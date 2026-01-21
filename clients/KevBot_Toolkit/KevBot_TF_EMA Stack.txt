@@ -2,25 +2,108 @@
 library("KevBot_TF_EMA_Stack", overlay = false)
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// OUTPUT STRUCTURE (MUST MATCH KevBot_TF_Placeholder)
+// OUTPUT STRUCTURE - Expanded for 10 Conditions (A-J) and 10 Triggers (A-J)
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export type TFModuleOutput
-    bool   tf1_cond
+    // Per-TF labels (state description)
     string tf1_label
-    bool   tf2_cond
     string tf2_label
-    bool   tf3_cond
     string tf3_label
-    bool   tf4_cond
     string tf4_label
-    bool   tf5_cond
     string tf5_label
-    bool   tf6_cond
     string tf6_label
 
-    // Unified trigger event metadata
-    bool   trigger_event
-    float  trigger_price
+    // Condition A per TF: SML (Bull Stack - S > M > L)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: LMS (Bear Stack - L > M > S)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: SLM
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: MSL
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF: MLS
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Condition F per TF: LSM
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    // Conditions G-J per TF: Reserved (false)
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // S crosses above M
+    bool trigB  // S crosses below M
+    bool trigC  // S crosses above L
+    bool trigD  // S crosses below L
+    bool trigE  // M crosses above L
+    bool trigF  // M crosses below L
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
     string trigger_label
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -28,13 +111,8 @@ export type TFModuleOutput
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // Convert a user TF string to a valid security resolution.
-// Toolkit supports "Chart" as a TF option.
 _tf_res(string tfRes) =>
     tfRes == "Chart" ? timeframe.period : tfRes
-
-// Clamp and sanitize EMA lengths coming from float params.
-_len(float p) =>
-    int(math.max(1, math.round(p)))
 
 // Compute EMA ordering label from three EMA values.
 // Returns one of: SML, SLM, MSL, MLS, LSM, LMS
@@ -54,21 +132,7 @@ _orderLabel(float eS, float eM, float eL) =>
         lab := "LMS"
     lab
 
-// Map paramE (confluence selector) into a target ordering label.
-// paramE meaning:
-//   0=SML, 1=SLM, 2=MSL, 3=MLS, 4=LSM, 5=LMS
-_selOrderLabel(float selE) =>
-    int i = int(math.round(selE))
-    i := math.max(0, math.min(5, i))
-    i == 0 ? "SML" :
-     i == 1 ? "SLM" :
-     i == 2 ? "MSL" :
-     i == 3 ? "MLS" :
-     i == 4 ? "LSM" : "LMS"
-
-// Compute per-TF CLOSE via request.security (expression must NOT depend on exported args).
-// We then compute EMAs locally on the stepped HTF close series.
-// NOTE: This is sufficient for Phase 1 wiring/table validation.
+// Compute per-TF CLOSE via request.security
 _getClose(simple string tfRes) =>
     string r = _tf_res(tfRes)
     request.security(
@@ -79,43 +143,8 @@ _getClose(simple string tfRes) =>
          barmerge.lookahead_off
      )
 
-// Determine trigger label from paramD.
-// paramD meaning:
-//   0=None
-//   1=SxM Up   2=SxM Down
-//   3=SxL Up   4=SxL Down
-//   5=MxL Up   6=MxL Down
-_trigLabel(float selD) =>
-    int d = int(math.round(selD))
-    d == 1 ? "S>M x" :
-     d == 2 ? "S<M x" :
-     d == 3 ? "S>L x" :
-     d == 4 ? "S<L x" :
-     d == 5 ? "M>L x" :
-     d == 6 ? "M<L x" : "None"
-
-// Compute trigger event on CHART timeframe only (discrete cross events).
-_trigEvent(float selD, float eS, float eM, float eL) =>
-    int d = int(math.round(selD))
-    bool ev = false
-    if d == 1
-        ev := ta.crossover(eS, eM)
-    else if d == 2
-        ev := ta.crossunder(eS, eM)
-    else if d == 3
-        ev := ta.crossover(eS, eL)
-    else if d == 4
-        ev := ta.crossunder(eS, eL)
-    else if d == 5
-        ev := ta.crossover(eM, eL)
-    else if d == 6
-        ev := ta.crossunder(eM, eL)
-    else
-        ev := false
-    ev
-
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// PUBLIC API (MUST MATCH KevBot_TF_Placeholder signature)
+// PUBLIC API
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export getTFConfluence(
@@ -124,21 +153,16 @@ export getTFConfluence(
      simple float  paramA,  simple float paramB,  simple float paramC,
      simple float  paramD,  simple float paramE,  simple float paramF) =>
 
-    // Length params (A/B/C) — must be SIMPLE for request.security() EMA lengths
+    // Length params (A/B/C)
     simple int lenS = int(math.max(1, math.round(paramA)))
     simple int lenM = int(math.max(1, math.round(paramB)))
     simple int lenL = int(math.max(1, math.round(paramC)))
 
-    // Selection params
-    // paramD = trigger selector (cross events)
-    // paramE = confluence selector (which ordering counts as TRUE)
-    // paramF currently unused by logic, but referenced to keep it "alive"
-    string targetOrder = _selOrderLabel(paramE)
-    float _keepAlive = paramF * 0.0
-    // consume paramF to avoid compiler elimination
-    bool _useParamF = _keepAlive == _keepAlive
+    // Keep paramD, E, F alive (they can be used for future extensions)
+    float _keepAlive = paramD + paramE + paramF
+    bool _useParams = _keepAlive == _keepAlive
 
-    // Per-TF stepped HTF closes (expression independent of exported args)
+    // Per-TF stepped HTF closes
     float c1_src = _getClose(tf1_res)
     float c2_src = _getClose(tf2_res)
     float c3_src = _getClose(tf3_res)
@@ -154,7 +178,7 @@ export getTFConfluence(
     float eS5 = ta.ema(c5_src, lenS), float eM5 = ta.ema(c5_src, lenM), float eL5 = ta.ema(c5_src, lenL)
     float eS6 = ta.ema(c6_src, lenS), float eM6 = ta.ema(c6_src, lenM), float eL6 = ta.ema(c6_src, lenL)
 
-    // Labels (state)
+    // Labels (current EMA ordering state)
     string lab1 = _orderLabel(eS1, eM1, eL1)
     string lab2 = _orderLabel(eS2, eM2, eL2)
     string lab3 = _orderLabel(eS3, eM3, eL3)
@@ -162,31 +186,69 @@ export getTFConfluence(
     string lab5 = _orderLabel(eS5, eM5, eL5)
     string lab6 = _orderLabel(eS6, eM6, eL6)
 
-    // Conditions (selected confluence rule)
-    bool c1 = lab1 == targetOrder
-    bool c2 = lab2 == targetOrder
-    bool c3 = lab3 == targetOrder
-    bool c4 = lab4 == targetOrder
-    bool c5 = lab5 == targetOrder
-    bool c6 = lab6 == targetOrder
+    // Condition A: SML (Bull Stack) per TF
+    bool cA1 = lab1 == "SML", bool cA2 = lab2 == "SML", bool cA3 = lab3 == "SML"
+    bool cA4 = lab4 == "SML", bool cA5 = lab5 == "SML", bool cA6 = lab6 == "SML"
 
-    // Trigger on chart timeframe (event)
+    // Condition B: LMS (Bear Stack) per TF
+    bool cB1 = lab1 == "LMS", bool cB2 = lab2 == "LMS", bool cB3 = lab3 == "LMS"
+    bool cB4 = lab4 == "LMS", bool cB5 = lab5 == "LMS", bool cB6 = lab6 == "LMS"
+
+    // Condition C: SLM per TF
+    bool cC1 = lab1 == "SLM", bool cC2 = lab2 == "SLM", bool cC3 = lab3 == "SLM"
+    bool cC4 = lab4 == "SLM", bool cC5 = lab5 == "SLM", bool cC6 = lab6 == "SLM"
+
+    // Condition D: MSL per TF
+    bool cD1 = lab1 == "MSL", bool cD2 = lab2 == "MSL", bool cD3 = lab3 == "MSL"
+    bool cD4 = lab4 == "MSL", bool cD5 = lab5 == "MSL", bool cD6 = lab6 == "MSL"
+
+    // Condition E: MLS per TF
+    bool cE1 = lab1 == "MLS", bool cE2 = lab2 == "MLS", bool cE3 = lab3 == "MLS"
+    bool cE4 = lab4 == "MLS", bool cE5 = lab5 == "MLS", bool cE6 = lab6 == "MLS"
+
+    // Condition F: LSM per TF
+    bool cF1 = lab1 == "LSM", bool cF2 = lab2 == "LSM", bool cF3 = lab3 == "LSM"
+    bool cF4 = lab4 == "LSM", bool cF5 = lab5 == "LSM", bool cF6 = lab6 == "LSM"
+
+    // Triggers on chart timeframe
     float eS = ta.ema(close, lenS)
     float eM = ta.ema(close, lenM)
     float eL = ta.ema(close, lenL)
 
-    bool trigEv = _trigEvent(paramD, eS, eM, eL)
-    string trigLab = _trigLabel(paramD) + " " + targetOrder + (paramF == paramF ? "" : "")
-    float trigPx = trigEv ? close : na
+    bool tA = ta.crossover(eS, eM)   // S crosses above M
+    bool tB = ta.crossunder(eS, eM)  // S crosses below M
+    bool tC = ta.crossover(eS, eL)   // S crosses above L
+    bool tD = ta.crossunder(eS, eL)  // S crosses below L
+    bool tE = ta.crossover(eM, eL)   // M crosses above L
+    bool tF = ta.crossunder(eM, eL)  // M crosses below L
+
+    // Determine active trigger for metadata
+    bool anyTrig = tA or tB or tC or tD or tE or tF
+    float trigPx = anyTrig ? close : na
+    string trigLab = tA ? "S>M" : tB ? "S<M" : tC ? "S>L" : tD ? "S<L" : tE ? "M>L" : tF ? "M<L" : "None"
 
     TFModuleOutput.new(
-        c1, lab1,
-        c2, lab2,
-        c3, lab3,
-        c4, lab4,
-        c5, lab5,
-        c6, lab6,
-        trigEv,
-        trigPx,
-        trigLab
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (SML)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (LMS)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (SLM)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (MSL)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E (MLS)
+        cE1, cE2, cE3, cE4, cE5, cE6,
+        // Cond F (LSM)
+        cF1, cF2, cF3, cF4, cF5, cF6,
+        // Cond G-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, tE, tF, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
     )

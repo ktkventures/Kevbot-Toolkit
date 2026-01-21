@@ -2,34 +2,114 @@
 library("KevBot_TF_Placeholder", overlay = false)
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// A1 OUTPUT STRUCTURE
+// OUTPUT STRUCTURE - Expanded for 10 Conditions (A-J) and 10 Triggers (A-J)
+// MUST MATCH KevBot_TF_EMA_Stack
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 export type TFModuleOutput
-    bool   tf1_cond
+    // Per-TF labels (state description)
     string tf1_label
-    bool   tf2_cond
     string tf2_label
-    bool   tf3_cond
     string tf3_label
-    bool   tf4_cond
     string tf4_label
-    bool   tf5_cond
     string tf5_label
-    bool   tf6_cond
     string tf6_label
 
-    // Unified trigger event metadata
-    bool   trigger_event
-    float  trigger_price
+    // Condition A per TF
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Condition F per TF
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    // Conditions G-J per TF
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA
+    bool trigB
+    bool trigC
+    bool trigD
+    bool trigE
+    bool trigF
+    bool trigG
+    bool trigH
+    bool trigI
+    bool trigJ
+
+    // Trigger metadata
+    float trigger_price
     string trigger_label
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // PLACEHOLDER CONFLUENCE FUNCTION
-// This is the authoritative Option A model:
-//   • One unified condition grid (TF1–TF6)
-//   • One unified trigger event
-//   • 6 parameters A–F supported
+// Returns placeholder values for testing the toolkit wiring
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export getTFConfluence(
@@ -37,38 +117,47 @@ export getTFConfluence(
      string tf4_res, string tf5_res, string tf6_res,
      float  paramA,  float paramB,  float paramC,
      float  paramD,  float paramE,  float paramF) =>
-    // Use all parameters in at least one expression so the compiler
-    // doesn't treat them as unused. Here we roll them into a simple sum
-    // that is only used in the text labels.
-    //
-    // This keeps the placeholder harmless but makes the API fully active.
+
+    // Use params to keep them alive
+    float _sum = paramA + paramB + paramC + paramD + paramE + paramF
+    bool _useParams = _sum == _sum
+
+    // Placeholder conditions based on paramA threshold
+    bool cA = paramA > 1
+    bool cB = paramA > 2
+    bool cC = paramA > 3
+    bool cD = paramA > 4
+    bool cE = paramA > 5
+    bool cF = paramA > 6
+
+    // Placeholder triggers
+    bool tA = paramA > 0
+    bool tB = paramA > 10
+
     TFModuleOutput.new(
-        // TF1: show sum of all parameters in the label
-        paramA > 1,
-        "TF1-" + tf1_res + " (" + str.tostring(paramA + paramB + paramC + paramD + paramE + paramF) + ")",
-
-        // TF2
-        paramA > 2,
-        "TF2-" + tf2_res,
-
-        // TF3
-        paramA > 3,
-        "TF3-" + tf3_res,
-
-        // TF4
-        paramA > 4,
-        "TF4-" + tf4_res,
-
-        // TF5
-        paramA > 5,
-        "TF5-" + tf5_res,
-
-        // TF6
-        paramA > 6,
-        "TF6-" + tf6_res,
-
-        // Unified trigger event – also use params in label to keep them "alive"
-        paramA > 0,
-        close,
-        "Trig (" + str.tostring(paramA + paramB + paramC + paramD + paramE + paramF) + ")"
+        // Labels
+        "TF1-" + tf1_res, "TF2-" + tf2_res, "TF3-" + tf3_res,
+        "TF4-" + tf4_res, "TF5-" + tf5_res, "TF6-" + tf6_res,
+        // Cond A
+        cA, cA, cA, cA, cA, cA,
+        // Cond B
+        cB, cB, cB, cB, cB, cB,
+        // Cond C
+        cC, cC, cC, cC, cC, cC,
+        // Cond D
+        cD, cD, cD, cD, cD, cD,
+        // Cond E
+        cE, cE, cE, cE, cE, cE,
+        // Cond F
+        cF, cF, cF, cF, cF, cF,
+        // Cond G-J (all false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, false, false, false, false, false, false, false, false,
+        // Trigger metadata
+        tA ? close : na,
+        "Placeholder (" + str.tostring(_sum) + ")"
     )

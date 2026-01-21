@@ -259,7 +259,7 @@ float side1_paramF = input.float(0.0, "Parameter F", group = GRP_SIDE1)
 // Long Entry
 string GRP_SIDE1_LE = "6.1 Side Module 1 – Long Entry"
 bool   side1_LE_enable = input.bool(false, "Long Entry Trigger", group = GRP_SIDE1_LE, inline="le1")
-string side1_LE_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_LE, inline="le1")
+string side1_LE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LE, inline="le1")
 string side1_LE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LE, inline = "le2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
 bool   side1_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_LE, inline = "le2",tooltip = "Plot a bullish info label on the chart when this Long Entry trigger fires.")
 
@@ -270,7 +270,7 @@ bool   side1_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_LE
 // TF Scores for Long Entry
 string GRP_SIDE1_LE_TF = "6.1.1 Long Entry – Confluences by Timeframe"
 bool   side1_LEC_enable = input.bool(false, "Long Entry Confluence", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Enable the Long Entry Confluence rule applied to all TF checks.")
-string side1_LEC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Select the Long Entry confluence function.")
+string side1_LEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Select the Long Entry confluence function.")
 bool   side1_LEC_bull   = input.bool(false, "Bullish Label", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Plot a bullish label when the Long Entry Confluence condition is met.")
 int  side1_LE_tf1     = input.int(0, "TF 1 TH Score", inline="le_tf1", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf1_req = input.bool(false, "Required", inline="le_tf1", group = GRP_SIDE1_LE_TF)
@@ -299,14 +299,14 @@ bool side1_LE_tf6_inv = input.bool(false, "Inv Label", inline="le_tf6", group = 
 // Long Exit
 string GRP_SIDE1_LX = "6.2 Side Module 1 – Long Exit"
 bool   side1_LX_enable = input.bool(false, "Long Exit Trigger", group = GRP_SIDE1_LX, inline="lx1")
-string side1_LX_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_LX, inline="lx1")
+string side1_LX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LX, inline="lx1")
 string side1_LX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LX, inline = "lx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
 bool   side1_LX_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_LX, inline = "lx2",tooltip = "Plot a bearish info label on the chart when this Long Exit trigger fires.")
 
 
 string GRP_SIDE1_LX_TF = "6.2.1 Long Exit – Confluences by Timeframe"
 bool   side1_LXC_enable = input.bool(false, "Long Exit Confluence", group = GRP_SIDE1_LX_TF, inline="lxc1")
-string side1_LXC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_LX_TF, inline="lxc1")
+string side1_LXC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_LX_TF, inline="lxc1")
 bool   side1_LXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_LX_TF, inline="lxc1")
 
 int  side1_LX_tf1     = input.int(0, "TF 1 TH Score", inline="lx_tf1", group = GRP_SIDE1_LX_TF)
@@ -336,14 +336,14 @@ bool side1_LX_tf6_inv = input.bool(false, "Inv Label", inline="lx_tf6", group = 
 // Short Entry
 string GRP_SIDE1_SE = "6.3 Side Module 1 – Short Entry"
 bool   side1_SE_enable = input.bool(false, "Short Entry Trigger", group = GRP_SIDE1_SE, inline="se1")
-string side1_SE_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_SE, inline="se1")
+string side1_SE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SE, inline="se1")
 string side1_SE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SE, inline = "se2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
 bool   side1_SE_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_SE, inline = "se2",tooltip = "Plot a bearish info label on the chart when this Short Entry trigger fires.")
 
 
 string GRP_SIDE1_SE_TF = "6.3.1 Short Entry – Confluences by Timeframe"
 bool   side1_SEC_enable = input.bool(false, "Short Entry Confluence", group = GRP_SIDE1_SE_TF, inline="sec1")
-string side1_SEC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_SE_TF, inline="sec1")
+string side1_SEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_SE_TF, inline="sec1")
 bool   side1_SEC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_SE_TF, inline="sec1")
 
 int  side1_SE_tf1     = input.int(0, "TF 1 TH Score", inline="se_tf1", group = GRP_SIDE1_SE_TF)
@@ -373,14 +373,14 @@ bool side1_SE_tf6_inv = input.bool(false, "Inv Label", inline="se_tf6", group = 
 // Short Exit
 string GRP_SIDE1_SX = "6.4 Side Module 1 – Short Exit"
 bool   side1_SX_enable = input.bool(false, "Short Exit Trigger", group = GRP_SIDE1_SX, inline="sx1")
-string side1_SX_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_SX, inline="sx1")
+string side1_SX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SX, inline="sx1")
 string side1_SX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SX, inline = "sx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
 bool   side1_SX_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_SX, inline = "sx2",tooltip = "Plot a bullish info label on the chart when this Short Exit trigger fires.")
 
 
 string GRP_SIDE1_SX_TF = "6.4.1 Short Exit – Confluences by Timeframe"
 bool   side1_SXC_enable = input.bool(false, "Short Exit Confluence", group = GRP_SIDE1_SX_TF, inline="sxc1")
-string side1_SXC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_SX_TF, inline="sxc1")
+string side1_SXC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_SX_TF, inline="sxc1")
 bool   side1_SXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_SX_TF, inline="sxc1")
 
 int  side1_SX_tf1     = input.int(0, "TF 1 TH Score", inline="sx_tf1", group = GRP_SIDE1_SX_TF)
@@ -583,39 +583,37 @@ type KB_TF_Out_V2
     string trigger_label
 
 
-// Phase 2B helper: map legacy TFModuleOutput (from side1Lib) → KB_TF_Out_V2
-// Legacy outputs only provide ONE condition per TF and ONE trigger event.
-// We map those into slot A and leave B–J false.
-_kb_mapLegacyToV2(side1Lib.TFModuleOutput o) =>
+// Phase 2B helper: map TFModuleOutput (from side1Lib) → KB_TF_Out_V2
+// Libraries now output all 10 conditions (A-J) per TF and 10 triggers (A-J).
+_kb_mapLibToV2(side1Lib.TFModuleOutput o) =>
     KB_TF_Out_V2.new(
         // labels
         o.tf1_label, o.tf2_label, o.tf3_label, o.tf4_label, o.tf5_label, o.tf6_label,
 
-        // condA (mapped)
-        o.tf1_cond, o.tf2_cond, o.tf3_cond, o.tf4_cond, o.tf5_cond, o.tf6_cond,
+        // condA
+        o.condA_tf1, o.condA_tf2, o.condA_tf3, o.condA_tf4, o.condA_tf5, o.condA_tf6,
         // condB
-        false, false, false, false, false, false,
+        o.condB_tf1, o.condB_tf2, o.condB_tf3, o.condB_tf4, o.condB_tf5, o.condB_tf6,
         // condC
-        false, false, false, false, false, false,
+        o.condC_tf1, o.condC_tf2, o.condC_tf3, o.condC_tf4, o.condC_tf5, o.condC_tf6,
         // condD
-        false, false, false, false, false, false,
+        o.condD_tf1, o.condD_tf2, o.condD_tf3, o.condD_tf4, o.condD_tf5, o.condD_tf6,
         // condE
-        false, false, false, false, false, false,
+        o.condE_tf1, o.condE_tf2, o.condE_tf3, o.condE_tf4, o.condE_tf5, o.condE_tf6,
         // condF
-        false, false, false, false, false, false,
+        o.condF_tf1, o.condF_tf2, o.condF_tf3, o.condF_tf4, o.condF_tf5, o.condF_tf6,
         // condG
-        false, false, false, false, false, false,
+        o.condG_tf1, o.condG_tf2, o.condG_tf3, o.condG_tf4, o.condG_tf5, o.condG_tf6,
         // condH
-        false, false, false, false, false, false,
+        o.condH_tf1, o.condH_tf2, o.condH_tf3, o.condH_tf4, o.condH_tf5, o.condH_tf6,
         // condI
-        false, false, false, false, false, false,
+        o.condI_tf1, o.condI_tf2, o.condI_tf3, o.condI_tf4, o.condI_tf5, o.condI_tf6,
         // condJ
-        false, false, false, false, false, false,
+        o.condJ_tf1, o.condJ_tf2, o.condJ_tf3, o.condJ_tf4, o.condJ_tf5, o.condJ_tf6,
 
-        // trigA (mapped)
-        o.trigger_event,
-        // trigB..trigJ
-        false, false, false, false, false, false, false, false, false,
+        // triggers A-J
+        o.trigA, o.trigB, o.trigC, o.trigD, o.trigE,
+        o.trigF, o.trigG, o.trigH, o.trigI, o.trigJ,
 
         // trigger metadata
         o.trigger_price,
@@ -649,16 +647,12 @@ if not (top1_enabled and top1_library != "None")
 // 7.2 TF MODULE LOADER (SIDE MODULE 1 PROTOTYPE)
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //
-// Expected TF library API:
+// Expected TF library API (V2 with 10 conditions A-J and 10 triggers A-J):
 //
 // export type TFModuleOutput => record(
-//       bool   tf1_cond, string tf1_label,
-//       bool   tf2_cond, string tf2_label,
-//       bool   tf3_cond, string tf3_label,
-//       bool   tf4_cond, string tf4_label,
-//       bool   tf5_cond, string tf5_label,
-//       bool   tf6_cond, string tf6_label,
-//       bool   trigger_event,
+//       string tf1_label, tf2_label, tf3_label, tf4_label, tf5_label, tf6_label,
+//       bool   condA_tf1..condA_tf6, condB_tf1..condB_tf6, ... condJ_tf1..condJ_tf6,
+//       bool   trigA, trigB, trigC, trigD, trigE, trigF, trigG, trigH, trigI, trigJ,
 //       float  trigger_price,
 //       string trigger_label
 // )
@@ -670,11 +664,11 @@ if not (top1_enabled and top1_library != "None")
 //       float  paramD,  float paramE,  float paramF
 // )
 //
-// Phase 2B adds a normalized output (KB_TF_Out_V2) alongside legacy output.
+// Toolkit normalizes library output to KB_TF_Out_V2 for uniform downstream use.
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// Raw TF-Module-1 output record (LEGACY)
-// NOTE: TFModuleOutput types are library-scoped. We must normalize all branches
+// Raw TF-Module-1 output record
+// NOTE: TFModuleOutput types are library-scoped. We normalize all branches
 // into the Placeholder TFModuleOutput type (side1Lib.TFModuleOutput).
 var side1Lib.TFModuleOutput side1_raw = side1Lib.getTFConfluence(
     tf1, tf2, tf3, tf4, tf5, tf6,
@@ -690,17 +684,46 @@ if side1_library == "EMA Stack (S/M/L)"
         side1_paramC, side1_paramD,
         side1_paramE, side1_paramF
     )
-    // Cast EMA output → placeholder output type
+    // Cast EMA output → placeholder output type (new V2 structure with 10 conditions/triggers)
     side1_raw := side1Lib.TFModuleOutput.new(
-        _emaOut.tf1_cond, _emaOut.tf1_label,
-        _emaOut.tf2_cond, _emaOut.tf2_label,
-        _emaOut.tf3_cond, _emaOut.tf3_label,
-        _emaOut.tf4_cond, _emaOut.tf4_label,
-        _emaOut.tf5_cond, _emaOut.tf5_label,
-        _emaOut.tf6_cond, _emaOut.tf6_label,
-        _emaOut.trigger_event,
-        _emaOut.trigger_price,
-        _emaOut.trigger_label
+        // Labels
+        _emaOut.tf1_label, _emaOut.tf2_label, _emaOut.tf3_label,
+        _emaOut.tf4_label, _emaOut.tf5_label, _emaOut.tf6_label,
+        // Cond A
+        _emaOut.condA_tf1, _emaOut.condA_tf2, _emaOut.condA_tf3,
+        _emaOut.condA_tf4, _emaOut.condA_tf5, _emaOut.condA_tf6,
+        // Cond B
+        _emaOut.condB_tf1, _emaOut.condB_tf2, _emaOut.condB_tf3,
+        _emaOut.condB_tf4, _emaOut.condB_tf5, _emaOut.condB_tf6,
+        // Cond C
+        _emaOut.condC_tf1, _emaOut.condC_tf2, _emaOut.condC_tf3,
+        _emaOut.condC_tf4, _emaOut.condC_tf5, _emaOut.condC_tf6,
+        // Cond D
+        _emaOut.condD_tf1, _emaOut.condD_tf2, _emaOut.condD_tf3,
+        _emaOut.condD_tf4, _emaOut.condD_tf5, _emaOut.condD_tf6,
+        // Cond E
+        _emaOut.condE_tf1, _emaOut.condE_tf2, _emaOut.condE_tf3,
+        _emaOut.condE_tf4, _emaOut.condE_tf5, _emaOut.condE_tf6,
+        // Cond F
+        _emaOut.condF_tf1, _emaOut.condF_tf2, _emaOut.condF_tf3,
+        _emaOut.condF_tf4, _emaOut.condF_tf5, _emaOut.condF_tf6,
+        // Cond G
+        _emaOut.condG_tf1, _emaOut.condG_tf2, _emaOut.condG_tf3,
+        _emaOut.condG_tf4, _emaOut.condG_tf5, _emaOut.condG_tf6,
+        // Cond H
+        _emaOut.condH_tf1, _emaOut.condH_tf2, _emaOut.condH_tf3,
+        _emaOut.condH_tf4, _emaOut.condH_tf5, _emaOut.condH_tf6,
+        // Cond I
+        _emaOut.condI_tf1, _emaOut.condI_tf2, _emaOut.condI_tf3,
+        _emaOut.condI_tf4, _emaOut.condI_tf5, _emaOut.condI_tf6,
+        // Cond J
+        _emaOut.condJ_tf1, _emaOut.condJ_tf2, _emaOut.condJ_tf3,
+        _emaOut.condJ_tf4, _emaOut.condJ_tf5, _emaOut.condJ_tf6,
+        // Triggers A-J
+        _emaOut.trigA, _emaOut.trigB, _emaOut.trigC, _emaOut.trigD, _emaOut.trigE,
+        _emaOut.trigF, _emaOut.trigG, _emaOut.trigH, _emaOut.trigI, _emaOut.trigJ,
+        // Trigger metadata
+        _emaOut.trigger_price, _emaOut.trigger_label
     )
 else
     // Default: Placeholder
@@ -713,7 +736,7 @@ else
 
 // Phase 2B normalized output (V2)
 // For now, all legacy libraries map into slot A.
-KB_TF_Out_V2 side1_v2 = _kb_mapLegacyToV2(side1_raw)
+KB_TF_Out_V2 side1_v2 = _kb_mapLibToV2(side1_raw)
 
 
 
@@ -726,36 +749,35 @@ KB_TF_Out_V2 side1_v2 = _kb_mapLegacyToV2(side1_raw)
 //   • Block 9 (CONFLUENCE ENGINE)
 //   • Block 12 (Side Table Renderer)
 //
-// They reflect the TFModuleOutput fields exactly.
-//
-// Phase 2B note:
-//   • New multi-slot engines will later consume side1_v2 instead.
-//   • Legacy engines continue to consume side1_raw until upgraded.
+// Uses V2 structure with 10 conditions (A-J) per TF and 10 triggers (A-J).
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// Unified trigger
-bool   _side1_baseTrigger  = _side1_moduleActive and side1_raw.trigger_event
-float  _side1_triggerPrice = _side1_moduleActive ? side1_raw.trigger_price : na
-string _side1_triggerLabel = _side1_moduleActive ? side1_raw.trigger_label : ""
+// Helper: map condition source text to an index slot (0-9 for A-J)
+_kb_mapCondSource(string src) => src == "Cond A" ? 0 : src == "Cond B" ? 1 : src == "Cond C" ? 2 : src == "Cond D" ? 3 : src == "Cond E" ? 4 : src == "Cond F" ? 5 : src == "Cond G" ? 6 : src == "Cond H" ? 7 : src == "Cond I" ? 8 : src == "Cond J" ? 9 : -1
 
-// Per-TF condition flags + labels
-bool   _side1_tf1_cond  = _side1_moduleActive and side1_raw.tf1_cond
-string _side1_tf1_label = side1_raw.tf1_label
+// Helper: get trigger by index from V2 output
+_kb_getTrigger(KB_TF_Out_V2 v2, int idx) =>
+    idx == 0 ? v2.trigA : idx == 1 ? v2.trigB : idx == 2 ? v2.trigC : idx == 3 ? v2.trigD : idx == 4 ? v2.trigE : idx == 5 ? v2.trigF : idx == 6 ? v2.trigG : idx == 7 ? v2.trigH : idx == 8 ? v2.trigI : idx == 9 ? v2.trigJ : false
 
-bool   _side1_tf2_cond  = _side1_moduleActive and side1_raw.tf2_cond
-string _side1_tf2_label = side1_raw.tf2_label
+// Helper: get condition for a specific TF by condition index
+_kb_getCondTF1(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf1 : idx == 1 ? v2.condB_tf1 : idx == 2 ? v2.condC_tf1 : idx == 3 ? v2.condD_tf1 : idx == 4 ? v2.condE_tf1 : idx == 5 ? v2.condF_tf1 : idx == 6 ? v2.condG_tf1 : idx == 7 ? v2.condH_tf1 : idx == 8 ? v2.condI_tf1 : idx == 9 ? v2.condJ_tf1 : false
+_kb_getCondTF2(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf2 : idx == 1 ? v2.condB_tf2 : idx == 2 ? v2.condC_tf2 : idx == 3 ? v2.condD_tf2 : idx == 4 ? v2.condE_tf2 : idx == 5 ? v2.condF_tf2 : idx == 6 ? v2.condG_tf2 : idx == 7 ? v2.condH_tf2 : idx == 8 ? v2.condI_tf2 : idx == 9 ? v2.condJ_tf2 : false
+_kb_getCondTF3(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf3 : idx == 1 ? v2.condB_tf3 : idx == 2 ? v2.condC_tf3 : idx == 3 ? v2.condD_tf3 : idx == 4 ? v2.condE_tf3 : idx == 5 ? v2.condF_tf3 : idx == 6 ? v2.condG_tf3 : idx == 7 ? v2.condH_tf3 : idx == 8 ? v2.condI_tf3 : idx == 9 ? v2.condJ_tf3 : false
+_kb_getCondTF4(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf4 : idx == 1 ? v2.condB_tf4 : idx == 2 ? v2.condC_tf4 : idx == 3 ? v2.condD_tf4 : idx == 4 ? v2.condE_tf4 : idx == 5 ? v2.condF_tf4 : idx == 6 ? v2.condG_tf4 : idx == 7 ? v2.condH_tf4 : idx == 8 ? v2.condI_tf4 : idx == 9 ? v2.condJ_tf4 : false
+_kb_getCondTF5(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf5 : idx == 1 ? v2.condB_tf5 : idx == 2 ? v2.condC_tf5 : idx == 3 ? v2.condD_tf5 : idx == 4 ? v2.condE_tf5 : idx == 5 ? v2.condF_tf5 : idx == 6 ? v2.condG_tf5 : idx == 7 ? v2.condH_tf5 : idx == 8 ? v2.condI_tf5 : idx == 9 ? v2.condJ_tf5 : false
+_kb_getCondTF6(KB_TF_Out_V2 v2, int idx) => idx == 0 ? v2.condA_tf6 : idx == 1 ? v2.condB_tf6 : idx == 2 ? v2.condC_tf6 : idx == 3 ? v2.condD_tf6 : idx == 4 ? v2.condE_tf6 : idx == 5 ? v2.condF_tf6 : idx == 6 ? v2.condG_tf6 : idx == 7 ? v2.condH_tf6 : idx == 8 ? v2.condI_tf6 : idx == 9 ? v2.condJ_tf6 : false
 
-bool   _side1_tf3_cond  = _side1_moduleActive and side1_raw.tf3_cond
-string _side1_tf3_label = side1_raw.tf3_label
+// Trigger metadata (shared across all triggers)
+float  _side1_triggerPrice = _side1_moduleActive ? side1_v2.trigger_price : na
+string _side1_triggerLabel = _side1_moduleActive ? side1_v2.trigger_label : ""
 
-bool   _side1_tf4_cond  = _side1_moduleActive and side1_raw.tf4_cond
-string _side1_tf4_label = side1_raw.tf4_label
-
-bool   _side1_tf5_cond  = _side1_moduleActive and side1_raw.tf5_cond
-string _side1_tf5_label = side1_raw.tf5_label
-
-bool   _side1_tf6_cond  = _side1_moduleActive and side1_raw.tf6_cond
-string _side1_tf6_label = side1_raw.tf6_label
+// Per-TF labels (from V2 structure)
+string _side1_tf1_label = side1_v2.tf1_label
+string _side1_tf2_label = side1_v2.tf2_label
+string _side1_tf3_label = side1_v2.tf3_label
+string _side1_tf4_label = side1_v2.tf4_label
+string _side1_tf5_label = side1_v2.tf5_label
+string _side1_tf6_label = side1_v2.tf6_label
 
 
 
@@ -766,57 +788,54 @@ string _side1_tf6_label = side1_raw.tf6_label
 
 // NOTE:
 // • This section maps Side Module 1 settings to raw entry/exit triggers.
-// • Currently, the minimal TF library (KevBot_TF_Minimal) exposes a single
-//   directional signal via side1_raw.outD. Future libraries can expose
-//   multiple trigger variants; the routing logic here is designed to be
-//   extended without breaking.
+// • Libraries expose 10 trigger variants (A-J); each directional group
+//   (LE/LX/SE/SX) selects which trigger to use via dropdown.
 
-// Helper: map trigger source text to an index slot (for future multi-trigger arrays)
-_kb_mapTriggerSource(string src) => src == "Trigger A" ? 0 : src == "Trigger B" ? 1 : -1
+/// Helper: map trigger source text to an index slot (0-9 for A-J)
+_kb_mapTriggerSource(string src) => src == "Trigger A" ? 0 : src == "Trigger B" ? 1 : src == "Trigger C" ? 2 : src == "Trigger D" ? 3 : src == "Trigger E" ? 4 : src == "Trigger F" ? 5 : src == "Trigger G" ? 6 : src == "Trigger H" ? 7 : src == "Trigger I" ? 8 : src == "Trigger J" ? 9 : -1
 
 // Resolve selected trigger indices for each directional group
-int side1_LE_index = _kb_mapTriggerSource(side1_LE_source)
-int side1_LX_index = _kb_mapTriggerSource(side1_LX_source)
-int side1_SE_index = _kb_mapTriggerSource(side1_SE_source)
-int side1_SX_index = _kb_mapTriggerSource(side1_SX_source)
+int side1_LE_trig_index = _kb_mapTriggerSource(side1_LE_source)
+int side1_LX_trig_index = _kb_mapTriggerSource(side1_LX_source)
+int side1_SE_trig_index = _kb_mapTriggerSource(side1_SE_source)
+int side1_SX_trig_index = _kb_mapTriggerSource(side1_SX_source)
 
 // Helper functions for signal-type dropdown
 _kb_sigRawEnabled(string t) => t == "Raw Only" or t == "Both"
 _kb_sigPosEnabled(string t) => t == "Position Only" or t == "Both"
 
-// Unified trigger event coming from the TF library. This is neutral with
-// respect to direction; the Toolkit maps it into LE/LX/SE/SX using the
-// Side Module settings.
-bool _kb_sideBaseCond = _side1_baseTrigger
-
-
+// Get the selected trigger for each directional group from V2 output
+bool _side1_LE_trigger = _side1_moduleActive and _kb_getTrigger(side1_v2, side1_LE_trig_index)
+bool _side1_LX_trigger = _side1_moduleActive and _kb_getTrigger(side1_v2, side1_LX_trig_index)
+bool _side1_SE_trigger = _side1_moduleActive and _kb_getTrigger(side1_v2, side1_SE_trig_index)
+bool _side1_SX_trigger = _side1_moduleActive and _kb_getTrigger(side1_v2, side1_SX_trig_index)
 
 // Determine, per directional group, whether raw marks and/or position
 // signals are enabled.
-bool _LE_posEnabled = side1_LE_enable and side1_LE_index >= 0 and _kb_sigPosEnabled(side1_LE_sigType)
-bool _LE_rawEnabled = side1_LE_enable and side1_LE_index >= 0 and _kb_sigRawEnabled(side1_LE_sigType)
+bool _LE_posEnabled = side1_LE_enable and side1_LE_trig_index >= 0 and _kb_sigPosEnabled(side1_LE_sigType)
+bool _LE_rawEnabled = side1_LE_enable and side1_LE_trig_index >= 0 and _kb_sigRawEnabled(side1_LE_sigType)
 
-bool _LX_posEnabled = side1_LX_enable and side1_LX_index >= 0 and _kb_sigPosEnabled(side1_LX_sigType)
-bool _LX_rawEnabled = side1_LX_enable and side1_LX_index >= 0 and _kb_sigRawEnabled(side1_LX_sigType)
+bool _LX_posEnabled = side1_LX_enable and side1_LX_trig_index >= 0 and _kb_sigPosEnabled(side1_LX_sigType)
+bool _LX_rawEnabled = side1_LX_enable and side1_LX_trig_index >= 0 and _kb_sigRawEnabled(side1_LX_sigType)
 
-bool _SE_posEnabled = side1_SE_enable and side1_SE_index >= 0 and _kb_sigPosEnabled(side1_SE_sigType)
-bool _SE_rawEnabled = side1_SE_enable and side1_SE_index >= 0 and _kb_sigRawEnabled(side1_SE_sigType)
+bool _SE_posEnabled = side1_SE_enable and side1_SE_trig_index >= 0 and _kb_sigPosEnabled(side1_SE_sigType)
+bool _SE_rawEnabled = side1_SE_enable and side1_SE_trig_index >= 0 and _kb_sigRawEnabled(side1_SE_sigType)
 
-bool _SX_posEnabled = side1_SX_enable and side1_SX_index >= 0 and _kb_sigPosEnabled(side1_SX_sigType)
-bool _SX_rawEnabled = side1_SX_enable and side1_SX_index >= 0 and _kb_sigRawEnabled(side1_SX_sigType)
+bool _SX_posEnabled = side1_SX_enable and side1_SX_trig_index >= 0 and _kb_sigPosEnabled(side1_SX_sigType)
+bool _SX_rawEnabled = side1_SX_enable and side1_SX_trig_index >= 0 and _kb_sigRawEnabled(side1_SX_sigType)
 
 // Position-level triggers (fed into the Position Engine later)
-bool rawLongEntry  = _side1_baseTrigger and _LE_posEnabled
-bool rawLongExit   = _side1_baseTrigger and _LX_posEnabled
-bool rawShortEntry = _side1_baseTrigger and _SE_posEnabled
-bool rawShortExit  = _side1_baseTrigger and _SX_posEnabled
+// Each uses its own selected trigger from the V2 output
+bool rawLongEntry  = _side1_LE_trigger and _LE_posEnabled
+bool rawLongExit   = _side1_LX_trigger and _LX_posEnabled
+bool rawShortEntry = _side1_SE_trigger and _SE_posEnabled
+bool rawShortExit  = _side1_SX_trigger and _SX_posEnabled
 
-// Raw visual marks (for chart-only signals). These aren’t yet consumed by
-// other modules, but are defined now for future plotting logic.
-bool markLongEntry  = _side1_baseTrigger and _LE_rawEnabled
-bool markLongExit   = _side1_baseTrigger and _LX_rawEnabled
-bool markShortEntry = _side1_baseTrigger and _SE_rawEnabled
-bool markShortExit  = _side1_baseTrigger and _SX_rawEnabled
+// Raw visual marks (for chart-only signals)
+bool markLongEntry  = _side1_LE_trigger and _LE_rawEnabled
+bool markLongExit   = _side1_LX_trigger and _LX_rawEnabled
+bool markShortEntry = _side1_SE_trigger and _SE_rawEnabled
+bool markShortExit  = _side1_SX_trigger and _SX_rawEnabled
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 9. CONFLUENCE ENGINE
@@ -1019,24 +1038,12 @@ float sideShortScore = 0.0
 bool  sideReqLongOk  = true
 bool  sideReqShortOk = true
 
-// Cached per-TF conditions from the active TF library. These are generic
-// confluence flags; the Toolkit decides how they contribute to long/short
-// scoring via TF TH scores and Required/Inv toggles.
-bool _kb_tf1_cond = _side1_tf1_cond
-bool _kb_tf2_cond = _side1_tf2_cond
-bool _kb_tf3_cond = _side1_tf3_cond
-bool _kb_tf4_cond = _side1_tf4_cond
-bool _kb_tf5_cond = _side1_tf5_cond
-bool _kb_tf6_cond = _side1_tf6_cond
-
-
-
 // Helper: evaluate one TF row (score + required) for a given direction.
 // Returns: [addedScore, updatedReqOk, tfMatched]
-//  • tfScore   = TF TH Score (0 means “this TF is ignored”)
+//  • tfScore   = TF TH Score (0 means "this TF is ignored")
 //  • tfReq     = Required toggle
 //  • tfInv     = Inv Label toggle (invert the condition)
-//  • cond      = raw condition (TRUE/FALSE for this TF – placeholder for now)
+//  • cond      = raw condition (TRUE/FALSE for this TF)
 //  • reqOkIn   = current required-OK flag for this direction
 _kb_evalSideTF(int tfScore, bool tfReq, bool tfInv, bool cond, bool reqOkIn) =>
     float add      = 0.0
@@ -1056,14 +1063,16 @@ _kb_evalSideTF(int tfScore, bool tfReq, bool tfInv, bool cond, bool reqOkIn) =>
 //──────────────────────────────────────────────────────────────────────────────
 
 if side1_LEC_enable and side1_enabled and side1_library != "None" and side1_LEC_func != "None"
-    // Per-TF conditions from the TF library (generic confluence flags).
-    bool condLE_tf1 = _kb_tf1_cond
-    bool condLE_tf2 = _kb_tf2_cond
-    bool condLE_tf3 = _kb_tf3_cond
-    bool condLE_tf4 = _kb_tf4_cond
-    bool condLE_tf5 = _kb_tf5_cond
-    bool condLE_tf6 = _kb_tf6_cond
+    // Get the selected condition index from the dropdown
+    int _LE_condIdx = _kb_mapCondSource(side1_LEC_func)
 
+    // Per-TF conditions from V2 output using the selected condition (A-J)
+    bool condLE_tf1 = _side1_moduleActive and _kb_getCondTF1(side1_v2, _LE_condIdx)
+    bool condLE_tf2 = _side1_moduleActive and _kb_getCondTF2(side1_v2, _LE_condIdx)
+    bool condLE_tf3 = _side1_moduleActive and _kb_getCondTF3(side1_v2, _LE_condIdx)
+    bool condLE_tf4 = _side1_moduleActive and _kb_getCondTF4(side1_v2, _LE_condIdx)
+    bool condLE_tf5 = _side1_moduleActive and _kb_getCondTF5(side1_v2, _LE_condIdx)
+    bool condLE_tf6 = _side1_moduleActive and _kb_getCondTF6(side1_v2, _LE_condIdx)
 
     // Per‑TF scoring loop – walks TF1..TF6 using the helper.
     float addTF_LE = 0.0
@@ -1085,14 +1094,16 @@ if side1_LEC_enable and side1_enabled and side1_library != "None" and side1_LEC_
 //──────────────────────────────────────────────────────────────────────────────
 
 if side1_SEC_enable and side1_enabled and side1_library != "None" and side1_SEC_func != "None"
-    // Per-TF conditions from the TF library (generic confluence flags).
-    bool condSE_tf1 = _kb_tf1_cond
-    bool condSE_tf2 = _kb_tf2_cond
-    bool condSE_tf3 = _kb_tf3_cond
-    bool condSE_tf4 = _kb_tf4_cond
-    bool condSE_tf5 = _kb_tf5_cond
-    bool condSE_tf6 = _kb_tf6_cond
+    // Get the selected condition index from the dropdown
+    int _SE_condIdx = _kb_mapCondSource(side1_SEC_func)
 
+    // Per-TF conditions from V2 output using the selected condition (A-J)
+    bool condSE_tf1 = _side1_moduleActive and _kb_getCondTF1(side1_v2, _SE_condIdx)
+    bool condSE_tf2 = _side1_moduleActive and _kb_getCondTF2(side1_v2, _SE_condIdx)
+    bool condSE_tf3 = _side1_moduleActive and _kb_getCondTF3(side1_v2, _SE_condIdx)
+    bool condSE_tf4 = _side1_moduleActive and _kb_getCondTF4(side1_v2, _SE_condIdx)
+    bool condSE_tf5 = _side1_moduleActive and _kb_getCondTF5(side1_v2, _SE_condIdx)
+    bool condSE_tf6 = _side1_moduleActive and _kb_getCondTF6(side1_v2, _SE_condIdx)
 
     float addTF_SE = 0.0
     bool  reqOutSE = true
@@ -1124,12 +1135,16 @@ bool  sideReqShortExitOk = true
 //──────────────────────────────────────────────────────────────────────────────
 
 if side1_LXC_enable and side1_enabled and side1_library != "None" and side1_LXC_func != "None"
-    bool condLX_tf1 = _kb_tf1_cond
-    bool condLX_tf2 = _kb_tf2_cond
-    bool condLX_tf3 = _kb_tf3_cond
-    bool condLX_tf4 = _kb_tf4_cond
-    bool condLX_tf5 = _kb_tf5_cond
-    bool condLX_tf6 = _kb_tf6_cond
+    // Get the selected condition index from the dropdown
+    int _LX_condIdx = _kb_mapCondSource(side1_LXC_func)
+
+    // Per-TF conditions from V2 output using the selected condition (A-J)
+    bool condLX_tf1 = _side1_moduleActive and _kb_getCondTF1(side1_v2, _LX_condIdx)
+    bool condLX_tf2 = _side1_moduleActive and _kb_getCondTF2(side1_v2, _LX_condIdx)
+    bool condLX_tf3 = _side1_moduleActive and _kb_getCondTF3(side1_v2, _LX_condIdx)
+    bool condLX_tf4 = _side1_moduleActive and _kb_getCondTF4(side1_v2, _LX_condIdx)
+    bool condLX_tf5 = _side1_moduleActive and _kb_getCondTF5(side1_v2, _LX_condIdx)
+    bool condLX_tf6 = _side1_moduleActive and _kb_getCondTF6(side1_v2, _LX_condIdx)
 
     float addTF_LX = 0.0
     bool  reqOutLX = true
@@ -1150,12 +1165,16 @@ if side1_LXC_enable and side1_enabled and side1_library != "None" and side1_LXC_
 //──────────────────────────────────────────────────────────────────────────────
 
 if side1_SXC_enable and side1_enabled and side1_library != "None" and side1_SXC_func != "None"
-    bool condSX_tf1 = _kb_tf1_cond
-    bool condSX_tf2 = _kb_tf2_cond
-    bool condSX_tf3 = _kb_tf3_cond
-    bool condSX_tf4 = _kb_tf4_cond
-    bool condSX_tf5 = _kb_tf5_cond
-    bool condSX_tf6 = _kb_tf6_cond
+    // Get the selected condition index from the dropdown
+    int _SX_condIdx = _kb_mapCondSource(side1_SXC_func)
+
+    // Per-TF conditions from V2 output using the selected condition (A-J)
+    bool condSX_tf1 = _side1_moduleActive and _kb_getCondTF1(side1_v2, _SX_condIdx)
+    bool condSX_tf2 = _side1_moduleActive and _kb_getCondTF2(side1_v2, _SX_condIdx)
+    bool condSX_tf3 = _side1_moduleActive and _kb_getCondTF3(side1_v2, _SX_condIdx)
+    bool condSX_tf4 = _side1_moduleActive and _kb_getCondTF4(side1_v2, _SX_condIdx)
+    bool condSX_tf5 = _side1_moduleActive and _kb_getCondTF5(side1_v2, _SX_condIdx)
+    bool condSX_tf6 = _side1_moduleActive and _kb_getCondTF6(side1_v2, _SX_condIdx)
 
     float addTF_SX = 0.0
     bool  reqOutSX = true
@@ -1902,6 +1921,10 @@ else if enableSideTable
     string moduleLabel = side1_name != "" ? side1_name : "Side Module 1"
     f_sideTable_cell(_kb_sideTable, 0, _kb_moduleRow, moduleLabel, _kb_sideTxtCol, _kb_sideLabelBg)
 
+    // Get condition indices for Long Entry and Short Entry (for display)
+    int _sideLE_condIdx = _kb_mapCondSource(side1_LEC_func)
+    int _sideSE_condIdx = _kb_mapCondSource(side1_SEC_func)
+
     // Per-TF cells
     for i = 0 to _kb_side_tfCount - 1
         int tfIdx = array.get(_kb_side_tfIndex, i)
@@ -1909,58 +1932,67 @@ else if enableSideTable
 
         int  leScore   = 0
         int  seScore   = 0
-        bool tfCond    = false
+        bool tfCondLE  = false
+        bool tfCondSE  = false
         string tfLabel = ""
         bool reqLong   = false
         bool reqShort  = false
 
-        // Extract TF-specific metadata
+        // Extract TF-specific metadata from V2 structure
         if tfIdx == 1
-            leScore := side1_LE_tf1
-            seScore := side1_SE_tf1
-            tfCond  := _side1_tf1_cond
-            tfLabel := side1_raw.tf1_label
-            reqLong := side1_LE_tf1_req
-            reqShort:= side1_SE_tf1_req
+            leScore  := side1_LE_tf1
+            seScore  := side1_SE_tf1
+            tfCondLE := _side1_moduleActive and _kb_getCondTF1(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF1(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf1_label
+            reqLong  := side1_LE_tf1_req
+            reqShort := side1_SE_tf1_req
         else if tfIdx == 2
-            leScore := side1_LE_tf2
-            seScore := side1_SE_tf2
-            tfCond  := _side1_tf2_cond
-            tfLabel := side1_raw.tf2_label
-            reqLong := side1_LE_tf2_req
-            reqShort:= side1_SE_tf2_req
+            leScore  := side1_LE_tf2
+            seScore  := side1_SE_tf2
+            tfCondLE := _side1_moduleActive and _kb_getCondTF2(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF2(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf2_label
+            reqLong  := side1_LE_tf2_req
+            reqShort := side1_SE_tf2_req
         else if tfIdx == 3
-            leScore := side1_LE_tf3
-            seScore := side1_SE_tf3
-            tfCond  := _side1_tf3_cond
-            tfLabel := side1_raw.tf3_label
-            reqLong := side1_LE_tf3_req
-            reqShort:= side1_SE_tf3_req
+            leScore  := side1_LE_tf3
+            seScore  := side1_SE_tf3
+            tfCondLE := _side1_moduleActive and _kb_getCondTF3(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF3(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf3_label
+            reqLong  := side1_LE_tf3_req
+            reqShort := side1_SE_tf3_req
         else if tfIdx == 4
-            leScore := side1_LE_tf4
-            seScore := side1_SE_tf4
-            tfCond  := _side1_tf4_cond
-            tfLabel := side1_raw.tf4_label
-            reqLong := side1_LE_tf4_req
-            reqShort:= side1_SE_tf4_req
+            leScore  := side1_LE_tf4
+            seScore  := side1_SE_tf4
+            tfCondLE := _side1_moduleActive and _kb_getCondTF4(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF4(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf4_label
+            reqLong  := side1_LE_tf4_req
+            reqShort := side1_SE_tf4_req
         else if tfIdx == 5
-            leScore := side1_LE_tf5
-            seScore := side1_SE_tf5
-            tfCond  := _side1_tf5_cond
-            tfLabel := side1_raw.tf5_label
-            reqLong := side1_LE_tf5_req
-            reqShort:= side1_SE_tf5_req
+            leScore  := side1_LE_tf5
+            seScore  := side1_SE_tf5
+            tfCondLE := _side1_moduleActive and _kb_getCondTF5(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF5(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf5_label
+            reqLong  := side1_LE_tf5_req
+            reqShort := side1_SE_tf5_req
         else if tfIdx == 6
-            leScore := side1_LE_tf6
-            seScore := side1_SE_tf6
-            tfCond  := _side1_tf6_cond
-            tfLabel := side1_raw.tf6_label
-            reqLong := side1_LE_tf6_req
-            reqShort:= side1_SE_tf6_req
+            leScore  := side1_LE_tf6
+            seScore  := side1_SE_tf6
+            tfCondLE := _side1_moduleActive and _kb_getCondTF6(side1_v2, _sideLE_condIdx)
+            tfCondSE := _side1_moduleActive and _kb_getCondTF6(side1_v2, _sideSE_condIdx)
+            tfLabel  := _side1_tf6_label
+            reqLong  := side1_LE_tf6_req
+            reqShort := side1_SE_tf6_req
 
         bool leScope = side1_LEC_enable and side1_LEC_func != "None"
         bool seScope = side1_SEC_enable and side1_SEC_func != "None"
 
+        // Use Long Entry condition for display (or Short Entry if LE not enabled)
+        bool tfCond = leScope ? tfCondLE : (seScope ? tfCondSE : false)
         color cellBg = f_sideTF_color(tfCond, leScope, seScope, leScore, seScore)
 
         bool isRequired = (reqLong and leScore > 0) or (reqShort and seScore > 0)
