@@ -1,0 +1,1908 @@
+// KevBot Toolkit v1.0 Input Skeleton Placeholder
+// This canvas file will hold the full PineScript input skeleton and placeholder library notes.
+
+//──────────────────────────────────────────────────────────────────────────────
+// KevBot Toolkit v1.0 – INPUT SKELETON (Single‑Line Safe, No Logic Yet)
+//──────────────────────────────────────────────────────────────────────────────
+// NOTE: This file only contains inputs + structure. No engines, no tables, no logic.
+// Placeholder Library APIs included at bottom for reference.
+
+//@version=6
+indicator("KevBot Toolkit v1.0 – Input Skeleton", overlay = true)
+plot(na, title="placeholder", display=display.none)
+
+import yamigushi/KevBot_TimeUtils/1 as tu
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1. GLOBAL TOOLKIT SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_GLOBAL = "1. Global Toolkit Settings"
+bool   enableTopTable  = input.bool(true,  "Enable Top Table",          group = GRP_GLOBAL, tooltip="Show or hide the top-of-chart table that displays the outputs of all Top Modules.")
+bool   enableSideTable = input.bool(true,  "Enable Side Table",         group = GRP_GLOBAL, tooltip="Show or hide the right-side multi-timeframe table that displays Side Module outputs.")
+bool   useDarkTheme    = input.bool(true,  "Use Dark Theme Colors",     group = GRP_GLOBAL, tooltip="Enable the KevBot Toolkit dark color theme.")
+
+// Timeframes
+string GRP_TF = "1.1 Global Timeframe Configuration"
+
+// Row 1: TF 1 & TF 2
+bool   tf1_enabled = input.bool(true, "TF 1", group = GRP_TF, inline = "tf_row1", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf1        = input.timeframe("1", "", group = GRP_TF, inline = "tf_row1")
+
+bool   tf2_enabled = input.bool(true, "TF 2", group = GRP_TF, inline = "tf_row1", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf2        = input.timeframe("5", "", group = GRP_TF, inline = "tf_row1")
+
+// Row 2: TF 3 & TF 4
+bool   tf3_enabled = input.bool(true, "TF 3", group = GRP_TF, inline = "tf_row2", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf3        = input.timeframe("15", "", group = GRP_TF, inline = "tf_row2")
+
+bool   tf4_enabled = input.bool(true, "TF 4", group = GRP_TF, inline = "tf_row2", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf4        = input.timeframe("60", "", group = GRP_TF, inline = "tf_row2")
+
+// Row 3: TF 5 & TF 6
+bool   tf5_enabled = input.bool(true, "TF 5", group = GRP_TF, inline = "tf_row3", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf5        = input.timeframe("240", "", group = GRP_TF, inline = "tf_row3")
+
+bool   tf6_enabled = input.bool(true, "TF 6", group = GRP_TF, inline = "tf_row3", tooltip = "Enable this timeframe for scoring. Disabled TFs contribute no TH score.")
+string tf6        = input.timeframe("D", "", group = GRP_TF, inline = "tf_row3")
+
+// Confluence Grades
+string GRP_CG = "1.2 Global Confluence Grades"
+int gradeC_long = input.int(200, "Grade C Long Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Long confluence score required to qualify as Grade C.")
+int gradeB_long = input.int(250, "Grade B Long Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Long confluence score required to qualify as Grade B.")
+int gradeA_long = input.int(300, "Grade A Long Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Long confluence score required to qualify as Grade A.")
+int gradeC_short = input.int(200, "Grade C Short Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Short confluence score required to qualify as Grade C.")
+int gradeB_short = input.int(250, "Grade B Short Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Short confluence score required to qualify as Grade B.")
+int gradeA_short = input.int(300, "Grade A Short Threshold", minval = 0, group = GRP_CG, tooltip="Minimum Short confluence score required to qualify as Grade A.")
+
+//label.new(bar_index, high, "TF1 = " + tf1 + "\nTF2 = " + tf2 + "\nTF3 = " + tf3 + "\nTF4 = " + tf4 + "\nTF5 = " + tf5 + "\nTF6 = " + tf6)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2. CONFLUENCE SUMMARY MODULES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_CSM = "2. Confluence Summary Modules"
+bool showCSM_long  = input.bool(false, "Show Long Confluence Module", group = GRP_CSM, inline="csm_long", tooltip="Displays the Long Confluence summary module in the Top Table. Does not affect trading logic.")
+string csmLongName = input.string("", "Custom Name", group = GRP_CSM, inline="csm_long", tooltip="Optional display name for the Long Confluence Module.")
+bool showCSM_short = input.bool(false, "Show Short Confluence Module", group = GRP_CSM, inline="csm_short", tooltip="Displays the Short Confluence summary module in the Top Table. Does not affect trading logic.")
+string csmShortName= input.string("", "Custom Name", group = GRP_CSM, inline="csm_short", tooltip="Optional display name for the Short Confluence Module.")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3. POSITION SIZING MODULE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_POS = "3. Position Sizing Module"
+bool showSizer = input.bool(false, "Show Position Sizing Module", group = GRP_POS, inline="ps_row", tooltip="Displays this module in the Top Table (visual only). Does not affect trade logic.")
+string sizerName = input.string("", "Custom Name", group = GRP_POS, inline="ps_row", tooltip="Name shown in the Top Table for this module.")
+string sizer_entry = input.string("Entry Trigger + Grade C", "Position Entry Method", options=["Any Entry Trigger","Entry Trigger + Grade C","Entry Trigger + Grade B","Entry Trigger + Grade A","Library Custom"], group=GRP_POS, tooltip="Controls when a position is allowed to open, optionally requiring specific confluence grades.")
+bool   sizerAllowMulti = input.bool(false, "Allow Multiple Entries Per Trade", group=GRP_POS, tooltip="If enabled, the system may stack additional entries while a trade is open.")
+int    sizerMaxEntries = input.int(1, "Max Entries Per Trade", minval=1, group=GRP_POS, tooltip="Limits how many entries may be stacked into a single trade.")
+string sizer_exit = input.string("First Exit Trigger", "Position Exit Method", options=["First Exit Trigger","Exit Trigger + Grade C","Exit Trigger + Grade B","Exit Trigger + Grade A","Library Custom"], group=GRP_POS, tooltip="Determines when a trade should close, optionally requiring a confluence grade.")
+bool   sizer_exitEOD = input.bool(false, "Exit at End of Day", group=GRP_POS, tooltip="Closes all positions at the end of the trading day as a safety fallback.")
+
+// Safety Stop Loss
+string GRP_POS_SL = "3.1 Safety Stop Loss"
+string sl_method = input.string("ATR", "SL Method", options = ["ATR","Fixed Dollar","Percentage","Candle Wicks","Library Custom"], group = GRP_POS_SL, inline="slrow", tooltip="Safety‑based stop‑loss. Acts as a protective anchor for bots and a fallback chart‑based stop if no exit trigger occurs.")
+bool   sl_show   = input.bool(false, "Show SL on chart", group = GRP_POS_SL, inline="slrow", tooltip="Plots the safety stop‑loss level visually.")
+int    sl_atrPer = input.int(14, "ATR Period", group = GRP_POS_SL)
+float  sl_atrMult= input.float(2.0, "ATR Multiplier", group = GRP_POS_SL)
+float  sl_fixed  = input.float(1.0, "Fixed Dollar Stop", group = GRP_POS_SL)
+float  sl_pct    = input.float(1.0, "Percentage Stop", group = GRP_POS_SL)
+int    sl_lookback = input.int(1, "Lo/Hi Lookback Bars", group = GRP_POS_SL)
+float  sl_pad    = input.float(0.1, "Lo/Hi Padding", group = GRP_POS_SL)
+
+// Safety Take Profit
+// Safety Take Profit
+string GRP_POS_TP = "3.2 Safety Take Profit"
+string tp_method = input.string("Risk:Reward Target", "TP Method", options = ["Risk:Reward Target","ATR","Fixed Dollar","Percentage","Candle Wicks","Library Custom"], group = GRP_POS_TP, inline="tprow")
+bool   tp_show   = input.bool(false, "Show TP on chart", group = GRP_POS_TP, inline="tprow")
+float  tp_rr     = input.float(2.0, "R:R Target", group = GRP_POS_TP)
+int    tp_atrPer = input.int(14, "ATR Period", group = GRP_POS_TP)
+float  tp_atrMult= input.float(2.0, "ATR Multiplier", group = GRP_POS_TP)
+float  tp_fixed  = input.float(1.0, "Fixed Dollar Target", group = GRP_POS_TP)
+float  tp_pct    = input.float(1.0, "Percentage Target", group = GRP_POS_TP)
+int    tp_lookback = input.int(1, "Lo/Hi Lookback Bars", group = GRP_POS_TP)
+float  tp_pad    = input.float(0.1, "Lo/Hi Padding", group = GRP_POS_TP)
+
+
+
+// Account & Risk
+string GRP_POS_ACC = "3.3 Account / Risk Configuration"
+float acctSize     = input.float(25000, "Account Size", group = GRP_POS_ACC)
+string riskMode    = input.string("Fixed $ Risk", "Risk Mode", options = ["Share Qty","Fixed $ Risk","Percentage Risk"], group = GRP_POS_ACC)
+int    defShares   = input.int(100, "Default Share Qty", group = GRP_POS_ACC)
+float  defRisk    = input.float(100, "Default Risk Value (Fixed)", group = GRP_POS_ACC)
+float  defRiskPct  = input.float(1.0, "Default Risk Value (Percent)", group = GRP_POS_ACC)
+
+// Risk Multipliers
+string GRP_POS_MULT = "3.4 Risk Multipliers"
+float mult_CL = input.float(1.0, "Grade C Long Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size based on Long Grade C confluence. Applied on top of the Risk Mode defaults.")
+float mult_BL = input.float(1.0, "Grade B Long Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size when Long Grade B confluence is met.")
+float mult_AL = input.float(1.0, "Grade A Long Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size when Long Grade A confluence is met.")
+float mult_CS = input.float(1.0, "Grade C Short Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size when Short Grade C confluence is met.")
+float mult_BS = input.float(1.0, "Grade B Short Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size when Short Grade B confluence is met.")
+float mult_AS = input.float(1.0, "Grade A Short Risk Multiplier", group = GRP_POS_MULT, tooltip="Multiplies the position size when Short Grade A confluence is met.")
+
+// Position Labels
+string GRP_POS_LBL = "3.5 Position Labels"
+bool lbl_warn  = input.bool(true, "Inherit Bullish/Warning Label Text", group = GRP_POS_LBL, tooltip="Displays the system's bullish/bearish label text inside the Position Label. These enhanced labels replace basic SL/TP labels and include expanded trade information.")
+bool lbl_grade = input.bool(true, "Confluence Grade (A,B,C)", group = GRP_POS_LBL, tooltip="Adds the detected confluence grade (A/B/C) into the Position Label for clarity.")
+bool lbl_type  = input.bool(true, "Trade Type (Long or Short)", group = GRP_POS_LBL, tooltip="Adds whether the trade was Long or Short to the Position Label.")
+bool lbl_qty   = input.bool(true, "Qty", group = GRP_POS_LBL, tooltip="Shows the calculated position size (quantity) on entry labels.")
+bool lbl_risk  = input.bool(true, "$Risk", group = GRP_POS_LBL, tooltip="Displays the actual dollar risk taken on the trade, based on Risk Mode and Safety Stop distance.")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4. BACKTESTING MODULE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_BACK = "4. Backtesting Module"
+bool showBack   = input.bool(false, "Show Backtest KPI Module", group = GRP_BACK, inline="back_row")
+string backName = input.string("", "Custom Name", group = GRP_BACK, inline="back_row")
+
+string GRP_BACK_DATA = "4.1 Data & Lookback Config"
+string backWindow = input.string("Entire Chart", "Backtest Window", options = ["Entire Chart","Fixed Bars","Date Range"], group = GRP_BACK_DATA)
+int    backBars   = input.int(2000, "Window (Bars)", minval = 1, group = GRP_BACK_DATA)
+const int BACK_START_DEF = 1577836800000 // 2020-01-01 00:00 UTC
+int    backStartDate = input.time(BACK_START_DEF, "Window (Start Date)", group = GRP_BACK_DATA, inline="wstart")
+
+bool   backUseEnd = input.bool(false, "Window (End)", group = GRP_BACK_DATA, inline="wend")
+const int BACK_END_DEF = 1893456000000 // 2030-01-01 00:00 UTC
+int    backEndDate   = input.time(BACK_END_DEF, "End Date", group = GRP_BACK_DATA, inline="wend")
+
+
+string GRP_BACK_FILT = "4.2 Backtest Filters"
+string backSession   = input.session("0000-2359", "Time of Day Filter", group = GRP_BACK_FILT)
+bool   backUseDOW_M  = input.bool(true,  "Mon",  group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_T  = input.bool(true,  "Tues", group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_W  = input.bool(true,  "Weds", group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_Th = input.bool(true,  "Thurs",group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_F  = input.bool(true,  "Fri",  group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_Sa = input.bool(false, "Sat",  group = GRP_BACK_FILT, inline="dow1")
+bool   backUseDOW_Su = input.bool(false, "Sun",  group = GRP_BACK_FILT, inline="dow1")
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5. TOP MODULE 1
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_TOP1 = "5. Top Module 1"
+bool   top1_enabled = input.bool(false, "Enable Top Module 1", group = GRP_TOP1, tooltip="Enables this Top Module. If the Top Table is visible, the module will appear there. Its enabled outputs also contribute their TH Scores to confluence calculations.")
+string top1_library = input.string("None", "Library", options = ["None","Placeholder Top Library"], group = GRP_TOP1, inline="top1_row1")
+string top1_name    = input.string("", "Custom Name", group = GRP_TOP1, inline="top1_row1")
+
+// Parameters A–F
+float top1_paramA = input.float(0.0, "Parameter A", group = GRP_TOP1, inline="top1_rowA")
+float top1_paramB = input.float(0.0, "Parameter B", group = GRP_TOP1, inline="top1_rowA")
+float top1_paramC = input.float(0.0, "Parameter C", group = GRP_TOP1, inline="top1_rowB")
+float top1_paramD = input.float(0.0, "Parameter D", group = GRP_TOP1, inline="top1_rowB")
+float top1_paramE = input.float(0.0, "Parameter E", group = GRP_TOP1, inline="top1_rowC")
+float top1_paramF = input.float(0.0, "Parameter F", group = GRP_TOP1, inline="top1_rowC")
+
+// Output 1
+string GRP_TOP1_O1 = "5.1 Top Module 1 – Output 1"
+bool   top1_o1_enabled = input.bool(false, "Enable Output 1", group = GRP_TOP1_O1, tooltip="Activates this output. When enabled, its threshold score (TH Score) is included in the module’s total confluence contribution.")
+string top1_o1_source  = input.string("None", "Source", options=["None","Output A","Output B","Output C","Output D"], group=GRP_TOP1_O1, inline="o1_row1")
+bool   top1_o1_required= input.bool(false, "Required", group = GRP_TOP1_O1, inline="o1_row1", tooltip="If enabled, this condition becomes mandatory: it must be true for entries or exits (depending on context). Required acts as a hard confluence filter.")
+bool   top1_o1_invLbl  = input.bool(false, "Inv Label", group = GRP_TOP1_O1, inline="o1_row1", tooltip="Required makes this output a mandatory condition for entries. Inv Label plots invisible markers so the data can be exported for journaling and analytics.")
+string top1_o1_dir     = input.string("Both", "Direction", options=["Long","Short","Both"], group=GRP_TOP1_O1, inline="o1_row2")
+string top1_o1_mode    = input.string("Boolean", "Mode", options=["Boolean","Greater Than","Less Than","Between","Equals","Library Default"], group=GRP_TOP1_O1, inline="o1_row2")
+float  top1_o1_valA    = input.float(0.0, "Value A", group = GRP_TOP1_O1, inline="o1_row3")
+float  top1_o1_valB    = input.float(0.0, "Value B", group = GRP_TOP1_O1, inline="o1_row3")
+int    top1_o1_score   = input.int(0, "TH Score", group = GRP_TOP1_O1, inline="o1_row4")
+
+// Output 2
+string GRP_TOP1_O2 = "5.2 Top Module 1 – Output 2"
+bool   top1_o2_enabled = input.bool(false, "Enable Output 2", group = GRP_TOP1_O2)
+string top1_o2_source  = input.string("None", "Source", options=["None","Output A","Output B","Output C","Output D"], group=GRP_TOP1_O2, inline="o2_row1")
+bool   top1_o2_required= input.bool(false, "Required", group = GRP_TOP1_O2, inline="o2_row1")
+bool   top1_o2_invLbl  = input.bool(false, "Inv Label", group = GRP_TOP1_O2, inline="o2_row1")
+string top1_o2_dir     = input.string("Both", "Direction", options=["Long","Short","Both"], group=GRP_TOP1_O2, inline="o2_row2")
+string top1_o2_mode    = input.string("Boolean", "Mode", options=["Boolean","Greater Than","Less Than","Between","Equals","Library Default"], group=GRP_TOP1_O2, inline="o2_row2")
+float  top1_o2_valA    = input.float(0.0, "Value A", group = GRP_TOP1_O2, inline="o2_row3")
+float  top1_o2_valB    = input.float(0.0, "Value B", group = GRP_TOP1_O2, inline="o2_row3")
+int    top1_o2_score   = input.int(0, "TH Score", group = GRP_TOP1_O2, inline="o2_row4")
+
+// Output 3
+string GRP_TOP1_O3 = "5.3 Top Module 1 – Output 3"
+bool   top1_o3_enabled = input.bool(false, "Enable Output 3", group = GRP_TOP1_O3)
+string top1_o3_source  = input.string("None", "Source", options=["None","Output A","Output B","Output C","Output D"], group=GRP_TOP1_O3, inline="o3_row1")
+bool   top1_o3_required= input.bool(false, "Required", group = GRP_TOP1_O3, inline="o3_row1")
+bool   top1_o3_invLbl  = input.bool(false, "Inv Label", group = GRP_TOP1_O3, inline="o3_row1")
+string top1_o3_dir     = input.string("Both", "Direction", options=["Long","Short","Both"], group=GRP_TOP1_O3, inline="o3_row2")
+string top1_o3_mode    = input.string("Boolean", "Mode", options=["Boolean","Greater Than","Less Than","Between","Equals","Library Default"], group=GRP_TOP1_O3, inline="o3_row2")
+float  top1_o3_valA    = input.float(0.0, "Value A", group = GRP_TOP1_O3, inline="o3_row3")
+float  top1_o3_valB    = input.float(0.0, "Value B", group = GRP_TOP1_O3, inline="o3_row3")
+int    top1_o3_score   = input.int(0, "TH Score", group = GRP_TOP1_O3, inline="o3_row4")
+
+// Output 4
+string GRP_TOP1_O4 = "5.4 Top Module 1 – Output 4"
+bool   top1_o4_enabled = input.bool(false, "Enable Output 4", group = GRP_TOP1_O4)
+string top1_o4_source  = input.string("None", "Source", options=["None","Output A","Output B","Output C","Output D"], group=GRP_TOP1_O4, inline="o4_row1")
+bool   top1_o4_required= input.bool(false, "Required", group = GRP_TOP1_O4, inline="o4_row1")
+bool   top1_o4_invLbl  = input.bool(false, "Inv Label", group = GRP_TOP1_O4, inline="o4_row1")
+string top1_o4_dir     = input.string("Both", "Direction", options=["Long","Short","Both"], group=GRP_TOP1_O4, inline="o4_row2")
+string top1_o4_mode    = input.string("Boolean", "Mode", options=["Boolean","Greater Than","Less Than","Between","Equals","Library Default"], group=GRP_TOP1_O4, inline="o4_row2")
+float  top1_o4_valA    = input.float(0.0, "Value A", group = GRP_TOP1_O4, inline="o4_row3")
+float  top1_o4_valB    = input.float(0.0, "Value B", group = GRP_TOP1_O4, inline="o4_row3")
+int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o4_row4")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 6. SIDE MODULE 1 (Timeframe-Based)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_SIDE1 = "6. Side Module 1"
+bool   side1_enabled = input.bool(false, "Enable Side Module 1", group = GRP_SIDE1)
+string side1_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE1)
+
+//────────────────────────────────────────────────────────────
+// Phase 2A — Semantic Mapping (UI clarity only)
+// These comments define what Condition A/B and Trigger A/B
+// represent for each library. No logic is changed here.
+//
+// Library: EMA Stack (S/M/L)
+//   Condition A → S > M > L (Bull Stack)
+//   Condition B → L > M > S (Bear Stack)
+//   Trigger A   → S crosses above M
+//   Trigger B   → S crosses below M
+//
+// Library: KevBot_TF_Placeholder
+//   Condition A → Placeholder Condition A
+//   Condition B → Placeholder Condition B
+//   Trigger A   → Placeholder Trigger A
+//   Trigger B   → Placeholder Trigger B
+//────────────────────────────────────────────────────────────
+string side1_name    = input.string("", "Custom Name", group = GRP_SIDE1)
+
+float side1_paramA = input.float(0.0, "Parameter A", group = GRP_SIDE1)
+float side1_paramB = input.float(0.0, "Parameter B", group = GRP_SIDE1)
+float side1_paramC = input.float(0.0, "Parameter C", group = GRP_SIDE1)
+float side1_paramD = input.float(0.0, "Parameter D", group = GRP_SIDE1)
+float side1_paramE = input.float(0.0, "Parameter E", group = GRP_SIDE1)
+float side1_paramF = input.float(0.0, "Parameter F", group = GRP_SIDE1)
+
+// Long Entry
+string GRP_SIDE1_LE = "6.1 Side Module 1 – Long Entry"
+bool   side1_LE_enable = input.bool(false, "Long Entry Trigger", group = GRP_SIDE1_LE, inline="le1")
+string side1_LE_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_LE, inline="le1")
+string side1_LE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LE, inline = "le2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_LE, inline = "le2",tooltip = "Plot a bullish info label on the chart when this Long Entry trigger fires.")
+
+
+// (Long Entry Confluence moved to 6.1.1)
+
+
+// TF Scores for Long Entry
+string GRP_SIDE1_LE_TF = "6.1.1 Long Entry – Confluences by Timeframe"
+bool   side1_LEC_enable = input.bool(false, "Long Entry Confluence", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Enable the Long Entry Confluence rule applied to all TF checks.")
+string side1_LEC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Select the Long Entry confluence function.")
+bool   side1_LEC_bull   = input.bool(false, "Bullish Label", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Plot a bullish label when the Long Entry Confluence condition is met.")
+int  side1_LE_tf1     = input.int(0, "TF 1 TH Score", inline="le_tf1", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf1_req = input.bool(false, "Required", inline="le_tf1", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf1_inv = input.bool(false, "Inv Label", inline="le_tf1", group = GRP_SIDE1_LE_TF)
+
+int  side1_LE_tf2     = input.int(0, "TF 2 TH Score", inline="le_tf2", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf2_req = input.bool(false, "Required", inline="le_tf2", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf2_inv = input.bool(false, "Inv Label", inline="le_tf2", group = GRP_SIDE1_LE_TF)
+
+int  side1_LE_tf3     = input.int(0, "TF 3 TH Score", inline="le_tf3", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf3_req = input.bool(false, "Required", inline="le_tf3", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf3_inv = input.bool(false, "Inv Label", inline="le_tf3", group = GRP_SIDE1_LE_TF)
+
+int  side1_LE_tf4     = input.int(0, "TF 4 TH Score", inline="le_tf4", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf4_req = input.bool(false, "Required", inline="le_tf4", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf4_inv = input.bool(false, "Inv Label", inline="le_tf4", group = GRP_SIDE1_LE_TF)
+
+int  side1_LE_tf5     = input.int(0, "TF 5 TH Score", inline="le_tf5", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf5_req = input.bool(false, "Required", inline="le_tf5", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf5_inv = input.bool(false, "Inv Label", inline="le_tf5", group = GRP_SIDE1_LE_TF)
+
+int  side1_LE_tf6     = input.int(0, "TF 6 TH Score", inline="le_tf6", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf6_req = input.bool(false, "Required", inline="le_tf6", group = GRP_SIDE1_LE_TF)
+bool side1_LE_tf6_inv = input.bool(false, "Inv Label", inline="le_tf6", group = GRP_SIDE1_LE_TF)
+
+// Long Exit
+string GRP_SIDE1_LX = "6.2 Side Module 1 – Long Exit"
+bool   side1_LX_enable = input.bool(false, "Long Exit Trigger", group = GRP_SIDE1_LX, inline="lx1")
+string side1_LX_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_LX, inline="lx1")
+string side1_LX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LX, inline = "lx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_LX_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_LX, inline = "lx2",tooltip = "Plot a bearish info label on the chart when this Long Exit trigger fires.")
+
+
+string GRP_SIDE1_LX_TF = "6.2.1 Long Exit – Confluences by Timeframe"
+bool   side1_LXC_enable = input.bool(false, "Long Exit Confluence", group = GRP_SIDE1_LX_TF, inline="lxc1")
+string side1_LXC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_LX_TF, inline="lxc1")
+bool   side1_LXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_LX_TF, inline="lxc1")
+
+int  side1_LX_tf1     = input.int(0, "TF 1 TH Score", inline="lx_tf1", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf1_req = input.bool(false, "Required", inline="lx_tf1", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf1_inv = input.bool(false, "Inv Label", inline="lx_tf1", group = GRP_SIDE1_LX_TF)
+
+int  side1_LX_tf2     = input.int(0, "TF 2 TH Score", inline="lx_tf2", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf2_req = input.bool(false, "Required", inline="lx_tf2", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf2_inv = input.bool(false, "Inv Label", inline="lx_tf2", group = GRP_SIDE1_LX_TF)
+
+int  side1_LX_tf3     = input.int(0, "TF 3 TH Score", inline="lx_tf3", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf3_req = input.bool(false, "Required", inline="lx_tf3", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf3_inv = input.bool(false, "Inv Label", inline="lx_tf3", group = GRP_SIDE1_LX_TF)
+
+int  side1_LX_tf4     = input.int(0, "TF 4 TH Score", inline="lx_tf4", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf4_req = input.bool(false, "Required", inline="lx_tf4", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf4_inv = input.bool(false, "Inv Label", inline="lx_tf4", group = GRP_SIDE1_LX_TF)
+
+int  side1_LX_tf5     = input.int(0, "TF 5 TH Score", inline="lx_tf5", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf5_req = input.bool(false, "Required", inline="lx_tf5", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf5_inv = input.bool(false, "Inv Label", inline="lx_tf5", group = GRP_SIDE1_LX_TF)
+
+int  side1_LX_tf6     = input.int(0, "TF 6 TH Score", inline="lx_tf6", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf6_req = input.bool(false, "Required", inline="lx_tf6", group = GRP_SIDE1_LX_TF)
+bool side1_LX_tf6_inv = input.bool(false, "Inv Label", inline="lx_tf6", group = GRP_SIDE1_LX_TF)
+
+// Short Entry
+string GRP_SIDE1_SE = "6.3 Side Module 1 – Short Entry"
+bool   side1_SE_enable = input.bool(false, "Short Entry Trigger", group = GRP_SIDE1_SE, inline="se1")
+string side1_SE_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_SE, inline="se1")
+string side1_SE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SE, inline = "se2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_SE_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_SE, inline = "se2",tooltip = "Plot a bearish info label on the chart when this Short Entry trigger fires.")
+
+
+string GRP_SIDE1_SE_TF = "6.3.1 Short Entry – Confluences by Timeframe"
+bool   side1_SEC_enable = input.bool(false, "Short Entry Confluence", group = GRP_SIDE1_SE_TF, inline="sec1")
+string side1_SEC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_SE_TF, inline="sec1")
+bool   side1_SEC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_SE_TF, inline="sec1")
+
+int  side1_SE_tf1     = input.int(0, "TF 1 TH Score", inline="se_tf1", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf1_req = input.bool(false, "Required", inline="se_tf1", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf1_inv = input.bool(false, "Inv Label", inline="se_tf1", group = GRP_SIDE1_SE_TF)
+
+int  side1_SE_tf2     = input.int(0, "TF 2 TH Score", inline="se_tf2", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf2_req = input.bool(false, "Required", inline="se_tf2", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf2_inv = input.bool(false, "Inv Label", inline="se_tf2", group = GRP_SIDE1_SE_TF)
+
+int  side1_SE_tf3     = input.int(0, "TF 3 TH Score", inline="se_tf3", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf3_req = input.bool(false, "Required", inline="se_tf3", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf3_inv = input.bool(false, "Inv Label", inline="se_tf3", group = GRP_SIDE1_SE_TF)
+
+int  side1_SE_tf4     = input.int(0, "TF 4 TH Score", inline="se_tf4", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf4_req = input.bool(false, "Required", inline="se_tf4", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf4_inv = input.bool(false, "Inv Label", inline="se_tf4", group = GRP_SIDE1_SE_TF)
+
+int  side1_SE_tf5     = input.int(0, "TF 5 TH Score", inline="se_tf5", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf5_req = input.bool(false, "Required", inline="se_tf5", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf5_inv = input.bool(false, "Inv Label", inline="se_tf5", group = GRP_SIDE1_SE_TF)
+
+int  side1_SE_tf6     = input.int(0, "TF 6 TH Score", inline="se_tf6", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf6_req = input.bool(false, "Required", inline="se_tf6", group = GRP_SIDE1_SE_TF)
+bool side1_SE_tf6_inv = input.bool(false, "Inv Label", inline="se_tf6", group = GRP_SIDE1_SE_TF)
+
+// Short Exit
+string GRP_SIDE1_SX = "6.4 Side Module 1 – Short Exit"
+bool   side1_SX_enable = input.bool(false, "Short Exit Trigger", group = GRP_SIDE1_SX, inline="sx1")
+string side1_SX_source = input.string("None", "", options=["None","Trigger A","Trigger B"], group=GRP_SIDE1_SX, inline="sx1")
+string side1_SX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SX, inline = "sx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_SX_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_SX, inline = "sx2",tooltip = "Plot a bullish info label on the chart when this Short Exit trigger fires.")
+
+
+string GRP_SIDE1_SX_TF = "6.4.1 Short Exit – Confluences by Timeframe"
+bool   side1_SXC_enable = input.bool(false, "Short Exit Confluence", group = GRP_SIDE1_SX_TF, inline="sxc1")
+string side1_SXC_func   = input.string("None", "", options=["None","Cond A","Cond B"], group = GRP_SIDE1_SX_TF, inline="sxc1")
+bool   side1_SXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_SX_TF, inline="sxc1")
+
+int  side1_SX_tf1     = input.int(0, "TF 1 TH Score", inline="sx_tf1", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf1_req = input.bool(false, "Required", inline="sx_tf1", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf1_inv = input.bool(false, "Inv Label", inline="sx_tf1", group = GRP_SIDE1_SX_TF)
+
+int  side1_SX_tf2     = input.int(0, "TF 2 TH Score", inline="sx_tf2", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf2_req = input.bool(false, "Required", inline="sx_tf2", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf2_inv = input.bool(false, "Inv Label", inline="sx_tf2", group = GRP_SIDE1_SX_TF)
+
+int  side1_SX_tf3     = input.int(0, "TF 3 TH Score", inline="sx_tf3", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf3_req = input.bool(false, "Required", inline="sx_tf3", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf3_inv = input.bool(false, "Inv Label", inline="sx_tf3", group = GRP_SIDE1_SX_TF)
+
+int  side1_SX_tf4     = input.int(0, "TF 4 TH Score", inline="sx_tf4", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf4_req = input.bool(false, "Required", inline="sx_tf4", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf4_inv = input.bool(false, "Inv Label", inline="sx_tf4", group = GRP_SIDE1_SX_TF)
+
+int  side1_SX_tf5     = input.int(0, "TF 5 TH Score", inline="sx_tf5", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf5_req = input.bool(false, "Required", inline="sx_tf5", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf5_inv = input.bool(false, "Inv Label", inline="sx_tf5", group = GRP_SIDE1_SX_TF)
+
+int  side1_SX_tf6     = input.int(0, "TF 6 TH Score", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf6_req = input.bool(false, "Required", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
+bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
+ //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// LIB 1: Placeholder Timeframe Library (Side Module style)
+// -----------------------------------------------
+// //@version=6
+// library("KevBot Placeholder TF Library", "kb_tf_demo")
+// type TFModuleOutput => record(
+//     longEntry, longExit, shortEntry, shortExit,
+//     longConfluenceTF1, longConfluenceTF2, longConfluenceTF3,
+//     longConfluenceTF4, longConfluenceTF5, longConfluenceTF6,
+//     shortConfluenceTF1, shortConfluenceTF2, shortConfluenceTF3,
+//     shortConfluenceTF4, shortConfluenceTF5, shortConfluenceTF6)
+// TFModuleOutput getTFDemo(float paramA, float paramB) => TFModuleOutput(
+//     true, false, false, false,
+//     true, true, false, false, false, false,
+//     false, false, false, false, false, false)
+// LIB 2: Placeholder Top Library (Top Module style)
+// -----------------------------------------------
+// //@version=6
+// library("KevBot Placeholder Top Library", "kb_top_demo")
+// type TopModuleOutput => record(outA, outB, outC, outD)
+// TopModuleOutput getTopDemo(float a, float b, float c) => TopModuleOutput(a + b, b + c, a - c, a + b + c)
+// true, false, false, false, true, true, false, false, false, false, false, false, false, false, false, false)
+//
+// LIB 2: Placeholder Top Library (Top Module style)
+// -----------------------------------------------
+// //@version=6
+// library("KevBot Placeholder Top Library", "kb_top_demo", true)
+//
+// type TopModuleOutput =>
+//     float outA
+//     float outB
+//     float outC
+//     float outD
+//
+// TopModuleOutput getTopDemo(float paramA, float paramB, float paramC) =>
+//     // Placeholder implementation
+//     TopModuleOutput(paramA + paramB, paramB + paramC, paramA - paramC, paramA + paramB + paramC)
+//
+// In the main Toolkit script, you will eventually:
+// // import kb_tf_demo as tfLib
+// // import kb_top_demo as topLib
+// and then call their APIs inside the Confluence / Entry / Exit engines.
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//* 7. MODULE LOADER SYSTEM */
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Import KevBot libraries (Top + TF Placeholder)
+// IMPORTANT: These imports must match your actual published library names.
+import yamigushi/KevBot_Top_Minimal/1               as top1Lib
+import yamigushi/KevBot_TF_Placeholder/4            as side1Lib
+import yamigushi/KevBot_TF_EMA_Stack/1              as tfEMAStack
+
+
+// Convenience activation flag for Side Module 1
+bool _side1_moduleActive = side1_enabled and side1_library != "None"
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Phase 2B introduces a Toolkit-internal, normalized output shape that supports:
+//   • 10 Trigger slots (A–J) on chart timeframe
+//   • 10 Condition slots (A–J) per TF (tf1–tf6)
+//   • TF labels (tf1_label..tf6_label)
+//
+// NOTE:
+//   • This does NOT change legacy behavior yet.
+//   • Downstream blocks (8/9/12/13) may still consume legacy fields until
+//     their Phase 2B updates land.
+//   • Legacy libraries are mapped into slot A only (others false).
+//
+// This is Option A: Parallel Outputs.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Toolkit-internal normalized output (NOT exported)
+// Conditions are per TF so that any selected Condition slot can be evaluated
+// against each timeframe independently.
+
+type KB_TF_Out_V2
+    // TF state labels
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition slots per TF (A–J × tf1–tf6)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Trigger slots (chart timeframe events)
+    bool trigA
+    bool trigB
+    bool trigC
+    bool trigD
+    bool trigE
+    bool trigF
+    bool trigG
+    bool trigH
+    bool trigI
+    bool trigJ
+
+    // Trigger metadata (optional, legacy-compatible)
+    float trigger_price
+    string trigger_label
+
+
+// Phase 2B helper: map legacy TFModuleOutput (from side1Lib) → KB_TF_Out_V2
+// Legacy outputs only provide ONE condition per TF and ONE trigger event.
+// We map those into slot A and leave B–J false.
+_kb_mapLegacyToV2(side1Lib.TFModuleOutput o) =>
+    KB_TF_Out_V2.new(
+        // labels
+        o.tf1_label, o.tf2_label, o.tf3_label, o.tf4_label, o.tf5_label, o.tf6_label,
+
+        // condA (mapped)
+        o.tf1_cond, o.tf2_cond, o.tf3_cond, o.tf4_cond, o.tf5_cond, o.tf6_cond,
+        // condB
+        false, false, false, false, false, false,
+        // condC
+        false, false, false, false, false, false,
+        // condD
+        false, false, false, false, false, false,
+        // condE
+        false, false, false, false, false, false,
+        // condF
+        false, false, false, false, false, false,
+        // condG
+        false, false, false, false, false, false,
+        // condH
+        false, false, false, false, false, false,
+        // condI
+        false, false, false, false, false, false,
+        // condJ
+        false, false, false, false, false, false,
+
+        // trigA (mapped)
+        o.trigger_event,
+        // trigB..trigJ
+        false, false, false, false, false, false, false, false, false,
+
+        // trigger metadata
+        o.trigger_price,
+        o.trigger_label
+    )
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7.1 TOP MODULE LOADER (TOP MODULE 1 PROTOTYPE)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Expected Top library API:
+//   type TopModuleOutput
+//   export getTopModule(float pA, float pB, float pC, float pD, float pE, float pF)
+//
+// The Toolkit does not yet define real Top modules; this is placeholder wiring.
+// The output record fields (outA..outD) are placeholders only.
+//
+
+// Raw Top-Module-1 output record
+var top1Lib.TopModuleOutput top1_raw = top1Lib.getTopModule(
+    top1_paramA, top1_paramB, top1_paramC,
+    top1_paramD, top1_paramE, top1_paramF)
+
+// When disabled, force a neutral TopModuleOutput
+if not (top1_enabled and top1_library != "None")
+    top1_raw := top1Lib.getTopModule(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7.2 TF MODULE LOADER (SIDE MODULE 1 PROTOTYPE)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Expected TF library API:
+//
+// export type TFModuleOutput => record(
+//       bool   tf1_cond, string tf1_label,
+//       bool   tf2_cond, string tf2_label,
+//       bool   tf3_cond, string tf3_label,
+//       bool   tf4_cond, string tf4_label,
+//       bool   tf5_cond, string tf5_label,
+//       bool   tf6_cond, string tf6_label,
+//       bool   trigger_event,
+//       float  trigger_price,
+//       string trigger_label
+// )
+//
+// export TFModuleOutput getTFConfluence(
+//       string tf1_res, string tf2_res, string tf3_res,
+//       string tf4_res, string tf5_res, string tf6_res,
+//       float  paramA,  float paramB,  float paramC,
+//       float  paramD,  float paramE,  float paramF
+// )
+//
+// Phase 2B adds a normalized output (KB_TF_Out_V2) alongside legacy output.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Raw TF-Module-1 output record (LEGACY)
+// NOTE: TFModuleOutput types are library-scoped. We must normalize all branches
+// into the Placeholder TFModuleOutput type (side1Lib.TFModuleOutput).
+var side1Lib.TFModuleOutput side1_raw = side1Lib.getTFConfluence(
+    tf1, tf2, tf3, tf4, tf5, tf6,
+    side1_paramA, side1_paramB,
+    side1_paramC, side1_paramD,
+    side1_paramE, side1_paramF
+)
+
+if side1_library == "EMA Stack (S/M/L)"
+    tfEMAStack.TFModuleOutput _emaOut = tfEMAStack.getTFConfluence(
+        tf1, tf2, tf3, tf4, tf5, tf6,
+        side1_paramA, side1_paramB,
+        side1_paramC, side1_paramD,
+        side1_paramE, side1_paramF
+    )
+    // Cast EMA output → placeholder output type
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _emaOut.tf1_cond, _emaOut.tf1_label,
+        _emaOut.tf2_cond, _emaOut.tf2_label,
+        _emaOut.tf3_cond, _emaOut.tf3_label,
+        _emaOut.tf4_cond, _emaOut.tf4_label,
+        _emaOut.tf5_cond, _emaOut.tf5_label,
+        _emaOut.tf6_cond, _emaOut.tf6_label,
+        _emaOut.trigger_event,
+        _emaOut.trigger_price,
+        _emaOut.trigger_label
+    )
+else
+    // Default: Placeholder
+    side1_raw := side1Lib.getTFConfluence(
+        tf1, tf2, tf3, tf4, tf5, tf6,
+        side1_paramA, side1_paramB,
+        side1_paramC, side1_paramD,
+        side1_paramE, side1_paramF
+    )
+
+// Phase 2B normalized output (V2)
+// For now, all legacy libraries map into slot A.
+KB_TF_Out_V2 side1_v2 = _kb_mapLegacyToV2(side1_raw)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7.3 OUTPUT BRIDGE FOR DOWNSTREAM BLOCKS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// These stable variables are consumed by:
+//   • Block 8 (RAW TRIGGER ROUTING)
+//   • Block 9 (CONFLUENCE ENGINE)
+//   • Block 12 (Side Table Renderer)
+//
+// They reflect the TFModuleOutput fields exactly.
+//
+// Phase 2B note:
+//   • New multi-slot engines will later consume side1_v2 instead.
+//   • Legacy engines continue to consume side1_raw until upgraded.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Unified trigger
+bool   _side1_baseTrigger  = _side1_moduleActive and side1_raw.trigger_event
+float  _side1_triggerPrice = _side1_moduleActive ? side1_raw.trigger_price : na
+string _side1_triggerLabel = _side1_moduleActive ? side1_raw.trigger_label : ""
+
+// Per-TF condition flags + labels
+bool   _side1_tf1_cond  = _side1_moduleActive and side1_raw.tf1_cond
+string _side1_tf1_label = side1_raw.tf1_label
+
+bool   _side1_tf2_cond  = _side1_moduleActive and side1_raw.tf2_cond
+string _side1_tf2_label = side1_raw.tf2_label
+
+bool   _side1_tf3_cond  = _side1_moduleActive and side1_raw.tf3_cond
+string _side1_tf3_label = side1_raw.tf3_label
+
+bool   _side1_tf4_cond  = _side1_moduleActive and side1_raw.tf4_cond
+string _side1_tf4_label = side1_raw.tf4_label
+
+bool   _side1_tf5_cond  = _side1_moduleActive and side1_raw.tf5_cond
+string _side1_tf5_label = side1_raw.tf5_label
+
+bool   _side1_tf6_cond  = _side1_moduleActive and side1_raw.tf6_cond
+string _side1_tf6_label = side1_raw.tf6_label
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8. RAW TRIGGER ROUTING (Side Module 1)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NOTE:
+// • This section maps Side Module 1 settings to raw entry/exit triggers.
+// • Currently, the minimal TF library (KevBot_TF_Minimal) exposes a single
+//   directional signal via side1_raw.outD. Future libraries can expose
+//   multiple trigger variants; the routing logic here is designed to be
+//   extended without breaking.
+
+// Helper: map trigger source text to an index slot (for future multi-trigger arrays)
+_kb_mapTriggerSource(string src) => src == "Trigger A" ? 0 : src == "Trigger B" ? 1 : -1
+
+// Resolve selected trigger indices for each directional group
+int side1_LE_index = _kb_mapTriggerSource(side1_LE_source)
+int side1_LX_index = _kb_mapTriggerSource(side1_LX_source)
+int side1_SE_index = _kb_mapTriggerSource(side1_SE_source)
+int side1_SX_index = _kb_mapTriggerSource(side1_SX_source)
+
+// Helper functions for signal-type dropdown
+_kb_sigRawEnabled(string t) => t == "Raw Only" or t == "Both"
+_kb_sigPosEnabled(string t) => t == "Position Only" or t == "Both"
+
+// Unified trigger event coming from the TF library. This is neutral with
+// respect to direction; the Toolkit maps it into LE/LX/SE/SX using the
+// Side Module settings.
+bool _kb_sideBaseCond = _side1_baseTrigger
+
+
+
+// Determine, per directional group, whether raw marks and/or position
+// signals are enabled.
+bool _LE_posEnabled = side1_LE_enable and side1_LE_index >= 0 and _kb_sigPosEnabled(side1_LE_sigType)
+bool _LE_rawEnabled = side1_LE_enable and side1_LE_index >= 0 and _kb_sigRawEnabled(side1_LE_sigType)
+
+bool _LX_posEnabled = side1_LX_enable and side1_LX_index >= 0 and _kb_sigPosEnabled(side1_LX_sigType)
+bool _LX_rawEnabled = side1_LX_enable and side1_LX_index >= 0 and _kb_sigRawEnabled(side1_LX_sigType)
+
+bool _SE_posEnabled = side1_SE_enable and side1_SE_index >= 0 and _kb_sigPosEnabled(side1_SE_sigType)
+bool _SE_rawEnabled = side1_SE_enable and side1_SE_index >= 0 and _kb_sigRawEnabled(side1_SE_sigType)
+
+bool _SX_posEnabled = side1_SX_enable and side1_SX_index >= 0 and _kb_sigPosEnabled(side1_SX_sigType)
+bool _SX_rawEnabled = side1_SX_enable and side1_SX_index >= 0 and _kb_sigRawEnabled(side1_SX_sigType)
+
+// Position-level triggers (fed into the Position Engine later)
+bool rawLongEntry  = _side1_baseTrigger and _LE_posEnabled
+bool rawLongExit   = _side1_baseTrigger and _LX_posEnabled
+bool rawShortEntry = _side1_baseTrigger and _SE_posEnabled
+bool rawShortExit  = _side1_baseTrigger and _SX_posEnabled
+
+// Raw visual marks (for chart-only signals). These aren’t yet consumed by
+// other modules, but are defined now for future plotting logic.
+bool markLongEntry  = _side1_baseTrigger and _LE_rawEnabled
+bool markLongExit   = _side1_baseTrigger and _LX_rawEnabled
+bool markShortEntry = _side1_baseTrigger and _SE_rawEnabled
+bool markShortExit  = _side1_baseTrigger and _SX_rawEnabled
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 9. CONFLUENCE ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// KevBot Toolkit v1.0 — Confluence Engine Module
+// Standalone engine fragment – to be integrated into KevBot_Main
+// Pine v6 compatible, no external imports required
+
+//@version=6
+// NOTE: Do NOT use this as a standalone script on TradingView.
+// Copy the engine pieces into your main KevBot Toolkit script.
+
+//──────────────────────────────────────────────────────────────────────────────
+// ConfluenceResult type
+//──────────────────────────────────────────────────────────────────────────────
+
+// Encapsulates the final confluence state for long/short directions.
+// longScore / shortScore  → total TH score
+// longReqOk / shortReqOk  → all required conditions satisfied?
+// longGrade / shortGrade  → "A" / "B" / "C" / "None" / "Fail"
+
+type ConfluenceResult
+    float  longScore
+    float  shortScore
+    bool   longReqOk
+    bool   shortReqOk
+    string longGrade
+    string shortGrade
+
+//──────────────────────────────────────────────────────────────────────────────
+// Helpers for Top Module evaluation
+//──────────────────────────────────────────────────────────────────────────────
+
+// Map a Top Module Source selector ("Output A".."Output D") to a value.
+// The caller passes the four raw outputs explicitly to keep this engine
+// independent of any specific library type.
+getTopSourceValue(string src, float outA, float outB, float outC, float outD) =>
+    float v = na
+    if   src == "Output A"
+        v := outA
+    else if src == "Output B"
+        v := outB
+    else if src == "Output C"
+        v := outC
+    else if src == "Output D"
+        v := outD
+    v
+
+// Evaluate a single value against Mode + Value A/B settings.
+// Modes: Boolean, Greater Than, Less Than, Between, Equals, Library Default
+
+evalTopCondition(string mode, float v, float a, float b) =>
+    bool passed = false
+    if mode == "Boolean"
+        passed := v != 0.0
+    else if mode == "Greater Than"
+        passed := v > a
+    else if mode == "Less Than"
+        passed := v < a
+    else if mode == "Between"
+        float lo = math.min(a, b)
+        float hi = math.max(a, b)
+        passed := v >= lo and v <= hi
+    else if mode == "Equals"
+        passed := v == a
+    else
+        // "Library Default" → treat non‑zero as true
+        passed := v != 0.0
+    passed
+
+// Process a single Top output row (O1–O4).
+// Returns: [addLong, addShort, reqLongOk, reqShortOk]
+
+applyTopOutput(bool moduleActive, bool enabled, bool required, string dir, string mode, string src, float valA, float valB, int thScore, float outA, float outB, float outC, float outD) =>
+    float addLong  = 0.0
+    float addShort = 0.0
+    bool  reqLong  = true
+    bool  reqShort = true
+
+    if moduleActive and enabled and src != "None"
+        float v      = getTopSourceValue(src, outA, outB, outC, outD)
+        bool  passes = evalTopCondition(mode, v, valA, valB)
+        bool  useLong  = dir == "Both" or dir == "Long"
+        bool  useShort = dir == "Both" or dir == "Short"
+
+        if passes
+            if useLong
+                addLong := thScore
+            if useShort
+                addShort := thScore
+
+        if required
+            if useLong and not passes
+                reqLong := false
+            if useShort and not passes
+                reqShort := false
+
+    [addLong, addShort, reqLong, reqShort]
+
+//──────────────────────────────────────────────────────────────────────────────
+// Top Module 1 – Confluence Aggregation
+//──────────────────────────────────────────────────────────────────────────────
+
+// This function expects the main script to pass all Top1 config + outputs.
+// It returns partial Top confluence that will later be combined with Side TF
+// confluence into a ConfluenceResult.
+
+calcTopConfluence(bool topEnabled, string topLibraryName, float outA, float outB, float outC, float outD, bool o1_enabled, bool o1_required, string o1_dir, string o1_mode, string o1_source, float o1_valA, float o1_valB, int o1_score, bool o2_enabled, bool o2_required, string o2_dir, string o2_mode, string o2_source, float o2_valA, float o2_valB, int o2_score, bool o3_enabled, bool o3_required, string o3_dir, string o3_mode, string o3_source, float o3_valA, float o3_valB, int o3_score, bool o4_enabled, bool o4_required, string o4_dir, string o4_mode, string o4_source, float o4_valA, float o4_valB, int o4_score) =>
+    bool  active        = topEnabled and topLibraryName != "None"
+    float topLongScore  = 0.0
+    float topShortScore = 0.0
+    bool  reqLongOk     = true
+    bool  reqShortOk    = true
+
+    // O1
+    [o1L, o1S, o1ReqL, o1ReqS] = applyTopOutput(active, o1_enabled, o1_required, o1_dir, o1_mode, o1_source, o1_valA, o1_valB, o1_score, outA, outB, outC, outD)
+    topLongScore  += o1L
+    topShortScore += o1S
+    reqLongOk     := reqLongOk  and o1ReqL
+    reqShortOk    := reqShortOk and o1ReqS
+
+    // O2
+    [o2L, o2S, o2ReqL, o2ReqS] = applyTopOutput(active, o2_enabled, o2_required, o2_dir, o2_mode, o2_source, o2_valA, o2_valB, o2_score, outA, outB, outC, outD)
+    topLongScore  += o2L
+    topShortScore += o2S
+    reqLongOk     := reqLongOk  and o2ReqL
+    reqShortOk    := reqShortOk and o2ReqS
+
+    // O3
+    [o3L, o3S, o3ReqL, o3ReqS] = applyTopOutput(active, o3_enabled, o3_required, o3_dir, o3_mode, o3_source, o3_valA, o3_valB, o3_score, outA, outB, outC, outD)
+    topLongScore  += o3L
+    topShortScore += o3S
+    reqLongOk     := reqLongOk  and o3ReqL
+    reqShortOk    := reqShortOk and o3ReqS
+
+    // O4
+    [o4L, o4S, o4ReqL, o4ReqS] = applyTopOutput(active, o4_enabled, o4_required, o4_dir, o4_mode, o4_source, o4_valA, o4_valB, o4_score, outA, outB, outC, outD)
+    topLongScore  += o4L
+    topShortScore += o4S
+    reqLongOk     := reqLongOk  and o4ReqL
+    reqShortOk    := reqShortOk and o4ReqS
+
+    [topLongScore, topShortScore, reqLongOk, reqShortOk]
+
+//──────────────────────────────────────────────────────────────────────────────
+// Global Confluence – combine Top + Side and compute grades
+//──────────────────────────────────────────────────────────────────────────────
+
+// This function is meant to be the single entry point from the main script.
+// The main script computes:
+//   • Top module partial confluence via calcTopConfluence()
+//   • Side/TF partial confluence (to be added later)
+// and passes both into calcGlobalConfluence().
+calcGlobalConfluence(float topLongScore, float topShortScore, bool topReqLongOk, bool topReqShortOk, float sideLongScore, float sideShortScore, bool sideReqLongOk, bool sideReqShortOk, int gradeC_long, int gradeB_long, int gradeA_long, int gradeC_short, int gradeB_short, int gradeA_short) =>
+    float longScore  = topLongScore  + sideLongScore
+    float shortScore = topShortScore + sideShortScore
+    bool  longReqOk  = topReqLongOk  and sideReqLongOk
+    bool  shortReqOk = topReqShortOk and sideReqShortOk
+
+    string longGrade = "None"
+    string shortGrade = "None"
+
+    if not longReqOk
+        longGrade := "Fail"
+    else if longScore >= gradeA_long
+        longGrade := "A"
+    else if longScore >= gradeB_long
+        longGrade := "B"
+    else if longScore >= gradeC_long
+        longGrade := "C"
+
+    if not shortReqOk
+        shortGrade := "Fail"
+    else if shortScore >= gradeA_short
+        shortGrade := "A"
+    else if shortScore >= gradeB_short
+        shortGrade := "B"
+    else if shortScore >= gradeC_short
+        shortGrade := "C"
+
+    ConfluenceResult.new(longScore, shortScore, longReqOk, shortReqOk, longGrade, shortGrade)
+
+
+// 9.1 Top Module 1 partial confluence
+
+
+[topLongScore, topShortScore, topReqLongOk, topReqShortOk] =calcTopConfluence(top1_enabled, top1_library,top1_raw.outA, top1_raw.outB, top1_raw.outC, top1_raw.outD,top1_o1_enabled, top1_o1_required, top1_o1_dir, top1_o1_mode, top1_o1_source, top1_o1_valA, top1_o1_valB, top1_o1_score,top1_o2_enabled, top1_o2_required, top1_o2_dir, top1_o2_mode, top1_o2_source, top1_o2_valA, top1_o2_valB, top1_o2_score,top1_o3_enabled, top1_o3_required, top1_o3_dir, top1_o3_mode, top1_o3_source, top1_o3_valA, top1_o3_valB, top1_o3_score,top1_o4_enabled, top1_o4_required, top1_o4_dir, top1_o4_mode, top1_o4_source, top1_o4_valA, top1_o4_valB, top1_o4_score)
+
+// 9.2 Side/TF partial confluence
+
+//──────────────────────────────────────────────────────────────────────────────
+// SIDE TF LIBRARY INTERFACE (A1 signature)
+// This defines the structure returned by any Side-Module TF library.
+// Each TF has a boolean condition + a label string, plus a unified trigger.
+type TFModuleOutput
+    // Per-timeframe confluence condition + table label
+    bool   tf1_cond
+    string tf1_label
+    bool   tf2_cond
+    string tf2_label
+    bool   tf3_cond
+    string tf3_label
+    bool   tf4_cond
+    string tf4_label
+    bool   tf5_cond
+    string tf5_label
+    bool   tf6_cond
+    string tf6_label
+
+    // Unified trigger event (chart timeframe)
+    bool   trigger_event      // TRUE when this module fires its main trigger
+    float  trigger_price      // Price associated with the trigger (NaN if not used)
+    string trigger_label      // Optional short label/descriptor for chart labels
+
+
+// Each library must expose a function following this signature:
+//     TFModuleOutput getTFConfluence(string tf1_res, string tf2_res, string tf3_res,
+//                                    string tf4_res, string tf5_res, string tf6_res,
+//                                    float paramA, float paramB)
+// The Toolkit will call this with the user's selected resolutions + parame 1 – entry-only scoring for now)
+// This block computes how much Side Module 1 contributes to Long and Short
+// confluence score// Side Module 1 – computes how much it contributes/ NOTE: The actual per-TF condition is still a placeholder and currently
+// derived from side1_raw.outD. In a future step, this will be wired to the
+// TF library’s per-timeframe confluence function output
+
+float sideLongScore  = 0.0
+float sideShortScore = 0.0
+bool  sideReqLongOk  = true
+bool  sideReqShortOk = true
+
+// Cached per-TF conditions from the active TF library. These are generic
+// confluence flags; the Toolkit decides how they contribute to long/short
+// scoring via TF TH scores and Required/Inv toggles.
+bool _kb_tf1_cond = _side1_tf1_cond
+bool _kb_tf2_cond = _side1_tf2_cond
+bool _kb_tf3_cond = _side1_tf3_cond
+bool _kb_tf4_cond = _side1_tf4_cond
+bool _kb_tf5_cond = _side1_tf5_cond
+bool _kb_tf6_cond = _side1_tf6_cond
+
+
+
+// Helper: evaluate one TF row (score + required) for a given direction.
+// Returns: [addedScore, updatedReqOk, tfMatched]
+//  • tfScore   = TF TH Score (0 means “this TF is ignored”)
+//  • tfReq     = Required toggle
+//  • tfInv     = Inv Label toggle (invert the condition)
+//  • cond      = raw condition (TRUE/FALSE for this TF – placeholder for now)
+//  • reqOkIn   = current required-OK flag for this direction
+_kb_evalSideTF(int tfScore, bool tfReq, bool tfInv, bool cond, bool reqOkIn) =>
+    float add      = 0.0
+    bool  reqOkOut = reqOkIn
+    bool  matched  = false
+    if tfScore > 0
+        bool effective = tfInv ? not cond : cond
+        matched := effective
+        if effective
+            add := tfScore
+        else if tfReq
+            reqOkOut := false
+    [add, reqOkOut, matched]
+
+//──────────────────────────────────────────────────────────────────────────────
+// LONG ENTRY SIDE CONFLUENCE (uses 6.1.1 settings)
+//──────────────────────────────────────────────────────────────────────────────
+
+if side1_LEC_enable and side1_enabled and side1_library != "None" and side1_LEC_func != "None"
+    // Per-TF conditions from the TF library (generic confluence flags).
+    bool condLE_tf1 = _kb_tf1_cond
+    bool condLE_tf2 = _kb_tf2_cond
+    bool condLE_tf3 = _kb_tf3_cond
+    bool condLE_tf4 = _kb_tf4_cond
+    bool condLE_tf5 = _kb_tf5_cond
+    bool condLE_tf6 = _kb_tf6_cond
+
+
+    // Per‑TF scoring loop – walks TF1..TF6 using the helper.
+    float addTF_LE = 0.0
+    bool  reqOut   = true
+    bool  matchOut = false
+
+    for _i = 1 to 6
+        int  tfScore = _i == 1 ? side1_LE_tf1 : _i == 2 ? side1_LE_tf2 : _i == 3 ? side1_LE_tf3 : _i == 4 ? side1_LE_tf4 : _i == 5 ? side1_LE_tf5 : side1_LE_tf6
+        bool tfReq   = _i == 1 ? side1_LE_tf1_req : _i == 2 ? side1_LE_tf2_req : _i == 3 ? side1_LE_tf3_req : _i == 4 ? side1_LE_tf4_req : _i == 5 ? side1_LE_tf5_req : side1_LE_tf6_req
+        bool tfInv   = _i == 1 ? side1_LE_tf1_inv : _i == 2 ? side1_LE_tf2_inv : _i == 3 ? side1_LE_tf3_inv : _i == 4 ? side1_LE_tf4_inv : _i == 5 ? side1_LE_tf5_inv : side1_LE_tf6_inv
+        bool tfCond  = _i == 1 ? condLE_tf1 : _i == 2 ? condLE_tf2 : _i == 3 ? condLE_tf3 : _i == 4 ? condLE_tf4 : _i == 5 ? condLE_tf5 : condLE_tf6
+
+        [addTF_LE, reqOut, matchOut] = _kb_evalSideTF(tfScore, tfReq, tfInv, tfCond, sideReqLongOk)
+        sideReqLongOk := reqOut
+        sideLongScore += addTF_LE
+
+//──────────────────────────────────────────────────────────────────────────────
+// SHORT ENTRY SIDE CONFLUENCE (uses 6.3.1 settings)
+//──────────────────────────────────────────────────────────────────────────────
+
+if side1_SEC_enable and side1_enabled and side1_library != "None" and side1_SEC_func != "None"
+    // Per-TF conditions from the TF library (generic confluence flags).
+    bool condSE_tf1 = _kb_tf1_cond
+    bool condSE_tf2 = _kb_tf2_cond
+    bool condSE_tf3 = _kb_tf3_cond
+    bool condSE_tf4 = _kb_tf4_cond
+    bool condSE_tf5 = _kb_tf5_cond
+    bool condSE_tf6 = _kb_tf6_cond
+
+
+    float addTF_SE = 0.0
+    bool  reqOutSE = true
+    bool  matchOutSE = false
+
+    for _i = 1 to 6
+        int  tfScore = _i == 1 ? side1_SE_tf1 : _i == 2 ? side1_SE_tf2 : _i == 3 ? side1_SE_tf3 : _i == 4 ? side1_SE_tf4 : _i == 5 ? side1_SE_tf5 : side1_SE_tf6
+        bool tfReq   = _i == 1 ? side1_SE_tf1_req : _i == 2 ? side1_SE_tf2_req : _i == 3 ? side1_SE_tf3_req : _i == 4 ? side1_SE_tf4_req : _i == 5 ? side1_SE_tf5_req : side1_SE_tf6_req
+        bool tfInv   = _i == 1 ? side1_SE_tf1_inv : _i == 2 ? side1_SE_tf2_inv : _i == 3 ? side1_SE_tf3_inv : _i == 4 ? side1_SE_tf4_inv : _i == 5 ? side1_SE_tf5_inv : side1_SE_tf6_inv
+        bool tfCond  = _i == 1 ? condSE_tf1 : _i == 2 ? condSE_tf2 : _i == 3 ? condSE_tf3 : _i == 4 ? condSE_tf4 : _i == 5 ? condSE_tf5 : condSE_tf6
+
+        [addTF_SE, reqOutSE, matchOutSE] = _kb_evalSideTF(tfScore, tfReq, tfInv, tfCond, sideReqShortOk)
+        sideReqShortOk := reqOutSE
+        sideShortScore += addTF_SE
+
+// NOTE: Long Exit (6.2.1) and Short Exit (6.4.1) TF scores are defined in the
+// inputs but are not yet contributing to confluence grades. Once we introduce
+// separate entry/exit grades, we will add a similar pass here specifically for
+// exit confluence. (6.4.1) TF scores are defined in the
+// inputs but are not yet contributing to confluence grades. Once we introduce
+// separate entry/exit grades, we will add a similar pass here specifically for
+// exit confluence.
+
+
+// 9.3 Global confluence
+ConfluenceResult _kb_conf =calcGlobalConfluence(topLongScore, topShortScore,topReqLongOk, topReqShortOk,sideLongScore, sideShortScore,sideReqLongOk, sideReqShortOk,gradeC_long, gradeB_long, gradeA_long,gradeC_short, gradeB_short, gradeA_short)
+
+
+// 9.4 Expose for other modules (Position Engine + Top Table)
+float  _kb_longScore   = _kb_conf.longScore
+float  _kb_shortScore  = _kb_conf.shortScore
+bool   _kb_longReqOk   = _kb_conf.longReqOk
+bool   _kb_shortReqOk  = _kb_conf.shortReqOk
+string _kb_longGrade   = _kb_conf.longGrade
+string _kb_shortGrade  = _kb_conf.shortGrade
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 10. POSITION ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// KevBot Toolkit v1.0 — Position Engine Module
+// Drop this block into your main KevBot script **after** the Confluence Engine.
+// Assumes the following are already defined earlier in the script:
+//   • bool  rawLongEntry,  rawLongExit,  rawShortEntry, rawShortExit
+//   • string sizer_entry, sizer_exit
+//   • bool  sizerAllowMulti
+//   • int   sizerMaxEntries
+//   • (Optional for later) confluence grades from the Confluence Engine.
+// For now, grade-based modes will be wired but will only work once you
+// assign `_kb_longGrade` and `_kb_shortGrade` from your ConfluenceResult.
+
+
+
+// Placeholder confluence grades (to be wired to ConfluenceResult later).
+// Example once wired:
+//   _kb_longGrade  := globalConf.longGrade
+//   _kb_shortGrade := globalConf.shortGrade
+
+// Helper: check if a grade meets a minimum requirement.
+// "C" => C/B/A pass, "B" => B/A pass, "A" => A only.
+_kb_gradeAtLeast(string grade, string minGrade) => (minGrade == "C" and (grade == "C" or grade == "B" or grade == "A")) or (minGrade == "B" and (grade == "B" or grade == "A")) or (minGrade == "A" and grade == "A")
+
+//──────────────────────────────────────────────────────────────────────────────
+// 10.1 Entry Method Resolution
+//──────────────────────────────────────────────────────────────────────────────
+
+// Resolve whether entries are allowed for long/short based on Position Entry
+// Method and (eventually) confluence grades.
+
+bool _kb_longEntryOK  = false
+bool _kb_shortEntryOK = false
+
+// Long side
+if sizer_entry == "Any Entry Trigger" or sizer_entry == "Library Custom"
+    // Pure raw trigger; ignore grades and requireds.
+    _kb_longEntryOK := rawLongEntry
+else if sizer_entry == "Entry Trigger + Grade C"
+    _kb_longEntryOK := rawLongEntry and _kb_gradeAtLeast(_kb_longGrade, "C")
+else if sizer_entry == "Entry Trigger + Grade B"
+    _kb_longEntryOK := rawLongEntry and _kb_gradeAtLeast(_kb_longGrade, "B")
+else if sizer_entry == "Entry Trigger + Grade A"
+    _kb_longEntryOK := rawLongEntry and _kb_gradeAtLeast(_kb_longGrade, "A")
+
+// Short side
+if sizer_entry == "Any Entry Trigger" or sizer_entry == "Library Custom"
+    _kb_shortEntryOK := rawShortEntry
+else if sizer_entry == "Entry Trigger + Grade C"
+    _kb_shortEntryOK := rawShortEntry and _kb_gradeAtLeast(_kb_shortGrade, "C")
+else if sizer_entry == "Entry Trigger + Grade B"
+    _kb_shortEntryOK := rawShortEntry and _kb_gradeAtLeast(_kb_shortGrade, "B")
+else if sizer_entry == "Entry Trigger + Grade A"
+    _kb_shortEntryOK := rawShortEntry and _kb_gradeAtLeast(_kb_shortGrade, "A")
+
+//──────────────────────────────────────────────────────────────────────────────
+// 10.2 Exit Method Resolution
+//──────────────────────────────────────────────────────────────────────────────
+
+// Resolve whether exits are allowed for long/short based on Position Exit
+// Method and (eventually) confluence grades.
+
+bool _kb_longExitOK  = false
+bool _kb_shortExitOK = false
+
+// Long exits
+if sizer_exit == "First Exit Trigger" or sizer_exit == "Library Custom"
+    // Raw exits only; ignore confluence and requireds, but gated by position.
+    _kb_longExitOK := rawLongExit
+else if sizer_exit == "Exit Trigger + Grade C"
+    _kb_longExitOK := rawLongExit and _kb_gradeAtLeast(_kb_longGrade, "C")
+else if sizer_exit == "Exit Trigger + Grade B"
+    _kb_longExitOK := rawLongExit and _kb_gradeAtLeast(_kb_longGrade, "B")
+else if sizer_exit == "Exit Trigger + Grade A"
+    _kb_longExitOK := rawLongExit and _kb_gradeAtLeast(_kb_longGrade, "A")
+
+// Short exits
+if sizer_exit == "First Exit Trigger" or sizer_exit == "Library Custom"
+    _kb_shortExitOK := rawShortExit
+else if sizer_exit == "Exit Trigger + Grade C"
+    _kb_shortExitOK := rawShortExit and _kb_gradeAtLeast(_kb_shortGrade, "C")
+else if sizer_exit == "Exit Trigger + Grade B"
+    _kb_shortExitOK := rawShortExit and _kb_gradeAtLeast(_kb_shortGrade, "B")
+else if sizer_exit == "Exit Trigger + Grade A"
+    _kb_shortExitOK := rawShortExit and _kb_gradeAtLeast(_kb_shortGrade, "A")
+
+//──────────────────────────────────────────────────────────────────────────────
+// 10.3 Position State Machine
+//──────────────────────────────────────────────────────────────────────────────
+
+// posDir:  0 = flat, 1 = long, -1 = short
+var int _kb_posDir     = 0
+var int _kb_posEntries = 0
+
+// Output signals from the Position Engine.
+bool positionLongEntry  = false
+bool positionShortEntry = false
+bool positionLongExit   = false
+bool positionShortExit  = false
+
+// Helper: can we add another long entry (respecting stacking rules)?
+bool _kb_canAddLong = false
+if not sizerAllowMulti
+    // Single-entry mode: only from flat to long.
+    _kb_canAddLong := _kb_posDir == 0
+else
+    if _kb_posDir == 0
+        _kb_canAddLong := true
+    else if _kb_posDir == 1
+        _kb_canAddLong := _kb_posEntries < sizerMaxEntries
+    else if _kb_posDir == -1
+        _kb_canAddLong := false
+
+// Helper: can we add another short entry (respecting stacking rules)?
+bool _kb_canAddShort = false
+if not sizerAllowMulti
+    _kb_canAddShort := _kb_posDir == 0
+else
+    if _kb_posDir == 0
+        _kb_canAddShort := true
+    else if _kb_posDir == -1
+        _kb_canAddShort := _kb_posEntries < sizerMaxEntries
+    else if _kb_posDir == 1
+        _kb_canAddShort := false
+
+// Long entry logic
+if _kb_longEntryOK and _kb_canAddLong
+    positionLongEntry := true
+    if _kb_posDir != 1
+        _kb_posDir := 1
+        _kb_posEntries := 1
+    else
+        _kb_posEntries += 1
+
+// Short entry logic
+if _kb_shortEntryOK and _kb_canAddShort
+    positionShortEntry := true
+    if _kb_posDir != -1
+        _kb_posDir := -1
+        _kb_posEntries := 1
+    else
+        _kb_posEntries += 1
+
+// Long exit logic — only valid if currently long.
+if _kb_posDir == 1 and _kb_longExitOK
+    positionLongExit := true
+    _kb_posDir := 0
+    _kb_posEntries := 0
+
+// Short exit logic — only valid if currently short.
+if _kb_posDir == -1 and _kb_shortExitOK
+    positionShortExit := true
+    _kb_posDir := 0
+    _kb_posEntries := 0
+
+// You can now feed positionLongEntry/positionShortEntry/positionLongExit/
+// positionShortExit into the Backtest Engine, label system, and alert manager
+// in later phases of the KevBot Toolkit.
+
+//──────────────────────────────────────────────────────────────────────────────
+// 11. BACKTEST ENGINE
+//──────────────────────────────────────────────────────────────────────────────
+
+//──────────────────────────────────────────────────────────────────────────────
+// KevBot Toolkit – BACKTEST ENGINE MODULE (Block 11)
+// Minimal trade tracking, single-entry or multi-entry compatible
+//──────────────────────────────────────────────────────────────────────────────
+
+// This module is designed to be pasted directly after the Position Engine.
+// It expects the following variables to already exist in the main script:
+//   • positionLongEntry, positionShortEntry (bool)
+//   • positionLongExit,  positionShortExit  (bool)
+//   • riskMode, acctSize, defShares, defRisk, defRiskPct
+//   • sl_method, tp_method, sl_show, tp_show (not fully wired yet)
+//   • current candle OHLC
+//   • settings for multi-entry stacking
+//   • sizerAllowMulti, sizerMaxEntries
+//
+// OUTPUT:
+//   • bt_positionActive   (bool)
+//   • bt_positionSide     ("LONG" / "SHORT" / "NONE")
+//   • bt_entryPrice
+//   • bt_exitPrice
+//   • bt_qty
+//   • bt_realizedPNL
+//   • bt_winCount, bt_lossCount, bt_totalTrades
+//   • bt_lastTradePNL
+//──────────────────────────────────────────────────────────────────────────────
+
+//──────────────────────────────────────────────────────────────────────────────
+// BACKTEST ENGINE INTERNAL STATE
+//──────────────────────────────────────────────────────────────────────────────
+
+var bool  bt_positionActive = false
+var string bt_positionSide  = "NONE"     // "LONG" or "SHORT"
+var float bt_entryPrice     = na
+var float bt_exitPrice      = na
+var float bt_qty            = 0.0
+var float bt_realizedPNL    = 0.0
+
+var float bt_lastTradePNL = 0.0
+var int   bt_totalTrades  = 0
+var int   bt_winCount     = 0
+var int   bt_lossCount    = 0
+
+// track stacked entries
+var int   bt_stackCount = 0
+
+// Stats for PF + drawdown
+var float bt_grossWin    = 0.0
+var float bt_grossLoss   = 0.0    // will be negative
+var float bt_maxDrawdown = 0.0    // as fraction (0.075 = 7.5%)
+var float bt_peakEquity  = 0.0    // best realized PNL so far
+
+//──────────────────────────────────────────────────────────────────────────────
+// Helper: compute position size based on Risk Mode
+// Single-line arrow function to avoid line-continuation issues.
+_kb_calcQty(float price) => riskMode == "Share Qty" ? defShares : riskMode == "Fixed $ Risk" ? (defRisk / (price * 0.01)) : riskMode == "Percentage Risk" ? ((acctSize * defRiskPct * 0.01) / (price * 0.01)) : defShares
+
+//──────────────────────────────────────────────────────────────────────────────
+// ENTRY LOGIC
+
+//──────────────────────────────────────────────────────────────────────────────
+
+bool _longEntry  = positionLongEntry
+bool _shortEntry = positionShortEntry
+
+float _entryFill = close   // assume filled at close for now
+
+// LONG ENTRY
+if _longEntry and not bt_positionActive
+    bt_positionActive := true
+    bt_positionSide   := "LONG"
+    bt_entryPrice     := _entryFill
+    bt_qty            := _kb_calcQty(_entryFill)
+    bt_stackCount     := 1
+
+// stacking additional entries while already in a long
+if _longEntry and bt_positionActive and bt_positionSide == "LONG" and sizerAllowMulti and bt_stackCount < sizerMaxEntries
+    bt_qty        += _kb_calcQty(_entryFill)
+    bt_entryPrice := (bt_entryPrice * bt_stackCount + _entryFill) / (bt_stackCount + 1)
+    bt_stackCount += 1
+
+// SHORT ENTRY
+if _shortEntry and not bt_positionActive
+    bt_positionActive := true
+    bt_positionSide   := "SHORT"
+    bt_entryPrice     := _entryFill
+    bt_qty            := _kb_calcQty(_entryFill)
+    bt_stackCount     := 1
+
+// stacking additional entries while already in a short
+if _shortEntry and bt_positionActive and bt_positionSide == "SHORT" and sizerAllowMulti and bt_stackCount < sizerMaxEntries
+    bt_qty        += _kb_calcQty(_entryFill)
+    bt_entryPrice := (bt_entryPrice * bt_stackCount + _entryFill) / (bt_stackCount + 1)
+    bt_stackCount += 1
+
+//──────────────────────────────────────────────────────────────────────────────
+// EXIT LOGIC
+//──────────────────────────────────────────────────────────────────────────────
+
+bool _longExit  = positionLongExit
+bool _shortExit = positionShortExit
+
+float _exitFill = close
+
+if bt_positionActive
+    // LONG EXIT
+    if bt_positionSide == "LONG" and _longExit
+        bt_exitPrice     := _exitFill
+        bt_lastTradePNL  := (bt_exitPrice - bt_entryPrice) * bt_qty
+        bt_realizedPNL  += bt_lastTradePNL
+        bt_totalTrades  += 1
+        bt_winCount     += bt_lastTradePNL > 0 ? 1 : 0
+        bt_lossCount    += bt_lastTradePNL < 0 ? 1 : 0
+
+        // PF components
+        if bt_lastTradePNL > 0
+            bt_grossWin += bt_lastTradePNL
+        else if bt_lastTradePNL < 0
+            bt_grossLoss += bt_lastTradePNL
+
+        // Equity + max drawdown (based on realized PNL only)
+        float _eq = bt_realizedPNL
+        if _eq > bt_peakEquity
+            bt_peakEquity := _eq
+        float _dd = bt_peakEquity != 0.0 ? (bt_peakEquity - _eq) / math.abs(bt_peakEquity) : 0.0
+        if _dd > bt_maxDrawdown
+            bt_maxDrawdown := _dd
+
+
+        bt_positionActive := false
+        bt_positionSide   := "NONE"
+        bt_qty            := 0
+        bt_stackCount     := 0
+
+    // SHORT EXIT
+    if bt_positionSide == "SHORT" and _shortExit
+        bt_exitPrice     := _exitFill
+        bt_lastTradePNL  := (bt_entryPrice - bt_exitPrice) * bt_qty
+        bt_realizedPNL  += bt_lastTradePNL
+        bt_totalTrades  += 1
+        bt_winCount     += bt_lastTradePNL > 0 ? 1 : 0
+        bt_lossCount    += bt_lastTradePNL < 0 ? 1 : 0
+
+        if bt_lastTradePNL > 0
+            bt_grossWin += bt_lastTradePNL
+        else if bt_lastTradePNL < 0
+            bt_grossLoss += bt_lastTradePNL
+
+        float _eq = bt_realizedPNL
+        if _eq > bt_peakEquity
+            bt_peakEquity := _eq
+        float _dd = bt_peakEquity != 0.0 ? (bt_peakEquity - _eq) / math.abs(bt_peakEquity) : 0.0
+        if _dd > bt_maxDrawdown
+            bt_maxDrawdown := _dd
+
+
+        bt_positionActive := false
+        bt_positionSide   := "NONE"
+        bt_qty            := 0
+        bt_stackCount     := 0
+
+//──────────────────────────────────────────────────────────────────────────────
+// 11.1 Optional Debug Labels
+//──────────────────────────────────────────────────────────────────────────────
+// Uncomment if you want visual confirmation for entries/exits
+// label.new(bar_index, high,  text="ENTRY LONG",  color=color.green)  if _longEntry
+// label.new(bar_index, low,   text="EXIT LONG",   color=color.red)    if _longExit
+// label.new(bar_index, high,  text="ENTRY SHORT", color=color.orange) if _shortEntry
+// label.new(bar_index, low,   text="EXIT SHORT",  color=color.blue)   if _shortExit
+
+//──────────────────────────────────────────────────────────────────────────────
+// END BACKTEST ENGINE
+//──────────────────────────────────────────────────────────────────────────────
+
+//──────────────────────────────────────────────────────────────────────────────
+// KevBot Toolkit – TOP MODULE TABLE (Dynamic Multi‑Module Renderer)
+//──────────────────────────────────────────────────────────────────────────────
+// Layout rules:
+// • Each module = 5 rows x 2 columns
+// • Modules are placed left→right in this order:
+//      1. Long Confluence Module
+//      2. Short Confluence Module
+//      3. Position Sizing Module
+//      4. Backtest KPI Module
+//      5. Top Module 1 (external library)
+// • Disabled modules do NOT appear and do NOT take space.
+// • All rendering happens only on barstate.islast to minimize compute cost.
+//──────────────────────────────────────────────────────────────────────────────
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.0 TOP TABLE SETTINGS
+//──────────────────────────────────────────────────────────────────────────────
+
+string GRP_TOP_TABLE = "12. Top Table (Module Grid)"
+
+string topTable_position = input.string(
+     "Top Center",
+     "Top Table Position",
+     options = ["Top Left", "Top Center", "Top Right"],
+     group   = GRP_TOP_TABLE,
+     tooltip = "Choose where to render the Top (module) table."
+)
+
+// Resolve table position
+f_topTable_pos(string posLabel) =>
+     posLabel == "Top Left"   ? position.top_left :
+     posLabel == "Top Center" ? position.top_center : position.top_right
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.1 TABLE INITIALIZATION
+//──────────────────────────────────────────────────────────────────────────────
+
+var table kbTopTable = na
+if enableTopTable and na(kbTopTable)
+    kbTopTable := table.new(f_topTable_pos(topTable_position), 10, 20, frame_width = 1, bgcolor = color.new(color.gray, 85))
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.2 COLOR + TEXT SETTINGS (Theme-Aware)
+//──────────────────────────────────────────────────────────────────────────────
+
+// Dark theme colors
+color _kb_headBg  = useDarkTheme ? color.new(color.blue, 40)  : color.new(color.blue, 70)
+color _kb_labBg   = useDarkTheme ? color.new(color.gray, 75)  : color.new(color.gray, 90)
+color _kb_valBg   = useDarkTheme ? color.new(color.gray, 55)  : color.new(color.gray, 85)
+color _kb_headTxt = useDarkTheme ? color.white : color.new(color.black, 0)
+color _kb_labTxt  = useDarkTheme ? color.white : color.new(color.black, 20)
+color _kb_valTxt  = useDarkTheme ? color.white : color.new(color.black, 0)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.3 MODULE ENABLE FLAGS
+//──────────────────────────────────────────────────────────────────────────────
+
+bool useLongCSM  = showCSM_long
+bool useShortCSM = showCSM_short
+bool useSizer    = showSizer
+bool useBacktest = showBack
+bool useTop1     = top1_enabled
+
+// Count active modules
+int activeCount = 0
+activeCount += useLongCSM  ? 1 : 0
+activeCount += useShortCSM ? 1 : 0
+activeCount += useSizer    ? 1 : 0
+activeCount += useBacktest ? 1 : 0
+activeCount += useTop1     ? 1 : 0
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.4 COLUMN ASSIGNMENT
+//──────────────────────────────────────────────────────────────────────────────
+// Modules shift left automatically. For example, if only Long + Sizer are on,
+// Long gets col=0, Sizer gets col=1, and others are skipped.
+//──────────────────────────────────────────────────────────────────────────────
+
+int colLong  = na
+int colShort = na
+int colSizer = na
+int colBack  = na
+int colTop1  = na
+
+int cursor = 0
+if useLongCSM
+    colLong := cursor
+    cursor += 1
+if useShortCSM
+    colShort := cursor
+    cursor += 1
+if useSizer
+    colSizer := cursor
+    cursor += 1
+if useBacktest
+    colBack := cursor
+    cursor += 1
+if useTop1
+    colTop1 := cursor
+    cursor += 1
+
+// Each module uses 2 columns → multiply by 2
+f_colStart(int block) => block * 2
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.5 MODULE DATA PREPARATION
+// Placeholders / aggregates (to be wired to engines elsewhere)
+
+//──────────────────────────────────────────────────────────────────────────────
+// LONG CONFLUENCE
+string long_title = csmLongName == "" ? "Long Confluence" : csmLongName
+string long_cur   = str.format("{0} ({1})", _kb_longScore, _kb_longGrade)
+
+float _longCMinPct = gradeC_long != 0 ? math.round(100.0 * _kb_longScore / gradeC_long) : na
+float _longBMinPct = gradeB_long != 0 ? math.round(100.0 * _kb_longScore / gradeB_long) : na
+float _longAMinPct = gradeA_long != 0 ? math.round(100.0 * _kb_longScore / gradeA_long) : na
+
+string long_cmin  = str.format("{0} ({1}%)", gradeC_long, _longCMinPct)
+string long_bmin  = str.format("{0} ({1}%)", gradeB_long, _longBMinPct)
+string long_amin  = str.format("{0} ({1}%)", gradeA_long, _longAMinPct)
+
+
+// SHORT CONFLUENCE
+string short_title = csmShortName == "" ? "Short Confluence" : csmShortName
+string short_cur   = str.format("{0} ({1})", _kb_shortScore, _kb_shortGrade)
+
+float _shortCMinPct = gradeC_short != 0 ? math.round(100.0 * _kb_shortScore / gradeC_short) : na
+float _shortBMinPct = gradeB_short != 0 ? math.round(100.0 * _kb_shortScore / gradeB_short) : na
+float _shortAMinPct = gradeA_short != 0 ? math.round(100.0 * _kb_shortScore / gradeA_short) : na
+
+string short_cmin  = str.format("{0} ({1}%)", gradeC_short, _shortCMinPct)
+string short_bmin  = str.format("{0} ({1}%)", gradeB_short, _shortBMinPct)
+string short_amin  = str.format("{0} ({1}%)", gradeA_short, _shortAMinPct)
+
+
+// POSITION SIZING
+string sizer_title = sizerName == "" ? "Position Sizing" : sizerName
+string s_slMethod  = sl_method
+float s_slPrice    = na
+if sl_method == "ATR"
+    s_slPrice := close - ta.atr(sl_atrPer) * sl_atrMult
+else if sl_method == "Fixed Dollar"
+    s_slPrice := close - sl_fixed
+else if sl_method == "Percentage"
+    s_slPrice := close * (1 - sl_pct * 0.01)
+else if sl_method == "Candle Wicks"
+    s_slPrice := low[sl_lookback] - sl_pad
+string s_SL = str.tostring(s_slPrice)
+
+float ps_qty = _kb_calcQty(close)
+string s_QTY = str.tostring(ps_qty)
+string s_RISK = riskMode == "Share Qty" ? "Shares" : riskMode == "Fixed $ Risk" ? str.tostring(defRisk) : str.tostring(defRiskPct) + "%"
+
+// BACKTEST KPIs
+string back_title = backName == "" ? "Backtest KPIs" : backName
+float wr = bt_totalTrades > 0 ? 100.0 * bt_winCount / bt_totalTrades : 0
+string bt_wr = str.format("{0,number,#.##}%", wr)
+float pf = na
+if bt_grossLoss != 0
+    float _pfDenom = math.max(math.abs(bt_grossLoss), 0.0000001)
+    pf := bt_grossWin / _pfDenom
+string bt_pf = str.tostring(pf)
+string bt_dd = str.format("{0,number,#.##}%", 100.0 * bt_maxDrawdown)
+string bt_tr = str.tostring(bt_totalTrades)
+
+// TOP MODULE 1 (External Library)
+string top1_title = top1_name
+string top1A = str.tostring(top1_raw.outA)
+string top1B = str.tostring(top1_raw.outB)
+string top1C = str.tostring(top1_raw.outC)
+string top1D = str.tostring(top1_raw.outD)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 12.6 RENDERING
+//──────────────────────────────────────────────────────────────────────────────
+
+renderModule(int block, string title, string r1name, string r1val, string r2name, string r2val, string r3name, string r3val, string r4name, string r4val) =>
+    int c = f_colStart(block)
+    table.cell(kbTopTable, c,   0, title, text_color=_kb_headTxt, bgcolor=_kb_headBg)
+    table.cell(kbTopTable, c+1, 0, "",     text_color=_kb_headTxt, bgcolor=_kb_headBg)
+    table.cell(kbTopTable, c,   1, r1name, text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 1, r1val,  text_color=_kb_valTxt,  bgcolor=_kb_valBg)
+    table.cell(kbTopTable, c,   2, r2name, text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 2, r2val,  text_color=_kb_valTxt,  bgcolor=_kb_valBg)
+    table.cell(kbTopTable, c,   3, r3name, text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 3, r3val,  text_color=_kb_valTxt,  bgcolor=_kb_valBg)
+    table.cell(kbTopTable, c,   4, r4name, text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 4, r4val,  text_color=_kb_valTxt,  bgcolor=_kb_valBg)
+
+if enableTopTable and barstate.islast
+    if useLongCSM
+        renderModule(colLong, long_title, "Current", long_cur, "C Min", long_cmin, "B Min", long_bmin, "A Min", long_amin)
+    if useShortCSM
+        renderModule(colShort, short_title, "Current", short_cur, "C Min", short_cmin, "B Min", short_bmin, "A Min", short_amin)
+    if useSizer
+        renderModule(colSizer, sizer_title, "SL Method", s_slMethod, "SL Price", s_SL, "Risk", s_RISK, "Qty", s_QTY)
+    if useBacktest
+        renderModule(colBack, back_title, "WR", bt_wr, "PF", bt_pf, "Drawdown", bt_dd, "Trades", bt_tr)
+    if useTop1
+        renderModule(colTop1, top1_title, "Output A", top1A, "Output B", top1B, "Output C", top1C, "Output D", top1D)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 13. SIDE TABLE RENDERER (Side Module 1 – Timeframe-Based)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 13.1 Side Table Settings
+
+string GRP_SIDE_TABLE = "13. Side Table (Timeframe Grid)"
+
+string sideTable_position = input.string(
+     "Middle Right",
+     "Side Table Position",
+     options = ["Top Right", "Middle Right", "Bottom Right"],
+     group   = GRP_SIDE_TABLE,
+     tooltip = "Choose where to render the Side (timeframe) table."
+)
+
+// Resolve table position ------------------------------------------------------
+f_sideTable_pos(string posLabel) =>
+     posLabel == "Top Right"   ? position.top_right :
+     posLabel == "Middle Right"? position.middle_right : position.bottom_right
+
+// 13.2 Per‑TF Color Logic (Theme-Aware) ----------------------------------------
+
+// Theme-aware transparency levels
+int _kb_sideTrans     = useDarkTheme ? 75 : 85
+int _kb_sideTransOff  = useDarkTheme ? 85 : 90
+color _kb_sideTxtCol  = useDarkTheme ? color.white : color.new(color.black, 0)
+color _kb_sideHeadBg  = useDarkTheme ? color.new(color.gray, 65) : color.new(color.gray, 85)
+color _kb_sideLabelBg = useDarkTheme ? color.new(color.gray, 75) : color.new(color.gray, 88)
+
+f_sideTF_color(bool tfCond, bool leScope, bool seScope, int leScore, int seScore) =>
+    bool hasLongScope  = leScope  and leScore > 0
+    bool hasShortScope = seScope and seScore > 0
+    bool anyScope      = hasLongScope or hasShortScope
+
+    bool longTrue  = hasLongScope  and tfCond
+    bool shortTrue = hasShortScope and tfCond
+
+    color bg = color.new(color.gray, _kb_sideTransOff)
+
+    if anyScope
+        if longTrue and shortTrue
+            bg := color.new(color.blue, _kb_sideTrans)
+        else if longTrue
+            bg := color.new(color.green, _kb_sideTrans)
+        else if shortTrue
+            bg := color.new(color.red, _kb_sideTrans)
+        else
+            bg := color.new(color.yellow, _kb_sideTrans)
+    bg
+
+// 13.3 Build Timeframe Columns -----------------------------------------------
+// Use KevBot_TimeUtils library for formatting
+
+tf_fmt_tf(string tf) => tu.tu_fmt(tf)
+
+string[] _kb_side_tfLabels = array.new_string()
+int[]    _kb_side_tfIndex  = array.new_int()
+
+// Push enabled TFs into the arrays
+f_push_tf(bool enabled, string rawTf, int idx) =>
+    if enabled
+        // Treat empty/Chart consistently so library can resolve timeframe.period
+        string safeTf = (rawTf == "" or rawTf == "Chart") ? "Chart" : rawTf
+        array.push(_kb_side_tfLabels, tf_fmt_tf(safeTf))
+        array.push(_kb_side_tfIndex,  idx)
+
+// Collect only enabled TFs (TF1..TF6) in order.
+f_push_tf(tf1_enabled, tf1, 1)
+f_push_tf(tf2_enabled, tf2, 2)
+f_push_tf(tf3_enabled, tf3, 3)
+f_push_tf(tf4_enabled, tf4, 4)
+f_push_tf(tf5_enabled, tf5, 5)
+f_push_tf(tf6_enabled, tf6, 6)
+
+int _kb_side_tfCount = array.size(_kb_side_tfLabels)
+// LOCKED COLUMN MODE (workaround): always 7 columns
+// 1 Indicator + 6 TF columns
+int _kb_colCount = 7
+
+var table _kb_sideTable = na
+var int   _kb_sideCols  = 0
+
+// Hard-reset table if column count changes
+if enableSideTable and not na(_kb_sideTable) and _kb_sideCols != _kb_colCount
+    table.delete(_kb_sideTable)
+    _kb_sideTable := na
+    _kb_sideCols  := 0
+
+// Create table if needed
+if enableSideTable and na(_kb_sideTable)
+    _kb_sideTable := table.new(
+        f_sideTable_pos(sideTable_position),
+        _kb_colCount,
+        2,
+        frame_width = 1,
+        bgcolor     = color.new(color.gray, 80)
+    )
+    _kb_sideCols := _kb_colCount
+
+// 13.4.1 Safe cell wrapper ----------------------------------------------------
+
+f_sideTable_cell(table t, int col, int row, string txt, color txtCol, color bgCol) =>
+    if not na(t) and col >= 0 and col < _kb_sideCols
+        table.cell(t, col, row, txt, text_color = txtCol, bgcolor = bgCol)
+
+// 13.5 Header Row -------------------------------------------------------------
+
+int _kb_headerRow = 0
+int _kb_moduleRow = 1
+
+// Indicator column header
+if enableSideTable
+    f_sideTable_cell(_kb_sideTable, 0, _kb_headerRow, "Indicator", _kb_sideTxtCol, _kb_sideHeadBg)
+
+    // Timeframe headers (TF1..TFN)
+    for i = 0 to _kb_side_tfCount - 1
+        string tfLabel = array.get(_kb_side_tfLabels, i)
+        int    col     = 1 + i
+        f_sideTable_cell(_kb_sideTable, col, _kb_headerRow, tfLabel, _kb_sideTxtCol, _kb_sideHeadBg)
+
+    // Clear any unused header cells beyond active TF count
+    for col = 1 + _kb_side_tfCount to _kb_sideCols - 1
+        f_sideTable_cell(_kb_sideTable, col, _kb_headerRow, "", _kb_sideTxtCol, color.new(color.gray, 100))
+
+// 13.6 Side Module 1 Row ------------------------------------------------------
+
+if enableSideTable and (not side1_enabled or side1_library == "None" or _kb_side_tfCount == 0)
+    // Clear module row entirely
+    for col = 0 to _kb_sideCols - 1
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow, "", _kb_sideTxtCol, color.new(color.gray, 100))
+else if enableSideTable
+    // Module label (leftmost column)
+    string moduleLabel = side1_name != "" ? side1_name : "Side Module 1"
+    f_sideTable_cell(_kb_sideTable, 0, _kb_moduleRow, moduleLabel, _kb_sideTxtCol, _kb_sideLabelBg)
+
+    // Per-TF cells
+    for i = 0 to _kb_side_tfCount - 1
+        int tfIdx = array.get(_kb_side_tfIndex, i)
+        int col   = 1 + i
+
+        int  leScore   = 0
+        int  seScore   = 0
+        bool tfCond    = false
+        string tfLabel = ""
+        bool reqLong   = false
+        bool reqShort  = false
+
+        // Extract TF-specific metadata
+        if tfIdx == 1
+            leScore := side1_LE_tf1
+            seScore := side1_SE_tf1
+            tfCond  := _side1_tf1_cond
+            tfLabel := side1_raw.tf1_label
+            reqLong := side1_LE_tf1_req
+            reqShort:= side1_SE_tf1_req
+        else if tfIdx == 2
+            leScore := side1_LE_tf2
+            seScore := side1_SE_tf2
+            tfCond  := _side1_tf2_cond
+            tfLabel := side1_raw.tf2_label
+            reqLong := side1_LE_tf2_req
+            reqShort:= side1_SE_tf2_req
+        else if tfIdx == 3
+            leScore := side1_LE_tf3
+            seScore := side1_SE_tf3
+            tfCond  := _side1_tf3_cond
+            tfLabel := side1_raw.tf3_label
+            reqLong := side1_LE_tf3_req
+            reqShort:= side1_SE_tf3_req
+        else if tfIdx == 4
+            leScore := side1_LE_tf4
+            seScore := side1_SE_tf4
+            tfCond  := _side1_tf4_cond
+            tfLabel := side1_raw.tf4_label
+            reqLong := side1_LE_tf4_req
+            reqShort:= side1_SE_tf4_req
+        else if tfIdx == 5
+            leScore := side1_LE_tf5
+            seScore := side1_SE_tf5
+            tfCond  := _side1_tf5_cond
+            tfLabel := side1_raw.tf5_label
+            reqLong := side1_LE_tf5_req
+            reqShort:= side1_SE_tf5_req
+        else if tfIdx == 6
+            leScore := side1_LE_tf6
+            seScore := side1_SE_tf6
+            tfCond  := _side1_tf6_cond
+            tfLabel := side1_raw.tf6_label
+            reqLong := side1_LE_tf6_req
+            reqShort:= side1_SE_tf6_req
+
+        bool leScope = side1_LEC_enable and side1_LEC_func != "None"
+        bool seScope = side1_SEC_enable and side1_SEC_func != "None"
+
+        color cellBg = f_sideTF_color(tfCond, leScope, seScope, leScore, seScore)
+
+        bool isRequired = (reqLong and leScore > 0) or (reqShort and seScore > 0)
+
+        string baseLabel = tfLabel != "" ? tfLabel : "-"
+        string cellText  = isRequired ? baseLabel + " (R)" : baseLabel
+
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow, cellText, _kb_sideTxtCol, cellBg)
+
+    // Clear any unused module cells beyond active TF count
+    for col = 1 + _kb_side_tfCount to _kb_sideCols - 1
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow, "", _kb_sideTxtCol, color.new(color.gray, 100))

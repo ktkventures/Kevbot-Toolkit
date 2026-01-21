@@ -1,0 +1,24 @@
+// KevBot Minimal Top Library — Pine v6
+//@version=6
+library("KevBot_Top_Minimal", overlay = false)
+
+// Exported output record for KevBot Top modules
+export type TopModuleOutput
+    float outA  // Fast MA
+    float outB  // Slow MA
+    float outC  // Difference (fast - slow)
+    float outD  // Cross direction (1 long, -1 short, 0 none)
+
+// Exported helper returning the current TopModuleOutput
+export getTopModule(float pA, float pB, float pC, float pD, float pE, float pF) =>
+    int   fastLen   = int(pA > 0 ? pA : 10)
+    int   slowLen   = int(pB > 0 ? pB : 20)
+    float adjFast   = pC
+    float adjSlow   = pD
+    float scaleDiff = pE != 0 ? pE : 1.0
+    float biasDiff  = pF
+    float maFast    = ta.sma(close, fastLen) + adjFast
+    float maSlow    = ta.sma(close, slowLen) + adjSlow
+    float diff      = (maFast - maSlow) * scaleDiff + biasDiff
+    float crossDir  = ta.cross(maFast, maSlow) ? (maFast > maSlow ? 1 : -1) : 0
+    TopModuleOutput.new(maFast, maSlow, diff, crossDir)

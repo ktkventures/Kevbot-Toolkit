@@ -1,0 +1,74 @@
+//@version=6
+library("KevBot_TF_Placeholder", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// A1 OUTPUT STRUCTURE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export type TFModuleOutput
+    bool   tf1_cond
+    string tf1_label
+    bool   tf2_cond
+    string tf2_label
+    bool   tf3_cond
+    string tf3_label
+    bool   tf4_cond
+    string tf4_label
+    bool   tf5_cond
+    string tf5_label
+    bool   tf6_cond
+    string tf6_label
+
+    // Unified trigger event metadata
+    bool   trigger_event
+    float  trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PLACEHOLDER CONFLUENCE FUNCTION
+// This is the authoritative Option A model:
+//   • One unified condition grid (TF1–TF6)
+//   • One unified trigger event
+//   • 6 parameters A–F supported
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export getTFConfluence(
+     string tf1_res, string tf2_res, string tf3_res,
+     string tf4_res, string tf5_res, string tf6_res,
+     float  paramA,  float paramB,  float paramC,
+     float  paramD,  float paramE,  float paramF) =>
+    // Use all parameters in at least one expression so the compiler
+    // doesn't treat them as unused. Here we roll them into a simple sum
+    // that is only used in the text labels.
+    //
+    // This keeps the placeholder harmless but makes the API fully active.
+    TFModuleOutput.new(
+        // TF1: show sum of all parameters in the label
+        paramA > 1,
+        "TF1-" + tf1_res + " (" + str.tostring(paramA + paramB + paramC + paramD + paramE + paramF) + ")",
+
+        // TF2
+        paramA > 2,
+        "TF2-" + tf2_res,
+
+        // TF3
+        paramA > 3,
+        "TF3-" + tf3_res,
+
+        // TF4
+        paramA > 4,
+        "TF4-" + tf4_res,
+
+        // TF5
+        paramA > 5,
+        "TF5-" + tf5_res,
+
+        // TF6
+        paramA > 6,
+        "TF6-" + tf6_res,
+
+        // Unified trigger event – also use params in label to keep them "alive"
+        paramA > 0,
+        close,
+        "Trig (" + str.tostring(paramA + paramB + paramC + paramD + paramE + paramF) + ")"
+    )

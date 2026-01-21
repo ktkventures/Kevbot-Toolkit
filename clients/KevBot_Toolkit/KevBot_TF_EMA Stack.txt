@@ -1,0 +1,192 @@
+//@version=6
+library("KevBot_TF_EMA_Stack", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE (MUST MATCH KevBot_TF_Placeholder)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    bool   tf1_cond
+    string tf1_label
+    bool   tf2_cond
+    string tf2_label
+    bool   tf3_cond
+    string tf3_label
+    bool   tf4_cond
+    string tf4_label
+    bool   tf5_cond
+    string tf5_label
+    bool   tf6_cond
+    string tf6_label
+
+    // Unified trigger event metadata
+    bool   trigger_event
+    float  trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Convert a user TF string to a valid security resolution.
+// Toolkit supports "Chart" as a TF option.
+_tf_res(string tfRes) =>
+    tfRes == "Chart" ? timeframe.period : tfRes
+
+// Clamp and sanitize EMA lengths coming from float params.
+_len(float p) =>
+    int(math.max(1, math.round(p)))
+
+// Compute EMA ordering label from three EMA values.
+// Returns one of: SML, SLM, MSL, MLS, LSM, LMS
+_orderLabel(float eS, float eM, float eL) =>
+    string lab = "MSL"
+    if eS > eM and eM > eL
+        lab := "SML"
+    else if eS > eL and eL > eM
+        lab := "SLM"
+    else if eM > eS and eS > eL
+        lab := "MSL"
+    else if eM > eL and eL > eS
+        lab := "MLS"
+    else if eL > eS and eS > eM
+        lab := "LSM"
+    else
+        lab := "LMS"
+    lab
+
+// Map paramE (confluence selector) into a target ordering label.
+// paramE meaning:
+//   0=SML, 1=SLM, 2=MSL, 3=MLS, 4=LSM, 5=LMS
+_selOrderLabel(float selE) =>
+    int i = int(math.round(selE))
+    i := math.max(0, math.min(5, i))
+    i == 0 ? "SML" :
+     i == 1 ? "SLM" :
+     i == 2 ? "MSL" :
+     i == 3 ? "MLS" :
+     i == 4 ? "LSM" : "LMS"
+
+// Compute per-TF CLOSE via request.security (expression must NOT depend on exported args).
+// We then compute EMAs locally on the stepped HTF close series.
+// NOTE: This is sufficient for Phase 1 wiring/table validation.
+_getClose(simple string tfRes) =>
+    string r = _tf_res(tfRes)
+    request.security(
+         syminfo.tickerid,
+         r,
+         close,
+         barmerge.gaps_off,
+         barmerge.lookahead_off
+     )
+
+// Determine trigger label from paramD.
+// paramD meaning:
+//   0=None
+//   1=SxM Up   2=SxM Down
+//   3=SxL Up   4=SxL Down
+//   5=MxL Up   6=MxL Down
+_trigLabel(float selD) =>
+    int d = int(math.round(selD))
+    d == 1 ? "S>M x" :
+     d == 2 ? "S<M x" :
+     d == 3 ? "S>L x" :
+     d == 4 ? "S<L x" :
+     d == 5 ? "M>L x" :
+     d == 6 ? "M<L x" : "None"
+
+// Compute trigger event on CHART timeframe only (discrete cross events).
+_trigEvent(float selD, float eS, float eM, float eL) =>
+    int d = int(math.round(selD))
+    bool ev = false
+    if d == 1
+        ev := ta.crossover(eS, eM)
+    else if d == 2
+        ev := ta.crossunder(eS, eM)
+    else if d == 3
+        ev := ta.crossover(eS, eL)
+    else if d == 4
+        ev := ta.crossunder(eS, eL)
+    else if d == 5
+        ev := ta.crossover(eM, eL)
+    else if d == 6
+        ev := ta.crossunder(eM, eL)
+    else
+        ev := false
+    ev
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API (MUST MATCH KevBot_TF_Placeholder signature)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export getTFConfluence(
+     simple string tf1_res, simple string tf2_res, simple string tf3_res,
+     simple string tf4_res, simple string tf5_res, simple string tf6_res,
+     simple float  paramA,  simple float paramB,  simple float paramC,
+     simple float  paramD,  simple float paramE,  simple float paramF) =>
+
+    // Length params (A/B/C) — must be SIMPLE for request.security() EMA lengths
+    simple int lenS = int(math.max(1, math.round(paramA)))
+    simple int lenM = int(math.max(1, math.round(paramB)))
+    simple int lenL = int(math.max(1, math.round(paramC)))
+
+    // Selection params
+    // paramD = trigger selector (cross events)
+    // paramE = confluence selector (which ordering counts as TRUE)
+    // paramF currently unused by logic, but referenced to keep it "alive"
+    string targetOrder = _selOrderLabel(paramE)
+    float _keepAlive = paramF * 0.0
+    // consume paramF to avoid compiler elimination
+    bool _useParamF = _keepAlive == _keepAlive
+
+    // Per-TF stepped HTF closes (expression independent of exported args)
+    float c1_src = _getClose(tf1_res)
+    float c2_src = _getClose(tf2_res)
+    float c3_src = _getClose(tf3_res)
+    float c4_src = _getClose(tf4_res)
+    float c5_src = _getClose(tf5_res)
+    float c6_src = _getClose(tf6_res)
+
+    // EMAs computed on stepped HTF series
+    float eS1 = ta.ema(c1_src, lenS), float eM1 = ta.ema(c1_src, lenM), float eL1 = ta.ema(c1_src, lenL)
+    float eS2 = ta.ema(c2_src, lenS), float eM2 = ta.ema(c2_src, lenM), float eL2 = ta.ema(c2_src, lenL)
+    float eS3 = ta.ema(c3_src, lenS), float eM3 = ta.ema(c3_src, lenM), float eL3 = ta.ema(c3_src, lenL)
+    float eS4 = ta.ema(c4_src, lenS), float eM4 = ta.ema(c4_src, lenM), float eL4 = ta.ema(c4_src, lenL)
+    float eS5 = ta.ema(c5_src, lenS), float eM5 = ta.ema(c5_src, lenM), float eL5 = ta.ema(c5_src, lenL)
+    float eS6 = ta.ema(c6_src, lenS), float eM6 = ta.ema(c6_src, lenM), float eL6 = ta.ema(c6_src, lenL)
+
+    // Labels (state)
+    string lab1 = _orderLabel(eS1, eM1, eL1)
+    string lab2 = _orderLabel(eS2, eM2, eL2)
+    string lab3 = _orderLabel(eS3, eM3, eL3)
+    string lab4 = _orderLabel(eS4, eM4, eL4)
+    string lab5 = _orderLabel(eS5, eM5, eL5)
+    string lab6 = _orderLabel(eS6, eM6, eL6)
+
+    // Conditions (selected confluence rule)
+    bool c1 = lab1 == targetOrder
+    bool c2 = lab2 == targetOrder
+    bool c3 = lab3 == targetOrder
+    bool c4 = lab4 == targetOrder
+    bool c5 = lab5 == targetOrder
+    bool c6 = lab6 == targetOrder
+
+    // Trigger on chart timeframe (event)
+    float eS = ta.ema(close, lenS)
+    float eM = ta.ema(close, lenM)
+    float eL = ta.ema(close, lenL)
+
+    bool trigEv = _trigEvent(paramD, eS, eM, eL)
+    string trigLab = _trigLabel(paramD) + " " + targetOrder + (paramF == paramF ? "" : "")
+    float trigPx = trigEv ? close : na
+
+    TFModuleOutput.new(
+        c1, lab1,
+        c2, lab2,
+        c3, lab3,
+        c4, lab4,
+        c5, lab5,
+        c6, lab6,
+        trigEv,
+        trigPx,
+        trigLab
+    )
