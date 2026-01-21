@@ -457,8 +457,8 @@ bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = 
 // Import KevBot libraries (Top + TF Placeholder)
 // IMPORTANT: These imports must match your actual published library names.
 import yamigushi/KevBot_Top_Minimal/1               as top1Lib
-import yamigushi/KevBot_TF_Placeholder/4            as side1Lib
-import yamigushi/KevBot_TF_EMA_Stack/1              as tfEMAStack
+import yamigushi/KevBot_TF_Placeholder/5            as side1Lib
+import yamigushi/KevBot_TF_EMA_Stack/2              as tfEMAStack
 
 
 // Convenience activation flag for Side Module 1
