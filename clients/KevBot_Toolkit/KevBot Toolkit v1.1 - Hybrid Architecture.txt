@@ -1,14 +1,22 @@
-// KevBot Toolkit v1.0 Input Skeleton Placeholder
-// This canvas file will hold the full PineScript input skeleton and placeholder library notes.
+// KevBot Toolkit v1.1 – Hybrid Architecture
+// Implements the hybrid approach for Side Modules where:
+//   • Toolkit owns all request.security() calls and input.*() declarations
+//   • Libraries provide builder functions to process pre-fetched data
+//   • This allows paramA-F to be fully optimizable by third-party tools
+//
+// CHANGES FROM v1.0:
+//   • EMA Stack now uses hybrid pattern (toolkit fetches, library processes)
+//   • For EMA Stack: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
+//   • Removed dependency on library-level inputs for EMA Stack
+//
+// See KevBot_Architecture_Notes.md for detailed explanation of this approach.
 
 //──────────────────────────────────────────────────────────────────────────────
-// KevBot Toolkit v1.0 – INPUT SKELETON (Single‑Line Safe, No Logic Yet)
+// KevBot Toolkit v1.1 – HYBRID ARCHITECTURE
 //──────────────────────────────────────────────────────────────────────────────
-// NOTE: This file only contains inputs + structure. No engines, no tables, no logic.
-// Placeholder Library APIs included at bottom for reference.
 
 //@version=6
-indicator("KevBot Toolkit v1.0 – Input Skeleton", overlay = true)
+indicator("KevBot Toolkit v1.1 – Hybrid Architecture", overlay = true)
 plot(na, title="placeholder", display=display.none)
 
 import yamigushi/KevBot_TimeUtils/1 as tu
@@ -406,7 +414,148 @@ bool side1_SX_tf5_inv = input.bool(false, "Inv Label", inline="sx_tf5", group = 
 int  side1_SX_tf6     = input.int(0, "TF 6 TH Score", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
 bool side1_SX_tf6_req = input.bool(false, "Required", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
 bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = GRP_SIDE1_SX_TF)
- //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7. SIDE MODULE 2 (Timeframe-Based)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string GRP_SIDE2 = "7. Side Module 2"
+bool   side2_enabled = input.bool(false, "Enable Side Module 2", group = GRP_SIDE2)
+string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE2)
+
+//────────────────────────────────────────────────────────────
+// For EMA Stack: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
+//────────────────────────────────────────────────────────────
+string side2_name    = input.string("", "Custom Name", group = GRP_SIDE2)
+
+float side2_paramA = input.float(0.0, "Parameter A", group = GRP_SIDE2)
+float side2_paramB = input.float(0.0, "Parameter B", group = GRP_SIDE2)
+float side2_paramC = input.float(0.0, "Parameter C", group = GRP_SIDE2)
+float side2_paramD = input.float(0.0, "Parameter D", group = GRP_SIDE2)
+float side2_paramE = input.float(0.0, "Parameter E", group = GRP_SIDE2)
+float side2_paramF = input.float(0.0, "Parameter F", group = GRP_SIDE2)
+
+// Long Entry
+string GRP_SIDE2_LE = "7.1 Side Module 2 – Long Entry"
+bool   side2_LE_enable = input.bool(false, "Long Entry Trigger", group = GRP_SIDE2_LE, inline="le1")
+string side2_LE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE2_LE, inline="le1")
+string side2_LE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group = GRP_SIDE2_LE, inline = "le2")
+bool   side2_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE2_LE, inline = "le2")
+
+// TF Scores for Long Entry
+string GRP_SIDE2_LE_TF = "7.1.1 Long Entry – Confluences by Timeframe"
+bool   side2_LEC_enable = input.bool(false, "Long Entry Confluence", group = GRP_SIDE2_LE_TF, inline="lec1")
+string side2_LEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE2_LE_TF, inline="lec1")
+bool   side2_LEC_bull   = input.bool(false, "Bullish Label", group = GRP_SIDE2_LE_TF, inline="lec1")
+int  side2_LE_tf1     = input.int(0, "TF 1 TH Score", inline="s2le_tf1", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf1_req = input.bool(false, "Required", inline="s2le_tf1", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf1_inv = input.bool(false, "Inv Label", inline="s2le_tf1", group = GRP_SIDE2_LE_TF)
+int  side2_LE_tf2     = input.int(0, "TF 2 TH Score", inline="s2le_tf2", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf2_req = input.bool(false, "Required", inline="s2le_tf2", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf2_inv = input.bool(false, "Inv Label", inline="s2le_tf2", group = GRP_SIDE2_LE_TF)
+int  side2_LE_tf3     = input.int(0, "TF 3 TH Score", inline="s2le_tf3", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf3_req = input.bool(false, "Required", inline="s2le_tf3", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf3_inv = input.bool(false, "Inv Label", inline="s2le_tf3", group = GRP_SIDE2_LE_TF)
+int  side2_LE_tf4     = input.int(0, "TF 4 TH Score", inline="s2le_tf4", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf4_req = input.bool(false, "Required", inline="s2le_tf4", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf4_inv = input.bool(false, "Inv Label", inline="s2le_tf4", group = GRP_SIDE2_LE_TF)
+int  side2_LE_tf5     = input.int(0, "TF 5 TH Score", inline="s2le_tf5", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf5_req = input.bool(false, "Required", inline="s2le_tf5", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf5_inv = input.bool(false, "Inv Label", inline="s2le_tf5", group = GRP_SIDE2_LE_TF)
+int  side2_LE_tf6     = input.int(0, "TF 6 TH Score", inline="s2le_tf6", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf6_req = input.bool(false, "Required", inline="s2le_tf6", group = GRP_SIDE2_LE_TF)
+bool side2_LE_tf6_inv = input.bool(false, "Inv Label", inline="s2le_tf6", group = GRP_SIDE2_LE_TF)
+
+// Long Exit
+string GRP_SIDE2_LX = "7.2 Side Module 2 – Long Exit"
+bool   side2_LX_enable = input.bool(false, "Long Exit Trigger", group = GRP_SIDE2_LX, inline="lx1")
+string side2_LX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE2_LX, inline="lx1")
+string side2_LX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group = GRP_SIDE2_LX, inline = "lx2")
+bool   side2_LX_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE2_LX, inline = "lx2")
+
+string GRP_SIDE2_LX_TF = "7.2.1 Long Exit – Confluences by Timeframe"
+bool   side2_LXC_enable = input.bool(false, "Long Exit Confluence", group = GRP_SIDE2_LX_TF, inline="lxc1")
+string side2_LXC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE2_LX_TF, inline="lxc1")
+bool   side2_LXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE2_LX_TF, inline="lxc1")
+int  side2_LX_tf1     = input.int(0, "TF 1 TH Score", inline="s2lx_tf1", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf1_req = input.bool(false, "Required", inline="s2lx_tf1", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf1_inv = input.bool(false, "Inv Label", inline="s2lx_tf1", group = GRP_SIDE2_LX_TF)
+int  side2_LX_tf2     = input.int(0, "TF 2 TH Score", inline="s2lx_tf2", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf2_req = input.bool(false, "Required", inline="s2lx_tf2", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf2_inv = input.bool(false, "Inv Label", inline="s2lx_tf2", group = GRP_SIDE2_LX_TF)
+int  side2_LX_tf3     = input.int(0, "TF 3 TH Score", inline="s2lx_tf3", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf3_req = input.bool(false, "Required", inline="s2lx_tf3", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf3_inv = input.bool(false, "Inv Label", inline="s2lx_tf3", group = GRP_SIDE2_LX_TF)
+int  side2_LX_tf4     = input.int(0, "TF 4 TH Score", inline="s2lx_tf4", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf4_req = input.bool(false, "Required", inline="s2lx_tf4", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf4_inv = input.bool(false, "Inv Label", inline="s2lx_tf4", group = GRP_SIDE2_LX_TF)
+int  side2_LX_tf5     = input.int(0, "TF 5 TH Score", inline="s2lx_tf5", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf5_req = input.bool(false, "Required", inline="s2lx_tf5", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf5_inv = input.bool(false, "Inv Label", inline="s2lx_tf5", group = GRP_SIDE2_LX_TF)
+int  side2_LX_tf6     = input.int(0, "TF 6 TH Score", inline="s2lx_tf6", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf6_req = input.bool(false, "Required", inline="s2lx_tf6", group = GRP_SIDE2_LX_TF)
+bool side2_LX_tf6_inv = input.bool(false, "Inv Label", inline="s2lx_tf6", group = GRP_SIDE2_LX_TF)
+
+// Short Entry
+string GRP_SIDE2_SE = "7.3 Side Module 2 – Short Entry"
+bool   side2_SE_enable = input.bool(false, "Short Entry Trigger", group = GRP_SIDE2_SE, inline="se1")
+string side2_SE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE2_SE, inline="se1")
+string side2_SE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group = GRP_SIDE2_SE, inline = "se2")
+bool   side2_SE_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE2_SE, inline = "se2")
+
+string GRP_SIDE2_SE_TF = "7.3.1 Short Entry – Confluences by Timeframe"
+bool   side2_SEC_enable = input.bool(false, "Short Entry Confluence", group = GRP_SIDE2_SE_TF, inline="sec1")
+string side2_SEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE2_SE_TF, inline="sec1")
+bool   side2_SEC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE2_SE_TF, inline="sec1")
+int  side2_SE_tf1     = input.int(0, "TF 1 TH Score", inline="s2se_tf1", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf1_req = input.bool(false, "Required", inline="s2se_tf1", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf1_inv = input.bool(false, "Inv Label", inline="s2se_tf1", group = GRP_SIDE2_SE_TF)
+int  side2_SE_tf2     = input.int(0, "TF 2 TH Score", inline="s2se_tf2", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf2_req = input.bool(false, "Required", inline="s2se_tf2", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf2_inv = input.bool(false, "Inv Label", inline="s2se_tf2", group = GRP_SIDE2_SE_TF)
+int  side2_SE_tf3     = input.int(0, "TF 3 TH Score", inline="s2se_tf3", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf3_req = input.bool(false, "Required", inline="s2se_tf3", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf3_inv = input.bool(false, "Inv Label", inline="s2se_tf3", group = GRP_SIDE2_SE_TF)
+int  side2_SE_tf4     = input.int(0, "TF 4 TH Score", inline="s2se_tf4", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf4_req = input.bool(false, "Required", inline="s2se_tf4", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf4_inv = input.bool(false, "Inv Label", inline="s2se_tf4", group = GRP_SIDE2_SE_TF)
+int  side2_SE_tf5     = input.int(0, "TF 5 TH Score", inline="s2se_tf5", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf5_req = input.bool(false, "Required", inline="s2se_tf5", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf5_inv = input.bool(false, "Inv Label", inline="s2se_tf5", group = GRP_SIDE2_SE_TF)
+int  side2_SE_tf6     = input.int(0, "TF 6 TH Score", inline="s2se_tf6", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf6_req = input.bool(false, "Required", inline="s2se_tf6", group = GRP_SIDE2_SE_TF)
+bool side2_SE_tf6_inv = input.bool(false, "Inv Label", inline="s2se_tf6", group = GRP_SIDE2_SE_TF)
+
+// Short Exit
+string GRP_SIDE2_SX = "7.4 Side Module 2 – Short Exit"
+bool   side2_SX_enable = input.bool(false, "Short Exit Trigger", group = GRP_SIDE2_SX, inline="sx1")
+string side2_SX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE2_SX, inline="sx1")
+string side2_SX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group = GRP_SIDE2_SX, inline = "sx2")
+bool   side2_SX_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE2_SX, inline = "sx2")
+
+string GRP_SIDE2_SX_TF = "7.4.1 Short Exit – Confluences by Timeframe"
+bool   side2_SXC_enable = input.bool(false, "Short Exit Confluence", group = GRP_SIDE2_SX_TF, inline="sxc1")
+string side2_SXC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE2_SX_TF, inline="sxc1")
+bool   side2_SXC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE2_SX_TF, inline="sxc1")
+int  side2_SX_tf1     = input.int(0, "TF 1 TH Score", inline="s2sx_tf1", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf1_req = input.bool(false, "Required", inline="s2sx_tf1", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf1_inv = input.bool(false, "Inv Label", inline="s2sx_tf1", group = GRP_SIDE2_SX_TF)
+int  side2_SX_tf2     = input.int(0, "TF 2 TH Score", inline="s2sx_tf2", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf2_req = input.bool(false, "Required", inline="s2sx_tf2", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf2_inv = input.bool(false, "Inv Label", inline="s2sx_tf2", group = GRP_SIDE2_SX_TF)
+int  side2_SX_tf3     = input.int(0, "TF 3 TH Score", inline="s2sx_tf3", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf3_req = input.bool(false, "Required", inline="s2sx_tf3", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf3_inv = input.bool(false, "Inv Label", inline="s2sx_tf3", group = GRP_SIDE2_SX_TF)
+int  side2_SX_tf4     = input.int(0, "TF 4 TH Score", inline="s2sx_tf4", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf4_req = input.bool(false, "Required", inline="s2sx_tf4", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf4_inv = input.bool(false, "Inv Label", inline="s2sx_tf4", group = GRP_SIDE2_SX_TF)
+int  side2_SX_tf5     = input.int(0, "TF 5 TH Score", inline="s2sx_tf5", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf5_req = input.bool(false, "Required", inline="s2sx_tf5", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf5_inv = input.bool(false, "Inv Label", inline="s2sx_tf5", group = GRP_SIDE2_SX_TF)
+int  side2_SX_tf6     = input.int(0, "TF 6 TH Score", inline="s2sx_tf6", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf6_req = input.bool(false, "Required", inline="s2sx_tf6", group = GRP_SIDE2_SX_TF)
+bool side2_SX_tf6_inv = input.bool(false, "Inv Label", inline="s2sx_tf6", group = GRP_SIDE2_SX_TF)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //
 // LIB 1: Placeholder Timeframe Library (Side Module style)
 // -----------------------------------------------
@@ -458,14 +607,15 @@ bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = 
 // IMPORTANT: These imports must match your actual published library names.
 import yamigushi/KevBot_Top_Minimal/1               as top1Lib
 import yamigushi/KevBot_TF_Placeholder/5            as side1Lib
-import yamigushi/KevBot_TF_EMA_Stack/2              as tfEMAStack
+import yamigushi/KevBot_TF_EMA_Stack/7              as tfEMAStack  // v6 uses buildOutput() hybrid approach
 
 
-// Convenience activation flag for Side Module 1
+// Convenience activation flags for Side Modules
 bool _side1_moduleActive = side1_enabled and side1_library != "None"
+bool _side2_moduleActive = side2_enabled and side2_library != "None"
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 7.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
+// 8.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //
 // Phase 2B introduces a Toolkit-internal, normalized output shape that supports:
@@ -644,28 +794,25 @@ if not (top1_enabled and top1_library != "None")
 
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 7.2 TF MODULE LOADER (SIDE MODULE 1 PROTOTYPE)
+// 7.2 TF MODULE LOADER (SIDE MODULE 1) – HYBRID ARCHITECTURE
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //
-// Expected TF library API (V2 with 10 conditions A-J and 10 triggers A-J):
+// HYBRID ARCHITECTURE:
+//   • Toolkit owns all request.security() calls and input parameters
+//   • Libraries provide builder functions to process pre-fetched data
+//   • This allows paramA-F to be fully optimizable by third-party tools
 //
-// export type TFModuleOutput => record(
-//       string tf1_label, tf2_label, tf3_label, tf4_label, tf5_label, tf6_label,
-//       bool   condA_tf1..condA_tf6, condB_tf1..condB_tf6, ... condJ_tf1..condJ_tf6,
-//       bool   trigA, trigB, trigC, trigD, trigE, trigF, trigG, trigH, trigI, trigJ,
-//       float  trigger_price,
-//       string trigger_label
-// )
-//
-// export TFModuleOutput getTFConfluence(
-//       string tf1_res, string tf2_res, string tf3_res,
-//       string tf4_res, string tf5_res, string tf6_res,
-//       float  paramA,  float paramB,  float paramC,
-//       float  paramD,  float paramE,  float paramF
-// )
+// For EMA Stack:
+//   paramA = Short EMA Length (default: 10)
+//   paramB = Medium EMA Length (default: 20)
+//   paramC = Long EMA Length (default: 50)
+//   paramD-F = (reserved)
 //
 // Toolkit normalizes library output to KB_TF_Out_V2 for uniform downstream use.
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Helper to resolve timeframe string for request.security
+_tf_res(string tfRes) => tfRes == "Chart" or tfRes == "" ? timeframe.period : tfRes
 
 // Raw TF-Module-1 output record
 // NOTE: TFModuleOutput types are library-scoped. We normalize all branches
@@ -677,46 +824,95 @@ var side1Lib.TFModuleOutput side1_raw = side1Lib.getTFConfluence(
     side1_paramE, side1_paramF
 )
 
+//──────────────────────────────────────────────────────────────────────────────
+// EMA STACK HYBRID IMPLEMENTATION
+// Toolkit fetches HTF data, library processes it
+//──────────────────────────────────────────────────────────────────────────────
 if side1_library == "EMA Stack (S/M/L)"
-    tfEMAStack.TFModuleOutput _emaOut = tfEMAStack.getTFConfluence(
-        tf1, tf2, tf3, tf4, tf5, tf6,
-        side1_paramA, side1_paramB,
-        side1_paramC, side1_paramD,
-        side1_paramE, side1_paramF
+    // Convert params to integer EMA lengths (with sensible defaults)
+    int _ema_short  = side1_paramA > 0 ? int(side1_paramA) : 10
+    int _ema_medium = side1_paramB > 0 ? int(side1_paramB) : 20
+    int _ema_long   = side1_paramC > 0 ? int(side1_paramC) : 50
+
+    // Fetch HTF EMAs for each of the 6 timeframes
+    // NOTE: These request.security calls use toolkit params (fully optimizable!)
+    [_eS1, _eM1, _eL1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_eS2, _eM2, _eL2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_eS3, _eM3, _eL3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_eS4, _eM4, _eL4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_eS5, _eM5, _eL5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_eS6, _eM6, _eL6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart timeframe EMAs (for trigger detection)
+    float _eS_chart = ta.ema(close, _ema_short)
+    float _eM_chart = ta.ema(close, _ema_medium)
+    float _eL_chart = ta.ema(close, _ema_long)
+
+    // Previous bar values (for crossover detection)
+    float _eS_prev = _eS_chart[1]
+    float _eM_prev = _eM_chart[1]
+    float _eL_prev = _eL_chart[1]
+
+    // Call library's builder function with the fetched data
+    tfEMAStack.TFModuleOutput _emaOut = tfEMAStack.buildOutput(
+        _eS1, _eM1, _eL1,
+        _eS2, _eM2, _eL2,
+        _eS3, _eM3, _eL3,
+        _eS4, _eM4, _eL4,
+        _eS5, _eM5, _eL5,
+        _eS6, _eM6, _eL6,
+        _eS_chart, _eM_chart, _eL_chart,
+        _eS_prev, _eM_prev, _eL_prev,
+        close
     )
-    // Cast EMA output → placeholder output type (new V2 structure with 10 conditions/triggers)
+
+    // Cast EMA output → placeholder output type (V2 structure with 10 conditions/triggers)
     side1_raw := side1Lib.TFModuleOutput.new(
         // Labels
         _emaOut.tf1_label, _emaOut.tf2_label, _emaOut.tf3_label,
         _emaOut.tf4_label, _emaOut.tf5_label, _emaOut.tf6_label,
-        // Cond A
+        // Cond A (SML - Bull Stack)
         _emaOut.condA_tf1, _emaOut.condA_tf2, _emaOut.condA_tf3,
         _emaOut.condA_tf4, _emaOut.condA_tf5, _emaOut.condA_tf6,
-        // Cond B
+        // Cond B (LMS - Bear Stack)
         _emaOut.condB_tf1, _emaOut.condB_tf2, _emaOut.condB_tf3,
         _emaOut.condB_tf4, _emaOut.condB_tf5, _emaOut.condB_tf6,
-        // Cond C
+        // Cond C (SLM)
         _emaOut.condC_tf1, _emaOut.condC_tf2, _emaOut.condC_tf3,
         _emaOut.condC_tf4, _emaOut.condC_tf5, _emaOut.condC_tf6,
-        // Cond D
+        // Cond D (MSL)
         _emaOut.condD_tf1, _emaOut.condD_tf2, _emaOut.condD_tf3,
         _emaOut.condD_tf4, _emaOut.condD_tf5, _emaOut.condD_tf6,
-        // Cond E
+        // Cond E (MLS)
         _emaOut.condE_tf1, _emaOut.condE_tf2, _emaOut.condE_tf3,
         _emaOut.condE_tf4, _emaOut.condE_tf5, _emaOut.condE_tf6,
-        // Cond F
+        // Cond F (LSM)
         _emaOut.condF_tf1, _emaOut.condF_tf2, _emaOut.condF_tf3,
         _emaOut.condF_tf4, _emaOut.condF_tf5, _emaOut.condF_tf6,
-        // Cond G
+        // Cond G-J (reserved)
         _emaOut.condG_tf1, _emaOut.condG_tf2, _emaOut.condG_tf3,
         _emaOut.condG_tf4, _emaOut.condG_tf5, _emaOut.condG_tf6,
-        // Cond H
         _emaOut.condH_tf1, _emaOut.condH_tf2, _emaOut.condH_tf3,
         _emaOut.condH_tf4, _emaOut.condH_tf5, _emaOut.condH_tf6,
-        // Cond I
         _emaOut.condI_tf1, _emaOut.condI_tf2, _emaOut.condI_tf3,
         _emaOut.condI_tf4, _emaOut.condI_tf5, _emaOut.condI_tf6,
-        // Cond J
         _emaOut.condJ_tf1, _emaOut.condJ_tf2, _emaOut.condJ_tf3,
         _emaOut.condJ_tf4, _emaOut.condJ_tf5, _emaOut.condJ_tf6,
         // Triggers A-J
@@ -726,7 +922,7 @@ if side1_library == "EMA Stack (S/M/L)"
         _emaOut.trigger_price, _emaOut.trigger_label
     )
 else
-    // Default: Placeholder
+    // Default: Placeholder library (legacy approach)
     side1_raw := side1Lib.getTFConfluence(
         tf1, tf2, tf3, tf4, tf5, tf6,
         side1_paramA, side1_paramB,
@@ -739,9 +935,125 @@ else
 KB_TF_Out_V2 side1_v2 = _kb_mapLibToV2(side1_raw)
 
 
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8.3 SIDE MODULE 2 LOADER – HYBRID ARCHITECTURE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// For EMA Stack:
+//   paramA = Short EMA Length (default: 10)
+//   paramB = Medium EMA Length (default: 20)
+//   paramC = Long EMA Length (default: 50)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Raw TF-Module-2 output record
+var side1Lib.TFModuleOutput side2_raw = side1Lib.getTFConfluence(
+    tf1, tf2, tf3, tf4, tf5, tf6,
+    side2_paramA, side2_paramB,
+    side2_paramC, side2_paramD,
+    side2_paramE, side2_paramF
+)
+
+//──────────────────────────────────────────────────────────────────────────────
+// EMA STACK HYBRID IMPLEMENTATION (SIDE MODULE 2)
+//──────────────────────────────────────────────────────────────────────────────
+if side2_library == "EMA Stack (S/M/L)"
+    // Convert params to integer EMA lengths (with sensible defaults)
+    int _s2_ema_short  = side2_paramA > 0 ? int(side2_paramA) : 10
+    int _s2_ema_medium = side2_paramB > 0 ? int(side2_paramB) : 20
+    int _s2_ema_long   = side2_paramC > 0 ? int(side2_paramC) : 50
+
+    // Fetch HTF EMAs for each of the 6 timeframes
+    // NOTE: Uses side2 params - can be different from side1!
+    [_s2_eS1, _s2_eM1, _s2_eL1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_eS2, _s2_eM2, _s2_eL2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_eS3, _s2_eM3, _s2_eL3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_eS4, _s2_eM4, _s2_eL4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_eS5, _s2_eM5, _s2_eL5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_eS6, _s2_eM6, _s2_eL6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _s2_ema_short), ta.ema(close, _s2_ema_medium), ta.ema(close, _s2_ema_long)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart timeframe EMAs (for trigger detection)
+    float _s2_eS_chart = ta.ema(close, _s2_ema_short)
+    float _s2_eM_chart = ta.ema(close, _s2_ema_medium)
+    float _s2_eL_chart = ta.ema(close, _s2_ema_long)
+
+    // Previous bar values (for crossover detection)
+    float _s2_eS_prev = _s2_eS_chart[1]
+    float _s2_eM_prev = _s2_eM_chart[1]
+    float _s2_eL_prev = _s2_eL_chart[1]
+
+    // Call library's builder function with the fetched data
+    tfEMAStack.TFModuleOutput _s2_emaOut = tfEMAStack.buildOutput(
+        _s2_eS1, _s2_eM1, _s2_eL1,
+        _s2_eS2, _s2_eM2, _s2_eL2,
+        _s2_eS3, _s2_eM3, _s2_eL3,
+        _s2_eS4, _s2_eM4, _s2_eL4,
+        _s2_eS5, _s2_eM5, _s2_eL5,
+        _s2_eS6, _s2_eM6, _s2_eL6,
+        _s2_eS_chart, _s2_eM_chart, _s2_eL_chart,
+        _s2_eS_prev, _s2_eM_prev, _s2_eL_prev,
+        close
+    )
+
+    // Cast EMA output → placeholder output type
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_emaOut.tf1_label, _s2_emaOut.tf2_label, _s2_emaOut.tf3_label,
+        _s2_emaOut.tf4_label, _s2_emaOut.tf5_label, _s2_emaOut.tf6_label,
+        _s2_emaOut.condA_tf1, _s2_emaOut.condA_tf2, _s2_emaOut.condA_tf3,
+        _s2_emaOut.condA_tf4, _s2_emaOut.condA_tf5, _s2_emaOut.condA_tf6,
+        _s2_emaOut.condB_tf1, _s2_emaOut.condB_tf2, _s2_emaOut.condB_tf3,
+        _s2_emaOut.condB_tf4, _s2_emaOut.condB_tf5, _s2_emaOut.condB_tf6,
+        _s2_emaOut.condC_tf1, _s2_emaOut.condC_tf2, _s2_emaOut.condC_tf3,
+        _s2_emaOut.condC_tf4, _s2_emaOut.condC_tf5, _s2_emaOut.condC_tf6,
+        _s2_emaOut.condD_tf1, _s2_emaOut.condD_tf2, _s2_emaOut.condD_tf3,
+        _s2_emaOut.condD_tf4, _s2_emaOut.condD_tf5, _s2_emaOut.condD_tf6,
+        _s2_emaOut.condE_tf1, _s2_emaOut.condE_tf2, _s2_emaOut.condE_tf3,
+        _s2_emaOut.condE_tf4, _s2_emaOut.condE_tf5, _s2_emaOut.condE_tf6,
+        _s2_emaOut.condF_tf1, _s2_emaOut.condF_tf2, _s2_emaOut.condF_tf3,
+        _s2_emaOut.condF_tf4, _s2_emaOut.condF_tf5, _s2_emaOut.condF_tf6,
+        _s2_emaOut.condG_tf1, _s2_emaOut.condG_tf2, _s2_emaOut.condG_tf3,
+        _s2_emaOut.condG_tf4, _s2_emaOut.condG_tf5, _s2_emaOut.condG_tf6,
+        _s2_emaOut.condH_tf1, _s2_emaOut.condH_tf2, _s2_emaOut.condH_tf3,
+        _s2_emaOut.condH_tf4, _s2_emaOut.condH_tf5, _s2_emaOut.condH_tf6,
+        _s2_emaOut.condI_tf1, _s2_emaOut.condI_tf2, _s2_emaOut.condI_tf3,
+        _s2_emaOut.condI_tf4, _s2_emaOut.condI_tf5, _s2_emaOut.condI_tf6,
+        _s2_emaOut.condJ_tf1, _s2_emaOut.condJ_tf2, _s2_emaOut.condJ_tf3,
+        _s2_emaOut.condJ_tf4, _s2_emaOut.condJ_tf5, _s2_emaOut.condJ_tf6,
+        _s2_emaOut.trigA, _s2_emaOut.trigB, _s2_emaOut.trigC, _s2_emaOut.trigD, _s2_emaOut.trigE,
+        _s2_emaOut.trigF, _s2_emaOut.trigG, _s2_emaOut.trigH, _s2_emaOut.trigI, _s2_emaOut.trigJ,
+        _s2_emaOut.trigger_price, _s2_emaOut.trigger_label
+    )
+else
+    // Default: Placeholder library
+    side2_raw := side1Lib.getTFConfluence(
+        tf1, tf2, tf3, tf4, tf5, tf6,
+        side2_paramA, side2_paramB,
+        side2_paramC, side2_paramD,
+        side2_paramE, side2_paramF
+    )
+
+// Phase 2B normalized output for Side Module 2
+KB_TF_Out_V2 side2_v2 = _kb_mapLibToV2(side2_raw)
+
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 7.3 OUTPUT BRIDGE FOR DOWNSTREAM BLOCKS
+// 8.4 OUTPUT BRIDGE FOR DOWNSTREAM BLOCKS
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //
 // These stable variables are consumed by:
@@ -779,7 +1091,16 @@ string _side1_tf4_label = side1_v2.tf4_label
 string _side1_tf5_label = side1_v2.tf5_label
 string _side1_tf6_label = side1_v2.tf6_label
 
+// Side Module 2 output bridge variables
+float  _side2_triggerPrice = _side2_moduleActive ? side2_v2.trigger_price : na
+string _side2_triggerLabel = _side2_moduleActive ? side2_v2.trigger_label : ""
 
+string _side2_tf1_label = side2_v2.tf1_label
+string _side2_tf2_label = side2_v2.tf2_label
+string _side2_tf3_label = side2_v2.tf3_label
+string _side2_tf4_label = side2_v2.tf4_label
+string _side2_tf5_label = side2_v2.tf5_label
+string _side2_tf6_label = side2_v2.tf6_label
 
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -836,6 +1157,48 @@ bool markLongEntry  = _side1_LE_trigger and _LE_rawEnabled
 bool markLongExit   = _side1_LX_trigger and _LX_rawEnabled
 bool markShortEntry = _side1_SE_trigger and _SE_rawEnabled
 bool markShortExit  = _side1_SX_trigger and _SX_rawEnabled
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8.5 RAW TRIGGER ROUTING (Side Module 2)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Resolve selected trigger indices for each directional group
+int side2_LE_trig_index = _kb_mapTriggerSource(side2_LE_source)
+int side2_LX_trig_index = _kb_mapTriggerSource(side2_LX_source)
+int side2_SE_trig_index = _kb_mapTriggerSource(side2_SE_source)
+int side2_SX_trig_index = _kb_mapTriggerSource(side2_SX_source)
+
+// Get the selected trigger for each directional group from V2 output
+bool _side2_LE_trigger = _side2_moduleActive and _kb_getTrigger(side2_v2, side2_LE_trig_index)
+bool _side2_LX_trigger = _side2_moduleActive and _kb_getTrigger(side2_v2, side2_LX_trig_index)
+bool _side2_SE_trigger = _side2_moduleActive and _kb_getTrigger(side2_v2, side2_SE_trig_index)
+bool _side2_SX_trigger = _side2_moduleActive and _kb_getTrigger(side2_v2, side2_SX_trig_index)
+
+// Determine, per directional group, whether raw marks and/or position signals are enabled
+bool _s2_LE_posEnabled = side2_LE_enable and side2_LE_trig_index >= 0 and _kb_sigPosEnabled(side2_LE_sigType)
+bool _s2_LE_rawEnabled = side2_LE_enable and side2_LE_trig_index >= 0 and _kb_sigRawEnabled(side2_LE_sigType)
+
+bool _s2_LX_posEnabled = side2_LX_enable and side2_LX_trig_index >= 0 and _kb_sigPosEnabled(side2_LX_sigType)
+bool _s2_LX_rawEnabled = side2_LX_enable and side2_LX_trig_index >= 0 and _kb_sigRawEnabled(side2_LX_sigType)
+
+bool _s2_SE_posEnabled = side2_SE_enable and side2_SE_trig_index >= 0 and _kb_sigPosEnabled(side2_SE_sigType)
+bool _s2_SE_rawEnabled = side2_SE_enable and side2_SE_trig_index >= 0 and _kb_sigRawEnabled(side2_SE_sigType)
+
+bool _s2_SX_posEnabled = side2_SX_enable and side2_SX_trig_index >= 0 and _kb_sigPosEnabled(side2_SX_sigType)
+bool _s2_SX_rawEnabled = side2_SX_enable and side2_SX_trig_index >= 0 and _kb_sigRawEnabled(side2_SX_sigType)
+
+// Position-level triggers from Side Module 2 (combined with Side Module 1)
+// OR logic: if either module triggers, the combined trigger fires
+rawLongEntry  := rawLongEntry  or (_side2_LE_trigger and _s2_LE_posEnabled)
+rawLongExit   := rawLongExit   or (_side2_LX_trigger and _s2_LX_posEnabled)
+rawShortEntry := rawShortEntry or (_side2_SE_trigger and _s2_SE_posEnabled)
+rawShortExit  := rawShortExit  or (_side2_SX_trigger and _s2_SX_posEnabled)
+
+// Raw visual marks from Side Module 2 (combined)
+markLongEntry  := markLongEntry  or (_side2_LE_trigger and _s2_LE_rawEnabled)
+markLongExit   := markLongExit   or (_side2_LX_trigger and _s2_LX_rawEnabled)
+markShortEntry := markShortEntry or (_side2_SE_trigger and _s2_SE_rawEnabled)
+markShortExit  := markShortExit  or (_side2_SX_trigger and _s2_SX_rawEnabled)
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 9. CONFLUENCE ENGINE
@@ -1874,12 +2237,12 @@ if enableSideTable and not na(_kb_sideTable) and _kb_sideCols != _kb_colCount
     _kb_sideTable := na
     _kb_sideCols  := 0
 
-// Create table if needed
+// Create table if needed (3 rows: 1 header + 2 module rows)
 if enableSideTable and na(_kb_sideTable)
     _kb_sideTable := table.new(
         f_sideTable_pos(sideTable_position),
         _kb_colCount,
-        2,
+        3,
         frame_width = 1,
         bgcolor     = color.new(color.gray, 80)
     )
@@ -2005,3 +2368,101 @@ else if enableSideTable
     // Clear any unused module cells beyond active TF count
     for col = 1 + _kb_side_tfCount to _kb_sideCols - 1
         f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow, "", _kb_sideTxtCol, color.new(color.gray, 100))
+
+// 13.7 Side Module 2 Row ------------------------------------------------------
+
+int _kb_moduleRow2 = 2
+
+if enableSideTable and (not side2_enabled or side2_library == "None" or _kb_side_tfCount == 0)
+    // Clear module row entirely
+    for col = 0 to _kb_sideCols - 1
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow2, "", _kb_sideTxtCol, color.new(color.gray, 100))
+else if enableSideTable
+    // Module label (leftmost column)
+    string module2Label = side2_name != "" ? side2_name : "Side Module 2"
+    f_sideTable_cell(_kb_sideTable, 0, _kb_moduleRow2, module2Label, _kb_sideTxtCol, _kb_sideLabelBg)
+
+    // Get condition indices for Long Entry and Short Entry (for display)
+    int _s2LE_condIdx = _kb_mapCondSource(side2_LEC_func)
+    int _s2SE_condIdx = _kb_mapCondSource(side2_SEC_func)
+
+    // Per-TF cells
+    for i = 0 to _kb_side_tfCount - 1
+        int tfIdx = array.get(_kb_side_tfIndex, i)
+        int col   = 1 + i
+
+        int  leScore   = 0
+        int  seScore   = 0
+        bool tfCondLE  = false
+        bool tfCondSE  = false
+        string tfLabel = ""
+        bool reqLong   = false
+        bool reqShort  = false
+
+        // Extract TF-specific metadata from V2 structure
+        if tfIdx == 1
+            leScore  := side2_LE_tf1
+            seScore  := side2_SE_tf1
+            tfCondLE := _side2_moduleActive and _kb_getCondTF1(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF1(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf1_label
+            reqLong  := side2_LE_tf1_req
+            reqShort := side2_SE_tf1_req
+        else if tfIdx == 2
+            leScore  := side2_LE_tf2
+            seScore  := side2_SE_tf2
+            tfCondLE := _side2_moduleActive and _kb_getCondTF2(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF2(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf2_label
+            reqLong  := side2_LE_tf2_req
+            reqShort := side2_SE_tf2_req
+        else if tfIdx == 3
+            leScore  := side2_LE_tf3
+            seScore  := side2_SE_tf3
+            tfCondLE := _side2_moduleActive and _kb_getCondTF3(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF3(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf3_label
+            reqLong  := side2_LE_tf3_req
+            reqShort := side2_SE_tf3_req
+        else if tfIdx == 4
+            leScore  := side2_LE_tf4
+            seScore  := side2_SE_tf4
+            tfCondLE := _side2_moduleActive and _kb_getCondTF4(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF4(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf4_label
+            reqLong  := side2_LE_tf4_req
+            reqShort := side2_SE_tf4_req
+        else if tfIdx == 5
+            leScore  := side2_LE_tf5
+            seScore  := side2_SE_tf5
+            tfCondLE := _side2_moduleActive and _kb_getCondTF5(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF5(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf5_label
+            reqLong  := side2_LE_tf5_req
+            reqShort := side2_SE_tf5_req
+        else if tfIdx == 6
+            leScore  := side2_LE_tf6
+            seScore  := side2_SE_tf6
+            tfCondLE := _side2_moduleActive and _kb_getCondTF6(side2_v2, _s2LE_condIdx)
+            tfCondSE := _side2_moduleActive and _kb_getCondTF6(side2_v2, _s2SE_condIdx)
+            tfLabel  := _side2_tf6_label
+            reqLong  := side2_LE_tf6_req
+            reqShort := side2_SE_tf6_req
+
+        bool leScope = side2_LEC_enable and side2_LEC_func != "None"
+        bool seScope = side2_SEC_enable and side2_SEC_func != "None"
+
+        // Use Long Entry condition for display (or Short Entry if LE not enabled)
+        bool tfCond = leScope ? tfCondLE : (seScope ? tfCondSE : false)
+        color cellBg = f_sideTF_color(tfCond, leScope, seScope, leScore, seScore)
+
+        bool isRequired = (reqLong and leScore > 0) or (reqShort and seScore > 0)
+
+        string baseLabel = tfLabel != "" ? tfLabel : "-"
+        string cellText  = isRequired ? baseLabel + " (R)" : baseLabel
+
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow2, cellText, _kb_sideTxtCol, cellBg)
+
+    // Clear any unused module cells beyond active TF count
+    for col = 1 + _kb_side_tfCount to _kb_sideCols - 1
+        f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow2, "", _kb_sideTxtCol, color.new(color.gray, 100))

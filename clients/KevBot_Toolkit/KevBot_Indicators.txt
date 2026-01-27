@@ -1,0 +1,208 @@
+//@version=6
+library("KevBot_Indicators", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_Indicators – Pure Processing Functions for Indicator Analysis
+//
+// PURPOSE:
+//   Provides processing functions that evaluate already-fetched indicator data.
+//   These functions do NOT use request.security() or input.*() - they are pure
+//   functions that take values and return results.
+//
+// USAGE PATTERN (in toolkit):
+//   // Toolkit fetches HTF data with user-configurable params
+//   [eS1, eM1, eL1] = request.security(sym, tf1, [ta.ema(close, paramA), ...])
+//
+//   // Library processes the fetched data
+//   string label = ind.orderEMA(eS1, eM1, eL1)
+//   bool bullStack = ind.isBullStack(eS1, eM1, eL1)
+//
+// WHY THIS PATTERN:
+//   PineScript libraries cannot use request.security() with dynamic parameters
+//   or use input.*() variables in exported functions. By having the toolkit
+//   own all security calls and inputs, we get full optimizer compatibility
+//   while still maintaining modular, reusable processing logic.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA STACK PROCESSING FUNCTIONS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute EMA ordering label from three EMA values.
+// Returns one of: SML, SLM, MSL, MLS, LSM, LMS, EQ, or "na" for warmup
+//
+// @param eS Short EMA value
+// @param eM Medium EMA value
+// @param eL Long EMA value
+// @returns String label describing the EMA ordering
+export orderEMA(float eS, float eM, float eL) =>
+    string lab = "na"
+    if na(eS) or na(eM) or na(eL)
+        lab := "na"
+    else if eS > eM and eM > eL
+        lab := "SML"  // Bull Stack: Short > Medium > Long
+    else if eS > eL and eL > eM
+        lab := "SLM"
+    else if eM > eS and eS > eL
+        lab := "MSL"
+    else if eM > eL and eL > eS
+        lab := "MLS"
+    else if eL > eS and eS > eM
+        lab := "LSM"
+    else if eL > eM and eM > eS
+        lab := "LMS"  // Bear Stack: Long > Medium > Short
+    else
+        lab := "EQ"   // Two or more EMAs are equal
+    lab
+
+// Check if EMAs are in Bull Stack formation (S > M > L)
+// @param eS Short EMA value
+// @param eM Medium EMA value
+// @param eL Long EMA value
+// @returns True if in bull stack formation
+export isBullStack(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eS > eM and eM > eL
+
+// Check if EMAs are in Bear Stack formation (L > M > S)
+// @param eS Short EMA value
+// @param eM Medium EMA value
+// @param eL Long EMA value
+// @returns True if in bear stack formation
+export isBearStack(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eL > eM and eM > eS
+
+// Check for SLM formation
+export isSLM(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eS > eL and eL > eM
+
+// Check for MSL formation
+export isMSL(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eM > eS and eS > eL
+
+// Check for MLS formation
+export isMLS(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eM > eL and eL > eS
+
+// Check for LSM formation
+export isLSM(float eS, float eM, float eL) =>
+    not na(eS) and not na(eM) and not na(eL) and eL > eS and eS > eM
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA CROSSOVER DETECTION
+// Note: These require current and previous values to detect crossovers.
+// The toolkit should pass [current, previous] values for each EMA.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Detect if Short crossed above Medium
+// @param eS_curr Current Short EMA
+// @param eS_prev Previous Short EMA
+// @param eM_curr Current Medium EMA
+// @param eM_prev Previous Medium EMA
+// @returns True if Short crossed above Medium on this bar
+export crossedAbove_S_M(float eS_curr, float eS_prev, float eM_curr, float eM_prev) =>
+    not na(eS_curr) and not na(eS_prev) and not na(eM_curr) and not na(eM_prev) and
+    eS_prev <= eM_prev and eS_curr > eM_curr
+
+// Detect if Short crossed below Medium
+export crossedBelow_S_M(float eS_curr, float eS_prev, float eM_curr, float eM_prev) =>
+    not na(eS_curr) and not na(eS_prev) and not na(eM_curr) and not na(eM_prev) and
+    eS_prev >= eM_prev and eS_curr < eM_curr
+
+// Detect if Short crossed above Long
+export crossedAbove_S_L(float eS_curr, float eS_prev, float eL_curr, float eL_prev) =>
+    not na(eS_curr) and not na(eS_prev) and not na(eL_curr) and not na(eL_prev) and
+    eS_prev <= eL_prev and eS_curr > eL_curr
+
+// Detect if Short crossed below Long
+export crossedBelow_S_L(float eS_curr, float eS_prev, float eL_curr, float eL_prev) =>
+    not na(eS_curr) and not na(eS_prev) and not na(eL_curr) and not na(eL_prev) and
+    eS_prev >= eL_prev and eS_curr < eL_curr
+
+// Detect if Medium crossed above Long
+export crossedAbove_M_L(float eM_curr, float eM_prev, float eL_curr, float eL_prev) =>
+    not na(eM_curr) and not na(eM_prev) and not na(eL_curr) and not na(eL_prev) and
+    eM_prev <= eL_prev and eM_curr > eL_curr
+
+// Detect if Medium crossed below Long
+export crossedBelow_M_L(float eM_curr, float eM_prev, float eL_curr, float eL_prev) =>
+    not na(eM_curr) and not na(eM_prev) and not na(eL_curr) and not na(eL_prev) and
+    eM_prev >= eL_prev and eM_curr < eL_curr
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GENERIC CROSSOVER HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Generic crossover detection (a crosses above b)
+export crossedAbove(float a_curr, float a_prev, float b_curr, float b_prev) =>
+    not na(a_curr) and not na(a_prev) and not na(b_curr) and not na(b_prev) and
+    a_prev <= b_prev and a_curr > b_curr
+
+// Generic crossunder detection (a crosses below b)
+export crossedBelow(float a_curr, float a_prev, float b_curr, float b_prev) =>
+    not na(a_curr) and not na(a_prev) and not na(b_curr) and not na(b_prev) and
+    a_prev >= b_prev and a_curr < b_curr
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RSI PROCESSING FUNCTIONS (Future Use)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Check if RSI is in overbought zone
+// @param rsi RSI value
+// @param threshold Overbought threshold (default 70)
+// @returns True if RSI >= threshold
+export isOverbought(float rsi, float threshold) =>
+    not na(rsi) and rsi >= threshold
+
+// Check if RSI is in oversold zone
+// @param rsi RSI value
+// @param threshold Oversold threshold (default 30)
+// @returns True if RSI <= threshold
+export isOversold(float rsi, float threshold) =>
+    not na(rsi) and rsi <= threshold
+
+// Check if RSI is in neutral zone
+export isNeutral(float rsi, float oversoldThresh, float overboughtThresh) =>
+    not na(rsi) and rsi > oversoldThresh and rsi < overboughtThresh
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MACD PROCESSING FUNCTIONS (Future Use)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Check if MACD line is above signal line (bullish)
+export macdBullish(float macdLine, float signalLine) =>
+    not na(macdLine) and not na(signalLine) and macdLine > signalLine
+
+// Check if MACD line is below signal line (bearish)
+export macdBearish(float macdLine, float signalLine) =>
+    not na(macdLine) and not na(signalLine) and macdLine < signalLine
+
+// Check if MACD histogram is positive
+export macdHistPositive(float histogram) =>
+    not na(histogram) and histogram > 0
+
+// Check if MACD histogram is negative
+export macdHistNegative(float histogram) =>
+    not na(histogram) and histogram < 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRIGGER LABEL GENERATION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Generate a label for the active EMA trigger
+// @param tA-tF Trigger booleans for each crossover type
+// @returns String label describing the active trigger, or "None"
+export getEMATriggerLabel(bool tA, bool tB, bool tC, bool tD, bool tE, bool tF) =>
+    string lab = "None"
+    if tA
+        lab := "S>M"
+    else if tB
+        lab := "S<M"
+    else if tC
+        lab := "S>L"
+    else if tD
+        lab := "S<L"
+    else if tE
+        lab := "M>L"
+    else if tF
+        lab := "M<L"
+    lab

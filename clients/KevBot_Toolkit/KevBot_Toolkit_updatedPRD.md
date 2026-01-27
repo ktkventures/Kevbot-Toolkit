@@ -1,9 +1,9 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.0  
-**Date:** January 20, 2026  
-**Target Platform:** TradingView (PineScript v6)  
-**Development Tool:** Claude Code  
+**Version:** 1.2
+**Date:** January 26, 2026
+**Target Platform:** TradingView (PineScript v6)
+**Development Tool:** Claude Code
 
 ---
 
@@ -11,9 +11,14 @@
 
 The KevBot Toolkit is a modular TradingView indicator designed to automate trade journaling and enable multivariate analysis of trading strategies. It replaces manual data entry (80+ questions per trade) with automatic context capture across multiple timeframes and indicators, displaying results in two dynamic tables.
 
-**Current Development State:** Input skeleton complete (~1,700 lines), 4 library files functional, stalled due to AI context window limitations.
+**Current Development State:**
+- v1.1 Hybrid Architecture implemented and working
+- 2 Side Modules functional (proof of concept for multi-module support)
+- EMA Stack library working correctly with hybrid pattern
+- Parameters (paramA-F) now fully optimizable by third-party tools
+- Side table displays both modules with correct EMA stack labels
 
-**Goal of This PRD:** Enable Claude Code to accelerate development with full codebase awareness, resolving the context window blocker that has limited progress.
+**Goal of This PRD:** Enable Claude Code to accelerate development with full codebase awareness, documenting current state and architecture decisions accurately.
 
 ---
 
@@ -107,13 +112,22 @@ A modular TradingView indicator that:
 ### 3.2 File Structure
 
 **Main Files:**
-- `Kevbot_Toolkit_v1_0_Main.txt` — Core indicator (1,881 lines currently)
+- `LEGACY - Kevbot Toolkit v1.0 - Input Skeleton.txt` — Legacy core indicator (reference only)
+- `KevBot Toolkit v1.1 - Hybrid Architecture.txt` — **Current** main toolkit with hybrid pattern (~2,400 lines)
+- `LEGACY - KevBot_Toolkit_EMAStack_Integration.txt` — Reference template for hybrid integration (superseded)
 
 **Library Files:**
 - `KevBot_TimeUtils.txt` — Timeframe formatting utilities
-- `KevBot_Top_Minimal.txt` — Placeholder Top module (4 outputs: A/B/C/D)
-- `KevBot_TF_Placeholder.txt` — Placeholder TF module (6 TF conditions + trigger)
-- `KevBot_TF_EMA_Stack.txt` — EMA Stack implementation (S/M/L ordering)
+- `KevBot_Top_Minimal.txt` — Top module for MA crossover (4 outputs: A/B/C/D)
+- `KevBot_TF_Placeholder.txt` — Placeholder TF module (10 conditions A-J × 6 TFs + 10 triggers A-J)
+- `KevBot_TF_EMA Stack.txt` — EMA Stack with `buildOutput()` hybrid function (v7)
+- `KevBot_Types.txt` — Shared type definitions (TFModuleOutput, EMAStackData, etc.)
+- `KevBot_Indicators.txt` — Pure processing functions (orderEMA, isBullStack, etc.)
+
+**Documentation Files:**
+- `KevBot_Architecture_Notes.md` — PineScript limitations and architecture decisions
+- `KevBot_Library_Definitions.md` — User-facing library documentation (params, triggers, conditions)
+- `KevBot_Toolkit_updatedPRD.md` — This PRD
 
 ### 3.3 Architecture Principles
 
@@ -155,13 +169,49 @@ type TopModuleOutput
     float outD  // Cross direction (1 long, -1 short, 0 none)
 ```
 
-**TFModuleOutput (Library Standard):**
+**TFModuleOutput (Library Standard - V2 Expanded):**
 ```pinescript
 type TFModuleOutput
-    bool   tf1_cond, tf2_cond, tf3_cond, tf4_cond, tf5_cond, tf6_cond
+    // Per-TF labels (state description string for display)
     string tf1_label, tf2_label, tf3_label, tf4_label, tf5_label, tf6_label
-    bool   trigger_event
+
+    // 10 Conditions (A-J) per TF (60 total boolean fields)
+    bool condA_tf1, condA_tf2, condA_tf3, condA_tf4, condA_tf5, condA_tf6
+    bool condB_tf1, condB_tf2, condB_tf3, condB_tf4, condB_tf5, condB_tf6
+    bool condC_tf1, condC_tf2, condC_tf3, condC_tf4, condC_tf5, condC_tf6
+    bool condD_tf1, condD_tf2, condD_tf3, condD_tf4, condD_tf5, condD_tf6
+    bool condE_tf1, condE_tf2, condE_tf3, condE_tf4, condE_tf5, condE_tf6
+    bool condF_tf1, condF_tf2, condF_tf3, condF_tf4, condF_tf5, condF_tf6
+    bool condG_tf1, condG_tf2, condG_tf3, condG_tf4, condG_tf5, condG_tf6  // Reserved
+    bool condH_tf1, condH_tf2, condH_tf3, condH_tf4, condH_tf5, condH_tf6  // Reserved
+    bool condI_tf1, condI_tf2, condI_tf3, condI_tf4, condI_tf5, condI_tf6  // Reserved
+    bool condJ_tf1, condJ_tf2, condJ_tf3, condJ_tf4, condJ_tf5, condJ_tf6  // Reserved
+
+    // 10 Triggers (A-J) - chart timeframe events
+    bool trigA, trigB, trigC, trigD, trigE, trigF, trigG, trigH, trigI, trigJ
+
+    // Trigger metadata
     float  trigger_price
+    string trigger_label
+```
+
+**KB_TF_Out_V2 (Internal Normalized Structure):**
+```pinescript
+// Toolkit-internal normalized output (NOT exported)
+// Used to standardize all library outputs for downstream processing
+type KB_TF_Out_V2
+    // TF state labels
+    string tf1_label, tf2_label, tf3_label, tf4_label, tf5_label, tf6_label
+
+    // 10 Conditions (A-J) per TF - mirrors TFModuleOutput structure
+    // Allows generic condition evaluation without library-specific logic
+    bool condA_tf1...condJ_tf6  // (60 total fields)
+
+    // 10 Triggers (A-J)
+    bool trigA...trigJ
+
+    // Trigger metadata
+    float trigger_price
     string trigger_label
 ```
 
@@ -472,18 +522,35 @@ export getTFConfluence(
 - Trigger event: `paramA > 0`
 
 **KevBot_TF_EMA_Stack:**
-- Implements 3-EMA stack analysis (Short/Medium/Long EMAs)
-- Params:
-  - A: Short EMA length
-  - B: Medium EMA length
-  - C: Long EMA length
-  - D: Trigger selector (0=None, 1=SxM Up, 2=SxM Down, 3=SxL Up, etc.)
-  - E: Confluence selector (0=SML, 1=SLM, 2=MSL, 3=MLS, 4=LSM, 5=LMS)
-  - F: (unused, reserved)
-- Outputs:
-  - `tfN_cond`: TRUE if EMA order matches selected confluence
-  - `tfN_label`: Current order (e.g., "SML", "LMS")
-  - `trigger_event`: TRUE on selected EMA cross
+- Implements 3-EMA stack analysis (Short/Medium/Long EMAs) across 6 timeframes
+- **Params:**
+  - A: Short EMA length (default: 10)
+  - B: Medium EMA length (default: 20)
+  - C: Long EMA length (default: 50)
+  - D-F: Reserved (unused)
+- **Conditions (per TF):**
+  - Cond A: SML (Bull Stack - S > M > L)
+  - Cond B: LMS (Bear Stack - L > M > S)
+  - Cond C: SLM
+  - Cond D: MSL
+  - Cond E: MLS
+  - Cond F: LSM
+  - Cond G-J: Reserved (always false)
+- **Triggers (chart TF only):**
+  - Trig A: Short crosses above Medium
+  - Trig B: Short crosses below Medium
+  - Trig C: Short crosses above Long
+  - Trig D: Short crosses below Long
+  - Trig E: Medium crosses above Long
+  - Trig F: Medium crosses below Long
+  - Trig G-J: Reserved (always false)
+- **Outputs:**
+  - `tfN_label`: Current EMA ordering string (e.g., "SML", "LMS")
+  - `condX_tfN`: TRUE if that TF matches the specific EMA ordering
+  - `trigger_price`, `trigger_label`: Metadata for active trigger
+
+**Architecture:** Hybrid pattern - toolkit fetches HTF data, library processes via `buildOutput()`
+**Status:** Working correctly in v1.1 with hybrid architecture
 
 ---
 
@@ -649,25 +716,35 @@ Inherit similar structure that is currently in the code
 ## 9. Development Priorities
 
 ### 9.1 Phase 1: Core Functionality (Current)
-**Status:** 90% Complete
+**Status:** 90% Complete - Hybrid architecture working, 2 Side Modules functional
 
 **Completed:**
-- [x] Input skeleton (all 6 modules)
+- [x] Input skeleton (all 6 modules, ~2,006 lines)
 - [x] Library loader system
 - [x] Confluence Engine
 - [x] Position Engine
 - [x] Basic Backtest Engine
-- [x] Side Table rendering
+- [x] Side Table rendering (supports 2 modules)
 - [x] TimeUtils library
-- [x] TF_Placeholder library
-- [x] TF_EMA_Stack library
+- [x] TF_Placeholder library (V2 structure with 10 conditions/triggers)
+- [x] TF_EMA_Stack library with `buildOutput()` hybrid function (v7)
 - [x] Top_Minimal library
+- [x] KB_TF_Out_V2 internal normalization structure
+- [x] Condition/Trigger helper functions (_kb_getCondTF1-6, _kb_getTrigger)
+- [x] **✅ Hybrid Architecture (v1.1)** - Toolkit owns security calls, libraries process data
+- [x] **✅ Side Module 2** - Proof of concept for multi-module support
+- [x] **✅ EMA Stack working correctly** - Labels display proper EMA ordering per TF
+- [x] **✅ Parameters optimizable** - paramA-F work with third-party optimizers
+- [x] KevBot_Types library (shared type definitions)
+- [x] KevBot_Indicators library (pure processing functions)
+- [x] KevBot_Library_Definitions.md (user-facing documentation)
 
 **Remaining:**
-- [ ] Update Libraries and input options to support 6 parameters, 10 triggers, and 10 condition
+- [ ] Expand UI input options to expose all 10 triggers and 10 conditions
 - [ ] Label plotting system
 - [ ] Complete backtest KPI calculations
 - [ ] CSV export functionality
+- [ ] Add Side Modules 3-10 (follow existing pattern)
 
 ### 9.2 Phase 2: Enhancement & Testing
 **Status:** Not Started
@@ -750,26 +827,38 @@ Inherit similar structure that is currently in the code
 
 ### 11.1 Critical Issues
 
-**1. Label Plotting Incomplete**
+**1. ✅ RESOLVED: EMA Stack Library - Incorrect Label Output**
+- **Original Issue:** Side Table displayed "LMS" for all timeframes regardless of actual EMA ordering
+- **Root Cause:** PineScript library limitations prevented dynamic `request.security()` calls
+- **Solution Implemented:** Hybrid Architecture in v1.1
+  - Toolkit owns all `request.security()` calls with user-configurable params
+  - Library provides `buildOutput()` function to process pre-fetched EMA data
+  - Parameters (paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA) are now fully optimizable
+- **Status:** ✅ **RESOLVED** in v1.1 Hybrid Architecture
+- **Verification:** Side Table now correctly displays EMA stack labels (SML, LMS, MSL, etc.) per timeframe
+
+**2. Label Plotting Incomplete**
 - **Impact:** Entry/exit signals not visible on chart
 - **Status:** Position labels defined but not plotted
 - **Blocker for:** Visual confirmation of signals
 
-**2. CSV Export Not Implemented**
+**3. CSV Export Not Implemented**
 - **Impact:** Cannot analyze data in external tools
 - **Status:** No export mechanism exists yet
 - **Blocker for:** Primary use case (multivariate analysis)
 
-**3. Trigger Options Not Finalized
-- **Impact:** Not enough trigger options showing in input settings we should 10 trigger options and 10 confluence condition labels to choose from
-- **Status:** Currently it's showing 2 trigger options and only 2 confluence options 
-- **Blocker for:** Fully utilizing libraries as intended
+**4. UI Trigger/Condition Options Limited**
+- **Impact:** Input settings only show subset of available trigger/condition options
+- **Status:** Libraries support 10 triggers (A-J) and 10 conditions (A-J), but UI dropdowns may only show 2
+- **Blocker for:** Fully utilizing expanded library capabilities
+- **Note:** Library architecture is complete; UI input expansion needed
 
 ### 11.2 Non-Critical Issues
 
-**1. Single Module Limitation**
-- Currently only supports Top Module 1 and Side Module 1
-- Future: Expand to Top2–Top4, Side2–Side4
+**1. Limited Module Count**
+- Currently supports Top Module 1 and Side Modules 1-2
+- Side Module 2 added as proof of concept for multi-module support
+- Future: Expand to Top2–Top4, Side3–Side10 (following same hybrid pattern)
 
 
 ### 11.3 Technical Debt
@@ -912,22 +1001,42 @@ for i = 0 to _kb_side_tfCount - 1
 
 ### B.1 Creating a New TF Library
 
-**Step 1: Define Output Type**
+**Step 1: Define Output Type (V2 Structure - MUST MATCH)**
 ```pinescript
 //@version=6
 library("MyCustomTFLibrary", overlay = false)
 
 export type TFModuleOutput
-    bool   tf1_cond, string tf1_label
-    bool   tf2_cond, string tf2_label
-    bool   tf3_cond, string tf3_label
-    bool   tf4_cond, string tf4_label
-    bool   tf5_cond, string tf5_label
-    bool   tf6_cond, string tf6_label
-    bool   trigger_event
-    float  trigger_price
+    // Per-TF labels (state description)
+    string tf1_label, tf2_label, tf3_label, tf4_label, tf5_label, tf6_label
+
+    // Condition A per TF (define your primary bullish condition)
+    bool condA_tf1, condA_tf2, condA_tf3, condA_tf4, condA_tf5, condA_tf6
+
+    // Condition B per TF (define your primary bearish condition)
+    bool condB_tf1, condB_tf2, condB_tf3, condB_tf4, condB_tf5, condB_tf6
+
+    // Conditions C-F per TF (additional conditions as needed)
+    bool condC_tf1, condC_tf2, condC_tf3, condC_tf4, condC_tf5, condC_tf6
+    bool condD_tf1, condD_tf2, condD_tf3, condD_tf4, condD_tf5, condD_tf6
+    bool condE_tf1, condE_tf2, condE_tf3, condE_tf4, condE_tf5, condE_tf6
+    bool condF_tf1, condF_tf2, condF_tf3, condF_tf4, condF_tf5, condF_tf6
+
+    // Conditions G-J per TF (reserved, set to false)
+    bool condG_tf1, condG_tf2, condG_tf3, condG_tf4, condG_tf5, condG_tf6
+    bool condH_tf1, condH_tf2, condH_tf3, condH_tf4, condH_tf5, condH_tf6
+    bool condI_tf1, condI_tf2, condI_tf3, condI_tf4, condI_tf5, condI_tf6
+    bool condJ_tf1, condJ_tf2, condJ_tf3, condJ_tf4, condJ_tf5, condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA, trigB, trigC, trigD, trigE, trigF, trigG, trigH, trigI, trigJ
+
+    // Trigger metadata
+    float trigger_price
     string trigger_label
 ```
+
+**IMPORTANT:** The TFModuleOutput structure MUST match exactly between all TF libraries. Once the EMA Stack library bug is fixed, `KevBot_TF_EMA Stack.txt` will serve as the canonical reference template for new TF libraries. The main toolkit casts library outputs to a common type for normalization.
 
 **Step 2: Implement Core Logic**
 ```pinescript
@@ -1183,6 +1292,8 @@ label.new(bar_index, high,
 | Version | Date | Changes | Author |
 |---------|------|---------|--------|
 | 1.0 | 2026-01-20 | Initial PRD creation | Claude (Anthropic) |
+| 1.1 | 2026-01-26 | Updated to reflect current state: corrected file names/line counts, documented V2 expanded TFModuleOutput structure (10 conditions/triggers), added KB_TF_Out_V2 internal structure, documented critical EMA Stack label bug with root cause analysis, updated development status | Claude Code (Opus 4.5) |
+| 1.2 | 2026-01-26 | **Major Update:** Hybrid Architecture v1.1 implemented and working. EMA Stack bug resolved via hybrid pattern (toolkit owns security calls, library processes data). Side Module 2 added as proof of concept. Created KevBot_Library_Definitions.md for user-facing documentation. Renamed legacy files with LEGACY prefix. Updated all sections to reflect current working state. | Claude Code (Opus 4.5) |
 
 ---
 

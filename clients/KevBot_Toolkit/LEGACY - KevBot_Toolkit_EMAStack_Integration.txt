@@ -1,0 +1,209 @@
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot Toolkit - EMA Stack Integration (Hybrid Architecture)
+//
+// This file shows the code that needs to be added to the toolkit to integrate
+// the EMA Stack module using the hybrid approach where:
+//   • Toolkit owns all request.security() calls and input.*() declarations
+//   • Library (KevBot_TF_EMA_Stack) provides the buildOutput() function
+//
+// BENEFITS:
+//   • paramA-F are now fully optimizable by third-party tools
+//   • Processing logic stays modular in the library
+//   • User experience: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//──────────────────────────────────────────────────────────────────────────────
+// STEP 1: Import the EMA Stack library (add near top of toolkit)
+//──────────────────────────────────────────────────────────────────────────────
+
+import yamigushi/KevBot_TF_EMA_Stack/2 as emaStack  // Version 2 uses buildOutput()
+
+//──────────────────────────────────────────────────────────────────────────────
+// STEP 2: EMA Stack HTF Data Fetching (add in Side Module 1 section)
+// This replaces the old getTFConfluence() call
+//──────────────────────────────────────────────────────────────────────────────
+
+// Only fetch if EMA Stack is selected
+bool _side1_isEMAStack = side1_library == "EMA Stack (S/M/L)"
+
+// Convert params to integer EMA lengths (with sensible defaults)
+int _ema_short  = _side1_isEMAStack ? (side1_paramA > 0 ? int(side1_paramA) : 10) : 10
+int _ema_medium = _side1_isEMAStack ? (side1_paramB > 0 ? int(side1_paramB) : 20) : 20
+int _ema_long   = _side1_isEMAStack ? (side1_paramC > 0 ? int(side1_paramC) : 50) : 50
+
+// Helper to resolve timeframe string
+_tf_res(string tfRes) => tfRes == "Chart" ? timeframe.period : tfRes
+
+// Fetch HTF EMAs for each of the 6 timeframes
+// Note: These request.security calls use toolkit inputs (fully optimizable!)
+[_eS1, _eM1, _eL1] = request.security(syminfo.tickerid, _tf_res(tf1),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+[_eS2, _eM2, _eL2] = request.security(syminfo.tickerid, _tf_res(tf2),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+[_eS3, _eM3, _eL3] = request.security(syminfo.tickerid, _tf_res(tf3),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+[_eS4, _eM4, _eL4] = request.security(syminfo.tickerid, _tf_res(tf4),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+[_eS5, _eM5, _eL5] = request.security(syminfo.tickerid, _tf_res(tf5),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+[_eS6, _eM6, _eL6] = request.security(syminfo.tickerid, _tf_res(tf6),
+    [ta.ema(close, _ema_short), ta.ema(close, _ema_medium), ta.ema(close, _ema_long)],
+    barmerge.gaps_off, barmerge.lookahead_off)
+
+// Chart timeframe EMAs (for trigger detection)
+float _eS_chart = ta.ema(close, _ema_short)
+float _eM_chart = ta.ema(close, _ema_medium)
+float _eL_chart = ta.ema(close, _ema_long)
+
+// Previous bar values (for crossover detection)
+float _eS_prev = _eS_chart[1]
+float _eM_prev = _eM_chart[1]
+float _eL_prev = _eL_chart[1]
+
+//──────────────────────────────────────────────────────────────────────────────
+// STEP 3: Build the TFModuleOutput using the library's builder function
+//──────────────────────────────────────────────────────────────────────────────
+
+emaStack.TFModuleOutput _side1_emaStackOutput = _side1_isEMAStack ?
+    emaStack.buildOutput(
+        _eS1, _eM1, _eL1,
+        _eS2, _eM2, _eL2,
+        _eS3, _eM3, _eL3,
+        _eS4, _eM4, _eL4,
+        _eS5, _eM5, _eL5,
+        _eS6, _eM6, _eL6,
+        _eS_chart, _eM_chart, _eL_chart,
+        _eS_prev, _eM_prev, _eL_prev,
+        close
+    ) : na
+
+//──────────────────────────────────────────────────────────────────────────────
+// STEP 4: Wire into existing side1_v2 structure
+// This replaces the old side1_v2 assignment that used getTFConfluence()
+//──────────────────────────────────────────────────────────────────────────────
+
+// The toolkit already has KB_TF_Out_V2 internal type - populate it from library output
+KB_TF_Out_V2 side1_v2 = KB_TF_Out_V2.new()
+
+if _side1_isEMAStack and not na(_side1_emaStackOutput)
+    // Copy labels
+    side1_v2.tf1_label := _side1_emaStackOutput.tf1_label
+    side1_v2.tf2_label := _side1_emaStackOutput.tf2_label
+    side1_v2.tf3_label := _side1_emaStackOutput.tf3_label
+    side1_v2.tf4_label := _side1_emaStackOutput.tf4_label
+    side1_v2.tf5_label := _side1_emaStackOutput.tf5_label
+    side1_v2.tf6_label := _side1_emaStackOutput.tf6_label
+
+    // Copy conditions A-F (and G-J if needed)
+    side1_v2.condA_tf1 := _side1_emaStackOutput.condA_tf1
+    side1_v2.condA_tf2 := _side1_emaStackOutput.condA_tf2
+    side1_v2.condA_tf3 := _side1_emaStackOutput.condA_tf3
+    side1_v2.condA_tf4 := _side1_emaStackOutput.condA_tf4
+    side1_v2.condA_tf5 := _side1_emaStackOutput.condA_tf5
+    side1_v2.condA_tf6 := _side1_emaStackOutput.condA_tf6
+
+    side1_v2.condB_tf1 := _side1_emaStackOutput.condB_tf1
+    side1_v2.condB_tf2 := _side1_emaStackOutput.condB_tf2
+    side1_v2.condB_tf3 := _side1_emaStackOutput.condB_tf3
+    side1_v2.condB_tf4 := _side1_emaStackOutput.condB_tf4
+    side1_v2.condB_tf5 := _side1_emaStackOutput.condB_tf5
+    side1_v2.condB_tf6 := _side1_emaStackOutput.condB_tf6
+
+    // ... continue for condC through condF ...
+    side1_v2.condC_tf1 := _side1_emaStackOutput.condC_tf1
+    side1_v2.condC_tf2 := _side1_emaStackOutput.condC_tf2
+    side1_v2.condC_tf3 := _side1_emaStackOutput.condC_tf3
+    side1_v2.condC_tf4 := _side1_emaStackOutput.condC_tf4
+    side1_v2.condC_tf5 := _side1_emaStackOutput.condC_tf5
+    side1_v2.condC_tf6 := _side1_emaStackOutput.condC_tf6
+
+    side1_v2.condD_tf1 := _side1_emaStackOutput.condD_tf1
+    side1_v2.condD_tf2 := _side1_emaStackOutput.condD_tf2
+    side1_v2.condD_tf3 := _side1_emaStackOutput.condD_tf3
+    side1_v2.condD_tf4 := _side1_emaStackOutput.condD_tf4
+    side1_v2.condD_tf5 := _side1_emaStackOutput.condD_tf5
+    side1_v2.condD_tf6 := _side1_emaStackOutput.condD_tf6
+
+    side1_v2.condE_tf1 := _side1_emaStackOutput.condE_tf1
+    side1_v2.condE_tf2 := _side1_emaStackOutput.condE_tf2
+    side1_v2.condE_tf3 := _side1_emaStackOutput.condE_tf3
+    side1_v2.condE_tf4 := _side1_emaStackOutput.condE_tf4
+    side1_v2.condE_tf5 := _side1_emaStackOutput.condE_tf5
+    side1_v2.condE_tf6 := _side1_emaStackOutput.condE_tf6
+
+    side1_v2.condF_tf1 := _side1_emaStackOutput.condF_tf1
+    side1_v2.condF_tf2 := _side1_emaStackOutput.condF_tf2
+    side1_v2.condF_tf3 := _side1_emaStackOutput.condF_tf3
+    side1_v2.condF_tf4 := _side1_emaStackOutput.condF_tf4
+    side1_v2.condF_tf5 := _side1_emaStackOutput.condF_tf5
+    side1_v2.condF_tf6 := _side1_emaStackOutput.condF_tf6
+
+    // Copy triggers
+    side1_v2.trigA := _side1_emaStackOutput.trigA
+    side1_v2.trigB := _side1_emaStackOutput.trigB
+    side1_v2.trigC := _side1_emaStackOutput.trigC
+    side1_v2.trigD := _side1_emaStackOutput.trigD
+    side1_v2.trigE := _side1_emaStackOutput.trigE
+    side1_v2.trigF := _side1_emaStackOutput.trigF
+
+    // Copy trigger metadata
+    side1_v2.trigger_price := _side1_emaStackOutput.trigger_price
+    side1_v2.trigger_label := _side1_emaStackOutput.trigger_label
+
+//──────────────────────────────────────────────────────────────────────────────
+// PARAM DOCUMENTATION (Update in Side Module 1 tooltips)
+//──────────────────────────────────────────────────────────────────────────────
+
+// For EMA Stack library, the params have these meanings:
+// Param A = Short EMA Length (default: 10)
+// Param B = Medium EMA Length (default: 20)
+// Param C = Long EMA Length (default: 50)
+// Param D = (unused/reserved)
+// Param E = (unused/reserved)
+// Param F = (unused/reserved)
+
+//──────────────────────────────────────────────────────────────────────────────
+// ALTERNATIVE: Inline all logic (if not using library at all)
+// This shows how to do it without any library import
+//──────────────────────────────────────────────────────────────────────────────
+
+// If you want to completely avoid the library, you can inline the _orderLabel
+// and condition checks. However, using the library's buildOutput() keeps the
+// code cleaner and more maintainable.
+
+// Example inline approach (partial):
+/*
+_orderLabel(float eS, float eM, float eL) =>
+    string lab = "na"
+    if na(eS) or na(eM) or na(eL)
+        lab := "na"
+    else if eS > eM and eM > eL
+        lab := "SML"
+    else if eS > eL and eL > eM
+        lab := "SLM"
+    else if eM > eS and eS > eL
+        lab := "MSL"
+    else if eM > eL and eL > eS
+        lab := "MLS"
+    else if eL > eS and eS > eM
+        lab := "LSM"
+    else if eL > eM and eM > eS
+        lab := "LMS"
+    else
+        lab := "EQ"
+    lab
+
+string lab1 = _orderLabel(_eS1, _eM1, _eL1)
+bool condA_tf1 = _eS1 > _eM1 and _eM1 > _eL1
+// ... etc
+*/

@@ -2,7 +2,61 @@
 library("KevBot_TF_EMA_Stack", overlay = false)
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// OUTPUT STRUCTURE - Expanded for 10 Conditions (A-J) and 10 Triggers (A-J)
+// KevBot_TF_EMA_Stack – EMA Stack Module for KevBot Toolkit (Hybrid Architecture)
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched EMA data
+//   • This allows paramA-F in the toolkit to control EMA lengths (optimizer compatible!)
+//
+// WHY THIS APPROACH:
+//   PineScript has three limitations that prevent libraries from being fully modular:
+//   1. request.security() cannot depend on function arguments
+//   2. var variables don't persist in library exported functions
+//   3. Exported functions cannot depend on input.*() variables
+//
+//   By having the toolkit fetch data and this library process it, we get the best
+//   of both worlds: optimizer-friendly params AND modular processing logic.
+//
+// USAGE IN TOOLKIT:
+//   // 1. Toolkit declares inputs (these ARE optimizable!)
+//   int emaShort = int(side1_paramA)  // e.g., 10
+//   int emaMed   = int(side1_paramB)  // e.g., 20
+//   int emaLong  = int(side1_paramC)  // e.g., 50
+//
+//   // 2. Toolkit fetches HTF data for each timeframe
+//   [eS1, eM1, eL1] = request.security(sym, tf1, [ta.ema(close, emaShort), ta.ema(close, emaMed), ta.ema(close, emaLong)])
+//   ... repeat for tf2-tf6 ...
+//
+//   // 3. Toolkit calls this library's builder
+//   TFModuleOutput output = emaStack.buildOutput(
+//       eS1, eM1, eL1, eS2, eM2, eL2, ...,   // HTF EMAs
+//       eS_chart, eM_chart, eL_chart,         // Chart TF EMAs for triggers
+//       eS_prev, eM_prev, eL_prev             // Previous bar for crossovers
+//   )
+//
+// CONDITIONS PROVIDED:
+//   A: SML (Bull Stack - S > M > L)
+//   B: LMS (Bear Stack - L > M > S)
+//   C: SLM
+//   D: MSL
+//   E: MLS
+//   F: LSM
+//   G-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Short crosses above Medium
+//   B: Short crosses below Medium
+//   C: Short crosses above Long
+//   D: Short crosses below Long
+//   E: Medium crosses above Long
+//   F: Medium crosses below Long
+//   G-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export type TFModuleOutput
     // Per-TF labels (state description)
@@ -110,15 +164,12 @@ export type TFModuleOutput
 // INTERNAL HELPERS
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// Convert a user TF string to a valid security resolution.
-_tf_res(string tfRes) =>
-    tfRes == "Chart" ? timeframe.period : tfRes
-
 // Compute EMA ordering label from three EMA values.
-// Returns one of: SML, SLM, MSL, MLS, LSM, LMS
 _orderLabel(float eS, float eM, float eL) =>
-    string lab = "MSL"
-    if eS > eM and eM > eL
+    string lab = "na"
+    if na(eS) or na(eM) or na(eL)
+        lab := "na"
+    else if eS > eM and eM > eL
         lab := "SML"
     else if eS > eL and eL > eM
         lab := "SLM"
@@ -128,56 +179,43 @@ _orderLabel(float eS, float eM, float eL) =>
         lab := "MLS"
     else if eL > eS and eS > eM
         lab := "LSM"
-    else
+    else if eL > eM and eM > eS
         lab := "LMS"
+    else
+        lab := "EQ"
     lab
 
-// Compute per-TF CLOSE via request.security
-_getClose(simple string tfRes) =>
-    string r = _tf_res(tfRes)
-    request.security(
-         syminfo.tickerid,
-         r,
-         close,
-         barmerge.gaps_off,
-         barmerge.lookahead_off
-     )
+// Check individual EMA formations
+_isSML(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eS > eM and eM > eL
+_isLMS(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eL > eM and eM > eS
+_isSLM(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eS > eL and eL > eM
+_isMSL(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eM > eS and eS > eL
+_isMLS(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eM > eL and eL > eS
+_isLSM(float eS, float eM, float eL) => not na(eS) and not na(eM) and not na(eL) and eL > eS and eS > eM
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// PUBLIC API
+// PUBLIC API - Builder Function
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export getTFConfluence(
-     simple string tf1_res, simple string tf2_res, simple string tf3_res,
-     simple string tf4_res, simple string tf5_res, simple string tf6_res,
-     simple float  paramA,  simple float paramB,  simple float paramC,
-     simple float  paramD,  simple float paramE,  simple float paramF) =>
-
-    // Length params (A/B/C)
-    simple int lenS = int(math.max(1, math.round(paramA)))
-    simple int lenM = int(math.max(1, math.round(paramB)))
-    simple int lenL = int(math.max(1, math.round(paramC)))
-
-    // Reserved params (D/E/F) - used in trigger label to satisfy compiler
-    float _reservedSum = paramD + paramE + paramF
-
-    // Per-TF stepped HTF closes
-    float c1_src = _getClose(tf1_res)
-    float c2_src = _getClose(tf2_res)
-    float c3_src = _getClose(tf3_res)
-    float c4_src = _getClose(tf4_res)
-    float c5_src = _getClose(tf5_res)
-    float c6_src = _getClose(tf6_res)
-
-    // EMAs computed on stepped HTF series
-    float eS1 = ta.ema(c1_src, lenS), float eM1 = ta.ema(c1_src, lenM), float eL1 = ta.ema(c1_src, lenL)
-    float eS2 = ta.ema(c2_src, lenS), float eM2 = ta.ema(c2_src, lenM), float eL2 = ta.ema(c2_src, lenL)
-    float eS3 = ta.ema(c3_src, lenS), float eM3 = ta.ema(c3_src, lenM), float eL3 = ta.ema(c3_src, lenL)
-    float eS4 = ta.ema(c4_src, lenS), float eM4 = ta.ema(c4_src, lenM), float eL4 = ta.ema(c4_src, lenL)
-    float eS5 = ta.ema(c5_src, lenS), float eM5 = ta.ema(c5_src, lenM), float eL5 = ta.ema(c5_src, lenL)
-    float eS6 = ta.ema(c6_src, lenS), float eM6 = ta.ema(c6_src, lenM), float eL6 = ta.ema(c6_src, lenL)
-
-    // Labels (current EMA ordering state)
+// Build TFModuleOutput from pre-fetched EMA data
+// The toolkit calls this AFTER it has fetched all HTF EMAs using request.security()
+//
+// @param eS1-eL6  Short/Medium/Long EMAs for each of the 6 timeframes
+// @param eS_chart, eM_chart, eL_chart  Current chart TF EMAs (for triggers)
+// @param eS_prev, eM_prev, eL_prev     Previous bar EMAs (for crossover detection)
+// @param triggerPrice                   Price to use for trigger metadata (usually close)
+export buildOutput(
+    float eS1, float eM1, float eL1,
+    float eS2, float eM2, float eL2,
+    float eS3, float eM3, float eL3,
+    float eS4, float eM4, float eL4,
+    float eS5, float eM5, float eL5,
+    float eS6, float eM6, float eL6,
+    float eS_chart, float eM_chart, float eL_chart,
+    float eS_prev, float eM_prev, float eL_prev,
+    float triggerPrice
+) =>
+    // Generate labels
     string lab1 = _orderLabel(eS1, eM1, eL1)
     string lab2 = _orderLabel(eS2, eM2, eL2)
     string lab3 = _orderLabel(eS3, eM3, eL3)
@@ -186,44 +224,48 @@ export getTFConfluence(
     string lab6 = _orderLabel(eS6, eM6, eL6)
 
     // Condition A: SML (Bull Stack) per TF
-    bool cA1 = lab1 == "SML", bool cA2 = lab2 == "SML", bool cA3 = lab3 == "SML"
-    bool cA4 = lab4 == "SML", bool cA5 = lab5 == "SML", bool cA6 = lab6 == "SML"
+    bool cA1 = _isSML(eS1, eM1, eL1), bool cA2 = _isSML(eS2, eM2, eL2), bool cA3 = _isSML(eS3, eM3, eL3)
+    bool cA4 = _isSML(eS4, eM4, eL4), bool cA5 = _isSML(eS5, eM5, eL5), bool cA6 = _isSML(eS6, eM6, eL6)
 
     // Condition B: LMS (Bear Stack) per TF
-    bool cB1 = lab1 == "LMS", bool cB2 = lab2 == "LMS", bool cB3 = lab3 == "LMS"
-    bool cB4 = lab4 == "LMS", bool cB5 = lab5 == "LMS", bool cB6 = lab6 == "LMS"
+    bool cB1 = _isLMS(eS1, eM1, eL1), bool cB2 = _isLMS(eS2, eM2, eL2), bool cB3 = _isLMS(eS3, eM3, eL3)
+    bool cB4 = _isLMS(eS4, eM4, eL4), bool cB5 = _isLMS(eS5, eM5, eL5), bool cB6 = _isLMS(eS6, eM6, eL6)
 
     // Condition C: SLM per TF
-    bool cC1 = lab1 == "SLM", bool cC2 = lab2 == "SLM", bool cC3 = lab3 == "SLM"
-    bool cC4 = lab4 == "SLM", bool cC5 = lab5 == "SLM", bool cC6 = lab6 == "SLM"
+    bool cC1 = _isSLM(eS1, eM1, eL1), bool cC2 = _isSLM(eS2, eM2, eL2), bool cC3 = _isSLM(eS3, eM3, eL3)
+    bool cC4 = _isSLM(eS4, eM4, eL4), bool cC5 = _isSLM(eS5, eM5, eL5), bool cC6 = _isSLM(eS6, eM6, eL6)
 
     // Condition D: MSL per TF
-    bool cD1 = lab1 == "MSL", bool cD2 = lab2 == "MSL", bool cD3 = lab3 == "MSL"
-    bool cD4 = lab4 == "MSL", bool cD5 = lab5 == "MSL", bool cD6 = lab6 == "MSL"
+    bool cD1 = _isMSL(eS1, eM1, eL1), bool cD2 = _isMSL(eS2, eM2, eL2), bool cD3 = _isMSL(eS3, eM3, eL3)
+    bool cD4 = _isMSL(eS4, eM4, eL4), bool cD5 = _isMSL(eS5, eM5, eL5), bool cD6 = _isMSL(eS6, eM6, eL6)
 
     // Condition E: MLS per TF
-    bool cE1 = lab1 == "MLS", bool cE2 = lab2 == "MLS", bool cE3 = lab3 == "MLS"
-    bool cE4 = lab4 == "MLS", bool cE5 = lab5 == "MLS", bool cE6 = lab6 == "MLS"
+    bool cE1 = _isMLS(eS1, eM1, eL1), bool cE2 = _isMLS(eS2, eM2, eL2), bool cE3 = _isMLS(eS3, eM3, eL3)
+    bool cE4 = _isMLS(eS4, eM4, eL4), bool cE5 = _isMLS(eS5, eM5, eL5), bool cE6 = _isMLS(eS6, eM6, eL6)
 
     // Condition F: LSM per TF
-    bool cF1 = lab1 == "LSM", bool cF2 = lab2 == "LSM", bool cF3 = lab3 == "LSM"
-    bool cF4 = lab4 == "LSM", bool cF5 = lab5 == "LSM", bool cF6 = lab6 == "LSM"
+    bool cF1 = _isLSM(eS1, eM1, eL1), bool cF2 = _isLSM(eS2, eM2, eL2), bool cF3 = _isLSM(eS3, eM3, eL3)
+    bool cF4 = _isLSM(eS4, eM4, eL4), bool cF5 = _isLSM(eS5, eM5, eL5), bool cF6 = _isLSM(eS6, eM6, eL6)
 
-    // Triggers on chart timeframe
-    float eS = ta.ema(close, lenS)
-    float eM = ta.ema(close, lenM)
-    float eL = ta.ema(close, lenL)
+    // Triggers on chart timeframe (crossovers)
+    bool tA = eS_prev <= eM_prev and eS_chart > eM_chart  // S crosses above M
+    bool tB = eS_prev >= eM_prev and eS_chart < eM_chart  // S crosses below M
+    bool tC = eS_prev <= eL_prev and eS_chart > eL_chart  // S crosses above L
+    bool tD = eS_prev >= eL_prev and eS_chart < eL_chart  // S crosses below L
+    bool tE = eM_prev <= eL_prev and eM_chart > eL_chart  // M crosses above L
+    bool tF = eM_prev >= eL_prev and eM_chart < eL_chart  // M crosses below L
 
-    bool tA = ta.crossover(eS, eM)   // S crosses above M
-    bool tB = ta.crossunder(eS, eM)  // S crosses below M
-    bool tC = ta.crossover(eS, eL)   // S crosses above L
-    bool tD = ta.crossunder(eS, eL)  // S crosses below L
-    bool tE = ta.crossover(eM, eL)   // M crosses above L
-    bool tF = ta.crossunder(eM, eL)  // M crosses below L
+    // Handle na values in trigger detection
+    tA := na(eS_prev) or na(eM_prev) or na(eS_chart) or na(eM_chart) ? false : tA
+    tB := na(eS_prev) or na(eM_prev) or na(eS_chart) or na(eM_chart) ? false : tB
+    tC := na(eS_prev) or na(eL_prev) or na(eS_chart) or na(eL_chart) ? false : tC
+    tD := na(eS_prev) or na(eL_prev) or na(eS_chart) or na(eL_chart) ? false : tD
+    tE := na(eM_prev) or na(eL_prev) or na(eM_chart) or na(eL_chart) ? false : tE
+    tF := na(eM_prev) or na(eL_prev) or na(eM_chart) or na(eL_chart) ? false : tF
 
-    // Determine active trigger for metadata
+    // Determine trigger label
     bool anyTrig = tA or tB or tC or tD or tE or tF
-    float trigPx = anyTrig ? close + (_reservedSum * 0) : na  // _reservedSum used to satisfy compiler
+    float trigPx = anyTrig ? triggerPrice : na
     string trigLab = tA ? "S>M" : tB ? "S<M" : tC ? "S>L" : tD ? "S<L" : tE ? "M>L" : tF ? "M<L" : "None"
 
     TFModuleOutput.new(
@@ -251,3 +293,16 @@ export getTFConfluence(
         // Trigger metadata
         trigPx, trigLab
     )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LEGACY API - getTFConfluence (For backwards compatibility reference)
+// NOTE: This function is DEPRECATED. Use buildOutput() with toolkit-fetched data.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// REMOVED: The old getTFConfluence() function that used request.security()
+// is no longer supported due to PineScript limitations.
+//
+// Migration path:
+// 1. Toolkit fetches EMAs using request.security() with user-controlled params
+// 2. Toolkit calls buildOutput() with the fetched values
+// 3. This gives full optimizer compatibility while keeping processing modular
