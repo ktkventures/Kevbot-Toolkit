@@ -16,7 +16,7 @@
 //──────────────────────────────────────────────────────────────────────────────
 
 //@version=6
-indicator("KevBot Toolkit v1.1 – Hybrid Architecture", overlay = true)
+indicator("KevBot Toolkit v1.1 – Hybrid Architecture", overlay = true, max_labels_count = 500)
 plot(na, title="placeholder", display=display.none)
 
 import yamigushi/KevBot_TimeUtils/1 as tu
@@ -81,7 +81,7 @@ string csmShortName= input.string("", "Custom Name", group = GRP_CSM, inline="cs
 string GRP_POS = "3. Position Sizing Module"
 bool showSizer = input.bool(false, "Show Position Sizing Module", group = GRP_POS, inline="ps_row", tooltip="Displays this module in the Top Table (visual only). Does not affect trade logic.")
 string sizerName = input.string("", "Custom Name", group = GRP_POS, inline="ps_row", tooltip="Name shown in the Top Table for this module.")
-string sizer_entry = input.string("Entry Trigger + Grade C", "Position Entry Method", options=["Any Entry Trigger","Entry Trigger + Grade C","Entry Trigger + Grade B","Entry Trigger + Grade A","Library Custom"], group=GRP_POS, tooltip="Controls when a position is allowed to open, optionally requiring specific confluence grades.")
+string sizer_entry = input.string("Any Entry Trigger", "Position Entry Method", options=["Any Entry Trigger","Entry Trigger + Grade C","Entry Trigger + Grade B","Entry Trigger + Grade A","Library Custom"], group=GRP_POS, tooltip="Controls when a position is allowed to open, optionally requiring specific confluence grades.")
 bool   sizerAllowMulti = input.bool(false, "Allow Multiple Entries Per Trade", group=GRP_POS, tooltip="If enabled, the system may stack additional entries while a trade is open.")
 int    sizerMaxEntries = input.int(1, "Max Entries Per Trade", minval=1, group=GRP_POS, tooltip="Limits how many entries may be stacked into a single trade.")
 string sizer_exit = input.string("First Exit Trigger", "Position Exit Method", options=["First Exit Trigger","Exit Trigger + Grade C","Exit Trigger + Grade B","Exit Trigger + Grade A","Library Custom"], group=GRP_POS, tooltip="Determines when a trade should close, optionally requiring a confluence grade.")
@@ -235,8 +235,8 @@ int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o
 // 6. SIDE MODULE 1 (Timeframe-Based)
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE1 = "6. Side Module 1"
-bool   side1_enabled = input.bool(false, "Enable Side Module 1", group = GRP_SIDE1)
-string side1_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE1)
+bool   side1_enabled = input.bool(true, "Enable Side Module 1", group = GRP_SIDE1)
+string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE1)
 
 //────────────────────────────────────────────────────────────
 // Phase 2A — Semantic Mapping (UI clarity only)
@@ -266,10 +266,10 @@ float side1_paramF = input.float(0.0, "Parameter F", group = GRP_SIDE1)
 
 // Long Entry
 string GRP_SIDE1_LE = "6.1 Side Module 1 – Long Entry"
-bool   side1_LE_enable = input.bool(false, "Long Entry Trigger", group = GRP_SIDE1_LE, inline="le1")
-string side1_LE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LE, inline="le1")
-string side1_LE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LE, inline = "le2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
-bool   side1_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_LE, inline = "le2",tooltip = "Plot a bullish info label on the chart when this Long Entry trigger fires.")
+bool   side1_LE_enable = input.bool(true, "Long Entry Trigger", group = GRP_SIDE1_LE, inline="le1")
+string side1_LE_source = input.string("Trigger A", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LE, inline="le1")
+string side1_LE_sigType = input.string("Both", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LE, inline = "le2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_LE_bull    = input.bool(true, "Bullish Label",group = GRP_SIDE1_LE, inline = "le2",tooltip = "Plot a bullish info label on the chart when this Long Entry trigger fires.")
 
 
 // (Long Entry Confluence moved to 6.1.1)
@@ -277,18 +277,18 @@ bool   side1_LE_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_LE
 
 // TF Scores for Long Entry
 string GRP_SIDE1_LE_TF = "6.1.1 Long Entry – Confluences by Timeframe"
-bool   side1_LEC_enable = input.bool(false, "Long Entry Confluence", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Enable the Long Entry Confluence rule applied to all TF checks.")
-string side1_LEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Select the Long Entry confluence function.")
+bool   side1_LEC_enable = input.bool(true, "Long Entry Confluence", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Enable the Long Entry Confluence rule applied to all TF checks.")
+string side1_LEC_func   = input.string("Cond A", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Select the Long Entry confluence function.")
 bool   side1_LEC_bull   = input.bool(false, "Bullish Label", group = GRP_SIDE1_LE_TF, inline="lec1", tooltip="Plot a bullish label when the Long Entry Confluence condition is met.")
-int  side1_LE_tf1     = input.int(0, "TF 1 TH Score", inline="le_tf1", group = GRP_SIDE1_LE_TF)
+int  side1_LE_tf1     = input.int(50, "TF 1 TH Score", inline="le_tf1", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf1_req = input.bool(false, "Required", inline="le_tf1", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf1_inv = input.bool(false, "Inv Label", inline="le_tf1", group = GRP_SIDE1_LE_TF)
 
-int  side1_LE_tf2     = input.int(0, "TF 2 TH Score", inline="le_tf2", group = GRP_SIDE1_LE_TF)
+int  side1_LE_tf2     = input.int(50, "TF 2 TH Score", inline="le_tf2", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf2_req = input.bool(false, "Required", inline="le_tf2", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf2_inv = input.bool(false, "Inv Label", inline="le_tf2", group = GRP_SIDE1_LE_TF)
 
-int  side1_LE_tf3     = input.int(0, "TF 3 TH Score", inline="le_tf3", group = GRP_SIDE1_LE_TF)
+int  side1_LE_tf3     = input.int(50, "TF 3 TH Score", inline="le_tf3", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf3_req = input.bool(false, "Required", inline="le_tf3", group = GRP_SIDE1_LE_TF)
 bool side1_LE_tf3_inv = input.bool(false, "Inv Label", inline="le_tf3", group = GRP_SIDE1_LE_TF)
 
@@ -306,10 +306,10 @@ bool side1_LE_tf6_inv = input.bool(false, "Inv Label", inline="le_tf6", group = 
 
 // Long Exit
 string GRP_SIDE1_LX = "6.2 Side Module 1 – Long Exit"
-bool   side1_LX_enable = input.bool(false, "Long Exit Trigger", group = GRP_SIDE1_LX, inline="lx1")
-string side1_LX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LX, inline="lx1")
-string side1_LX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LX, inline = "lx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
-bool   side1_LX_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_LX, inline = "lx2",tooltip = "Plot a bearish info label on the chart when this Long Exit trigger fires.")
+bool   side1_LX_enable = input.bool(true, "Long Exit Trigger", group = GRP_SIDE1_LX, inline="lx1")
+string side1_LX_source = input.string("Trigger B", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_LX, inline="lx1")
+string side1_LX_sigType = input.string("Both", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_LX, inline = "lx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_LX_bear    = input.bool(true, "Bearish Label",group = GRP_SIDE1_LX, inline = "lx2",tooltip = "Plot a bearish info label on the chart when this Long Exit trigger fires.")
 
 
 string GRP_SIDE1_LX_TF = "6.2.1 Long Exit – Confluences by Timeframe"
@@ -343,26 +343,26 @@ bool side1_LX_tf6_inv = input.bool(false, "Inv Label", inline="lx_tf6", group = 
 
 // Short Entry
 string GRP_SIDE1_SE = "6.3 Side Module 1 – Short Entry"
-bool   side1_SE_enable = input.bool(false, "Short Entry Trigger", group = GRP_SIDE1_SE, inline="se1")
-string side1_SE_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SE, inline="se1")
-string side1_SE_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SE, inline = "se2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
-bool   side1_SE_bear    = input.bool(false, "Bearish Label",group = GRP_SIDE1_SE, inline = "se2",tooltip = "Plot a bearish info label on the chart when this Short Entry trigger fires.")
+bool   side1_SE_enable = input.bool(true, "Short Entry Trigger", group = GRP_SIDE1_SE, inline="se1")
+string side1_SE_source = input.string("Trigger B", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SE, inline="se1")
+string side1_SE_sigType = input.string("Both", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SE, inline = "se2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_SE_bear    = input.bool(true, "Bearish Label",group = GRP_SIDE1_SE, inline = "se2",tooltip = "Plot a bearish info label on the chart when this Short Entry trigger fires.")
 
 
 string GRP_SIDE1_SE_TF = "6.3.1 Short Entry – Confluences by Timeframe"
-bool   side1_SEC_enable = input.bool(false, "Short Entry Confluence", group = GRP_SIDE1_SE_TF, inline="sec1")
-string side1_SEC_func   = input.string("None", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_SE_TF, inline="sec1")
+bool   side1_SEC_enable = input.bool(true, "Short Entry Confluence", group = GRP_SIDE1_SE_TF, inline="sec1")
+string side1_SEC_func   = input.string("Cond B", "", options=["None","Cond A","Cond B","Cond C","Cond D","Cond E","Cond F","Cond G","Cond H","Cond I","Cond J"], group = GRP_SIDE1_SE_TF, inline="sec1")
 bool   side1_SEC_bear   = input.bool(false, "Bearish Label", group = GRP_SIDE1_SE_TF, inline="sec1")
 
-int  side1_SE_tf1     = input.int(0, "TF 1 TH Score", inline="se_tf1", group = GRP_SIDE1_SE_TF)
+int  side1_SE_tf1     = input.int(50, "TF 1 TH Score", inline="se_tf1", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf1_req = input.bool(false, "Required", inline="se_tf1", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf1_inv = input.bool(false, "Inv Label", inline="se_tf1", group = GRP_SIDE1_SE_TF)
 
-int  side1_SE_tf2     = input.int(0, "TF 2 TH Score", inline="se_tf2", group = GRP_SIDE1_SE_TF)
+int  side1_SE_tf2     = input.int(50, "TF 2 TH Score", inline="se_tf2", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf2_req = input.bool(false, "Required", inline="se_tf2", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf2_inv = input.bool(false, "Inv Label", inline="se_tf2", group = GRP_SIDE1_SE_TF)
 
-int  side1_SE_tf3     = input.int(0, "TF 3 TH Score", inline="se_tf3", group = GRP_SIDE1_SE_TF)
+int  side1_SE_tf3     = input.int(50, "TF 3 TH Score", inline="se_tf3", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf3_req = input.bool(false, "Required", inline="se_tf3", group = GRP_SIDE1_SE_TF)
 bool side1_SE_tf3_inv = input.bool(false, "Inv Label", inline="se_tf3", group = GRP_SIDE1_SE_TF)
 
@@ -380,10 +380,10 @@ bool side1_SE_tf6_inv = input.bool(false, "Inv Label", inline="se_tf6", group = 
 
 // Short Exit
 string GRP_SIDE1_SX = "6.4 Side Module 1 – Short Exit"
-bool   side1_SX_enable = input.bool(false, "Short Exit Trigger", group = GRP_SIDE1_SX, inline="sx1")
-string side1_SX_source = input.string("None", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SX, inline="sx1")
-string side1_SX_sigType = input.string("None", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SX, inline = "sx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
-bool   side1_SX_bull    = input.bool(false, "Bullish Label",group = GRP_SIDE1_SX, inline = "sx2",tooltip = "Plot a bullish info label on the chart when this Short Exit trigger fires.")
+bool   side1_SX_enable = input.bool(true, "Short Exit Trigger", group = GRP_SIDE1_SX, inline="sx1")
+string side1_SX_source = input.string("Trigger A", "", options=["None","Trigger A","Trigger B","Trigger C","Trigger D","Trigger E","Trigger F","Trigger G","Trigger H","Trigger I","Trigger J"], group=GRP_SIDE1_SX, inline="sx1")
+string side1_SX_sigType = input.string("Both", "Signal Type",options = ["None","Raw Only","Position Only","Both"],group   = GRP_SIDE1_SX, inline = "sx2",tooltip = "Choose whether this trigger plots raw marks, position entries/exits, or both.")
+bool   side1_SX_bull    = input.bool(true, "Bullish Label",group = GRP_SIDE1_SX, inline = "sx2",tooltip = "Plot a bullish info label on the chart when this Short Exit trigger fires.")
 
 
 string GRP_SIDE1_SX_TF = "6.4.1 Short Exit – Confluences by Timeframe"
@@ -2178,25 +2178,27 @@ color _kb_sideTxtCol  = useDarkTheme ? color.white : color.new(color.black, 0)
 color _kb_sideHeadBg  = useDarkTheme ? color.new(color.gray, 65) : color.new(color.gray, 85)
 color _kb_sideLabelBg = useDarkTheme ? color.new(color.gray, 75) : color.new(color.gray, 88)
 
-f_sideTF_color(bool tfCond, bool leScope, bool seScope, int leScore, int seScore) =>
+f_sideTF_color(bool tfCondLE, bool tfCondSE, bool leScope, bool seScope, int leScore, int seScore) =>
     bool hasLongScope  = leScope  and leScore > 0
     bool hasShortScope = seScope and seScore > 0
     bool anyScope      = hasLongScope or hasShortScope
 
-    bool longTrue  = hasLongScope  and tfCond
-    bool shortTrue = hasShortScope and tfCond
+    // Evaluate Long and Short conditions independently
+    bool longTrue  = hasLongScope  and tfCondLE
+    bool shortTrue = hasShortScope and tfCondSE
 
+    // Color priority (lowest to highest): Gray -> Yellow -> Green/Red -> Blue
     color bg = color.new(color.gray, _kb_sideTransOff)
 
     if anyScope
         if longTrue and shortTrue
-            bg := color.new(color.blue, _kb_sideTrans)
+            bg := color.new(color.blue, _kb_sideTrans)    // Both confluences TRUE
         else if longTrue
-            bg := color.new(color.green, _kb_sideTrans)
+            bg := color.new(color.green, _kb_sideTrans)   // Long confluence TRUE
         else if shortTrue
-            bg := color.new(color.red, _kb_sideTrans)
+            bg := color.new(color.red, _kb_sideTrans)     // Short confluence TRUE
         else
-            bg := color.new(color.yellow, _kb_sideTrans)
+            bg := color.new(color.yellow, _kb_sideTrans)  // Monitored but not met
     bg
 
 // 13.3 Build Timeframe Columns -----------------------------------------------
@@ -2354,9 +2356,8 @@ else if enableSideTable
         bool leScope = side1_LEC_enable and side1_LEC_func != "None"
         bool seScope = side1_SEC_enable and side1_SEC_func != "None"
 
-        // Use Long Entry condition for display (or Short Entry if LE not enabled)
-        bool tfCond = leScope ? tfCondLE : (seScope ? tfCondSE : false)
-        color cellBg = f_sideTF_color(tfCond, leScope, seScope, leScore, seScore)
+        // Pass both Long and Short conditions separately for independent evaluation
+        color cellBg = f_sideTF_color(tfCondLE, tfCondSE, leScope, seScope, leScore, seScore)
 
         bool isRequired = (reqLong and leScore > 0) or (reqShort and seScore > 0)
 
@@ -2452,9 +2453,8 @@ else if enableSideTable
         bool leScope = side2_LEC_enable and side2_LEC_func != "None"
         bool seScope = side2_SEC_enable and side2_SEC_func != "None"
 
-        // Use Long Entry condition for display (or Short Entry if LE not enabled)
-        bool tfCond = leScope ? tfCondLE : (seScope ? tfCondSE : false)
-        color cellBg = f_sideTF_color(tfCond, leScope, seScope, leScore, seScore)
+        // Pass both Long and Short conditions separately for independent evaluation
+        color cellBg = f_sideTF_color(tfCondLE, tfCondSE, leScope, seScope, leScore, seScore)
 
         bool isRequired = (reqLong and leScore > 0) or (reqShort and seScore > 0)
 
@@ -2466,3 +2466,335 @@ else if enableSideTable
     // Clear any unused module cells beyond active TF count
     for col = 1 + _kb_side_tfCount to _kb_sideCols - 1
         f_sideTable_cell(_kb_sideTable, col, _kb_moduleRow2, "", _kb_sideTxtCol, color.new(color.gray, 100))
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 14. CHART PLOTTING
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Signal shapes and labels plotted on the chart.
+//
+// Two categories of signals:
+//   1. Raw Triggers (informational) - Cross (+) shape for entries only
+//      - Indicates a library trigger fired
+//      - Does NOT imply a trade was taken
+//   2. Position Signals (actual trades) - Arrow for entries, XCross for exits
+//      - Indicates an actual position entry/exit occurred
+//
+// Note: Raw exit triggers do NOT plot shapes. Exit marks ONLY apply to
+// actual position exits since exits only have meaning with an open position.
+
+//──────────────────────────────────────────────────────────────────────────────
+// 14.1 RAW TRIGGER MARKS (Entry Only)
+//──────────────────────────────────────────────────────────────────────────────
+// Cross (+) shape for raw entry triggers - informational only
+// Plotted at close price (where trigger is detected)
+
+// Long Entry Raw - Green Cross at close price
+plotshape(
+     markLongEntry ? close : na,
+     title    = "Raw Long Entry",
+     style    = shape.cross,
+     location = location.absolute,
+     color    = color.green,
+     size     = size.small,
+     display  = display.all
+     )
+
+// Short Entry Raw - Red Cross at close price
+plotshape(
+     markShortEntry ? close : na,
+     title    = "Raw Short Entry",
+     style    = shape.cross,
+     location = location.absolute,
+     color    = color.red,
+     size     = size.small,
+     display  = display.all
+     )
+
+// Note: Raw exit triggers (markLongExit, markShortExit) do NOT plot shapes.
+// Exit marks only apply to actual position exits.
+
+//──────────────────────────────────────────────────────────────────────────────
+// 14.2 POSITION SIGNAL MARKS
+//──────────────────────────────────────────────────────────────────────────────
+// Triangle shapes for position entries, XCross for position exits
+// All plotted at close price (where trigger is detected)
+
+// Long Position Entry - Green Triangle Up at close price
+plotshape(
+     positionLongEntry ? close : na,
+     title    = "Position Long Entry",
+     style    = shape.triangleup,
+     location = location.absolute,
+     color    = color.green,
+     size     = size.normal,
+     display  = display.all
+     )
+
+// Short Position Entry - Red Triangle Down at close price
+plotshape(
+     positionShortEntry ? close : na,
+     title    = "Position Short Entry",
+     style    = shape.triangledown,
+     location = location.absolute,
+     color    = color.red,
+     size     = size.normal,
+     display  = display.all
+     )
+
+// Long Position Exit - Green XCross at close price
+plotshape(
+     positionLongExit ? close : na,
+     title    = "Position Long Exit",
+     style    = shape.xcross,
+     location = location.absolute,
+     color    = color.green,
+     size     = size.normal,
+     display  = display.all
+     )
+
+// Short Position Exit - Red XCross at close price
+plotshape(
+     positionShortExit ? close : na,
+     title    = "Position Short Exit",
+     style    = shape.xcross,
+     location = location.absolute,
+     color    = color.red,
+     size     = size.normal,
+     display  = display.all
+     )
+
+//──────────────────────────────────────────────────────────────────────────────
+// 14.3 TRIGGER LABELS
+//──────────────────────────────────────────────────────────────────────────────
+// Contextual labels showing trigger names and position metadata.
+// - Bullish labels: GREEN, BELOW candle (anticipating price up)
+// - Bearish labels: RED, ABOVE candle (anticipating price down)
+
+// Helper: Get trigger label for a specific library and trigger index
+// Returns descriptive text like "S>M" instead of "Trigger A"
+_kb_getTriggerLabel(string library, int trigIdx) =>
+    string lbl = ""
+    if library == "EMA Stack (S/M/L)"
+        // EMA Stack trigger labels
+        lbl := trigIdx == 0 ? "S>M" :   // Trigger A: Short crosses above Medium
+               trigIdx == 1 ? "S<M" :   // Trigger B: Short crosses below Medium
+               trigIdx == 2 ? "S>L" :   // Trigger C: Short crosses above Long
+               trigIdx == 3 ? "S<L" :   // Trigger D: Short crosses below Long
+               trigIdx == 4 ? "M>L" :   // Trigger E: Medium crosses above Long
+               trigIdx == 5 ? "M<L" :   // Trigger F: Medium crosses below Long
+               "Trig " + str.tostring(trigIdx)
+    else if library == "KevBot_TF_Placeholder"
+        lbl := "Trig " + str.tostring(trigIdx)
+    else
+        lbl := "Trig " + str.tostring(trigIdx)
+    lbl
+
+// Helper: Build position label text with metadata
+_kb_buildPosLabel(string trigLabel, string grade, string tradeType, float qty, string riskStr) =>
+    string txt = trigLabel
+    if lbl_type
+        txt := txt + "\n" + tradeType
+    if lbl_grade
+        txt := txt + " | " + grade
+    if lbl_qty
+        txt := txt + "\nQty: " + str.tostring(qty, "#.##")
+    if lbl_risk
+        txt := txt + " | $" + riskStr
+    txt
+
+// Get trigger labels for Side Module 1
+string _lbl_LE = _kb_getTriggerLabel(side1_library, side1_LE_trig_index)
+string _lbl_LX = _kb_getTriggerLabel(side1_library, side1_LX_trig_index)
+string _lbl_SE = _kb_getTriggerLabel(side1_library, side1_SE_trig_index)
+string _lbl_SX = _kb_getTriggerLabel(side1_library, side1_SX_trig_index)
+
+// Get trigger labels for Side Module 2
+string _lbl_s2_LE = _kb_getTriggerLabel(side2_library, side2_LE_trig_index)
+string _lbl_s2_LX = _kb_getTriggerLabel(side2_library, side2_LX_trig_index)
+string _lbl_s2_SE = _kb_getTriggerLabel(side2_library, side2_SE_trig_index)
+string _lbl_s2_SX = _kb_getTriggerLabel(side2_library, side2_SX_trig_index)
+
+// Calculate position quantities for labels
+float _lbl_longQty  = _kb_calcQty(close, 1)
+float _lbl_shortQty = _kb_calcQty(close, -1)
+string _lbl_riskStr = riskMode == "Fixed $ Risk" ? str.tostring(defRisk, "#.##") : riskMode == "Percentage Risk" ? str.tostring(defRiskPct, "#.##") + "%" : str.tostring(defShares)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 14.3.1 RAW TRIGGER LABELS (informational only)
+//──────────────────────────────────────────────────────────────────────────────
+// Note: Raw labels only show when position signal does NOT fire on same bar
+// (to avoid duplicate labels - position labels have more info)
+
+// Long Entry - Bullish Label (GREEN, BELOW candle)
+// Only show raw label if position entry did NOT fire AND not exiting opposite direction
+if barstate.islast == false and markLongEntry and side1_LE_bull and not positionLongEntry and not positionShortExit
+    label.new(
+         bar_index, low,
+         _lbl_LE,
+         style    = label.style_label_up,
+         color    = color.green,
+         textcolor = color.white,
+         size     = size.small
+         )
+
+// Long Exit - Transparent Red Label (ABOVE candle, bearish exit)
+// Only show raw label if position exit did NOT fire AND not entering opposite direction
+// Also suppress if Short Entry raw is showing (same trigger, prioritize entry)
+if barstate.islast == false and markLongExit and side1_LX_bear and not positionLongExit and not positionShortEntry and not markShortEntry
+    label.new(
+         bar_index, high,
+         _lbl_LX,
+         style    = label.style_label_down,
+         color    = color.new(color.red, 50),
+         textcolor = color.white,
+         size     = size.small
+         )
+
+// Short Entry - Bearish Label (RED, ABOVE candle)
+// Only show raw label if position entry did NOT fire AND not exiting opposite direction
+if barstate.islast == false and markShortEntry and side1_SE_bear and not positionShortEntry and not positionLongExit
+    label.new(
+         bar_index, high,
+         _lbl_SE,
+         style    = label.style_label_down,
+         color    = color.red,
+         textcolor = color.white,
+         size     = size.small
+         )
+
+// Short Exit - Transparent Green Label (BELOW candle, bullish exit)
+// Only show raw label if position exit did NOT fire AND not entering opposite direction
+// Also suppress if Long Entry raw is showing (same trigger, prioritize entry)
+if barstate.islast == false and markShortExit and side1_SX_bull and not positionShortExit and not positionLongEntry and not markLongEntry
+    label.new(
+         bar_index, low,
+         _lbl_SX,
+         style    = label.style_label_up,
+         color    = color.new(color.green, 50),
+         textcolor = color.white,
+         size     = size.small
+         )
+
+//──────────────────────────────────────────────────────────────────────────────
+// 14.3.2 POSITION SIGNAL LABELS (with full metadata)
+//──────────────────────────────────────────────────────────────────────────────
+
+// Long Position Entry - Bullish Label with metadata (GREEN, BELOW candle)
+if barstate.islast == false and positionLongEntry and side1_LE_bull
+    string _posLblLE = _kb_buildPosLabel(_lbl_LE, _kb_longGrade, "LONG", _lbl_longQty, _lbl_riskStr)
+    label.new(
+         bar_index, low,
+         _posLblLE,
+         style    = label.style_label_up,
+         color    = color.green,
+         textcolor = color.white,
+         size     = size.normal
+         )
+
+// Long Position Exit - Transparent Red Label with metadata (ABOVE candle, bearish exit)
+if barstate.islast == false and positionLongExit and side1_LX_bear
+    string _posLblLX = _kb_buildPosLabel(_lbl_LX, _kb_longGrade, "LONG EXIT", _lbl_longQty, _lbl_riskStr)
+    label.new(
+         bar_index, high,
+         _posLblLX,
+         style    = label.style_label_down,
+         color    = color.new(color.red, 50),
+         textcolor = color.white,
+         size     = size.normal
+         )
+
+// Short Position Entry - Bearish Label with metadata (RED, ABOVE candle)
+if barstate.islast == false and positionShortEntry and side1_SE_bear
+    string _posLblSE = _kb_buildPosLabel(_lbl_SE, _kb_shortGrade, "SHORT", _lbl_shortQty, _lbl_riskStr)
+    label.new(
+         bar_index, high,
+         _posLblSE,
+         style    = label.style_label_down,
+         color    = color.red,
+         textcolor = color.white,
+         size     = size.normal
+         )
+
+// Short Position Exit - Transparent Green Label with metadata (BELOW candle, bullish exit)
+if barstate.islast == false and positionShortExit and side1_SX_bull
+    string _posLblSX = _kb_buildPosLabel(_lbl_SX, _kb_shortGrade, "SHORT EXIT", _lbl_shortQty, _lbl_riskStr)
+    label.new(
+         bar_index, low,
+         _posLblSX,
+         style    = label.style_label_up,
+         color    = color.new(color.green, 50),
+         textcolor = color.white,
+         size     = size.normal
+         )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 15. DATA EXPORT PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// These plots are invisible on the chart but appear in CSV exports.
+// Use TradingView's "Export chart data" to capture this information.
+//
+// ENCODING REFERENCE:
+// Grades: 0=None, 1=C, 2=B, 3=A
+// EMA Labels: 1=SML, 2=SLM, 3=MSL, 4=MLS, 5=LSM, 6=LMS, 0=Unknown
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.1 HELPERS - Encode strings to numbers for export
+//──────────────────────────────────────────────────────────────────────────────
+
+// Encode grade string to number
+_kb_encodeGrade(string g) =>
+    g == "A" ? 3 : g == "B" ? 2 : g == "C" ? 1 : 0
+
+// Encode EMA label string to number
+_kb_encodeEMALabel(string lbl) =>
+    lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "MSL" ? 3 : lbl == "MLS" ? 4 : lbl == "LSM" ? 5 : lbl == "LMS" ? 6 : 0
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.2 CONFLUENCE STATE EXPORTS
+//──────────────────────────────────────────────────────────────────────────────
+
+// Long Confluence
+plot(_kb_longScore,  "Export: Long Score",  display = display.data_window)
+plot(_kb_encodeGrade(_kb_longGrade), "Export: Long Grade (0=None,1=C,2=B,3=A)", display = display.data_window)
+
+// Short Confluence
+plot(_kb_shortScore, "Export: Short Score", display = display.data_window)
+plot(_kb_encodeGrade(_kb_shortGrade), "Export: Short Grade (0=None,1=C,2=B,3=A)", display = display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.3 POSITION SIZING EXPORTS
+//──────────────────────────────────────────────────────────────────────────────
+
+plot(_lbl_longQty,  "Export: Long Qty",  display = display.data_window)
+plot(_lbl_shortQty, "Export: Short Qty", display = display.data_window)
+
+// Risk amount (actual dollar value based on risk mode)
+float _export_riskAmt = riskMode == "Fixed $ Risk" ? defRisk : riskMode == "Percentage Risk" ? (acctSize * defRiskPct * 0.01) : na
+plot(_export_riskAmt, "Export: Risk Amount ($)", display = display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.4 TIMEFRAME CONDITION STATE EXPORTS (Side Module 1)
+//──────────────────────────────────────────────────────────────────────────────
+// Exports the EMA ordering label for each timeframe as an encoded number
+// 1=SML (Bull Stack), 2=SLM, 3=MSL, 4=MLS, 5=LSM, 6=LMS (Bear Stack), 0=Unknown
+
+plot(_kb_encodeEMALabel(_side1_tf1_label), "Export: TF1 EMA State", display = display.data_window)
+plot(_kb_encodeEMALabel(_side1_tf2_label), "Export: TF2 EMA State", display = display.data_window)
+plot(_kb_encodeEMALabel(_side1_tf3_label), "Export: TF3 EMA State", display = display.data_window)
+plot(_kb_encodeEMALabel(_side1_tf4_label), "Export: TF4 EMA State", display = display.data_window)
+plot(_kb_encodeEMALabel(_side1_tf5_label), "Export: TF5 EMA State", display = display.data_window)
+plot(_kb_encodeEMALabel(_side1_tf6_label), "Export: TF6 EMA State", display = display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.5 SIGNAL MARKERS FOR EXPORT
+//──────────────────────────────────────────────────────────────────────────────
+// These help identify which bars had entries/exits in the export
+
+plot(positionLongEntry  ? 1 : 0, "Export: Pos Long Entry",  display = display.data_window)
+plot(positionShortEntry ? 1 : 0, "Export: Pos Short Entry", display = display.data_window)
+plot(positionLongExit   ? 1 : 0, "Export: Pos Long Exit",   display = display.data_window)
+plot(positionShortExit  ? 1 : 0, "Export: Pos Short Exit",  display = display.data_window)
+
+// Active trigger index on entry (helps identify which trigger fired)
+plot(positionLongEntry  ? side1_LE_trig_index : na, "Export: LE Trigger Idx", display = display.data_window)
+plot(positionShortEntry ? side1_SE_trig_index : na, "Export: SE Trigger Idx", display = display.data_window)

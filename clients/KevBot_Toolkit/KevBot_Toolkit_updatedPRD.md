@@ -1,7 +1,7 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.2
-**Date:** January 26, 2026
+**Version:** 1.3
+**Date:** January 27, 2026
 **Target Platform:** TradingView (PineScript v6)
 **Development Tool:** Claude Code
 
@@ -17,6 +17,11 @@ The KevBot Toolkit is a modular TradingView indicator designed to automate trade
 - EMA Stack library working correctly with hybrid pattern
 - Parameters (paramA-F) now fully optimizable by third-party tools
 - Side table displays both modules with correct EMA stack labels
+- Chart plotting system: raw trigger marks (cross) and position signals (triangles/xcross)
+- Label system: trigger name labels for raw signals, full metadata labels for positions
+- Data export plots: invisible plots for CSV export of confluence data, position sizing, TF states
+- All 10 triggers (A-J) and 10 conditions (A-J) exposed in UI dropdowns
+- Sensible default input values for immediate signal display on load
 
 **Goal of This PRD:** Enable Claude Code to accelerate development with full codebase awareness, documenting current state and architecture decisions accurately.
 
@@ -705,11 +710,141 @@ Inherit similar structure that is currently in the code
 
 ### 8.3 Chart Elements
 
+#### 8.3.1 Signal Types Overview
+
+The toolkit distinguishes between two categories of chart signals:
+
+**Raw Triggers** - Informational markers indicating "something interesting happened here"
+- Simply indicates that a library trigger fired (e.g., EMA crossover occurred)
+- Does NOT imply a trade was taken
+- Useful for debugging and understanding market context
+- Displayed when Signal Type = "Raw Only" or "Both"
+
+**Position Signals** - Actual trade entry/exit markers
+- Indicates a position was actually entered or exited
+- Requires: Raw trigger + all required conditions met + grade threshold (if configured)
+- Displayed when Signal Type = "Position Only" or "Both"
+
+#### 8.3.2 Signal Shape & Color Specifications
+
+**Raw Trigger Marks (Entry Only):**
+
+| Signal | Shape | Color | PineScript Shape |
+|--------|-------|-------|------------------|
+| Long Entry Raw | Cross (+) | Green | `shape.cross` |
+| Short Entry Raw | Cross (+) | Red | `shape.cross` |
+
+**IMPORTANT:** Raw exit triggers do NOT plot shapes. Exit marks ONLY apply to position exits. Raw exit triggers are purely informational events that may trigger labels (if enabled) but do not render chart shapes.
+
+**Position Signal Marks:**
+
+| Signal | Shape | Color | PineScript Shape |
+|--------|-------|-------|------------------|
+| Long Position Entry | Triangle Up | Green | `shape.triangleup` |
+| Short Position Entry | Triangle Down | Red | `shape.triangledown` |
+| Long Position Exit | XCross (X) | Green | `shape.xcross` |
+| Short Position Exit | XCross (X) | Red | `shape.xcross` |
+
+**Exit Mark Rule:** XCross (X) shapes are ONLY plotted for actual position exits. There is no visual mark for raw exit triggers since exits only have meaning in the context of an open position.
+
+#### 8.3.3 Label System
+
+Labels can be displayed alongside any signal (raw or position) when enabled via the Bullish/Bearish Label toggles.
+
+**Raw Trigger Labels:**
+- Display the **trigger name** for context (e.g., "S>M" for Short EMA crossed above Medium)
+- Small size (`size.small`)
+- Helps user understand what event occurred at that bar
+
+**Position Signal Labels:**
+- Display **full trade metadata** including:
+  - Trigger name/reason
+  - Confluence grade (A/B/C) - if `lbl_grade` enabled
+  - Trade type (Long/Short) - if `lbl_type` enabled
+  - Position quantity - if `lbl_qty` enabled
+  - Dollar risk amount - if `lbl_risk` enabled
+- Normal size (`size.normal`)
+- Provides complete context for the trade entry/exit
+
+**Label Color & Position Specifications:**
+
+| Signal Type | Color | Transparency | Position | Style |
+|-------------|-------|--------------|----------|-------|
+| Long Entry (Raw & Position) | Green | Solid (0%) | Below candle | `label.style_label_up` |
+| Long Exit (Raw & Position) | Red | 50% transparent | Above candle | `label.style_label_down` |
+| Short Entry (Raw & Position) | Red | Solid (0%) | Above candle | `label.style_label_down` |
+| Short Exit (Raw & Position) | Green | 50% transparent | Below candle | `label.style_label_up` |
+
+**Color Logic Rationale:**
+- Entry labels use bold/solid colors (green for bullish entry, red for bearish entry)
+- Exit labels use transparent colors representing the direction the exit is TOWARD (Long Exit = transparent red because exiting means bearish action, Short Exit = transparent green because exiting means bullish action)
+
+**Label Suppression Logic:**
+To prevent duplicate labels when the same trigger fires for multiple signal types:
+1. Position labels suppress corresponding raw labels (if position fires, raw label is hidden)
+2. Entry labels suppress exit labels when same trigger fires for both (entry takes priority)
+3. Uses `max_labels_count = 500` in indicator declaration for extended history
+
+#### 8.3.4 Other Chart Elements
+
 **Plotted When Enabled:**
-- Position labels (entry/exit markers)
 - Safety stop loss lines (`sl_show = true`)
 - Safety take profit lines (`tp_show = true`)
-- Raw Trigger Only (when Signal Type = "Raw Trigger Only" or "Both")
+
+### 8.4 Data Export System
+
+The toolkit includes invisible plots that capture confluence state, position sizing, and timeframe conditions for CSV export via TradingView's data export feature.
+
+#### 8.4.1 Export Plot Specifications
+
+All export plots use `display = display.data_window` to remain invisible on chart but appear in exported data.
+
+**Confluence State Exports:**
+| Plot Name | Description | Values |
+|-----------|-------------|--------|
+| Export: Long Score | Current long confluence score | 0-999 |
+| Export: Long Grade | Encoded grade | 0=None, 1=C, 2=B, 3=A |
+| Export: Short Score | Current short confluence score | 0-999 |
+| Export: Short Grade | Encoded grade | 0=None, 1=C, 2=B, 3=A |
+
+**Position Sizing Exports:**
+| Plot Name | Description | Values |
+|-----------|-------------|--------|
+| Export: Long Qty | Calculated long position quantity | Float |
+| Export: Short Qty | Calculated short position quantity | Float |
+| Export: Risk Amount ($) | Dollar risk based on risk mode | Float |
+
+**Timeframe Condition State Exports (TF1-TF6):**
+| Plot Name | Description | Encoded Values |
+|-----------|-------------|----------------|
+| Export: TFn EMA State | Current EMA stack ordering | 1=SML, 2=SLM, 3=MSL, 4=MLS, 5=LSM, 6=LMS, 0=Unknown |
+
+**Signal Marker Exports:**
+| Plot Name | Description | Values |
+|-----------|-------------|--------|
+| Export: Pos Long Entry | Position long entry fired | 0 or 1 |
+| Export: Pos Short Entry | Position short entry fired | 0 or 1 |
+| Export: Pos Long Exit | Position long exit fired | 0 or 1 |
+| Export: Pos Short Exit | Position short exit fired | 0 or 1 |
+| Export: Long Entry Trigger Idx | Which trigger fired for long entry | 0-9 (A-J) or -1 |
+| Export: Short Entry Trigger Idx | Which trigger fired for short entry | 0-9 (A-J) or -1 |
+
+#### 8.4.2 Encoding Helper Functions
+
+The toolkit uses helper functions to convert string values to numeric for export:
+
+```pinescript
+_kb_encodeGrade(string g) => g == "A" ? 3 : g == "B" ? 2 : g == "C" ? 1 : 0
+_kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "MSL" ? 3 : lbl == "MLS" ? 4 : lbl == "LSM" ? 5 : lbl == "LMS" ? 6 : 0
+```
+
+#### 8.4.3 CSV Export Workflow
+
+1. Apply indicator to chart with desired configuration
+2. Use TradingView's "Export Chart Data" feature (Settings > Export data)
+3. Select "Indicator data" to include all plot values
+4. Import CSV into Google Sheets, Trader Sync, or analysis tool
+5. Decode numeric values using encoding tables above
 
 ---
 
@@ -739,11 +874,16 @@ Inherit similar structure that is currently in the code
 - [x] KevBot_Indicators library (pure processing functions)
 - [x] KevBot_Library_Definitions.md (user-facing documentation)
 
+- [x] **✅ Expand UI input options to expose all 10 triggers (A-J) and 10 conditions (A-J)** - All dropdown options now available in inputs
+- [x] **✅ Label plotting system** - Raw trigger labels and position labels with full metadata support
+- [x] **✅ Chart plotting system** - Raw trigger marks (cross) and position signal marks (triangles/xcross)
+- [x] **✅ Data export plots** - Invisible plots for CSV export (confluence scores, grades, position sizing, TF states)
+- [x] **✅ Default input values** - Sensible defaults so signals display on indicator load
+- [x] **✅ Side table color fix** - Independent evaluation of Long/Short confluence conditions
+
 **Remaining:**
-- [ ] Expand UI input options to expose all 10 triggers and 10 conditions
-- [ ] Label plotting system
 - [ ] Complete backtest KPI calculations
-- [ ] CSV export functionality
+- [ ] CSV export functionality (data export plots ready, need export mechanism)
 - [ ] Add Side Modules 3-10 (follow existing pattern)
 
 ### 9.2 Phase 2: Enhancement & Testing
@@ -837,21 +977,29 @@ Inherit similar structure that is currently in the code
 - **Status:** ✅ **RESOLVED** in v1.1 Hybrid Architecture
 - **Verification:** Side Table now correctly displays EMA stack labels (SML, LMS, MSL, etc.) per timeframe
 
-**2. Label Plotting Incomplete**
-- **Impact:** Entry/exit signals not visible on chart
-- **Status:** Position labels defined but not plotted
-- **Blocker for:** Visual confirmation of signals
+**2. ✅ RESOLVED: Label Plotting Incomplete**
+- **Original Issue:** Entry/exit signals not visible on chart
+- **Solution Implemented:** Complete label system with raw trigger labels and position labels
+  - Raw labels show trigger names (e.g., "S>M")
+  - Position labels show full metadata (grade, qty, risk, trade type)
+  - Label colors/positions follow directional semantics
+  - Suppression logic prevents duplicate labels
+  - `max_labels_count = 500` for extended history
+- **Status:** ✅ **RESOLVED** in v1.1
 
-**3. CSV Export Not Implemented**
-- **Impact:** Cannot analyze data in external tools
-- **Status:** No export mechanism exists yet
-- **Blocker for:** Primary use case (multivariate analysis)
+**3. Partial: CSV Export**
+- **Impact:** Cannot fully analyze data in external tools
+- **Current Status:** Data export plots implemented (Section 15 in code)
+  - Invisible plots capture confluence scores, grades, position sizing, TF states
+  - Signal markers for all entry/exit events
+  - Encoding functions convert strings to numeric values
+- **Remaining:** TradingView's export mechanism needed for actual CSV download
+- **Workaround:** Use TradingView's native "Export Chart Data" feature
 
-**4. UI Trigger/Condition Options Limited**
-- **Impact:** Input settings only show subset of available trigger/condition options
-- **Status:** Libraries support 10 triggers (A-J) and 10 conditions (A-J), but UI dropdowns may only show 2
-- **Blocker for:** Fully utilizing expanded library capabilities
-- **Note:** Library architecture is complete; UI input expansion needed
+**4. ✅ RESOLVED: UI Trigger/Condition Options Limited**
+- **Original Issue:** Input settings only showed subset of available trigger/condition options
+- **Solution Implemented:** All 10 triggers (A-J) and 10 conditions (A-J) now available in UI dropdowns
+- **Status:** ✅ **RESOLVED** in v1.1
 
 ### 11.2 Non-Critical Issues
 
@@ -888,10 +1036,11 @@ Inherit similar structure that is currently in the code
 - [ ] Top Table rendering (Confluence Summary + Position Sizing + Backtest KPIs)
 - [x] Side Table rendering (1 Side Module across 6 TFs)
 - [x] At least 1 functional TF library (EMA Stack ✓)
-- [ ] Chart label plotting for entries/exits, bullish and bearish labels that communicate trigger reason, and invisible labels
+- [x] Chart plotting for entries/exits (raw trigger marks + position signal marks)
+- [x] Label system with trigger names and full position metadata
+- [x] Data export plots for CSV analysis (confluence, position sizing, TF states)
 - [ ] Basic backtest KPIs (win rate, PF, total trades) using single entry trades instead of multientries
-- [ ] CSV file export
-- [ ] Position labels with full metadata
+- [ ] CSV file export mechanism (data plots ready, need TradingView export)
 
 ### 12.2 Full Feature Set
 
@@ -1294,6 +1443,7 @@ label.new(bar_index, high,
 | 1.0 | 2026-01-20 | Initial PRD creation | Claude (Anthropic) |
 | 1.1 | 2026-01-26 | Updated to reflect current state: corrected file names/line counts, documented V2 expanded TFModuleOutput structure (10 conditions/triggers), added KB_TF_Out_V2 internal structure, documented critical EMA Stack label bug with root cause analysis, updated development status | Claude Code (Opus 4.5) |
 | 1.2 | 2026-01-26 | **Major Update:** Hybrid Architecture v1.1 implemented and working. EMA Stack bug resolved via hybrid pattern (toolkit owns security calls, library processes data). Side Module 2 added as proof of concept. Created KevBot_Library_Definitions.md for user-facing documentation. Renamed legacy files with LEGACY prefix. Updated all sections to reflect current working state. | Claude Code (Opus 4.5) |
+| 1.3 | 2026-01-27 | **Feature Complete Update:** (1) Chart plotting system: raw trigger marks (cross +) for entries, position signal marks (triangles for entries, xcross for exits). (2) Label system: raw labels with trigger names, position labels with full metadata, color/position semantics, suppression logic, max_labels_count=500. (3) Data export plots: invisible plots for CSV export including confluence scores, grades, position sizing, TF EMA states, signal markers. (4) UI expansion: all 10 triggers (A-J) and 10 conditions (A-J) exposed in dropdowns. (5) Default input values: sensible defaults so signals display on load. (6) Side table color fix: independent Long/Short confluence condition evaluation. Updated Section 8.3, added Section 8.4 Data Export, updated Section 9.1 completed items, marked resolved issues in Section 11. | Claude Code (Opus 4.5) |
 
 ---
 
