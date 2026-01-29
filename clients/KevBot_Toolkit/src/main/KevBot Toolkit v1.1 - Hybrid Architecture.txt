@@ -2798,3 +2798,87 @@ plot(positionShortExit  ? 1 : 0, "Export: Pos Short Exit",  display = display.da
 // Active trigger index on entry (helps identify which trigger fired)
 plot(positionLongEntry  ? side1_LE_trig_index : na, "Export: LE Trigger Idx", display = display.data_window)
 plot(positionShortEntry ? side1_SE_trig_index : na, "Export: SE Trigger Idx", display = display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 15.6 EQUITY CURVE EXPORTS (Entry Price, SL, TP)
+//──────────────────────────────────────────────────────────────────────────────
+// These exports allow building a more realistic equity curve in a spreadsheet
+// by using actual SL/TP prices instead of bar close for exits.
+//
+// USAGE IN SPREADSHEET:
+// 1. Find entry bars (Pos Long Entry = 1 or Pos Short Entry = 1)
+// 2. Capture Entry Price, SL Price, TP Price at entry
+// 3. On subsequent bars, check if Low <= SL (stopped out) or High >= TP (target hit)
+// 4. Use the appropriate exit price for PnL calculation
+
+// Entry price (close of entry bar)
+plot(positionLongEntry  ? close : na, "Export: Long Entry Price",  display = display.data_window)
+plot(positionShortEntry ? close : na, "Export: Short Entry Price", display = display.data_window)
+
+// SL Price calculation at entry (direction-aware)
+// Long: SL is below entry | Short: SL is above entry
+float _export_longSL = na
+float _export_shortSL = na
+
+if positionLongEntry
+    if sl_method == "ATR"
+        _export_longSL := close - ta.atr(sl_atrPer) * sl_atrMult
+    else if sl_method == "Fixed Dollar"
+        _export_longSL := close - sl_fixed
+    else if sl_method == "Percentage"
+        _export_longSL := close * (1 - sl_pct * 0.01)
+    else if sl_method == "Candle Wicks"
+        _export_longSL := low[sl_lookback] - sl_pad
+
+if positionShortEntry
+    if sl_method == "ATR"
+        _export_shortSL := close + ta.atr(sl_atrPer) * sl_atrMult
+    else if sl_method == "Fixed Dollar"
+        _export_shortSL := close + sl_fixed
+    else if sl_method == "Percentage"
+        _export_shortSL := close * (1 + sl_pct * 0.01)
+    else if sl_method == "Candle Wicks"
+        _export_shortSL := high[sl_lookback] + sl_pad
+
+plot(_export_longSL,  "Export: Long SL Price",  display = display.data_window)
+plot(_export_shortSL, "Export: Short SL Price", display = display.data_window)
+
+// TP Price calculation at entry (direction-aware)
+// Long: TP is above entry | Short: TP is below entry
+float _export_longTP = na
+float _export_shortTP = na
+
+// Calculate risk distance for R:R based TP
+float _export_longRisk  = positionLongEntry  ? (close - nz(_export_longSL, close)) : na
+float _export_shortRisk = positionShortEntry ? (nz(_export_shortSL, close) - close) : na
+
+if positionLongEntry
+    if tp_method == "Risk:Reward Target"
+        _export_longTP := close + (_export_longRisk * tp_rr)
+    else if tp_method == "ATR"
+        _export_longTP := close + ta.atr(tp_atrPer) * tp_atrMult
+    else if tp_method == "Fixed Dollar"
+        _export_longTP := close + tp_fixed
+    else if tp_method == "Percentage"
+        _export_longTP := close * (1 + tp_pct * 0.01)
+    else if tp_method == "Candle Wicks"
+        _export_longTP := high[tp_lookback] + tp_pad
+
+if positionShortEntry
+    if tp_method == "Risk:Reward Target"
+        _export_shortTP := close - (_export_shortRisk * tp_rr)
+    else if tp_method == "ATR"
+        _export_shortTP := close - ta.atr(tp_atrPer) * tp_atrMult
+    else if tp_method == "Fixed Dollar"
+        _export_shortTP := close - tp_fixed
+    else if tp_method == "Percentage"
+        _export_shortTP := close * (1 - tp_pct * 0.01)
+    else if tp_method == "Candle Wicks"
+        _export_shortTP := low[tp_lookback] - tp_pad
+
+plot(_export_longTP,  "Export: Long TP Price",  display = display.data_window)
+plot(_export_shortTP, "Export: Short TP Price", display = display.data_window)
+
+// Risk amount in price terms (distance from entry to SL)
+plot(_export_longRisk,  "Export: Long Risk (Price)",  display = display.data_window)
+plot(_export_shortRisk, "Export: Short Risk (Price)", display = display.data_window)
