@@ -1,0 +1,300 @@
+//@version=6
+library("KevBot_TF_MACD_Divergence", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_MACD_Divergence – MACD Divergence Detection Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched data
+//   • This allows paramA-E in the toolkit to control parameters (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Detects divergences between price action and MACD indicator.
+//   A divergence occurs when price makes a new high/low but MACD doesn't confirm.
+//   This often signals a potential reversal or continuation.
+//
+// DIVERGENCE TYPES:
+//   Regular Bullish:  Price lower low  + MACD higher low  → Reversal UP likely
+//   Regular Bearish:  Price higher high + MACD lower high → Reversal DOWN likely
+//   Hidden Bullish:   Price higher low  + MACD lower low  → Uptrend continuation
+//   Hidden Bearish:   Price lower high  + MACD higher high → Downtrend continuation
+//
+// CONDITIONS PROVIDED:
+//   A: DIV+  (Regular Bullish Divergence detected)
+//   B: DIV-  (Regular Bearish Divergence detected)
+//   C: hDIV+ (Hidden Bullish Divergence detected)
+//   D: hDIV- (Hidden Bearish Divergence detected)
+//   E: NONE  (No divergence detected)
+//   F-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Regular Bullish Divergence Confirmed (new swing low completes pattern)
+//   B: Regular Bearish Divergence Confirmed (new swing high completes pattern)
+//   C: Hidden Bullish Divergence Confirmed
+//   D: Hidden Bearish Divergence Confirmed
+//   E-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: DIV+ (Regular Bullish Divergence)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: DIV- (Regular Bearish Divergence)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: hDIV+ (Hidden Bullish Divergence)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: hDIV- (Hidden Bearish Divergence)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF: NONE (No divergence)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Conditions F-J per TF: Reserved (false)
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Regular Bullish Divergence Confirmed
+    bool trigB  // Regular Bearish Divergence Confirmed
+    bool trigC  // Hidden Bullish Divergence Confirmed
+    bool trigD  // Hidden Bearish Divergence Confirmed
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Detect divergence type from swing data
+// priceLow1/2 = most recent two swing lows (1 is more recent)
+// macdLow1/2 = MACD values at those swing lows
+// priceHigh1/2 = most recent two swing highs (1 is more recent)
+// macdHigh1/2 = MACD values at those swing highs
+// Returns: [regBull, regBear, hidBull, hidBear]
+_detectDivergence(float priceLow1, float priceLow2, float macdLow1, float macdLow2,
+                  float priceHigh1, float priceHigh2, float macdHigh1, float macdHigh2) =>
+    bool regBull = false
+    bool regBear = false
+    bool hidBull = false
+    bool hidBear = false
+
+    // Check for valid swing low data (for bullish divergences)
+    if not na(priceLow1) and not na(priceLow2) and not na(macdLow1) and not na(macdLow2)
+        // Regular Bullish: Price makes LOWER low, MACD makes HIGHER low
+        if priceLow1 < priceLow2 and macdLow1 > macdLow2
+            regBull := true
+        // Hidden Bullish: Price makes HIGHER low, MACD makes LOWER low
+        if priceLow1 > priceLow2 and macdLow1 < macdLow2
+            hidBull := true
+
+    // Check for valid swing high data (for bearish divergences)
+    if not na(priceHigh1) and not na(priceHigh2) and not na(macdHigh1) and not na(macdHigh2)
+        // Regular Bearish: Price makes HIGHER high, MACD makes LOWER high
+        if priceHigh1 > priceHigh2 and macdHigh1 < macdHigh2
+            regBear := true
+        // Hidden Bearish: Price makes LOWER high, MACD makes HIGHER high
+        if priceHigh1 < priceHigh2 and macdHigh1 > macdHigh2
+            hidBear := true
+
+    [regBull, regBear, hidBull, hidBear]
+
+// Generate label from divergence state
+_stateLabel(bool regBull, bool regBear, bool hidBull, bool hidBear) =>
+    // Priority: Regular > Hidden, Bullish > Bearish
+    string lab = "NONE"
+    if regBull
+        lab := "DIV+"
+    else if regBear
+        lab := "DIV-"
+    else if hidBull
+        lab := "hDV+"
+    else if hidBear
+        lab := "hDV-"
+    lab
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched divergence data
+//
+// For each TF, the toolkit needs to provide:
+//   - priceLow1, priceLow2: Two most recent swing low prices (1 = more recent)
+//   - macdLow1, macdLow2: MACD values at those swing lows
+//   - priceHigh1, priceHigh2: Two most recent swing high prices
+//   - macdHigh1, macdHigh2: MACD values at those swing highs
+//
+// For chart TF triggers, also provide:
+//   - newSwingLow: true if a new swing low just confirmed
+//   - newSwingHigh: true if a new swing high just confirmed
+//
+export buildOutput(
+    // TF1 swing data
+    float tf1_pL1, float tf1_pL2, float tf1_mL1, float tf1_mL2,
+    float tf1_pH1, float tf1_pH2, float tf1_mH1, float tf1_mH2,
+    // TF2 swing data
+    float tf2_pL1, float tf2_pL2, float tf2_mL1, float tf2_mL2,
+    float tf2_pH1, float tf2_pH2, float tf2_mH1, float tf2_mH2,
+    // TF3 swing data
+    float tf3_pL1, float tf3_pL2, float tf3_mL1, float tf3_mL2,
+    float tf3_pH1, float tf3_pH2, float tf3_mH1, float tf3_mH2,
+    // TF4 swing data
+    float tf4_pL1, float tf4_pL2, float tf4_mL1, float tf4_mL2,
+    float tf4_pH1, float tf4_pH2, float tf4_mH1, float tf4_mH2,
+    // TF5 swing data
+    float tf5_pL1, float tf5_pL2, float tf5_mL1, float tf5_mL2,
+    float tf5_pH1, float tf5_pH2, float tf5_mH1, float tf5_mH2,
+    // TF6 swing data
+    float tf6_pL1, float tf6_pL2, float tf6_mL1, float tf6_mL2,
+    float tf6_pH1, float tf6_pH2, float tf6_mH1, float tf6_mH2,
+    // Chart TF swing data + new swing flags
+    float chart_pL1, float chart_pL2, float chart_mL1, float chart_mL2,
+    float chart_pH1, float chart_pH2, float chart_mH1, float chart_mH2,
+    bool newSwingLow, bool newSwingHigh,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Detect divergences for each TF
+    [rb1, rr1, hb1, hr1] = _detectDivergence(tf1_pL1, tf1_pL2, tf1_mL1, tf1_mL2, tf1_pH1, tf1_pH2, tf1_mH1, tf1_mH2)
+    [rb2, rr2, hb2, hr2] = _detectDivergence(tf2_pL1, tf2_pL2, tf2_mL1, tf2_mL2, tf2_pH1, tf2_pH2, tf2_mH1, tf2_mH2)
+    [rb3, rr3, hb3, hr3] = _detectDivergence(tf3_pL1, tf3_pL2, tf3_mL1, tf3_mL2, tf3_pH1, tf3_pH2, tf3_mH1, tf3_mH2)
+    [rb4, rr4, hb4, hr4] = _detectDivergence(tf4_pL1, tf4_pL2, tf4_mL1, tf4_mL2, tf4_pH1, tf4_pH2, tf4_mH1, tf4_mH2)
+    [rb5, rr5, hb5, hr5] = _detectDivergence(tf5_pL1, tf5_pL2, tf5_mL1, tf5_mL2, tf5_pH1, tf5_pH2, tf5_mH1, tf5_mH2)
+    [rb6, rr6, hb6, hr6] = _detectDivergence(tf6_pL1, tf6_pL2, tf6_mL1, tf6_mL2, tf6_pH1, tf6_pH2, tf6_mH1, tf6_mH2)
+
+    // Chart TF divergence detection
+    [rb_chart, rr_chart, hb_chart, hr_chart] = _detectDivergence(
+        chart_pL1, chart_pL2, chart_mL1, chart_mL2,
+        chart_pH1, chart_pH2, chart_mH1, chart_mH2)
+
+    // Generate labels
+    string lab1 = _stateLabel(rb1, rr1, hb1, hr1)
+    string lab2 = _stateLabel(rb2, rr2, hb2, hr2)
+    string lab3 = _stateLabel(rb3, rr3, hb3, hr3)
+    string lab4 = _stateLabel(rb4, rr4, hb4, hr4)
+    string lab5 = _stateLabel(rb5, rr5, hb5, hr5)
+    string lab6 = _stateLabel(rb6, rr6, hb6, hr6)
+
+    // Condition E: No divergence (mutually exclusive with A-D)
+    bool noDiv1 = not rb1 and not rr1 and not hb1 and not hr1
+    bool noDiv2 = not rb2 and not rr2 and not hb2 and not hr2
+    bool noDiv3 = not rb3 and not rr3 and not hb3 and not hr3
+    bool noDiv4 = not rb4 and not rr4 and not hb4 and not hr4
+    bool noDiv5 = not rb5 and not rr5 and not hb5 and not hr5
+    bool noDiv6 = not rb6 and not rr6 and not hb6 and not hr6
+
+    // Triggers fire when a new swing confirms a divergence pattern
+    bool tA = newSwingLow and rb_chart   // Regular bullish confirmed
+    bool tB = newSwingHigh and rr_chart  // Regular bearish confirmed
+    bool tC = newSwingLow and hb_chart   // Hidden bullish confirmed
+    bool tD = newSwingHigh and hr_chart  // Hidden bearish confirmed
+
+    // Determine trigger label
+    bool anyTrig = tA or tB or tC or tD
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "DIV+" : tB ? "DIV-" : tC ? "hDV+" : tD ? "hDV-" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (DIV+ - Regular Bullish)
+        rb1, rb2, rb3, rb4, rb5, rb6,
+        // Cond B (DIV- - Regular Bearish)
+        rr1, rr2, rr3, rr4, rr5, rr6,
+        // Cond C (hDIV+ - Hidden Bullish)
+        hb1, hb2, hb3, hb4, hb5, hb6,
+        // Cond D (hDIV- - Hidden Bearish)
+        hr1, hr2, hr3, hr4, hr5, hr6,
+        // Cond E (NONE - No Divergence)
+        noDiv1, noDiv2, noDiv3, noDiv4, noDiv5, noDiv6,
+        // Cond F-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

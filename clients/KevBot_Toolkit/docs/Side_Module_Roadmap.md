@@ -13,14 +13,35 @@ This document captures the planned structure for all side modules (3-10) to be b
 | 1 | EMA Stack | ✅ Complete | EMA ordering (S/M/L) |
 | 2 | Placeholder | ✅ Complete | Testing template |
 | 3 | Simple MACD Line | ✅ Complete | MACD vs Signal (no zero line) |
-| 4 | MACD Line | 📋 Planned | MACD vs Signal + zero line context |
-| 5 | MACD Histogram | 📋 Planned | Histogram momentum |
-| 6 | MACD Divergence | 📋 Planned | Price vs MACD divergence |
+| 4 | MACD Line | ✅ Complete | MACD vs Signal + zero line context |
+| 5 | MACD Histogram | ✅ Complete | Histogram momentum |
+| 6 | MACD Divergence | ✅ Complete | Price vs MACD divergence (chart TF only*) |
 | 7 | UT Bot | 📋 Planned | ATR trailing stop signals |
 | 8 | VWAP | 📋 Planned | VWAP + standard deviation bands |
 | 9 | RVOL | 📋 Planned | Relative volume analysis |
 | 10 | SR Channel | 📋 Planned | Support/Resistance zones |
 | -- | Swing 123 | 📋 Planned | Candle pattern recognition |
+
+\* MACD Divergence works on chart timeframe only due to PineScript limitations (`request.security()` cannot call functions with `var` variables). The same divergence state is shown across all TF columns.
+
+---
+
+## Manual Verification Status
+
+Libraries need manual verification to confirm conditions/triggers align with expected chart behavior.
+
+| Library | Code Complete | Integrated | Manually Verified | Notes |
+|---------|---------------|------------|-------------------|-------|
+| EMA Stack | ✅ | ✅ | ✅ | Working correctly |
+| Simple MACD Line | ✅ | ✅ | ✅ | Working correctly |
+| MACD Line | ✅ | ✅ | ✅ | Working correctly |
+| MACD Histogram | ✅ | ✅ | ✅ | Working correctly |
+| MACD Divergence | ✅ | ✅ | ⏳ Pending | Values updating; needs chart alignment check |
+| UT Bot | ❌ | ❌ | ❌ | Not yet built |
+| VWAP | ❌ | ❌ | ❌ | Not yet built |
+| RVOL | ❌ | ❌ | ❌ | Not yet built |
+| SR Channel | ❌ | ❌ | ❌ | Not yet built |
+| Swing 123 | ❌ | ❌ | ❌ | Not yet built |
 
 ---
 
@@ -100,6 +121,8 @@ Early momentum detection. H+↓ often signals a coming bearish cross before it h
 
 **Library Name:** `KevBot_TF_MACD_Divergence`
 **Focus:** Detecting price vs MACD divergences
+
+> ⚠️ **Implementation Note:** Due to PineScript limitations, MACD Divergence works on the **chart timeframe only**. The `request.security()` function cannot call user-defined functions that use `var` variables for state tracking. As a result, the same divergence state is displayed across all TF columns in the side table.
 
 ### Parameters
 
@@ -375,15 +398,15 @@ Identifies potential reversal points. The pattern shows when price is "rejected"
 
 Recommended order for building and integrating:
 
-1. ✅ **Simple MACD Line** - Done
-2. **UT Bot** - Your preferred trigger, simple to implement
-3. **MACD Line (with zero)** - Builds on Simple MACD
-4. **MACD Histogram** - Completes MACD family
-5. **VWAP** - Common day trading tool
-6. **RVOL** - Volume confirmation
-7. **Swing 123** - Pattern recognition
-8. **SR Channel** - Most complex, save for last
-9. **MACD Divergence** - Requires swing detection, complex
+1. ✅ **Simple MACD Line** - Complete, verified
+2. ✅ **MACD Line (with zero)** - Complete, verified
+3. ✅ **MACD Histogram** - Complete, verified
+4. ✅ **MACD Divergence** - Complete, pending verification (chart TF only due to PineScript limitations)
+5. **UT Bot** - Your preferred trigger, simple to implement (NEXT)
+6. **VWAP** - Common day trading tool
+7. **RVOL** - Volume confirmation
+8. **Swing 123** - Pattern recognition
+9. **SR Channel** - Most complex, save for last
 
 ---
 
@@ -410,4 +433,4 @@ This separation ensures:
 
 ---
 
-*Last Updated: January 2026*
+*Last Updated: January 29, 2026*

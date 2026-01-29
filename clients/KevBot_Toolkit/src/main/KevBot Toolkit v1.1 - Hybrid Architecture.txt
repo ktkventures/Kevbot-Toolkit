@@ -236,7 +236,7 @@ int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE1 = "6. Side Module 1"
 bool   side1_enabled = input.bool(true, "Enable Side Module 1", group = GRP_SIDE1)
-string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram"], group = GRP_SIDE1)
+string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence"], group = GRP_SIDE1)
 
 //────────────────────────────────────────────────────────────
 // Phase 2A — Semantic Mapping (UI clarity only)
@@ -420,7 +420,7 @@ bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE2 = "7. Side Module 2"
 bool   side2_enabled = input.bool(false, "Enable Side Module 2", group = GRP_SIDE2)
-string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram"], group = GRP_SIDE2)
+string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence"], group = GRP_SIDE2)
 
 //────────────────────────────────────────────────────────────
 // For EMA Stack: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
@@ -611,11 +611,67 @@ import yamigushi/KevBot_TF_EMA_Stack/7              as tfEMAStack  // v6 uses bu
 import yamigushi/KevBot_TF_MACD_Simple/1            as tfMACDSimple    // Simple MACD Line (no zero context)
 import yamigushi/KevBot_TF_MACD_Line/1              as tfMACDLine      // MACD Line with zero context
 import yamigushi/KevBot_TF_MACD_Histogram/1         as tfMACDHistogram // MACD Histogram momentum
+import yamigushi/KevBot_TF_MACD_Divergence/1        as tfMACDDivergence // MACD Divergence detection
 
 
 // Convenience activation flags for Side Modules
 bool _side1_moduleActive = side1_enabled and side1_library != "None"
 bool _side2_moduleActive = side2_enabled and side2_library != "None"
+
+//──────────────────────────────────────────────────────────────────────────────
+// MACD DIVERGENCE HELPER FUNCTION (must be at global scope)
+//──────────────────────────────────────────────────────────────────────────────
+// This helper finds swing points and tracks MACD values at those swings.
+// Used by MACD Divergence implementation in Side Module loaders.
+// Returns: [priceLow1, priceLow2, macdLow1, macdLow2, priceHigh1, priceHigh2, macdHigh1, macdHigh2, newSwingLow, newSwingHigh]
+_kb_getSwingData(float _macd, int _pivotLen, int _maxLookback) =>
+    float _pl = ta.pivotlow(low, _pivotLen, _pivotLen)
+    float _ph = ta.pivothigh(high, _pivotLen, _pivotLen)
+
+    // Track last two swing lows
+    var float _swingLow1 = na
+    var float _swingLow2 = na
+    var float _macdAtLow1 = na
+    var float _macdAtLow2 = na
+    var int _lowBar1 = na
+
+    if not na(_pl)
+        _swingLow2 := _swingLow1
+        _macdAtLow2 := _macdAtLow1
+        _swingLow1 := _pl
+        _macdAtLow1 := _macd[_pivotLen]
+        _lowBar1 := bar_index
+
+    // Track last two swing highs
+    var float _swingHigh1 = na
+    var float _swingHigh2 = na
+    var float _macdAtHigh1 = na
+    var float _macdAtHigh2 = na
+    var int _highBar1 = na
+
+    if not na(_ph)
+        _swingHigh2 := _swingHigh1
+        _macdAtHigh2 := _macdAtHigh1
+        _swingHigh1 := _ph
+        _macdAtHigh1 := _macd[_pivotLen]
+        _highBar1 := bar_index
+
+    // Check if swings are within lookback
+    bool _lowValid = not na(_lowBar1) and (bar_index - _lowBar1) < _maxLookback
+    bool _highValid = not na(_highBar1) and (bar_index - _highBar1) < _maxLookback
+
+    float _pL1 = _lowValid ? _swingLow1 : na
+    float _pL2 = _lowValid ? _swingLow2 : na
+    float _mL1 = _lowValid ? _macdAtLow1 : na
+    float _mL2 = _lowValid ? _macdAtLow2 : na
+    float _pH1 = _highValid ? _swingHigh1 : na
+    float _pH2 = _highValid ? _swingHigh2 : na
+    float _mH1 = _highValid ? _macdAtHigh1 : na
+    float _mH2 = _highValid ? _macdAtHigh2 : na
+    bool _newLow = not na(_pl)
+    bool _newHigh = not na(_ph)
+
+    [_pL1, _pL2, _mL1, _mL2, _pH1, _pH2, _mH1, _mH2, _newLow, _newHigh]
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 8.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
@@ -1201,6 +1257,73 @@ else if side1_library == "MACD Histogram"
         _mhOut.trigF, _mhOut.trigG, _mhOut.trigH, _mhOut.trigI, _mhOut.trigJ,
         _mhOut.trigger_price, _mhOut.trigger_label
     )
+else if side1_library == "MACD Divergence"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD DIVERGENCE HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // NOTE: Divergence detection works on CHART TIMEFRAME only due to PineScript
+    // limitations (request.security cannot call functions with var variables).
+    // The same divergence state is shown across all TF columns.
+    //
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    // paramD = Pivot lookback (default: 5)
+    // paramE = Max lookback for divergence (default: 30)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _dv_fast   = side1_paramA > 0 ? int(side1_paramA) : 12
+    int _dv_slow   = side1_paramB > 0 ? int(side1_paramB) : 26
+    int _dv_signal = side1_paramC > 0 ? int(side1_paramC) : 9
+    int _dv_pivot  = side1_paramD > 0 ? int(side1_paramD) : 5
+    int _dv_maxLB  = side1_paramE > 0 ? int(side1_paramE) : 30
+
+    // Calculate MACD on chart timeframe
+    float _dv_macd = ta.ema(close, _dv_fast) - ta.ema(close, _dv_slow)
+
+    // Chart TF swing data (divergence is chart-TF only)
+    [_dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2, _dvC_nL, _dvC_nH] = _kb_getSwingData(_dv_macd, _dv_pivot, _dv_maxLB)
+
+    // Call builder with chart TF data for all slots (same state shown across all TFs)
+    tfMACDDivergence.TFModuleOutput _dvOut = tfMACDDivergence.buildOutput(
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_pL1, _dvC_pL2, _dvC_mL1, _dvC_mL2, _dvC_pH1, _dvC_pH2, _dvC_mH1, _dvC_mH2,
+        _dvC_nL, _dvC_nH,
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _dvOut.tf1_label, _dvOut.tf2_label, _dvOut.tf3_label,
+        _dvOut.tf4_label, _dvOut.tf5_label, _dvOut.tf6_label,
+        _dvOut.condA_tf1, _dvOut.condA_tf2, _dvOut.condA_tf3,
+        _dvOut.condA_tf4, _dvOut.condA_tf5, _dvOut.condA_tf6,
+        _dvOut.condB_tf1, _dvOut.condB_tf2, _dvOut.condB_tf3,
+        _dvOut.condB_tf4, _dvOut.condB_tf5, _dvOut.condB_tf6,
+        _dvOut.condC_tf1, _dvOut.condC_tf2, _dvOut.condC_tf3,
+        _dvOut.condC_tf4, _dvOut.condC_tf5, _dvOut.condC_tf6,
+        _dvOut.condD_tf1, _dvOut.condD_tf2, _dvOut.condD_tf3,
+        _dvOut.condD_tf4, _dvOut.condD_tf5, _dvOut.condD_tf6,
+        _dvOut.condE_tf1, _dvOut.condE_tf2, _dvOut.condE_tf3,
+        _dvOut.condE_tf4, _dvOut.condE_tf5, _dvOut.condE_tf6,
+        _dvOut.condF_tf1, _dvOut.condF_tf2, _dvOut.condF_tf3,
+        _dvOut.condF_tf4, _dvOut.condF_tf5, _dvOut.condF_tf6,
+        _dvOut.condG_tf1, _dvOut.condG_tf2, _dvOut.condG_tf3,
+        _dvOut.condG_tf4, _dvOut.condG_tf5, _dvOut.condG_tf6,
+        _dvOut.condH_tf1, _dvOut.condH_tf2, _dvOut.condH_tf3,
+        _dvOut.condH_tf4, _dvOut.condH_tf5, _dvOut.condH_tf6,
+        _dvOut.condI_tf1, _dvOut.condI_tf2, _dvOut.condI_tf3,
+        _dvOut.condI_tf4, _dvOut.condI_tf5, _dvOut.condI_tf6,
+        _dvOut.condJ_tf1, _dvOut.condJ_tf2, _dvOut.condJ_tf3,
+        _dvOut.condJ_tf4, _dvOut.condJ_tf5, _dvOut.condJ_tf6,
+        _dvOut.trigA, _dvOut.trigB, _dvOut.trigC, _dvOut.trigD, _dvOut.trigE,
+        _dvOut.trigF, _dvOut.trigG, _dvOut.trigH, _dvOut.trigI, _dvOut.trigJ,
+        _dvOut.trigger_price, _dvOut.trigger_label
+    )
 else
     // Default: Placeholder library (legacy approach)
     side1_raw := side1Lib.getTFConfluence(
@@ -1580,6 +1703,72 @@ else if side2_library == "MACD Histogram"
         _s2_mhOut.trigA, _s2_mhOut.trigB, _s2_mhOut.trigC, _s2_mhOut.trigD, _s2_mhOut.trigE,
         _s2_mhOut.trigF, _s2_mhOut.trigG, _s2_mhOut.trigH, _s2_mhOut.trigI, _s2_mhOut.trigJ,
         _s2_mhOut.trigger_price, _s2_mhOut.trigger_label
+    )
+else if side2_library == "MACD Divergence"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD DIVERGENCE HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // NOTE: Divergence detection works on CHART TIMEFRAME only due to PineScript
+    // limitations (request.security cannot call functions with var variables).
+    // The same divergence state is shown across all TF columns.
+    //
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    // paramD = Pivot lookback (default: 5)
+    // paramE = Max lookback for divergence (default: 30)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _s2_dv_fast   = side2_paramA > 0 ? int(side2_paramA) : 12
+    int _s2_dv_slow   = side2_paramB > 0 ? int(side2_paramB) : 26
+    int _s2_dv_signal = side2_paramC > 0 ? int(side2_paramC) : 9
+    int _s2_dv_pivot  = side2_paramD > 0 ? int(side2_paramD) : 5
+    int _s2_dv_maxLB  = side2_paramE > 0 ? int(side2_paramE) : 30
+
+    float _s2_dv_macd = ta.ema(close, _s2_dv_fast) - ta.ema(close, _s2_dv_slow)
+
+    // Chart TF swing data (divergence is chart-TF only)
+    [_s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2, _s2_dvC_nL, _s2_dvC_nH] = _kb_getSwingData(_s2_dv_macd, _s2_dv_pivot, _s2_dv_maxLB)
+
+    // Call builder with chart TF data for all slots (same state shown across all TFs)
+    tfMACDDivergence.TFModuleOutput _s2_dvOut = tfMACDDivergence.buildOutput(
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_pL1, _s2_dvC_pL2, _s2_dvC_mL1, _s2_dvC_mL2, _s2_dvC_pH1, _s2_dvC_pH2, _s2_dvC_mH1, _s2_dvC_mH2,
+        _s2_dvC_nL, _s2_dvC_nH,
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_dvOut.tf1_label, _s2_dvOut.tf2_label, _s2_dvOut.tf3_label,
+        _s2_dvOut.tf4_label, _s2_dvOut.tf5_label, _s2_dvOut.tf6_label,
+        _s2_dvOut.condA_tf1, _s2_dvOut.condA_tf2, _s2_dvOut.condA_tf3,
+        _s2_dvOut.condA_tf4, _s2_dvOut.condA_tf5, _s2_dvOut.condA_tf6,
+        _s2_dvOut.condB_tf1, _s2_dvOut.condB_tf2, _s2_dvOut.condB_tf3,
+        _s2_dvOut.condB_tf4, _s2_dvOut.condB_tf5, _s2_dvOut.condB_tf6,
+        _s2_dvOut.condC_tf1, _s2_dvOut.condC_tf2, _s2_dvOut.condC_tf3,
+        _s2_dvOut.condC_tf4, _s2_dvOut.condC_tf5, _s2_dvOut.condC_tf6,
+        _s2_dvOut.condD_tf1, _s2_dvOut.condD_tf2, _s2_dvOut.condD_tf3,
+        _s2_dvOut.condD_tf4, _s2_dvOut.condD_tf5, _s2_dvOut.condD_tf6,
+        _s2_dvOut.condE_tf1, _s2_dvOut.condE_tf2, _s2_dvOut.condE_tf3,
+        _s2_dvOut.condE_tf4, _s2_dvOut.condE_tf5, _s2_dvOut.condE_tf6,
+        _s2_dvOut.condF_tf1, _s2_dvOut.condF_tf2, _s2_dvOut.condF_tf3,
+        _s2_dvOut.condF_tf4, _s2_dvOut.condF_tf5, _s2_dvOut.condF_tf6,
+        _s2_dvOut.condG_tf1, _s2_dvOut.condG_tf2, _s2_dvOut.condG_tf3,
+        _s2_dvOut.condG_tf4, _s2_dvOut.condG_tf5, _s2_dvOut.condG_tf6,
+        _s2_dvOut.condH_tf1, _s2_dvOut.condH_tf2, _s2_dvOut.condH_tf3,
+        _s2_dvOut.condH_tf4, _s2_dvOut.condH_tf5, _s2_dvOut.condH_tf6,
+        _s2_dvOut.condI_tf1, _s2_dvOut.condI_tf2, _s2_dvOut.condI_tf3,
+        _s2_dvOut.condI_tf4, _s2_dvOut.condI_tf5, _s2_dvOut.condI_tf6,
+        _s2_dvOut.condJ_tf1, _s2_dvOut.condJ_tf2, _s2_dvOut.condJ_tf3,
+        _s2_dvOut.condJ_tf4, _s2_dvOut.condJ_tf5, _s2_dvOut.condJ_tf6,
+        _s2_dvOut.trigA, _s2_dvOut.trigB, _s2_dvOut.trigC, _s2_dvOut.trigD, _s2_dvOut.trigE,
+        _s2_dvOut.trigF, _s2_dvOut.trigG, _s2_dvOut.trigH, _s2_dvOut.trigI, _s2_dvOut.trigJ,
+        _s2_dvOut.trigger_price, _s2_dvOut.trigger_label
     )
 else
     // Default: Placeholder library

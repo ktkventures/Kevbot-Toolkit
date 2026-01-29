@@ -8,8 +8,11 @@ This document provides user-facing definitions for all Side Module libraries ava
 
 1. [EMA Stack (S/M/L)](#ema-stack-sml)
 2. [Simple MACD Line](#simple-macd-line)
-3. [KevBot_TF_Placeholder](#kevbot_tf_placeholder)
-4. [Adding New Libraries](#adding-new-libraries)
+3. [MACD Line (with Zero Context)](#macd-line-with-zero-context)
+4. [MACD Histogram](#macd-histogram)
+5. [MACD Divergence](#macd-divergence)
+6. [KevBot_TF_Placeholder](#kevbot_tf_placeholder)
+7. [Adding New Libraries](#adding-new-libraries)
 
 ---
 
@@ -167,6 +170,180 @@ Triggers fire on crossover events on the chart timeframe.
 
 ---
 
+## MACD Line (with Zero Context)
+
+**Library Name:** `KevBot_TF_MACD_Line`
+**Version:** 1
+**Architecture:** Hybrid (Toolkit fetches data, library processes)
+
+### Overview
+
+The MACD Line library analyzes the MACD vs Signal relationship WITH zero line context. It shows whether MACD is above or below Signal, AND whether MACD itself is above or below zero. This provides additional context on trend strength - being above signal AND above zero is stronger than being above signal but below zero.
+
+### Parameters
+
+| Parameter | Name | Default | Description |
+|-----------|------|---------|-------------|
+| **Param A** | Fast EMA Length | 12 | Period for the Fast EMA |
+| **Param B** | Slow EMA Length | 26 | Period for the Slow EMA |
+| **Param C** | Signal Smoothing | 9 | Period for the Signal line EMA |
+| Param D | (Reserved) | - | Not used |
+| Param E | (Reserved) | - | Not used |
+| Param F | (Reserved) | - | Not used |
+
+### Conditions (A-J)
+
+| Condition | Name | Description | Label |
+|-----------|------|-------------|-------|
+| **Cond A** | Strong Bull | MACD > Signal AND MACD > 0 | M>S+ |
+| **Cond B** | Recovering | MACD > Signal AND MACD < 0 (crossed bullish but still negative) | M>S- |
+| **Cond C** | Strong Bear | MACD < Signal AND MACD < 0 | M<S- |
+| **Cond D** | Weakening | MACD < Signal AND MACD > 0 (crossed bearish but still positive) | M<S+ |
+| Cond E-J | (Reserved) | Not used | - |
+
+### Triggers (A-J)
+
+| Trigger | Name | Description | Use Case |
+|---------|------|-------------|----------|
+| **Trig A** | Bullish Cross | MACD crosses above Signal | Long Entry signal |
+| **Trig B** | Bearish Cross | MACD crosses below Signal | Short Entry / Long Exit signal |
+| **Trig C** | Zero Cross Up | MACD crosses above 0 | Trend confirmation (bullish) |
+| **Trig D** | Zero Cross Down | MACD crosses below 0 | Trend confirmation (bearish) |
+| Trig E-J | (Reserved) | Not used | - |
+
+### Interpretation Guide
+
+| Side Table Shows | Meaning | Trading Implication |
+|------------------|---------|---------------------|
+| M>S+ across TFs | Strong bullish trend | Highest confidence long entries |
+| M>S- across TFs | Bullish crossover but recovering from bearish | Good entry, but wait for zero cross for confirmation |
+| M<S- across TFs | Strong bearish trend | Avoid longs, consider shorts |
+| M<S+ across TFs | Bearish crossover but was in bullish territory | Possible profit taking, not ideal for new longs |
+
+---
+
+## MACD Histogram
+
+**Library Name:** `KevBot_TF_MACD_Histogram`
+**Version:** 1
+**Architecture:** Hybrid (Toolkit fetches data, library processes)
+
+### Overview
+
+The MACD Histogram library analyzes the histogram (MACD - Signal) momentum direction. It shows whether the histogram is positive/negative AND whether it's rising/falling. This provides early warning of momentum shifts before actual crossovers occur.
+
+### Parameters
+
+| Parameter | Name | Default | Description |
+|-----------|------|---------|-------------|
+| **Param A** | Fast EMA Length | 12 | Period for the Fast EMA |
+| **Param B** | Slow EMA Length | 26 | Period for the Slow EMA |
+| **Param C** | Signal Smoothing | 9 | Period for the Signal line EMA |
+| Param D | (Reserved) | - | Not used |
+| Param E | (Reserved) | - | Not used |
+| Param F | (Reserved) | - | Not used |
+
+### Conditions (A-J)
+
+| Condition | Name | Description | Label |
+|-----------|------|-------------|-------|
+| **Cond A** | Accel Bull | Histogram positive AND rising (accelerating bullish momentum) | H+↑ |
+| **Cond B** | Decel Bull | Histogram positive AND falling (decelerating bullish momentum) | H+↓ |
+| **Cond C** | Accel Bear | Histogram negative AND falling (accelerating bearish momentum) | H-↓ |
+| **Cond D** | Decel Bear | Histogram negative AND rising (decelerating bearish momentum) | H-↑ |
+| Cond E-J | (Reserved) | Not used | - |
+
+### Triggers (A-J)
+
+| Trigger | Name | Description | Use Case |
+|---------|------|-------------|----------|
+| **Trig A** | Flip Bullish | Histogram crosses from negative to positive | Bullish crossover confirmed |
+| **Trig B** | Flip Bearish | Histogram crosses from positive to negative | Bearish crossover confirmed |
+| **Trig C** | Momentum Shift Up | Histogram starts rising after falling | Early bullish warning |
+| **Trig D** | Momentum Shift Down | Histogram starts falling after rising | Early bearish warning |
+| Trig E-J | (Reserved) | Not used | - |
+
+### Interpretation Guide
+
+| Side Table Shows | Meaning | Trading Implication |
+|------------------|---------|---------------------|
+| H+↑ across TFs | Strong bullish momentum building | High confidence long entries |
+| H+↓ across TFs | Still bullish but momentum fading | Warning: bearish cross may be coming |
+| H-↓ across TFs | Strong bearish momentum building | Avoid longs, consider shorts |
+| H-↑ across TFs | Still bearish but momentum fading | Warning: bullish cross may be coming |
+
+### Early Warning Usage
+
+The histogram is valuable for **anticipating** MACD crossovers:
+- When you see H+↓ (positive but falling), expect a bearish cross soon
+- When you see H-↑ (negative but rising), expect a bullish cross soon
+
+This gives you time to prepare entries/exits before the actual signal fires.
+
+---
+
+## MACD Divergence
+
+**Library Name:** `KevBot_TF_MACD_Divergence`
+**Version:** 1
+**Architecture:** Hybrid (Toolkit fetches data, library processes)
+
+> ⚠️ **Important:** Due to PineScript limitations, MACD Divergence works on the **chart timeframe only**. The same divergence state is displayed across all TF columns in the side table.
+
+### Overview
+
+The MACD Divergence library detects divergences between price action and MACD indicator. A divergence occurs when price makes a new high/low but MACD doesn't confirm. This often signals a potential reversal or continuation.
+
+### Parameters
+
+| Parameter | Name | Default | Description |
+|-----------|------|---------|-------------|
+| **Param A** | Fast EMA Length | 12 | Period for the Fast EMA |
+| **Param B** | Slow EMA Length | 26 | Period for the Slow EMA |
+| **Param C** | Signal Smoothing | 9 | Period for the Signal line EMA |
+| **Param D** | Pivot Lookback | 5 | Left/right bars for swing detection |
+| **Param E** | Max Divergence Lookback | 30 | Maximum bars to look back for divergence |
+| Param F | (Reserved) | - | Not used |
+
+### Conditions (A-J)
+
+| Condition | Name | Description | Label |
+|-----------|------|-------------|-------|
+| **Cond A** | Regular Bullish | Price lower low + MACD higher low (reversal UP likely) | DIV+ |
+| **Cond B** | Regular Bearish | Price higher high + MACD lower high (reversal DOWN likely) | DIV- |
+| **Cond C** | Hidden Bullish | Price higher low + MACD lower low (uptrend continuation) | hDV+ |
+| **Cond D** | Hidden Bearish | Price lower high + MACD higher high (downtrend continuation) | hDV- |
+| **Cond E** | No Divergence | No divergence pattern detected | NONE |
+| Cond F-J | (Reserved) | Not used | - |
+
+### Triggers (A-J)
+
+| Trigger | Name | Description | Use Case |
+|---------|------|-------------|----------|
+| **Trig A** | Bullish Div Confirmed | Regular bullish divergence completed | Long Entry signal |
+| **Trig B** | Bearish Div Confirmed | Regular bearish divergence completed | Short Entry / Long Exit |
+| **Trig C** | Hidden Bull Confirmed | Hidden bullish divergence completed | Add to longs in uptrend |
+| **Trig D** | Hidden Bear Confirmed | Hidden bearish divergence completed | Add to shorts in downtrend |
+| Trig E-J | (Reserved) | Not used | - |
+
+### Divergence Types Explained
+
+| Type | Price Action | MACD Action | Signal |
+|------|--------------|-------------|--------|
+| **Regular Bullish** | Lower Low | Higher Low | Reversal up likely |
+| **Regular Bearish** | Higher High | Lower High | Reversal down likely |
+| **Hidden Bullish** | Higher Low | Lower Low | Uptrend continuation |
+| **Hidden Bearish** | Lower High | Higher High | Downtrend continuation |
+
+### Usage Tips
+
+- **Regular divergences** warn of potential trend reversals - use for counter-trend entries
+- **Hidden divergences** confirm trend continuation - use to add to existing positions
+- Divergences work best when combined with other confluence factors (support/resistance, EMA stack, etc.)
+- The pivot lookback (Param D) affects sensitivity: smaller = more signals, larger = fewer but stronger signals
+
+---
+
 ## KevBot_TF_Placeholder
 
 **Library Name:** `KevBot_TF_Placeholder`
@@ -260,5 +437,5 @@ When adding a new library:
 
 ---
 
-*Last Updated: January 2026*
+*Last Updated: January 29, 2026*
 *Toolkit Version: 1.1 (Hybrid Architecture)*
