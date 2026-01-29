@@ -1,0 +1,284 @@
+//@version=6
+library("KevBot_TF_MACD_Line", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_MACD_Line – MACD Line Module with Zero Context
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched MACD data
+//   • This allows paramA-C in the toolkit to control MACD lengths (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes the MACD vs Signal line relationship WITH zero line context.
+//   Shows whether MACD is above/below Signal AND whether MACD is above/below zero.
+//   This provides context on trend strength - being above signal AND above zero is
+//   stronger than being above signal but below zero.
+//
+// CONDITIONS PROVIDED:
+//   A: M>S+ (MACD > Signal AND MACD > 0 - strong bullish)
+//   B: M>S- (MACD > Signal AND MACD < 0 - recovering/early bullish)
+//   C: M<S- (MACD < Signal AND MACD < 0 - strong bearish)
+//   D: M<S+ (MACD < Signal AND MACD > 0 - weakening/early bearish)
+//   E-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Bullish Cross (MACD crosses above Signal)
+//   B: Bearish Cross (MACD crosses below Signal)
+//   C: Zero Cross Up (MACD crosses above 0)
+//   D: Zero Cross Down (MACD crosses below 0)
+//   E-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: M>S+ (MACD > Signal AND MACD > 0)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: M>S- (MACD > Signal AND MACD < 0)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: M<S- (MACD < Signal AND MACD < 0)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: M<S+ (MACD < Signal AND MACD > 0)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Conditions E-J per TF: Reserved (false)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Bullish Cross (MACD crosses above Signal)
+    bool trigB  // Bearish Cross (MACD crosses below Signal)
+    bool trigC  // Zero Cross Up (MACD crosses above 0)
+    bool trigD  // Zero Cross Down (MACD crosses below 0)
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute MACD state label with zero context
+// Returns: "M>S+", "M>S-", "M<S-", "M<S+", or "na"
+_stateLabel(float macd, float signal) =>
+    string lab = "na"
+    if na(macd) or na(signal)
+        lab := "na"
+    else
+        bool aboveSignal = macd > signal
+        bool aboveZero = macd > 0
+
+        if aboveSignal and aboveZero
+            lab := "M>S+"
+        else if aboveSignal and not aboveZero
+            lab := "M>S-"
+        else if not aboveSignal and not aboveZero
+            lab := "M<S-"
+        else  // not aboveSignal and aboveZero
+            lab := "M<S+"
+    lab
+
+// Condition A: MACD > Signal AND MACD > 0 (strong bullish)
+_isBullStrong(float macd, float signal) =>
+    not na(macd) and not na(signal) and macd > signal and macd > 0
+
+// Condition B: MACD > Signal AND MACD < 0 (recovering/early bullish)
+_isBullRecovering(float macd, float signal) =>
+    not na(macd) and not na(signal) and macd > signal and macd <= 0
+
+// Condition C: MACD < Signal AND MACD < 0 (strong bearish)
+_isBearStrong(float macd, float signal) =>
+    not na(macd) and not na(signal) and macd < signal and macd < 0
+
+// Condition D: MACD < Signal AND MACD > 0 (weakening/early bearish)
+_isBearWeakening(float macd, float signal) =>
+    not na(macd) and not na(signal) and macd < signal and macd >= 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched MACD data
+// Note: This version only needs current MACD/Signal values (no prev needed for conditions)
+//       Previous values are only needed for chart TF triggers
+//
+// @param m1-m6      MACD values for each of the 6 timeframes
+// @param s1-s6      Signal values for each of the 6 timeframes
+// @param m_chart    Current chart TF MACD (for triggers)
+// @param s_chart    Current chart TF Signal (for triggers)
+// @param m_prev     Previous bar MACD (for crossover detection)
+// @param s_prev     Previous bar Signal (for crossover detection)
+// @param triggerPrice  Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 (only current values needed)
+    float m1, float s1,
+    float m2, float s2,
+    float m3, float s3,
+    float m4, float s4,
+    float m5, float s5,
+    float m6, float s6,
+    // Chart TF (current + previous for triggers)
+    float m_chart, float s_chart, float m_prev, float s_prev,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _stateLabel(m1, s1)
+    string lab2 = _stateLabel(m2, s2)
+    string lab3 = _stateLabel(m3, s3)
+    string lab4 = _stateLabel(m4, s4)
+    string lab5 = _stateLabel(m5, s5)
+    string lab6 = _stateLabel(m6, s6)
+
+    // Condition A: M>S+ (strong bullish) per TF
+    bool cA1 = _isBullStrong(m1, s1)
+    bool cA2 = _isBullStrong(m2, s2)
+    bool cA3 = _isBullStrong(m3, s3)
+    bool cA4 = _isBullStrong(m4, s4)
+    bool cA5 = _isBullStrong(m5, s5)
+    bool cA6 = _isBullStrong(m6, s6)
+
+    // Condition B: M>S- (recovering) per TF
+    bool cB1 = _isBullRecovering(m1, s1)
+    bool cB2 = _isBullRecovering(m2, s2)
+    bool cB3 = _isBullRecovering(m3, s3)
+    bool cB4 = _isBullRecovering(m4, s4)
+    bool cB5 = _isBullRecovering(m5, s5)
+    bool cB6 = _isBullRecovering(m6, s6)
+
+    // Condition C: M<S- (strong bearish) per TF
+    bool cC1 = _isBearStrong(m1, s1)
+    bool cC2 = _isBearStrong(m2, s2)
+    bool cC3 = _isBearStrong(m3, s3)
+    bool cC4 = _isBearStrong(m4, s4)
+    bool cC5 = _isBearStrong(m5, s5)
+    bool cC6 = _isBearStrong(m6, s6)
+
+    // Condition D: M<S+ (weakening) per TF
+    bool cD1 = _isBearWeakening(m1, s1)
+    bool cD2 = _isBearWeakening(m2, s2)
+    bool cD3 = _isBearWeakening(m3, s3)
+    bool cD4 = _isBearWeakening(m4, s4)
+    bool cD5 = _isBearWeakening(m5, s5)
+    bool cD6 = _isBearWeakening(m6, s6)
+
+    // Triggers on chart timeframe
+    bool tA = m_prev <= s_prev and m_chart > s_chart  // Bullish cross
+    bool tB = m_prev >= s_prev and m_chart < s_chart  // Bearish cross
+    bool tC = m_prev <= 0 and m_chart > 0             // Zero cross up
+    bool tD = m_prev >= 0 and m_chart < 0             // Zero cross down
+
+    // Handle na values in trigger detection
+    tA := na(m_prev) or na(s_prev) or na(m_chart) or na(s_chart) ? false : tA
+    tB := na(m_prev) or na(s_prev) or na(m_chart) or na(s_chart) ? false : tB
+    tC := na(m_prev) or na(m_chart) ? false : tC
+    tD := na(m_prev) or na(m_chart) ? false : tD
+
+    // Determine trigger label (priority: A > B > C > D)
+    bool anyTrig = tA or tB or tC or tD
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "M>S" : tB ? "M<S" : tC ? "M>0" : tD ? "M<0" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (M>S+ - Strong Bull)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (M>S- - Recovering)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (M<S- - Strong Bear)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (M<S+ - Weakening)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

@@ -1,0 +1,285 @@
+//@version=6
+library("KevBot_TF_MACD_Histogram", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_MACD_Histogram – MACD Histogram Momentum Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched data
+//   • This allows paramA-C in the toolkit to control MACD lengths (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes the MACD histogram (MACD - Signal) to detect momentum direction.
+//   Shows whether histogram is positive/negative AND whether it's rising/falling.
+//   This provides early warning of momentum shifts before actual crossovers occur.
+//
+// CONDITIONS PROVIDED:
+//   A: H+↑ (Histogram positive AND rising - accelerating bullish momentum)
+//   B: H+↓ (Histogram positive AND falling - decelerating bullish momentum)
+//   C: H-↓ (Histogram negative AND falling - accelerating bearish momentum)
+//   D: H-↑ (Histogram negative AND rising - decelerating bearish momentum)
+//   E-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Histogram Flip Bullish (crosses from negative to positive)
+//   B: Histogram Flip Bearish (crosses from positive to negative)
+//   C: Momentum Shift Up (histogram starts rising after falling)
+//   D: Momentum Shift Down (histogram starts falling after rising)
+//   E-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: H+↑ (Histogram positive AND rising)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: H+↓ (Histogram positive AND falling)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: H-↓ (Histogram negative AND falling)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: H-↑ (Histogram negative AND rising)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Conditions E-J per TF: Reserved (false)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Histogram Flip Bullish (neg → pos)
+    bool trigB  // Histogram Flip Bearish (pos → neg)
+    bool trigC  // Momentum Shift Up (starts rising)
+    bool trigD  // Momentum Shift Down (starts falling)
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute Histogram state label
+// Returns: "H+↑", "H+↓", "H-↓", "H-↑", or "na"
+_stateLabel(float hist, float histPrev) =>
+    string lab = "na"
+    if na(hist) or na(histPrev)
+        lab := "na"
+    else
+        bool isPositive = hist > 0
+        bool isRising = hist > histPrev
+
+        if isPositive and isRising
+            lab := "H+↑"
+        else if isPositive and not isRising
+            lab := "H+↓"
+        else if not isPositive and not isRising
+            lab := "H-↓"
+        else  // negative and rising
+            lab := "H-↑"
+    lab
+
+// Condition A: Histogram positive AND rising (accelerating bullish)
+_isPosRising(float hist, float histPrev) =>
+    not na(hist) and not na(histPrev) and hist > 0 and hist > histPrev
+
+// Condition B: Histogram positive AND falling (decelerating bullish)
+_isPosFalling(float hist, float histPrev) =>
+    not na(hist) and not na(histPrev) and hist > 0 and hist <= histPrev
+
+// Condition C: Histogram negative AND falling (accelerating bearish)
+_isNegFalling(float hist, float histPrev) =>
+    not na(hist) and not na(histPrev) and hist < 0 and hist < histPrev
+
+// Condition D: Histogram negative AND rising (decelerating bearish)
+_isNegRising(float hist, float histPrev) =>
+    not na(hist) and not na(histPrev) and hist < 0 and hist >= histPrev
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched Histogram data
+// Histogram = MACD - Signal
+//
+// @param h1-h6      Histogram values for each of the 6 timeframes
+// @param h1p-h6p    Previous bar Histogram values for direction detection
+// @param h_chart    Current chart TF Histogram (for triggers)
+// @param h_prev     Previous bar Histogram (for triggers)
+// @param h_prev2    Two bars ago Histogram (for momentum shift detection)
+// @param triggerPrice  Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 (current + previous histogram)
+    float h1, float h1p,
+    float h2, float h2p,
+    float h3, float h3p,
+    float h4, float h4p,
+    float h5, float h5p,
+    float h6, float h6p,
+    // Chart TF (current + prev + prev2 for triggers)
+    float h_chart, float h_prev, float h_prev2,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _stateLabel(h1, h1p)
+    string lab2 = _stateLabel(h2, h2p)
+    string lab3 = _stateLabel(h3, h3p)
+    string lab4 = _stateLabel(h4, h4p)
+    string lab5 = _stateLabel(h5, h5p)
+    string lab6 = _stateLabel(h6, h6p)
+
+    // Condition A: H+↑ (positive rising) per TF
+    bool cA1 = _isPosRising(h1, h1p)
+    bool cA2 = _isPosRising(h2, h2p)
+    bool cA3 = _isPosRising(h3, h3p)
+    bool cA4 = _isPosRising(h4, h4p)
+    bool cA5 = _isPosRising(h5, h5p)
+    bool cA6 = _isPosRising(h6, h6p)
+
+    // Condition B: H+↓ (positive falling) per TF
+    bool cB1 = _isPosFalling(h1, h1p)
+    bool cB2 = _isPosFalling(h2, h2p)
+    bool cB3 = _isPosFalling(h3, h3p)
+    bool cB4 = _isPosFalling(h4, h4p)
+    bool cB5 = _isPosFalling(h5, h5p)
+    bool cB6 = _isPosFalling(h6, h6p)
+
+    // Condition C: H-↓ (negative falling) per TF
+    bool cC1 = _isNegFalling(h1, h1p)
+    bool cC2 = _isNegFalling(h2, h2p)
+    bool cC3 = _isNegFalling(h3, h3p)
+    bool cC4 = _isNegFalling(h4, h4p)
+    bool cC5 = _isNegFalling(h5, h5p)
+    bool cC6 = _isNegFalling(h6, h6p)
+
+    // Condition D: H-↑ (negative rising) per TF
+    bool cD1 = _isNegRising(h1, h1p)
+    bool cD2 = _isNegRising(h2, h2p)
+    bool cD3 = _isNegRising(h3, h3p)
+    bool cD4 = _isNegRising(h4, h4p)
+    bool cD5 = _isNegRising(h5, h5p)
+    bool cD6 = _isNegRising(h6, h6p)
+
+    // Triggers on chart timeframe
+    // Trigger A: Histogram flips from negative to positive
+    bool tA = h_prev <= 0 and h_chart > 0
+    // Trigger B: Histogram flips from positive to negative
+    bool tB = h_prev >= 0 and h_chart < 0
+    // Trigger C: Momentum shift up (was falling, now rising)
+    bool tC = h_prev2 > h_prev and h_chart > h_prev
+    // Trigger D: Momentum shift down (was rising, now falling)
+    bool tD = h_prev2 < h_prev and h_chart < h_prev
+
+    // Handle na values in trigger detection
+    tA := na(h_prev) or na(h_chart) ? false : tA
+    tB := na(h_prev) or na(h_chart) ? false : tB
+    tC := na(h_prev2) or na(h_prev) or na(h_chart) ? false : tC
+    tD := na(h_prev2) or na(h_prev) or na(h_chart) ? false : tD
+
+    // Determine trigger label (priority: A > B > C > D)
+    bool anyTrig = tA or tB or tC or tD
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "H+" : tB ? "H-" : tC ? "H↑" : tD ? "H↓" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (H+↑ - Positive Rising)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (H+↓ - Positive Falling)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (H-↓ - Negative Falling)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (H-↑ - Negative Rising)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

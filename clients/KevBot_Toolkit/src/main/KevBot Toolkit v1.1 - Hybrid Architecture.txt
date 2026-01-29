@@ -236,7 +236,7 @@ int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE1 = "6. Side Module 1"
 bool   side1_enabled = input.bool(true, "Enable Side Module 1", group = GRP_SIDE1)
-string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE1)
+string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram"], group = GRP_SIDE1)
 
 //────────────────────────────────────────────────────────────
 // Phase 2A — Semantic Mapping (UI clarity only)
@@ -420,7 +420,7 @@ bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE2 = "7. Side Module 2"
 bool   side2_enabled = input.bool(false, "Enable Side Module 2", group = GRP_SIDE2)
-string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)"], group = GRP_SIDE2)
+string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram"], group = GRP_SIDE2)
 
 //────────────────────────────────────────────────────────────
 // For EMA Stack: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
@@ -608,6 +608,9 @@ bool side2_SX_tf6_inv = input.bool(false, "Inv Label", inline="s2sx_tf6", group 
 import yamigushi/KevBot_Top_Minimal/1               as top1Lib
 import yamigushi/KevBot_TF_Placeholder/5            as side1Lib
 import yamigushi/KevBot_TF_EMA_Stack/7              as tfEMAStack  // v6 uses buildOutput() hybrid approach
+import yamigushi/KevBot_TF_MACD_Simple/1            as tfMACDSimple    // Simple MACD Line (no zero context)
+import yamigushi/KevBot_TF_MACD_Line/1              as tfMACDLine      // MACD Line with zero context
+import yamigushi/KevBot_TF_MACD_Histogram/1         as tfMACDHistogram // MACD Histogram momentum
 
 
 // Convenience activation flags for Side Modules
@@ -921,6 +924,283 @@ if side1_library == "EMA Stack (S/M/L)"
         // Trigger metadata
         _emaOut.trigger_price, _emaOut.trigger_label
     )
+else if side1_library == "Simple MACD Line"
+    //──────────────────────────────────────────────────────────────────────────────
+    // SIMPLE MACD LINE HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    // Convert params to integer lengths (with sensible defaults)
+    int _macd_fast   = side1_paramA > 0 ? int(side1_paramA) : 12
+    int _macd_slow   = side1_paramB > 0 ? int(side1_paramB) : 26
+    int _macd_signal = side1_paramC > 0 ? int(side1_paramC) : 9
+
+    // Calculate MACD components on chart timeframe (for reference and triggers)
+    float _macd_fastMA  = ta.ema(close, _macd_fast)
+    float _macd_slowMA  = ta.ema(close, _macd_slow)
+    float _macd_line    = _macd_fastMA - _macd_slowMA
+    float _macd_sig     = ta.ema(_macd_line, _macd_signal)
+
+    // Fetch HTF MACD data for each of the 6 timeframes
+    // Each fetch returns: [macd, signal, macd_prev, signal_prev]
+    [_m1, _s1, _m1p, _s1p] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_m2, _s2, _m2p, _s2p] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_m3, _s3, _m3p, _s3p] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_m4, _s4, _m4p, _s4p] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_m5, _s5, _m5p, _s5p] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_m6, _s6, _m6p, _s6p] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow),
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal),
+         (ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow))[1],
+         ta.ema(ta.ema(close, _macd_fast) - ta.ema(close, _macd_slow), _macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart timeframe values for triggers
+    float _m_chart = _macd_line
+    float _s_chart = _macd_sig
+    float _m_prev  = _macd_line[1]
+    float _s_prev  = _macd_sig[1]
+
+    // Call library's builder function with the fetched data
+    tfMACDSimple.TFModuleOutput _macdOut = tfMACDSimple.buildOutput(
+        _m1, _s1, _m1p, _s1p,
+        _m2, _s2, _m2p, _s2p,
+        _m3, _s3, _m3p, _s3p,
+        _m4, _s4, _m4p, _s4p,
+        _m5, _s5, _m5p, _s5p,
+        _m6, _s6, _m6p, _s6p,
+        _m_chart, _s_chart, _m_prev, _s_prev,
+        close
+    )
+
+    // Cast MACD output → placeholder output type (V2 structure)
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _macdOut.tf1_label, _macdOut.tf2_label, _macdOut.tf3_label,
+        _macdOut.tf4_label, _macdOut.tf5_label, _macdOut.tf6_label,
+        _macdOut.condA_tf1, _macdOut.condA_tf2, _macdOut.condA_tf3,
+        _macdOut.condA_tf4, _macdOut.condA_tf5, _macdOut.condA_tf6,
+        _macdOut.condB_tf1, _macdOut.condB_tf2, _macdOut.condB_tf3,
+        _macdOut.condB_tf4, _macdOut.condB_tf5, _macdOut.condB_tf6,
+        _macdOut.condC_tf1, _macdOut.condC_tf2, _macdOut.condC_tf3,
+        _macdOut.condC_tf4, _macdOut.condC_tf5, _macdOut.condC_tf6,
+        _macdOut.condD_tf1, _macdOut.condD_tf2, _macdOut.condD_tf3,
+        _macdOut.condD_tf4, _macdOut.condD_tf5, _macdOut.condD_tf6,
+        _macdOut.condE_tf1, _macdOut.condE_tf2, _macdOut.condE_tf3,
+        _macdOut.condE_tf4, _macdOut.condE_tf5, _macdOut.condE_tf6,
+        _macdOut.condF_tf1, _macdOut.condF_tf2, _macdOut.condF_tf3,
+        _macdOut.condF_tf4, _macdOut.condF_tf5, _macdOut.condF_tf6,
+        _macdOut.condG_tf1, _macdOut.condG_tf2, _macdOut.condG_tf3,
+        _macdOut.condG_tf4, _macdOut.condG_tf5, _macdOut.condG_tf6,
+        _macdOut.condH_tf1, _macdOut.condH_tf2, _macdOut.condH_tf3,
+        _macdOut.condH_tf4, _macdOut.condH_tf5, _macdOut.condH_tf6,
+        _macdOut.condI_tf1, _macdOut.condI_tf2, _macdOut.condI_tf3,
+        _macdOut.condI_tf4, _macdOut.condI_tf5, _macdOut.condI_tf6,
+        _macdOut.condJ_tf1, _macdOut.condJ_tf2, _macdOut.condJ_tf3,
+        _macdOut.condJ_tf4, _macdOut.condJ_tf5, _macdOut.condJ_tf6,
+        _macdOut.trigA, _macdOut.trigB, _macdOut.trigC, _macdOut.trigD, _macdOut.trigE,
+        _macdOut.trigF, _macdOut.trigG, _macdOut.trigH, _macdOut.trigI, _macdOut.trigJ,
+        _macdOut.trigger_price, _macdOut.trigger_label
+    )
+else if side1_library == "MACD Line"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD LINE (WITH ZERO CONTEXT) HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _ml_fast   = side1_paramA > 0 ? int(side1_paramA) : 12
+    int _ml_slow   = side1_paramB > 0 ? int(side1_paramB) : 26
+    int _ml_signal = side1_paramC > 0 ? int(side1_paramC) : 9
+
+    // Calculate MACD on chart timeframe
+    float _ml_macd_line = ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow)
+    float _ml_sig       = ta.ema(_ml_macd_line, _ml_signal)
+
+    // Fetch HTF MACD data (only need current MACD and Signal)
+    [_ml_m1, _ml_s1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ml_m2, _ml_s2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ml_m3, _ml_s3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ml_m4, _ml_s4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ml_m5, _ml_s5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ml_m6, _ml_s6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow),
+         ta.ema(ta.ema(close, _ml_fast) - ta.ema(close, _ml_slow), _ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Call builder
+    tfMACDLine.TFModuleOutput _mlOut = tfMACDLine.buildOutput(
+        _ml_m1, _ml_s1, _ml_m2, _ml_s2, _ml_m3, _ml_s3,
+        _ml_m4, _ml_s4, _ml_m5, _ml_s5, _ml_m6, _ml_s6,
+        _ml_macd_line, _ml_sig, _ml_macd_line[1], _ml_sig[1],
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _mlOut.tf1_label, _mlOut.tf2_label, _mlOut.tf3_label,
+        _mlOut.tf4_label, _mlOut.tf5_label, _mlOut.tf6_label,
+        _mlOut.condA_tf1, _mlOut.condA_tf2, _mlOut.condA_tf3,
+        _mlOut.condA_tf4, _mlOut.condA_tf5, _mlOut.condA_tf6,
+        _mlOut.condB_tf1, _mlOut.condB_tf2, _mlOut.condB_tf3,
+        _mlOut.condB_tf4, _mlOut.condB_tf5, _mlOut.condB_tf6,
+        _mlOut.condC_tf1, _mlOut.condC_tf2, _mlOut.condC_tf3,
+        _mlOut.condC_tf4, _mlOut.condC_tf5, _mlOut.condC_tf6,
+        _mlOut.condD_tf1, _mlOut.condD_tf2, _mlOut.condD_tf3,
+        _mlOut.condD_tf4, _mlOut.condD_tf5, _mlOut.condD_tf6,
+        _mlOut.condE_tf1, _mlOut.condE_tf2, _mlOut.condE_tf3,
+        _mlOut.condE_tf4, _mlOut.condE_tf5, _mlOut.condE_tf6,
+        _mlOut.condF_tf1, _mlOut.condF_tf2, _mlOut.condF_tf3,
+        _mlOut.condF_tf4, _mlOut.condF_tf5, _mlOut.condF_tf6,
+        _mlOut.condG_tf1, _mlOut.condG_tf2, _mlOut.condG_tf3,
+        _mlOut.condG_tf4, _mlOut.condG_tf5, _mlOut.condG_tf6,
+        _mlOut.condH_tf1, _mlOut.condH_tf2, _mlOut.condH_tf3,
+        _mlOut.condH_tf4, _mlOut.condH_tf5, _mlOut.condH_tf6,
+        _mlOut.condI_tf1, _mlOut.condI_tf2, _mlOut.condI_tf3,
+        _mlOut.condI_tf4, _mlOut.condI_tf5, _mlOut.condI_tf6,
+        _mlOut.condJ_tf1, _mlOut.condJ_tf2, _mlOut.condJ_tf3,
+        _mlOut.condJ_tf4, _mlOut.condJ_tf5, _mlOut.condJ_tf6,
+        _mlOut.trigA, _mlOut.trigB, _mlOut.trigC, _mlOut.trigD, _mlOut.trigE,
+        _mlOut.trigF, _mlOut.trigG, _mlOut.trigH, _mlOut.trigI, _mlOut.trigJ,
+        _mlOut.trigger_price, _mlOut.trigger_label
+    )
+else if side1_library == "MACD Histogram"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD HISTOGRAM HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _mh_fast   = side1_paramA > 0 ? int(side1_paramA) : 12
+    int _mh_slow   = side1_paramB > 0 ? int(side1_paramB) : 26
+    int _mh_signal = side1_paramC > 0 ? int(side1_paramC) : 9
+
+    // Calculate histogram on chart timeframe
+    float _mh_macd = ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow)
+    float _mh_sig  = ta.ema(_mh_macd, _mh_signal)
+    float _mh_hist = _mh_macd - _mh_sig
+
+    // Fetch HTF histogram data (current + previous)
+    [_mh_h1, _mh_h1p] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_mh_h2, _mh_h2p] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_mh_h3, _mh_h3p] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_mh_h4, _mh_h4p] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_mh_h5, _mh_h5p] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_mh_h6, _mh_h6p] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal),
+         (ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow) - ta.ema(ta.ema(close, _mh_fast) - ta.ema(close, _mh_slow), _mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Call builder
+    tfMACDHistogram.TFModuleOutput _mhOut = tfMACDHistogram.buildOutput(
+        _mh_h1, _mh_h1p, _mh_h2, _mh_h2p, _mh_h3, _mh_h3p,
+        _mh_h4, _mh_h4p, _mh_h5, _mh_h5p, _mh_h6, _mh_h6p,
+        _mh_hist, _mh_hist[1], _mh_hist[2],
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _mhOut.tf1_label, _mhOut.tf2_label, _mhOut.tf3_label,
+        _mhOut.tf4_label, _mhOut.tf5_label, _mhOut.tf6_label,
+        _mhOut.condA_tf1, _mhOut.condA_tf2, _mhOut.condA_tf3,
+        _mhOut.condA_tf4, _mhOut.condA_tf5, _mhOut.condA_tf6,
+        _mhOut.condB_tf1, _mhOut.condB_tf2, _mhOut.condB_tf3,
+        _mhOut.condB_tf4, _mhOut.condB_tf5, _mhOut.condB_tf6,
+        _mhOut.condC_tf1, _mhOut.condC_tf2, _mhOut.condC_tf3,
+        _mhOut.condC_tf4, _mhOut.condC_tf5, _mhOut.condC_tf6,
+        _mhOut.condD_tf1, _mhOut.condD_tf2, _mhOut.condD_tf3,
+        _mhOut.condD_tf4, _mhOut.condD_tf5, _mhOut.condD_tf6,
+        _mhOut.condE_tf1, _mhOut.condE_tf2, _mhOut.condE_tf3,
+        _mhOut.condE_tf4, _mhOut.condE_tf5, _mhOut.condE_tf6,
+        _mhOut.condF_tf1, _mhOut.condF_tf2, _mhOut.condF_tf3,
+        _mhOut.condF_tf4, _mhOut.condF_tf5, _mhOut.condF_tf6,
+        _mhOut.condG_tf1, _mhOut.condG_tf2, _mhOut.condG_tf3,
+        _mhOut.condG_tf4, _mhOut.condG_tf5, _mhOut.condG_tf6,
+        _mhOut.condH_tf1, _mhOut.condH_tf2, _mhOut.condH_tf3,
+        _mhOut.condH_tf4, _mhOut.condH_tf5, _mhOut.condH_tf6,
+        _mhOut.condI_tf1, _mhOut.condI_tf2, _mhOut.condI_tf3,
+        _mhOut.condI_tf4, _mhOut.condI_tf5, _mhOut.condI_tf6,
+        _mhOut.condJ_tf1, _mhOut.condJ_tf2, _mhOut.condJ_tf3,
+        _mhOut.condJ_tf4, _mhOut.condJ_tf5, _mhOut.condJ_tf6,
+        _mhOut.trigA, _mhOut.trigB, _mhOut.trigC, _mhOut.trigD, _mhOut.trigE,
+        _mhOut.trigF, _mhOut.trigG, _mhOut.trigH, _mhOut.trigI, _mhOut.trigJ,
+        _mhOut.trigger_price, _mhOut.trigger_label
+    )
 else
     // Default: Placeholder library (legacy approach)
     side1_raw := side1Lib.getTFConfluence(
@@ -1038,6 +1318,268 @@ if side2_library == "EMA Stack (S/M/L)"
         _s2_emaOut.trigA, _s2_emaOut.trigB, _s2_emaOut.trigC, _s2_emaOut.trigD, _s2_emaOut.trigE,
         _s2_emaOut.trigF, _s2_emaOut.trigG, _s2_emaOut.trigH, _s2_emaOut.trigI, _s2_emaOut.trigJ,
         _s2_emaOut.trigger_price, _s2_emaOut.trigger_label
+    )
+else if side2_library == "Simple MACD Line"
+    //──────────────────────────────────────────────────────────────────────────────
+    // SIMPLE MACD LINE HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // paramA = Fast EMA (default: 12)
+    // paramB = Slow EMA (default: 26)
+    // paramC = Signal smoothing (default: 9)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    // Convert params to integer lengths (with sensible defaults)
+    int _s2_macd_fast   = side2_paramA > 0 ? int(side2_paramA) : 12
+    int _s2_macd_slow   = side2_paramB > 0 ? int(side2_paramB) : 26
+    int _s2_macd_signal = side2_paramC > 0 ? int(side2_paramC) : 9
+
+    // Calculate MACD components on chart timeframe
+    float _s2_macd_fastMA = ta.ema(close, _s2_macd_fast)
+    float _s2_macd_slowMA = ta.ema(close, _s2_macd_slow)
+    float _s2_macd_line   = _s2_macd_fastMA - _s2_macd_slowMA
+    float _s2_macd_sig    = ta.ema(_s2_macd_line, _s2_macd_signal)
+
+    // Fetch HTF MACD data for each of the 6 timeframes
+    [_s2_m1, _s2_sig1, _s2_m1p, _s2_sig1p] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_m2, _s2_sig2, _s2_m2p, _s2_sig2p] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_m3, _s2_sig3, _s2_m3p, _s2_sig3p] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_m4, _s2_sig4, _s2_m4p, _s2_sig4p] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_m5, _s2_sig5, _s2_m5p, _s2_sig5p] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_m6, _s2_sig6, _s2_m6p, _s2_sig6p] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow),
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal),
+         (ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow))[1],
+         ta.ema(ta.ema(close, _s2_macd_fast) - ta.ema(close, _s2_macd_slow), _s2_macd_signal)[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart timeframe values for triggers
+    float _s2_m_chart = _s2_macd_line
+    float _s2_s_chart = _s2_macd_sig
+    float _s2_m_prev  = _s2_macd_line[1]
+    float _s2_s_prev  = _s2_macd_sig[1]
+
+    // Call library's builder function with the fetched data
+    tfMACDSimple.TFModuleOutput _s2_macdOut = tfMACDSimple.buildOutput(
+        _s2_m1, _s2_sig1, _s2_m1p, _s2_sig1p,
+        _s2_m2, _s2_sig2, _s2_m2p, _s2_sig2p,
+        _s2_m3, _s2_sig3, _s2_m3p, _s2_sig3p,
+        _s2_m4, _s2_sig4, _s2_m4p, _s2_sig4p,
+        _s2_m5, _s2_sig5, _s2_m5p, _s2_sig5p,
+        _s2_m6, _s2_sig6, _s2_m6p, _s2_sig6p,
+        _s2_m_chart, _s2_s_chart, _s2_m_prev, _s2_s_prev,
+        close
+    )
+
+    // Cast MACD output → placeholder output type
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_macdOut.tf1_label, _s2_macdOut.tf2_label, _s2_macdOut.tf3_label,
+        _s2_macdOut.tf4_label, _s2_macdOut.tf5_label, _s2_macdOut.tf6_label,
+        _s2_macdOut.condA_tf1, _s2_macdOut.condA_tf2, _s2_macdOut.condA_tf3,
+        _s2_macdOut.condA_tf4, _s2_macdOut.condA_tf5, _s2_macdOut.condA_tf6,
+        _s2_macdOut.condB_tf1, _s2_macdOut.condB_tf2, _s2_macdOut.condB_tf3,
+        _s2_macdOut.condB_tf4, _s2_macdOut.condB_tf5, _s2_macdOut.condB_tf6,
+        _s2_macdOut.condC_tf1, _s2_macdOut.condC_tf2, _s2_macdOut.condC_tf3,
+        _s2_macdOut.condC_tf4, _s2_macdOut.condC_tf5, _s2_macdOut.condC_tf6,
+        _s2_macdOut.condD_tf1, _s2_macdOut.condD_tf2, _s2_macdOut.condD_tf3,
+        _s2_macdOut.condD_tf4, _s2_macdOut.condD_tf5, _s2_macdOut.condD_tf6,
+        _s2_macdOut.condE_tf1, _s2_macdOut.condE_tf2, _s2_macdOut.condE_tf3,
+        _s2_macdOut.condE_tf4, _s2_macdOut.condE_tf5, _s2_macdOut.condE_tf6,
+        _s2_macdOut.condF_tf1, _s2_macdOut.condF_tf2, _s2_macdOut.condF_tf3,
+        _s2_macdOut.condF_tf4, _s2_macdOut.condF_tf5, _s2_macdOut.condF_tf6,
+        _s2_macdOut.condG_tf1, _s2_macdOut.condG_tf2, _s2_macdOut.condG_tf3,
+        _s2_macdOut.condG_tf4, _s2_macdOut.condG_tf5, _s2_macdOut.condG_tf6,
+        _s2_macdOut.condH_tf1, _s2_macdOut.condH_tf2, _s2_macdOut.condH_tf3,
+        _s2_macdOut.condH_tf4, _s2_macdOut.condH_tf5, _s2_macdOut.condH_tf6,
+        _s2_macdOut.condI_tf1, _s2_macdOut.condI_tf2, _s2_macdOut.condI_tf3,
+        _s2_macdOut.condI_tf4, _s2_macdOut.condI_tf5, _s2_macdOut.condI_tf6,
+        _s2_macdOut.condJ_tf1, _s2_macdOut.condJ_tf2, _s2_macdOut.condJ_tf3,
+        _s2_macdOut.condJ_tf4, _s2_macdOut.condJ_tf5, _s2_macdOut.condJ_tf6,
+        _s2_macdOut.trigA, _s2_macdOut.trigB, _s2_macdOut.trigC, _s2_macdOut.trigD, _s2_macdOut.trigE,
+        _s2_macdOut.trigF, _s2_macdOut.trigG, _s2_macdOut.trigH, _s2_macdOut.trigI, _s2_macdOut.trigJ,
+        _s2_macdOut.trigger_price, _s2_macdOut.trigger_label
+    )
+else if side2_library == "MACD Line"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD LINE (WITH ZERO CONTEXT) HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _s2_ml_fast   = side2_paramA > 0 ? int(side2_paramA) : 12
+    int _s2_ml_slow   = side2_paramB > 0 ? int(side2_paramB) : 26
+    int _s2_ml_signal = side2_paramC > 0 ? int(side2_paramC) : 9
+
+    float _s2_ml_macd = ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow)
+    float _s2_ml_sig  = ta.ema(_s2_ml_macd, _s2_ml_signal)
+
+    [_s2_ml_m1, _s2_ml_s1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ml_m2, _s2_ml_s2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ml_m3, _s2_ml_s3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ml_m4, _s2_ml_s4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ml_m5, _s2_ml_s5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ml_m6, _s2_ml_s6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow),
+         ta.ema(ta.ema(close, _s2_ml_fast) - ta.ema(close, _s2_ml_slow), _s2_ml_signal)],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    tfMACDLine.TFModuleOutput _s2_mlOut = tfMACDLine.buildOutput(
+        _s2_ml_m1, _s2_ml_s1, _s2_ml_m2, _s2_ml_s2, _s2_ml_m3, _s2_ml_s3,
+        _s2_ml_m4, _s2_ml_s4, _s2_ml_m5, _s2_ml_s5, _s2_ml_m6, _s2_ml_s6,
+        _s2_ml_macd, _s2_ml_sig, _s2_ml_macd[1], _s2_ml_sig[1],
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_mlOut.tf1_label, _s2_mlOut.tf2_label, _s2_mlOut.tf3_label,
+        _s2_mlOut.tf4_label, _s2_mlOut.tf5_label, _s2_mlOut.tf6_label,
+        _s2_mlOut.condA_tf1, _s2_mlOut.condA_tf2, _s2_mlOut.condA_tf3,
+        _s2_mlOut.condA_tf4, _s2_mlOut.condA_tf5, _s2_mlOut.condA_tf6,
+        _s2_mlOut.condB_tf1, _s2_mlOut.condB_tf2, _s2_mlOut.condB_tf3,
+        _s2_mlOut.condB_tf4, _s2_mlOut.condB_tf5, _s2_mlOut.condB_tf6,
+        _s2_mlOut.condC_tf1, _s2_mlOut.condC_tf2, _s2_mlOut.condC_tf3,
+        _s2_mlOut.condC_tf4, _s2_mlOut.condC_tf5, _s2_mlOut.condC_tf6,
+        _s2_mlOut.condD_tf1, _s2_mlOut.condD_tf2, _s2_mlOut.condD_tf3,
+        _s2_mlOut.condD_tf4, _s2_mlOut.condD_tf5, _s2_mlOut.condD_tf6,
+        _s2_mlOut.condE_tf1, _s2_mlOut.condE_tf2, _s2_mlOut.condE_tf3,
+        _s2_mlOut.condE_tf4, _s2_mlOut.condE_tf5, _s2_mlOut.condE_tf6,
+        _s2_mlOut.condF_tf1, _s2_mlOut.condF_tf2, _s2_mlOut.condF_tf3,
+        _s2_mlOut.condF_tf4, _s2_mlOut.condF_tf5, _s2_mlOut.condF_tf6,
+        _s2_mlOut.condG_tf1, _s2_mlOut.condG_tf2, _s2_mlOut.condG_tf3,
+        _s2_mlOut.condG_tf4, _s2_mlOut.condG_tf5, _s2_mlOut.condG_tf6,
+        _s2_mlOut.condH_tf1, _s2_mlOut.condH_tf2, _s2_mlOut.condH_tf3,
+        _s2_mlOut.condH_tf4, _s2_mlOut.condH_tf5, _s2_mlOut.condH_tf6,
+        _s2_mlOut.condI_tf1, _s2_mlOut.condI_tf2, _s2_mlOut.condI_tf3,
+        _s2_mlOut.condI_tf4, _s2_mlOut.condI_tf5, _s2_mlOut.condI_tf6,
+        _s2_mlOut.condJ_tf1, _s2_mlOut.condJ_tf2, _s2_mlOut.condJ_tf3,
+        _s2_mlOut.condJ_tf4, _s2_mlOut.condJ_tf5, _s2_mlOut.condJ_tf6,
+        _s2_mlOut.trigA, _s2_mlOut.trigB, _s2_mlOut.trigC, _s2_mlOut.trigD, _s2_mlOut.trigE,
+        _s2_mlOut.trigF, _s2_mlOut.trigG, _s2_mlOut.trigH, _s2_mlOut.trigI, _s2_mlOut.trigJ,
+        _s2_mlOut.trigger_price, _s2_mlOut.trigger_label
+    )
+else if side2_library == "MACD Histogram"
+    //──────────────────────────────────────────────────────────────────────────────
+    // MACD HISTOGRAM HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int _s2_mh_fast   = side2_paramA > 0 ? int(side2_paramA) : 12
+    int _s2_mh_slow   = side2_paramB > 0 ? int(side2_paramB) : 26
+    int _s2_mh_signal = side2_paramC > 0 ? int(side2_paramC) : 9
+
+    float _s2_mh_macd = ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow)
+    float _s2_mh_sig  = ta.ema(_s2_mh_macd, _s2_mh_signal)
+    float _s2_mh_hist = _s2_mh_macd - _s2_mh_sig
+
+    [_s2_mh_h1, _s2_mh_h1p] = request.security(syminfo.tickerid, _tf_res(tf1),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_mh_h2, _s2_mh_h2p] = request.security(syminfo.tickerid, _tf_res(tf2),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_mh_h3, _s2_mh_h3p] = request.security(syminfo.tickerid, _tf_res(tf3),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_mh_h4, _s2_mh_h4p] = request.security(syminfo.tickerid, _tf_res(tf4),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_mh_h5, _s2_mh_h5p] = request.security(syminfo.tickerid, _tf_res(tf5),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_mh_h6, _s2_mh_h6p] = request.security(syminfo.tickerid, _tf_res(tf6),
+        [ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal),
+         (ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow) - ta.ema(ta.ema(close, _s2_mh_fast) - ta.ema(close, _s2_mh_slow), _s2_mh_signal))[1]],
+        barmerge.gaps_off, barmerge.lookahead_off)
+
+    tfMACDHistogram.TFModuleOutput _s2_mhOut = tfMACDHistogram.buildOutput(
+        _s2_mh_h1, _s2_mh_h1p, _s2_mh_h2, _s2_mh_h2p, _s2_mh_h3, _s2_mh_h3p,
+        _s2_mh_h4, _s2_mh_h4p, _s2_mh_h5, _s2_mh_h5p, _s2_mh_h6, _s2_mh_h6p,
+        _s2_mh_hist, _s2_mh_hist[1], _s2_mh_hist[2],
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_mhOut.tf1_label, _s2_mhOut.tf2_label, _s2_mhOut.tf3_label,
+        _s2_mhOut.tf4_label, _s2_mhOut.tf5_label, _s2_mhOut.tf6_label,
+        _s2_mhOut.condA_tf1, _s2_mhOut.condA_tf2, _s2_mhOut.condA_tf3,
+        _s2_mhOut.condA_tf4, _s2_mhOut.condA_tf5, _s2_mhOut.condA_tf6,
+        _s2_mhOut.condB_tf1, _s2_mhOut.condB_tf2, _s2_mhOut.condB_tf3,
+        _s2_mhOut.condB_tf4, _s2_mhOut.condB_tf5, _s2_mhOut.condB_tf6,
+        _s2_mhOut.condC_tf1, _s2_mhOut.condC_tf2, _s2_mhOut.condC_tf3,
+        _s2_mhOut.condC_tf4, _s2_mhOut.condC_tf5, _s2_mhOut.condC_tf6,
+        _s2_mhOut.condD_tf1, _s2_mhOut.condD_tf2, _s2_mhOut.condD_tf3,
+        _s2_mhOut.condD_tf4, _s2_mhOut.condD_tf5, _s2_mhOut.condD_tf6,
+        _s2_mhOut.condE_tf1, _s2_mhOut.condE_tf2, _s2_mhOut.condE_tf3,
+        _s2_mhOut.condE_tf4, _s2_mhOut.condE_tf5, _s2_mhOut.condE_tf6,
+        _s2_mhOut.condF_tf1, _s2_mhOut.condF_tf2, _s2_mhOut.condF_tf3,
+        _s2_mhOut.condF_tf4, _s2_mhOut.condF_tf5, _s2_mhOut.condF_tf6,
+        _s2_mhOut.condG_tf1, _s2_mhOut.condG_tf2, _s2_mhOut.condG_tf3,
+        _s2_mhOut.condG_tf4, _s2_mhOut.condG_tf5, _s2_mhOut.condG_tf6,
+        _s2_mhOut.condH_tf1, _s2_mhOut.condH_tf2, _s2_mhOut.condH_tf3,
+        _s2_mhOut.condH_tf4, _s2_mhOut.condH_tf5, _s2_mhOut.condH_tf6,
+        _s2_mhOut.condI_tf1, _s2_mhOut.condI_tf2, _s2_mhOut.condI_tf3,
+        _s2_mhOut.condI_tf4, _s2_mhOut.condI_tf5, _s2_mhOut.condI_tf6,
+        _s2_mhOut.condJ_tf1, _s2_mhOut.condJ_tf2, _s2_mhOut.condJ_tf3,
+        _s2_mhOut.condJ_tf4, _s2_mhOut.condJ_tf5, _s2_mhOut.condJ_tf6,
+        _s2_mhOut.trigA, _s2_mhOut.trigB, _s2_mhOut.trigC, _s2_mhOut.trigD, _s2_mhOut.trigE,
+        _s2_mhOut.trigF, _s2_mhOut.trigG, _s2_mhOut.trigH, _s2_mhOut.trigI, _s2_mhOut.trigJ,
+        _s2_mhOut.trigger_price, _s2_mhOut.trigger_label
     )
 else
     // Default: Placeholder library
