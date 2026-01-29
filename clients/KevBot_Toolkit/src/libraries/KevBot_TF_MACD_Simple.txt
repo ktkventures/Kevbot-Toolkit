@@ -1,0 +1,326 @@
+//@version=6
+library("KevBot_TF_MACD_Simple", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_MACD_Simple – Simple MACD Line Module for KevBot Toolkit
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched MACD data
+//   • This allows paramA-C in the toolkit to control MACD lengths (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes the pure MACD vs Signal line relationship without considering the zero line.
+//   Shows whether MACD is above/below Signal and whether the gap is widening or narrowing.
+//   This is useful for strategies that focus purely on momentum crossovers.
+//
+// USAGE IN TOOLKIT:
+//   // 1. Toolkit declares inputs
+//   int fastLen   = int(side_paramA)  // e.g., 12
+//   int slowLen   = int(side_paramB)  // e.g., 26
+//   int signalLen = int(side_paramC)  // e.g., 9
+//
+//   // 2. Toolkit calculates MACD values
+//   fastMA  = ta.ema(close, fastLen)
+//   slowMA  = ta.ema(close, slowLen)
+//   macd    = fastMA - slowMA
+//   signal  = ta.ema(macd, signalLen)
+//
+//   // 3. Toolkit fetches HTF data for each timeframe
+//   [m1, s1, m1p, s1p] = request.security(sym, tf1, [macd, signal, macd[1], signal[1]])
+//   ... repeat for tf2-tf6 ...
+//
+//   // 4. Toolkit calls this library's builder
+//   TFModuleOutput output = macdSimple.buildOutput(
+//       m1, s1, m1p, s1p,  // TF1 MACD, Signal, prev MACD, prev Signal
+//       m2, s2, m2p, s2p,  // TF2
+//       ... tf3-tf6 ...,
+//       m_chart, s_chart, m_prev, s_prev,  // Chart TF for triggers
+//       triggerPrice
+//   )
+//
+// CONDITIONS PROVIDED:
+//   A: M>S↑ (MACD > Signal, gap widening - strengthening bullish)
+//   B: M>S↓ (MACD > Signal, gap narrowing - weakening bullish)
+//   C: M<S↓ (MACD < Signal, gap widening - strengthening bearish)
+//   D: M<S↑ (MACD < Signal, gap narrowing - weakening bearish)
+//   E-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Bullish Cross (MACD crosses above Signal)
+//   B: Bearish Cross (MACD crosses below Signal)
+//   C-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: M>S↑ (MACD > Signal, gap widening)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: M>S↓ (MACD > Signal, gap narrowing)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: M<S↓ (MACD < Signal, gap widening)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: M<S↑ (MACD < Signal, gap narrowing)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Conditions E-J per TF: Reserved (false)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Bullish Cross (MACD crosses above Signal)
+    bool trigB  // Bearish Cross (MACD crosses below Signal)
+    bool trigC  // Reserved
+    bool trigD  // Reserved
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute MACD state label from current and previous MACD/Signal values
+// Returns: "M>S↑", "M>S↓", "M<S↓", "M<S↑", or "na"
+_stateLabel(float macd, float signal, float macdPrev, float signalPrev) =>
+    string lab = "na"
+    if na(macd) or na(signal) or na(macdPrev) or na(signalPrev)
+        lab := "na"
+    else
+        float gap = macd - signal
+        float gapPrev = macdPrev - signalPrev
+        bool gapWidening = math.abs(gap) > math.abs(gapPrev)
+
+        if macd > signal
+            lab := gapWidening ? "M>S↑" : "M>S↓"
+        else
+            lab := gapWidening ? "M<S↓" : "M<S↑"
+    lab
+
+// Check individual MACD states
+// Condition A: MACD > Signal AND gap widening (strengthening bullish)
+_isBullWidening(float macd, float signal, float macdPrev, float signalPrev) =>
+    if na(macd) or na(signal) or na(macdPrev) or na(signalPrev)
+        false
+    else
+        float gap = macd - signal
+        float gapPrev = macdPrev - signalPrev
+        macd > signal and math.abs(gap) > math.abs(gapPrev)
+
+// Condition B: MACD > Signal AND gap narrowing (weakening bullish)
+_isBullNarrowing(float macd, float signal, float macdPrev, float signalPrev) =>
+    if na(macd) or na(signal) or na(macdPrev) or na(signalPrev)
+        false
+    else
+        float gap = macd - signal
+        float gapPrev = macdPrev - signalPrev
+        macd > signal and math.abs(gap) <= math.abs(gapPrev)
+
+// Condition C: MACD < Signal AND gap widening (strengthening bearish)
+_isBearWidening(float macd, float signal, float macdPrev, float signalPrev) =>
+    if na(macd) or na(signal) or na(macdPrev) or na(signalPrev)
+        false
+    else
+        float gap = macd - signal
+        float gapPrev = macdPrev - signalPrev
+        macd < signal and math.abs(gap) > math.abs(gapPrev)
+
+// Condition D: MACD < Signal AND gap narrowing (weakening bearish)
+_isBearNarrowing(float macd, float signal, float macdPrev, float signalPrev) =>
+    if na(macd) or na(signal) or na(macdPrev) or na(signalPrev)
+        false
+    else
+        float gap = macd - signal
+        float gapPrev = macdPrev - signalPrev
+        macd < signal and math.abs(gap) <= math.abs(gapPrev)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched MACD data
+// The toolkit calls this AFTER it has fetched all HTF MACD/Signal values using request.security()
+//
+// @param m1-m6      MACD values for each of the 6 timeframes
+// @param s1-s6      Signal values for each of the 6 timeframes
+// @param m1p-m6p    Previous bar MACD values for gap detection
+// @param s1p-s6p    Previous bar Signal values for gap detection
+// @param m_chart    Current chart TF MACD (for triggers)
+// @param s_chart    Current chart TF Signal (for triggers)
+// @param m_prev     Previous bar MACD (for crossover detection)
+// @param s_prev     Previous bar Signal (for crossover detection)
+// @param triggerPrice  Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1
+    float m1, float s1, float m1p, float s1p,
+    // TF2
+    float m2, float s2, float m2p, float s2p,
+    // TF3
+    float m3, float s3, float m3p, float s3p,
+    // TF4
+    float m4, float s4, float m4p, float s4p,
+    // TF5
+    float m5, float s5, float m5p, float s5p,
+    // TF6
+    float m6, float s6, float m6p, float s6p,
+    // Chart TF (for triggers)
+    float m_chart, float s_chart, float m_prev, float s_prev,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _stateLabel(m1, s1, m1p, s1p)
+    string lab2 = _stateLabel(m2, s2, m2p, s2p)
+    string lab3 = _stateLabel(m3, s3, m3p, s3p)
+    string lab4 = _stateLabel(m4, s4, m4p, s4p)
+    string lab5 = _stateLabel(m5, s5, m5p, s5p)
+    string lab6 = _stateLabel(m6, s6, m6p, s6p)
+
+    // Condition A: M>S↑ (MACD > Signal, gap widening) per TF
+    bool cA1 = _isBullWidening(m1, s1, m1p, s1p)
+    bool cA2 = _isBullWidening(m2, s2, m2p, s2p)
+    bool cA3 = _isBullWidening(m3, s3, m3p, s3p)
+    bool cA4 = _isBullWidening(m4, s4, m4p, s4p)
+    bool cA5 = _isBullWidening(m5, s5, m5p, s5p)
+    bool cA6 = _isBullWidening(m6, s6, m6p, s6p)
+
+    // Condition B: M>S↓ (MACD > Signal, gap narrowing) per TF
+    bool cB1 = _isBullNarrowing(m1, s1, m1p, s1p)
+    bool cB2 = _isBullNarrowing(m2, s2, m2p, s2p)
+    bool cB3 = _isBullNarrowing(m3, s3, m3p, s3p)
+    bool cB4 = _isBullNarrowing(m4, s4, m4p, s4p)
+    bool cB5 = _isBullNarrowing(m5, s5, m5p, s5p)
+    bool cB6 = _isBullNarrowing(m6, s6, m6p, s6p)
+
+    // Condition C: M<S↓ (MACD < Signal, gap widening) per TF
+    bool cC1 = _isBearWidening(m1, s1, m1p, s1p)
+    bool cC2 = _isBearWidening(m2, s2, m2p, s2p)
+    bool cC3 = _isBearWidening(m3, s3, m3p, s3p)
+    bool cC4 = _isBearWidening(m4, s4, m4p, s4p)
+    bool cC5 = _isBearWidening(m5, s5, m5p, s5p)
+    bool cC6 = _isBearWidening(m6, s6, m6p, s6p)
+
+    // Condition D: M<S↑ (MACD < Signal, gap narrowing) per TF
+    bool cD1 = _isBearNarrowing(m1, s1, m1p, s1p)
+    bool cD2 = _isBearNarrowing(m2, s2, m2p, s2p)
+    bool cD3 = _isBearNarrowing(m3, s3, m3p, s3p)
+    bool cD4 = _isBearNarrowing(m4, s4, m4p, s4p)
+    bool cD5 = _isBearNarrowing(m5, s5, m5p, s5p)
+    bool cD6 = _isBearNarrowing(m6, s6, m6p, s6p)
+
+    // Triggers on chart timeframe (crossovers)
+    bool tA = m_prev <= s_prev and m_chart > s_chart  // Bullish cross
+    bool tB = m_prev >= s_prev and m_chart < s_chart  // Bearish cross
+
+    // Handle na values in trigger detection
+    tA := na(m_prev) or na(s_prev) or na(m_chart) or na(s_chart) ? false : tA
+    tB := na(m_prev) or na(s_prev) or na(m_chart) or na(s_chart) ? false : tB
+
+    // Determine trigger label
+    bool anyTrig = tA or tB
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "M>S" : tB ? "M<S" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (M>S↑ - Bull Widening)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (M>S↓ - Bull Narrowing)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (M<S↓ - Bear Widening)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (M<S↑ - Bear Narrowing)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, false, false, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

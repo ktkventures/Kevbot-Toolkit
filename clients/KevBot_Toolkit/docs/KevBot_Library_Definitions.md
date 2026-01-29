@@ -7,8 +7,9 @@ This document provides user-facing definitions for all Side Module libraries ava
 ## Table of Contents
 
 1. [EMA Stack (S/M/L)](#ema-stack-sml)
-2. [KevBot_TF_Placeholder](#kevbot_tf_placeholder)
-3. [Adding New Libraries](#adding-new-libraries)
+2. [Simple MACD Line](#simple-macd-line)
+3. [KevBot_TF_Placeholder](#kevbot_tf_placeholder)
+4. [Adding New Libraries](#adding-new-libraries)
 
 ---
 
@@ -83,6 +84,86 @@ Triggers fire on crossover events on the chart timeframe.
 - Param C: 200
 - Long Entry Trigger: Trig E (M > L)
 - Long Entry Confluence: Cond A (Bull Stack)
+
+---
+
+## Simple MACD Line
+
+**Library Name:** `KevBot_TF_MACD_Simple`
+**Version:** 1
+**Architecture:** Hybrid (Toolkit fetches data, library processes)
+
+### Overview
+
+The Simple MACD Line library analyzes the pure relationship between the MACD line and Signal line, without considering the zero line. It shows whether MACD is above or below Signal, and whether the gap between them is widening (strengthening) or narrowing (weakening).
+
+This is ideal for strategies that focus purely on MACD/Signal crossovers without caring about whether MACD is above or below zero.
+
+### Parameters
+
+| Parameter | Name | Default | Description |
+|-----------|------|---------|-------------|
+| **Param A** | Fast EMA Length | 12 | Period for the Fast EMA |
+| **Param B** | Slow EMA Length | 26 | Period for the Slow EMA |
+| **Param C** | Signal Smoothing | 9 | Period for the Signal line EMA |
+| Param D | (Reserved) | - | Not used |
+| Param E | (Reserved) | - | Not used |
+| Param F | (Reserved) | - | Not used |
+
+### Conditions (A-J)
+
+Conditions evaluate the MACD vs Signal relationship on each timeframe. The label shown indicates both the relationship and momentum direction.
+
+| Condition | Name | Description | Label |
+|-----------|------|-------------|-------|
+| **Cond A** | Bull Widening | MACD > Signal, gap widening (strengthening bullish) | M>S↑ |
+| **Cond B** | Bull Narrowing | MACD > Signal, gap narrowing (weakening bullish) | M>S↓ |
+| **Cond C** | Bear Widening | MACD < Signal, gap widening (strengthening bearish) | M<S↓ |
+| **Cond D** | Bear Narrowing | MACD < Signal, gap narrowing (weakening bearish) | M<S↑ |
+| Cond E-J | (Reserved) | Not used | - |
+
+### Triggers (A-J)
+
+Triggers fire on crossover events on the chart timeframe.
+
+| Trigger | Name | Description | Use Case |
+|---------|------|-------------|----------|
+| **Trig A** | Bullish Cross | MACD crosses above Signal | Long Entry signal |
+| **Trig B** | Bearish Cross | MACD crosses below Signal | Short Entry / Long Exit signal |
+| Trig C-J | (Reserved) | Not used | - |
+
+### Recommended Configurations
+
+#### Standard MACD
+- Param A: 12
+- Param B: 26
+- Param C: 9
+- Long Entry Trigger: Trig A (Bullish Cross)
+- Long Entry Confluence: Cond A (Bull Widening on higher TFs)
+
+#### Fast MACD (More Signals)
+- Param A: 8
+- Param B: 17
+- Param C: 9
+- Long Entry Trigger: Trig A (Bullish Cross)
+- Long Entry Confluence: Cond A or Cond B (any bullish state)
+
+#### Slow MACD (Fewer False Signals)
+- Param A: 19
+- Param B: 39
+- Param C: 9
+- Long Entry Trigger: Trig A (Bullish Cross)
+- Long Entry Confluence: Cond A (Bull Widening for confirmation)
+
+### Interpretation Guide
+
+| Side Table Shows | Meaning | Trading Implication |
+|------------------|---------|---------------------|
+| M>S↑ across TFs | Strong bullish momentum building | High confidence long entries |
+| M>S↓ across TFs | Bullish but losing steam | Consider taking profits or tightening stops |
+| M<S↓ across TFs | Strong bearish momentum building | High confidence short entries / avoid longs |
+| M<S↑ across TFs | Bearish but recovering | Watch for potential reversal |
+| Mixed signals | Choppy/transitional market | Reduce position size or wait for clarity |
 
 ---
 
