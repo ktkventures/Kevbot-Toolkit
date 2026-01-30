@@ -1,7 +1,7 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.3
-**Date:** January 27, 2026
+**Version:** 1.4
+**Date:** January 30, 2026
 **Target Platform:** TradingView (PineScript v6)
 **Development Tool:** Claude Code
 
@@ -905,6 +905,27 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 - [ ] Risk management automation
 - [ ] Portfolio-level analytics
 
+### 9.4 Companion Tools
+
+#### Trade Analyzer (Python/Streamlit) - POC Complete
+**Location:** `tools/trade_analyzer/`
+**Status:** ✅ Proof of concept complete, ready for toolkit integration
+
+A web-based analysis tool that processes CSV exports from the toolkit to find optimal confluence combinations.
+
+**Key Features:**
+- **Confluence Record Analysis**: Atomic units combining Timeframe + Evaluator + State (e.g., "1M-EMA-SML")
+- **Drill-Down Mode**: Iteratively explore which factors pair well together
+- **Auto-Search Mode**: Combinatorial search for best N-factor combinations
+- **Financial Modeling**: Fixed vs Compounding risk modes, starting balance, daily P&L in both R and $
+- **Export TradingView Parameters**: Placeholder for auto-configuring indicator settings based on analysis results
+
+**Integration Points:**
+- Reads CSV data matching toolkit's export format (Section 8.4)
+- Future: Export button will generate toolkit input parameters to match discovered confluence combinations
+
+**Tech Stack:** Python, Streamlit, Pandas, Plotly (~800 lines)
+
 ---
 
 ## 10. Testing & Validation
@@ -1444,6 +1465,7 @@ label.new(bar_index, high,
 | 1.1 | 2026-01-26 | Updated to reflect current state: corrected file names/line counts, documented V2 expanded TFModuleOutput structure (10 conditions/triggers), added KB_TF_Out_V2 internal structure, documented critical EMA Stack label bug with root cause analysis, updated development status | Claude Code (Opus 4.5) |
 | 1.2 | 2026-01-26 | **Major Update:** Hybrid Architecture v1.1 implemented and working. EMA Stack bug resolved via hybrid pattern (toolkit owns security calls, library processes data). Side Module 2 added as proof of concept. Created KevBot_Library_Definitions.md for user-facing documentation. Renamed legacy files with LEGACY prefix. Updated all sections to reflect current working state. | Claude Code (Opus 4.5) |
 | 1.3 | 2026-01-27 | **Feature Complete Update:** (1) Chart plotting system: raw trigger marks (cross +) for entries, position signal marks (triangles for entries, xcross for exits). (2) Label system: raw labels with trigger names, position labels with full metadata, color/position semantics, suppression logic, max_labels_count=500. (3) Data export plots: invisible plots for CSV export including confluence scores, grades, position sizing, TF EMA states, signal markers. (4) UI expansion: all 10 triggers (A-J) and 10 conditions (A-J) exposed in dropdowns. (5) Default input values: sensible defaults so signals display on load. (6) Side table color fix: independent Long/Short confluence condition evaluation. Updated Section 8.3, added Section 8.4 Data Export, updated Section 9.1 completed items, marked resolved issues in Section 11. | Claude Code (Opus 4.5) |
+| 1.4 | 2026-01-30 | Added Section 9.4 Companion Tools documenting the Trade Analyzer POC (Python/Streamlit). Tool analyzes CSV exports to find optimal confluence combinations using "confluence records" (TF-Evaluator-State). Features: drill-down analysis, auto-search, financial modeling (fixed/compounding risk), placeholder for TradingView parameter export. | Claude Code (Opus 4.5) |
 
 ---
 

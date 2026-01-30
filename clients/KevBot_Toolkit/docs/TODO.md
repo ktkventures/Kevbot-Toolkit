@@ -2,29 +2,40 @@
 
 ## Next Session Priority
 
-### Build Trade Analysis Tool (Python/Streamlit)
+### Continue TradingView Toolkit Development
 
-**Goal:** Create a web-based analysis tool to find optimal confluence combinations from exported trade data.
+Return to building the TradingView indicator side modules and features. The Trade Analysis Tool POC is complete and ready to wire up once the toolkit's export structure is finalized.
 
-**Requirements:**
-- Import CSV data exports from TradingView (the toolkit's data export feature)
-- Input fields for entry trigger and exit trigger selection
-- Calculate KPIs (win rate, R-multiple, profit factor, etc.) grouped by confluence combinations
-- Rank and display "best performing confluence setups"
-- Interactive filtering: e.g., "Show trades where Trigger A fired AND EMA Stack was SML on TF1-3"
-- Heatmaps or visualizations showing which confluences correlate with positive outcomes
+**Pending Toolkit Work:**
+- Build UT Bot library (preferred trigger module)
+- Build remaining side modules: VWAP, RVOL, SR Channel, Swing 123
+- Manually verify MACD Divergence behavior against chart interpretation
+- Complete backtest KPI calculations in toolkit
+- Add Side Modules 3-10 (follow existing pattern)
 
-**Tech Stack:**
-- Python
-- Streamlit (simple web UI)
-- Pandas for data processing
-- ~200-300 lines estimated
+---
 
-**Why web app over spreadsheet:**
-- Multi-dimensional analysis (triggers × confluences × TFs × outcomes)
-- Finding "best combinations" is statistical analysis that's hard in spreadsheet formulas
-- Code can be written directly vs. giving spreadsheet instructions
-- Better interactivity and visualizations
+## Completed Items
+
+### ✅ Trade Analysis Tool (Python/Streamlit) - POC Complete
+
+**Location:** `tools/trade_analyzer/`
+
+**What was built:**
+- Streamlit web app for analyzing confluence combinations
+- Mock data generator mimicking TradingView CSV export format
+- Two analysis modes:
+  - **Drill-Down**: Start with best single factor, iteratively add confluences
+  - **Auto-Search**: Combinatorial search for best N-factor combinations
+- "Confluence Record" concept: atomic units combining Timeframe + Evaluator + State (e.g., "1M-EMA-SML")
+- KPI Dashboard: Trades, Win Rate, Profit Factor, Daily P&L (R and $)
+- P&L Settings: Fixed vs Compounding risk modes, starting balance, risk per trade
+- Interactive equity curve with high water mark
+- Export TradingView Parameters button (placeholder for future integration)
+
+**Tech Stack:** Python, Streamlit, Pandas, Plotly (~800 lines)
+
+**Status:** POC complete. Ready to integrate with real toolkit export data once format is finalized.
 
 ---
 
@@ -36,4 +47,4 @@
 
 ---
 
-*Last Updated: January 29, 2026*
+*Last Updated: January 30, 2026*
