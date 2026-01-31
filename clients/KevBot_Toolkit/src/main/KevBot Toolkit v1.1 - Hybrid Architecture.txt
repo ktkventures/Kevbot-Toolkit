@@ -236,7 +236,7 @@ int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE1 = "6. Side Module 1"
 bool   side1_enabled = input.bool(true, "Enable Side Module 1", group = GRP_SIDE1)
-string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence"], group = GRP_SIDE1)
+string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence","UT Bot","VWAP","RVOL","Swing 123"], group = GRP_SIDE1)
 
 //────────────────────────────────────────────────────────────
 // Phase 2A — Semantic Mapping (UI clarity only)
@@ -254,6 +254,42 @@ string side1_library = input.string("EMA Stack (S/M/L)", "Library", options = ["
 //   Condition B → Placeholder Condition B
 //   Trigger A   → Placeholder Trigger A
 //   Trigger B   → Placeholder Trigger B
+//
+// Library: MACD Line
+//   Condition A → M>S+ (MACD > Signal AND MACD > 0)
+//   Condition B → M>S- (MACD > Signal AND MACD < 0)
+//   Condition C → M<S- (MACD < Signal AND MACD < 0)
+//   Condition D → M<S+ (MACD < Signal AND MACD > 0)
+//   Trigger A   → Bullish Cross (MACD crosses above Signal)
+//   Trigger B   → Bearish Cross (MACD crosses below Signal)
+//   Trigger C   → Zero Cross Up
+//   Trigger D   → Zero Cross Down
+//
+// Library: MACD Histogram
+//   Condition A → H+↑ (Histogram positive AND rising)
+//   Condition B → H+↓ (Histogram positive AND falling)
+//   Condition C → H-↓ (Histogram negative AND falling)
+//   Condition D → H-↑ (Histogram negative AND rising)
+//   Trigger A   → Flip Bullish (histogram crosses to positive)
+//   Trigger B   → Flip Bearish (histogram crosses to negative)
+//   Trigger C   → Momentum Shift Up
+//   Trigger D   → Momentum Shift Down
+//
+// Library: MACD Divergence (chart TF only)
+//   Condition A → DIV+ (Regular Bullish Divergence)
+//   Condition B → DIV- (Regular Bearish Divergence)
+//   Condition C → hDIV+ (Hidden Bullish Divergence)
+//   Condition D → hDIV- (Hidden Bearish Divergence)
+//   Condition E → NONE (No divergence)
+//   Trigger A   → Bullish Divergence Confirmed
+//   Trigger B   → Bearish Divergence Confirmed
+//
+// Library: UT Bot
+//   Condition A → Bull (Price above ATR trailing stop)
+//   Condition B → Bear (Price below ATR trailing stop)
+//   Trigger A   → Buy (Price crosses above trailing stop)
+//   Trigger B   → Sell (Price crosses below trailing stop)
+//   Params: A=Key Value (ATR mult), B=ATR Period, C=Use HA (0/1)
 //────────────────────────────────────────────────────────────
 string side1_name    = input.string("", "Custom Name", group = GRP_SIDE1)
 
@@ -420,7 +456,7 @@ bool side1_SX_tf6_inv = input.bool(false, "Inv Label", inline="sx_tf6", group = 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 string GRP_SIDE2 = "7. Side Module 2"
 bool   side2_enabled = input.bool(false, "Enable Side Module 2", group = GRP_SIDE2)
-string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence"], group = GRP_SIDE2)
+string side2_library = input.string("None", "Library", options = ["None","KevBot_TF_Placeholder","EMA Stack (S/M/L)","Simple MACD Line","MACD Line","MACD Histogram","MACD Divergence","UT Bot","VWAP","RVOL","Swing 123"], group = GRP_SIDE2)
 
 //────────────────────────────────────────────────────────────
 // For EMA Stack: paramA = Short EMA, paramB = Medium EMA, paramC = Long EMA
@@ -612,11 +648,57 @@ import yamigushi/KevBot_TF_MACD_Simple/1            as tfMACDSimple    // Simple
 import yamigushi/KevBot_TF_MACD_Line/1              as tfMACDLine      // MACD Line with zero context
 import yamigushi/KevBot_TF_MACD_Histogram/1         as tfMACDHistogram // MACD Histogram momentum
 import yamigushi/KevBot_TF_MACD_Divergence/1        as tfMACDDivergence // MACD Divergence detection
+import yamigushi/KevBot_TF_UTBot/1                  as tfUTBot          // UT Bot ATR trailing stop
+import yamigushi/KevBot_TF_VWAP/1                   as tfVWAP           // VWAP with SD bands
+import yamigushi/KevBot_TF_RVOL/1                   as tfRVOL           // Relative volume
+import yamigushi/KevBot_TF_Swing123/1              as tfSwing123       // 1-2-3 reversal patterns
 
 
 // Convenience activation flags for Side Modules
 bool _side1_moduleActive = side1_enabled and side1_library != "None"
 bool _side2_moduleActive = side2_enabled and side2_library != "None"
+
+//──────────────────────────────────────────────────────────────────────────────
+// UT BOT HELPER FUNCTION (must be at global scope)
+//──────────────────────────────────────────────────────────────────────────────
+// Calculates ATR trailing stop with ratcheting behavior.
+// Uses self-referential series (NOT var) so it can be evaluated per-TF via request.security()
+// Returns: [trailingStop, source]
+_kb_calcUTBot(float _keyVal, int _atrPer) =>
+    float _src = close
+    float _atr = ta.atr(_atrPer)
+    float _nLoss = _keyVal * _atr
+    // Self-referential trailing stop calculation (no var keyword)
+    float _stop = 0.0
+    if bar_index == 0
+        _stop := _src - _nLoss
+    else if _src > nz(_stop[1], 0) and _src[1] > nz(_stop[1], 0)
+        _stop := math.max(nz(_stop[1]), _src - _nLoss)
+    else if _src < nz(_stop[1], 0) and _src[1] < nz(_stop[1], 0)
+        _stop := math.min(nz(_stop[1]), _src + _nLoss)
+    else if _src > nz(_stop[1], 0)
+        _stop := _src - _nLoss
+    else
+        _stop := _src + _nLoss
+    [_stop, _src]
+
+// UT Bot with Heikin Ashi source option
+_kb_calcUTBotHA(float _keyVal, int _atrPer, float _haSrc) =>
+    float _src = _haSrc
+    float _atr = ta.atr(_atrPer)
+    float _nLoss = _keyVal * _atr
+    float _stop = 0.0
+    if bar_index == 0
+        _stop := _src - _nLoss
+    else if _src > nz(_stop[1], 0) and _src[1] > nz(_stop[1], 0)
+        _stop := math.max(nz(_stop[1]), _src - _nLoss)
+    else if _src < nz(_stop[1], 0) and _src[1] < nz(_stop[1], 0)
+        _stop := math.min(nz(_stop[1]), _src + _nLoss)
+    else if _src > nz(_stop[1], 0)
+        _stop := _src - _nLoss
+    else
+        _stop := _src + _nLoss
+    [_stop, _src]
 
 //──────────────────────────────────────────────────────────────────────────────
 // MACD DIVERGENCE HELPER FUNCTION (must be at global scope)
@@ -672,6 +754,40 @@ _kb_getSwingData(float _macd, int _pivotLen, int _maxLookback) =>
     bool _newHigh = not na(_ph)
 
     [_pL1, _pL2, _mL1, _mL2, _pH1, _pH2, _mH1, _mH2, _newLow, _newHigh]
+
+//──────────────────────────────────────────────────────────────────────────────
+// VWAP HELPER FUNCTION (must be at global scope)
+//──────────────────────────────────────────────────────────────────────────────
+// Calculates session-anchored VWAP with cumulative standard deviation.
+// Uses self-referential series (NOT var) so it can be evaluated per-TF via request.security()
+// Returns: [vwap, sd]
+_kb_calcVWAP() =>
+    // Session reset detection (new day)
+    bool _newSession = ta.change(time("D")) != 0
+
+    // Self-referential cumulative sums (no var keyword for request.security compatibility)
+    float _sumPV = 0.0    // sum(price × volume)
+    float _sumV = 0.0     // sum(volume)
+    float _sumPV2 = 0.0   // sum(price² × volume)
+
+    if bar_index == 0 or _newSession
+        _sumPV := close * volume
+        _sumV := volume
+        _sumPV2 := close * close * volume
+    else
+        _sumPV := nz(_sumPV[1]) + close * volume
+        _sumV := nz(_sumV[1]) + volume
+        _sumPV2 := nz(_sumPV2[1]) + close * close * volume
+
+    // Calculate VWAP
+    float _vwap = _sumV > 0 ? _sumPV / _sumV : close
+
+    // Calculate standard deviation using variance formula: Var(X) = E[X²] - E[X]²
+    // Volume-weighted variance = (sumPV2 / sumV) - (vwap²)
+    float _variance = _sumV > 0 ? (_sumPV2 / _sumV) - (_vwap * _vwap) : 0.0
+    float _sd = math.sqrt(math.max(_variance, 0))
+
+    [_vwap, _sd]
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 8.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
@@ -1324,6 +1440,355 @@ else if side1_library == "MACD Divergence"
         _dvOut.trigF, _dvOut.trigG, _dvOut.trigH, _dvOut.trigI, _dvOut.trigJ,
         _dvOut.trigger_price, _dvOut.trigger_label
     )
+else if side1_library == "UT Bot"
+    //──────────────────────────────────────────────────────────────────────────────
+    // UT BOT HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Uses helper function with self-referential series (not var) so it can be
+    // properly evaluated on each timeframe via request.security().
+    //
+    // paramA = Key Value / ATR multiplier (default: 1)
+    // paramB = ATR Period (default: 10)
+    // paramC = Use Heikin Ashi (0=No, 1=Yes) - NOTE: HA only applies to chart TF
+    //──────────────────────────────────────────────────────────────────────────────
+
+    float _ut_keyVal  = side1_paramA > 0 ? side1_paramA : 1.0
+    int   _ut_atrPer  = side1_paramB > 0 ? int(side1_paramB) : 10
+    bool  _ut_useHA   = side1_paramC > 0
+
+    // Fetch UT Bot trailing stop for each timeframe using helper function
+    [_ut_stop1, _ut_src1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ut_stop2, _ut_src2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ut_stop3, _ut_src3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ut_stop4, _ut_src4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ut_stop5, _ut_src5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_ut_stop6, _ut_src6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        _kb_calcUTBot(_ut_keyVal, _ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (with optional Heikin Ashi)
+    float _ut_haClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+    [_ut_stop_chart_reg, _ut_src_chart_reg] = _kb_calcUTBot(_ut_keyVal, _ut_atrPer)
+    [_ut_stop_chart_ha, _ut_src_chart_ha] = _kb_calcUTBotHA(_ut_keyVal, _ut_atrPer, _ut_haClose)
+    float _ut_stop_chart = _ut_useHA ? _ut_stop_chart_ha : _ut_stop_chart_reg
+    float _ut_src_chart = _ut_useHA ? _ut_src_chart_ha : _ut_src_chart_reg
+
+    // Previous bar values for trigger detection
+    float _ut_src_prev = _ut_src_chart[1]
+    float _ut_stop_prev = _ut_stop_chart[1]
+
+    // Call builder with per-TF data
+    tfUTBot.TFModuleOutput _utOut = tfUTBot.buildOutput(
+        _ut_src1, _ut_stop1, _ut_src2, _ut_stop2, _ut_src3, _ut_stop3,
+        _ut_src4, _ut_stop4, _ut_src5, _ut_stop5, _ut_src6, _ut_stop6,
+        _ut_src_chart, _ut_stop_chart, _ut_src_prev, _ut_stop_prev,
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _utOut.tf1_label, _utOut.tf2_label, _utOut.tf3_label,
+        _utOut.tf4_label, _utOut.tf5_label, _utOut.tf6_label,
+        _utOut.condA_tf1, _utOut.condA_tf2, _utOut.condA_tf3,
+        _utOut.condA_tf4, _utOut.condA_tf5, _utOut.condA_tf6,
+        _utOut.condB_tf1, _utOut.condB_tf2, _utOut.condB_tf3,
+        _utOut.condB_tf4, _utOut.condB_tf5, _utOut.condB_tf6,
+        _utOut.condC_tf1, _utOut.condC_tf2, _utOut.condC_tf3,
+        _utOut.condC_tf4, _utOut.condC_tf5, _utOut.condC_tf6,
+        _utOut.condD_tf1, _utOut.condD_tf2, _utOut.condD_tf3,
+        _utOut.condD_tf4, _utOut.condD_tf5, _utOut.condD_tf6,
+        _utOut.condE_tf1, _utOut.condE_tf2, _utOut.condE_tf3,
+        _utOut.condE_tf4, _utOut.condE_tf5, _utOut.condE_tf6,
+        _utOut.condF_tf1, _utOut.condF_tf2, _utOut.condF_tf3,
+        _utOut.condF_tf4, _utOut.condF_tf5, _utOut.condF_tf6,
+        _utOut.condG_tf1, _utOut.condG_tf2, _utOut.condG_tf3,
+        _utOut.condG_tf4, _utOut.condG_tf5, _utOut.condG_tf6,
+        _utOut.condH_tf1, _utOut.condH_tf2, _utOut.condH_tf3,
+        _utOut.condH_tf4, _utOut.condH_tf5, _utOut.condH_tf6,
+        _utOut.condI_tf1, _utOut.condI_tf2, _utOut.condI_tf3,
+        _utOut.condI_tf4, _utOut.condI_tf5, _utOut.condI_tf6,
+        _utOut.condJ_tf1, _utOut.condJ_tf2, _utOut.condJ_tf3,
+        _utOut.condJ_tf4, _utOut.condJ_tf5, _utOut.condJ_tf6,
+        _utOut.trigA, _utOut.trigB, _utOut.trigC, _utOut.trigD, _utOut.trigE,
+        _utOut.trigF, _utOut.trigG, _utOut.trigH, _utOut.trigI, _utOut.trigJ,
+        _utOut.trigger_price, _utOut.trigger_label
+    )
+else if side1_library == "VWAP"
+    //──────────────────────────────────────────────────────────────────────────────
+    // VWAP HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Uses helper function with self-referential series (not var) so it can be
+    // properly evaluated on each timeframe via request.security().
+    //
+    // paramA = Band 1 Multiplier (default: 1.0) - inner SD band
+    // paramB = Band 2 Multiplier (default: 2.0) - outer SD band
+    // paramC = Band 3 Multiplier (default: 3.0) - extreme SD band (reserved)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    float _vw_sd1Mult = side1_paramA > 0 ? side1_paramA : 1.0
+    float _vw_sd2Mult = side1_paramB > 0 ? side1_paramB : 2.0
+
+    // Fetch VWAP/SD for each timeframe using helper function
+    [_vw_vwap1, _vw_sd1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p1 = request.security(syminfo.tickerid, _tf_res(tf1), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_vw_vwap2, _vw_sd2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p2 = request.security(syminfo.tickerid, _tf_res(tf2), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_vw_vwap3, _vw_sd3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p3 = request.security(syminfo.tickerid, _tf_res(tf3), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_vw_vwap4, _vw_sd4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p4 = request.security(syminfo.tickerid, _tf_res(tf4), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_vw_vwap5, _vw_sd5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p5 = request.security(syminfo.tickerid, _tf_res(tf5), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_vw_vwap6, _vw_sd6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _vw_p6 = request.security(syminfo.tickerid, _tf_res(tf6), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (for triggers)
+    [_vw_vwap_chart, _vw_sd_chart] = _kb_calcVWAP()
+    float _vw_p_chart = close
+
+    // Previous bar values for trigger detection
+    float _vw_p_prev = close[1]
+    float _vw_vwap_prev = _vw_vwap_chart[1]
+    float _vw_sd_prev = _vw_sd_chart[1]
+
+    // Call builder with per-TF data
+    tfVWAP.TFModuleOutput _vwOut = tfVWAP.buildOutput(
+        _vw_p1, _vw_vwap1, _vw_sd1,
+        _vw_p2, _vw_vwap2, _vw_sd2,
+        _vw_p3, _vw_vwap3, _vw_sd3,
+        _vw_p4, _vw_vwap4, _vw_sd4,
+        _vw_p5, _vw_vwap5, _vw_sd5,
+        _vw_p6, _vw_vwap6, _vw_sd6,
+        _vw_sd1Mult, _vw_sd2Mult,
+        _vw_p_chart, _vw_vwap_chart, _vw_sd_chart,
+        _vw_p_prev, _vw_vwap_prev, _vw_sd_prev,
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _vwOut.tf1_label, _vwOut.tf2_label, _vwOut.tf3_label,
+        _vwOut.tf4_label, _vwOut.tf5_label, _vwOut.tf6_label,
+        _vwOut.condA_tf1, _vwOut.condA_tf2, _vwOut.condA_tf3,
+        _vwOut.condA_tf4, _vwOut.condA_tf5, _vwOut.condA_tf6,
+        _vwOut.condB_tf1, _vwOut.condB_tf2, _vwOut.condB_tf3,
+        _vwOut.condB_tf4, _vwOut.condB_tf5, _vwOut.condB_tf6,
+        _vwOut.condC_tf1, _vwOut.condC_tf2, _vwOut.condC_tf3,
+        _vwOut.condC_tf4, _vwOut.condC_tf5, _vwOut.condC_tf6,
+        _vwOut.condD_tf1, _vwOut.condD_tf2, _vwOut.condD_tf3,
+        _vwOut.condD_tf4, _vwOut.condD_tf5, _vwOut.condD_tf6,
+        _vwOut.condE_tf1, _vwOut.condE_tf2, _vwOut.condE_tf3,
+        _vwOut.condE_tf4, _vwOut.condE_tf5, _vwOut.condE_tf6,
+        _vwOut.condF_tf1, _vwOut.condF_tf2, _vwOut.condF_tf3,
+        _vwOut.condF_tf4, _vwOut.condF_tf5, _vwOut.condF_tf6,
+        _vwOut.condG_tf1, _vwOut.condG_tf2, _vwOut.condG_tf3,
+        _vwOut.condG_tf4, _vwOut.condG_tf5, _vwOut.condG_tf6,
+        _vwOut.condH_tf1, _vwOut.condH_tf2, _vwOut.condH_tf3,
+        _vwOut.condH_tf4, _vwOut.condH_tf5, _vwOut.condH_tf6,
+        _vwOut.condI_tf1, _vwOut.condI_tf2, _vwOut.condI_tf3,
+        _vwOut.condI_tf4, _vwOut.condI_tf5, _vwOut.condI_tf6,
+        _vwOut.condJ_tf1, _vwOut.condJ_tf2, _vwOut.condJ_tf3,
+        _vwOut.condJ_tf4, _vwOut.condJ_tf5, _vwOut.condJ_tf6,
+        _vwOut.trigA, _vwOut.trigB, _vwOut.trigC, _vwOut.trigD, _vwOut.trigE,
+        _vwOut.trigF, _vwOut.trigG, _vwOut.trigH, _vwOut.trigI, _vwOut.trigJ,
+        _vwOut.trigger_price, _vwOut.trigger_label
+    )
+else if side1_library == "RVOL"
+    //──────────────────────────────────────────────────────────────────────────────
+    // RVOL HYBRID IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Relative Volume analysis - compares current volume to historical average.
+    // No helper function needed - simple calculation works in request.security().
+    //
+    // paramA = Lookback period for average volume (default: 20)
+    // paramB = High threshold (default: 1.5)
+    // paramC = Very high threshold (default: 2.0)
+    // paramD = Extreme threshold (default: 3.0)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int   _rv_period    = side1_paramA > 0 ? int(side1_paramA) : 20
+    float _rv_highTh    = side1_paramB > 0 ? side1_paramB : 1.5
+    float _rv_veryHighTh = side1_paramC > 0 ? side1_paramC : 2.0
+    float _rv_extremeTh = side1_paramD > 0 ? side1_paramD : 3.0
+
+    // Fetch RVOL for each timeframe (simple calculation, no helper needed)
+    float _rv1 = request.security(syminfo.tickerid, _tf_res(tf1), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _rv2 = request.security(syminfo.tickerid, _tf_res(tf2), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _rv3 = request.security(syminfo.tickerid, _tf_res(tf3), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _rv4 = request.security(syminfo.tickerid, _tf_res(tf4), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _rv5 = request.security(syminfo.tickerid, _tf_res(tf5), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _rv6 = request.security(syminfo.tickerid, _tf_res(tf6), volume / ta.sma(volume, _rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (for triggers)
+    float _rv_chart = volume / ta.sma(volume, _rv_period)
+    float _rv_prev = _rv_chart[1]
+
+    // Call builder with per-TF data
+    tfRVOL.TFModuleOutput _rvOut = tfRVOL.buildOutput(
+        _rv1, _rv2, _rv3, _rv4, _rv5, _rv6,
+        _rv_highTh, _rv_veryHighTh, _rv_extremeTh,
+        _rv_chart, _rv_prev,
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _rvOut.tf1_label, _rvOut.tf2_label, _rvOut.tf3_label,
+        _rvOut.tf4_label, _rvOut.tf5_label, _rvOut.tf6_label,
+        _rvOut.condA_tf1, _rvOut.condA_tf2, _rvOut.condA_tf3,
+        _rvOut.condA_tf4, _rvOut.condA_tf5, _rvOut.condA_tf6,
+        _rvOut.condB_tf1, _rvOut.condB_tf2, _rvOut.condB_tf3,
+        _rvOut.condB_tf4, _rvOut.condB_tf5, _rvOut.condB_tf6,
+        _rvOut.condC_tf1, _rvOut.condC_tf2, _rvOut.condC_tf3,
+        _rvOut.condC_tf4, _rvOut.condC_tf5, _rvOut.condC_tf6,
+        _rvOut.condD_tf1, _rvOut.condD_tf2, _rvOut.condD_tf3,
+        _rvOut.condD_tf4, _rvOut.condD_tf5, _rvOut.condD_tf6,
+        _rvOut.condE_tf1, _rvOut.condE_tf2, _rvOut.condE_tf3,
+        _rvOut.condE_tf4, _rvOut.condE_tf5, _rvOut.condE_tf6,
+        _rvOut.condF_tf1, _rvOut.condF_tf2, _rvOut.condF_tf3,
+        _rvOut.condF_tf4, _rvOut.condF_tf5, _rvOut.condF_tf6,
+        _rvOut.condG_tf1, _rvOut.condG_tf2, _rvOut.condG_tf3,
+        _rvOut.condG_tf4, _rvOut.condG_tf5, _rvOut.condG_tf6,
+        _rvOut.condH_tf1, _rvOut.condH_tf2, _rvOut.condH_tf3,
+        _rvOut.condH_tf4, _rvOut.condH_tf5, _rvOut.condH_tf6,
+        _rvOut.condI_tf1, _rvOut.condI_tf2, _rvOut.condI_tf3,
+        _rvOut.condI_tf4, _rvOut.condI_tf5, _rvOut.condI_tf6,
+        _rvOut.condJ_tf1, _rvOut.condJ_tf2, _rvOut.condJ_tf3,
+        _rvOut.condJ_tf4, _rvOut.condJ_tf5, _rvOut.condJ_tf6,
+        _rvOut.trigA, _rvOut.trigB, _rvOut.trigC, _rvOut.trigD, _rvOut.trigE,
+        _rvOut.trigF, _rvOut.trigG, _rvOut.trigH, _rvOut.trigI, _rvOut.trigJ,
+        _rvOut.trigger_price, _rvOut.trigger_label
+    )
+else if side1_library == "Swing 123"
+    //──────────────────────────────────────────────────────────────────────────────
+    // SWING 123 IMPLEMENTATION (SIDE MODULE 1)
+    //──────────────────────────────────────────────────────────────────────────────
+    // 1-2-3 reversal pattern recognition. No parameters needed.
+    //
+    // BC2: Bullish Candle 2 (lower low, close > prev close) - rejection
+    // BC3: Bullish Candle 3 (close > prev high after BC2) - confirmation
+    // XC2: Bearish Candle 2 (higher high, close < prev close) - rejection
+    // XC3: Bearish Candle 3 (close < prev low after XC2) - confirmation
+    //──────────────────────────────────────────────────────────────────────────────
+
+    // Pattern detection expressions for request.security()
+    // BC2: lower low but closed above prior close
+    // BC3: previous was BC2 and we closed above its high
+    // XC2: higher high but closed below prior close
+    // XC3: previous was XC2 and we closed below its low
+
+    // Fetch pattern flags for TF1
+    bool _sw_bc2_1 = request.security(syminfo.tickerid, _tf_res(tf1), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_1 = request.security(syminfo.tickerid, _tf_res(tf1), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_1 = request.security(syminfo.tickerid, _tf_res(tf1), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_1 = request.security(syminfo.tickerid, _tf_res(tf1), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF2
+    bool _sw_bc2_2 = request.security(syminfo.tickerid, _tf_res(tf2), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_2 = request.security(syminfo.tickerid, _tf_res(tf2), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_2 = request.security(syminfo.tickerid, _tf_res(tf2), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_2 = request.security(syminfo.tickerid, _tf_res(tf2), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF3
+    bool _sw_bc2_3 = request.security(syminfo.tickerid, _tf_res(tf3), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_3 = request.security(syminfo.tickerid, _tf_res(tf3), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_3 = request.security(syminfo.tickerid, _tf_res(tf3), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_3 = request.security(syminfo.tickerid, _tf_res(tf3), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF4
+    bool _sw_bc2_4 = request.security(syminfo.tickerid, _tf_res(tf4), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_4 = request.security(syminfo.tickerid, _tf_res(tf4), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_4 = request.security(syminfo.tickerid, _tf_res(tf4), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_4 = request.security(syminfo.tickerid, _tf_res(tf4), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF5
+    bool _sw_bc2_5 = request.security(syminfo.tickerid, _tf_res(tf5), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_5 = request.security(syminfo.tickerid, _tf_res(tf5), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_5 = request.security(syminfo.tickerid, _tf_res(tf5), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_5 = request.security(syminfo.tickerid, _tf_res(tf5), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF6
+    bool _sw_bc2_6 = request.security(syminfo.tickerid, _tf_res(tf6), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_bc3_6 = request.security(syminfo.tickerid, _tf_res(tf6), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc2_6 = request.security(syminfo.tickerid, _tf_res(tf6), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _sw_xc3_6 = request.security(syminfo.tickerid, _tf_res(tf6), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Recent setups (within last 3 bars) per TF
+    bool _sw_rbull_1 = _sw_bc2_1 or _sw_bc3_1 or _sw_bc2_1[1] or _sw_bc3_1[1] or _sw_bc2_1[2] or _sw_bc3_1[2]
+    bool _sw_rbear_1 = _sw_xc2_1 or _sw_xc3_1 or _sw_xc2_1[1] or _sw_xc3_1[1] or _sw_xc2_1[2] or _sw_xc3_1[2]
+    bool _sw_rbull_2 = _sw_bc2_2 or _sw_bc3_2 or _sw_bc2_2[1] or _sw_bc3_2[1] or _sw_bc2_2[2] or _sw_bc3_2[2]
+    bool _sw_rbear_2 = _sw_xc2_2 or _sw_xc3_2 or _sw_xc2_2[1] or _sw_xc3_2[1] or _sw_xc2_2[2] or _sw_xc3_2[2]
+    bool _sw_rbull_3 = _sw_bc2_3 or _sw_bc3_3 or _sw_bc2_3[1] or _sw_bc3_3[1] or _sw_bc2_3[2] or _sw_bc3_3[2]
+    bool _sw_rbear_3 = _sw_xc2_3 or _sw_xc3_3 or _sw_xc2_3[1] or _sw_xc3_3[1] or _sw_xc2_3[2] or _sw_xc3_3[2]
+    bool _sw_rbull_4 = _sw_bc2_4 or _sw_bc3_4 or _sw_bc2_4[1] or _sw_bc3_4[1] or _sw_bc2_4[2] or _sw_bc3_4[2]
+    bool _sw_rbear_4 = _sw_xc2_4 or _sw_xc3_4 or _sw_xc2_4[1] or _sw_xc3_4[1] or _sw_xc2_4[2] or _sw_xc3_4[2]
+    bool _sw_rbull_5 = _sw_bc2_5 or _sw_bc3_5 or _sw_bc2_5[1] or _sw_bc3_5[1] or _sw_bc2_5[2] or _sw_bc3_5[2]
+    bool _sw_rbear_5 = _sw_xc2_5 or _sw_xc3_5 or _sw_xc2_5[1] or _sw_xc3_5[1] or _sw_xc2_5[2] or _sw_xc3_5[2]
+    bool _sw_rbull_6 = _sw_bc2_6 or _sw_bc3_6 or _sw_bc2_6[1] or _sw_bc3_6[1] or _sw_bc2_6[2] or _sw_bc3_6[2]
+    bool _sw_rbear_6 = _sw_xc2_6 or _sw_xc3_6 or _sw_xc2_6[1] or _sw_xc3_6[1] or _sw_xc2_6[2] or _sw_xc3_6[2]
+
+    // Chart TF patterns (for triggers)
+    bool _sw_bc2_chart = low < low[1] and close > close[1]
+    bool _sw_bc3_chart = (low[1] < low[2] and close[1] > close[2]) and close > high[1]
+    bool _sw_xc2_chart = high > high[1] and close < close[1]
+    bool _sw_xc3_chart = (high[1] > high[2] and close[1] < close[2]) and close < low[1]
+
+    // Call builder with per-TF data
+    tfSwing123.TFModuleOutput _swOut = tfSwing123.buildOutput(
+        _sw_bc2_1, _sw_bc3_1, _sw_xc2_1, _sw_xc3_1, _sw_rbull_1, _sw_rbear_1,
+        _sw_bc2_2, _sw_bc3_2, _sw_xc2_2, _sw_xc3_2, _sw_rbull_2, _sw_rbear_2,
+        _sw_bc2_3, _sw_bc3_3, _sw_xc2_3, _sw_xc3_3, _sw_rbull_3, _sw_rbear_3,
+        _sw_bc2_4, _sw_bc3_4, _sw_xc2_4, _sw_xc3_4, _sw_rbull_4, _sw_rbear_4,
+        _sw_bc2_5, _sw_bc3_5, _sw_xc2_5, _sw_xc3_5, _sw_rbull_5, _sw_rbear_5,
+        _sw_bc2_6, _sw_bc3_6, _sw_xc2_6, _sw_xc3_6, _sw_rbull_6, _sw_rbear_6,
+        _sw_bc2_chart, _sw_bc3_chart, _sw_xc2_chart, _sw_xc3_chart,
+        close
+    )
+
+    side1_raw := side1Lib.TFModuleOutput.new(
+        _swOut.tf1_label, _swOut.tf2_label, _swOut.tf3_label,
+        _swOut.tf4_label, _swOut.tf5_label, _swOut.tf6_label,
+        _swOut.condA_tf1, _swOut.condA_tf2, _swOut.condA_tf3,
+        _swOut.condA_tf4, _swOut.condA_tf5, _swOut.condA_tf6,
+        _swOut.condB_tf1, _swOut.condB_tf2, _swOut.condB_tf3,
+        _swOut.condB_tf4, _swOut.condB_tf5, _swOut.condB_tf6,
+        _swOut.condC_tf1, _swOut.condC_tf2, _swOut.condC_tf3,
+        _swOut.condC_tf4, _swOut.condC_tf5, _swOut.condC_tf6,
+        _swOut.condD_tf1, _swOut.condD_tf2, _swOut.condD_tf3,
+        _swOut.condD_tf4, _swOut.condD_tf5, _swOut.condD_tf6,
+        _swOut.condE_tf1, _swOut.condE_tf2, _swOut.condE_tf3,
+        _swOut.condE_tf4, _swOut.condE_tf5, _swOut.condE_tf6,
+        _swOut.condF_tf1, _swOut.condF_tf2, _swOut.condF_tf3,
+        _swOut.condF_tf4, _swOut.condF_tf5, _swOut.condF_tf6,
+        _swOut.condG_tf1, _swOut.condG_tf2, _swOut.condG_tf3,
+        _swOut.condG_tf4, _swOut.condG_tf5, _swOut.condG_tf6,
+        _swOut.condH_tf1, _swOut.condH_tf2, _swOut.condH_tf3,
+        _swOut.condH_tf4, _swOut.condH_tf5, _swOut.condH_tf6,
+        _swOut.condI_tf1, _swOut.condI_tf2, _swOut.condI_tf3,
+        _swOut.condI_tf4, _swOut.condI_tf5, _swOut.condI_tf6,
+        _swOut.condJ_tf1, _swOut.condJ_tf2, _swOut.condJ_tf3,
+        _swOut.condJ_tf4, _swOut.condJ_tf5, _swOut.condJ_tf6,
+        _swOut.trigA, _swOut.trigB, _swOut.trigC, _swOut.trigD, _swOut.trigE,
+        _swOut.trigF, _swOut.trigG, _swOut.trigH, _swOut.trigI, _swOut.trigJ,
+        _swOut.trigger_price, _swOut.trigger_label
+    )
 else
     // Default: Placeholder library (legacy approach)
     side1_raw := side1Lib.getTFConfluence(
@@ -1769,6 +2234,349 @@ else if side2_library == "MACD Divergence"
         _s2_dvOut.trigA, _s2_dvOut.trigB, _s2_dvOut.trigC, _s2_dvOut.trigD, _s2_dvOut.trigE,
         _s2_dvOut.trigF, _s2_dvOut.trigG, _s2_dvOut.trigH, _s2_dvOut.trigI, _s2_dvOut.trigJ,
         _s2_dvOut.trigger_price, _s2_dvOut.trigger_label
+    )
+else if side2_library == "UT Bot"
+    //──────────────────────────────────────────────────────────────────────────────
+    // UT BOT HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Uses helper function with self-referential series (not var) so it can be
+    // properly evaluated on each timeframe via request.security().
+    //
+    // paramA = Key Value / ATR multiplier (default: 1)
+    // paramB = ATR Period (default: 10)
+    // paramC = Use Heikin Ashi (0=No, 1=Yes) - NOTE: HA only applies to chart TF
+    //──────────────────────────────────────────────────────────────────────────────
+
+    float _s2_ut_keyVal  = side2_paramA > 0 ? side2_paramA : 1.0
+    int   _s2_ut_atrPer  = side2_paramB > 0 ? int(side2_paramB) : 10
+    bool  _s2_ut_useHA   = side2_paramC > 0
+
+    // Fetch UT Bot trailing stop for each timeframe using helper function
+    [_s2_ut_stop1, _s2_ut_src1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ut_stop2, _s2_ut_src2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ut_stop3, _s2_ut_src3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ut_stop4, _s2_ut_src4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ut_stop5, _s2_ut_src5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_ut_stop6, _s2_ut_src6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer), barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (with optional Heikin Ashi)
+    float _s2_ut_haClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+    [_s2_ut_stop_chart_reg, _s2_ut_src_chart_reg] = _kb_calcUTBot(_s2_ut_keyVal, _s2_ut_atrPer)
+    [_s2_ut_stop_chart_ha, _s2_ut_src_chart_ha] = _kb_calcUTBotHA(_s2_ut_keyVal, _s2_ut_atrPer, _s2_ut_haClose)
+    float _s2_ut_stop_chart = _s2_ut_useHA ? _s2_ut_stop_chart_ha : _s2_ut_stop_chart_reg
+    float _s2_ut_src_chart = _s2_ut_useHA ? _s2_ut_src_chart_ha : _s2_ut_src_chart_reg
+
+    // Previous bar values for trigger detection
+    float _s2_ut_src_prev = _s2_ut_src_chart[1]
+    float _s2_ut_stop_prev = _s2_ut_stop_chart[1]
+
+    // Call builder with per-TF data
+    tfUTBot.TFModuleOutput _s2_utOut = tfUTBot.buildOutput(
+        _s2_ut_src1, _s2_ut_stop1, _s2_ut_src2, _s2_ut_stop2, _s2_ut_src3, _s2_ut_stop3,
+        _s2_ut_src4, _s2_ut_stop4, _s2_ut_src5, _s2_ut_stop5, _s2_ut_src6, _s2_ut_stop6,
+        _s2_ut_src_chart, _s2_ut_stop_chart, _s2_ut_src_prev, _s2_ut_stop_prev,
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_utOut.tf1_label, _s2_utOut.tf2_label, _s2_utOut.tf3_label,
+        _s2_utOut.tf4_label, _s2_utOut.tf5_label, _s2_utOut.tf6_label,
+        _s2_utOut.condA_tf1, _s2_utOut.condA_tf2, _s2_utOut.condA_tf3,
+        _s2_utOut.condA_tf4, _s2_utOut.condA_tf5, _s2_utOut.condA_tf6,
+        _s2_utOut.condB_tf1, _s2_utOut.condB_tf2, _s2_utOut.condB_tf3,
+        _s2_utOut.condB_tf4, _s2_utOut.condB_tf5, _s2_utOut.condB_tf6,
+        _s2_utOut.condC_tf1, _s2_utOut.condC_tf2, _s2_utOut.condC_tf3,
+        _s2_utOut.condC_tf4, _s2_utOut.condC_tf5, _s2_utOut.condC_tf6,
+        _s2_utOut.condD_tf1, _s2_utOut.condD_tf2, _s2_utOut.condD_tf3,
+        _s2_utOut.condD_tf4, _s2_utOut.condD_tf5, _s2_utOut.condD_tf6,
+        _s2_utOut.condE_tf1, _s2_utOut.condE_tf2, _s2_utOut.condE_tf3,
+        _s2_utOut.condE_tf4, _s2_utOut.condE_tf5, _s2_utOut.condE_tf6,
+        _s2_utOut.condF_tf1, _s2_utOut.condF_tf2, _s2_utOut.condF_tf3,
+        _s2_utOut.condF_tf4, _s2_utOut.condF_tf5, _s2_utOut.condF_tf6,
+        _s2_utOut.condG_tf1, _s2_utOut.condG_tf2, _s2_utOut.condG_tf3,
+        _s2_utOut.condG_tf4, _s2_utOut.condG_tf5, _s2_utOut.condG_tf6,
+        _s2_utOut.condH_tf1, _s2_utOut.condH_tf2, _s2_utOut.condH_tf3,
+        _s2_utOut.condH_tf4, _s2_utOut.condH_tf5, _s2_utOut.condH_tf6,
+        _s2_utOut.condI_tf1, _s2_utOut.condI_tf2, _s2_utOut.condI_tf3,
+        _s2_utOut.condI_tf4, _s2_utOut.condI_tf5, _s2_utOut.condI_tf6,
+        _s2_utOut.condJ_tf1, _s2_utOut.condJ_tf2, _s2_utOut.condJ_tf3,
+        _s2_utOut.condJ_tf4, _s2_utOut.condJ_tf5, _s2_utOut.condJ_tf6,
+        _s2_utOut.trigA, _s2_utOut.trigB, _s2_utOut.trigC, _s2_utOut.trigD, _s2_utOut.trigE,
+        _s2_utOut.trigF, _s2_utOut.trigG, _s2_utOut.trigH, _s2_utOut.trigI, _s2_utOut.trigJ,
+        _s2_utOut.trigger_price, _s2_utOut.trigger_label
+    )
+else if side2_library == "VWAP"
+    //──────────────────────────────────────────────────────────────────────────────
+    // VWAP HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Uses helper function with self-referential series (not var) so it can be
+    // properly evaluated on each timeframe via request.security().
+    //
+    // paramA = Band 1 Multiplier (default: 1.0) - inner SD band
+    // paramB = Band 2 Multiplier (default: 2.0) - outer SD band
+    // paramC = Band 3 Multiplier (default: 3.0) - extreme SD band (reserved)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    float _s2_vw_sd1Mult = side2_paramA > 0 ? side2_paramA : 1.0
+    float _s2_vw_sd2Mult = side2_paramB > 0 ? side2_paramB : 2.0
+
+    // Fetch VWAP/SD for each timeframe using helper function
+    [_s2_vw_vwap1, _s2_vw_sd1] = request.security(syminfo.tickerid, _tf_res(tf1),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p1 = request.security(syminfo.tickerid, _tf_res(tf1), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_vw_vwap2, _s2_vw_sd2] = request.security(syminfo.tickerid, _tf_res(tf2),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p2 = request.security(syminfo.tickerid, _tf_res(tf2), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_vw_vwap3, _s2_vw_sd3] = request.security(syminfo.tickerid, _tf_res(tf3),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p3 = request.security(syminfo.tickerid, _tf_res(tf3), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_vw_vwap4, _s2_vw_sd4] = request.security(syminfo.tickerid, _tf_res(tf4),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p4 = request.security(syminfo.tickerid, _tf_res(tf4), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_vw_vwap5, _s2_vw_sd5] = request.security(syminfo.tickerid, _tf_res(tf5),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p5 = request.security(syminfo.tickerid, _tf_res(tf5), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    [_s2_vw_vwap6, _s2_vw_sd6] = request.security(syminfo.tickerid, _tf_res(tf6),
+        _kb_calcVWAP(), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_vw_p6 = request.security(syminfo.tickerid, _tf_res(tf6), close, barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (for triggers)
+    [_s2_vw_vwap_chart, _s2_vw_sd_chart] = _kb_calcVWAP()
+    float _s2_vw_p_chart = close
+
+    // Previous bar values for trigger detection
+    float _s2_vw_p_prev = close[1]
+    float _s2_vw_vwap_prev = _s2_vw_vwap_chart[1]
+    float _s2_vw_sd_prev = _s2_vw_sd_chart[1]
+
+    // Call builder with per-TF data
+    tfVWAP.TFModuleOutput _s2_vwOut = tfVWAP.buildOutput(
+        _s2_vw_p1, _s2_vw_vwap1, _s2_vw_sd1,
+        _s2_vw_p2, _s2_vw_vwap2, _s2_vw_sd2,
+        _s2_vw_p3, _s2_vw_vwap3, _s2_vw_sd3,
+        _s2_vw_p4, _s2_vw_vwap4, _s2_vw_sd4,
+        _s2_vw_p5, _s2_vw_vwap5, _s2_vw_sd5,
+        _s2_vw_p6, _s2_vw_vwap6, _s2_vw_sd6,
+        _s2_vw_sd1Mult, _s2_vw_sd2Mult,
+        _s2_vw_p_chart, _s2_vw_vwap_chart, _s2_vw_sd_chart,
+        _s2_vw_p_prev, _s2_vw_vwap_prev, _s2_vw_sd_prev,
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_vwOut.tf1_label, _s2_vwOut.tf2_label, _s2_vwOut.tf3_label,
+        _s2_vwOut.tf4_label, _s2_vwOut.tf5_label, _s2_vwOut.tf6_label,
+        _s2_vwOut.condA_tf1, _s2_vwOut.condA_tf2, _s2_vwOut.condA_tf3,
+        _s2_vwOut.condA_tf4, _s2_vwOut.condA_tf5, _s2_vwOut.condA_tf6,
+        _s2_vwOut.condB_tf1, _s2_vwOut.condB_tf2, _s2_vwOut.condB_tf3,
+        _s2_vwOut.condB_tf4, _s2_vwOut.condB_tf5, _s2_vwOut.condB_tf6,
+        _s2_vwOut.condC_tf1, _s2_vwOut.condC_tf2, _s2_vwOut.condC_tf3,
+        _s2_vwOut.condC_tf4, _s2_vwOut.condC_tf5, _s2_vwOut.condC_tf6,
+        _s2_vwOut.condD_tf1, _s2_vwOut.condD_tf2, _s2_vwOut.condD_tf3,
+        _s2_vwOut.condD_tf4, _s2_vwOut.condD_tf5, _s2_vwOut.condD_tf6,
+        _s2_vwOut.condE_tf1, _s2_vwOut.condE_tf2, _s2_vwOut.condE_tf3,
+        _s2_vwOut.condE_tf4, _s2_vwOut.condE_tf5, _s2_vwOut.condE_tf6,
+        _s2_vwOut.condF_tf1, _s2_vwOut.condF_tf2, _s2_vwOut.condF_tf3,
+        _s2_vwOut.condF_tf4, _s2_vwOut.condF_tf5, _s2_vwOut.condF_tf6,
+        _s2_vwOut.condG_tf1, _s2_vwOut.condG_tf2, _s2_vwOut.condG_tf3,
+        _s2_vwOut.condG_tf4, _s2_vwOut.condG_tf5, _s2_vwOut.condG_tf6,
+        _s2_vwOut.condH_tf1, _s2_vwOut.condH_tf2, _s2_vwOut.condH_tf3,
+        _s2_vwOut.condH_tf4, _s2_vwOut.condH_tf5, _s2_vwOut.condH_tf6,
+        _s2_vwOut.condI_tf1, _s2_vwOut.condI_tf2, _s2_vwOut.condI_tf3,
+        _s2_vwOut.condI_tf4, _s2_vwOut.condI_tf5, _s2_vwOut.condI_tf6,
+        _s2_vwOut.condJ_tf1, _s2_vwOut.condJ_tf2, _s2_vwOut.condJ_tf3,
+        _s2_vwOut.condJ_tf4, _s2_vwOut.condJ_tf5, _s2_vwOut.condJ_tf6,
+        _s2_vwOut.trigA, _s2_vwOut.trigB, _s2_vwOut.trigC, _s2_vwOut.trigD, _s2_vwOut.trigE,
+        _s2_vwOut.trigF, _s2_vwOut.trigG, _s2_vwOut.trigH, _s2_vwOut.trigI, _s2_vwOut.trigJ,
+        _s2_vwOut.trigger_price, _s2_vwOut.trigger_label
+    )
+else if side2_library == "RVOL"
+    //──────────────────────────────────────────────────────────────────────────────
+    // RVOL HYBRID IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // Relative Volume analysis - compares current volume to historical average.
+    // No helper function needed - simple calculation works in request.security().
+    //
+    // paramA = Lookback period for average volume (default: 20)
+    // paramB = High threshold (default: 1.5)
+    // paramC = Very high threshold (default: 2.0)
+    // paramD = Extreme threshold (default: 3.0)
+    //──────────────────────────────────────────────────────────────────────────────
+
+    int   _s2_rv_period    = side2_paramA > 0 ? int(side2_paramA) : 20
+    float _s2_rv_highTh    = side2_paramB > 0 ? side2_paramB : 1.5
+    float _s2_rv_veryHighTh = side2_paramC > 0 ? side2_paramC : 2.0
+    float _s2_rv_extremeTh = side2_paramD > 0 ? side2_paramD : 3.0
+
+    // Fetch RVOL for each timeframe (simple calculation, no helper needed)
+    float _s2_rv1 = request.security(syminfo.tickerid, _tf_res(tf1), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_rv2 = request.security(syminfo.tickerid, _tf_res(tf2), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_rv3 = request.security(syminfo.tickerid, _tf_res(tf3), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_rv4 = request.security(syminfo.tickerid, _tf_res(tf4), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_rv5 = request.security(syminfo.tickerid, _tf_res(tf5), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+    float _s2_rv6 = request.security(syminfo.tickerid, _tf_res(tf6), volume / ta.sma(volume, _s2_rv_period), barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Chart TF calculation (for triggers)
+    float _s2_rv_chart = volume / ta.sma(volume, _s2_rv_period)
+    float _s2_rv_prev = _s2_rv_chart[1]
+
+    // Call builder with per-TF data
+    tfRVOL.TFModuleOutput _s2_rvOut = tfRVOL.buildOutput(
+        _s2_rv1, _s2_rv2, _s2_rv3, _s2_rv4, _s2_rv5, _s2_rv6,
+        _s2_rv_highTh, _s2_rv_veryHighTh, _s2_rv_extremeTh,
+        _s2_rv_chart, _s2_rv_prev,
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_rvOut.tf1_label, _s2_rvOut.tf2_label, _s2_rvOut.tf3_label,
+        _s2_rvOut.tf4_label, _s2_rvOut.tf5_label, _s2_rvOut.tf6_label,
+        _s2_rvOut.condA_tf1, _s2_rvOut.condA_tf2, _s2_rvOut.condA_tf3,
+        _s2_rvOut.condA_tf4, _s2_rvOut.condA_tf5, _s2_rvOut.condA_tf6,
+        _s2_rvOut.condB_tf1, _s2_rvOut.condB_tf2, _s2_rvOut.condB_tf3,
+        _s2_rvOut.condB_tf4, _s2_rvOut.condB_tf5, _s2_rvOut.condB_tf6,
+        _s2_rvOut.condC_tf1, _s2_rvOut.condC_tf2, _s2_rvOut.condC_tf3,
+        _s2_rvOut.condC_tf4, _s2_rvOut.condC_tf5, _s2_rvOut.condC_tf6,
+        _s2_rvOut.condD_tf1, _s2_rvOut.condD_tf2, _s2_rvOut.condD_tf3,
+        _s2_rvOut.condD_tf4, _s2_rvOut.condD_tf5, _s2_rvOut.condD_tf6,
+        _s2_rvOut.condE_tf1, _s2_rvOut.condE_tf2, _s2_rvOut.condE_tf3,
+        _s2_rvOut.condE_tf4, _s2_rvOut.condE_tf5, _s2_rvOut.condE_tf6,
+        _s2_rvOut.condF_tf1, _s2_rvOut.condF_tf2, _s2_rvOut.condF_tf3,
+        _s2_rvOut.condF_tf4, _s2_rvOut.condF_tf5, _s2_rvOut.condF_tf6,
+        _s2_rvOut.condG_tf1, _s2_rvOut.condG_tf2, _s2_rvOut.condG_tf3,
+        _s2_rvOut.condG_tf4, _s2_rvOut.condG_tf5, _s2_rvOut.condG_tf6,
+        _s2_rvOut.condH_tf1, _s2_rvOut.condH_tf2, _s2_rvOut.condH_tf3,
+        _s2_rvOut.condH_tf4, _s2_rvOut.condH_tf5, _s2_rvOut.condH_tf6,
+        _s2_rvOut.condI_tf1, _s2_rvOut.condI_tf2, _s2_rvOut.condI_tf3,
+        _s2_rvOut.condI_tf4, _s2_rvOut.condI_tf5, _s2_rvOut.condI_tf6,
+        _s2_rvOut.condJ_tf1, _s2_rvOut.condJ_tf2, _s2_rvOut.condJ_tf3,
+        _s2_rvOut.condJ_tf4, _s2_rvOut.condJ_tf5, _s2_rvOut.condJ_tf6,
+        _s2_rvOut.trigA, _s2_rvOut.trigB, _s2_rvOut.trigC, _s2_rvOut.trigD, _s2_rvOut.trigE,
+        _s2_rvOut.trigF, _s2_rvOut.trigG, _s2_rvOut.trigH, _s2_rvOut.trigI, _s2_rvOut.trigJ,
+        _s2_rvOut.trigger_price, _s2_rvOut.trigger_label
+    )
+else if side2_library == "Swing 123"
+    //──────────────────────────────────────────────────────────────────────────────
+    // SWING 123 IMPLEMENTATION (SIDE MODULE 2)
+    //──────────────────────────────────────────────────────────────────────────────
+    // 1-2-3 reversal pattern recognition. No parameters needed.
+    //
+    // BC2: Bullish Candle 2 (lower low, close > prev close) - rejection
+    // BC3: Bullish Candle 3 (close > prev high after BC2) - confirmation
+    // XC2: Bearish Candle 2 (higher high, close < prev close) - rejection
+    // XC3: Bearish Candle 3 (close < prev low after XC2) - confirmation
+    //──────────────────────────────────────────────────────────────────────────────
+
+    // Fetch pattern flags for TF1
+    bool _s2_sw_bc2_1 = request.security(syminfo.tickerid, _tf_res(tf1), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_1 = request.security(syminfo.tickerid, _tf_res(tf1), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_1 = request.security(syminfo.tickerid, _tf_res(tf1), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_1 = request.security(syminfo.tickerid, _tf_res(tf1), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF2
+    bool _s2_sw_bc2_2 = request.security(syminfo.tickerid, _tf_res(tf2), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_2 = request.security(syminfo.tickerid, _tf_res(tf2), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_2 = request.security(syminfo.tickerid, _tf_res(tf2), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_2 = request.security(syminfo.tickerid, _tf_res(tf2), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF3
+    bool _s2_sw_bc2_3 = request.security(syminfo.tickerid, _tf_res(tf3), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_3 = request.security(syminfo.tickerid, _tf_res(tf3), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_3 = request.security(syminfo.tickerid, _tf_res(tf3), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_3 = request.security(syminfo.tickerid, _tf_res(tf3), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF4
+    bool _s2_sw_bc2_4 = request.security(syminfo.tickerid, _tf_res(tf4), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_4 = request.security(syminfo.tickerid, _tf_res(tf4), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_4 = request.security(syminfo.tickerid, _tf_res(tf4), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_4 = request.security(syminfo.tickerid, _tf_res(tf4), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF5
+    bool _s2_sw_bc2_5 = request.security(syminfo.tickerid, _tf_res(tf5), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_5 = request.security(syminfo.tickerid, _tf_res(tf5), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_5 = request.security(syminfo.tickerid, _tf_res(tf5), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_5 = request.security(syminfo.tickerid, _tf_res(tf5), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Fetch pattern flags for TF6
+    bool _s2_sw_bc2_6 = request.security(syminfo.tickerid, _tf_res(tf6), low < low[1] and close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_bc3_6 = request.security(syminfo.tickerid, _tf_res(tf6), (low[1] < low[2] and close[1] > close[2]) and close > high[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc2_6 = request.security(syminfo.tickerid, _tf_res(tf6), high > high[1] and close < close[1], barmerge.gaps_off, barmerge.lookahead_off)
+    bool _s2_sw_xc3_6 = request.security(syminfo.tickerid, _tf_res(tf6), (high[1] > high[2] and close[1] < close[2]) and close < low[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+    // Recent setups (within last 3 bars) per TF
+    bool _s2_sw_rbull_1 = _s2_sw_bc2_1 or _s2_sw_bc3_1 or _s2_sw_bc2_1[1] or _s2_sw_bc3_1[1] or _s2_sw_bc2_1[2] or _s2_sw_bc3_1[2]
+    bool _s2_sw_rbear_1 = _s2_sw_xc2_1 or _s2_sw_xc3_1 or _s2_sw_xc2_1[1] or _s2_sw_xc3_1[1] or _s2_sw_xc2_1[2] or _s2_sw_xc3_1[2]
+    bool _s2_sw_rbull_2 = _s2_sw_bc2_2 or _s2_sw_bc3_2 or _s2_sw_bc2_2[1] or _s2_sw_bc3_2[1] or _s2_sw_bc2_2[2] or _s2_sw_bc3_2[2]
+    bool _s2_sw_rbear_2 = _s2_sw_xc2_2 or _s2_sw_xc3_2 or _s2_sw_xc2_2[1] or _s2_sw_xc3_2[1] or _s2_sw_xc2_2[2] or _s2_sw_xc3_2[2]
+    bool _s2_sw_rbull_3 = _s2_sw_bc2_3 or _s2_sw_bc3_3 or _s2_sw_bc2_3[1] or _s2_sw_bc3_3[1] or _s2_sw_bc2_3[2] or _s2_sw_bc3_3[2]
+    bool _s2_sw_rbear_3 = _s2_sw_xc2_3 or _s2_sw_xc3_3 or _s2_sw_xc2_3[1] or _s2_sw_xc3_3[1] or _s2_sw_xc2_3[2] or _s2_sw_xc3_3[2]
+    bool _s2_sw_rbull_4 = _s2_sw_bc2_4 or _s2_sw_bc3_4 or _s2_sw_bc2_4[1] or _s2_sw_bc3_4[1] or _s2_sw_bc2_4[2] or _s2_sw_bc3_4[2]
+    bool _s2_sw_rbear_4 = _s2_sw_xc2_4 or _s2_sw_xc3_4 or _s2_sw_xc2_4[1] or _s2_sw_xc3_4[1] or _s2_sw_xc2_4[2] or _s2_sw_xc3_4[2]
+    bool _s2_sw_rbull_5 = _s2_sw_bc2_5 or _s2_sw_bc3_5 or _s2_sw_bc2_5[1] or _s2_sw_bc3_5[1] or _s2_sw_bc2_5[2] or _s2_sw_bc3_5[2]
+    bool _s2_sw_rbear_5 = _s2_sw_xc2_5 or _s2_sw_xc3_5 or _s2_sw_xc2_5[1] or _s2_sw_xc3_5[1] or _s2_sw_xc2_5[2] or _s2_sw_xc3_5[2]
+    bool _s2_sw_rbull_6 = _s2_sw_bc2_6 or _s2_sw_bc3_6 or _s2_sw_bc2_6[1] or _s2_sw_bc3_6[1] or _s2_sw_bc2_6[2] or _s2_sw_bc3_6[2]
+    bool _s2_sw_rbear_6 = _s2_sw_xc2_6 or _s2_sw_xc3_6 or _s2_sw_xc2_6[1] or _s2_sw_xc3_6[1] or _s2_sw_xc2_6[2] or _s2_sw_xc3_6[2]
+
+    // Chart TF patterns (for triggers)
+    bool _s2_sw_bc2_chart = low < low[1] and close > close[1]
+    bool _s2_sw_bc3_chart = (low[1] < low[2] and close[1] > close[2]) and close > high[1]
+    bool _s2_sw_xc2_chart = high > high[1] and close < close[1]
+    bool _s2_sw_xc3_chart = (high[1] > high[2] and close[1] < close[2]) and close < low[1]
+
+    // Call builder with per-TF data
+    tfSwing123.TFModuleOutput _s2_swOut = tfSwing123.buildOutput(
+        _s2_sw_bc2_1, _s2_sw_bc3_1, _s2_sw_xc2_1, _s2_sw_xc3_1, _s2_sw_rbull_1, _s2_sw_rbear_1,
+        _s2_sw_bc2_2, _s2_sw_bc3_2, _s2_sw_xc2_2, _s2_sw_xc3_2, _s2_sw_rbull_2, _s2_sw_rbear_2,
+        _s2_sw_bc2_3, _s2_sw_bc3_3, _s2_sw_xc2_3, _s2_sw_xc3_3, _s2_sw_rbull_3, _s2_sw_rbear_3,
+        _s2_sw_bc2_4, _s2_sw_bc3_4, _s2_sw_xc2_4, _s2_sw_xc3_4, _s2_sw_rbull_4, _s2_sw_rbear_4,
+        _s2_sw_bc2_5, _s2_sw_bc3_5, _s2_sw_xc2_5, _s2_sw_xc3_5, _s2_sw_rbull_5, _s2_sw_rbear_5,
+        _s2_sw_bc2_6, _s2_sw_bc3_6, _s2_sw_xc2_6, _s2_sw_xc3_6, _s2_sw_rbull_6, _s2_sw_rbear_6,
+        _s2_sw_bc2_chart, _s2_sw_bc3_chart, _s2_sw_xc2_chart, _s2_sw_xc3_chart,
+        close
+    )
+
+    side2_raw := side1Lib.TFModuleOutput.new(
+        _s2_swOut.tf1_label, _s2_swOut.tf2_label, _s2_swOut.tf3_label,
+        _s2_swOut.tf4_label, _s2_swOut.tf5_label, _s2_swOut.tf6_label,
+        _s2_swOut.condA_tf1, _s2_swOut.condA_tf2, _s2_swOut.condA_tf3,
+        _s2_swOut.condA_tf4, _s2_swOut.condA_tf5, _s2_swOut.condA_tf6,
+        _s2_swOut.condB_tf1, _s2_swOut.condB_tf2, _s2_swOut.condB_tf3,
+        _s2_swOut.condB_tf4, _s2_swOut.condB_tf5, _s2_swOut.condB_tf6,
+        _s2_swOut.condC_tf1, _s2_swOut.condC_tf2, _s2_swOut.condC_tf3,
+        _s2_swOut.condC_tf4, _s2_swOut.condC_tf5, _s2_swOut.condC_tf6,
+        _s2_swOut.condD_tf1, _s2_swOut.condD_tf2, _s2_swOut.condD_tf3,
+        _s2_swOut.condD_tf4, _s2_swOut.condD_tf5, _s2_swOut.condD_tf6,
+        _s2_swOut.condE_tf1, _s2_swOut.condE_tf2, _s2_swOut.condE_tf3,
+        _s2_swOut.condE_tf4, _s2_swOut.condE_tf5, _s2_swOut.condE_tf6,
+        _s2_swOut.condF_tf1, _s2_swOut.condF_tf2, _s2_swOut.condF_tf3,
+        _s2_swOut.condF_tf4, _s2_swOut.condF_tf5, _s2_swOut.condF_tf6,
+        _s2_swOut.condG_tf1, _s2_swOut.condG_tf2, _s2_swOut.condG_tf3,
+        _s2_swOut.condG_tf4, _s2_swOut.condG_tf5, _s2_swOut.condG_tf6,
+        _s2_swOut.condH_tf1, _s2_swOut.condH_tf2, _s2_swOut.condH_tf3,
+        _s2_swOut.condH_tf4, _s2_swOut.condH_tf5, _s2_swOut.condH_tf6,
+        _s2_swOut.condI_tf1, _s2_swOut.condI_tf2, _s2_swOut.condI_tf3,
+        _s2_swOut.condI_tf4, _s2_swOut.condI_tf5, _s2_swOut.condI_tf6,
+        _s2_swOut.condJ_tf1, _s2_swOut.condJ_tf2, _s2_swOut.condJ_tf3,
+        _s2_swOut.condJ_tf4, _s2_swOut.condJ_tf5, _s2_swOut.condJ_tf6,
+        _s2_swOut.trigA, _s2_swOut.trigB, _s2_swOut.trigC, _s2_swOut.trigD, _s2_swOut.trigE,
+        _s2_swOut.trigF, _s2_swOut.trigG, _s2_swOut.trigH, _s2_swOut.trigI, _s2_swOut.trigJ,
+        _s2_swOut.trigger_price, _s2_swOut.trigger_label
     )
 else
     // Default: Placeholder library

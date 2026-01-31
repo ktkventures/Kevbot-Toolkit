@@ -1,7 +1,7 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.4
-**Date:** January 30, 2026
+**Version:** 1.6
+**Date:** January 31, 2026
 **Target Platform:** TradingView (PineScript v6)
 **Development Tool:** Claude Code
 
@@ -557,6 +557,103 @@ export getTFConfluence(
 **Architecture:** Hybrid pattern - toolkit fetches HTF data, library processes via `buildOutput()`
 **Status:** Working correctly in v1.1 with hybrid architecture
 
+**KevBot_TF_UTBot:**
+- Implements ATR-based trailing stop with ratcheting behavior across 6 timeframes
+- **Params:**
+  - A: Key Value / ATR multiplier (default: 1)
+  - B: ATR Period (default: 10)
+  - C: Use Heikin Ashi (0=No, 1=Yes) - applies to chart TF triggers only
+  - D-F: Reserved (unused)
+- **Conditions (per TF):**
+  - Cond A: Bull (Price above trailing stop)
+  - Cond B: Bear (Price below trailing stop)
+  - Cond C-J: Reserved (always false)
+- **Triggers (chart TF only):**
+  - Trig A: Buy (Price crosses above trailing stop)
+  - Trig B: Sell (Price crosses below trailing stop)
+  - Trig C-J: Reserved (always false)
+- **Trailing Stop Logic:**
+  - `nLoss = KeyValue × ATR(period)`
+  - In uptrend: stop ratchets up only (never down)
+  - In downtrend: stop ratchets down only (never up)
+  - On direction flip: stop reinitializes
+
+**Architecture:** Hybrid pattern with global helper function `_kb_calcUTBot()` using self-referential series (not var) so `request.security()` properly evaluates per-TF
+**Status:** Working correctly in v1.1 with hybrid architecture
+
+**KevBot_TF_VWAP:**
+- Implements session-anchored VWAP with standard deviation bands across 6 timeframes
+- **Params:**
+  - A: Band 1 Multiplier (default: 1.0)
+  - B: Band 2 Multiplier (default: 2.0)
+  - C: Band 3 Multiplier (default: 3.0)
+  - D-F: Reserved (unused)
+- **Conditions (per TF, mutually exclusive zones):**
+  - Cond A: >+2σ (Price above VWAP + 2 SD, extended high)
+  - Cond B: >+1σ (Price between +1σ and +2σ)
+  - Cond C: >V (Price between VWAP and +1σ)
+  - Cond D: @V (Price near VWAP, within ±0.5σ)
+  - Cond E: <V (Price between VWAP and -1σ)
+  - Cond F: <-1σ (Price between -1σ and -2σ)
+  - Cond G: <-2σ (Price below VWAP - 2 SD, extended low)
+  - Cond H-J: Reserved (always false)
+- **Triggers (chart TF only):**
+  - Trig A: Cross Above VWAP
+  - Trig B: Cross Below VWAP
+  - Trig C: Enter Upper Extreme (+2σ zone)
+  - Trig D: Enter Lower Extreme (-2σ zone)
+  - Trig E: Return to VWAP (@V zone from extremes)
+  - Trig F-J: Reserved (always false)
+
+**Architecture:** Hybrid pattern with global helper function `_kb_calcVWAP()` for session-anchored cumulative calculation
+**Status:** Complete, integrated, needs TradingView publish
+
+**KevBot_TF_RVOL:**
+- Implements relative volume analysis (current volume vs historical average) across 6 timeframes
+- **Params:**
+  - A: Lookback period for average volume (default: 20)
+  - B: High threshold (default: 1.5)
+  - C: Very high threshold (default: 2.0)
+  - D: Extreme threshold (default: 3.0)
+  - E-F: Reserved (unused)
+- **Conditions (per TF, mutually exclusive zones):**
+  - Cond A: RV! (Extreme volume, RVOL > extreme threshold)
+  - Cond B: RV++ (Very high volume, RVOL > very high threshold)
+  - Cond C: RV+ (Elevated volume, RVOL > high threshold)
+  - Cond D: RV= (Normal volume, RVOL between 0.5 and high)
+  - Cond E: RV- (Low volume, RVOL < 0.5)
+  - Cond F-J: Reserved (always false)
+- **Triggers (chart TF only):**
+  - Trig A: Volume Spike (RVOL crosses above high threshold)
+  - Trig B: Volume Extreme (RVOL crosses above extreme threshold)
+  - Trig C: Volume Fade (RVOL drops below 1.0)
+  - Trig D-J: Reserved (always false)
+
+**Architecture:** Simple calculation in `request.security()` (no helper function needed)
+**Status:** Complete, integrated, needs TradingView publish
+
+**KevBot_TF_Swing123:**
+- Implements 1-2-3 reversal pattern recognition across 6 timeframes
+- **Params:**
+  - A-F: Not used (pattern is fixed)
+- **Conditions (per TF):**
+  - Cond A: BC2 (Bullish Candle 2 - lower low but close > prev close)
+  - Cond B: BC3 (Bullish Candle 3 - confirmation, close > prev high after BC2)
+  - Cond C: XC2 (Bearish Candle 2 - higher high but close < prev close)
+  - Cond D: XC3 (Bearish Candle 3 - confirmation, close < prev low after XC2)
+  - Cond E: B↑ (Recent bullish setup within last 3 bars)
+  - Cond F: X↓ (Recent bearish setup within last 3 bars)
+  - Cond G-J: Reserved (always false)
+- **Triggers (chart TF only):**
+  - Trig A: BC2 formed (Bullish Candle 2)
+  - Trig B: BC3 formed (Bullish Candle 3 confirmation)
+  - Trig C: XC2 formed (Bearish Candle 2)
+  - Trig D: XC3 formed (Bearish Candle 3 confirmation)
+  - Trig E-J: Reserved (always false)
+
+**Architecture:** Pure price action, no helper function needed, works correctly in `request.security()` context
+**Status:** Complete, integrated, needs TradingView publish
+
 ---
 
 ## 7. Data Flow
@@ -880,11 +977,17 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 - [x] **✅ Data export plots** - Invisible plots for CSV export (confluence scores, grades, position sizing, TF states)
 - [x] **✅ Default input values** - Sensible defaults so signals display on indicator load
 - [x] **✅ Side table color fix** - Independent evaluation of Long/Short confluence conditions
+- [x] **✅ UT Bot library** - ATR trailing stop with per-TF evaluation via hybrid pattern
 
 **Remaining:**
 - [ ] Complete backtest KPI calculations
 - [ ] CSV export functionality (data export plots ready, need export mechanism)
-- [ ] Add Side Modules 3-10 (follow existing pattern)
+- [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
+- [ ] Manually verify VWAP, RVOL, Swing 123 behavior on charts
+
+**Architecture Decision Pending:**
+- Option A: Build Top Table module system (for SR Channel, Multi-Anchor VWAP)
+- Option B: Expand Side Modules from 2 to 10 slots
 
 ### 9.2 Phase 2: Enhancement & Testing
 **Status:** Not Started
@@ -1466,6 +1569,8 @@ label.new(bar_index, high,
 | 1.2 | 2026-01-26 | **Major Update:** Hybrid Architecture v1.1 implemented and working. EMA Stack bug resolved via hybrid pattern (toolkit owns security calls, library processes data). Side Module 2 added as proof of concept. Created KevBot_Library_Definitions.md for user-facing documentation. Renamed legacy files with LEGACY prefix. Updated all sections to reflect current working state. | Claude Code (Opus 4.5) |
 | 1.3 | 2026-01-27 | **Feature Complete Update:** (1) Chart plotting system: raw trigger marks (cross +) for entries, position signal marks (triangles for entries, xcross for exits). (2) Label system: raw labels with trigger names, position labels with full metadata, color/position semantics, suppression logic, max_labels_count=500. (3) Data export plots: invisible plots for CSV export including confluence scores, grades, position sizing, TF EMA states, signal markers. (4) UI expansion: all 10 triggers (A-J) and 10 conditions (A-J) exposed in dropdowns. (5) Default input values: sensible defaults so signals display on load. (6) Side table color fix: independent Long/Short confluence condition evaluation. Updated Section 8.3, added Section 8.4 Data Export, updated Section 9.1 completed items, marked resolved issues in Section 11. | Claude Code (Opus 4.5) |
 | 1.4 | 2026-01-30 | Added Section 9.4 Companion Tools documenting the Trade Analyzer POC (Python/Streamlit). Tool analyzes CSV exports to find optimal confluence combinations using "confluence records" (TF-Evaluator-State). Features: drill-down analysis, auto-search, financial modeling (fixed/compounding risk), placeholder for TradingView parameter export. | Claude Code (Opus 4.5) |
+| 1.5 | 2026-01-30 | **UT Bot Library Added:** New KevBot_TF_UTBot library implementing ATR-based trailing stop with ratcheting behavior. Key technical achievement: uses self-referential series (not var) in global helper function `_kb_calcUTBot()` so `request.security()` properly evaluates per-TF (unlike MACD Divergence which is chart-TF only). Params: A=Key Value, B=ATR Period, C=Use Heikin Ashi. Conditions: Bull/Bear (price vs stop). Triggers: Buy/Sell (crossovers). Integrated into both Side Module 1 and 2 slots. Updated Section 6.3 with library documentation. | Claude Code (Opus 4.5) |
+| 1.6 | 2026-01-31 | **Three New Libraries Added:** (1) VWAP - Session-anchored VWAP with SD bands, 7 zone conditions, uses `_kb_calcVWAP()` helper. (2) RVOL - Relative volume analysis, 5 zone conditions (RV!/RV++/RV+/RV=/RV-), simple calculation. (3) Swing 123 - 1-2-3 reversal pattern recognition, pure price action, 6 pattern conditions. **SR Channel Deferred:** Moved to planned Top Table module system due to `var` state requirements incompatible with `request.security()` per-TF evaluation. Added architecture decision point: Top Table modules vs expanding Side Modules (2→10). Updated Section 6.3 with all library documentation. | Claude Code (Opus 4.5) |
 
 ---
 

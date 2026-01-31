@@ -1,0 +1,377 @@
+//@version=6
+library("KevBot_TF_VWAP", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_VWAP – VWAP with Standard Deviation Bands Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • The TOOLKIT calculates VWAP/SD using a helper function (requires var state)
+//   • This library provides a BUILDER function that processes pre-fetched VWAP data
+//   • This allows paramA-C in the toolkit to control band multipliers (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes price position relative to session-anchored VWAP and its standard
+//   deviation bands. VWAP is a key institutional reference point; deviations
+//   from it indicate overextension while returns to it suggest mean reversion.
+//
+// PARAMETERS (defined in toolkit):
+//   paramA: Band 1 Multiplier (default 1.0) - inner SD band
+//   paramB: Band 2 Multiplier (default 2.0) - outer SD band
+//   paramC: Band 3 Multiplier (default 3.0) - extreme SD band (reserved)
+//
+// VWAP CALCULATION (in toolkit helper _kb_calcVWAP):
+//   VWAP = sum(price × volume) / sum(volume)
+//   SD = sqrt(sum(volume × (price - VWAP)²) / sum(volume))
+//   Session resets at market open (stocks) or 00:00 UTC (crypto)
+//
+// CONDITIONS PROVIDED (7 mutually exclusive zones):
+//   A: >+2σ  - Price above VWAP + 2×SD (extended high)
+//   B: >+1σ  - Price between +1σ and +2σ
+//   C: >V    - Price between VWAP and +1σ (above VWAP zone)
+//   D: @V    - Price within ±0.5σ of VWAP (at VWAP)
+//   E: <V    - Price between VWAP and -1σ (below VWAP zone)
+//   F: <-1σ  - Price between -1σ and -2σ
+//   G: <-2σ  - Price below VWAP - 2×SD (extended low)
+//   H-J: Reserved (false)
+//
+// TRIGGERS PROVIDED (Chart TF only):
+//   A: X>V   - Price crosses above VWAP
+//   B: X<V   - Price crosses below VWAP
+//   C: >+2σ  - Price enters upper extreme (crosses into +2σ zone)
+//   D: <-2σ  - Price enters lower extreme (crosses into -2σ zone)
+//   E: @V    - Price returns to VWAP zone from extremes
+//   F-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: >+2σ (Price above VWAP + 2×SD)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: >+1σ (Price between +1σ and +2σ)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: >V (Price between VWAP and +1σ)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: @V (Price within ±0.5σ of VWAP)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF: <V (Price between VWAP and -1σ)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Condition F per TF: <-1σ (Price between -1σ and -2σ)
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    // Condition G per TF: <-2σ (Price below VWAP - 2×SD)
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    // Conditions H-J per TF: Reserved (false)
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // X>V (Price crosses above VWAP)
+    bool trigB  // X<V (Price crosses below VWAP)
+    bool trigC  // >+2σ (Price enters upper extreme)
+    bool trigD  // <-2σ (Price enters lower extreme)
+    bool trigE  // @V (Price returns to VWAP zone)
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute zone label based on price position relative to VWAP bands
+// Returns: ">+2σ", ">+1σ", ">V", "@V", "<V", "<-1σ", "<-2σ", or "na"
+_zoneLabel(float price, float vwap, float sd, float sd1Mult, float sd2Mult) =>
+    string lab = "na"
+    if na(price) or na(vwap) or na(sd) or sd == 0
+        lab := "na"
+    else
+        float upperBand2 = vwap + (sd2Mult * sd)
+        float upperBand1 = vwap + (sd1Mult * sd)
+        float atVwapUpper = vwap + (0.5 * sd)
+        float atVwapLower = vwap - (0.5 * sd)
+        float lowerBand1 = vwap - (sd1Mult * sd)
+        float lowerBand2 = vwap - (sd2Mult * sd)
+
+        if price > upperBand2
+            lab := ">+2σ"
+        else if price > upperBand1
+            lab := ">+1σ"
+        else if price > atVwapUpper
+            lab := ">V"
+        else if price >= atVwapLower
+            lab := "@V"
+        else if price >= lowerBand1
+            lab := "<V"
+        else if price >= lowerBand2
+            lab := "<-1σ"
+        else
+            lab := "<-2σ"
+    lab
+
+// Zone condition checks (mutually exclusive)
+
+// Condition A: >+2σ (price > vwap + 2×SD)
+_isZoneA(float price, float vwap, float sd, float sd2Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price > vwap + (sd2Mult * sd)
+
+// Condition B: >+1σ (price > vwap + 1×SD AND price <= vwap + 2×SD)
+_isZoneB(float price, float vwap, float sd, float sd1Mult, float sd2Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price > vwap + (sd1Mult * sd) and price <= vwap + (sd2Mult * sd)
+
+// Condition C: >V (price > vwap + 0.5×SD AND price <= vwap + 1×SD)
+_isZoneC(float price, float vwap, float sd, float sd1Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price > vwap + (0.5 * sd) and price <= vwap + (sd1Mult * sd)
+
+// Condition D: @V (price within ±0.5×SD of VWAP)
+_isZoneD(float price, float vwap, float sd) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price >= vwap - (0.5 * sd) and price <= vwap + (0.5 * sd)
+
+// Condition E: <V (price < vwap - 0.5×SD AND price >= vwap - 1×SD)
+_isZoneE(float price, float vwap, float sd, float sd1Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price < vwap - (0.5 * sd) and price >= vwap - (sd1Mult * sd)
+
+// Condition F: <-1σ (price < vwap - 1×SD AND price >= vwap - 2×SD)
+_isZoneF(float price, float vwap, float sd, float sd1Mult, float sd2Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price < vwap - (sd1Mult * sd) and price >= vwap - (sd2Mult * sd)
+
+// Condition G: <-2σ (price < vwap - 2×SD)
+_isZoneG(float price, float vwap, float sd, float sd2Mult) =>
+    not na(price) and not na(vwap) and not na(sd) and sd > 0 and price < vwap - (sd2Mult * sd)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched VWAP/SD data
+//
+// NOTE: The VWAP/SD calculation requires `var` state which cannot persist
+//       in library functions. Therefore, the TOOLKIT must calculate the VWAP
+//       and SD values and pass them to this function.
+//
+// @param p1-p6      Price (close) values for each of the 6 timeframes
+// @param v1-v6      VWAP values for each of the 6 timeframes
+// @param sd1-sd6    Standard deviation values for each of the 6 timeframes
+// @param sd1Mult    Band 1 multiplier (default 1.0)
+// @param sd2Mult    Band 2 multiplier (default 2.0)
+// @param p_chart    Current chart TF price (for triggers)
+// @param v_chart    Current chart TF VWAP (for triggers)
+// @param sd_chart   Current chart TF SD (for triggers)
+// @param p_prev     Previous bar price (for crossover detection)
+// @param v_prev     Previous bar VWAP (for crossover detection)
+// @param sd_prev    Previous bar SD (for crossover detection)
+// @param triggerPrice  Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 (price, VWAP, and SD values)
+    float p1, float v1, float sd1,
+    float p2, float v2, float sd2,
+    float p3, float v3, float sd3,
+    float p4, float v4, float sd4,
+    float p5, float v5, float sd5,
+    float p6, float v6, float sd6,
+    // Band multipliers
+    float sd1Mult, float sd2Mult,
+    // Chart TF (current + previous for triggers)
+    float p_chart, float v_chart, float sd_chart,
+    float p_prev, float v_prev, float sd_prev,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _zoneLabel(p1, v1, sd1, sd1Mult, sd2Mult)
+    string lab2 = _zoneLabel(p2, v2, sd2, sd1Mult, sd2Mult)
+    string lab3 = _zoneLabel(p3, v3, sd3, sd1Mult, sd2Mult)
+    string lab4 = _zoneLabel(p4, v4, sd4, sd1Mult, sd2Mult)
+    string lab5 = _zoneLabel(p5, v5, sd5, sd1Mult, sd2Mult)
+    string lab6 = _zoneLabel(p6, v6, sd6, sd1Mult, sd2Mult)
+
+    // Condition A: >+2σ per TF
+    bool cA1 = _isZoneA(p1, v1, sd1, sd2Mult)
+    bool cA2 = _isZoneA(p2, v2, sd2, sd2Mult)
+    bool cA3 = _isZoneA(p3, v3, sd3, sd2Mult)
+    bool cA4 = _isZoneA(p4, v4, sd4, sd2Mult)
+    bool cA5 = _isZoneA(p5, v5, sd5, sd2Mult)
+    bool cA6 = _isZoneA(p6, v6, sd6, sd2Mult)
+
+    // Condition B: >+1σ per TF
+    bool cB1 = _isZoneB(p1, v1, sd1, sd1Mult, sd2Mult)
+    bool cB2 = _isZoneB(p2, v2, sd2, sd1Mult, sd2Mult)
+    bool cB3 = _isZoneB(p3, v3, sd3, sd1Mult, sd2Mult)
+    bool cB4 = _isZoneB(p4, v4, sd4, sd1Mult, sd2Mult)
+    bool cB5 = _isZoneB(p5, v5, sd5, sd1Mult, sd2Mult)
+    bool cB6 = _isZoneB(p6, v6, sd6, sd1Mult, sd2Mult)
+
+    // Condition C: >V per TF
+    bool cC1 = _isZoneC(p1, v1, sd1, sd1Mult)
+    bool cC2 = _isZoneC(p2, v2, sd2, sd1Mult)
+    bool cC3 = _isZoneC(p3, v3, sd3, sd1Mult)
+    bool cC4 = _isZoneC(p4, v4, sd4, sd1Mult)
+    bool cC5 = _isZoneC(p5, v5, sd5, sd1Mult)
+    bool cC6 = _isZoneC(p6, v6, sd6, sd1Mult)
+
+    // Condition D: @V per TF
+    bool cD1 = _isZoneD(p1, v1, sd1)
+    bool cD2 = _isZoneD(p2, v2, sd2)
+    bool cD3 = _isZoneD(p3, v3, sd3)
+    bool cD4 = _isZoneD(p4, v4, sd4)
+    bool cD5 = _isZoneD(p5, v5, sd5)
+    bool cD6 = _isZoneD(p6, v6, sd6)
+
+    // Condition E: <V per TF
+    bool cE1 = _isZoneE(p1, v1, sd1, sd1Mult)
+    bool cE2 = _isZoneE(p2, v2, sd2, sd1Mult)
+    bool cE3 = _isZoneE(p3, v3, sd3, sd1Mult)
+    bool cE4 = _isZoneE(p4, v4, sd4, sd1Mult)
+    bool cE5 = _isZoneE(p5, v5, sd5, sd1Mult)
+    bool cE6 = _isZoneE(p6, v6, sd6, sd1Mult)
+
+    // Condition F: <-1σ per TF
+    bool cF1 = _isZoneF(p1, v1, sd1, sd1Mult, sd2Mult)
+    bool cF2 = _isZoneF(p2, v2, sd2, sd1Mult, sd2Mult)
+    bool cF3 = _isZoneF(p3, v3, sd3, sd1Mult, sd2Mult)
+    bool cF4 = _isZoneF(p4, v4, sd4, sd1Mult, sd2Mult)
+    bool cF5 = _isZoneF(p5, v5, sd5, sd1Mult, sd2Mult)
+    bool cF6 = _isZoneF(p6, v6, sd6, sd1Mult, sd2Mult)
+
+    // Condition G: <-2σ per TF
+    bool cG1 = _isZoneG(p1, v1, sd1, sd2Mult)
+    bool cG2 = _isZoneG(p2, v2, sd2, sd2Mult)
+    bool cG3 = _isZoneG(p3, v3, sd3, sd2Mult)
+    bool cG4 = _isZoneG(p4, v4, sd4, sd2Mult)
+    bool cG5 = _isZoneG(p5, v5, sd5, sd2Mult)
+    bool cG6 = _isZoneG(p6, v6, sd6, sd2Mult)
+
+    // Triggers on chart timeframe
+    // Helper: check if in @V zone
+    bool wasAtVwap = not na(p_prev) and not na(v_prev) and not na(sd_prev) and sd_prev > 0 and p_prev >= v_prev - (0.5 * sd_prev) and p_prev <= v_prev + (0.5 * sd_prev)
+    bool nowAtVwap = not na(p_chart) and not na(v_chart) and not na(sd_chart) and sd_chart > 0 and p_chart >= v_chart - (0.5 * sd_chart) and p_chart <= v_chart + (0.5 * sd_chart)
+
+    // Helper: check if in extreme zones
+    bool wasInUpperExtreme = not na(p_prev) and not na(v_prev) and not na(sd_prev) and sd_prev > 0 and p_prev > v_prev + (sd2Mult * sd_prev)
+    bool nowInUpperExtreme = not na(p_chart) and not na(v_chart) and not na(sd_chart) and sd_chart > 0 and p_chart > v_chart + (sd2Mult * sd_chart)
+    bool wasInLowerExtreme = not na(p_prev) and not na(v_prev) and not na(sd_prev) and sd_prev > 0 and p_prev < v_prev - (sd2Mult * sd_prev)
+    bool nowInLowerExtreme = not na(p_chart) and not na(v_chart) and not na(sd_chart) and sd_chart > 0 and p_chart < v_chart - (sd2Mult * sd_chart)
+
+    // Trigger A: X>V (Price crosses above VWAP)
+    bool tA = not na(p_prev) and not na(v_prev) and not na(p_chart) and not na(v_chart) and p_prev <= v_prev and p_chart > v_chart
+
+    // Trigger B: X<V (Price crosses below VWAP)
+    bool tB = not na(p_prev) and not na(v_prev) and not na(p_chart) and not na(v_chart) and p_prev >= v_prev and p_chart < v_chart
+
+    // Trigger C: >+2σ (Price enters upper extreme)
+    bool tC = not wasInUpperExtreme and nowInUpperExtreme
+
+    // Trigger D: <-2σ (Price enters lower extreme)
+    bool tD = not wasInLowerExtreme and nowInLowerExtreme
+
+    // Trigger E: @V (Price returns to VWAP zone from extremes)
+    bool wasInExtreme = wasInUpperExtreme or wasInLowerExtreme
+    bool tE = wasInExtreme and nowAtVwap
+
+    // Determine trigger label (priority: A > B > C > D > E)
+    bool anyTrig = tA or tB or tC or tD or tE
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "X>V" : tB ? "X<V" : tC ? ">+2σ" : tD ? "<-2σ" : tE ? "@V" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (>+2σ)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (>+1σ)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (>V)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (@V)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E (<V)
+        cE1, cE2, cE3, cE4, cE5, cE6,
+        // Cond F (<-1σ)
+        cF1, cF2, cF3, cF4, cF5, cF6,
+        // Cond G (<-2σ)
+        cG1, cG2, cG3, cG4, cG5, cG6,
+        // Cond H-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, tE, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

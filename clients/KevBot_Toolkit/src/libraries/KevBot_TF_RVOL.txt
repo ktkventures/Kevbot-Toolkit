@@ -1,0 +1,300 @@
+//@version=6
+library("KevBot_TF_RVOL", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_RVOL – Relative Volume Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • This library provides a BUILDER function that processes pre-fetched RVOL data
+//   • This allows paramA-D in the toolkit to control thresholds (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes relative volume (current volume vs historical average) to identify
+//   volume spikes, normal volume, and low volume conditions. Volume confirms
+//   price moves - high RVOL on breakouts = conviction, low RVOL = suspect.
+//
+// PARAMETERS (defined in toolkit):
+//   paramA: Lookback period for average volume (default 20)
+//   paramB: High threshold (default 1.5)
+//   paramC: Very high threshold (default 2.0)
+//   paramD: Extreme threshold (default 3.0)
+//
+// RVOL CALCULATION (in toolkit):
+//   avgVol = ta.sma(volume, lookbackPeriod)
+//   rvol = volume / avgVol
+//
+// CONDITIONS PROVIDED (5 mutually exclusive zones):
+//   A: RV!  - Extreme volume (rvol > extreme threshold)
+//   B: RV++ - Very high volume (rvol > very high threshold)
+//   C: RV+  - Elevated volume (rvol > high threshold)
+//   D: RV=  - Normal volume (rvol >= 0.5)
+//   E: RV-  - Low volume (rvol < 0.5)
+//   F-J: Reserved (false)
+//
+// TRIGGERS PROVIDED (Chart TF only):
+//   A: Spike   - RVOL crosses above high threshold
+//   B: Extreme - RVOL crosses above extreme threshold
+//   C: Fade    - RVOL crosses below 1.0
+//   D-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: RV! (Extreme volume)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: RV++ (Very high volume)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: RV+ (Elevated volume)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: RV= (Normal volume)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF: RV- (Low volume)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Conditions F-J per TF: Reserved (false)
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Spike (RVOL crosses above high threshold)
+    bool trigB  // Extreme (RVOL crosses above extreme threshold)
+    bool trigC  // Fade (RVOL crosses below 1.0)
+    bool trigD  // Reserved
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute zone label based on RVOL value and thresholds
+// Returns: "RV!", "RV++", "RV+", "RV=", "RV-", or "na"
+_rvolLabel(float rvol, float highTh, float veryHighTh, float extremeTh) =>
+    string lab = "na"
+    if na(rvol)
+        lab := "na"
+    else if rvol > extremeTh
+        lab := "RV!"
+    else if rvol > veryHighTh
+        lab := "RV++"
+    else if rvol > highTh
+        lab := "RV+"
+    else if rvol >= 0.5
+        lab := "RV="
+    else
+        lab := "RV-"
+    lab
+
+// Zone condition checks (mutually exclusive)
+
+// Condition A: RV! (rvol > extreme threshold)
+_isZoneA(float rvol, float extremeTh) =>
+    not na(rvol) and rvol > extremeTh
+
+// Condition B: RV++ (rvol > very high threshold AND rvol <= extreme threshold)
+_isZoneB(float rvol, float veryHighTh, float extremeTh) =>
+    not na(rvol) and rvol > veryHighTh and rvol <= extremeTh
+
+// Condition C: RV+ (rvol > high threshold AND rvol <= very high threshold)
+_isZoneC(float rvol, float highTh, float veryHighTh) =>
+    not na(rvol) and rvol > highTh and rvol <= veryHighTh
+
+// Condition D: RV= (rvol >= 0.5 AND rvol <= high threshold)
+_isZoneD(float rvol, float highTh) =>
+    not na(rvol) and rvol >= 0.5 and rvol <= highTh
+
+// Condition E: RV- (rvol < 0.5)
+_isZoneE(float rvol) =>
+    not na(rvol) and rvol < 0.5
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched RVOL data
+//
+// @param rv1-rv6      RVOL values for each of the 6 timeframes
+// @param highTh       High threshold (default 1.5)
+// @param veryHighTh   Very high threshold (default 2.0)
+// @param extremeTh    Extreme threshold (default 3.0)
+// @param rv_chart     Current chart TF RVOL (for triggers)
+// @param rv_prev      Previous bar RVOL (for crossover detection)
+// @param triggerPrice Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 RVOL values
+    float rv1, float rv2, float rv3, float rv4, float rv5, float rv6,
+    // Thresholds
+    float highTh, float veryHighTh, float extremeTh,
+    // Chart TF (current + previous for triggers)
+    float rv_chart, float rv_prev,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _rvolLabel(rv1, highTh, veryHighTh, extremeTh)
+    string lab2 = _rvolLabel(rv2, highTh, veryHighTh, extremeTh)
+    string lab3 = _rvolLabel(rv3, highTh, veryHighTh, extremeTh)
+    string lab4 = _rvolLabel(rv4, highTh, veryHighTh, extremeTh)
+    string lab5 = _rvolLabel(rv5, highTh, veryHighTh, extremeTh)
+    string lab6 = _rvolLabel(rv6, highTh, veryHighTh, extremeTh)
+
+    // Condition A: RV! (Extreme) per TF
+    bool cA1 = _isZoneA(rv1, extremeTh)
+    bool cA2 = _isZoneA(rv2, extremeTh)
+    bool cA3 = _isZoneA(rv3, extremeTh)
+    bool cA4 = _isZoneA(rv4, extremeTh)
+    bool cA5 = _isZoneA(rv5, extremeTh)
+    bool cA6 = _isZoneA(rv6, extremeTh)
+
+    // Condition B: RV++ (Very High) per TF
+    bool cB1 = _isZoneB(rv1, veryHighTh, extremeTh)
+    bool cB2 = _isZoneB(rv2, veryHighTh, extremeTh)
+    bool cB3 = _isZoneB(rv3, veryHighTh, extremeTh)
+    bool cB4 = _isZoneB(rv4, veryHighTh, extremeTh)
+    bool cB5 = _isZoneB(rv5, veryHighTh, extremeTh)
+    bool cB6 = _isZoneB(rv6, veryHighTh, extremeTh)
+
+    // Condition C: RV+ (Elevated) per TF
+    bool cC1 = _isZoneC(rv1, highTh, veryHighTh)
+    bool cC2 = _isZoneC(rv2, highTh, veryHighTh)
+    bool cC3 = _isZoneC(rv3, highTh, veryHighTh)
+    bool cC4 = _isZoneC(rv4, highTh, veryHighTh)
+    bool cC5 = _isZoneC(rv5, highTh, veryHighTh)
+    bool cC6 = _isZoneC(rv6, highTh, veryHighTh)
+
+    // Condition D: RV= (Normal) per TF
+    bool cD1 = _isZoneD(rv1, highTh)
+    bool cD2 = _isZoneD(rv2, highTh)
+    bool cD3 = _isZoneD(rv3, highTh)
+    bool cD4 = _isZoneD(rv4, highTh)
+    bool cD5 = _isZoneD(rv5, highTh)
+    bool cD6 = _isZoneD(rv6, highTh)
+
+    // Condition E: RV- (Low) per TF
+    bool cE1 = _isZoneE(rv1)
+    bool cE2 = _isZoneE(rv2)
+    bool cE3 = _isZoneE(rv3)
+    bool cE4 = _isZoneE(rv4)
+    bool cE5 = _isZoneE(rv5)
+    bool cE6 = _isZoneE(rv6)
+
+    // Triggers on chart timeframe
+    // Trigger A: Spike (RVOL crosses above high threshold)
+    bool tA = not na(rv_prev) and not na(rv_chart) and rv_prev <= highTh and rv_chart > highTh
+
+    // Trigger B: Extreme (RVOL crosses above extreme threshold)
+    bool tB = not na(rv_prev) and not na(rv_chart) and rv_prev <= extremeTh and rv_chart > extremeTh
+
+    // Trigger C: Fade (RVOL crosses below 1.0)
+    bool tC = not na(rv_prev) and not na(rv_chart) and rv_prev >= 1.0 and rv_chart < 1.0
+
+    // Determine trigger label (priority: B > A > C)
+    bool anyTrig = tA or tB or tC
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tB ? "Extreme" : tA ? "Spike" : tC ? "Fade" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (RV!)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (RV++)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C (RV+)
+        cC1, cC2, cC3, cC4, cC5, cC6,
+        // Cond D (RV=)
+        cD1, cD2, cD3, cD4, cD5, cD6,
+        // Cond E (RV-)
+        cE1, cE2, cE3, cE4, cE5, cE6,
+        // Cond F-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, false, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

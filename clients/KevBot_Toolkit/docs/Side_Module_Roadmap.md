@@ -16,11 +16,11 @@ This document captures the planned structure for all side modules (3-10) to be b
 | 4 | MACD Line | ✅ Complete | MACD vs Signal + zero line context |
 | 5 | MACD Histogram | ✅ Complete | Histogram momentum |
 | 6 | MACD Divergence | ✅ Complete | Price vs MACD divergence (chart TF only*) |
-| 7 | UT Bot | 📋 Planned | ATR trailing stop signals |
-| 8 | VWAP | 📋 Planned | VWAP + standard deviation bands |
-| 9 | RVOL | 📋 Planned | Relative volume analysis |
-| 10 | SR Channel | 📋 Planned | Support/Resistance zones |
-| -- | Swing 123 | 📋 Planned | Candle pattern recognition |
+| 7 | UT Bot | ✅ Complete | ATR trailing stop signals |
+| 8 | VWAP | ✅ Complete | VWAP + standard deviation bands |
+| 9 | RVOL | ✅ Complete | Relative volume analysis |
+| 10 | SR Channel | 🔄 Deferred | Support/Resistance zones (moved to Top Table) |
+| 11 | Swing 123 | ✅ Complete | Candle pattern recognition |
 
 \* MACD Divergence works on chart timeframe only due to PineScript limitations (`request.security()` cannot call functions with `var` variables). The same divergence state is shown across all TF columns.
 
@@ -37,11 +37,11 @@ Libraries need manual verification to confirm conditions/triggers align with exp
 | MACD Line | ✅ | ✅ | ✅ | Working correctly |
 | MACD Histogram | ✅ | ✅ | ✅ | Working correctly |
 | MACD Divergence | ✅ | ✅ | ⏳ Pending | Values updating; needs chart alignment check |
-| UT Bot | ❌ | ❌ | ❌ | Not yet built |
-| VWAP | ❌ | ❌ | ❌ | Not yet built |
-| RVOL | ❌ | ❌ | ❌ | Not yet built |
-| SR Channel | ❌ | ❌ | ❌ | Not yet built |
-| Swing 123 | ❌ | ❌ | ❌ | Not yet built |
+| UT Bot | ✅ | ✅ | ✅ | Working correctly with per-TF evaluation |
+| VWAP | ✅ | ✅ | ⏳ Pending | Needs manual verification on chart |
+| RVOL | ✅ | ✅ | ⏳ Pending | Needs manual verification on chart |
+| SR Channel | 🔄 | 🔄 | 🔄 | **Deferred** - Moving to Top Table module |
+| Swing 123 | ✅ | ✅ | ⏳ Pending | Needs manual verification on chart |
 
 ---
 
@@ -184,8 +184,8 @@ Powerful reversal and continuation signals. Regular divergences warn of potentia
 
 | Cond | Label | Description |
 |------|-------|-------------|
-| A | UT+ | Price above ATR trailing stop (bullish bias) |
-| B | UT- | Price below ATR trailing stop (bearish bias) |
+| A | Bull | Price above ATR trailing stop (bullish bias) |
+| B | Bear | Price below ATR trailing stop (bearish bias) |
 
 ### Triggers
 
@@ -207,6 +207,16 @@ Trailing Stop Logic:
 - If bearish: stop = min(prev_stop, close + nLoss)
 - Where nLoss = Key Value × ATR(period)
 ```
+
+### Technical Achievement
+
+Unlike MACD Divergence (which only works on chart TF), UT Bot **properly evaluates on each timeframe** via the hybrid architecture. This was achieved by:
+
+1. Using a **global helper function** `_kb_calcUTBot()` that calculates the trailing stop
+2. Using **self-referential series** (`:=` assignment) instead of `var` variables
+3. Calling the helper via `request.security()` for each timeframe
+
+The key insight: `var` variables don't persist correctly in `request.security()`, but self-referential series do. This allows the ratcheting trailing stop logic to work correctly per-TF.
 
 ### Use Case
 Excellent for capturing trend reversals and riding trends. The trailing stop naturally adapts to volatility. Lower Key Value = more sensitive (more signals, more whipsaws). Higher Key Value = less sensitive (fewer signals, larger swings).
@@ -260,6 +270,18 @@ VWAP is typically session-anchored. For multi-TF analysis:
 ### Use Case
 Day trading staple. Price tends to revert to VWAP. Extended moves to ±2σ often signal exhaustion. VWAP crossovers can confirm trend direction.
 
+### Future Enhancement: Multi-Anchor VWAP Top Module
+
+> **Note:** Consider creating a **Top Table module** that displays price position relative to multiple anchored VWAPs simultaneously:
+> - Daily VWAP (session-anchored)
+> - Weekly VWAP
+> - Monthly VWAP
+> - Quarterly VWAP (optional)
+>
+> This would provide a quick "institutional levels" snapshot showing whether price is above/below each key VWAP anchor. Useful for understanding where price sits relative to different timeframe participants.
+>
+> **Status:** Idea documented for future implementation once Top Table custom modules are being developed.
+
 ---
 
 ## Module 9: RVOL (Relative Volume)
@@ -304,19 +326,30 @@ Volume confirms price moves. High RVOL on breakouts = more conviction. Low RVOL 
 
 ## Module 10: SR Channel
 
-**Library Name:** `KevBot_TF_SRChannel`
+> ⚠️ **Status: DEFERRED to Top Table Module**
+>
+> SR Channel has been deferred from the Side Module system due to PineScript limitations. The algorithm requires `var` state tracking to accumulate pivot points over time, which doesn't work with `request.security()` for multi-timeframe evaluation.
+>
+> **Why this doesn't fit Side Tables:**
+> - Side tables are designed to show DIFFERENT states across 6 timeframes
+> - SR Channel would only work on chart TF (same state replicated to all columns)
+> - This defeats the purpose of multi-TF comparison
+>
+> **Recommendation:** Implement as a Top Table module where single chart-TF view is appropriate and expected. Similar to how MACD Divergence works on chart TF only, but SR Channel would benefit from dedicated Top Table treatment.
+
+**Library Name:** `KevBot_TF_SRChannel` → **Will become:** `KevBot_Top_SRChannel`
 **Focus:** Dynamic Support/Resistance zone detection
 
-### Parameters
+### Parameters (Planned for Top Table Implementation)
 
 | Param | Default | Purpose |
 |-------|---------|---------|
 | A | 10 | Pivot period (left/right bars) |
-| B | 5 | Max channel width % |
-| C | 1 | Minimum strength (pivot touches) |
-| D | 290 | Lookback period for pivots |
+| B | 5.0 | Max channel width % |
+| C | -- | Reserved (min strength - future) |
+| D | -- | Reserved (lookback period - future) |
 
-### Conditions (mutually exclusive)
+### Conditions (Planned)
 
 | Cond | Label | Description |
 |------|-------|-------------|
@@ -326,7 +359,7 @@ Volume confirms price moves. High RVOL on breakouts = more conviction. Low RVOL 
 | D | <SR | Price below all identified S/R zones |
 | E | MID | Price between zones (not in any zone) |
 
-### Triggers
+### Triggers (Planned)
 
 | Trig | Description |
 |------|-------------|
@@ -338,9 +371,9 @@ Volume confirms price moves. High RVOL on breakouts = more conviction. Low RVOL 
 ### Implementation Notes
 
 The SR Channel algorithm:
-1. Identifies pivot highs/lows over the lookback period
-2. Clusters nearby pivots into zones
-3. Ranks zones by strength (number of touches)
+1. Identifies pivot highs/lows using `ta.pivothigh()` and `ta.pivotlow()`
+2. Tracks most recent pivot levels using `var` state
+3. Creates zones ±X% around pivot levels
 4. Tracks price position relative to zones
 
 ### Use Case
@@ -402,11 +435,25 @@ Recommended order for building and integrating:
 2. ✅ **MACD Line (with zero)** - Complete, verified
 3. ✅ **MACD Histogram** - Complete, verified
 4. ✅ **MACD Divergence** - Complete, pending verification (chart TF only due to PineScript limitations)
-5. **UT Bot** - Your preferred trigger, simple to implement (NEXT)
-6. **VWAP** - Common day trading tool
-7. **RVOL** - Volume confirmation
-8. **Swing 123** - Pattern recognition
-9. **SR Channel** - Most complex, save for last
+5. ✅ **UT Bot** - Complete, verified
+6. ✅ **VWAP** - Complete, needs verification
+7. ✅ **RVOL** - Complete, needs verification
+8. ✅ **Swing 123** - Complete, needs verification
+9. 🔄 **SR Channel** - **DEFERRED** to Top Table module system
+
+---
+
+## Next Steps Decision Point
+
+**Option A: Build Top Table Module System**
+- Infrastructure for custom top table modules
+- Good candidates: SR Channel, Multi-Anchor VWAP
+- These don't need per-TF evaluation (chart TF only is fine)
+
+**Option B: Expand Side Modules (2 → 10)**
+- Currently have 2 side module slots
+- Expand to 10 for more confluence combinations
+- Follows established pattern, more code duplication
 
 ---
 
@@ -433,4 +480,4 @@ This separation ensures:
 
 ---
 
-*Last Updated: January 29, 2026*
+*Last Updated: January 31, 2026 (SR Channel deferred to Top Table, all other side modules complete)*

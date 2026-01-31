@@ -1,0 +1,240 @@
+//@version=6
+library("KevBot_TF_Swing123", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_Swing123 – 1-2-3 Reversal Pattern Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls
+//   • This library provides a BUILDER function that processes pre-fetched pattern data
+//   • No parameters needed - pattern is fixed
+//
+// WHAT THIS MODULE DOES:
+//   Identifies 1-2-3 reversal patterns where price attempts to continue a trend
+//   but fails (rejection), followed by confirmation in the opposite direction.
+//
+// PATTERN LOGIC:
+//   Bullish 1-2-3:
+//     - Candle 2: Makes lower low BUT closes above prior close (rejection)
+//     - Candle 3: Closes above Candle 2's high (confirmation)
+//
+//   Bearish 1-2-3:
+//     - Candle 2: Makes higher high BUT closes below prior close (rejection)
+//     - Candle 3: Closes below Candle 2's low (confirmation)
+//
+// CONDITIONS PROVIDED:
+//   A: BC2 - Bullish Candle 2 (lower low, close > prev close)
+//   B: BC3 - Bullish Candle 3 (confirmation - close > prev high after BC2)
+//   C: XC2 - Bearish Candle 2 (higher high, close < prev close)
+//   D: XC3 - Bearish Candle 3 (confirmation - close < prev low after XC2)
+//   E: B↑  - Recent bullish setup (BC2 or BC3 within last 3 bars)
+//   F: X↓  - Recent bearish setup (XC2 or XC3 within last 3 bars)
+//   G-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: BC2 - Bullish Candle 2 formed
+//   B: BC3 - Bullish Candle 3 confirmation
+//   C: XC2 - Bearish Candle 2 formed
+//   D: XC3 - Bearish Candle 3 confirmation
+//   E-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: BC2 (Bullish Candle 2)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: BC3 (Bullish Candle 3)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: XC2 (Bearish Candle 2)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: XC3 (Bearish Candle 3)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Condition E per TF: B↑ (Recent bullish setup)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    // Condition F per TF: X↓ (Recent bearish setup)
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    // Conditions G-J per TF: Reserved (false)
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // BC2 (Bullish Candle 2 formed)
+    bool trigB  // BC3 (Bullish Candle 3 confirmation)
+    bool trigC  // XC2 (Bearish Candle 2 formed)
+    bool trigD  // XC3 (Bearish Candle 3 confirmation)
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute pattern label based on active conditions
+// Priority: BC3 > XC3 > BC2 > XC2 > B↑ > X↓ > "--"
+_patternLabel(bool bc2, bool bc3, bool xc2, bool xc3, bool recentBull, bool recentBear) =>
+    string lab = "--"
+    if bc3
+        lab := "BC3"
+    else if xc3
+        lab := "XC3"
+    else if bc2
+        lab := "BC2"
+    else if xc2
+        lab := "XC2"
+    else if recentBull
+        lab := "B↑"
+    else if recentBear
+        lab := "X↓"
+    lab
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched pattern data
+//
+// @param bc2_1-bc2_6    Bullish Candle 2 active for each TF
+// @param bc3_1-bc3_6    Bullish Candle 3 active for each TF
+// @param xc2_1-xc2_6    Bearish Candle 2 active for each TF
+// @param xc3_1-xc3_6    Bearish Candle 3 active for each TF
+// @param rbull_1-rbull_6  Recent bullish setup for each TF
+// @param rbear_1-rbear_6  Recent bearish setup for each TF
+// @param bc2_chart, bc3_chart, xc2_chart, xc3_chart  Chart TF patterns for triggers
+// @param triggerPrice   Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 pattern flags
+    bool bc2_1, bool bc3_1, bool xc2_1, bool xc3_1, bool rbull_1, bool rbear_1,
+    bool bc2_2, bool bc3_2, bool xc2_2, bool xc3_2, bool rbull_2, bool rbear_2,
+    bool bc2_3, bool bc3_3, bool xc2_3, bool xc3_3, bool rbull_3, bool rbear_3,
+    bool bc2_4, bool bc3_4, bool xc2_4, bool xc3_4, bool rbull_4, bool rbear_4,
+    bool bc2_5, bool bc3_5, bool xc2_5, bool xc3_5, bool rbull_5, bool rbear_5,
+    bool bc2_6, bool bc3_6, bool xc2_6, bool xc3_6, bool rbull_6, bool rbear_6,
+    // Chart TF (for triggers)
+    bool bc2_chart, bool bc3_chart, bool xc2_chart, bool xc3_chart,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _patternLabel(bc2_1, bc3_1, xc2_1, xc3_1, rbull_1, rbear_1)
+    string lab2 = _patternLabel(bc2_2, bc3_2, xc2_2, xc3_2, rbull_2, rbear_2)
+    string lab3 = _patternLabel(bc2_3, bc3_3, xc2_3, xc3_3, rbull_3, rbear_3)
+    string lab4 = _patternLabel(bc2_4, bc3_4, xc2_4, xc3_4, rbull_4, rbear_4)
+    string lab5 = _patternLabel(bc2_5, bc3_5, xc2_5, xc3_5, rbull_5, rbear_5)
+    string lab6 = _patternLabel(bc2_6, bc3_6, xc2_6, xc3_6, rbull_6, rbear_6)
+
+    // Triggers on chart timeframe
+    bool tA = bc2_chart   // Bullish Candle 2 formed
+    bool tB = bc3_chart   // Bullish Candle 3 confirmation
+    bool tC = xc2_chart   // Bearish Candle 2 formed
+    bool tD = xc3_chart   // Bearish Candle 3 confirmation
+
+    // Determine trigger label (priority: B > D > A > C)
+    bool anyTrig = tA or tB or tC or tD
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tB ? "BC3" : tD ? "XC3" : tA ? "BC2" : tC ? "XC2" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (BC2)
+        bc2_1, bc2_2, bc2_3, bc2_4, bc2_5, bc2_6,
+        // Cond B (BC3)
+        bc3_1, bc3_2, bc3_3, bc3_4, bc3_5, bc3_6,
+        // Cond C (XC2)
+        xc2_1, xc2_2, xc2_3, xc2_4, xc2_5, xc2_6,
+        // Cond D (XC3)
+        xc3_1, xc3_2, xc3_3, xc3_4, xc3_5, xc3_6,
+        // Cond E (Recent Bullish)
+        rbull_1, rbull_2, rbull_3, rbull_4, rbull_5, rbull_6,
+        // Cond F (Recent Bearish)
+        rbear_1, rbear_2, rbear_3, rbear_4, rbear_5, rbear_6,
+        // Cond G-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, tC, tD, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )

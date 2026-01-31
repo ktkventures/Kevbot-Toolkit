@@ -1,0 +1,257 @@
+//@version=6
+library("KevBot_TF_UTBot", overlay = false)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// KevBot_TF_UTBot – UT Bot ATR Trailing Stop Module
+//
+// ARCHITECTURE NOTE:
+//   This library uses the HYBRID approach where:
+//   • The TOOLKIT owns all request.security() calls and input.*() declarations
+//   • The TOOLKIT calculates the ATR trailing stop (requires var state)
+//   • This library provides a BUILDER function that processes pre-fetched stop data
+//   • This allows paramA-C in the toolkit to control UT Bot params (optimizer compatible!)
+//
+// WHAT THIS MODULE DOES:
+//   Analyzes price position relative to an ATR-based trailing stop.
+//   The trailing stop ratchets in the direction of the trend, providing
+//   dynamic support/resistance levels that adapt to volatility.
+//
+// PARAMETERS (defined in toolkit):
+//   paramA: Key Value (ATR multiplier, default 1) - controls sensitivity
+//   paramB: ATR Period (default 10) - lookback for ATR calculation
+//   paramC: Use Heikin Ashi (0=No, 1=Yes) - source candle type
+//
+// TRAILING STOP LOGIC (calculated in toolkit):
+//   nLoss = KeyValue × ATR(period)
+//   In uptrend:   stop = max(prev_stop, close - nLoss)  [ratchets up]
+//   In downtrend: stop = min(prev_stop, close + nLoss)  [ratchets down]
+//   On flip:      stop reinitializes based on new direction
+//
+// CONDITIONS PROVIDED:
+//   A: Bull (Price above trailing stop - bullish bias)
+//   B: Bear (Price below trailing stop - bearish bias)
+//   C-J: Reserved (false)
+//
+// TRIGGERS PROVIDED:
+//   A: Buy (Price crosses above trailing stop)
+//   B: Sell (Price crosses below trailing stop)
+//   C-J: Reserved (false)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT STRUCTURE - V2 Format (10 Conditions × 6 TFs + 10 Triggers)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export type TFModuleOutput
+    // Per-TF labels (state description)
+    string tf1_label
+    string tf2_label
+    string tf3_label
+    string tf4_label
+    string tf5_label
+    string tf6_label
+
+    // Condition A per TF: Bull (Price > Trailing Stop)
+    bool condA_tf1
+    bool condA_tf2
+    bool condA_tf3
+    bool condA_tf4
+    bool condA_tf5
+    bool condA_tf6
+
+    // Condition B per TF: Bear (Price < Trailing Stop)
+    bool condB_tf1
+    bool condB_tf2
+    bool condB_tf3
+    bool condB_tf4
+    bool condB_tf5
+    bool condB_tf6
+
+    // Condition C per TF: Reserved (false)
+    bool condC_tf1
+    bool condC_tf2
+    bool condC_tf3
+    bool condC_tf4
+    bool condC_tf5
+    bool condC_tf6
+
+    // Condition D per TF: Reserved (false)
+    bool condD_tf1
+    bool condD_tf2
+    bool condD_tf3
+    bool condD_tf4
+    bool condD_tf5
+    bool condD_tf6
+
+    // Conditions E-J per TF: Reserved (false)
+    bool condE_tf1
+    bool condE_tf2
+    bool condE_tf3
+    bool condE_tf4
+    bool condE_tf5
+    bool condE_tf6
+
+    bool condF_tf1
+    bool condF_tf2
+    bool condF_tf3
+    bool condF_tf4
+    bool condF_tf5
+    bool condF_tf6
+
+    bool condG_tf1
+    bool condG_tf2
+    bool condG_tf3
+    bool condG_tf4
+    bool condG_tf5
+    bool condG_tf6
+
+    bool condH_tf1
+    bool condH_tf2
+    bool condH_tf3
+    bool condH_tf4
+    bool condH_tf5
+    bool condH_tf6
+
+    bool condI_tf1
+    bool condI_tf2
+    bool condI_tf3
+    bool condI_tf4
+    bool condI_tf5
+    bool condI_tf6
+
+    bool condJ_tf1
+    bool condJ_tf2
+    bool condJ_tf3
+    bool condJ_tf4
+    bool condJ_tf5
+    bool condJ_tf6
+
+    // Triggers A-J (chart timeframe events)
+    bool trigA  // Buy (Price crosses above trailing stop)
+    bool trigB  // Sell (Price crosses below trailing stop)
+    bool trigC  // Reserved
+    bool trigD  // Reserved
+    bool trigE  // Reserved
+    bool trigF  // Reserved
+    bool trigG  // Reserved
+    bool trigH  // Reserved
+    bool trigI  // Reserved
+    bool trigJ  // Reserved
+
+    // Trigger metadata (for the active/primary trigger)
+    float trigger_price
+    string trigger_label
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL HELPERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Compute state label based on price vs trailing stop
+// Returns: "Bull", "Bear", or "na"
+_stateLabel(float price, float stop) =>
+    string lab = "na"
+    if na(price) or na(stop)
+        lab := "na"
+    else if price > stop
+        lab := "Bull"
+    else
+        lab := "Bear"
+    lab
+
+// Condition A: Price above trailing stop (bullish)
+_isBull(float price, float stop) =>
+    not na(price) and not na(stop) and price > stop
+
+// Condition B: Price below trailing stop (bearish)
+_isBear(float price, float stop) =>
+    not na(price) and not na(stop) and price <= stop
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUBLIC API - Builder Function
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Build TFModuleOutput from pre-fetched UT Bot trailing stop data
+//
+// NOTE: The trailing stop calculation requires `var` state which cannot persist
+//       in library functions. Therefore, the TOOLKIT must calculate the trailing
+//       stop values and pass them to this function.
+//
+// @param p1-p6      Price (close) values for each of the 6 timeframes
+// @param s1-s6      Trailing stop values for each of the 6 timeframes
+// @param p_chart    Current chart TF price (for triggers)
+// @param s_chart    Current chart TF trailing stop (for triggers)
+// @param p_prev     Previous bar price (for crossover detection)
+// @param s_prev     Previous bar trailing stop (for crossover detection)
+// @param triggerPrice  Price to use for trigger metadata (usually close)
+export buildOutput(
+    // TF1-TF6 (price and trailing stop values)
+    float p1, float s1,
+    float p2, float s2,
+    float p3, float s3,
+    float p4, float s4,
+    float p5, float s5,
+    float p6, float s6,
+    // Chart TF (current + previous for triggers)
+    float p_chart, float s_chart, float p_prev, float s_prev,
+    // Trigger price
+    float triggerPrice
+) =>
+    // Generate labels
+    string lab1 = _stateLabel(p1, s1)
+    string lab2 = _stateLabel(p2, s2)
+    string lab3 = _stateLabel(p3, s3)
+    string lab4 = _stateLabel(p4, s4)
+    string lab5 = _stateLabel(p5, s5)
+    string lab6 = _stateLabel(p6, s6)
+
+    // Condition A: Bull (price > stop) per TF
+    bool cA1 = _isBull(p1, s1)
+    bool cA2 = _isBull(p2, s2)
+    bool cA3 = _isBull(p3, s3)
+    bool cA4 = _isBull(p4, s4)
+    bool cA5 = _isBull(p5, s5)
+    bool cA6 = _isBull(p6, s6)
+
+    // Condition B: Bear (price <= stop) per TF
+    bool cB1 = _isBear(p1, s1)
+    bool cB2 = _isBear(p2, s2)
+    bool cB3 = _isBear(p3, s3)
+    bool cB4 = _isBear(p4, s4)
+    bool cB5 = _isBear(p5, s5)
+    bool cB6 = _isBear(p6, s6)
+
+    // Triggers on chart timeframe
+    // Buy: was below stop, now above stop
+    bool tA = p_prev <= s_prev and p_chart > s_chart
+    // Sell: was above stop, now below stop
+    bool tB = p_prev > s_prev and p_chart <= s_chart
+
+    // Handle na values in trigger detection
+    tA := na(p_prev) or na(s_prev) or na(p_chart) or na(s_chart) ? false : tA
+    tB := na(p_prev) or na(s_prev) or na(p_chart) or na(s_chart) ? false : tB
+
+    // Determine trigger label (priority: A > B)
+    bool anyTrig = tA or tB
+    float trigPx = anyTrig ? triggerPrice : na
+    string trigLab = tA ? "Buy" : tB ? "Sell" : "None"
+
+    TFModuleOutput.new(
+        // Labels
+        lab1, lab2, lab3, lab4, lab5, lab6,
+        // Cond A (Bull - price above stop)
+        cA1, cA2, cA3, cA4, cA5, cA6,
+        // Cond B (Bear - price below stop)
+        cB1, cB2, cB3, cB4, cB5, cB6,
+        // Cond C-J (reserved, false)
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        false, false, false, false, false, false,
+        // Triggers A-J
+        tA, tB, false, false, false, false, false, false, false, false,
+        // Trigger metadata
+        trigPx, trigLab
+    )
