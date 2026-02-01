@@ -1,163 +1,121 @@
 # KevBot Toolkit - TODO / Session Notes
 
-## Next Session Priority
+## Current Session: v2.0 Architecture Transition
 
-### Decision Point: Architecture Direction
+### Phase 2: Convert Side Table Interpreters to v2 Pattern ✅ COMPLETE
+- [x] EMA Stack (template) - inputs, loader, renderer implemented
+- [x] RVOL - inputs, loader, renderer implemented
+- [x] UT Bot - inputs, loader, renderer implemented
+- [x] Swing 123 - inputs, loader, renderer implemented
+- [x] MACD Line - inputs, loader, renderer implemented
+- [x] MACD Histogram - inputs, loader, renderer implemented
+- [x] Simple MACD Line - inputs, loader, renderer implemented
 
-Choose between two development paths:
+### Deferred to Top Table Implementation
+- [ ] VWAP - better suited for Top Table interpreter
+- [ ] MACD Divergence - better suited for Top Table interpreter
 
-**Option A: Top Table Module System**
-- Build infrastructure for custom top table modules
-- Good candidates: SR Channel, Multi-Anchor VWAP
-- These modules don't need per-TF evaluation (chart TF only works fine)
-- Would enable "institutional levels" view (SR zones, multiple VWAPs)
-
-**Option B: Expand Side Modules (2 → 10)**
-- Currently have 2 side module slots
-- Expand to 10 side module slots for more confluence analysis
-- Allows more indicator combinations per setup
-- More code duplication but follows established pattern
-
-**Recommendation:** Discuss with Kevin which provides more immediate value for his trading workflow.
-
-### Pending Toolkit Work
-- [ ] Manually verify MACD Divergence behavior against chart interpretation
-- [ ] Complete backtest KPI calculations in toolkit
-- [ ] Manually verify VWAP, RVOL, Swing 123 behavior on charts
-- [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
+### Testing Notes (January 31, 2026)
+- All 7 side table interpreters compile and load correctly
+- Slot-based side table rendering works (Slot 1 = Row 1, etc.)
+- Enable/disable toggles correctly prevent security calls when disabled
+- **Security call limit**: When enabling 7+ libraries simultaneously, TradingView may crash due to ~40-50 request.security() call limit. Users must be selective about which libraries to enable at once.
 
 ---
 
 ## Completed Items
 
-### ✅ UT Bot Library - Complete & Verified (January 30, 2026)
+### Phase 0: File Setup (January 31, 2026)
+- [x] Move v1.1 from `src/main/` to `legacy/` folder
+- [x] Create `src/main/KevBot Toolkit v2.0.txt`
+- [x] Create `src/interpreters/side/` folder
+- [x] Create `src/interpreters/top/` folder
+- [x] Move interpreter files from `src/libraries/` to `src/interpreters/side/`
+- [x] Move `KevBot_Top_Minimal.txt` to `src/interpreters/top/`
 
-**Location:** `src/libraries/KevBot_TF_UTBot.txt`
+### Phase 1: Core Infrastructure (January 31, 2026)
+- [x] Define normalized output type (KB_TF_Out_V2) - already existed
+- [x] Create shared helper functions (_tf_res_v2, _kb_mapCondSource, _kb_getCondTF*)
+- [x] Design slot-based side table renderer (Slot 1 = Row 1, etc.)
+- [x] EMA Stack inputs with library-specific parameters
+- [x] EMA Stack v2 loader with conditional security calls
+- [x] EMA Stack side table row renderer
 
-**What was built:**
-- ATR-based trailing stop with ratcheting behavior
-- Per-TF evaluation working correctly via hybrid architecture
-- Key technical achievement: Uses self-referential series (not var) in `_kb_calcUTBot()` helper so `request.security()` properly evaluates on each timeframe
-
-**Parameters:**
-- A: Key Value / ATR multiplier (default: 1)
-- B: ATR Period (default: 10)
-- C: Use Heikin Ashi (0=No, 1=Yes)
-
-**Conditions:** Bull (price > stop), Bear (price <= stop)
-**Triggers:** Buy (cross above), Sell (cross below)
-
-**Status:** Library complete, integrated into toolkit (Side Module 1 & 2), manually verified working
-
----
-
-### ✅ Trade Analysis Tool (Python/Streamlit) - POC Complete
-
-**Location:** `tools/trade_analyzer/`
-
-**What was built:**
-- Streamlit web app for analyzing confluence combinations
-- Mock data generator mimicking TradingView CSV export format
-- Two analysis modes:
-  - **Drill-Down**: Start with best single factor, iteratively add confluences
-  - **Auto-Search**: Combinatorial search for best N-factor combinations
-- "Confluence Record" concept: atomic units combining Timeframe + Evaluator + State (e.g., "1M-EMA-SML")
-- KPI Dashboard: Trades, Win Rate, Profit Factor, Daily P&L (R and $)
-- P&L Settings: Fixed vs Compounding risk modes, starting balance, risk per trade
-- Interactive equity curve with high water mark
-- Export TradingView Parameters button (placeholder for future integration)
-
-**Tech Stack:** Python, Streamlit, Pandas, Plotly (~800 lines)
-
-**Status:** POC complete. Ready to integrate with real toolkit export data once format is finalized.
+### Phase 2: Side Table Interpreters (January 31, 2026)
+- [x] Removed legacy Side Module 1/2 blank row rendering code
+- [x] Updated slot-to-row mapping (Slot N = Row N)
+- [x] Converted 7 interpreters to v2 pattern with library-specific inputs:
+  - EMA Stack (6 security calls)
+  - RVOL (6 security calls)
+  - UT Bot (7 security calls)
+  - Swing 123 (6 security calls)
+  - MACD Line (6 security calls)
+  - MACD Histogram (6 security calls)
+  - Simple MACD Line (6 security calls)
+- [x] Full LE/SE/LX/SX condition/trigger configuration per library
 
 ---
 
-### ✅ VWAP Library - Complete (January 31, 2026)
+## v2.0 Architecture Benefits
 
-**Location:** `src/libraries/KevBot_TF_VWAP.txt`
+**What Changed:**
+- Each interpreter has its own input section with clear parameter names
+- Only enabled interpreters consume `request.security()` calls
+- Slot-based side table (1-10 slots, user-assignable)
+- Designed for future custom toolkit generator
 
-**What was built:**
-- Session-anchored VWAP with standard deviation bands
-- 7 mutually exclusive zone conditions: >+2σ, >+1σ, >V, @V, <V, <-1σ, <-2σ
-- Per-TF evaluation via hybrid architecture with `_kb_calcVWAP()` helper
-
-**Parameters:**
-- A: Band 1 Multiplier (default: 1.0)
-- B: Band 2 Multiplier (default: 2.0)
-- C: Band 3 Multiplier (default: 3.0)
-
-**Status:** Library complete, integrated into toolkit, needs TradingView publish
+**Key Files:**
+- `src/main/KevBot Toolkit v2.0.txt` - Main toolkit (working file)
+- `docs/Side_Module_Architecture_v2.md` - Architecture documentation
+- `src/interpreters/side/` - All side table interpreters
+- `legacy/KevBot Toolkit v1.1 - Hybrid Architecture.txt` - Previous version
 
 ---
 
-### ✅ RVOL Library - Complete (January 31, 2026)
+## Next Phases
 
-**Location:** `src/libraries/KevBot_TF_RVOL.txt`
+### Phase 2B: Top Table Interpreters (Future)
+- [ ] VWAP interpreter for Top Table
+- [ ] MACD Divergence interpreter for Top Table
 
-**What was built:**
-- Relative volume analysis (current volume vs historical average)
-- 5 zone conditions: RV! (extreme), RV++ (very high), RV+ (elevated), RV= (normal), RV- (low)
-- Uses zone labels (not numeric values like "1.8x") as requested
+### Phase 3: Trigger/Confluence System
+- [ ] Update entry/exit config to work with library-specific inputs
+- [ ] Consolidate trigger routing from all enabled libraries
+- [ ] Test confluence scoring across libraries
 
-**Parameters:**
-- A: Lookback period (default: 20)
-- B: High threshold (default: 1.5)
-- C: Very high threshold (default: 2.0)
-- D: Extreme threshold (default: 3.0)
+### Phase 4: Data Export
+- [ ] Design export format compatible with Trade Analyzer
+- [ ] Add plot() exports for each library
+- [ ] Test CSV export → Trade Analyzer import
 
-**Status:** Library complete, integrated into toolkit, needs TradingView publish
-
----
-
-### ✅ Swing 123 Library - Complete (January 31, 2026)
-
-**Location:** `src/libraries/KevBot_TF_Swing123.txt`
-
-**What was built:**
-- 1-2-3 reversal pattern recognition
-- No parameters needed (fixed pattern logic)
-- Conditions: BC2, BC3, XC2, XC3, B↑ (recent bullish), X↓ (recent bearish)
-- Per-TF evaluation (no cumulative state needed)
-
-**Pattern Logic:**
-- BC2: Lower low but closes above prior close (rejection)
-- BC3: Close above prior high after BC2 (confirmation)
-- XC2: Higher high but closes below prior close (rejection)
-- XC3: Close below prior low after XC2 (confirmation)
-
-**Status:** Library complete, integrated into toolkit, needs TradingView publish
-
----
-
-### 📋 SR Channel - Deferred to Top Table Module
-
-**Reason for deferral:**
-- SR Channel requires `var` state tracking for pivot accumulation
-- `request.security()` cannot preserve `var` state across timeframes
-- Would only work on chart TF (same state across all TF columns)
-- This defeats the purpose of a side table module
-- Better suited as a Top Table module where single chart-TF view is appropriate
-
-**Future implementation:**
-- Will implement as part of Top Table module system
-- Candidates for top table: SR Channel, Multi-Anchor VWAP
-- These modules provide consolidated views rather than per-TF comparison
+### Phase 5: Custom Toolkit Generator (Future)
+- [ ] Create "mega block" file with all libraries
+- [ ] Add generator markers/comments
+- [ ] Build web app for library selection
 
 ---
 
 ## Other Pending Items
-
-- [ ] Manually verify MACD Divergence behavior against chart interpretation
-- [x] Build UT Bot library (preferred trigger module)
-- [x] Integrate UT Bot library into main toolkit
-- [x] Manually verify UT Bot behavior against chart interpretation
-- [x] Build VWAP library
-- [x] Build RVOL library
-- [x] Build Swing 123 library
-- [ ] Build SR Channel library → **DEFERRED** (moving to top table module)
-- [ ] Publish VWAP, RVOL, Swing 123 to TradingView
+- [ ] Complete backtest KPI calculations in toolkit
+- [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
+- [ ] Manually verify MACD Divergence behavior on charts
 
 ---
 
-*Last Updated: January 31, 2026*
+## Future Concepts (Exploratory - Not Committed)
+
+### AND/OR Condition Groups
+**Status:** Idea to explore later
+
+Replace threshold-based scoring with explicit AND/OR logic groups:
+- AND groups: All conditions must be true
+- OR groups: Any one condition is sufficient
+- More intuitive for expressing strategy logic
+
+See `docs/Side_Module_Architecture_v2.md` for detailed concept notes.
+
+**Decision:** Revisit after v2.0 library conversions are complete.
+
+---
+
+*Last Updated: January 31, 2026 (Phase 2 Complete)*

@@ -1,6 +1,6 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.6
+**Version:** 1.7
 **Date:** January 31, 2026
 **Target Platform:** TradingView (PineScript v6)
 **Development Tool:** Claude Code
@@ -12,16 +12,19 @@
 The KevBot Toolkit is a modular TradingView indicator designed to automate trade journaling and enable multivariate analysis of trading strategies. It replaces manual data entry (80+ questions per trade) with automatic context capture across multiple timeframes and indicators, displaying results in two dynamic tables.
 
 **Current Development State:**
-- v1.1 Hybrid Architecture implemented and working
-- 2 Side Modules functional (proof of concept for multi-module support)
-- EMA Stack library working correctly with hybrid pattern
-- Parameters (paramA-F) now fully optimizable by third-party tools
-- Side table displays both modules with correct EMA stack labels
-- Chart plotting system: raw trigger marks (cross) and position signals (triangles/xcross)
-- Label system: trigger name labels for raw signals, full metadata labels for positions
-- Data export plots: invisible plots for CSV export of confluence data, position sizing, TF states
-- All 10 triggers (A-J) and 10 conditions (A-J) exposed in UI dropdowns
-- Sensible default input values for immediate signal display on load
+- **v2.0 Library-Centric Architecture IN PROGRESS**
+- v1.1 archived to `legacy/` folder
+- New architecture: each interpreter has dedicated input section with library-specific parameter names
+- Only enabled interpreters consume `request.security()` calls (resource efficient)
+- Slot-based side table rendering (1-10 user-assignable slots)
+- EMA Stack v2 implementation complete, ready for manual testing
+- Remaining interpreters to be converted: VWAP, UT Bot, RVOL, Swing 123, MACD variants
+
+**v2.0 Key Benefits:**
+- Clear parameter names per library (e.g., "Short EMA" instead of "Parameter A")
+- User controls resource usage by enabling/disabling interpreters
+- Designed for future custom toolkit generator web app
+- Scalable to 10+ side table interpreters
 
 **Goal of This PRD:** Enable Claude Code to accelerate development with full codebase awareness, documenting current state and architecture decisions accurately.
 
@@ -116,23 +119,54 @@ A modular TradingView indicator that:
 
 ### 3.2 File Structure
 
-**Main Files:**
-- `LEGACY - Kevbot Toolkit v1.0 - Input Skeleton.txt` — Legacy core indicator (reference only)
-- `KevBot Toolkit v1.1 - Hybrid Architecture.txt` — **Current** main toolkit with hybrid pattern (~2,400 lines)
-- `LEGACY - KevBot_Toolkit_EMAStack_Integration.txt` — Reference template for hybrid integration (superseded)
+```
+KevBot_Toolkit/
+├── src/
+│   ├── main/
+│   │   └── KevBot Toolkit v2.0.txt      # Current working file (v2 architecture)
+│   │
+│   ├── interpreters/
+│   │   ├── side/                         # Side table TF interpreters
+│   │   │   ├── KevBot_TF_EMA Stack.txt
+│   │   │   ├── KevBot_TF_VWAP.txt
+│   │   │   ├── KevBot_TF_UTBot.txt
+│   │   │   ├── KevBot_TF_RVOL.txt
+│   │   │   ├── KevBot_TF_Swing123.txt
+│   │   │   ├── KevBot_TF_MACD_Line.txt
+│   │   │   ├── KevBot_TF_MACD_Histogram.txt
+│   │   │   ├── KevBot_TF_MACD_Divergence.txt
+│   │   │   ├── KevBot_TF_MACD_Simple.txt
+│   │   │   └── KevBot_TF_Placeholder.txt
+│   │   │
+│   │   └── top/                          # Top table interpreters
+│   │       └── KevBot_Top_Minimal.txt
+│   │
+│   └── core/                             # Shared utilities
+│       ├── KevBot_TimeUtils.txt
+│       └── KevBot_Types.txt
+│
+├── legacy/                               # Archived versions
+│   ├── KevBot Toolkit v1.1 - Hybrid Architecture.txt
+│   ├── LEGACY - Kevbot Toolkit v1.0 - Input Skeleton.txt
+│   └── LEGACY - KevBot_Toolkit_EMAStack_Integration.txt
+│
+├── docs/                                 # Documentation
+│   ├── KevBot_Toolkit_updatedPRD.md      # This PRD
+│   ├── Side_Module_Architecture_v2.md   # v2 architecture spec
+│   ├── KevBot_Architecture_Notes.md
+│   ├── KevBot_Library_Definitions.md
+│   ├── Side_Module_Roadmap.md
+│   └── TODO.md
+│
+└── tools/
+    └── trade_analyzer/                   # Python analysis tool (POC)
+```
 
-**Library Files:**
-- `KevBot_TimeUtils.txt` — Timeframe formatting utilities
-- `KevBot_Top_Minimal.txt` — Top module for MA crossover (4 outputs: A/B/C/D)
-- `KevBot_TF_Placeholder.txt` — Placeholder TF module (10 conditions A-J × 6 TFs + 10 triggers A-J)
-- `KevBot_TF_EMA Stack.txt` — EMA Stack with `buildOutput()` hybrid function (v7)
-- `KevBot_Types.txt` — Shared type definitions (TFModuleOutput, EMAStackData, etc.)
-- `KevBot_Indicators.txt` — Pure processing functions (orderEMA, isBullStack, etc.)
-
-**Documentation Files:**
-- `KevBot_Architecture_Notes.md` — PineScript limitations and architecture decisions
-- `KevBot_Library_Definitions.md` — User-facing library documentation (params, triggers, conditions)
-- `KevBot_Toolkit_updatedPRD.md` — This PRD
+**Key Files:**
+- `src/main/KevBot Toolkit v2.0.txt` — **Current** main toolkit with v2 library-centric architecture
+- `docs/Side_Module_Architecture_v2.md` — v2 architecture specification and transition plan
+- `src/interpreters/side/` — All side table interpreter libraries (no changes needed to libraries)
+- `legacy/` — Previous versions for reference
 
 ### 3.3 Architecture Principles
 
@@ -947,8 +981,8 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 
 ## 9. Development Priorities
 
-### 9.1 Phase 1: Core Functionality (Current)
-**Status:** 90% Complete - Hybrid architecture working, 2 Side Modules functional
+### 9.1 Phase 1: Core Functionality - COMPLETE
+**Status:** ✅ Complete - v1.1 Hybrid Architecture fully working
 
 **Completed:**
 - [x] Input skeleton (all 6 modules, ~2,006 lines)
@@ -970,36 +1004,57 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 - [x] KevBot_Types library (shared type definitions)
 - [x] KevBot_Indicators library (pure processing functions)
 - [x] KevBot_Library_Definitions.md (user-facing documentation)
-
-- [x] **✅ Expand UI input options to expose all 10 triggers (A-J) and 10 conditions (A-J)** - All dropdown options now available in inputs
-- [x] **✅ Label plotting system** - Raw trigger labels and position labels with full metadata support
-- [x] **✅ Chart plotting system** - Raw trigger marks (cross) and position signal marks (triangles/xcross)
-- [x] **✅ Data export plots** - Invisible plots for CSV export (confluence scores, grades, position sizing, TF states)
-- [x] **✅ Default input values** - Sensible defaults so signals display on indicator load
-- [x] **✅ Side table color fix** - Independent evaluation of Long/Short confluence conditions
+- [x] **✅ Expand UI input options** - All 10 triggers (A-J) and 10 conditions (A-J) exposed
+- [x] **✅ Label plotting system** - Raw trigger labels and position labels with full metadata
+- [x] **✅ Chart plotting system** - Raw trigger marks (cross) and position signals (triangles/xcross)
+- [x] **✅ Data export plots** - Invisible plots for CSV export
+- [x] **✅ Default input values** - Sensible defaults so signals display on load
 - [x] **✅ UT Bot library** - ATR trailing stop with per-TF evaluation via hybrid pattern
 
-**Remaining:**
+### 9.2 Phase 2: v2.0 Architecture Transition - IN PROGRESS
+**Status:** 🔄 In Progress - EMA Stack v2 ready for testing
+
+**Architecture Decision Made:** Library-Centric Architecture (v2.0)
+- Each interpreter has dedicated input section with clear parameter names
+- Only enabled interpreters consume `request.security()` calls
+- Slot-based side table (1-10 user-assignable slots)
+- See `docs/Side_Module_Architecture_v2.md` for full specification
+
+**Completed:**
+- [x] Phase 0: File restructuring (folders, v1.1 to legacy)
+- [x] Phase 1: Core infrastructure (KB_TF_Out_V2, helpers, slot renderer)
+- [x] EMA Stack v2 inputs (library-specific parameter names)
+- [x] EMA Stack v2 loader (conditional security calls)
+- [x] EMA Stack v2 side table renderer
+
+**Current:**
+- [ ] **Manual Test: EMA Stack v2** ← ACTIVE
+
+**Remaining Interpreters:**
+- [ ] VWAP
+- [ ] UT Bot
+- [ ] RVOL
+- [ ] Swing 123
+- [ ] MACD Line
+- [ ] MACD Histogram
+- [ ] MACD Divergence
+- [ ] Simple MACD Line
+
+**Other Remaining:**
 - [ ] Complete backtest KPI calculations
-- [ ] CSV export functionality (data export plots ready, need export mechanism)
 - [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
-- [ ] Manually verify VWAP, RVOL, Swing 123 behavior on charts
 
-**Architecture Decision Pending:**
-- Option A: Build Top Table module system (for SR Channel, Multi-Anchor VWAP)
-- Option B: Expand Side Modules from 2 to 10 slots
-
-### 9.2 Phase 2: Enhancement & Testing
-**Status:** Not Started
+### 9.3 Phase 3: Enhancement & Testing
+**Status:** Not Started (after v2.0 migration complete)
 
 **Planned:**
 - [ ] Multiple Top Modules (Top2, Top3, Top4)
-- [ ] Multiple Side Modules (Side2, Side3, Side4)
+- [ ] Trigger/Confluence system consolidation
+- [ ] Data export format for Trade Analyzer
 - [ ] Advanced entry/exit conditions such as supporting multiple buys within the same trade
 - [ ] Alert system
-- [ ] Additional libraries (MACD, RSI, Volume, etc.)
 
-### 9.3 Phase 3: Advanced Features
+### 9.4 Phase 4: Advanced Features
 **Status:** Future
 
 **Planned:**
@@ -1008,7 +1063,7 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 - [ ] Risk management automation
 - [ ] Portfolio-level analytics
 
-### 9.4 Companion Tools
+### 9.5 Companion Tools
 
 #### Trade Analyzer (Python/Streamlit) - POC Complete
 **Location:** `tools/trade_analyzer/`
@@ -1571,6 +1626,7 @@ label.new(bar_index, high,
 | 1.4 | 2026-01-30 | Added Section 9.4 Companion Tools documenting the Trade Analyzer POC (Python/Streamlit). Tool analyzes CSV exports to find optimal confluence combinations using "confluence records" (TF-Evaluator-State). Features: drill-down analysis, auto-search, financial modeling (fixed/compounding risk), placeholder for TradingView parameter export. | Claude Code (Opus 4.5) |
 | 1.5 | 2026-01-30 | **UT Bot Library Added:** New KevBot_TF_UTBot library implementing ATR-based trailing stop with ratcheting behavior. Key technical achievement: uses self-referential series (not var) in global helper function `_kb_calcUTBot()` so `request.security()` properly evaluates per-TF (unlike MACD Divergence which is chart-TF only). Params: A=Key Value, B=ATR Period, C=Use Heikin Ashi. Conditions: Bull/Bear (price vs stop). Triggers: Buy/Sell (crossovers). Integrated into both Side Module 1 and 2 slots. Updated Section 6.3 with library documentation. | Claude Code (Opus 4.5) |
 | 1.6 | 2026-01-31 | **Three New Libraries Added:** (1) VWAP - Session-anchored VWAP with SD bands, 7 zone conditions, uses `_kb_calcVWAP()` helper. (2) RVOL - Relative volume analysis, 5 zone conditions (RV!/RV++/RV+/RV=/RV-), simple calculation. (3) Swing 123 - 1-2-3 reversal pattern recognition, pure price action, 6 pattern conditions. **SR Channel Deferred:** Moved to planned Top Table module system due to `var` state requirements incompatible with `request.security()` per-TF evaluation. Added architecture decision point: Top Table modules vs expanding Side Modules (2→10). Updated Section 6.3 with all library documentation. | Claude Code (Opus 4.5) |
+| 1.7 | 2026-01-31 | **v2.0 Architecture Transition Started:** Adopted Library-Centric Architecture per `Side_Module_Architecture_v2.md`. (1) File restructuring complete: v1.1 moved to `legacy/`, interpreters moved to `src/interpreters/side/` and `top/`, new `src/main/KevBot Toolkit v2.0.txt` created. (2) Core infrastructure complete: slot-based side table renderer, shared helpers. (3) EMA Stack v2 implementation complete: library-specific inputs (Short/Medium/Long EMA, per-TF scores), conditional security calls (only when enabled), side table slot assignment. Ready for manual testing. Updated Section 3.2 File Structure, Section 9 Development Priorities. | Claude Code (Opus 4.5) |
 
 ---
 
