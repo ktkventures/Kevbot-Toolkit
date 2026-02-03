@@ -235,6 +235,62 @@ float  top1_o4_valA    = input.float(0.0, "Value A", group = GRP_TOP1_O4, inline
 float  top1_o4_valB    = input.float(0.0, "Value B", group = GRP_TOP1_O4, inline="o4_row3")
 int    top1_o4_score   = input.int(0, "TH Score", group = GRP_TOP1_O4, inline="o4_row4")
 
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5-1. VWAP (TOP TABLE CONFLUENCE INTERPRETER)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Displays Daily, Weekly, and Monthly anchored VWAP zones in the Top Table.
+// Each output shows the current price position relative to that VWAP's
+// standard deviation bands, providing multi-timeframe VWAP context.
+//
+// Zone Labels: >+2σ, >+1σ, >V, @V, <V, <-1σ, <-2σ
+// Color Coding: Green (Long match), Red (Short match), Yellow (monitored), Gray (off)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// --- VWAP: MAIN SETTINGS ---
+string GRP_TOP_VWAP = "5-1. VWAP"
+bool   lib_vwap_enabled = input.bool(false, "Enable", group = GRP_TOP_VWAP, tooltip = "Enable VWAP top table interpreter showing Daily, Weekly, and Monthly anchored VWAP zones.")
+string lib_vwap_name    = input.string("VWAP", "Display Name", group = GRP_TOP_VWAP, tooltip = "Custom name shown in top table header.")
+
+// --- VWAP: PARAMETERS ---
+string GRP_TOP_VWAP_PARAMS = "5-1.1 VWAP – Parameters"
+float  lib_vwap_band1 = input.float(1.0, "Band 1 Multiplier (σ)", minval = 0.1, group = GRP_TOP_VWAP_PARAMS, tooltip = "Standard deviation multiplier for inner bands (+1σ/-1σ).")
+float  lib_vwap_band2 = input.float(2.0, "Band 2 Multiplier (σ)", minval = 0.1, group = GRP_TOP_VWAP_PARAMS, tooltip = "Standard deviation multiplier for outer bands (+2σ/-2σ).")
+
+// Zone condition options for dropdowns
+string _VWAP_COND_NONE = "None"
+string _VWAP_COND_ABOVE = "Above VWAP"
+string _VWAP_COND_AT_ABOVE = "At/Above VWAP"
+string _VWAP_COND_AT = "At VWAP"
+string _VWAP_COND_AT_BELOW = "At/Below VWAP"
+string _VWAP_COND_BELOW = "Below VWAP"
+string _VWAP_COND_EXT_ABOVE = "Extended Above"
+string _VWAP_COND_EXT_BELOW = "Extended Below"
+string _VWAP_COND_EXTREME_HI = "Extreme High"
+string _VWAP_COND_EXTREME_LO = "Extreme Low"
+
+// --- VWAP: DAILY OUTPUT ---
+string GRP_TOP_VWAP_D = "5-1.2 VWAP – Daily"
+string lib_vwap_D_long  = input.string("Above VWAP", "Long Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_D, tooltip = "Zone(s) that qualify as bullish confluence for Daily VWAP.")
+string lib_vwap_D_short = input.string("Below VWAP", "Short Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_D, tooltip = "Zone(s) that qualify as bearish confluence for Daily VWAP.")
+int    lib_vwap_D_score = input.int(50, "TH Score", minval = 0, group = GRP_TOP_VWAP_D, tooltip = "Threshold score contribution when condition is met.")
+bool   lib_vwap_D_req   = input.bool(false, "Required", group = GRP_TOP_VWAP_D, tooltip = "If enabled, this condition must be met for entries.")
+
+// --- VWAP: WEEKLY OUTPUT ---
+string GRP_TOP_VWAP_W = "5-1.3 VWAP – Weekly"
+string lib_vwap_W_long  = input.string("Above VWAP", "Long Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_W, tooltip = "Zone(s) that qualify as bullish confluence for Weekly VWAP.")
+string lib_vwap_W_short = input.string("Below VWAP", "Short Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_W, tooltip = "Zone(s) that qualify as bearish confluence for Weekly VWAP.")
+int    lib_vwap_W_score = input.int(50, "TH Score", minval = 0, group = GRP_TOP_VWAP_W, tooltip = "Threshold score contribution when condition is met.")
+bool   lib_vwap_W_req   = input.bool(false, "Required", group = GRP_TOP_VWAP_W, tooltip = "If enabled, this condition must be met for entries.")
+
+// --- VWAP: MONTHLY OUTPUT ---
+string GRP_TOP_VWAP_M = "5-1.4 VWAP – Monthly"
+string lib_vwap_M_long  = input.string("Above VWAP", "Long Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_M, tooltip = "Zone(s) that qualify as bullish confluence for Monthly VWAP.")
+string lib_vwap_M_short = input.string("Below VWAP", "Short Condition", options = ["None", "Above VWAP", "At/Above VWAP", "At VWAP", "At/Below VWAP", "Below VWAP", "Extended Above", "Extended Below", "Extreme High", "Extreme Low"], group = GRP_TOP_VWAP_M, tooltip = "Zone(s) that qualify as bearish confluence for Monthly VWAP.")
+int    lib_vwap_M_score = input.int(50, "TH Score", minval = 0, group = GRP_TOP_VWAP_M, tooltip = "Threshold score contribution when condition is met.")
+bool   lib_vwap_M_req   = input.bool(false, "Required", group = GRP_TOP_VWAP_M, tooltip = "If enabled, this condition must be met for entries.")
+
+
 // NOTE: Legacy Side Module 1/2 inputs removed in v2.0 transition
 // See legacy/KevBot Toolkit v1.1 - Hybrid Architecture.txt for reference
 // V2 uses library-specific input sections below (6-1. EMA Stack, 6-2. RVOL, etc.)
@@ -1026,6 +1082,106 @@ _kb_calcVWAP() =>
     float _sd = math.sqrt(math.max(_variance, 0))
 
     [_vwap, _sd]
+
+//──────────────────────────────────────────────────────────────────────────────
+// WEEKLY ANCHORED VWAP (resets at start of week)
+//──────────────────────────────────────────────────────────────────────────────
+_kb_calcVWAP_W() =>
+    bool _newSession = ta.change(time("W")) != 0
+    float _sumPV = 0.0
+    float _sumV = 0.0
+    float _sumPV2 = 0.0
+    if bar_index == 0 or _newSession
+        _sumPV := close * volume
+        _sumV := volume
+        _sumPV2 := close * close * volume
+    else
+        _sumPV := nz(_sumPV[1]) + close * volume
+        _sumV := nz(_sumV[1]) + volume
+        _sumPV2 := nz(_sumPV2[1]) + close * close * volume
+    float _vwap = _sumV > 0 ? _sumPV / _sumV : close
+    float _variance = _sumV > 0 ? (_sumPV2 / _sumV) - (_vwap * _vwap) : 0.0
+    float _sd = math.sqrt(math.max(_variance, 0))
+    [_vwap, _sd]
+
+//──────────────────────────────────────────────────────────────────────────────
+// MONTHLY ANCHORED VWAP (resets at start of month)
+//──────────────────────────────────────────────────────────────────────────────
+_kb_calcVWAP_M() =>
+    bool _newSession = ta.change(time("M")) != 0
+    float _sumPV = 0.0
+    float _sumV = 0.0
+    float _sumPV2 = 0.0
+    if bar_index == 0 or _newSession
+        _sumPV := close * volume
+        _sumV := volume
+        _sumPV2 := close * close * volume
+    else
+        _sumPV := nz(_sumPV[1]) + close * volume
+        _sumV := nz(_sumV[1]) + volume
+        _sumPV2 := nz(_sumPV2[1]) + close * close * volume
+    float _vwap = _sumV > 0 ? _sumPV / _sumV : close
+    float _variance = _sumV > 0 ? (_sumPV2 / _sumV) - (_vwap * _vwap) : 0.0
+    float _sd = math.sqrt(math.max(_variance, 0))
+    [_vwap, _sd]
+
+//──────────────────────────────────────────────────────────────────────────────
+// VWAP ZONE LABEL HELPER
+//──────────────────────────────────────────────────────────────────────────────
+// Returns zone label based on price position relative to VWAP bands
+_kb_vwapZoneLabel(float price, float vwap, float sd, float sd1Mult, float sd2Mult) =>
+    string lab = "na"
+    if not na(price) and not na(vwap) and not na(sd) and sd > 0
+        float upperBand2 = vwap + (sd2Mult * sd)
+        float upperBand1 = vwap + (sd1Mult * sd)
+        float atVwapUpper = vwap + (0.5 * sd)
+        float atVwapLower = vwap - (0.5 * sd)
+        float lowerBand1 = vwap - (sd1Mult * sd)
+        float lowerBand2 = vwap - (sd2Mult * sd)
+
+        if price > upperBand2
+            lab := ">+2σ"
+        else if price > upperBand1
+            lab := ">+1σ"
+        else if price > atVwapUpper
+            lab := ">V"
+        else if price >= atVwapLower
+            lab := "@V"
+        else if price >= lowerBand1
+            lab := "<V"
+        else if price >= lowerBand2
+            lab := "<-1σ"
+        else
+            lab := "<-2σ"
+    lab
+
+//──────────────────────────────────────────────────────────────────────────────
+// VWAP ZONE CONDITION MATCHER
+//──────────────────────────────────────────────────────────────────────────────
+// Checks if a zone label matches the user's configured condition grouping
+_kb_vwapZoneMatch(string zone, string condition) =>
+    bool match = false
+    if condition == "None"
+        match := false
+    else if condition == "Above VWAP"
+        match := zone == ">V" or zone == ">+1σ" or zone == ">+2σ"
+    else if condition == "At/Above VWAP"
+        match := zone == "@V" or zone == ">V" or zone == ">+1σ" or zone == ">+2σ"
+    else if condition == "At VWAP"
+        match := zone == "@V"
+    else if condition == "At/Below VWAP"
+        match := zone == "@V" or zone == "<V" or zone == "<-1σ" or zone == "<-2σ"
+    else if condition == "Below VWAP"
+        match := zone == "<V" or zone == "<-1σ" or zone == "<-2σ"
+    else if condition == "Extended Above"
+        match := zone == ">+1σ" or zone == ">+2σ"
+    else if condition == "Extended Below"
+        match := zone == "<-1σ" or zone == "<-2σ"
+    else if condition == "Extreme High"
+        match := zone == ">+2σ"
+    else if condition == "Extreme Low"
+        match := zone == "<-2σ"
+    match
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 8.0 PHASE 2B — INTERNAL NORMALIZED OUTPUT (PARALLEL OUTPUTS)
@@ -1837,6 +1993,49 @@ if lib_swing_enabled
 // END SWING 123 LOADER (V2)
 //──────────────────────────────────────────────────────────────────────────────
 
+//──────────────────────────────────────────────────────────────────────────────
+// TOP VWAP LOADER (V2)
+//──────────────────────────────────────────────────────────────────────────────
+// Calculates Daily, Weekly, and Monthly anchored VWAPs directly on chart TF.
+// No request.security needed since all VWAPs are calculated on current chart.
+//──────────────────────────────────────────────────────────────────────────────
+
+// Output variables for VWAP zone labels
+var string lib_vwap_D_zone = "na"
+var string lib_vwap_W_zone = "na"
+var string lib_vwap_M_zone = "na"
+
+// VWAP values for potential plotting/export
+var float _vwap_D_val = na
+var float _vwap_W_val = na
+var float _vwap_M_val = na
+var float _vwap_D_sd = na
+var float _vwap_W_sd = na
+var float _vwap_M_sd = na
+
+if lib_vwap_enabled
+    // Calculate anchored VWAPs directly on chart timeframe
+    [_vwap_D, _sd_D] = _kb_calcVWAP()    // Daily reset
+    [_vwap_W, _sd_W] = _kb_calcVWAP_W()  // Weekly reset
+    [_vwap_M, _sd_M] = _kb_calcVWAP_M()  // Monthly reset
+
+    // Store values
+    _vwap_D_val := _vwap_D
+    _vwap_W_val := _vwap_W
+    _vwap_M_val := _vwap_M
+    _vwap_D_sd := _sd_D
+    _vwap_W_sd := _sd_W
+    _vwap_M_sd := _sd_M
+
+    // Determine zone labels based on current price vs each anchored VWAP
+    lib_vwap_D_zone := _kb_vwapZoneLabel(close, _vwap_D, _sd_D, lib_vwap_band1, lib_vwap_band2)
+    lib_vwap_W_zone := _kb_vwapZoneLabel(close, _vwap_W, _sd_W, lib_vwap_band1, lib_vwap_band2)
+    lib_vwap_M_zone := _kb_vwapZoneLabel(close, _vwap_M, _sd_M, lib_vwap_band1, lib_vwap_band2)
+
+//──────────────────────────────────────────────────────────────────────────────
+// END TOP VWAP LOADER (V2)
+//──────────────────────────────────────────────────────────────────────────────
+
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // V2 LIBRARY OUTPUTS (Placeholder declarations for downstream compatibility)
@@ -2320,6 +2519,53 @@ calcGlobalConfluence(float topLongScore, float topShortScore, bool topReqLongOk,
 
 
 [topLongScore, topShortScore, topReqLongOk, topReqShortOk] =calcTopConfluence(top1_enabled, top1_library,top1_raw.outA, top1_raw.outB, top1_raw.outC, top1_raw.outD,top1_o1_enabled, top1_o1_required, top1_o1_dir, top1_o1_mode, top1_o1_source, top1_o1_valA, top1_o1_valB, top1_o1_score,top1_o2_enabled, top1_o2_required, top1_o2_dir, top1_o2_mode, top1_o2_source, top1_o2_valA, top1_o2_valB, top1_o2_score,top1_o3_enabled, top1_o3_required, top1_o3_dir, top1_o3_mode, top1_o3_source, top1_o3_valA, top1_o3_valB, top1_o3_score,top1_o4_enabled, top1_o4_required, top1_o4_dir, top1_o4_mode, top1_o4_source, top1_o4_valA, top1_o4_valB, top1_o4_score)
+
+//──────────────────────────────────────────────────────────────────────────────
+// 9.1.1 VWAP TOP TABLE CONFLUENCE
+//──────────────────────────────────────────────────────────────────────────────
+// VWAP contributes to top module scores based on D/W/M zone matches
+
+int _vwap_longScore = 0
+int _vwap_shortScore = 0
+bool _vwap_longReqOk = true
+bool _vwap_shortReqOk = true
+
+if lib_vwap_enabled
+    // Daily VWAP scoring
+    if _kb_vwapZoneMatch(lib_vwap_D_zone, lib_vwap_D_long) and lib_vwap_D_score > 0
+        _vwap_longScore += lib_vwap_D_score
+    if _kb_vwapZoneMatch(lib_vwap_D_zone, lib_vwap_D_short) and lib_vwap_D_score > 0
+        _vwap_shortScore += lib_vwap_D_score
+    if lib_vwap_D_req and lib_vwap_D_long != "None" and not _kb_vwapZoneMatch(lib_vwap_D_zone, lib_vwap_D_long)
+        _vwap_longReqOk := false
+    if lib_vwap_D_req and lib_vwap_D_short != "None" and not _kb_vwapZoneMatch(lib_vwap_D_zone, lib_vwap_D_short)
+        _vwap_shortReqOk := false
+
+    // Weekly VWAP scoring
+    if _kb_vwapZoneMatch(lib_vwap_W_zone, lib_vwap_W_long) and lib_vwap_W_score > 0
+        _vwap_longScore += lib_vwap_W_score
+    if _kb_vwapZoneMatch(lib_vwap_W_zone, lib_vwap_W_short) and lib_vwap_W_score > 0
+        _vwap_shortScore += lib_vwap_W_score
+    if lib_vwap_W_req and lib_vwap_W_long != "None" and not _kb_vwapZoneMatch(lib_vwap_W_zone, lib_vwap_W_long)
+        _vwap_longReqOk := false
+    if lib_vwap_W_req and lib_vwap_W_short != "None" and not _kb_vwapZoneMatch(lib_vwap_W_zone, lib_vwap_W_short)
+        _vwap_shortReqOk := false
+
+    // Monthly VWAP scoring
+    if _kb_vwapZoneMatch(lib_vwap_M_zone, lib_vwap_M_long) and lib_vwap_M_score > 0
+        _vwap_longScore += lib_vwap_M_score
+    if _kb_vwapZoneMatch(lib_vwap_M_zone, lib_vwap_M_short) and lib_vwap_M_score > 0
+        _vwap_shortScore += lib_vwap_M_score
+    if lib_vwap_M_req and lib_vwap_M_long != "None" and not _kb_vwapZoneMatch(lib_vwap_M_zone, lib_vwap_M_long)
+        _vwap_longReqOk := false
+    if lib_vwap_M_req and lib_vwap_M_short != "None" and not _kb_vwapZoneMatch(lib_vwap_M_zone, lib_vwap_M_short)
+        _vwap_shortReqOk := false
+
+// Add VWAP scores to top module totals
+topLongScore  += _vwap_longScore
+topShortScore += _vwap_shortScore
+topReqLongOk  := topReqLongOk and _vwap_longReqOk
+topReqShortOk := topReqShortOk and _vwap_shortReqOk
 
 // 9.2 Side/TF partial confluence
 
@@ -3083,12 +3329,32 @@ if enableTopTable and na(kbTopTable)
 //──────────────────────────────────────────────────────────────────────────────
 
 // Dark theme colors
-color _kb_headBg  = useDarkTheme ? color.new(color.blue, 40)  : color.new(color.blue, 70)
-color _kb_labBg   = useDarkTheme ? color.new(color.gray, 75)  : color.new(color.gray, 90)
+color _kb_headBg      = useDarkTheme ? color.new(color.blue, 40)   : color.new(color.blue, 70)   // Calculation modules
+color _kb_confHeadBg  = useDarkTheme ? color.new(color.purple, 40) : color.new(color.purple, 70) // Confluence interpreter modules
+color _kb_labBg       = useDarkTheme ? color.new(color.gray, 75)   : color.new(color.gray, 90)
 color _kb_valBg   = useDarkTheme ? color.new(color.gray, 55)  : color.new(color.gray, 85)
 color _kb_headTxt = useDarkTheme ? color.white : color.new(color.black, 0)
 color _kb_labTxt  = useDarkTheme ? color.white : color.new(color.black, 20)
 color _kb_valTxt  = useDarkTheme ? color.white : color.new(color.black, 0)
+
+// VWAP zone cell color helper
+// Returns: Green (Long match), Red (Short match), Blue (Both), Yellow (monitored), Gray (off)
+f_vwapCell_color(string zone, string longCond, string shortCond, int score) =>
+    bool longMatch = _kb_vwapZoneMatch(zone, longCond) and score > 0
+    bool shortMatch = _kb_vwapZoneMatch(zone, shortCond) and score > 0
+    bool monitored = (longCond != "None" or shortCond != "None") and score > 0
+
+    color bg = _kb_valBg  // Default gray
+    if monitored
+        if longMatch and shortMatch
+            bg := color.new(color.blue, 60)
+        else if longMatch
+            bg := color.new(color.green, 60)
+        else if shortMatch
+            bg := color.new(color.red, 60)
+        else
+            bg := color.new(color.yellow, 70)
+    bg
 
 //──────────────────────────────────────────────────────────────────────────────
 // 12.3 MODULE ENABLE FLAGS
@@ -3099,6 +3365,7 @@ bool useShortCSM = showCSM_short
 bool useSizer    = showSizer
 bool useBacktest = showBack
 bool useTop1     = top1_enabled
+bool useTopVWAP  = lib_vwap_enabled
 
 // Count active modules
 int activeCount = 0
@@ -3107,6 +3374,7 @@ activeCount += useShortCSM ? 1 : 0
 activeCount += useSizer    ? 1 : 0
 activeCount += useBacktest ? 1 : 0
 activeCount += useTop1     ? 1 : 0
+activeCount += useTopVWAP  ? 1 : 0
 
 //──────────────────────────────────────────────────────────────────────────────
 // 12.4 COLUMN ASSIGNMENT
@@ -3115,11 +3383,12 @@ activeCount += useTop1     ? 1 : 0
 // Long gets col=0, Sizer gets col=1, and others are skipped.
 //──────────────────────────────────────────────────────────────────────────────
 
-int colLong  = na
-int colShort = na
-int colSizer = na
-int colBack  = na
-int colTop1  = na
+int colLong    = na
+int colShort   = na
+int colSizer   = na
+int colBack    = na
+int colTop1    = na
+int colTopVWAP = na
 
 int cursor = 0
 if useLongCSM
@@ -3136,6 +3405,9 @@ if useBacktest
     cursor += 1
 if useTop1
     colTop1 := cursor
+    cursor += 1
+if useTopVWAP
+    colTopVWAP := cursor
     cursor += 1
 
 // Each module uses 2 columns → multiply by 2
@@ -3209,6 +3481,15 @@ string top1B = str.tostring(top1_raw.outB)
 string top1C = str.tostring(top1_raw.outC)
 string top1D = str.tostring(top1_raw.outD)
 
+// VWAP TOP MODULE (Confluence Interpreter)
+string vwap_title = lib_vwap_name == "" ? "VWAP" : lib_vwap_name
+int _vwap_totalScore = _vwap_longScore + _vwap_shortScore
+
+// Calculate cell colors based on condition matches
+color vwap_D_bg = f_vwapCell_color(lib_vwap_D_zone, lib_vwap_D_long, lib_vwap_D_short, lib_vwap_D_score)
+color vwap_W_bg = f_vwapCell_color(lib_vwap_W_zone, lib_vwap_W_long, lib_vwap_W_short, lib_vwap_W_score)
+color vwap_M_bg = f_vwapCell_color(lib_vwap_M_zone, lib_vwap_M_long, lib_vwap_M_short, lib_vwap_M_score)
+
 //──────────────────────────────────────────────────────────────────────────────
 // 12.6 RENDERING
 //──────────────────────────────────────────────────────────────────────────────
@@ -3226,6 +3507,24 @@ renderModule(int block, string title, string r1name, string r1val, string r2name
     table.cell(kbTopTable, c,   4, r4name, text_color=_kb_labTxt,  bgcolor=_kb_labBg)
     table.cell(kbTopTable, c+1, 4, r4val,  text_color=_kb_valTxt,  bgcolor=_kb_valBg)
 
+// Custom render function for VWAP with per-cell color coding (confluence interpreter = purple header)
+renderModuleVWAP(int block, string title,
+                 string r1val, color r1bg,
+                 string r2val, color r2bg,
+                 string r3val, color r3bg,
+                 string r4val) =>
+    int c = f_colStart(block)
+    table.cell(kbTopTable, c,   0, title,    text_color=_kb_headTxt, bgcolor=_kb_confHeadBg)
+    table.cell(kbTopTable, c+1, 0, "",       text_color=_kb_headTxt, bgcolor=_kb_confHeadBg)
+    table.cell(kbTopTable, c,   1, "Daily",  text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 1, r1val,    text_color=_kb_valTxt,  bgcolor=r1bg)
+    table.cell(kbTopTable, c,   2, "Weekly", text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 2, r2val,    text_color=_kb_valTxt,  bgcolor=r2bg)
+    table.cell(kbTopTable, c,   3, "Monthly",text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 3, r3val,    text_color=_kb_valTxt,  bgcolor=r3bg)
+    table.cell(kbTopTable, c,   4, "Score",  text_color=_kb_labTxt,  bgcolor=_kb_labBg)
+    table.cell(kbTopTable, c+1, 4, r4val,    text_color=_kb_valTxt,  bgcolor=_kb_valBg)
+
 if enableTopTable and barstate.islast
     if useLongCSM
         renderModule(colLong, long_title, "Current", long_cur, "C Min", long_cmin, "B Min", long_bmin, "A Min", long_amin)
@@ -3237,6 +3536,12 @@ if enableTopTable and barstate.islast
         renderModule(colBack, back_title, "WR", bt_wr, "PF", bt_pf, "Drawdown", bt_dd, "Trades", bt_tr)
     if useTop1
         renderModule(colTop1, top1_title, "Output A", top1A, "Output B", top1B, "Output C", top1C, "Output D", top1D)
+    if useTopVWAP
+        renderModuleVWAP(colTopVWAP, vwap_title,
+                         lib_vwap_D_zone, vwap_D_bg,
+                         lib_vwap_W_zone, vwap_W_bg,
+                         lib_vwap_M_zone, vwap_M_bg,
+                         str.tostring(_vwap_totalScore))
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 13. SIDE TABLE RENDERER (Side Module 1 – Timeframe-Based)

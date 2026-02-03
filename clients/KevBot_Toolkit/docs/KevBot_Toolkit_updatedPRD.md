@@ -1,7 +1,7 @@
 # KevBot Toolkit - Product Requirements Document (PRD)
 
-**Version:** 1.7
-**Date:** January 31, 2026
+**Version:** 1.8
+**Date:** February 2, 2026
 **Target Platform:** TradingView (PineScript v6)
 **Development Tool:** Claude Code
 
@@ -12,19 +12,21 @@
 The KevBot Toolkit is a modular TradingView indicator designed to automate trade journaling and enable multivariate analysis of trading strategies. It replaces manual data entry (80+ questions per trade) with automatic context capture across multiple timeframes and indicators, displaying results in two dynamic tables.
 
 **Current Development State:**
-- **v2.0 Library-Centric Architecture IN PROGRESS**
-- v1.1 archived to `legacy/` folder
-- New architecture: each interpreter has dedicated input section with library-specific parameter names
-- Only enabled interpreters consume `request.security()` calls (resource efficient)
-- Slot-based side table rendering (1-10 user-assignable slots)
-- EMA Stack v2 implementation complete, ready for manual testing
-- Remaining interpreters to be converted: VWAP, UT Bot, RVOL, Swing 123, MACD variants
+- **v3.0 AND/OR Confluence System COMPLETE**
+- v2.0 architecture as foundation (library-centric, conditional security calls)
+- New v3.0 features:
+  - AND/OR confluence groups replace threshold-based scoring
+  - Direction-specific toolkit (Long OR Short, not both)
+  - Centralized Entry/Exit trigger selection
+  - Module-based Top Table with Confluence Summary, Position Sizing, Backtest KPI, VWAP
+  - Color-coded Side Table (Green=assigned+true, Yellow=assigned+false, Gray=unassigned)
 
-**v2.0 Key Benefits:**
-- Clear parameter names per library (e.g., "Short EMA" instead of "Parameter A")
-- User controls resource usage by enabling/disabling interpreters
-- Designed for future custom toolkit generator web app
-- Scalable to 10+ side table interpreters
+**v3.0 Key Benefits:**
+- Intuitive confluence logic: "I need EMA bullish AND VWAP above, plus any 2 of these 5 confirmations"
+- No arbitrary point values or grade thresholds
+- Centralized trigger routing from single dropdown
+- Direct mapping to Trade Analyzer logic for future import/export
+- ~306 inputs (well under TradingView's ~500 limit)
 
 **Goal of This PRD:** Enable Claude Code to accelerate development with full codebase awareness, documenting current state and architecture decisions accurately.
 
@@ -103,7 +105,7 @@ A modular TradingView indicator that:
                             ▼
         ┌──────────────────────────────────────┐
         │      Confluence Engine               │
-        │  (TH Scoring + Grade Calculation)    │
+        │  (v3: AND/OR Groups, v2: TH Scoring) │
         └──────────────────────────────────────┘
                             ▼
         ┌──────────────────────────────────────┐
@@ -123,7 +125,8 @@ A modular TradingView indicator that:
 KevBot_Toolkit/
 ├── src/
 │   ├── main/
-│   │   └── KevBot Toolkit v2.0.txt      # Current working file (v2 architecture)
+│   │   ├── KevBot Toolkit v3.0.txt      # Current working file (v3 AND/OR confluence)
+│   │   └── KevBot Toolkit v2.0.txt      # Previous version (threshold-based scoring)
 │   │
 │   ├── interpreters/
 │   │   ├── side/                         # Side table TF interpreters
@@ -163,8 +166,10 @@ KevBot_Toolkit/
 ```
 
 **Key Files:**
-- `src/main/KevBot Toolkit v2.0.txt` — **Current** main toolkit with v2 library-centric architecture
-- `docs/Side_Module_Architecture_v2.md` — v2 architecture specification and transition plan
+- `src/main/KevBot Toolkit v3.0.txt` — **Current** main toolkit with v3 AND/OR confluence system
+- `src/main/KevBot Toolkit v2.0.txt` — Previous version with threshold-based scoring
+- `docs/KevBot_Toolkit_v3_Vision.md` — v3 architecture specification and design rationale
+- `docs/Side_Module_Architecture_v2.md` — v2 architecture specification (foundation for v3)
 - `src/interpreters/side/` — All side table interpreter libraries (no changes needed to libraries)
 - `legacy/` — Previous versions for reference
 
@@ -1011,8 +1016,8 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 - [x] **✅ Default input values** - Sensible defaults so signals display on load
 - [x] **✅ UT Bot library** - ATR trailing stop with per-TF evaluation via hybrid pattern
 
-### 9.2 Phase 2: v2.0 Architecture Transition - IN PROGRESS
-**Status:** 🔄 In Progress - EMA Stack v2 ready for testing
+### 9.2 Phase 2: v2.0 Architecture Transition - COMPLETE
+**Status:** ✅ Complete
 
 **Architecture Decision Made:** Library-Centric Architecture (v2.0)
 - Each interpreter has dedicated input section with clear parameter names
@@ -1023,24 +1028,29 @@ _kb_encodeEMALabel(string lbl) => lbl == "SML" ? 1 : lbl == "SLM" ? 2 : lbl == "
 **Completed:**
 - [x] Phase 0: File restructuring (folders, v1.1 to legacy)
 - [x] Phase 1: Core infrastructure (KB_TF_Out_V2, helpers, slot renderer)
-- [x] EMA Stack v2 inputs (library-specific parameter names)
-- [x] EMA Stack v2 loader (conditional security calls)
-- [x] EMA Stack v2 side table renderer
+- [x] All 7 side table interpreters (EMA Stack, RVOL, UT Bot, Swing 123, MACD Line, MACD Histogram, Simple MACD)
+- [x] VWAP Top Table interpreter
 
-**Current:**
-- [ ] **Manual Test: EMA Stack v2** ← ACTIVE
+### 9.2.1 Phase 2.5: v3.0 AND/OR Confluence System - COMPLETE
+**Status:** ✅ Complete (February 2, 2026)
 
-**Remaining Interpreters:**
-- [ ] VWAP
-- [ ] UT Bot
-- [ ] RVOL
-- [ ] Swing 123
-- [ ] MACD Line
-- [ ] MACD Histogram
-- [ ] MACD Divergence
-- [ ] Simple MACD Line
+**Major Changes from v2.0:**
+- Replaced threshold-based scoring with AND/OR confluence groups
+- Direction-specific toolkit (user selects Long OR Short at top)
+- Centralized Entry/Exit trigger selection (single dropdown each)
+- Removed grades (A/B/C), grade thresholds, and grade-based risk multipliers
+- Updated Top Table with module-based layout (Position Sizing, Backtest KPI, Confluence Summary, VWAP)
+- Updated Side Table with color coding (Green=assigned+true, Yellow=assigned+false, Gray=unassigned)
 
-**Other Remaining:**
+**Completed:**
+- [x] Create `src/main/KevBot Toolkit v3.0.txt`
+- [x] Implement AND/OR confluence engine (`_evalConfluenceGroups()`)
+- [x] Implement centralized trigger routing (`_evalTrigger()`)
+- [x] Update input structure for all interpreters (per-condition group assignment)
+- [x] Update Top Table renderer (module-based layout)
+- [x] Update Side Table renderer (color coding for all 7 libraries)
+
+**Remaining:**
 - [ ] Complete backtest KPI calculations
 - [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
 
@@ -1627,6 +1637,7 @@ label.new(bar_index, high,
 | 1.5 | 2026-01-30 | **UT Bot Library Added:** New KevBot_TF_UTBot library implementing ATR-based trailing stop with ratcheting behavior. Key technical achievement: uses self-referential series (not var) in global helper function `_kb_calcUTBot()` so `request.security()` properly evaluates per-TF (unlike MACD Divergence which is chart-TF only). Params: A=Key Value, B=ATR Period, C=Use Heikin Ashi. Conditions: Bull/Bear (price vs stop). Triggers: Buy/Sell (crossovers). Integrated into both Side Module 1 and 2 slots. Updated Section 6.3 with library documentation. | Claude Code (Opus 4.5) |
 | 1.6 | 2026-01-31 | **Three New Libraries Added:** (1) VWAP - Session-anchored VWAP with SD bands, 7 zone conditions, uses `_kb_calcVWAP()` helper. (2) RVOL - Relative volume analysis, 5 zone conditions (RV!/RV++/RV+/RV=/RV-), simple calculation. (3) Swing 123 - 1-2-3 reversal pattern recognition, pure price action, 6 pattern conditions. **SR Channel Deferred:** Moved to planned Top Table module system due to `var` state requirements incompatible with `request.security()` per-TF evaluation. Added architecture decision point: Top Table modules vs expanding Side Modules (2→10). Updated Section 6.3 with all library documentation. | Claude Code (Opus 4.5) |
 | 1.7 | 2026-01-31 | **v2.0 Architecture Transition Started:** Adopted Library-Centric Architecture per `Side_Module_Architecture_v2.md`. (1) File restructuring complete: v1.1 moved to `legacy/`, interpreters moved to `src/interpreters/side/` and `top/`, new `src/main/KevBot Toolkit v2.0.txt` created. (2) Core infrastructure complete: slot-based side table renderer, shared helpers. (3) EMA Stack v2 implementation complete: library-specific inputs (Short/Medium/Long EMA, per-TF scores), conditional security calls (only when enabled), side table slot assignment. Ready for manual testing. Updated Section 3.2 File Structure, Section 9 Development Priorities. | Claude Code (Opus 4.5) |
+| 1.8 | 2026-02-02 | **v3.0 AND/OR Confluence System Complete:** Major architectural change replacing threshold-based scoring with AND/OR confluence groups. (1) AND group: all assigned conditions must be true. (2) OR groups (1-3): user specifies minimum conditions required. (3) Direction-specific toolkit: user selects Long OR Short once at top. (4) Centralized triggers: single Entry Trigger and Exit Trigger dropdown with 26 options from all libraries. (5) Module-based Top Table: Position Sizing, Backtest KPI, Confluence Summary, VWAP D/W/M. (6) Color-coded Side Table: Green=assigned+true, Yellow=assigned+false, Gray=unassigned for all 7 libraries. (7) ~306 inputs total. See `docs/KevBot_Toolkit_v3_Vision.md` for full specification. | Claude Code (Opus 4.5) |
 
 ---
 

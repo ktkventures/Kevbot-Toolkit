@@ -1,6 +1,59 @@
 # KevBot Toolkit - TODO / Session Notes
 
-## Current Session: v2.0 Architecture Transition
+## Current Session: v3.0 QA Testing & VWAP Refactor (February 3, 2026)
+
+### Session Goals
+- [x] Port Position Engine from v2.0 to v3.0 (adapted for AND/OR system)
+- [x] Port Backtest Engine from v2.0 to v3.0 (KPI tracking)
+- [x] Add PNL display on exit labels (user-toggleable)
+- [x] Refactor VWAP from descriptive names to sigma-based zones
+- [x] Add color coding to VWAP top table module
+- [x] Fix script body size limit error (OR2/OR3 trimmed)
+
+### VWAP Sigma-Based Zones (Refactored)
+**Old (9 overlapping conditions):** Above VWAP, At/Above VWAP, At VWAP, etc.
+**New (7 distinct sigma zones per anchor):**
+- `>+2σ` (Extreme High)
+- `>+1σ` (+1σ to +2σ)
+- `>V` (0 to +1σ)
+- `@V` (At VWAP, ±0.5σ)
+- `<V` (-1σ to 0)
+- `<-1σ` (-2σ to -1σ)
+- `<-2σ` (Extreme Low)
+
+### OR2/OR3 Implementation Status
+- **AND group:** Fully implemented for all 8 libraries
+- **OR1 group:** Fully implemented for all 8 libraries
+- **OR2/OR3 groups:** VWAP only (other libraries deferred due to PineScript body size limit)
+- **Note:** Users can use AND + OR1 for most strategies; OR2/OR3 available for VWAP zones
+
+### Position Engine (v3.0)
+- State machine: flat ↔ in_position
+- Entry/Exit based on `validEntry` and `validExit` from confluence engine
+- Entry labels with position size, exit labels with optional PNL
+
+### Backtest Engine (v3.0)
+- Tracks: Win Rate, Profit Factor, Max Drawdown, Total Trades
+- Gross Win/Loss accumulation for PF calculation
+- Equity curve tracking for drawdown
+
+---
+
+## Previous Session: v3.0 AND/OR Confluence Implementation ✅ COMPLETE
+
+### v3.0 Implementation (February 2, 2026) ✅ COMPLETE
+- [x] Create `src/main/KevBot Toolkit v3.0.txt` as new working file
+- [x] Implement AND/OR confluence engine (replaces threshold-based scoring)
+- [x] Implement direction-specific toolkit (Long OR Short, not both)
+- [x] Implement centralized trigger routing (`_evalTrigger()` function)
+- [x] Update table renderers (Top Table + Side Table)
+- [x] Add color coding to all 7 side table libraries
+
+### v3.0 Key Changes from v2.0
+- **Removed:** TH Scores, Grade thresholds (C/B/A), Required checkbox, Per-library triggers
+- **Added:** AND/OR group assignments (None/AND/OR1/OR2/OR3), Position Direction selector, Centralized Entry/Exit triggers
+
+### Previous: v2.0 Architecture Transition ✅ COMPLETE
 
 ### Phase 2: Convert Side Table Interpreters to v2 Pattern ✅ COMPLETE
 - [x] EMA Stack (template) - inputs, loader, renderer implemented
@@ -11,15 +64,21 @@
 - [x] MACD Histogram - inputs, loader, renderer implemented
 - [x] Simple MACD Line - inputs, loader, renderer implemented
 
-### Deferred to Top Table Implementation
-- [ ] VWAP - better suited for Top Table interpreter
-- [ ] MACD Divergence - better suited for Top Table interpreter
+### Deferred to Future Implementation
+- [x] VWAP - implemented as Top Table confluence interpreter (February 1, 2026)
+- [ ] MACD Divergence - needs design for valuable outputs
 
-### Testing Notes (January 31, 2026)
-- All 7 side table interpreters compile and load correctly
-- Slot-based side table rendering works (Slot 1 = Row 1, etc.)
-- Enable/disable toggles correctly prevent security calls when disabled
-- **Security call limit**: When enabling 7+ libraries simultaneously, TradingView may crash due to ~40-50 request.security() call limit. Users must be selective about which libraries to enable at once.
+### Testing Notes (February 3, 2026)
+- v3.0 compiles and runs correctly
+- Top Table renders with module-based layout (Position Sizing, Backtest KPI, Confluence, VWAP)
+- Side Table renders with TF formatting and color coding
+- Color coding works on all 7 side table libraries (Green=assigned+true, Yellow=assigned+false, Gray=unassigned)
+- VWAP top table module now has per-cell color coding for sigma zones
+- Position Engine tracks entry/exit state with labels on chart
+- Backtest Engine tracks KPIs (Win Rate, Profit Factor, Max Drawdown)
+- Exit labels can optionally show PNL (user-toggleable)
+- **Security call limit**: Still applies when enabling 7+ libraries simultaneously
+- **Script body limit**: OR2/OR3 limited to VWAP only; full implementation would exceed PineScript limits
 
 ---
 
@@ -74,19 +133,35 @@
 
 ## Next Phases
 
-### Phase 2B: Top Table Interpreters (Future)
-- [ ] VWAP interpreter for Top Table
-- [ ] MACD Divergence interpreter for Top Table
+### Phase 2B: Top Table Interpreters ✅ COMPLETE
+- [x] VWAP interpreter for Top Table ✅ COMPLETE (February 1, 2026)
+  - Daily, Weekly, Monthly anchored VWAPs
+  - **Refactored (Feb 3):** Sigma-based zones (7 per anchor: >+2σ, >+1σ, >V, @V, <V, <-1σ, <-2σ)
+  - Per-cell color coding (Green=assigned+true, Yellow=assigned+false, Gray=unassigned)
+- [ ] MACD Divergence interpreter for Top Table (needs design)
 
-### Phase 3: Trigger/Confluence System
-- [ ] Update entry/exit config to work with library-specific inputs
-- [ ] Consolidate trigger routing from all enabled libraries
-- [ ] Test confluence scoring across libraries
+### Phase 3: Trigger/Confluence System ✅ COMPLETE (v3.0)
+- [x] Centralized trigger routing via `_evalTrigger()` function
+- [x] AND/OR confluence engine replaces threshold scoring
+- [x] All 7 side table libraries integrated with color coding
+
+### Phase 3B: QA Testing ← CURRENT
+- [ ] Verify AND group logic (all assigned must be true)
+- [ ] Verify OR1 group logic (minimum N of M must be true)
+- [ ] Verify OR2/OR3 with VWAP sigma zones
+- [ ] Test Entry/Exit trigger selection across libraries
+- [ ] Validate position direction toggle (Long vs Short)
+- [ ] Check side table color coding on all libraries
+- [ ] Check VWAP top table color coding on sigma zones
+- [ ] Verify Position Engine entry/exit state machine
+- [ ] Verify Backtest KPI calculations (WR, PF, DD)
+- [ ] Test PNL display on exit labels
+- [ ] Test with sample trading strategies
 
 ### Phase 4: Data Export
 - [ ] Design export format compatible with Trade Analyzer
-- [ ] Add plot() exports for each library
-- [ ] Test CSV export → Trade Analyzer import
+- [ ] Update plot() exports for AND/OR group data
+- [ ] Add import string parsing for Trade Analyzer integration
 
 ### Phase 5: Custom Toolkit Generator (Future)
 - [ ] Create "mega block" file with all libraries
@@ -96,7 +171,7 @@
 ---
 
 ## Other Pending Items
-- [ ] Complete backtest KPI calculations in toolkit
+- [x] Complete backtest KPI calculations in toolkit ✅ (February 3, 2026)
 - [ ] Publish new libraries to TradingView (VWAP, RVOL, Swing 123)
 - [ ] Manually verify MACD Divergence behavior on charts
 
@@ -104,18 +179,23 @@
 
 ## Future Concepts (Exploratory - Not Committed)
 
-### AND/OR Condition Groups
-**Status:** Idea to explore later
+### ~~AND/OR Condition Groups~~ ✅ IMPLEMENTED (v3.0)
+**Status:** Implemented in v3.0 (February 2, 2026)
 
-Replace threshold-based scoring with explicit AND/OR logic groups:
-- AND groups: All conditions must be true
-- OR groups: Any one condition is sufficient
+Replaced threshold-based scoring with explicit AND/OR logic groups:
+- **AND group:** ALL assigned conditions must be true
+- **OR groups (1-3):** User specifies minimum # of conditions that must be true
 - More intuitive for expressing strategy logic
 
-See `docs/Side_Module_Architecture_v2.md` for detailed concept notes.
+See `docs/KevBot_Toolkit_v3_Vision.md` for full specification.
 
-**Decision:** Revisit after v2.0 library conversions are complete.
+### Trade Analyzer Integration
+**Status:** Planned for future
+
+- Import string parsing for quick configuration
+- Config export from Trade Analyzer to TradingView
+- What-if analysis for confluence combinations
 
 ---
 
-*Last Updated: January 31, 2026 (Phase 2 Complete)*
+*Last Updated: February 3, 2026 (v3.0 QA Testing - VWAP Sigma Zones & Position/Backtest Engine)*
