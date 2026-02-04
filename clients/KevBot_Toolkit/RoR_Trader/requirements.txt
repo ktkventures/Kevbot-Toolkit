@@ -1,0 +1,24 @@
+# RoR Trader Dependencies
+
+# Data Provider
+alpaca-py>=0.21.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Technical Analysis (for indicator calculations)
+ta>=0.11.0
+
+# Web Framework (for MVP)
+streamlit>=1.32.0
+
+# Visualization
+plotly>=5.18.0
+streamlit-lightweight-charts>=0.7.0
+
+# Database (local storage for MVP)
+# sqlite3 is built-in to Python
+
+# Environment Variables
+python-dotenv>=1.0.0
