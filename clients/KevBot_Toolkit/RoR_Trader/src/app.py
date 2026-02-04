@@ -19,11 +19,25 @@ from streamlit_lightweight_charts import renderLightweightCharts
 import json
 import os
 
-from mock_data import generate_mock_bars, resample_bars
+from data_loader import load_market_data, get_data_source, is_alpaca_configured
+from indicators import (
+    INDICATORS,
+    run_all_indicators,
+    get_indicator_overlay_config,
+    get_available_overlay_indicators,
+    INDICATOR_COLORS
+)
 from interpreters import (
     INTERPRETERS,
     run_all_interpreters,
-    get_confluence_records
+    detect_all_triggers,
+    get_confluence_records,
+    get_available_triggers
+)
+from triggers import (
+    generate_trades,
+    get_entry_triggers_for_direction,
+    get_exit_triggers
 )
 
 
@@ -35,22 +49,6 @@ AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"
 TIMEFRAMES = ["1Min", "5Min", "15Min", "1Hour"]
 DIRECTIONS = ["LONG", "SHORT"]
 
-# Mock triggers (in real app, these would come from interpreter library)
-ENTRY_TRIGGERS = [
-    "UT Bot Alert",
-    "MACD Cross",
-    "EMA Cross",
-    "Swing Break",
-]
-
-EXIT_TRIGGERS = [
-    "Opposite Signal",
-    "Fixed R Target (2R)",
-    "Fixed R Target (3R)",
-    "Trailing Stop",
-    "Time Exit (50 bars)",
-]
-
 # Strategies storage path
 STRATEGIES_FILE = "strategies.json"
 
@@ -60,89 +58,30 @@ STRATEGIES_FILE = "strategies.json"
 # =============================================================================
 
 @st.cache_data(ttl=3600)
-def load_market_data(symbol: str, days: int = 30, seed: int = 42):
-    """Load market data for a symbol (cached)."""
-    end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=days)
-
-    bars = generate_mock_bars([symbol], start, end, "1Min", seed=seed)
-    return bars.loc[symbol] if symbol in bars.index.get_level_values(0) else pd.DataFrame()
-
-
-def generate_mock_trades(
-    df: pd.DataFrame,
-    direction: str,
-    entry_trigger: str,
-    exit_trigger: str,
-    seed: int = 42
-) -> pd.DataFrame:
+def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42):
     """
-    Generate mock trades based on the data.
+    Load market data and run all indicators, interpreters, and trigger detection.
 
-    In a real implementation, this would use the actual trigger logic.
-    For MVP, we generate plausible trades at random intervals.
+    Uses Alpaca API if configured, otherwise falls back to mock data.
+
+    Returns DataFrame ready for trade generation and analysis.
     """
-    np.random.seed(seed + hash(entry_trigger) % 100)
+    # Load raw bars (Alpaca if configured, mock otherwise)
+    df = load_market_data(symbol, days=days, seed=seed)
 
-    trades = []
-    n_bars = len(df)
+    if len(df) == 0:
+        return df
 
-    # Generate entry points (roughly 2-5% of bars)
-    entry_prob = 0.03
-    i = 0
+    # Run indicators
+    df = run_all_indicators(df)
 
-    while i < n_bars - 10:
-        if np.random.random() < entry_prob:
-            entry_idx = i
-            entry_row = df.iloc[entry_idx]
+    # Run interpreters
+    df = run_all_interpreters(df)
 
-            # Exit after 5-100 bars
-            exit_offset = np.random.randint(5, min(100, n_bars - entry_idx - 1))
-            exit_idx = entry_idx + exit_offset
-            exit_row = df.iloc[exit_idx]
+    # Detect triggers
+    df = detect_all_triggers(df)
 
-            # Calculate P&L
-            entry_price = entry_row['close']
-            exit_price = exit_row['close']
-
-            if direction == "LONG":
-                pnl = exit_price - entry_price
-            else:
-                pnl = entry_price - exit_price
-
-            # Risk is based on entry bar's range
-            risk = entry_row['high'] - entry_row['low']
-            if risk < 0.01:
-                risk = entry_price * 0.005  # Minimum 0.5% risk
-
-            r_multiple = pnl / risk
-
-            # Get confluence records at entry
-            confluence = get_confluence_records(
-                entry_row,
-                "1M",
-                list(INTERPRETERS.keys())
-            )
-
-            trades.append({
-                'entry_time': entry_row.name,
-                'exit_time': exit_row.name,
-                'entry_price': entry_price,
-                'exit_price': exit_price,
-                'pnl': pnl,
-                'risk': risk,
-                'r_multiple': r_multiple,
-                'win': pnl > 0,
-                'entry_trigger': entry_trigger,
-                'exit_trigger': exit_trigger,
-                'confluence_records': confluence,
-            })
-
-            i = exit_idx + 1
-        else:
-            i += 1
-
-    return pd.DataFrame(trades)
+    return df
 
 
 # =============================================================================
@@ -295,14 +234,20 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
 # CHART RENDERING
 # =============================================================================
 
-def render_price_chart(df: pd.DataFrame, trades: pd.DataFrame, config: dict):
+def render_price_chart(
+    df: pd.DataFrame,
+    trades: pd.DataFrame,
+    config: dict,
+    show_indicators: list = None
+):
     """
-    Render TradingView-style candlestick chart with trade markers.
+    Render TradingView-style candlestick chart with trade markers and indicator overlays.
 
     Args:
-        df: DataFrame with OHLCV data (timestamp index)
+        df: DataFrame with OHLCV data and indicator columns (timestamp index)
         trades: DataFrame with trade entry/exit data
         config: Strategy config with 'direction' key
+        show_indicators: List of indicator column names to overlay (e.g., ['ema_8', 'ema_21'])
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -365,10 +310,10 @@ def render_price_chart(df: pd.DataFrame, trades: pd.DataFrame, config: dict):
         "rightPriceScale": {
             "borderColor": "#2B2B2B"
         },
-        "height": 500
+        "height": 450
     }
 
-    # Candlestick series
+    # Candlestick series with markers
     series = [{
         "type": "Candlestick",
         "data": candle_data,
@@ -382,6 +327,35 @@ def render_price_chart(df: pd.DataFrame, trades: pd.DataFrame, config: dict):
         },
         "markers": markers
     }]
+
+    # Add indicator overlays
+    if show_indicators:
+        for ind_id in show_indicators:
+            if ind_id in candles.columns:
+                # Prepare indicator data
+                ind_data = []
+                for _, row in candles.iterrows():
+                    if pd.notna(row.get(ind_id)):
+                        ind_data.append({
+                            "time": int(row['time']),
+                            "value": float(row[ind_id])
+                        })
+
+                if ind_data:
+                    # Get color for this indicator
+                    color = INDICATOR_COLORS.get(ind_id, "#FFFFFF")
+
+                    series.append({
+                        "type": "Line",
+                        "data": ind_data,
+                        "options": {
+                            "color": color,
+                            "lineWidth": 2,
+                            "priceLineVisible": False,
+                            "crosshairMarkerVisible": True,
+                            "title": ind_id.upper().replace("_", " ")
+                        }
+                    })
 
     # Render the chart
     renderLightweightCharts([{
@@ -472,6 +446,13 @@ def main():
         st.title("📈 RoR Trader")
         st.caption("Return on Risk Trader")
 
+        # Data source indicator
+        data_source = get_data_source()
+        if is_alpaca_configured():
+            st.success(f"📡 {data_source}")
+        else:
+            st.warning(f"🎲 {data_source}")
+
         st.divider()
 
         page = st.radio(
@@ -485,7 +466,10 @@ def main():
         # Data settings (always visible)
         st.subheader("Data Settings")
         data_days = st.slider("Historical Days", 7, 90, 30)
-        data_seed = st.number_input("Data Seed", value=42, help="Change for different random data")
+        if not is_alpaca_configured():
+            data_seed = st.number_input("Data Seed", value=42, help="Change for different random data")
+        else:
+            data_seed = 42  # Not used with real data
 
     # Main content
     if page == "Strategy Builder":
@@ -530,13 +514,32 @@ def render_strategy_builder(data_days: int, data_seed: int):
         with col1:
             symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=0)
             direction = st.radio("Direction", DIRECTIONS, horizontal=True)
-            entry_trigger = st.selectbox("Entry Trigger", ENTRY_TRIGGERS)
+
+            # Get entry triggers for selected direction
+            entry_triggers = get_entry_triggers_for_direction(direction)
+            entry_trigger_options = list(entry_triggers.keys())
+            entry_trigger_labels = list(entry_triggers.values())
+            entry_trigger_idx = st.selectbox(
+                "Entry Trigger",
+                range(len(entry_trigger_options)),
+                format_func=lambda i: entry_trigger_labels[i]
+            )
+            entry_trigger = entry_trigger_options[entry_trigger_idx]
 
         with col2:
             timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=0)
             st.write("")  # Spacer
-            st.write("")
-            exit_trigger = st.selectbox("Exit Trigger", EXIT_TRIGGERS)
+
+            # Get exit triggers
+            exit_triggers = get_exit_triggers()
+            exit_trigger_options = list(exit_triggers.keys())
+            exit_trigger_labels = list(exit_triggers.values())
+            exit_trigger_idx = st.selectbox(
+                "Exit Trigger",
+                range(len(exit_trigger_options)),
+                format_func=lambda i: exit_trigger_labels[i]
+            )
+            exit_trigger = exit_trigger_options[exit_trigger_idx]
 
         st.divider()
 
@@ -548,6 +551,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 'timeframe': timeframe,
                 'entry_trigger': entry_trigger,
                 'exit_trigger': exit_trigger,
+                'entry_trigger_name': entry_triggers[entry_trigger],
+                'exit_trigger_name': exit_triggers[exit_trigger],
             }
             st.session_state.step = 2
             st.session_state.selected_confluences = set()
@@ -560,29 +565,28 @@ def render_strategy_builder(data_days: int, data_seed: int):
         config = st.session_state.strategy_config
 
         # Header with strategy summary
+        entry_name = config.get('entry_trigger_name', config['entry_trigger'])
+        exit_name = config.get('exit_trigger_name', config['exit_trigger'])
         st.markdown(
             f"### {config['symbol']} | {config['direction']} | "
-            f"{config['entry_trigger']} → {config['exit_trigger']}"
+            f"{entry_name} → {exit_name}"
         )
 
-        # Load data and run interpreters
-        with st.spinner("Loading market data..."):
-            df = load_market_data(config['symbol'], data_days, data_seed)
+        # Load data with indicators, interpreters, and triggers
+        with st.spinner("Loading market data and running analysis..."):
+            df = prepare_data_with_indicators(config['symbol'], data_days, data_seed)
 
             if len(df) == 0:
                 st.error("No data available")
                 return
 
-            # Run interpreters
-            df = run_all_interpreters(df)
-
-            # Generate mock trades
-            trades = generate_mock_trades(
+            # Generate trades using real trigger logic
+            trades = generate_trades(
                 df,
-                config['direction'],
-                config['entry_trigger'],
-                config['exit_trigger'],
-                seed=data_seed
+                direction=config['direction'],
+                entry_trigger=config['entry_trigger'],
+                exit_trigger=config['exit_trigger'],
+                confluence_required=None  # Will filter after generation
             )
 
         # Apply confluence filter
@@ -665,13 +669,22 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     st.info("No trades match current filters")
 
             with chart_tab2:
+                # Indicator overlay selector
+                available_overlays = get_available_overlay_indicators()
+                show_indicators = st.multiselect(
+                    "Show Indicators",
+                    options=available_overlays,
+                    default=["ema_21"],
+                    format_func=lambda x: INDICATORS[x].name if x in INDICATORS else x
+                )
+
                 if len(filtered_trades) > 0:
                     st.caption(f"{len(filtered_trades)} trades on {config['symbol']} ({config['direction']})")
                 else:
                     st.caption(f"{config['symbol']} price data (no trades match filters)")
 
-                # Render the TradingView-style chart
-                render_price_chart(df, filtered_trades, config)
+                # Render the TradingView-style chart with indicator overlays
+                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators)
 
         # -----------------------------------------------------------------
         # RIGHT COLUMN: Confluence Drill-Down (always visible)

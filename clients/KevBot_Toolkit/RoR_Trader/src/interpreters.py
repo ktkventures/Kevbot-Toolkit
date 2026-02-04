@@ -2,18 +2,21 @@
 Interpreters for RoR Trader
 ============================
 
-Interpreters analyze indicators and price action to output clear,
+Interpreters analyze indicator values and price action to output clear,
 mutually exclusive condition states (interpretations).
 
 Each interpreter:
-1. Takes raw bar data as input
-2. Calculates any necessary indicators
-3. Outputs a categorical interpretation for each bar
+1. Requires specific indicator columns to be present
+2. Classifies the current state into a categorical output
+3. Provides trigger detection for entry/exit signals
+
+Interpreters are SEPARATE from indicators - indicators calculate values,
+interpreters classify states.
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
 
@@ -23,42 +26,55 @@ class InterpreterConfig:
     name: str
     description: str
     category: str
-    outputs: List[str]
-    parameters: Dict
+    requires_indicators: List[str]  # Indicator IDs this interpreter needs
+    outputs: List[str]              # Possible categorical outputs
+    triggers: List[str]             # Available trigger events
 
 
 # =============================================================================
 # INTERPRETER DEFINITIONS
 # =============================================================================
 
-INTERPRETERS = {
+INTERPRETERS: Dict[str, InterpreterConfig] = {
     "EMA_STACK": InterpreterConfig(
         name="EMA Stack",
         description="Analyzes EMA alignment (8, 21, 50) relative to price",
         category="Moving Averages",
+        requires_indicators=["ema_8", "ema_21", "ema_50"],
         outputs=["SML", "SLM", "MSL", "MLS", "LSM", "LMS"],
-        parameters={"short": 8, "mid": 21, "long": 50}
+        triggers=["ema_cross_bull", "ema_cross_bear", "ema_mid_cross_bull", "ema_mid_cross_bear"]
     ),
-    "MACD_SIMPLE": InterpreterConfig(
-        name="MACD Simple",
-        description="MACD line vs Signal line with momentum direction",
+    "MACD_LINE": InterpreterConfig(
+        name="MACD Line",
+        description="MACD line vs Signal line with zero-line context",
         category="MACD",
-        outputs=["M>S↑", "M>S↓", "M<S↓", "M<S↑"],
-        parameters={"fast": 12, "slow": 26, "signal": 9}
+        requires_indicators=["macd"],
+        outputs=["M>S+", "M>S-", "M<S-", "M<S+"],
+        triggers=["macd_cross_bull", "macd_cross_bear", "macd_zero_cross_up", "macd_zero_cross_down"]
+    ),
+    "MACD_HISTOGRAM": InterpreterConfig(
+        name="MACD Histogram",
+        description="MACD histogram direction and momentum",
+        category="MACD",
+        requires_indicators=["macd"],
+        outputs=["H+up", "H+dn", "H-dn", "H-up"],
+        triggers=["macd_hist_flip_pos", "macd_hist_flip_neg"]
     ),
     "VWAP": InterpreterConfig(
         name="VWAP Position",
         description="Price position relative to VWAP",
         category="Volume",
+        requires_indicators=["vwap"],
         outputs=["ABOVE", "AT", "BELOW"],
-        parameters={"tolerance_pct": 0.1}
+        triggers=["vwap_cross_above", "vwap_cross_below"]
     ),
     "RVOL": InterpreterConfig(
         name="Relative Volume",
         description="Current volume vs historical average",
         category="Volume",
+        requires_indicators=["vol_sma"],
         outputs=["EXTREME", "HIGH", "NORMAL", "LOW", "MINIMAL"],
-        parameters={"lookback": 20}
+        triggers=["rvol_spike", "rvol_extreme", "rvol_fade"]
     ),
 }
 
@@ -67,31 +83,28 @@ INTERPRETERS = {
 # EMA STACK INTERPRETER
 # =============================================================================
 
-def calculate_ema_stack(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFrame:
+def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
     """
-    Calculate EMA Stack interpretation.
+    Interpret EMA Stack alignment.
+
+    Requires: ema_8, ema_21, ema_50 columns
 
     Outputs:
     - SML: Price > Short > Mid > Long (Full Bull Stack)
-    - SLM: Short > Price > Mid > Long
-    - MSL: Short > Mid > Price > Long
-    - MLS: Short > Mid > Long > Price
-    - LSM: Long > Price (various bear configurations)
+    - SLM: Short > Price > Mid > Long (Price below short)
+    - MSL: Short > Mid > Price > Long (Price in middle)
+    - MLS: Short > Mid > Long > Price (Price below all, bull order)
+    - LSM: Long > Short > Mid or other transitional
     - LMS: Price < Short < Mid < Long (Full Bear Stack)
     """
-    params = params or INTERPRETERS["EMA_STACK"].parameters
-    short, mid, long = params["short"], params["mid"], params["long"]
-
-    result = df.copy()
-
-    # Calculate EMAs
-    result['ema_short'] = result['close'].ewm(span=short, adjust=False).mean()
-    result['ema_mid'] = result['close'].ewm(span=mid, adjust=False).mean()
-    result['ema_long'] = result['close'].ewm(span=long, adjust=False).mean()
-
     def interpret(row):
         p = row['close']
-        s, m, l = row['ema_short'], row['ema_mid'], row['ema_long']
+        s = row.get('ema_8', np.nan)
+        m = row.get('ema_21', np.nan)
+        l = row.get('ema_50', np.nan)
+
+        if pd.isna(s) or pd.isna(m) or pd.isna(l):
+            return None
 
         # Full bull stack: Price > Short > Mid > Long
         if p > s > m > l:
@@ -112,91 +125,201 @@ def calculate_ema_stack(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.D
         else:
             return "LSM"
 
-    result['EMA_STACK'] = result.apply(interpret, axis=1)
-
-    return result[['EMA_STACK', 'ema_short', 'ema_mid', 'ema_long']]
+    return df.apply(interpret, axis=1)
 
 
-# =============================================================================
-# MACD SIMPLE INTERPRETER
-# =============================================================================
-
-def calculate_macd_simple(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFrame:
+def detect_ema_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
     """
-    Calculate MACD Simple interpretation.
+    Detect EMA-based triggers.
+
+    Returns dict of boolean Series for each trigger.
+    """
+    triggers = {}
+
+    # Short crosses above Mid (bullish)
+    triggers['ema_cross_bull'] = (
+        (df['ema_8'] > df['ema_21']) &
+        (df['ema_8'].shift(1) <= df['ema_21'].shift(1))
+    )
+
+    # Short crosses below Mid (bearish)
+    triggers['ema_cross_bear'] = (
+        (df['ema_8'] < df['ema_21']) &
+        (df['ema_8'].shift(1) >= df['ema_21'].shift(1))
+    )
+
+    # Mid crosses above Long (bullish confirmation)
+    triggers['ema_mid_cross_bull'] = (
+        (df['ema_21'] > df['ema_50']) &
+        (df['ema_21'].shift(1) <= df['ema_50'].shift(1))
+    )
+
+    # Mid crosses below Long (bearish confirmation)
+    triggers['ema_mid_cross_bear'] = (
+        (df['ema_21'] < df['ema_50']) &
+        (df['ema_21'].shift(1) >= df['ema_50'].shift(1))
+    )
+
+    return triggers
+
+
+# =============================================================================
+# MACD LINE INTERPRETER
+# =============================================================================
+
+def interpret_macd_line(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret MACD Line position.
+
+    Requires: macd_line, macd_signal columns
 
     Outputs:
-    - M>S↑: MACD above signal and rising (strengthening bullish)
-    - M>S↓: MACD above signal but falling (weakening bullish)
-    - M<S↓: MACD below signal and falling (strengthening bearish)
-    - M<S↑: MACD below signal but rising (weakening bearish)
+    - M>S+: MACD above signal AND above zero (strong bullish)
+    - M>S-: MACD above signal BUT below zero (recovering)
+    - M<S-: MACD below signal AND below zero (strong bearish)
+    - M<S+: MACD below signal BUT above zero (weakening)
     """
-    params = params or INTERPRETERS["MACD_SIMPLE"].parameters
-    fast, slow, signal = params["fast"], params["slow"], params["signal"]
-
-    result = df.copy()
-
-    # Calculate MACD
-    ema_fast = result['close'].ewm(span=fast, adjust=False).mean()
-    ema_slow = result['close'].ewm(span=slow, adjust=False).mean()
-    result['macd_line'] = ema_fast - ema_slow
-    result['macd_signal'] = result['macd_line'].ewm(span=signal, adjust=False).mean()
-    result['macd_hist'] = result['macd_line'] - result['macd_signal']
-
-    # Calculate momentum (is histogram growing or shrinking?)
-    result['macd_hist_prev'] = result['macd_hist'].shift(1)
-
     def interpret(row):
-        if pd.isna(row['macd_hist_prev']):
+        macd = row.get('macd_line', np.nan)
+        signal = row.get('macd_signal', np.nan)
+
+        if pd.isna(macd) or pd.isna(signal):
             return None
 
-        above_signal = row['macd_line'] > row['macd_signal']
-        hist_rising = row['macd_hist'] > row['macd_hist_prev']
+        above_signal = macd > signal
+        above_zero = macd > 0
 
-        if above_signal and hist_rising:
-            return "M>S↑"
-        elif above_signal and not hist_rising:
-            return "M>S↓"
-        elif not above_signal and not hist_rising:
-            return "M<S↓"
-        else:  # below signal, rising
-            return "M<S↑"
+        if above_signal and above_zero:
+            return "M>S+"
+        elif above_signal and not above_zero:
+            return "M>S-"
+        elif not above_signal and not above_zero:
+            return "M<S-"
+        else:  # below signal, above zero
+            return "M<S+"
 
-    result['MACD_SIMPLE'] = result.apply(interpret, axis=1)
+    return df.apply(interpret, axis=1)
 
-    return result[['MACD_SIMPLE', 'macd_line', 'macd_signal', 'macd_hist']]
+
+def detect_macd_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect MACD-based triggers."""
+    triggers = {}
+
+    # Bullish cross (MACD crosses above signal)
+    triggers['macd_cross_bull'] = (
+        (df['macd_line'] > df['macd_signal']) &
+        (df['macd_line'].shift(1) <= df['macd_signal'].shift(1))
+    )
+
+    # Bearish cross (MACD crosses below signal)
+    triggers['macd_cross_bear'] = (
+        (df['macd_line'] < df['macd_signal']) &
+        (df['macd_line'].shift(1) >= df['macd_signal'].shift(1))
+    )
+
+    # Zero line cross up
+    triggers['macd_zero_cross_up'] = (
+        (df['macd_line'] > 0) &
+        (df['macd_line'].shift(1) <= 0)
+    )
+
+    # Zero line cross down
+    triggers['macd_zero_cross_down'] = (
+        (df['macd_line'] < 0) &
+        (df['macd_line'].shift(1) >= 0)
+    )
+
+    return triggers
+
+
+# =============================================================================
+# MACD HISTOGRAM INTERPRETER
+# =============================================================================
+
+def interpret_macd_histogram(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret MACD Histogram momentum.
+
+    Requires: macd_hist column
+
+    Outputs:
+    - H+up: Positive and rising (strengthening bullish)
+    - H+dn: Positive but falling (weakening bullish)
+    - H-dn: Negative and falling (strengthening bearish)
+    - H-up: Negative but rising (weakening bearish)
+    """
+    def interpret(row, prev_hist):
+        hist = row.get('macd_hist', np.nan)
+
+        if pd.isna(hist) or pd.isna(prev_hist):
+            return None
+
+        positive = hist > 0
+        rising = hist > prev_hist
+
+        if positive and rising:
+            return "H+up"
+        elif positive and not rising:
+            return "H+dn"
+        elif not positive and not rising:
+            return "H-dn"
+        else:  # negative and rising
+            return "H-up"
+
+    # Need to pass previous histogram value
+    results = []
+    prev = np.nan
+    for idx, row in df.iterrows():
+        results.append(interpret(row, prev))
+        prev = row.get('macd_hist', np.nan)
+
+    return pd.Series(results, index=df.index)
+
+
+def detect_macd_hist_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect MACD histogram triggers."""
+    triggers = {}
+
+    # Histogram flips positive
+    triggers['macd_hist_flip_pos'] = (
+        (df['macd_hist'] > 0) &
+        (df['macd_hist'].shift(1) <= 0)
+    )
+
+    # Histogram flips negative
+    triggers['macd_hist_flip_neg'] = (
+        (df['macd_hist'] < 0) &
+        (df['macd_hist'].shift(1) >= 0)
+    )
+
+    return triggers
 
 
 # =============================================================================
 # VWAP INTERPRETER
 # =============================================================================
 
-def calculate_vwap(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFrame:
+def interpret_vwap(df: pd.DataFrame, tolerance_pct: float = 0.1) -> pd.Series:
     """
-    Calculate VWAP Position interpretation.
+    Interpret VWAP Position.
 
-    Uses the VWAP provided in Alpaca data (or calculates if not present).
+    Requires: vwap column
 
     Outputs:
     - ABOVE: Price significantly above VWAP
     - AT: Price near VWAP (within tolerance)
     - BELOW: Price significantly below VWAP
     """
-    params = params or INTERPRETERS["VWAP"].parameters
-    tolerance = params["tolerance_pct"] / 100
-
-    result = df.copy()
-
-    # Use provided VWAP or calculate
-    if 'vwap' not in result.columns:
-        # Simple VWAP calculation (cumulative for the day)
-        result['vwap'] = (result['close'] * result['volume']).cumsum() / result['volume'].cumsum()
+    tolerance = tolerance_pct / 100
 
     def interpret(row):
-        if pd.isna(row['vwap']) or row['vwap'] == 0:
+        vwap = row.get('vwap', np.nan)
+        price = row['close']
+
+        if pd.isna(vwap) or vwap == 0:
             return None
 
-        pct_diff = (row['close'] - row['vwap']) / row['vwap']
+        pct_diff = (price - vwap) / vwap
 
         if pct_diff > tolerance:
             return "ABOVE"
@@ -205,57 +328,88 @@ def calculate_vwap(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFr
         else:
             return "AT"
 
-    result['VWAP'] = result.apply(interpret, axis=1)
+    return df.apply(interpret, axis=1)
 
-    return result[['VWAP', 'vwap']]
+
+def detect_vwap_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect VWAP-based triggers."""
+    triggers = {}
+
+    # Price crosses above VWAP
+    triggers['vwap_cross_above'] = (
+        (df['close'] > df['vwap']) &
+        (df['close'].shift(1) <= df['vwap'].shift(1))
+    )
+
+    # Price crosses below VWAP
+    triggers['vwap_cross_below'] = (
+        (df['close'] < df['vwap']) &
+        (df['close'].shift(1) >= df['vwap'].shift(1))
+    )
+
+    return triggers
 
 
 # =============================================================================
 # RVOL INTERPRETER
 # =============================================================================
 
-def calculate_rvol(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFrame:
+def interpret_rvol(df: pd.DataFrame) -> pd.Series:
     """
-    Calculate Relative Volume interpretation.
+    Interpret Relative Volume.
 
-    Compares current volume to rolling average.
+    Requires: rvol column (volume / vol_sma)
 
     Outputs:
-    - EXTREME: > 200% of average
+    - EXTREME: > 300% of average
     - HIGH: > 150% of average
     - NORMAL: 75-150% of average
     - LOW: 50-75% of average
     - MINIMAL: < 50% of average
     """
-    params = params or INTERPRETERS["RVOL"].parameters
-    lookback = params["lookback"]
-
-    result = df.copy()
-
-    # Calculate rolling average volume
-    result['vol_avg'] = result['volume'].rolling(window=lookback, min_periods=5).mean()
-    result['rvol_ratio'] = result['volume'] / result['vol_avg']
-
     def interpret(row):
-        if pd.isna(row['rvol_ratio']):
+        rvol = row.get('rvol', np.nan)
+
+        if pd.isna(rvol):
             return None
 
-        ratio = row['rvol_ratio']
-
-        if ratio > 2.0:
+        if rvol > 3.0:
             return "EXTREME"
-        elif ratio > 1.5:
+        elif rvol > 1.5:
             return "HIGH"
-        elif ratio > 0.75:
+        elif rvol > 0.75:
             return "NORMAL"
-        elif ratio > 0.5:
+        elif rvol > 0.5:
             return "LOW"
         else:
             return "MINIMAL"
 
-    result['RVOL'] = result.apply(interpret, axis=1)
+    return df.apply(interpret, axis=1)
 
-    return result[['RVOL', 'rvol_ratio', 'vol_avg']]
+
+def detect_rvol_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect RVOL-based triggers."""
+    triggers = {}
+
+    # Volume spike (crosses above 1.5x)
+    triggers['rvol_spike'] = (
+        (df['rvol'] > 1.5) &
+        (df['rvol'].shift(1) <= 1.5)
+    )
+
+    # Extreme volume (crosses above 3x)
+    triggers['rvol_extreme'] = (
+        (df['rvol'] > 3.0) &
+        (df['rvol'].shift(1) <= 3.0)
+    )
+
+    # Volume fade (crosses below 1.0)
+    triggers['rvol_fade'] = (
+        (df['rvol'] < 1.0) &
+        (df['rvol'].shift(1) >= 1.0)
+    )
+
+    return triggers
 
 
 # =============================================================================
@@ -269,12 +423,14 @@ def run_all_interpreters(
     """
     Run all enabled interpreters on the data.
 
+    IMPORTANT: Indicators must be calculated first using run_all_indicators().
+
     Args:
-        df: DataFrame with OHLCV data (single symbol, timestamp index)
+        df: DataFrame with OHLCV data AND indicator columns
         enabled_interpreters: List of interpreter keys to run (default: all)
 
     Returns:
-        DataFrame with original data plus interpretation columns
+        DataFrame with interpretation columns added
     """
     if enabled_interpreters is None:
         enabled_interpreters = list(INTERPRETERS.keys())
@@ -282,26 +438,64 @@ def run_all_interpreters(
     result = df.copy()
 
     interpreter_funcs = {
-        "EMA_STACK": calculate_ema_stack,
-        "MACD_SIMPLE": calculate_macd_simple,
-        "VWAP": calculate_vwap,
-        "RVOL": calculate_rvol,
+        "EMA_STACK": interpret_ema_stack,
+        "MACD_LINE": interpret_macd_line,
+        "MACD_HISTOGRAM": interpret_macd_histogram,
+        "VWAP": interpret_vwap,
+        "RVOL": interpret_rvol,
     }
 
     for interp_key in enabled_interpreters:
         if interp_key in interpreter_funcs:
-            interp_result = interpreter_funcs[interp_key](df)
-            # Merge interpretation column (the one matching the key name)
-            result[interp_key] = interp_result[interp_key]
+            result[interp_key] = interpreter_funcs[interp_key](df)
 
     return result
 
 
-def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[str]) -> set:
+def detect_all_triggers(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detect all triggers and add boolean columns.
+
+    Args:
+        df: DataFrame with indicator columns
+
+    Returns:
+        DataFrame with trigger boolean columns added
+    """
+    result = df.copy()
+
+    # Collect all triggers
+    all_triggers = {}
+
+    # EMA triggers (only if columns exist)
+    if all(col in df.columns for col in ['ema_8', 'ema_21', 'ema_50']):
+        all_triggers.update(detect_ema_triggers(df))
+
+    # MACD triggers
+    if all(col in df.columns for col in ['macd_line', 'macd_signal', 'macd_hist']):
+        all_triggers.update(detect_macd_triggers(df))
+        all_triggers.update(detect_macd_hist_triggers(df))
+
+    # VWAP triggers
+    if 'vwap' in df.columns:
+        all_triggers.update(detect_vwap_triggers(df))
+
+    # RVOL triggers
+    if 'rvol' in df.columns:
+        all_triggers.update(detect_rvol_triggers(df))
+
+    # Add trigger columns
+    for trigger_id, trigger_series in all_triggers.items():
+        result[f"trig_{trigger_id}"] = trigger_series.fillna(False)
+
+    return result
+
+
+def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[str]) -> Set[str]:
     """
     Get all confluence records for a single bar.
 
-    Returns a set of strings like {"1M-EMA_STACK-SML", "1M-MACD_SIMPLE-M>S↑"}
+    Returns a set of strings like {"1M-EMA_STACK-SML", "1M-MACD_LINE-M>S+"}
     """
     records = set()
 
@@ -313,12 +507,43 @@ def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[st
     return records
 
 
+def get_available_triggers() -> Dict[str, str]:
+    """
+    Get all available triggers with display names.
+
+    Returns dict mapping trigger_id -> display_name
+    """
+    triggers = {
+        # EMA triggers
+        "ema_cross_bull": "EMA 8 > 21 Cross (Bull)",
+        "ema_cross_bear": "EMA 8 < 21 Cross (Bear)",
+        "ema_mid_cross_bull": "EMA 21 > 50 Cross (Bull)",
+        "ema_mid_cross_bear": "EMA 21 < 50 Cross (Bear)",
+        # MACD triggers
+        "macd_cross_bull": "MACD Bullish Cross",
+        "macd_cross_bear": "MACD Bearish Cross",
+        "macd_zero_cross_up": "MACD Zero Cross Up",
+        "macd_zero_cross_down": "MACD Zero Cross Down",
+        "macd_hist_flip_pos": "MACD Histogram Flip Positive",
+        "macd_hist_flip_neg": "MACD Histogram Flip Negative",
+        # VWAP triggers
+        "vwap_cross_above": "VWAP Cross Above",
+        "vwap_cross_below": "VWAP Cross Below",
+        # RVOL triggers
+        "rvol_spike": "Volume Spike (1.5x)",
+        "rvol_extreme": "Extreme Volume (3x)",
+        "rvol_fade": "Volume Fade (<1x)",
+    }
+    return triggers
+
+
 # =============================================================================
 # TEST
 # =============================================================================
 
 if __name__ == "__main__":
     from mock_data import generate_mock_bars
+    from indicators import run_all_indicators
     from datetime import datetime, timedelta
 
     # Generate test data
@@ -328,21 +553,26 @@ if __name__ == "__main__":
     bars = generate_mock_bars(["SPY"], start, end, "1Min")
     spy_bars = bars.loc["SPY"]
 
-    print("Running interpreters on SPY data...")
-    print(f"Input shape: {spy_bars.shape}")
+    print("Running indicators...")
+    df = run_all_indicators(spy_bars)
+
+    print("Running interpreters...")
+    df = run_all_interpreters(df)
+
+    print("Detecting triggers...")
+    df = detect_all_triggers(df)
+
+    print("\nOutput columns:", df.columns.tolist())
     print()
 
-    # Run all interpreters
-    result = run_all_interpreters(spy_bars)
+    print("Sample interpretations (last 10 bars):")
+    interp_cols = ['EMA_STACK', 'MACD_LINE', 'MACD_HISTOGRAM', 'VWAP', 'RVOL']
+    available = [c for c in interp_cols if c in df.columns]
+    print(df[available].tail(10))
 
-    print("Output columns:", result.columns.tolist())
-    print()
-
-    print("Sample output (last 10 bars):")
-    print(result[['close', 'EMA_STACK', 'MACD_SIMPLE', 'VWAP', 'RVOL']].tail(10))
-    print()
-
-    # Show interpretation distributions
-    for interp in ['EMA_STACK', 'MACD_SIMPLE', 'VWAP', 'RVOL']:
-        print(f"\n{interp} distribution:")
-        print(result[interp].value_counts())
+    print("\nTrigger counts:")
+    trigger_cols = [c for c in df.columns if c.startswith('trig_')]
+    for col in trigger_cols:
+        count = df[col].sum()
+        if count > 0:
+            print(f"  {col}: {count}")
