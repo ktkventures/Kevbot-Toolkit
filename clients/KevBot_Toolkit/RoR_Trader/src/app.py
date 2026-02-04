@@ -929,10 +929,12 @@ def render_settings():
     st.divider()
 
     st.subheader("Data Connection")
-    st.info("Alpaca API connection not configured. Using mock data.")
-
-    if st.button("Configure Alpaca API"):
-        st.warning("Create a .env file with ALPACA_API_KEY and ALPACA_SECRET_KEY")
+    if is_alpaca_configured():
+        st.success("✓ Alpaca API connected")
+    else:
+        st.info("Alpaca API connection not configured. Using mock data.")
+        if st.button("Configure Alpaca API"):
+            st.warning("Create a .env file with ALPACA_API_KEY and ALPACA_SECRET_KEY")
 
 
 if __name__ == "__main__":
