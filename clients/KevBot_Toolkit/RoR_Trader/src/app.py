@@ -39,6 +39,24 @@ from triggers import (
     get_entry_triggers_for_direction,
     get_exit_triggers
 )
+from confluence_groups import (
+    load_confluence_groups,
+    save_confluence_groups,
+    get_enabled_groups,
+    get_group_by_id,
+    get_group_triggers,
+    get_all_triggers,
+    duplicate_group,
+    generate_unique_id,
+    validate_group_id,
+    TEMPLATES,
+    get_template,
+    get_parameter_schema,
+    get_plot_schema,
+    get_output_descriptions,
+    ConfluenceGroup,
+    PlotSettings,
+)
 
 
 # =============================================================================
@@ -457,7 +475,7 @@ def main():
 
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Settings"],
+            ["Strategy Builder", "My Strategies", "Confluence Groups", "Settings"],
             index=0
         )
 
@@ -476,6 +494,8 @@ def main():
         render_strategy_builder(data_days, data_seed)
     elif page == "My Strategies":
         render_my_strategies()
+    elif page == "Confluence Groups":
+        render_confluence_groups()
     else:
         render_settings()
 
@@ -909,9 +929,379 @@ def render_my_strategies():
             st.caption(status)
 
 
+def render_confluence_groups():
+    """Render the Confluence Groups management page."""
+    st.header("Confluence Groups")
+    st.caption("Configure indicators, interpreters, and triggers for your analysis.")
+
+    # Initialize session state for editing
+    if 'editing_group' not in st.session_state:
+        st.session_state.editing_group = None
+    if 'show_new_group' not in st.session_state:
+        st.session_state.show_new_group = False
+
+    # Load groups
+    groups = load_confluence_groups()
+
+    # Top action bar
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.markdown(f"**{len(groups)} confluence groups** ({len(get_enabled_groups(groups))} enabled)")
+    with col3:
+        if st.button("+ New Group", use_container_width=True):
+            st.session_state.show_new_group = True
+            st.session_state.editing_group = None
+
+    st.divider()
+
+    # New group creation dialog
+    if st.session_state.show_new_group:
+        render_new_group_dialog(groups)
+        st.divider()
+
+    # Group details editing
+    if st.session_state.editing_group:
+        render_group_details(st.session_state.editing_group, groups)
+        st.divider()
+
+    # Group list organized by category
+    categories = {}
+    for group in groups:
+        template = get_template(group.base_template)
+        category = template["category"] if template else "Other"
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(group)
+
+    for category, cat_groups in categories.items():
+        st.subheader(category)
+
+        for group in cat_groups:
+            render_group_card(group, groups)
+
+        st.markdown("")  # Spacing
+
+
+def render_group_card(group: ConfluenceGroup, all_groups: list):
+    """Render a single confluence group card."""
+    template = get_template(group.base_template)
+
+    with st.container(border=True):
+        col1, col2, col3, col4 = st.columns([0.08, 0.52, 0.25, 0.15])
+
+        # Enable/disable checkbox
+        with col1:
+            enabled = st.checkbox(
+                "",
+                value=group.enabled,
+                key=f"enable_{group.id}",
+                label_visibility="collapsed"
+            )
+            if enabled != group.enabled:
+                group.enabled = enabled
+                save_confluence_groups(all_groups)
+                st.rerun()
+
+        # Group info
+        with col2:
+            default_badge = " (default)" if group.is_default else ""
+            st.markdown(f"**{group.name}**{default_badge}")
+
+            # Show key parameters
+            param_str = format_parameters(group.parameters, group.base_template)
+            st.caption(param_str)
+
+        # Outputs preview
+        with col3:
+            if template:
+                outputs = template.get("outputs", [])
+                st.caption(f"Outputs: {', '.join(outputs[:4])}" + ("..." if len(outputs) > 4 else ""))
+
+        # Actions
+        with col4:
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                if st.button("Details", key=f"details_{group.id}", use_container_width=True):
+                    st.session_state.editing_group = group.id
+                    st.session_state.show_new_group = False
+                    st.rerun()
+            with action_cols[1]:
+                if st.button("Copy", key=f"copy_{group.id}", use_container_width=True):
+                    new_id = generate_unique_id(group.base_template, all_groups)
+                    new_group = duplicate_group(group, new_id, f"{group.name} (Copy)")
+                    all_groups.append(new_group)
+                    save_confluence_groups(all_groups)
+                    st.session_state.editing_group = new_id
+                    st.rerun()
+
+
+def render_new_group_dialog(all_groups: list):
+    """Render the new group creation dialog."""
+    st.subheader("Create New Confluence Group")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Template selection
+        template_options = list(TEMPLATES.keys())
+        template_labels = [TEMPLATES[t]["name"] for t in template_options]
+        template_idx = st.selectbox(
+            "Base Template",
+            range(len(template_options)),
+            format_func=lambda i: template_labels[i]
+        )
+        selected_template = template_options[template_idx]
+
+        template = TEMPLATES[selected_template]
+        st.caption(template["description"])
+
+    with col2:
+        # Name input
+        default_name = f"{template['name']} (Custom)"
+        new_name = st.text_input("Group Name", value=default_name)
+
+        # ID input (auto-generated but editable)
+        suggested_id = generate_unique_id(selected_template, all_groups)
+        new_id = st.text_input("Group ID", value=suggested_id, help="Unique identifier (lowercase, no spaces)")
+
+    # Validation
+    id_valid = validate_group_id(new_id, all_groups)
+    name_valid = len(new_name.strip()) > 0
+
+    if not id_valid:
+        st.warning("ID must be unique and contain only letters, numbers, and underscores.")
+    if not name_valid:
+        st.warning("Name cannot be empty.")
+
+    # Action buttons
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        if st.button("Create", disabled=not (id_valid and name_valid), use_container_width=True):
+            # Create new group with default parameters from template
+            param_schema = get_parameter_schema(selected_template)
+            default_params = {k: v["default"] for k, v in param_schema.items()}
+
+            plot_schema = get_plot_schema(selected_template)
+            default_colors = {k: v["default"] for k, v in plot_schema.items() if v["type"] == "color"}
+
+            new_group = ConfluenceGroup(
+                id=new_id,
+                base_template=selected_template,
+                name=new_name,
+                description=f"Custom {template['name']} configuration",
+                enabled=True,
+                is_default=False,
+                parameters=default_params,
+                plot_settings=PlotSettings(colors=default_colors, line_width=1, visible=True),
+            )
+
+            all_groups.append(new_group)
+            save_confluence_groups(all_groups)
+            st.session_state.show_new_group = False
+            st.session_state.editing_group = new_id
+            st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.show_new_group = False
+            st.rerun()
+
+
+def render_group_details(group_id: str, all_groups: list):
+    """Render the detailed view/edit panel for a confluence group."""
+    group = get_group_by_id(group_id, all_groups)
+    if not group:
+        st.error(f"Group not found: {group_id}")
+        return
+
+    template = get_template(group.base_template)
+    if not template:
+        st.error(f"Template not found: {group.base_template}")
+        return
+
+    # Header with close button
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.subheader(f"Edit: {group.name}")
+        st.caption(f"Based on: {template['name']} | ID: {group.id}")
+    with col2:
+        if st.button("Close", use_container_width=True):
+            st.session_state.editing_group = None
+            st.rerun()
+
+    # Tabs for different sections
+    tab1, tab2, tab3, tab4 = st.tabs(["Parameters", "Plot Settings", "Outputs & Triggers", "Danger Zone"])
+
+    # TAB 1: Parameters
+    with tab1:
+        st.markdown("**Indicator Parameters**")
+
+        param_schema = get_parameter_schema(group.base_template)
+        updated_params = {}
+        changed = False
+
+        for param_key, schema in param_schema.items():
+            current_value = group.parameters.get(param_key, schema["default"])
+
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.caption(schema["label"])
+
+            with col2:
+                if schema["type"] == "int":
+                    new_value = st.number_input(
+                        schema["label"],
+                        min_value=schema.get("min", 1),
+                        max_value=schema.get("max", 500),
+                        value=int(current_value),
+                        key=f"param_{group.id}_{param_key}",
+                        label_visibility="collapsed"
+                    )
+                elif schema["type"] == "float":
+                    new_value = st.number_input(
+                        schema["label"],
+                        min_value=float(schema.get("min", 0.0)),
+                        max_value=float(schema.get("max", 100.0)),
+                        value=float(current_value),
+                        step=0.1,
+                        key=f"param_{group.id}_{param_key}",
+                        label_visibility="collapsed"
+                    )
+                else:
+                    new_value = current_value
+
+                updated_params[param_key] = new_value
+                if new_value != current_value:
+                    changed = True
+
+        if changed:
+            if st.button("Save Parameters", key="save_params"):
+                group.parameters = updated_params
+                save_confluence_groups(all_groups)
+                st.success("Parameters saved!")
+                st.rerun()
+
+    # TAB 2: Plot Settings
+    with tab2:
+        st.markdown("**Chart Colors**")
+
+        plot_schema = get_plot_schema(group.base_template)
+        updated_colors = {}
+        colors_changed = False
+
+        for color_key, schema in plot_schema.items():
+            if schema["type"] != "color":
+                continue
+
+            current_color = group.plot_settings.colors.get(color_key, schema["default"])
+
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.caption(schema["label"])
+            with col2:
+                new_color = st.color_picker(
+                    schema["label"],
+                    value=current_color,
+                    key=f"color_{group.id}_{color_key}",
+                    label_visibility="collapsed"
+                )
+                updated_colors[color_key] = new_color
+                if new_color != current_color:
+                    colors_changed = True
+
+        st.markdown("**Line Settings**")
+        new_line_width = st.slider(
+            "Line Width",
+            min_value=1,
+            max_value=5,
+            value=group.plot_settings.line_width,
+            key=f"linewidth_{group.id}"
+        )
+        if new_line_width != group.plot_settings.line_width:
+            colors_changed = True
+
+        new_visible = st.checkbox(
+            "Visible on Chart",
+            value=group.plot_settings.visible,
+            key=f"visible_{group.id}"
+        )
+        if new_visible != group.plot_settings.visible:
+            colors_changed = True
+
+        if colors_changed:
+            if st.button("Save Plot Settings", key="save_plot"):
+                group.plot_settings.colors = updated_colors
+                group.plot_settings.line_width = new_line_width
+                group.plot_settings.visible = new_visible
+                save_confluence_groups(all_groups)
+                st.success("Plot settings saved!")
+                st.rerun()
+
+    # TAB 3: Outputs & Triggers (read-only, from template)
+    with tab3:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**Interpreter Outputs**")
+            output_descriptions = get_output_descriptions(group.base_template)
+            for output, description in output_descriptions.items():
+                st.markdown(f"- **{output}**: {description}")
+
+        with col2:
+            st.markdown("**Available Triggers**")
+            triggers = get_group_triggers(group)
+            for trigger in triggers:
+                direction_icon = "LONG" if trigger.direction == "LONG" else "SHORT" if trigger.direction == "SHORT" else "BOTH"
+                type_icon = "ENTRY" if trigger.trigger_type == "ENTRY" else "EXIT"
+                st.markdown(f"- **{trigger.name}**")
+                st.caption(f"  {direction_icon} {type_icon} | ID: `{trigger.id}`")
+
+    # TAB 4: Danger Zone
+    with tab4:
+        st.markdown("**Rename Group**")
+        new_name = st.text_input("New Name", value=group.name, key=f"rename_{group.id}")
+        if new_name != group.name:
+            if st.button("Rename", key="rename_btn"):
+                group.name = new_name
+                save_confluence_groups(all_groups)
+                st.success("Renamed!")
+                st.rerun()
+
+        st.markdown("---")
+
+        if group.is_default:
+            st.info("Default groups cannot be deleted. You can disable them instead.")
+        else:
+            st.markdown("**Delete Group**")
+            st.warning("This action cannot be undone.")
+            if st.button("Delete Group", type="primary", key="delete_btn"):
+                all_groups.remove(group)
+                save_confluence_groups(all_groups)
+                st.session_state.editing_group = None
+                st.rerun()
+
+
+def format_parameters(params: dict, template_id: str) -> str:
+    """Format parameters as a readable string."""
+    template = get_template(template_id)
+    if not template:
+        return str(params)
+
+    schema = template.get("parameters_schema", {})
+
+    parts = []
+    for key, value in params.items():
+        label = schema.get(key, {}).get("label", key)
+        # Shorten common labels
+        short_label = label.replace(" Period", "").replace("Threshold", "")
+        parts.append(f"{short_label}: {value}")
+
+    return " | ".join(parts)
+
+
 def render_settings():
     """Render the Settings page."""
-    st.header("⚙️ Settings")
+    st.header("Settings")
 
     st.subheader("Interpreter Library")
     st.caption("Enable interpreters to use their outputs as confluence conditions.")

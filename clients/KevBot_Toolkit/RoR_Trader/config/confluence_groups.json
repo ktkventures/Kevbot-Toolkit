@@ -1,0 +1,113 @@
+{
+  "version": "1.0",
+  "groups": [
+    {
+      "id": "ema_stack_default",
+      "base_template": "ema_stack",
+      "name": "EMA Stack (Default)",
+      "description": "Standard EMA stack with 9/21/200 periods",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "short_period": 9,
+        "mid_period": 21,
+        "long_period": 200
+      },
+      "plot_settings": {
+        "colors": {
+          "short_color": "#22c55e",
+          "mid_color": "#eab308",
+          "long_color": "#ef4444"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "macd_default",
+      "base_template": "macd",
+      "name": "MACD (Default)",
+      "description": "Standard MACD with 12/26/9 periods",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9
+      },
+      "plot_settings": {
+        "colors": {
+          "macd_color": "#2563eb",
+          "signal_color": "#f97316",
+          "hist_pos_color": "#22c55e",
+          "hist_neg_color": "#ef4444"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "vwap_default",
+      "base_template": "vwap",
+      "name": "VWAP (Default)",
+      "description": "VWAP with 2 standard deviation bands",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "std_dev": 2.0,
+        "tolerance_pct": 0.1
+      },
+      "plot_settings": {
+        "colors": {
+          "vwap_color": "#8b5cf6",
+          "band_color": "#c4b5fd"
+        },
+        "line_width": 2,
+        "visible": true
+      }
+    },
+    {
+      "id": "rvol_default",
+      "base_template": "rvol",
+      "name": "RVOL (Default)",
+      "description": "Relative volume with 20-period SMA baseline",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "sma_period": 20,
+        "high_threshold": 1.5,
+        "extreme_threshold": 3.0
+      },
+      "plot_settings": {
+        "colors": {
+          "bar_color": "#64748b",
+          "high_color": "#f59e0b",
+          "extreme_color": "#ef4444"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "utbot_default",
+      "base_template": "utbot",
+      "name": "UT Bot (Default)",
+      "description": "UT Bot with ATR period 10, multiplier 1.0",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "atr_period": 10,
+        "atr_multiplier": 1.0
+      },
+      "plot_settings": {
+        "colors": {
+          "buy_color": "#22c55e",
+          "sell_color": "#ef4444",
+          "trail_color": "#64748b"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    }
+  ]
+}
