@@ -295,6 +295,97 @@ def prepare_forward_test_data(strat: dict):
     return df, backtest_trades, forward_trades, forward_test_start_dt
 
 
+def get_strategy_trades(strat: dict) -> pd.DataFrame:
+    """
+    Get trades for any modern strategy (backtest-only or forward-testing).
+    Returns all trades as a single DataFrame. For legacy strategies, returns empty.
+    """
+    if 'entry_trigger_confluence_id' not in strat:
+        return pd.DataFrame()
+
+    if strat.get('forward_testing') and strat.get('forward_test_start'):
+        _, bt, fw, _ = prepare_forward_test_data(strat)
+        return pd.concat([bt, fw], ignore_index=True)
+    else:
+        data_days = strat.get('data_days', 30)
+        data_seed = strat.get('data_seed', 42)
+        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed)
+        if len(df) == 0:
+            return pd.DataFrame()
+        confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+        return generate_trades(
+            df,
+            direction=strat['direction'],
+            entry_trigger=strat['entry_trigger'],
+            exit_trigger=strat['exit_trigger'],
+            confluence_required=confluence_set,
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+        )
+
+
+def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
+    """Render a small sparkline-style equity curve for a strategy card."""
+    if len(trades) == 0:
+        st.caption("No trades")
+        return
+
+    equity = trades[["exit_time", "r_multiple"]].sort_values("exit_time").reset_index(drop=True)
+    equity["cumulative_r"] = equity["r_multiple"].cumsum()
+
+    fig = go.Figure()
+
+    if boundary_dt is not None:
+        # Match timezone
+        boundary_ts = boundary_dt
+        if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
+            boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity["exit_time"].dtype.tz)
+
+        bt_mask = equity["exit_time"] < boundary_ts
+        fw_mask = equity["exit_time"] >= boundary_ts
+
+        bt_data = equity[bt_mask]
+        fw_data = equity[fw_mask]
+
+        if len(bt_data) > 0:
+            fig.add_trace(go.Scatter(
+                x=bt_data["exit_time"], y=bt_data["cumulative_r"],
+                mode="lines", line=dict(color="#2196F3", width=1.5),
+                fill="tozeroy", fillcolor="rgba(33, 150, 243, 0.08)",
+                showlegend=False
+            ))
+
+        if len(fw_data) > 0:
+            if len(bt_data) > 0:
+                bridge = bt_data.iloc[[-1]]
+                fw_plot = pd.concat([bridge, fw_data], ignore_index=True)
+            else:
+                fw_plot = fw_data
+            fig.add_trace(go.Scatter(
+                x=fw_plot["exit_time"], y=fw_plot["cumulative_r"],
+                mode="lines", line=dict(color="#4CAF50", width=1.5),
+                fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+                showlegend=False
+            ))
+    else:
+        final_r = equity["cumulative_r"].iloc[-1]
+        color = "#4CAF50" if final_r >= 0 else "#f44336"
+        fig.add_trace(go.Scatter(
+            x=equity["exit_time"], y=equity["cumulative_r"],
+            mode="lines", line=dict(color=color, width=1.5),
+            fill="tozeroy", fillcolor=f"rgba({'76, 175, 80' if final_r >= 0 else '244, 67, 54'}, 0.08)",
+            showlegend=False
+        ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+    fig.update_layout(
+        height=100, margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
 def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     """Split trades into backtest (before boundary) and forward (at/after boundary)."""
     if len(trades_df) == 0:
@@ -1421,44 +1512,51 @@ def render_strategy_list():
     for strat in strategies:
         sid = strat.get('id', 0)
         with st.container(border=True):
-            # Row 1: Name + KPI metrics
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            # Main layout: info on left, mini equity curve on right
+            info_col, chart_col = st.columns([3, 2])
 
-            with col1:
+            with info_col:
+                # Name + metadata
                 st.markdown(f"### {strat['name']}")
                 entry_display = get_trigger_display_name(strat, 'entry_trigger')
                 exit_display = get_trigger_display_name(strat, 'exit_trigger')
                 st.caption(f"{strat['symbol']} | {strat['direction']} | {entry_display} → {exit_display}")
 
-            kpis = strat.get('kpis', {})
-            with col2:
-                st.metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
-            with col3:
+                # KPI metrics inline
+                kpis = strat.get('kpis', {})
+                kpi_cols = st.columns(3)
+                kpi_cols[0].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
                 pf = kpis.get('profit_factor', 0)
-                st.metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-            with col4:
-                st.metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
+                kpi_cols[1].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+                kpi_cols[2].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
 
-            # Row 2: Confluence + Status
+            with chart_col:
+                # Status badge
+                if strat.get('forward_testing') and strat.get('forward_test_start'):
+                    ft_start = datetime.fromisoformat(strat['forward_test_start'])
+                    ft_days = (datetime.now() - ft_start).days
+                    st.caption(f"🟢 Forward Testing ({ft_days}d)")
+                elif strat.get('forward_testing'):
+                    st.caption("🟢 Forward Testing")
+                else:
+                    st.caption("⚪ Backtest Only")
+
+                # Mini equity curve
+                is_legacy = 'entry_trigger_confluence_id' not in strat
+                if not is_legacy:
+                    trades = get_strategy_trades(strat)
+                    boundary = None
+                    if strat.get('forward_testing') and strat.get('forward_test_start'):
+                        boundary = datetime.fromisoformat(strat['forward_test_start'])
+                    render_mini_equity_curve(trades, key=f"mini_eq_{sid}", boundary_dt=boundary)
+
+            # Confluence tags
             confluence = strat.get('confluence', [])
             if len(confluence) > 0:
                 formatted = [format_confluence_record(c, enabled_groups) for c in confluence[:3]]
                 st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
 
-            if strat.get('forward_testing') and strat.get('forward_test_start'):
-                ft_start = datetime.fromisoformat(strat['forward_test_start'])
-                ft_days = (datetime.now() - ft_start).days
-                status_label = f"Forward Testing ({ft_days}d)"
-                status_icon = "🟢"
-            elif strat.get('forward_testing'):
-                status_icon = "🟢"
-                status_label = "Forward Testing"
-            else:
-                status_icon = "⚪"
-                status_label = "Backtest Only"
-            st.caption(f"{status_icon} {status_label}")
-
-            # Row 3: Action buttons
+            # Action buttons
             btn_cols = st.columns([1, 1, 1, 1, 4])
             with btn_cols[0]:
                 if st.button("View", key=f"view_{sid}"):

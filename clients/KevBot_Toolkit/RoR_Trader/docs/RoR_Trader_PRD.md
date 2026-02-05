@@ -588,13 +588,23 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Stop loss as strategy parameter** — ATR multiplier affects trade outcomes (win rate, R distribution), so it belongs at strategy level. Future: add more stop loss types (fixed dollar, trailing, percentage).
 - **Legacy strategy handling** — Strategies created before Phase 1 (IDs 1, 2) cannot be re-backtested or edited; they display saved KPIs only.
 
-### Phase 3: Forward Testing
+### Phase 3: Forward Testing — COMPLETED (Feb 5, 2026)
 *Key differentiator — what separates RoR Trader from backtest-only tools.*
 
-- [ ] Track strategy performance on new data after save date
-- [ ] Backtest vs. forward test comparison visualization
-- [ ] Immutable forward test history (builds trust and credibility)
-- [ ] Status indicators on strategy cards (backtested, forward testing, validated)
+- [x] Track strategy performance on new data after save date (on-the-fly computation from forward_test_start to now)
+- [x] Backtest vs. forward test comparison visualization (side-by-side KPIs with deltas, combined equity curve with split line)
+- [x] Forward test data pipeline (date range support in data_loader.py, trade splitting at boundary)
+- [x] Combined equity curve (blue backtest / green forward segments, orange vertical split line)
+- [x] R-distribution comparison (side-by-side histograms)
+- [x] Split trade history (forward trades expanded, backtest collapsed)
+- [x] Status indicators on strategy cards (duration badge, e.g. "Forward Testing (14d)")
+- [x] Mini equity curves on strategy list cards (sparkline per card, forward-test-aware coloring)
+- [x] Timezone-aware datetime handling for Alpaca UTC timestamps
+
+### Design Decisions (Phase 3)
+- **On-the-fly computation** — No stored forward test results; always recompute from fresh data. Simpler architecture, always reflects latest data.
+- **Mock data simulation** — Same seed produces identical backtest portion; new bars generated beyond save date for forward testing with mock data.
+- **Cache-friendly end dates** — Forward test end_date rounded to market close (4 PM) so cached pipeline results are reused within the same day.
 
 ### Phase 4: Portfolios & Prop Firm Compliance
 *Combine strategies and validate against real trading account rules.*
