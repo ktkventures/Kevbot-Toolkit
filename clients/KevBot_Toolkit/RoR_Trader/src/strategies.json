@@ -1,0 +1,51 @@
+[
+  {
+    "name": "SPY LONG - UT Bot Alert",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "UT Bot Alert",
+    "exit_trigger": "Opposite Signal",
+    "confluence": [
+      "1M-EMA_STACK-LSM",
+      "1M-MACD_SIMPLE-M<S\u2193"
+    ],
+    "kpis": {
+      "total_trades": 5,
+      "win_rate": 80.0,
+      "profit_factor": 25.458713222943324,
+      "avg_r": 2.870361386494236,
+      "total_r": 14.351806932471181,
+      "daily_r": 2.870361386494236,
+      "final_balance": 11435.180693247119,
+      "total_pnl": 1435.1806932471181
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 1,
+    "created_at": "2026-02-03T18:18:48.537496"
+  },
+  {
+    "name": "SPY LONG - UT Bot Alert",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "UT Bot Alert",
+    "exit_trigger": "Opposite Signal",
+    "confluence": [],
+    "kpis": {
+      "total_trades": 96,
+      "win_rate": 64.58333333333334,
+      "profit_factor": 2.5680984205590973,
+      "avg_r": 1.8090767378239836,
+      "total_r": 173.67136683110243,
+      "daily_r": 7.894153037777383,
+      "final_balance": 27367.136683110242,
+      "total_pnl": 17367.136683110242
+    },
+    "forward_testing": false,
+    "alerts": false,
+    "id": 2,
+    "created_at": "2026-02-03T18:39:48.785320"
+  }
+]
