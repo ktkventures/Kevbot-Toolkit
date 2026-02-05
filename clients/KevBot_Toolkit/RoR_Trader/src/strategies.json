@@ -47,5 +47,40 @@
     "alerts": false,
     "id": 2,
     "created_at": "2026-02-03T18:39:48.785320"
+  },
+  {
+    "name": "SPY LONG - EMA Stack (Default): Short > Mid Cross",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 42,
+    "confluence": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "kpis": {
+      "total_trades": 24,
+      "win_rate": 12.5,
+      "profit_factor": 2.1550310458964956,
+      "avg_r": 0.7785684260295552,
+      "total_r": 18.685642224709326,
+      "daily_r": 1.2457094816472885,
+      "final_balance": 11868.564222470934,
+      "total_pnl": 1868.5642224709327
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 3,
+    "created_at": "2026-02-05T11:12:38.792597"
   }
 ]

@@ -94,6 +94,8 @@ def generate_trades(
                 # Check confluence if required
                 if confluence_required and len(confluence_required) > 0:
                     current_confluence = get_confluence_records(row, "1M", interpreter_list)
+                    if not isinstance(current_confluence, set):
+                        current_confluence = set()
                     if not confluence_required.issubset(current_confluence):
                         continue  # Confluence not met, skip entry
 
@@ -191,6 +193,8 @@ def generate_trades(
 
                 # Get confluence at entry
                 confluence = get_confluence_records(entry_row, "1M", interpreter_list)
+                if not isinstance(confluence, set):
+                    confluence = set()
 
                 trades.append({
                     'entry_time': entry_idx,

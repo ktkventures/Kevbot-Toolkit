@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.1 (Draft)
-**Date:** February 3, 2026
+**Version:** 0.2
+**Date:** February 5, 2026
 **Author:** Kevin Johnson
-**Status:** Initial Vision Document
+**Status:** MVP Built — Active Development
 
 ---
 
@@ -542,16 +542,77 @@ My Strategies → Strategy Detail → Edit Strategy
 
 ---
 
-## 13. Next Steps
+## 13. Completed Milestones
 
 1. [x] Define application sitemap and information architecture
-2. [ ] Set up Alpaca account and explore data structure
-3. [ ] Design wireframes/mockups for Strategy Builder flow
-4. [ ] Define database schema for interpreters/strategies/portfolios
-5. [ ] Build Python POC to validate core backtesting logic
-6. [ ] Select frontend framework (React/Next.js vs Streamlit for MVP)
-7. [ ] Develop first set of interpreters (port from KevBot Toolkit)
-8. [ ] Build Strategy Builder MVP
+2. [x] Set up Alpaca account and explore data structure
+3. [x] Design wireframes/mockups for Strategy Builder flow (see `/docs/wireframes/`)
+4. [x] Select frontend framework — **Streamlit** for MVP
+5. [x] Develop first set of interpreters: EMA Stack, MACD (Line + Histogram), VWAP, RVOL, UT Bot
+6. [x] Build Strategy Builder MVP — 3-step workflow (Setup, Confluence, Save)
+7. [x] Implement Confluence Groups management system (template/version model)
+8. [x] Integrate Alpaca API for real market data with mock data fallback
+9. [x] Build backtesting engine with trade generation and KPI calculations
+10. [x] Build My Strategies page (basic list view)
+
+---
+
+## 14. Development Roadmap
+
+### Phase 1: Harden the Core Engine
+*Fix bugs and remove fragility in the foundation all future features build on.*
+
+- [ ] Handle infinity gracefully in confluence analysis calculations (profit factor deltas, sorting) — display of infinity when no losses is correct and intentional
+- [ ] Add null guard on confluence record filtering (crash risk when trades have no confluence data)
+- [ ] Complete opposite trigger mapping in triggers.py (incomplete mapping causes positions that never close)
+- [ ] Replace hardcoded mappings (INTERPRETER_TO_TEMPLATE, base_trigger_map) with runtime-built maps from confluence groups
+- [ ] Add risk/stop-loss parameter configuration to Strategy Builder Step 1 (currently hardcoded, not saved with strategy)
+- [ ] Fix chart timestamp handling (fragile assumption about DataFrame column order)
+- [ ] Save complete strategy parameters on save (risk_per_trade, stop_atr_mult, timeframe usage)
+
+### Phase 2: Complete My Strategies
+*The weakest existing page — P0 per this PRD but currently a display-only stub.*
+
+- [ ] Strategy detail view (full KPIs, equity curve, trade history table)
+- [ ] Edit strategy (reopen in Strategy Builder with saved configuration)
+- [ ] Delete strategy (with confirmation dialog)
+- [ ] Clone/duplicate strategy
+- [ ] Re-backtest with fresh data
+- [ ] Sorting and filtering (by ticker, direction, performance metrics)
+
+### Phase 3: Dashboard
+*Landing page that ties the application together.*
+
+- [ ] Overview cards (strategy count, best performer, recent activity)
+- [ ] Quick actions (New Strategy, View Strategies)
+- [ ] Mini equity curves for saved strategies
+- [ ] Data source status and connection health
+- [ ] Empty state for new users
+
+### Phase 4: Forward Testing
+*Key differentiator — what separates RoR Trader from backtest-only tools.*
+
+- [ ] Track strategy performance on new data after save date
+- [ ] Backtest vs. forward test comparison visualization
+- [ ] Immutable forward test history (builds trust and credibility)
+- [ ] Status indicators on strategy cards (backtested, forward testing, validated)
+
+### Phase 5: Portfolios & Prop Firm Compliance
+*Combine strategies and validate against real trading account rules.*
+
+- [ ] Portfolio builder (select strategies, set allocations)
+- [ ] Combined equity curve and drawdown analysis
+- [ ] Correlation matrix between strategies
+- [ ] Prop firm rule sets (Trade The Pool, FTMO, etc.)
+- [ ] Compliance checker with pass/fail indicators and recommendations
+
+### Phase 6: Alerts & Deployment
+*Make strategies actionable in real time.*
+
+- [ ] Webhook configuration UI
+- [ ] Real-time signal detection from forward-tested strategies
+- [ ] Alert history and management
+- [ ] Trading bot connection framework
 
 ---
 

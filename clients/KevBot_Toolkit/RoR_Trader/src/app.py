@@ -84,57 +84,22 @@ def get_base_trigger_id(confluence_trigger_id: str) -> str:
     e.g., "ema_stack_default_cross_bull" -> "ema_cross_bull"
 
     The base trigger IDs match the columns created by detect_all_triggers().
+    Uses trigger_prefix from TEMPLATES to build the mapping dynamically.
     """
-    # Map from confluence group base triggers to interpreter trigger IDs
-    base_trigger_map = {
-        # EMA Stack triggers
-        "cross_bull": "ema_cross_bull",
-        "cross_bear": "ema_cross_bear",
-        "mid_cross_bull": "ema_mid_cross_bull",
-        "mid_cross_bear": "ema_mid_cross_bear",
-        # MACD triggers
-        "zero_cross_up": "macd_zero_cross_up",
-        "zero_cross_down": "macd_zero_cross_down",
-        "hist_flip_pos": "macd_hist_flip_pos",
-        "hist_flip_neg": "macd_hist_flip_neg",
-        # VWAP triggers
-        "cross_above": "vwap_cross_above",
-        "cross_below": "vwap_cross_below",
-        # RVOL triggers
-        "spike": "rvol_spike",
-        "extreme": "rvol_extreme",
-        "fade": "rvol_fade",
-        # UT Bot triggers
-        "buy": "utbot_buy",
-        "sell": "utbot_sell",
-    }
-
-    # Get all triggers to find the matching one
     all_triggers = get_all_triggers()
 
     if confluence_trigger_id in all_triggers:
         trigger_def = all_triggers[confluence_trigger_id]
         base_trigger = trigger_def.base_trigger
 
-        # Check if we have a direct mapping
-        if base_trigger in base_trigger_map:
-            return base_trigger_map[base_trigger]
-
-        # For MACD, the base trigger might be "cross_bull" which maps to "macd_cross_bull"
-        # Try prepending the template type
-        group_id = confluence_trigger_id.rsplit('_', 1)[0]  # Remove the base trigger suffix
-
-        # Infer template from group_id
-        if "macd" in group_id:
-            return f"macd_{base_trigger}"
-        elif "ema" in group_id:
-            return f"ema_{base_trigger}"
-        elif "vwap" in group_id:
-            return f"vwap_{base_trigger}"
-        elif "rvol" in group_id:
-            return f"rvol_{base_trigger}"
-        elif "utbot" in group_id:
-            return f"utbot_{base_trigger}"
+        # Find the group that owns this trigger to get its template's prefix
+        enabled_groups = get_enabled_groups()
+        for group in enabled_groups:
+            if group.get_trigger_id(base_trigger) == confluence_trigger_id:
+                template = TEMPLATES.get(group.base_template)
+                if template and "trigger_prefix" in template:
+                    return f"{template['trigger_prefix']}_{base_trigger}"
+                break
 
     # Fallback: return as-is (might be a direct trigger ID)
     return confluence_trigger_id
@@ -144,15 +109,16 @@ def get_base_trigger_id(confluence_trigger_id: str) -> str:
 # CONFLUENCE RECORD FORMATTING
 # =============================================================================
 
-# Map interpreter keys to base_template IDs
-INTERPRETER_TO_TEMPLATE = {
-    "EMA_STACK": "ema_stack",
-    "MACD_LINE": "macd",
-    "MACD_HISTOGRAM": "macd",
-    "VWAP": "vwap",
-    "RVOL": "rvol",
-    "UTBOT": "utbot",
-}
+def build_interpreter_to_template() -> dict:
+    """Build mapping from interpreter keys to template IDs from TEMPLATES data."""
+    mapping = {}
+    for template_id, template in TEMPLATES.items():
+        for interp_key in template.get("interpreters", []):
+            mapping[interp_key] = template_id
+    return mapping
+
+
+INTERPRETER_TO_TEMPLATE = build_interpreter_to_template()
 
 
 def format_confluence_record(record: str, groups: list = None) -> str:
@@ -281,6 +247,16 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42):
 # KPI CALCULATIONS
 # =============================================================================
 
+def safe_subtract(a: float, b: float) -> float:
+    """Safely subtract two values that may be infinity.
+    inf - inf = 0 (both infinite, no meaningful difference).
+    """
+    if a == float('inf') and b == float('inf'):
+        return 0.0
+    if a == float('-inf') and b == float('-inf'):
+        return 0.0
+    return a - b
+
 def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, risk_per_trade: float = 100) -> dict:
     """Calculate strategy KPIs."""
     if len(trades_df) == 0:
@@ -324,7 +300,8 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, ris
 # CONFLUENCE ANALYSIS
 # =============================================================================
 
-def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trades: int = 5) -> pd.DataFrame:
+def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trades: int = 5,
+                        starting_balance: float = 10000, risk_per_trade: float = 100) -> pd.DataFrame:
     """
     Analyze how different confluence conditions affect results.
 
@@ -336,7 +313,7 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
 
     # Get base trades (filtered by required confluences)
     if required and len(required) > 0:
-        mask = trades_df["confluence_records"].apply(lambda r: required.issubset(r))
+        mask = trades_df["confluence_records"].apply(lambda r: isinstance(r, set) and required.issubset(r))
         base_trades = trades_df[mask]
     else:
         base_trades = trades_df
@@ -344,7 +321,7 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
     if len(base_trades) < min_trades:
         return pd.DataFrame()
 
-    base_kpis = calculate_kpis(base_trades)
+    base_kpis = calculate_kpis(base_trades, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
 
     # Find all unique confluence records
     all_records = set()
@@ -358,11 +335,11 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
     results = []
     for record in all_records:
         # Filter to trades with this record
-        mask = base_trades["confluence_records"].apply(lambda r: record in r)
+        mask = base_trades["confluence_records"].apply(lambda r: isinstance(r, set) and record in r)
         subset = base_trades[mask]
 
         if len(subset) >= min_trades:
-            kpis = calculate_kpis(subset)
+            kpis = calculate_kpis(subset, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
 
             results.append({
                 "confluence": record,
@@ -372,18 +349,19 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
                 "avg_r": kpis["avg_r"],
                 "total_r": kpis["total_r"],
                 "daily_r": kpis["daily_r"],
-                "pf_change": kpis["profit_factor"] - base_kpis["profit_factor"],
+                "pf_change": safe_subtract(kpis["profit_factor"], base_kpis["profit_factor"]),
                 "wr_change": kpis["win_rate"] - base_kpis["win_rate"],
             })
 
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
-        results_df = results_df.sort_values("profit_factor", ascending=False)
+        results_df = results_df.sort_values("profit_factor", ascending=False, na_position="last")
 
     return results_df
 
 
-def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10) -> pd.DataFrame:
+def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10,
+                           starting_balance: float = 10000, risk_per_trade: float = 100) -> pd.DataFrame:
     """Find the best confluence combinations automatically."""
     if len(trades_df) == 0:
         return pd.DataFrame()
@@ -400,11 +378,11 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
         for combo in combinations(all_records, depth):
             combo_set = set(combo)
 
-            mask = trades_df["confluence_records"].apply(lambda r: combo_set.issubset(r))
+            mask = trades_df["confluence_records"].apply(lambda r: isinstance(r, set) and combo_set.issubset(r))
             subset = trades_df[mask]
 
             if len(subset) >= min_trades:
-                kpis = calculate_kpis(subset)
+                kpis = calculate_kpis(subset, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
 
                 results.append({
                     "combination": combo_set,
@@ -417,7 +395,8 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
     if len(results_df) > 0:
         results_df = results_df.sort_values(
             ["profit_factor", "total_trades"],
-            ascending=[False, False]
+            ascending=[False, False],
+            na_position="last"
         ).head(top_n)
 
     return results_df
@@ -449,10 +428,12 @@ def render_price_chart(
         return
 
     # Prepare candlestick data
+    time_col = df.index.name if df.index.name else 'timestamp'
     candles = df.reset_index()
 
-    # Handle both 'timestamp' and datetime index names
-    time_col = candles.columns[0]  # First column after reset_index is the former index
+    # Verify the expected column exists; fall back to positional if not
+    if time_col not in candles.columns:
+        time_col = candles.columns[0]
     candles['time'] = pd.to_datetime(candles[time_col]).astype(int) // 10**9
 
     candle_data = candles[['time', 'open', 'high', 'low', 'close']].to_dict('records')
@@ -655,7 +636,7 @@ def main():
 
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Confluence Groups", "Settings"],
+            ["Strategy Builder", "My Strategies", "Confluence Groups"],
             index=0
         )
 
@@ -674,10 +655,8 @@ def main():
         render_strategy_builder(data_days, data_seed)
     elif page == "My Strategies":
         render_my_strategies()
-    elif page == "Confluence Groups":
-        render_confluence_groups()
     else:
-        render_settings()
+        render_confluence_groups()
 
 
 def render_strategy_builder(data_days: int, data_seed: int):
@@ -722,7 +701,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
             entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
 
             if len(entry_triggers) == 0:
-                st.warning("No entry triggers available. Enable confluence groups in Settings.")
+                st.warning("No entry triggers available. Enable confluence groups in the Confluence Groups page.")
                 entry_trigger = None
                 entry_trigger_name = None
             else:
@@ -747,7 +726,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
             exit_triggers = {tid: tdef.name for tid, tdef in all_triggers.items()}
 
             if len(exit_triggers) == 0:
-                st.warning("No exit triggers available. Enable confluence groups in Settings.")
+                st.warning("No exit triggers available. Enable confluence groups in the Confluence Groups page.")
                 exit_trigger = None
                 exit_trigger_name = None
             else:
@@ -762,9 +741,44 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 exit_trigger = exit_trigger_options[exit_trigger_idx]
                 exit_trigger_name = exit_triggers[exit_trigger]
 
+        # Risk Settings
+        st.divider()
+        st.subheader("Risk Settings")
+        risk_col1, risk_col2, risk_col3 = st.columns(3)
+        with risk_col1:
+            risk_per_trade = st.number_input(
+                "Risk Per Trade ($)",
+                min_value=1.0,
+                max_value=10000.0,
+                value=100.0,
+                step=25.0,
+                help="Dollar amount risked per trade"
+            )
+        with risk_col2:
+            stop_atr_mult = st.number_input(
+                "Stop Loss (ATR x)",
+                min_value=0.5,
+                max_value=5.0,
+                value=1.5,
+                step=0.1,
+                help="Stop loss distance as a multiple of ATR"
+            )
+        with risk_col3:
+            starting_balance = st.number_input(
+                "Starting Balance ($)",
+                min_value=100.0,
+                max_value=1000000.0,
+                value=10000.0,
+                step=1000.0,
+                help="Starting account balance for P&L calculations"
+            )
+
         st.divider()
 
-        can_proceed = entry_trigger is not None and exit_trigger is not None
+        same_trigger = entry_trigger is not None and entry_trigger == exit_trigger
+        if same_trigger:
+            st.warning("Entry and exit triggers cannot be the same.")
+        can_proceed = entry_trigger is not None and exit_trigger is not None and not same_trigger
         if st.button("Next: Add Confluence →", type="primary", use_container_width=True, disabled=not can_proceed):
             # Save config and move to step 2
             # Map the confluence trigger IDs to the base trigger IDs for trade generation
@@ -781,6 +795,11 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 'exit_trigger_confluence_id': exit_trigger,  # Full confluence ID for display
                 'entry_trigger_name': entry_trigger_name,
                 'exit_trigger_name': exit_trigger_name,
+                'risk_per_trade': risk_per_trade,
+                'stop_atr_mult': stop_atr_mult,
+                'starting_balance': starting_balance,
+                'data_days': data_days,
+                'data_seed': data_seed,
             }
             st.session_state.step = 2
             st.session_state.selected_confluences = set()
@@ -817,13 +836,15 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 direction=config['direction'],
                 entry_trigger=config['entry_trigger'],
                 exit_trigger=config['exit_trigger'],
-                confluence_required=None  # Will filter after generation
+                confluence_required=None,  # Will filter after generation
+                risk_per_trade=config.get('risk_per_trade', 100.0),
+                stop_atr_mult=config.get('stop_atr_mult', 1.5),
             )
 
         # Apply confluence filter
         selected = st.session_state.selected_confluences
         if len(selected) > 0 and len(trades) > 0:
-            mask = trades["confluence_records"].apply(lambda r: selected.issubset(r))
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
             filtered_trades = trades[mask]
         else:
             filtered_trades = trades
@@ -847,7 +868,11 @@ def render_strategy_builder(data_days: int, data_seed: int):
             st.caption("No confluence filters active. Add conditions below to refine your strategy.")
 
         # KPIs
-        kpis = calculate_kpis(filtered_trades)
+        kpis = calculate_kpis(
+            filtered_trades,
+            starting_balance=config.get('starting_balance', 10000.0),
+            risk_per_trade=config.get('risk_per_trade', 100.0),
+        )
 
         kpi_cols = st.columns(6)
         kpi_cols[0].metric("Trades", kpis["total_trades"])
@@ -949,10 +974,14 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
                 sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "Trades": "total_trades"}
 
-                confluence_df = analyze_confluences(trades, selected, min_trades=3)
+                confluence_df = analyze_confluences(
+                    trades, selected, min_trades=3,
+                    starting_balance=config.get('starting_balance', 10000.0),
+                    risk_per_trade=config.get('risk_per_trade', 100.0),
+                )
 
                 if len(confluence_df) > 0:
-                    confluence_df = confluence_df.sort_values(sort_map[sort_by], ascending=False).head(15)
+                    confluence_df = confluence_df.sort_values(sort_map[sort_by], ascending=False, na_position="last").head(15)
 
                     # Display as interactive table
                     for _, row in confluence_df.iterrows():
@@ -992,7 +1021,11 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
                 if st.button("🔍 Find Best Combinations", type="primary"):
                     with st.spinner("Searching..."):
-                        best = find_best_combinations(trades, max_depth, min_trades, top_n=10)
+                        best = find_best_combinations(
+                            trades, max_depth, min_trades, top_n=10,
+                            starting_balance=config.get('starting_balance', 10000.0),
+                            risk_per_trade=config.get('risk_per_trade', 100.0),
+                        )
 
                     if len(best) > 0:
                         st.session_state.auto_results = best
@@ -1539,33 +1572,6 @@ def format_parameters(params: dict, template_id: str) -> str:
 
     return " | ".join(parts)
 
-
-def render_settings():
-    """Render the Settings page."""
-    st.header("Settings")
-
-    st.subheader("Interpreter Library")
-    st.caption("Enable interpreters to use their outputs as confluence conditions.")
-
-    for key, config in INTERPRETERS.items():
-        with st.container(border=True):
-            col1, col2 = st.columns([0.1, 0.9])
-            with col1:
-                st.checkbox("", value=True, key=f"interp_{key}", label_visibility="collapsed")
-            with col2:
-                st.markdown(f"**{config.name}**")
-                st.caption(config.description)
-                st.caption(f"Outputs: {', '.join(config.outputs)}")
-
-    st.divider()
-
-    st.subheader("Data Connection")
-    if is_alpaca_configured():
-        st.success("✓ Alpaca API connected")
-    else:
-        st.info("Alpaca API connection not configured. Using mock data.")
-        if st.button("Configure Alpaca API"):
-            st.warning("Create a .env file with ALPACA_API_KEY and ALPACA_SECRET_KEY")
 
 
 if __name__ == "__main__":

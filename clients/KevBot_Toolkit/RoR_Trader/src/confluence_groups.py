@@ -107,6 +107,8 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "EMA Stack",
         "category": "Moving Averages",
         "description": "Three EMAs for trend direction and momentum",
+        "interpreters": ["EMA_STACK"],
+        "trigger_prefix": "ema",
         "parameters_schema": {
             "short_period": {"type": "int", "default": 9, "min": 1, "max": 200, "label": "Short Period"},
             "mid_period": {"type": "int", "default": 21, "min": 1, "max": 200, "label": "Mid Period"},
@@ -139,6 +141,8 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "MACD",
         "category": "Momentum",
         "description": "Moving Average Convergence Divergence",
+        "interpreters": ["MACD_LINE", "MACD_HISTOGRAM"],
+        "trigger_prefix": "macd",
         "parameters_schema": {
             "fast_period": {"type": "int", "default": 12, "min": 1, "max": 100, "label": "Fast Period"},
             "slow_period": {"type": "int", "default": 26, "min": 1, "max": 100, "label": "Slow Period"},
@@ -172,6 +176,8 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "VWAP",
         "category": "Volume",
         "description": "Volume Weighted Average Price with bands",
+        "interpreters": ["VWAP"],
+        "trigger_prefix": "vwap",
         "parameters_schema": {
             "std_dev": {"type": "float", "default": 2.0, "min": 0.5, "max": 5.0, "label": "Std Dev Multiplier"},
             "tolerance_pct": {"type": "float", "default": 0.1, "min": 0.01, "max": 1.0, "label": "AT Tolerance %"},
@@ -197,6 +203,8 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "Relative Volume",
         "category": "Volume",
         "description": "Current volume relative to historical average",
+        "interpreters": ["RVOL"],
+        "trigger_prefix": "rvol",
         "parameters_schema": {
             "sma_period": {"type": "int", "default": 20, "min": 5, "max": 100, "label": "SMA Period"},
             "high_threshold": {"type": "float", "default": 1.5, "min": 1.0, "max": 5.0, "label": "High Threshold"},
@@ -227,6 +235,8 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "UT Bot",
         "category": "Trend",
         "description": "UT Bot trend-following alerts based on ATR trailing stop",
+        "interpreters": ["UTBOT"],
+        "trigger_prefix": "utbot",
         "parameters_schema": {
             "atr_period": {"type": "int", "default": 10, "min": 1, "max": 50, "label": "ATR Period"},
             "atr_multiplier": {"type": "float", "default": 1.0, "min": 0.5, "max": 5.0, "label": "ATR Multiplier"},
