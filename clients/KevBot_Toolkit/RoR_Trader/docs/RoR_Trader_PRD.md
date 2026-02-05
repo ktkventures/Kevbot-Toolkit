@@ -588,16 +588,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Stop loss as strategy parameter** — ATR multiplier affects trade outcomes (win rate, R distribution), so it belongs at strategy level. Future: add more stop loss types (fixed dollar, trailing, percentage).
 - **Legacy strategy handling** — Strategies created before Phase 1 (IDs 1, 2) cannot be re-backtested or edited; they display saved KPIs only.
 
-### Phase 3: Dashboard
-*Landing page that ties the application together.*
-
-- [ ] Overview cards (strategy count, best performer, recent activity)
-- [ ] Quick actions (New Strategy, View Strategies)
-- [ ] Mini equity curves for saved strategies
-- [ ] Data source status and connection health
-- [ ] Empty state for new users
-
-### Phase 4: Forward Testing
+### Phase 3: Forward Testing
 *Key differentiator — what separates RoR Trader from backtest-only tools.*
 
 - [ ] Track strategy performance on new data after save date
@@ -605,7 +596,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Immutable forward test history (builds trust and credibility)
 - [ ] Status indicators on strategy cards (backtested, forward testing, validated)
 
-### Phase 5: Portfolios & Prop Firm Compliance
+### Phase 4: Portfolios & Prop Firm Compliance
 *Combine strategies and validate against real trading account rules.*
 
 - [ ] Portfolio builder (select strategies, set allocations)
@@ -613,6 +604,15 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Correlation matrix between strategies
 - [ ] Prop firm rule sets (Trade The Pool, FTMO, etc.)
 - [ ] Compliance checker with pass/fail indicators and recommendations
+
+### Phase 5: Dashboard
+*Landing page that ties the application together. Deferred until core functionality is complete.*
+
+- [ ] Overview cards (strategy count, best performer, recent activity)
+- [ ] Quick actions (New Strategy, View Strategies)
+- [ ] Mini equity curves for saved strategies
+- [ ] Data source status and connection health
+- [ ] Empty state for new users
 
 ### Phase 6: Alerts & Deployment
 *Make strategies actionable in real time.*

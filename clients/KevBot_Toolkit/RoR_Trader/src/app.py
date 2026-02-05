@@ -219,16 +219,25 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 # =============================================================================
 
 @st.cache_data(ttl=3600)
-def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42):
+def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
+                                  start_date=None, end_date=None):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
     Uses Alpaca API if configured, otherwise falls back to mock data.
 
+    Args:
+        symbol: Stock symbol
+        days: Number of days (used if start_date/end_date not provided)
+        seed: Random seed for mock data
+        start_date: Explicit start date (overrides days)
+        end_date: Explicit end date (overrides days)
+
     Returns DataFrame ready for trade generation and analysis.
     """
     # Load raw bars (Alpaca if configured, mock otherwise)
-    df = load_market_data(symbol, days=days, seed=seed)
+    df = load_market_data(symbol, days=days, seed=seed,
+                          start_date=start_date, end_date=end_date)
 
     if len(df) == 0:
         return df
@@ -243,6 +252,61 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42):
     df = detect_all_triggers(df)
 
     return df
+
+
+def prepare_forward_test_data(strat: dict):
+    """
+    Load continuous data from before forward_test_start to now,
+    run the full pipeline, and split trades at the boundary.
+
+    Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
+    """
+    forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+    data_days = strat.get('data_days', 30)
+    data_seed = strat.get('data_seed', 42)
+
+    # Start before forward_test_start to have backtest data + indicator warmup
+    start_date = forward_test_start_dt - timedelta(days=data_days * 2)
+    # Round end_date to market close today for cache-friendly behavior
+    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+
+    df = prepare_data_with_indicators(
+        strat['symbol'], seed=data_seed,
+        start_date=start_date, end_date=end_date
+    )
+
+    if len(df) == 0:
+        empty = pd.DataFrame()
+        return df, empty, empty, forward_test_start_dt
+
+    confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+
+    trades = generate_trades(
+        df,
+        direction=strat['direction'],
+        entry_trigger=strat['entry_trigger'],
+        exit_trigger=strat['exit_trigger'],
+        confluence_required=confluence_set,
+        risk_per_trade=strat.get('risk_per_trade', 100.0),
+        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+    )
+
+    backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+    return df, backtest_trades, forward_trades, forward_test_start_dt
+
+
+def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
+    """Split trades into backtest (before boundary) and forward (at/after boundary)."""
+    if len(trades_df) == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Match timezone awareness of the entry_time column
+    if hasattr(trades_df['entry_time'].dtype, 'tz') and trades_df['entry_time'].dtype.tz is not None:
+        boundary_dt = pd.Timestamp(boundary_dt).tz_localize(trades_df['entry_time'].dtype.tz)
+
+    backtest = trades_df[trades_df['entry_time'] < boundary_dt].copy()
+    forward = trades_df[trades_df['entry_time'] >= boundary_dt].copy()
+    return backtest, forward
 
 
 # =============================================================================
@@ -1381,8 +1445,17 @@ def render_strategy_list():
                 formatted = [format_confluence_record(c, enabled_groups) for c in confluence[:3]]
                 st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
 
-            status_icon = "🟢" if strat.get('forward_testing') else "⚪"
-            status_label = "Forward Testing" if strat.get('forward_testing') else "Backtest Only"
+            if strat.get('forward_testing') and strat.get('forward_test_start'):
+                ft_start = datetime.fromisoformat(strat['forward_test_start'])
+                ft_days = (datetime.now() - ft_start).days
+                status_label = f"Forward Testing ({ft_days}d)"
+                status_icon = "🟢"
+            elif strat.get('forward_testing'):
+                status_icon = "🟢"
+                status_label = "Forward Testing"
+            else:
+                status_icon = "⚪"
+                status_label = "Backtest Only"
             st.caption(f"{status_icon} {status_label}")
 
             # Row 3: Action buttons
@@ -1494,7 +1567,14 @@ def render_strategy_detail(strategy_id: int):
             st.session_state.confirm_delete_id = strategy_id
             st.rerun()
     with action_cols[3]:
-        status = "🟢 Forward Testing" if strat.get('forward_testing') else "⚪ Backtest Only"
+        if strat.get('forward_testing') and strat.get('forward_test_start'):
+            ft_start = datetime.fromisoformat(strat['forward_test_start'])
+            ft_days = (datetime.now() - ft_start).days
+            status = f"🟢 Forward Testing ({ft_days}d)"
+        elif strat.get('forward_testing'):
+            status = "🟢 Forward Testing"
+        else:
+            status = "⚪ Backtest Only"
         st.markdown(f"**{status}**")
 
     # Inline delete confirmation
@@ -1542,6 +1622,8 @@ def render_strategy_detail(strategy_id: int):
     if is_legacy:
         st.info("This is a legacy strategy. Live re-backtest is not available. Showing saved KPIs.")
         render_saved_kpis(strat)
+    elif strat.get('forward_testing') and strat.get('forward_test_start'):
+        render_forward_test_view(strat)
     else:
         render_live_backtest(strat)
 
@@ -1737,6 +1819,303 @@ def render_live_backtest(strat: dict):
                 st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
         else:
             st.caption("No confluence conditions")
+
+
+# =============================================================================
+# FORWARD TEST VIEW
+# =============================================================================
+
+def render_forward_test_view(strat: dict):
+    """Render the forward test view for a strategy with forward testing enabled."""
+    forward_start_str = strat.get('forward_test_start', '')
+    forward_start_dt = datetime.fromisoformat(forward_start_str)
+    duration_days = (datetime.now() - forward_start_dt).days
+
+    st.markdown(
+        f"**Forward Testing since {forward_start_str[:10]}** "
+        f"({duration_days}d)"
+    )
+
+    with st.spinner("Loading forward test data..."):
+        df, backtest_trades, forward_trades, boundary_dt = prepare_forward_test_data(strat)
+
+    if len(df) == 0:
+        st.error("No data available for this symbol.")
+        return
+
+    # KPI comparison
+    render_kpi_comparison(backtest_trades, forward_trades)
+
+    # Tabs
+    tab_charts, tab_trades, tab_config = st.tabs(["Equity & Charts", "Trade History", "Configuration"])
+
+    with tab_charts:
+        # Combined equity curve
+        all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+        render_combined_equity_curve(all_trades, boundary_dt)
+
+        # R-distribution comparison
+        render_r_distribution_comparison(backtest_trades, forward_trades)
+
+        # Price chart
+        st.subheader("Price Chart")
+        enabled_groups = get_enabled_groups()
+        overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+        show_indicators = []
+        indicator_colors = {}
+        for group in overlay_groups:
+            show_indicators.extend(get_overlay_indicators_for_group(group))
+            indicator_colors.update(get_overlay_colors_for_group(group))
+
+        render_price_chart(
+            df, all_trades, strat,
+            show_indicators=show_indicators,
+            indicator_colors=indicator_colors,
+            chart_key='forward_test_chart'
+        )
+
+    with tab_trades:
+        render_split_trade_history(backtest_trades, forward_trades)
+
+    with tab_config:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Strategy Setup**")
+            st.markdown(f"- Ticker: {strat['symbol']}")
+            st.markdown(f"- Direction: {strat['direction']}")
+            st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
+            st.markdown(f"- Exit: {get_trigger_display_name(strat, 'exit_trigger')}")
+        with col2:
+            st.markdown("**Settings**")
+            st.markdown(f"- Stop Loss: {strat.get('stop_atr_mult', 1.5):.1f}x ATR")
+            st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            created = strat.get('created_at', 'Unknown')
+            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
+            st.markdown(f"- Forward Test Start: {forward_start_str[:19]}")
+            if strat.get('updated_at'):
+                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+
+        st.markdown("**Confluence Conditions**")
+        confluence = strat.get('confluence', [])
+        if confluence:
+            enabled_groups = get_enabled_groups()
+            for c in confluence:
+                st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+        else:
+            st.caption("No confluence conditions")
+
+
+def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
+    """Render side-by-side KPI comparison between backtest and forward test."""
+    bt_kpis = calculate_kpis(backtest_trades)
+    fw_kpis = calculate_kpis(forward_trades)
+
+    col_bt, col_fw = st.columns(2)
+
+    with col_bt:
+        st.subheader("Backtest")
+        kpi_cols = st.columns(6)
+        kpi_cols[0].metric("Trades", bt_kpis["total_trades"])
+        kpi_cols[1].metric("Win Rate", f"{bt_kpis['win_rate']:.1f}%")
+        pf = bt_kpis['profit_factor']
+        kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[3].metric("Avg R", f"{bt_kpis['avg_r']:+.2f}")
+        kpi_cols[4].metric("Total R", f"{bt_kpis['total_r']:+.1f}")
+        kpi_cols[5].metric("Daily R", f"{bt_kpis['daily_r']:+.2f}")
+
+    with col_fw:
+        st.subheader("Forward Test")
+        if len(forward_trades) == 0:
+            st.info("No forward test trades yet.")
+        else:
+            kpi_cols = st.columns(6)
+
+            # Trades (no delta — count isn't comparable)
+            kpi_cols[0].metric("Trades", fw_kpis["total_trades"])
+
+            # Win Rate with delta
+            wr_delta = safe_subtract(fw_kpis['win_rate'], bt_kpis['win_rate'])
+            kpi_cols[1].metric("Win Rate", f"{fw_kpis['win_rate']:.1f}%",
+                               delta=f"{wr_delta:+.1f}%")
+
+            # Profit Factor with delta
+            fw_pf = fw_kpis['profit_factor']
+            bt_pf = bt_kpis['profit_factor']
+            pf_display = "Inf" if fw_pf == float('inf') else f"{fw_pf:.2f}"
+            pf_delta = safe_subtract(fw_pf, bt_pf)
+            if fw_pf == float('inf') or bt_pf == float('inf'):
+                kpi_cols[2].metric("Profit Factor", pf_display)
+            else:
+                kpi_cols[2].metric("Profit Factor", pf_display, delta=f"{pf_delta:+.2f}")
+
+            # Avg R with delta
+            avg_r_delta = fw_kpis['avg_r'] - bt_kpis['avg_r']
+            kpi_cols[3].metric("Avg R", f"{fw_kpis['avg_r']:+.2f}",
+                               delta=f"{avg_r_delta:+.2f}")
+
+            # Total R (no delta — different time periods)
+            kpi_cols[4].metric("Total R", f"{fw_kpis['total_r']:+.1f}")
+
+            # Daily R with delta
+            daily_r_delta = fw_kpis['daily_r'] - bt_kpis['daily_r']
+            kpi_cols[5].metric("Daily R", f"{fw_kpis['daily_r']:+.2f}",
+                               delta=f"{daily_r_delta:+.2f}")
+
+
+def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime):
+    """Render a combined equity curve with vertical line at forward test start."""
+    st.subheader("Equity Curve")
+
+    if len(trades_df) == 0:
+        st.info("No trades to display.")
+        return
+
+    equity_df = trades_df[["exit_time", "r_multiple"]].sort_values("exit_time").reset_index(drop=True)
+    equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
+
+    # Match timezone awareness for comparison
+    boundary_ts = boundary_dt
+    if hasattr(equity_df["exit_time"].dtype, 'tz') and equity_df["exit_time"].dtype.tz is not None:
+        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity_df["exit_time"].dtype.tz)
+
+    # Split into backtest and forward portions
+    bt_mask = equity_df["exit_time"] < boundary_ts
+    fw_mask = equity_df["exit_time"] >= boundary_ts
+
+    fig = go.Figure()
+
+    # Backtest portion (blue)
+    bt_data = equity_df[bt_mask]
+    if len(bt_data) > 0:
+        fig.add_trace(go.Scatter(
+            x=bt_data["exit_time"],
+            y=bt_data["cumulative_r"],
+            mode="lines",
+            name="Backtest",
+            line=dict(color="#2196F3", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(33, 150, 243, 0.1)"
+        ))
+
+    # Forward portion (green) — connect to last backtest point
+    fw_data = equity_df[fw_mask]
+    if len(fw_data) > 0:
+        # Include last backtest point for continuity
+        if len(bt_data) > 0:
+            bridge = bt_data.iloc[[-1]]
+            fw_plot = pd.concat([bridge, fw_data], ignore_index=True)
+        else:
+            fw_plot = fw_data
+
+        fig.add_trace(go.Scatter(
+            x=fw_plot["exit_time"],
+            y=fw_plot["cumulative_r"],
+            mode="lines",
+            name="Forward Test",
+            line=dict(color="#4CAF50", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(76, 175, 80, 0.1)"
+        ))
+
+    # High water mark
+    fig.add_trace(go.Scatter(
+        x=equity_df["exit_time"],
+        y=equity_df["cumulative_r"].cummax(),
+        mode="lines",
+        name="High Water Mark",
+        line=dict(color="green", width=1, dash="dot")
+    ))
+
+    # Vertical line at forward test start
+    # Use shape + annotation instead of add_vline to avoid Plotly datetime arithmetic bug
+    fig.add_shape(
+        type="line", x0=boundary_ts, x1=boundary_ts, y0=0, y1=1,
+        yref="paper", line=dict(color="orange", width=2, dash="dash")
+    )
+    fig.add_annotation(
+        x=boundary_ts, y=1, yref="paper",
+        text="Forward Test Start", showarrow=False,
+        font=dict(color="orange"), xanchor="left", yanchor="bottom"
+    )
+
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.update_layout(
+        height=400,
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="",
+        yaxis_title="Cumulative R",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
+    """Render side-by-side R-multiple distribution histograms."""
+    col_bt, col_fw = st.columns(2)
+
+    with col_bt:
+        st.subheader("Backtest R-Distribution")
+        if len(backtest_trades) > 0:
+            fig = px.histogram(
+                backtest_trades, x="r_multiple", nbins=20,
+                labels={"r_multiple": "R-Multiple"},
+                color_discrete_sequence=["#2196F3"]
+            )
+            fig.add_vline(x=0, line_dash="dash", line_color="gray")
+            fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No backtest trades.")
+
+    with col_fw:
+        st.subheader("Forward R-Distribution")
+        if len(forward_trades) > 0:
+            fig = px.histogram(
+                forward_trades, x="r_multiple", nbins=20,
+                labels={"r_multiple": "R-Multiple"},
+                color_discrete_sequence=["#4CAF50"]
+            )
+            fig.add_vline(x=0, line_dash="dash", line_color="gray")
+            fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No forward test trades yet.")
+
+
+def render_split_trade_history(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
+    """Render trade history split into forward test and backtest sections."""
+    def format_trade_table(trades: pd.DataFrame) -> pd.DataFrame:
+        display = trades.copy()
+        display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+        display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+        display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
+        display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+        return display[['entry', 'exit', 'exit_reason', 'R', 'result']]
+
+    trade_col_config = {
+        'entry': 'Entry Time',
+        'exit': 'Exit Time',
+        'exit_reason': 'Exit Reason',
+        'R': 'R-Multiple',
+        'result': 'Result',
+    }
+
+    with st.expander(f"Forward Test Trades ({len(forward_trades)})", expanded=True):
+        if len(forward_trades) > 0:
+            display = format_trade_table(forward_trades.sort_values('entry_time', ascending=False))
+            st.dataframe(display, use_container_width=True, hide_index=True,
+                         column_config=trade_col_config)
+        else:
+            st.info("No forward test trades yet.")
+
+    with st.expander(f"Backtest Trades ({len(backtest_trades)})", expanded=False):
+        if len(backtest_trades) > 0:
+            display = format_trade_table(backtest_trades.sort_values('entry_time', ascending=False))
+            st.dataframe(display, use_container_width=True, hide_index=True,
+                         column_config=trade_col_config)
+        else:
+            st.info("No backtest trades.")
 
 
 # =============================================================================

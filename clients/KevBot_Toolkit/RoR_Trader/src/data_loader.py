@@ -35,15 +35,19 @@ def is_alpaca_configured() -> bool:
 def load_from_alpaca(
     symbol: str,
     days: int = 30,
-    timeframe: str = "1Min"
+    timeframe: str = "1Min",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Load historical bar data from Alpaca API.
 
     Args:
         symbol: Stock symbol (e.g., "SPY")
-        days: Number of days of history to fetch
+        days: Number of days of history to fetch (used if start_date/end_date not provided)
         timeframe: Bar timeframe ("1Min", "5Min", "15Min", "1Hour", "1Day")
+        start_date: Explicit start date (overrides days)
+        end_date: Explicit end date (overrides days)
 
     Returns:
         DataFrame with OHLCV data, or None if fetch fails
@@ -72,8 +76,9 @@ def load_from_alpaca(
         tf = tf_map.get(timeframe, TimeFrame.Minute)
 
         # Calculate date range
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        if start_date is None or end_date is None:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
 
         # Fetch bars
         request = StockBarsRequest(
@@ -103,23 +108,31 @@ def load_from_alpaca(
 def load_from_mock(
     symbol: str,
     days: int = 30,
-    seed: int = 42
+    seed: int = 42,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
     Load mock/simulated bar data.
 
     Args:
         symbol: Stock symbol (used for seed variation)
-        days: Number of days of history
+        days: Number of days of history (used if start_date/end_date not provided)
         seed: Random seed for reproducibility
+        start_date: Explicit start date (overrides days)
+        end_date: Explicit end date (overrides days)
 
     Returns:
         DataFrame with simulated OHLCV data
     """
     from mock_data import generate_mock_bars
 
-    end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=days)
+    if start_date is not None and end_date is not None:
+        start = start_date
+        end = end_date
+    else:
+        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=days)
 
     # Vary seed by symbol for different price patterns
     symbol_seed = seed + hash(symbol) % 1000
@@ -137,29 +150,33 @@ def load_market_data(
     days: int = 30,
     timeframe: str = "1Min",
     seed: int = 42,
-    force_mock: bool = False
+    force_mock: bool = False,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
     Load market data, preferring Alpaca if configured.
 
     Args:
         symbol: Stock symbol (e.g., "SPY")
-        days: Number of days of history
+        days: Number of days of history (used if start_date/end_date not provided)
         timeframe: Bar timeframe (only affects Alpaca, mock always uses 1Min)
         seed: Random seed for mock data
         force_mock: If True, skip Alpaca and use mock data
+        start_date: Explicit start date (overrides days)
+        end_date: Explicit end date (overrides days)
 
     Returns:
         DataFrame with OHLCV data (columns: open, high, low, close, volume, trade_count, vwap)
     """
     # Try Alpaca first (unless forced to use mock)
     if not force_mock and is_alpaca_configured():
-        df = load_from_alpaca(symbol, days, timeframe)
+        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date, end_date=end_date)
         if df is not None and len(df) > 0:
             return df
 
     # Fall back to mock data
-    return load_from_mock(symbol, days, seed)
+    return load_from_mock(symbol, days, seed, start_date=start_date, end_date=end_date)
 
 
 def get_data_source() -> str:

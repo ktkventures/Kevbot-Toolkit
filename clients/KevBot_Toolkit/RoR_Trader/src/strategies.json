@@ -1,55 +1,6 @@
 [
   {
-    "name": "SPY LONG - UT Bot Alert",
-    "symbol": "SPY",
-    "direction": "LONG",
-    "timeframe": "1Min",
-    "entry_trigger": "UT Bot Alert",
-    "exit_trigger": "Opposite Signal",
-    "confluence": [
-      "1M-EMA_STACK-LSM",
-      "1M-MACD_SIMPLE-M<S\u2193"
-    ],
-    "kpis": {
-      "total_trades": 5,
-      "win_rate": 80.0,
-      "profit_factor": 25.458713222943324,
-      "avg_r": 2.870361386494236,
-      "total_r": 14.351806932471181,
-      "daily_r": 2.870361386494236,
-      "final_balance": 11435.180693247119,
-      "total_pnl": 1435.1806932471181
-    },
-    "forward_testing": true,
-    "alerts": false,
-    "id": 1,
-    "created_at": "2026-02-03T18:18:48.537496"
-  },
-  {
-    "name": "SPY LONG - UT Bot Alert",
-    "symbol": "SPY",
-    "direction": "LONG",
-    "timeframe": "1Min",
-    "entry_trigger": "UT Bot Alert",
-    "exit_trigger": "Opposite Signal",
-    "confluence": [],
-    "kpis": {
-      "total_trades": 96,
-      "win_rate": 64.58333333333334,
-      "profit_factor": 2.5680984205590973,
-      "avg_r": 1.8090767378239836,
-      "total_r": 173.67136683110243,
-      "daily_r": 7.894153037777383,
-      "final_balance": 27367.136683110242,
-      "total_pnl": 17367.136683110242
-    },
-    "forward_testing": false,
-    "alerts": false,
-    "id": 2,
-    "created_at": "2026-02-03T18:39:48.785320"
-  },
-  {
-    "name": "SPY LONG - EMA Stack (Default): Short > Mid Cross",
+    "name": "SPY LONG - EMA Cross (20d Forward Test)",
     "symbol": "SPY",
     "direction": "LONG",
     "timeframe": "1Min",
@@ -71,20 +22,56 @@
     "kpis": {
       "total_trades": 24,
       "win_rate": 12.5,
-      "profit_factor": 2.1550310458964956,
-      "avg_r": 0.7785684260295552,
-      "total_r": 18.685642224709326,
-      "daily_r": 1.2457094816472885,
-      "final_balance": 11868.564222470934,
-      "total_pnl": 1868.5642224709327
+      "profit_factor": 2.15,
+      "avg_r": 0.78,
+      "total_r": 18.69,
+      "daily_r": 1.25,
+      "final_balance": 11869.0,
+      "total_pnl": 1869.0
     },
     "forward_testing": true,
     "alerts": false,
-    "id": 3,
-    "created_at": "2026-02-05T11:12:38.792597"
+    "id": 1,
+    "created_at": "2026-01-16T10:00:00.000000",
+    "forward_test_start": "2026-01-16T10:00:00.000000"
   },
   {
-    "name": "AMD LONG - EMA Stack (Default): Short > Mid Cross",
+    "name": "NVDA LONG - EMA Cross (14d Forward Test)",
+    "symbol": "NVDA",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 2.0,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 77,
+    "confluence": [
+      "1M-RVOL-HIGH"
+    ],
+    "kpis": {
+      "total_trades": 40,
+      "win_rate": 30.0,
+      "profit_factor": 1.8,
+      "avg_r": 0.5,
+      "total_r": 20.0,
+      "daily_r": 0.67,
+      "final_balance": 12000.0,
+      "total_pnl": 2000.0
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 2,
+    "created_at": "2026-01-22T09:30:00.000000",
+    "forward_test_start": "2026-01-22T09:30:00.000000"
+  },
+  {
+    "name": "AMD LONG - EMA Cross (7d Forward Test)",
     "symbol": "AMD",
     "direction": "LONG",
     "timeframe": "1Min",
@@ -99,29 +86,62 @@
     "starting_balance": 10000.0,
     "data_days": 30,
     "data_seed": 42,
-    "confluence": [
-      "1M-VWAP-AT",
-      "1M-RVOL-HIGH"
-    ],
+    "confluence": [],
     "kpis": {
       "total_trades": 158,
-      "win_rate": 24.68354430379747,
-      "profit_factor": 1.1578438846333194,
-      "avg_r": 0.10927534737572063,
-      "total_r": 17.26550488536386,
-      "daily_r": 0.28775841475606434,
-      "final_balance": 11726.550488536386,
-      "total_pnl": 1726.550488536386
+      "win_rate": 24.68,
+      "profit_factor": 1.16,
+      "avg_r": 0.11,
+      "total_r": 17.27,
+      "daily_r": 0.29,
+      "final_balance": 11727.0,
+      "total_pnl": 1727.0
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 3,
+    "created_at": "2026-01-29T11:00:00.000000",
+    "forward_test_start": "2026-01-29T11:00:00.000000"
+  },
+  {
+    "name": "SPY LONG - EMA Cross (1d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.0,
+    "starting_balance": 10000.0,
+    "data_days": 15,
+    "data_seed": 99,
+    "confluence": [
+      "1M-VWAP-AT",
+      "1M-MACD_LINE-M>S+"
+    ],
+    "kpis": {
+      "total_trades": 10,
+      "win_rate": 50.0,
+      "profit_factor": 1.5,
+      "avg_r": 0.3,
+      "total_r": 3.0,
+      "daily_r": 0.5,
+      "final_balance": 10300.0,
+      "total_pnl": 300.0
     },
     "forward_testing": true,
     "alerts": false,
     "id": 4,
-    "created_at": "2026-02-05T13:56:22.361889",
-    "forward_test_start": "2026-02-05T13:56:22.361889"
+    "created_at": "2026-02-04T14:00:00.000000",
+    "forward_test_start": "2026-02-04T14:00:00.000000"
   },
   {
-    "name": "SPY LONG - EMA Stack (Default): Short > Mid Cross (Copy)",
-    "symbol": "SPY",
+    "name": "TSLA LONG - EMA Cross (Backtest Only)",
+    "symbol": "TSLA",
     "direction": "LONG",
     "timeframe": "1Min",
     "entry_trigger": "ema_cross_bull",
@@ -134,24 +154,23 @@
     "stop_atr_mult": 1.5,
     "starting_balance": 10000.0,
     "data_days": 30,
-    "data_seed": 42,
+    "data_seed": 55,
     "confluence": [
-      "1M-MACD_LINE-M>S+",
       "1M-RVOL-MINIMAL"
     ],
     "kpis": {
-      "total_trades": 24,
-      "win_rate": 12.5,
-      "profit_factor": 2.1550310458964956,
-      "avg_r": 0.7785684260295552,
-      "total_r": 18.685642224709326,
-      "daily_r": 1.2457094816472885,
-      "final_balance": 11868.564222470934,
-      "total_pnl": 1868.5642224709327
+      "total_trades": 35,
+      "win_rate": 40.0,
+      "profit_factor": 1.3,
+      "avg_r": 0.2,
+      "total_r": 7.0,
+      "daily_r": 0.35,
+      "final_balance": 10700.0,
+      "total_pnl": 700.0
     },
     "forward_testing": false,
     "alerts": false,
     "id": 5,
-    "created_at": "2026-02-05T13:58:17.671240"
+    "created_at": "2026-02-05T09:00:00.000000"
   }
 ]
