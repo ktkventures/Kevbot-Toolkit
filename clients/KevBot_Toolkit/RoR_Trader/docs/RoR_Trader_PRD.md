@@ -567,19 +567,26 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Add null guard on confluence record filtering (crash risk when trades have no confluence data)
 - [x] Prevent same entry/exit trigger selection (validation + warning in Strategy Builder Step 1)
 - [x] Replace hardcoded mappings (INTERPRETER_TO_TEMPLATE, base_trigger_map) with runtime-built maps from confluence groups
-- [x] Add risk/stop-loss parameter configuration to Strategy Builder Step 1 (risk_per_trade, stop_atr_mult, starting_balance)
+- [x] Add stop loss (ATR multiplier) configuration to Strategy Builder Step 1
 - [x] Fix chart timestamp handling (fragile assumption about DataFrame column order)
-- [x] Save complete strategy parameters on save (risk_per_trade, stop_atr_mult, starting_balance, data_days, data_seed)
+- [x] Save complete strategy parameters on save (stop_atr_mult, data_days, data_seed)
 
-### Phase 2: Complete My Strategies
+### Phase 2: Complete My Strategies ✓
 *The weakest existing page — P0 per this PRD but currently a display-only stub.*
+*Completed: February 5, 2026*
 
-- [ ] Strategy detail view (full KPIs, equity curve, trade history table)
-- [ ] Edit strategy (reopen in Strategy Builder with saved configuration)
-- [ ] Delete strategy (with confirmation dialog)
-- [ ] Clone/duplicate strategy
-- [ ] Re-backtest with fresh data
-- [ ] Sorting and filtering (by ticker, direction, performance metrics)
+- [x] Strategy detail view (full R-based KPIs, equity curve, R-distribution histogram, price chart, trade history table)
+- [x] Edit strategy (reopen in Strategy Builder with saved configuration; warns if forward testing enabled)
+- [x] Delete strategy (with inline confirmation dialog)
+- [x] Clone/duplicate strategy (preserves original, disables forward testing on copy)
+- [x] Re-backtest with current data (detail view re-runs backtest live using saved config)
+- [x] Sorting and filtering (by ticker, direction, status; sort by name, date, win rate, profit factor, total R)
+- [x] Fix strategies.json path to resolve relative to script location (not working directory)
+
+### Design Decisions
+- **R-based metrics at strategy level** — Avg R, Total R, Daily R keep comparisons apples-to-apples across strategies. Dollar sizing (risk_per_trade, starting_balance) deferred to portfolio level.
+- **Stop loss as strategy parameter** — ATR multiplier affects trade outcomes (win rate, R distribution), so it belongs at strategy level. Future: add more stop loss types (fixed dollar, trailing, percentage).
+- **Legacy strategy handling** — Strategies created before Phase 1 (IDs 1, 2) cannot be re-backtested or edited; they display saved KPIs only.
 
 ### Phase 3: Dashboard
 *Landing page that ties the application together.*

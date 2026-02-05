@@ -18,6 +18,7 @@ import plotly.express as px
 from streamlit_lightweight_charts import renderLightweightCharts
 import json
 import os
+import copy
 
 from data_loader import load_market_data, get_data_source, is_alpaca_configured
 from indicators import (
@@ -68,8 +69,9 @@ AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"
 TIMEFRAMES = ["1Min", "5Min", "15Min", "1Hour"]
 DIRECTIONS = ["LONG", "SHORT"]
 
-# Strategies storage path
-STRATEGIES_FILE = "strategies.json"
+# Strategies storage path (resolve relative to this script, not cwd)
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STRATEGIES_FILE = os.path.join(_SCRIPT_DIR, "strategies.json")
 
 
 # =============================================================================
@@ -411,7 +413,8 @@ def render_price_chart(
     trades: pd.DataFrame,
     config: dict,
     show_indicators: list = None,
-    indicator_colors: dict = None
+    indicator_colors: dict = None,
+    chart_key: str = 'price_chart'
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -540,7 +543,7 @@ def render_price_chart(
     renderLightweightCharts([{
         "chart": chart_options,
         "series": series
-    }], key='price_chart')
+    }], key=chart_key)
 
 
 # =============================================================================
@@ -559,9 +562,13 @@ def save_strategy(strategy: dict):
     """Save a strategy to file."""
     strategies = load_strategies()
 
-    # Add timestamp and ID
-    strategy['id'] = len(strategies) + 1
+    # Add timestamp and ID (max+1 is safe after deletions)
+    strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
     strategy['created_at'] = datetime.now().isoformat()
+
+    # Track forward test start date
+    if strategy.get('forward_testing'):
+        strategy['forward_test_start'] = strategy['created_at']
 
     # Convert set to list for JSON serialization
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
@@ -571,6 +578,93 @@ def save_strategy(strategy: dict):
 
     with open(STRATEGIES_FILE, 'w') as f:
         json.dump(strategies, f, indent=2)
+
+
+def get_strategy_by_id(strategy_id: int) -> dict | None:
+    """Get a single strategy by ID."""
+    for s in load_strategies():
+        if s.get('id') == strategy_id:
+            return s
+    return None
+
+
+def update_strategy(strategy_id: int, updated_strategy: dict) -> bool:
+    """
+    Update an existing strategy in strategies.json.
+    Preserves original id and created_at. Sets updated_at.
+    Resets forward_test_start if forward testing is enabled.
+    """
+    strategies = load_strategies()
+
+    for i, strat in enumerate(strategies):
+        if strat.get('id') == strategy_id:
+            updated_strategy['id'] = strategy_id
+            updated_strategy['created_at'] = strat['created_at']
+            updated_strategy['updated_at'] = datetime.now().isoformat()
+
+            if updated_strategy.get('forward_testing'):
+                updated_strategy['forward_test_start'] = datetime.now().isoformat()
+
+            if 'confluence' in updated_strategy and isinstance(updated_strategy['confluence'], set):
+                updated_strategy['confluence'] = list(updated_strategy['confluence'])
+
+            strategies[i] = updated_strategy
+
+            with open(STRATEGIES_FILE, 'w') as f:
+                json.dump(strategies, f, indent=2)
+            return True
+
+    return False
+
+
+def delete_strategy(strategy_id: int) -> bool:
+    """Delete a strategy from strategies.json by ID."""
+    strategies = load_strategies()
+    original_len = len(strategies)
+    strategies = [s for s in strategies if s.get('id') != strategy_id]
+
+    if len(strategies) < original_len:
+        with open(STRATEGIES_FILE, 'w') as f:
+            json.dump(strategies, f, indent=2)
+        return True
+    return False
+
+
+def duplicate_strategy(strategy_id: int) -> dict | None:
+    """
+    Duplicate a strategy. Creates a new copy with forward testing disabled.
+    The original (including forward test data) is untouched.
+    """
+    strategies = load_strategies()
+    source = None
+    for s in strategies:
+        if s.get('id') == strategy_id:
+            source = s
+            break
+
+    if source is None:
+        return None
+
+    new_strategy = copy.deepcopy(source)
+    new_strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
+    new_strategy['created_at'] = datetime.now().isoformat()
+    new_strategy['name'] = source['name'] + " (Copy)"
+    new_strategy['forward_testing'] = False
+    new_strategy.pop('forward_test_start', None)
+    new_strategy.pop('updated_at', None)
+
+    strategies.append(new_strategy)
+
+    with open(STRATEGIES_FILE, 'w') as f:
+        json.dump(strategies, f, indent=2)
+
+    return new_strategy
+
+
+def get_trigger_display_name(strat: dict, trigger_key: str) -> str:
+    """Get display name for a trigger, handling legacy strategies."""
+    name_key = trigger_key + '_name'
+    return strat.get(name_key, strat.get(trigger_key, 'Unknown'))
 
 
 # =============================================================================
@@ -619,6 +713,14 @@ def main():
         st.session_state.selected_confluences = set()
     if 'strategy_config' not in st.session_state:
         st.session_state.strategy_config = {}
+    if 'viewing_strategy_id' not in st.session_state:
+        st.session_state.viewing_strategy_id = None
+    if 'editing_strategy_id' not in st.session_state:
+        st.session_state.editing_strategy_id = None
+    if 'confirm_delete_id' not in st.session_state:
+        st.session_state.confirm_delete_id = None
+    if 'confirm_edit_id' not in st.session_state:
+        st.session_state.confirm_edit_id = None
 
     # Sidebar navigation
     with st.sidebar:
@@ -682,17 +784,35 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
     st.divider()
 
+    # Editing banner
+    editing_id = st.session_state.get('editing_strategy_id')
+    if editing_id:
+        editing_strat = get_strategy_by_id(editing_id)
+        if editing_strat:
+            st.info(f"Editing: {editing_strat['name']}")
+            if st.button("Cancel Edit", key="cancel_edit_builder"):
+                st.session_state.editing_strategy_id = None
+                st.session_state.step = 1
+                st.session_state.strategy_config = {}
+                st.session_state.selected_confluences = set()
+                st.rerun()
+
     # =========================================================================
     # STEP 1: SETUP
     # =========================================================================
     if step == 1:
         st.header("Step 1: Define Your Strategy")
 
+        # Pre-populate defaults when editing
+        edit_config = st.session_state.strategy_config if editing_id else {}
+
         col1, col2 = st.columns(2)
 
         with col1:
-            symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=0)
-            direction = st.radio("Direction", DIRECTIONS, horizontal=True)
+            symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
+            symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx)
+            direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
+            direction = st.radio("Direction", DIRECTIONS, horizontal=True, index=direction_idx)
 
             # Get entry triggers from enabled confluence groups
             # Returns dict mapping confluence_trigger_id -> display_name
@@ -707,9 +827,13 @@ def render_strategy_builder(data_days: int, data_seed: int):
             else:
                 entry_trigger_options = list(entry_triggers.keys())
                 entry_trigger_labels = list(entry_triggers.values())
+                # Pre-select saved entry trigger when editing
+                saved_entry = edit_config.get('entry_trigger_confluence_id', '')
+                entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
                 entry_trigger_idx = st.selectbox(
                     "Entry Trigger",
                     range(len(entry_trigger_options)),
+                    index=entry_default_idx,
                     format_func=lambda i: entry_trigger_labels[i],
                     help="Triggers from your enabled Confluence Groups"
                 )
@@ -717,7 +841,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 entry_trigger_name = entry_triggers[entry_trigger]
 
         with col2:
-            timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=0)
+            tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
+            timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=tf_idx)
             st.write("")  # Spacer
 
             # Exit triggers use the same confluence group triggers
@@ -732,46 +857,34 @@ def render_strategy_builder(data_days: int, data_seed: int):
             else:
                 exit_trigger_options = list(exit_triggers.keys())
                 exit_trigger_labels = list(exit_triggers.values())
+                # Pre-select saved exit trigger when editing
+                saved_exit = edit_config.get('exit_trigger_confluence_id', '')
+                exit_default_idx = exit_trigger_options.index(saved_exit) if saved_exit in exit_trigger_options else 0
                 exit_trigger_idx = st.selectbox(
                     "Exit Trigger",
                     range(len(exit_trigger_options)),
+                    index=exit_default_idx,
                     format_func=lambda i: exit_trigger_labels[i],
                     help="Triggers from your enabled Confluence Groups"
                 )
                 exit_trigger = exit_trigger_options[exit_trigger_idx]
                 exit_trigger_name = exit_triggers[exit_trigger]
 
-        # Risk Settings
+        # Stop Loss Settings
         st.divider()
-        st.subheader("Risk Settings")
-        risk_col1, risk_col2, risk_col3 = st.columns(3)
-        with risk_col1:
-            risk_per_trade = st.number_input(
-                "Risk Per Trade ($)",
-                min_value=1.0,
-                max_value=10000.0,
-                value=100.0,
-                step=25.0,
-                help="Dollar amount risked per trade"
-            )
-        with risk_col2:
-            stop_atr_mult = st.number_input(
-                "Stop Loss (ATR x)",
-                min_value=0.5,
-                max_value=5.0,
-                value=1.5,
-                step=0.1,
-                help="Stop loss distance as a multiple of ATR"
-            )
-        with risk_col3:
-            starting_balance = st.number_input(
-                "Starting Balance ($)",
-                min_value=100.0,
-                max_value=1000000.0,
-                value=10000.0,
-                step=1000.0,
-                help="Starting account balance for P&L calculations"
-            )
+        st.subheader("Stop Loss")
+        stop_atr_mult = st.number_input(
+            "Stop Loss (ATR x)",
+            min_value=0.5,
+            max_value=5.0,
+            value=float(edit_config.get('stop_atr_mult', 1.5)),
+            step=0.1,
+            help="Stop loss distance as a multiple of ATR. Acts as an early exit if price moves against you."
+        )
+
+        # Dollar sizing deferred to portfolio level — use fixed defaults for R calculations
+        risk_per_trade = 100.0
+        starting_balance = 10000.0
 
         st.divider()
 
@@ -1147,7 +1260,10 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 st.rerun()
 
         with nav_cols[2]:
-            if st.button("💾 Save Strategy", type="primary"):
+            editing_id = st.session_state.get('editing_strategy_id')
+            save_label = "💾 Update Strategy" if editing_id else "💾 Save Strategy"
+
+            if st.button(save_label, type="primary"):
                 strategy = {
                     'name': strategy_name,
                     **config,
@@ -1156,19 +1272,34 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     'forward_testing': enable_forward,
                     'alerts': enable_alerts,
                 }
-                save_strategy(strategy)
-                st.success(f"Strategy '{strategy_name}' saved!")
+
+                if editing_id:
+                    update_strategy(editing_id, strategy)
+                    st.success(f"Strategy '{strategy_name}' updated!")
+                else:
+                    save_strategy(strategy)
+                    st.success(f"Strategy '{strategy_name}' saved!")
+
                 st.balloons()
 
                 # Reset for new strategy
                 st.session_state.step = 1
                 st.session_state.selected_confluences = set()
                 st.session_state.strategy_config = {}
+                st.session_state.editing_strategy_id = None
 
 
 def render_my_strategies():
-    """Render the My Strategies page."""
-    st.header("📁 My Strategies")
+    """Render the My Strategies page — routes to list or detail view."""
+    if st.session_state.viewing_strategy_id is not None:
+        render_strategy_detail(st.session_state.viewing_strategy_id)
+        return
+    render_strategy_list()
+
+
+def render_strategy_list():
+    """Render the strategy list view with sorting and filtering."""
+    st.header("My Strategies")
 
     strategies = load_strategies()
 
@@ -1176,29 +1307,482 @@ def render_my_strategies():
         st.info("No strategies saved yet. Create one in the Strategy Builder!")
         return
 
+    # --- Filter & Sort Bar ---
+    filter_cols = st.columns([1, 1, 1, 2])
+
+    with filter_cols[0]:
+        ticker_filter = st.selectbox("Ticker", ["All"] + AVAILABLE_SYMBOLS, key="strat_filter_ticker")
+    with filter_cols[1]:
+        direction_filter = st.selectbox("Direction", ["All", "LONG", "SHORT"], key="strat_filter_dir")
+    with filter_cols[2]:
+        status_filter = st.selectbox("Status", ["All", "Forward Testing", "Backtest Only"], key="strat_filter_status")
+    with filter_cols[3]:
+        sort_option = st.selectbox(
+            "Sort By",
+            ["Newest First", "Oldest First", "Name A-Z", "Win Rate (High)", "Profit Factor (High)", "Total R (High)"],
+            key="strat_sort"
+        )
+
+    # Apply filters
+    if ticker_filter != "All":
+        strategies = [s for s in strategies if s.get('symbol') == ticker_filter]
+    if direction_filter != "All":
+        strategies = [s for s in strategies if s.get('direction') == direction_filter]
+    if status_filter == "Forward Testing":
+        strategies = [s for s in strategies if s.get('forward_testing')]
+    elif status_filter == "Backtest Only":
+        strategies = [s for s in strategies if not s.get('forward_testing')]
+
+    # Apply sorting
+    sort_keys = {
+        "Newest First": (lambda s: s.get('created_at', ''), True),
+        "Oldest First": (lambda s: s.get('created_at', ''), False),
+        "Name A-Z": (lambda s: s.get('name', '').lower(), False),
+        "Win Rate (High)": (lambda s: s.get('kpis', {}).get('win_rate', 0), True),
+        "Profit Factor (High)": (lambda s: s.get('kpis', {}).get('profit_factor', 0), True),
+        "Total R (High)": (lambda s: s.get('kpis', {}).get('total_r', 0), True),
+    }
+    key_fn, reverse = sort_keys[sort_option]
+    strategies.sort(key=key_fn, reverse=reverse)
+
+    if len(strategies) == 0:
+        st.info("No strategies match the current filters.")
+        return
+
+    st.caption(f"{len(strategies)} strategies")
+
+    # --- Strategy Cards ---
+    enabled_groups = get_enabled_groups()
+
     for strat in strategies:
+        sid = strat.get('id', 0)
         with st.container(border=True):
-            col1, col2, col3 = st.columns([3, 2, 1])
+            # Row 1: Name + KPI metrics
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
 
             with col1:
                 st.markdown(f"### {strat['name']}")
-                st.caption(f"{strat['symbol']} | {strat['direction']} | {strat['entry_trigger']} → {strat['exit_trigger']}")
+                entry_display = get_trigger_display_name(strat, 'entry_trigger')
+                exit_display = get_trigger_display_name(strat, 'exit_trigger')
+                st.caption(f"{strat['symbol']} | {strat['direction']} | {entry_display} → {exit_display}")
 
+            kpis = strat.get('kpis', {})
             with col2:
-                kpis = strat.get('kpis', {})
                 st.metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
-
             with col3:
-                st.metric("Profit Factor", f"{kpis.get('profit_factor', 0):.2f}")
+                pf = kpis.get('profit_factor', 0)
+                st.metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+            with col4:
+                st.metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
 
-            # Confluence
+            # Row 2: Confluence + Status
             confluence = strat.get('confluence', [])
             if len(confluence) > 0:
-                st.caption(f"Confluence: {', '.join(confluence[:3])}" + ("..." if len(confluence) > 3 else ""))
+                formatted = [format_confluence_record(c, enabled_groups) for c in confluence[:3]]
+                st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
 
-            # Status
-            status = "🟢 Forward Testing" if strat.get('forward_testing') else "⚪ Backtest Only"
-            st.caption(status)
+            status_icon = "🟢" if strat.get('forward_testing') else "⚪"
+            status_label = "Forward Testing" if strat.get('forward_testing') else "Backtest Only"
+            st.caption(f"{status_icon} {status_label}")
+
+            # Row 3: Action buttons
+            btn_cols = st.columns([1, 1, 1, 1, 4])
+            with btn_cols[0]:
+                if st.button("View", key=f"view_{sid}"):
+                    st.session_state.viewing_strategy_id = sid
+                    st.rerun()
+            with btn_cols[1]:
+                if st.button("Edit", key=f"edit_{sid}"):
+                    initiate_edit(strat)
+            with btn_cols[2]:
+                if st.button("Clone", key=f"clone_{sid}"):
+                    new = duplicate_strategy(sid)
+                    if new:
+                        st.toast(f"Cloned as '{new['name']}'")
+                        st.rerun()
+            with btn_cols[3]:
+                if st.button("Delete", key=f"del_{sid}", type="secondary"):
+                    st.session_state.confirm_delete_id = sid
+                    st.rerun()
+
+            # Inline delete confirmation
+            if st.session_state.confirm_delete_id == sid:
+                st.warning(f"Are you sure you want to delete '{strat['name']}'? This cannot be undone.")
+                confirm_cols = st.columns([1, 1, 6])
+                with confirm_cols[0]:
+                    if st.button("Yes, Delete", key=f"confirm_del_{sid}", type="primary"):
+                        delete_strategy(sid)
+                        st.session_state.confirm_delete_id = None
+                        st.rerun()
+                with confirm_cols[1]:
+                    if st.button("Cancel", key=f"cancel_del_{sid}"):
+                        st.session_state.confirm_delete_id = None
+                        st.rerun()
+
+            # Inline edit confirmation (forward-tested strategies)
+            if st.session_state.confirm_edit_id == sid:
+                st.warning(
+                    "This strategy has forward testing enabled. "
+                    "Editing will reset the forward test start date. "
+                    "You can also duplicate the strategy to preserve the original."
+                )
+                edit_cols = st.columns([1, 1, 1, 5])
+                with edit_cols[0]:
+                    if st.button("Edit Anyway", key=f"confirm_edit_{sid}", type="primary"):
+                        st.session_state.confirm_edit_id = None
+                        load_strategy_into_builder(strat)
+                with edit_cols[1]:
+                    if st.button("Duplicate Instead", key=f"dup_instead_{sid}"):
+                        new = duplicate_strategy(sid)
+                        if new:
+                            st.session_state.confirm_edit_id = None
+                            load_strategy_into_builder(new)
+                with edit_cols[2]:
+                    if st.button("Cancel", key=f"cancel_edit_{sid}"):
+                        st.session_state.confirm_edit_id = None
+                        st.rerun()
+
+
+# =============================================================================
+# STRATEGY DETAIL VIEW
+# =============================================================================
+
+def render_strategy_detail(strategy_id: int):
+    """Render the full detail view for a single strategy."""
+    strat = get_strategy_by_id(strategy_id)
+    if strat is None:
+        st.error("Strategy not found.")
+        st.session_state.viewing_strategy_id = None
+        st.rerun()
+        return
+
+    # Back button
+    if st.button("← Back to Strategies"):
+        st.session_state.viewing_strategy_id = None
+        st.rerun()
+
+    # Header
+    st.header(strat['name'])
+
+    meta_cols = st.columns(5)
+    meta_cols[0].markdown(f"**Ticker:** {strat['symbol']}")
+    meta_cols[1].markdown(f"**Direction:** {strat['direction']}")
+    meta_cols[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
+    meta_cols[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
+    meta_cols[4].markdown(f"**Exit:** {get_trigger_display_name(strat, 'exit_trigger')}")
+
+    # Confluence conditions
+    enabled_groups = get_enabled_groups()
+    confluence = strat.get('confluence', [])
+    if confluence:
+        formatted = [format_confluence_record(c, enabled_groups) for c in confluence]
+        st.caption("Confluence: " + " + ".join(formatted))
+
+    # Action bar
+    action_cols = st.columns([1, 1, 1, 1, 4])
+    with action_cols[0]:
+        if st.button("Edit Strategy", key="detail_edit"):
+            initiate_edit(strat)
+    with action_cols[1]:
+        if st.button("Clone", key="detail_clone"):
+            new = duplicate_strategy(strategy_id)
+            if new:
+                st.toast(f"Cloned as '{new['name']}'")
+                st.rerun()
+    with action_cols[2]:
+        if st.button("Delete", key="detail_delete", type="secondary"):
+            st.session_state.confirm_delete_id = strategy_id
+            st.rerun()
+    with action_cols[3]:
+        status = "🟢 Forward Testing" if strat.get('forward_testing') else "⚪ Backtest Only"
+        st.markdown(f"**{status}**")
+
+    # Inline delete confirmation
+    if st.session_state.confirm_delete_id == strategy_id:
+        st.warning(f"Are you sure you want to delete '{strat['name']}'? This cannot be undone.")
+        confirm_cols = st.columns([1, 1, 6])
+        with confirm_cols[0]:
+            if st.button("Yes, Delete", key="detail_confirm_del", type="primary"):
+                delete_strategy(strategy_id)
+                st.session_state.confirm_delete_id = None
+                st.session_state.viewing_strategy_id = None
+                st.rerun()
+        with confirm_cols[1]:
+            if st.button("Cancel", key="detail_cancel_del"):
+                st.session_state.confirm_delete_id = None
+                st.rerun()
+
+    # Inline edit confirmation (forward-tested strategies)
+    if st.session_state.confirm_edit_id == strategy_id:
+        st.warning(
+            "This strategy has forward testing enabled. "
+            "Editing will reset the forward test start date. "
+            "You can also duplicate the strategy to preserve the original."
+        )
+        edit_cols = st.columns([1, 1, 1, 5])
+        with edit_cols[0]:
+            if st.button("Edit Anyway", key="detail_confirm_edit", type="primary"):
+                st.session_state.confirm_edit_id = None
+                load_strategy_into_builder(strat)
+        with edit_cols[1]:
+            if st.button("Duplicate Instead", key="detail_dup_instead"):
+                new = duplicate_strategy(strategy_id)
+                if new:
+                    st.session_state.confirm_edit_id = None
+                    load_strategy_into_builder(new)
+        with edit_cols[2]:
+            if st.button("Cancel", key="detail_cancel_edit"):
+                st.session_state.confirm_edit_id = None
+                st.rerun()
+
+    st.divider()
+
+    # Route to appropriate view based on strategy type
+    is_legacy = 'entry_trigger_confluence_id' not in strat
+    if is_legacy:
+        st.info("This is a legacy strategy. Live re-backtest is not available. Showing saved KPIs.")
+        render_saved_kpis(strat)
+    else:
+        render_live_backtest(strat)
+
+
+def render_saved_kpis(strat: dict):
+    """Display saved KPIs for legacy strategies that cannot be re-backtested."""
+    kpis = strat.get('kpis', {})
+
+    kpi_cols = st.columns(6)
+    kpi_cols[0].metric("Trades", kpis.get("total_trades", 0))
+    kpi_cols[1].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
+    pf = kpis.get('profit_factor', 0)
+    kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+    kpi_cols[3].metric("Avg R", f"{kpis.get('avg_r', 0):+.2f}")
+    kpi_cols[4].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
+    kpi_cols[5].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+
+    st.subheader("Strategy Configuration")
+    stop = strat.get('stop_atr_mult')
+    if stop:
+        st.markdown(f"**Stop Loss:** {stop}x ATR")
+    created = strat.get('created_at', 'Unknown')
+    st.markdown(f"**Created:** {created[:10] if len(created) >= 10 else created}")
+
+
+def render_live_backtest(strat: dict):
+    """Re-run backtest with current data and display full results."""
+    data_days = strat.get('data_days', 30)
+    data_seed = strat.get('data_seed', 42)
+
+    with st.spinner("Running backtest with current data..."):
+        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed)
+
+        if len(df) == 0:
+            st.error("No data available for this symbol.")
+            return
+
+        confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+
+        trades = generate_trades(
+            df,
+            direction=strat['direction'],
+            entry_trigger=strat['entry_trigger'],
+            exit_trigger=strat['exit_trigger'],
+            confluence_required=confluence_set,
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+        )
+
+    if len(trades) == 0:
+        st.warning("No trades generated. The entry trigger may reference a confluence group that is no longer enabled.")
+
+    # Compute live KPIs
+    kpis = calculate_kpis(
+        trades,
+        starting_balance=strat.get('starting_balance', 10000.0),
+        risk_per_trade=strat.get('risk_per_trade', 100.0),
+    )
+
+    # KPI row (R-based metrics only — dollar sizing deferred to portfolio level)
+    kpi_cols = st.columns(6)
+    kpi_cols[0].metric("Trades", kpis["total_trades"])
+    kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+    pf = kpis['profit_factor']
+    kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+    kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
+    kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
+    kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+
+    # Tabbed content
+    tab_backtest, tab_config = st.tabs(["Backtest Results", "Configuration"])
+
+    with tab_backtest:
+        # Charts side by side
+        chart_left, chart_right = st.columns(2)
+
+        with chart_left:
+            st.subheader("Equity Curve")
+            if len(trades) > 0:
+                equity_df = trades[["exit_time", "r_multiple"]].sort_values("exit_time")
+                equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=equity_df["exit_time"],
+                    y=equity_df["cumulative_r"],
+                    mode="lines",
+                    name="Equity",
+                    line=dict(color="#2196F3", width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(33, 150, 243, 0.1)"
+                ))
+                fig.add_trace(go.Scatter(
+                    x=equity_df["exit_time"],
+                    y=equity_df["cumulative_r"].cummax(),
+                    mode="lines",
+                    name="High Water Mark",
+                    line=dict(color="green", width=1, dash="dot")
+                ))
+                fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                fig.update_layout(
+                    height=400,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="",
+                    yaxis_title="Cumulative R",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No trades to display.")
+
+        with chart_right:
+            st.subheader("R-Multiple Distribution")
+            if len(trades) > 0:
+                fig_hist = px.histogram(
+                    trades, x="r_multiple", nbins=20,
+                    labels={"r_multiple": "R-Multiple"},
+                    color_discrete_sequence=["#2196F3"]
+                )
+                fig_hist.add_vline(x=0, line_dash="dash", line_color="gray")
+                fig_hist.update_layout(
+                    height=400,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+            else:
+                st.info("No trades to display.")
+
+        # Price chart (full width)
+        st.subheader("Price Chart")
+        enabled_groups = get_enabled_groups()
+        overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+        show_indicators = []
+        indicator_colors = {}
+        for group in overlay_groups:
+            show_indicators.extend(get_overlay_indicators_for_group(group))
+            indicator_colors.update(get_overlay_colors_for_group(group))
+
+        render_price_chart(
+            df, trades, strat,
+            show_indicators=show_indicators,
+            indicator_colors=indicator_colors,
+            chart_key='detail_price_chart'
+        )
+
+        # Trade history table
+        st.subheader("Trade History")
+        if len(trades) > 0:
+            display = trades.copy()
+            display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+            display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+            display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
+            display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+            st.dataframe(
+                display[['entry', 'exit', 'exit_reason', 'R', 'result']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'entry': 'Entry Time',
+                    'exit': 'Exit Time',
+                    'exit_reason': 'Exit Reason',
+                    'R': 'R-Multiple',
+                    'result': 'Result',
+                }
+            )
+        else:
+            st.info("No trades to display.")
+
+    with tab_config:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Strategy Setup**")
+            st.markdown(f"- Ticker: {strat['symbol']}")
+            st.markdown(f"- Direction: {strat['direction']}")
+            st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
+            st.markdown(f"- Exit: {get_trigger_display_name(strat, 'exit_trigger')}")
+        with col2:
+            st.markdown("**Settings**")
+            st.markdown(f"- Stop Loss: {strat.get('stop_atr_mult', 1.5):.1f}x ATR")
+            st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            created = strat.get('created_at', 'Unknown')
+            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
+            if strat.get('updated_at'):
+                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+
+        st.markdown("**Confluence Conditions**")
+        confluence = strat.get('confluence', [])
+        if confluence:
+            enabled_groups = get_enabled_groups()
+            for c in confluence:
+                st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+        else:
+            st.caption("No confluence conditions")
+
+
+# =============================================================================
+# EDIT FLOW
+# =============================================================================
+
+def initiate_edit(strat: dict):
+    """Start editing a strategy. Warns if forward testing is enabled."""
+    if strat.get('forward_testing'):
+        st.session_state.confirm_edit_id = strat.get('id')
+        st.rerun()
+    else:
+        load_strategy_into_builder(strat)
+
+
+def load_strategy_into_builder(strat: dict):
+    """Load a saved strategy into the Strategy Builder for editing."""
+    if 'entry_trigger_confluence_id' not in strat:
+        st.error("Legacy strategies cannot be edited. Please create a new strategy in the Strategy Builder.")
+        return
+
+    st.session_state.editing_strategy_id = strat['id']
+
+    st.session_state.strategy_config = {
+        'symbol': strat['symbol'],
+        'direction': strat['direction'],
+        'timeframe': strat.get('timeframe', '1Min'),
+        'entry_trigger': strat['entry_trigger'],
+        'entry_trigger_confluence_id': strat.get('entry_trigger_confluence_id', ''),
+        'exit_trigger': strat['exit_trigger'],
+        'exit_trigger_confluence_id': strat.get('exit_trigger_confluence_id', ''),
+        'entry_trigger_name': strat.get('entry_trigger_name', strat['entry_trigger']),
+        'exit_trigger_name': strat.get('exit_trigger_name', strat['exit_trigger']),
+        'risk_per_trade': strat.get('risk_per_trade', 100.0),
+        'stop_atr_mult': strat.get('stop_atr_mult', 1.5),
+        'starting_balance': strat.get('starting_balance', 10000.0),
+        'data_days': strat.get('data_days', 30),
+        'data_seed': strat.get('data_seed', 42),
+    }
+
+    st.session_state.selected_confluences = set(strat.get('confluence', []))
+    st.session_state.step = 2
+    st.session_state.viewing_strategy_id = None
+    st.session_state.confirm_edit_id = None
+
+    st.rerun()
 
 
 def render_confluence_groups():

@@ -82,5 +82,76 @@
     "alerts": false,
     "id": 3,
     "created_at": "2026-02-05T11:12:38.792597"
+  },
+  {
+    "name": "AMD LONG - EMA Stack (Default): Short > Mid Cross",
+    "symbol": "AMD",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 42,
+    "confluence": [
+      "1M-VWAP-AT",
+      "1M-RVOL-HIGH"
+    ],
+    "kpis": {
+      "total_trades": 158,
+      "win_rate": 24.68354430379747,
+      "profit_factor": 1.1578438846333194,
+      "avg_r": 0.10927534737572063,
+      "total_r": 17.26550488536386,
+      "daily_r": 0.28775841475606434,
+      "final_balance": 11726.550488536386,
+      "total_pnl": 1726.550488536386
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 4,
+    "created_at": "2026-02-05T13:56:22.361889",
+    "forward_test_start": "2026-02-05T13:56:22.361889"
+  },
+  {
+    "name": "SPY LONG - EMA Stack (Default): Short > Mid Cross (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 42,
+    "confluence": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "kpis": {
+      "total_trades": 24,
+      "win_rate": 12.5,
+      "profit_factor": 2.1550310458964956,
+      "avg_r": 0.7785684260295552,
+      "total_r": 18.685642224709326,
+      "daily_r": 1.2457094816472885,
+      "final_balance": 11868.564222470934,
+      "total_pnl": 1868.5642224709327
+    },
+    "forward_testing": false,
+    "alerts": false,
+    "id": 5,
+    "created_at": "2026-02-05T13:58:17.671240"
   }
 ]
