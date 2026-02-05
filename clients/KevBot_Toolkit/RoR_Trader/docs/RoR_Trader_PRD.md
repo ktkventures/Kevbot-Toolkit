@@ -559,16 +559,17 @@ My Strategies → Strategy Detail → Edit Strategy
 
 ## 14. Development Roadmap
 
-### Phase 1: Harden the Core Engine
+### Phase 1: Harden the Core Engine ✓
 *Fix bugs and remove fragility in the foundation all future features build on.*
+*Completed: February 5, 2026*
 
-- [ ] Handle infinity gracefully in confluence analysis calculations (profit factor deltas, sorting) — display of infinity when no losses is correct and intentional
-- [ ] Add null guard on confluence record filtering (crash risk when trades have no confluence data)
-- [ ] Complete opposite trigger mapping in triggers.py (incomplete mapping causes positions that never close)
-- [ ] Replace hardcoded mappings (INTERPRETER_TO_TEMPLATE, base_trigger_map) with runtime-built maps from confluence groups
-- [ ] Add risk/stop-loss parameter configuration to Strategy Builder Step 1 (currently hardcoded, not saved with strategy)
-- [ ] Fix chart timestamp handling (fragile assumption about DataFrame column order)
-- [ ] Save complete strategy parameters on save (risk_per_trade, stop_atr_mult, timeframe usage)
+- [x] Handle infinity gracefully in confluence analysis calculations (profit factor deltas, sorting) — display of infinity when no losses is correct and intentional
+- [x] Add null guard on confluence record filtering (crash risk when trades have no confluence data)
+- [x] Prevent same entry/exit trigger selection (validation + warning in Strategy Builder Step 1)
+- [x] Replace hardcoded mappings (INTERPRETER_TO_TEMPLATE, base_trigger_map) with runtime-built maps from confluence groups
+- [x] Add risk/stop-loss parameter configuration to Strategy Builder Step 1 (risk_per_trade, stop_atr_mult, starting_balance)
+- [x] Fix chart timestamp handling (fragile assumption about DataFrame column order)
+- [x] Save complete strategy parameters on save (risk_per_trade, stop_atr_mult, starting_balance, data_days, data_seed)
 
 ### Phase 2: Complete My Strategies
 *The weakest existing page — P0 per this PRD but currently a display-only stub.*
