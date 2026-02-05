@@ -36,8 +36,7 @@ from interpreters import (
 )
 from triggers import (
     generate_trades,
-    get_entry_triggers_for_direction,
-    get_exit_triggers
+    EXIT_TYPES,
 )
 from confluence_groups import (
     load_confluence_groups,
@@ -46,6 +45,8 @@ from confluence_groups import (
     get_group_by_id,
     get_group_triggers,
     get_all_triggers,
+    get_entry_triggers as get_confluence_entry_triggers,
+    get_exit_triggers as get_confluence_exit_triggers,
     duplicate_group,
     generate_unique_id,
     validate_group_id,
@@ -69,6 +70,180 @@ DIRECTIONS = ["LONG", "SHORT"]
 
 # Strategies storage path
 STRATEGIES_FILE = "strategies.json"
+
+
+# =============================================================================
+# TRIGGER MAPPING
+# =============================================================================
+
+def get_base_trigger_id(confluence_trigger_id: str) -> str:
+    """
+    Map a confluence group trigger ID to the base trigger ID used in DataFrame columns.
+
+    Confluence group trigger IDs are formatted as: {group_id}_{base_trigger}
+    e.g., "ema_stack_default_cross_bull" -> "ema_cross_bull"
+
+    The base trigger IDs match the columns created by detect_all_triggers().
+    """
+    # Map from confluence group base triggers to interpreter trigger IDs
+    base_trigger_map = {
+        # EMA Stack triggers
+        "cross_bull": "ema_cross_bull",
+        "cross_bear": "ema_cross_bear",
+        "mid_cross_bull": "ema_mid_cross_bull",
+        "mid_cross_bear": "ema_mid_cross_bear",
+        # MACD triggers
+        "zero_cross_up": "macd_zero_cross_up",
+        "zero_cross_down": "macd_zero_cross_down",
+        "hist_flip_pos": "macd_hist_flip_pos",
+        "hist_flip_neg": "macd_hist_flip_neg",
+        # VWAP triggers
+        "cross_above": "vwap_cross_above",
+        "cross_below": "vwap_cross_below",
+        # RVOL triggers
+        "spike": "rvol_spike",
+        "extreme": "rvol_extreme",
+        "fade": "rvol_fade",
+        # UT Bot triggers
+        "buy": "utbot_buy",
+        "sell": "utbot_sell",
+    }
+
+    # Get all triggers to find the matching one
+    all_triggers = get_all_triggers()
+
+    if confluence_trigger_id in all_triggers:
+        trigger_def = all_triggers[confluence_trigger_id]
+        base_trigger = trigger_def.base_trigger
+
+        # Check if we have a direct mapping
+        if base_trigger in base_trigger_map:
+            return base_trigger_map[base_trigger]
+
+        # For MACD, the base trigger might be "cross_bull" which maps to "macd_cross_bull"
+        # Try prepending the template type
+        group_id = confluence_trigger_id.rsplit('_', 1)[0]  # Remove the base trigger suffix
+
+        # Infer template from group_id
+        if "macd" in group_id:
+            return f"macd_{base_trigger}"
+        elif "ema" in group_id:
+            return f"ema_{base_trigger}"
+        elif "vwap" in group_id:
+            return f"vwap_{base_trigger}"
+        elif "rvol" in group_id:
+            return f"rvol_{base_trigger}"
+        elif "utbot" in group_id:
+            return f"utbot_{base_trigger}"
+
+    # Fallback: return as-is (might be a direct trigger ID)
+    return confluence_trigger_id
+
+
+# =============================================================================
+# CONFLUENCE RECORD FORMATTING
+# =============================================================================
+
+# Map interpreter keys to base_template IDs
+INTERPRETER_TO_TEMPLATE = {
+    "EMA_STACK": "ema_stack",
+    "MACD_LINE": "macd",
+    "MACD_HISTOGRAM": "macd",
+    "VWAP": "vwap",
+    "RVOL": "rvol",
+    "UTBOT": "utbot",
+}
+
+
+def format_confluence_record(record: str, groups: list = None) -> str:
+    """
+    Format a confluence record with the confluence group version name.
+
+    Confluence records are formatted as: "{timeframe}-{INTERPRETER}-{state}"
+    e.g., "1M-EMA_STACK-SML"
+
+    Returns formatted string like: "EMA Stack (Default): SML"
+    """
+    if groups is None:
+        groups = get_enabled_groups()
+
+    parts = record.split("-")
+    if len(parts) < 3:
+        return record  # Can't parse, return as-is
+
+    timeframe = parts[0]
+    interpreter = parts[1]
+    state = "-".join(parts[2:])  # Handle states that might contain dashes
+
+    # Find the template ID for this interpreter
+    template_id = INTERPRETER_TO_TEMPLATE.get(interpreter)
+    if not template_id:
+        return record  # Unknown interpreter
+
+    # Find the first enabled group with this template
+    for group in groups:
+        if group.base_template == template_id:
+            return f"{group.name}: {state}"
+
+    # Fallback: just clean up the interpreter name
+    interpreter_name = interpreter.replace("_", " ").title()
+    return f"{interpreter_name}: {state}"
+
+
+def format_confluence_set(records: set, groups: list = None) -> str:
+    """Format a set of confluence records into a readable string."""
+    if groups is None:
+        groups = get_enabled_groups()
+
+    formatted = [format_confluence_record(r, groups) for r in sorted(records)]
+    return " + ".join(formatted)
+
+
+def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
+    """
+    Get the indicator column names for a confluence group.
+
+    Returns list of column names that should be displayed for this group.
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return []
+
+    # Return the indicator columns defined in the template
+    return template.get("indicator_columns", [])
+
+
+def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
+    """
+    Get the colors for a confluence group's indicators.
+
+    Returns dict mapping column_name -> color
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return {}
+
+    # Map template indicator columns to their colors from plot_settings
+    colors = {}
+    indicator_cols = template.get("indicator_columns", [])
+    plot_schema = template.get("plot_schema", {})
+
+    # Build color mapping based on template type
+    if group.base_template == "ema_stack":
+        colors["ema_short"] = group.plot_settings.colors.get("short_color", "#22c55e")
+        colors["ema_mid"] = group.plot_settings.colors.get("mid_color", "#eab308")
+        colors["ema_long"] = group.plot_settings.colors.get("long_color", "#ef4444")
+    elif group.base_template == "vwap":
+        colors["vwap"] = group.plot_settings.colors.get("vwap_color", "#8b5cf6")
+        colors["vwap_upper"] = group.plot_settings.colors.get("band_color", "#c4b5fd")
+        colors["vwap_lower"] = group.plot_settings.colors.get("band_color", "#c4b5fd")
+    elif group.base_template == "macd":
+        colors["macd_line"] = group.plot_settings.colors.get("macd_color", "#2563eb")
+        colors["macd_signal"] = group.plot_settings.colors.get("signal_color", "#f97316")
+    elif group.base_template == "utbot":
+        colors["utbot_stop"] = group.plot_settings.colors.get("trail_color", "#64748b")
+
+    return colors
 
 
 # =============================================================================
@@ -256,7 +431,8 @@ def render_price_chart(
     df: pd.DataFrame,
     trades: pd.DataFrame,
     config: dict,
-    show_indicators: list = None
+    show_indicators: list = None,
+    indicator_colors: dict = None
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -265,7 +441,8 @@ def render_price_chart(
         df: DataFrame with OHLCV data and indicator columns (timestamp index)
         trades: DataFrame with trade entry/exit data
         config: Strategy config with 'direction' key
-        show_indicators: List of indicator column names to overlay (e.g., ['ema_8', 'ema_21'])
+        show_indicators: List of indicator column names to overlay (e.g., ['ema_short', 'ema_mid'])
+        indicator_colors: Dict mapping column names to colors (from confluence group settings)
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -360,8 +537,11 @@ def render_price_chart(
                         })
 
                 if ind_data:
-                    # Get color for this indicator
-                    color = INDICATOR_COLORS.get(ind_id, "#FFFFFF")
+                    # Get color for this indicator (prefer confluence group colors, fallback to defaults)
+                    if indicator_colors and ind_id in indicator_colors:
+                        color = indicator_colors[ind_id]
+                    else:
+                        color = INDICATOR_COLORS.get(ind_id, "#FFFFFF")
 
                     series.append({
                         "type": "Line",
@@ -535,44 +715,72 @@ def render_strategy_builder(data_days: int, data_seed: int):
             symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=0)
             direction = st.radio("Direction", DIRECTIONS, horizontal=True)
 
-            # Get entry triggers for selected direction
-            entry_triggers = get_entry_triggers_for_direction(direction)
-            entry_trigger_options = list(entry_triggers.keys())
-            entry_trigger_labels = list(entry_triggers.values())
-            entry_trigger_idx = st.selectbox(
-                "Entry Trigger",
-                range(len(entry_trigger_options)),
-                format_func=lambda i: entry_trigger_labels[i]
-            )
-            entry_trigger = entry_trigger_options[entry_trigger_idx]
+            # Get entry triggers from enabled confluence groups
+            # Returns dict mapping confluence_trigger_id -> display_name
+            # e.g., "ema_stack_default_cross_bull" -> "EMA Stack (Default): Short > Mid Cross"
+            enabled_groups = get_enabled_groups()
+            entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
+
+            if len(entry_triggers) == 0:
+                st.warning("No entry triggers available. Enable confluence groups in Settings.")
+                entry_trigger = None
+                entry_trigger_name = None
+            else:
+                entry_trigger_options = list(entry_triggers.keys())
+                entry_trigger_labels = list(entry_triggers.values())
+                entry_trigger_idx = st.selectbox(
+                    "Entry Trigger",
+                    range(len(entry_trigger_options)),
+                    format_func=lambda i: entry_trigger_labels[i],
+                    help="Triggers from your enabled Confluence Groups"
+                )
+                entry_trigger = entry_trigger_options[entry_trigger_idx]
+                entry_trigger_name = entry_triggers[entry_trigger]
 
         with col2:
             timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=0)
             st.write("")  # Spacer
 
-            # Get exit triggers
-            exit_triggers = get_exit_triggers()
-            exit_trigger_options = list(exit_triggers.keys())
-            exit_trigger_labels = list(exit_triggers.values())
-            exit_trigger_idx = st.selectbox(
-                "Exit Trigger",
-                range(len(exit_trigger_options)),
-                format_func=lambda i: exit_trigger_labels[i]
-            )
-            exit_trigger = exit_trigger_options[exit_trigger_idx]
+            # Exit triggers use the same confluence group triggers
+            # Get ALL triggers (not filtered by direction) - user decides how to use them
+            all_triggers = get_all_triggers(enabled_groups)
+            exit_triggers = {tid: tdef.name for tid, tdef in all_triggers.items()}
+
+            if len(exit_triggers) == 0:
+                st.warning("No exit triggers available. Enable confluence groups in Settings.")
+                exit_trigger = None
+                exit_trigger_name = None
+            else:
+                exit_trigger_options = list(exit_triggers.keys())
+                exit_trigger_labels = list(exit_triggers.values())
+                exit_trigger_idx = st.selectbox(
+                    "Exit Trigger",
+                    range(len(exit_trigger_options)),
+                    format_func=lambda i: exit_trigger_labels[i],
+                    help="Triggers from your enabled Confluence Groups"
+                )
+                exit_trigger = exit_trigger_options[exit_trigger_idx]
+                exit_trigger_name = exit_triggers[exit_trigger]
 
         st.divider()
 
-        if st.button("Next: Add Confluence →", type="primary", use_container_width=True):
+        can_proceed = entry_trigger is not None and exit_trigger is not None
+        if st.button("Next: Add Confluence →", type="primary", use_container_width=True, disabled=not can_proceed):
             # Save config and move to step 2
+            # Map the confluence trigger IDs to the base trigger IDs for trade generation
+            base_entry_trigger_id = get_base_trigger_id(entry_trigger)
+            base_exit_trigger_id = get_base_trigger_id(exit_trigger)
+
             st.session_state.strategy_config = {
                 'symbol': symbol,
                 'direction': direction,
                 'timeframe': timeframe,
-                'entry_trigger': entry_trigger,
-                'exit_trigger': exit_trigger,
-                'entry_trigger_name': entry_triggers[entry_trigger],
-                'exit_trigger_name': exit_triggers[exit_trigger],
+                'entry_trigger': base_entry_trigger_id,  # Base trigger ID for trade generation
+                'entry_trigger_confluence_id': entry_trigger,  # Full confluence ID for display
+                'exit_trigger': base_exit_trigger_id,  # Base trigger ID for trade generation
+                'exit_trigger_confluence_id': exit_trigger,  # Full confluence ID for display
+                'entry_trigger_name': entry_trigger_name,
+                'exit_trigger_name': exit_trigger_name,
             }
             st.session_state.step = 2
             st.session_state.selected_confluences = set()
@@ -583,6 +791,9 @@ def render_strategy_builder(data_days: int, data_seed: int):
     # =========================================================================
     elif step == 2:
         config = st.session_state.strategy_config
+
+        # Load enabled confluence groups for formatting and overlays
+        enabled_groups = get_enabled_groups()
 
         # Header with strategy summary
         entry_name = config.get('entry_trigger_name', config['entry_trigger'])
@@ -622,8 +833,9 @@ def render_strategy_builder(data_days: int, data_seed: int):
             st.caption("Active Confluence Filters:")
             tag_cols = st.columns(min(len(selected) + 1, 6))
             for i, conf in enumerate(sorted(selected)):
+                conf_display = format_confluence_record(conf, enabled_groups)
                 with tag_cols[i % 5]:
-                    if st.button(f"✕ {conf}", key=f"rm_{conf}"):
+                    if st.button(f"✕ {conf_display}", key=f"rm_{conf}"):
                         st.session_state.selected_confluences.discard(conf)
                         st.rerun()
 
@@ -689,14 +901,32 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     st.info("No trades match current filters")
 
             with chart_tab2:
-                # Indicator overlay selector
-                available_overlays = get_available_overlay_indicators()
-                show_indicators = st.multiselect(
-                    "Show Indicators",
-                    options=available_overlays,
-                    default=["ema_21"],
-                    format_func=lambda x: INDICATORS[x].name if x in INDICATORS else x
-                )
+                # Confluence group selector for indicator overlays
+                # Only show groups that have chart overlays (not MACD which is typically a separate pane)
+                overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+
+                if len(overlay_groups) > 0:
+                    selected_overlay_groups = st.multiselect(
+                        "Show Indicators",
+                        options=[g.id for g in overlay_groups],
+                        default=[overlay_groups[0].id] if len(overlay_groups) > 0 else [],
+                        format_func=lambda gid: next((g.name for g in overlay_groups if g.id == gid), gid),
+                        help="Select confluence groups to overlay on chart"
+                    )
+
+                    # Collect indicator columns and colors from selected groups
+                    show_indicators = []
+                    indicator_colors = {}
+                    for gid in selected_overlay_groups:
+                        group = get_group_by_id(gid, enabled_groups)
+                        if group:
+                            cols = get_overlay_indicators_for_group(group)
+                            show_indicators.extend(cols)
+                            indicator_colors.update(get_overlay_colors_for_group(group))
+                else:
+                    st.info("No overlay-compatible confluence groups enabled")
+                    show_indicators = []
+                    indicator_colors = {}
 
                 if len(filtered_trades) > 0:
                     st.caption(f"{len(filtered_trades)} trades on {config['symbol']} ({config['direction']})")
@@ -704,7 +934,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     st.caption(f"{config['symbol']} price data (no trades match filters)")
 
                 # Render the TradingView-style chart with indicator overlays
-                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators)
+                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors)
 
         # -----------------------------------------------------------------
         # RIGHT COLUMN: Confluence Drill-Down (always visible)
@@ -726,7 +956,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
                     # Display as interactive table
                     for _, row in confluence_df.iterrows():
-                        conf = row['confluence']
+                        conf = row['confluence']  # Raw record for selection logic
+                        conf_display = format_confluence_record(conf, enabled_groups)  # Formatted for display
                         is_selected = conf in selected
 
                         col1, col2, col3, col4, col5 = st.columns([0.5, 3, 1, 1, 1])
@@ -741,7 +972,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
                                 st.rerun()
 
                         with col2:
-                            st.markdown(f"**{conf}**" if is_selected else conf)
+                            st.markdown(f"**{conf_display}**" if is_selected else conf_display)
                         with col3:
                             st.caption(f"{row['total_trades']} trades")
                         with col4:
@@ -770,10 +1001,13 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     for _, row in st.session_state.auto_results.iterrows():
                         col1, col2, col3, col4 = st.columns([0.5, 3, 1, 1])
 
+                        # Format the combination for display
+                        combo_display = format_confluence_set(row['combination'], enabled_groups)
+
                         with col1:
                             st.caption(f"{row['depth']}")
                         with col2:
-                            st.markdown(f"**{row['combo_str']}**")
+                            st.markdown(f"**{combo_display}**")
                         with col3:
                             pf = row['profit_factor']
                             st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "∞")
@@ -789,8 +1023,9 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 display['time'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
                 display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
                 display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
+                # Format confluence records with group version names
                 display['confluences'] = display['confluence_records'].apply(
-                    lambda r: ", ".join(sorted(r)[:3]) + ("..." if len(r) > 3 else "")
+                    lambda r: ", ".join([format_confluence_record(rec, enabled_groups) for rec in sorted(r)[:3]]) + ("..." if len(r) > 3 else "")
                 )
 
                 st.dataframe(
@@ -824,8 +1059,9 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
         st.header("Step 3: Save Your Strategy")
 
-        # Strategy name
-        default_name = f"{config['symbol']} {config['direction']} - {config['entry_trigger']}"
+        # Use the display name for default strategy name
+        entry_display_name = config.get('entry_trigger_name', config['entry_trigger'])
+        default_name = f"{config['symbol']} {config['direction']} - {entry_display_name}"
         strategy_name = st.text_input("Strategy Name", value=default_name)
 
         # Summary
@@ -833,14 +1069,17 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
         col1, col2 = st.columns(2)
 
+        # Get display names
+        exit_display_name = config.get('exit_trigger_name', config['exit_trigger'])
+
         with col1:
             st.markdown(f"""
             **Configuration:**
             - Ticker: {config['symbol']}
             - Direction: {config['direction']}
             - Timeframe: {config['timeframe']}
-            - Entry: {config['entry_trigger']}
-            - Exit: {config['exit_trigger']}
+            - Entry: {entry_display_name}
+            - Exit: {exit_display_name}
             """)
 
         with col2:
@@ -1028,7 +1267,7 @@ def render_group_card(group: ConfluenceGroup, all_groups: list):
             with action_cols[1]:
                 if st.button("Copy", key=f"copy_{group.id}", use_container_width=True):
                     new_id = generate_unique_id(group.base_template, all_groups)
-                    new_group = duplicate_group(group, new_id, f"{group.name} (Copy)")
+                    new_group = duplicate_group(group, new_id, f"{group.version} Copy")
                     all_groups.append(new_group)
                     save_confluence_groups(all_groups)
                     st.session_state.editing_group = new_id
@@ -1056,9 +1295,9 @@ def render_new_group_dialog(all_groups: list):
         st.caption(template["description"])
 
     with col2:
-        # Name input
-        default_name = f"{template['name']} (Custom)"
-        new_name = st.text_input("Group Name", value=default_name)
+        # Version name input (the part in parentheses)
+        new_version = st.text_input("Version Name", value="Custom", help="e.g., 'Scalping', 'Aggressive', 'Custom'")
+        st.caption(f"Full name will be: **{template['name']} ({new_version})**")
 
         # ID input (auto-generated but editable)
         suggested_id = generate_unique_id(selected_template, all_groups)
@@ -1066,17 +1305,17 @@ def render_new_group_dialog(all_groups: list):
 
     # Validation
     id_valid = validate_group_id(new_id, all_groups)
-    name_valid = len(new_name.strip()) > 0
+    version_valid = len(new_version.strip()) > 0
 
     if not id_valid:
         st.warning("ID must be unique and contain only letters, numbers, and underscores.")
-    if not name_valid:
-        st.warning("Name cannot be empty.")
+    if not version_valid:
+        st.warning("Version name cannot be empty.")
 
     # Action buttons
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        if st.button("Create", disabled=not (id_valid and name_valid), use_container_width=True):
+        if st.button("Create", disabled=not (id_valid and version_valid), use_container_width=True):
             # Create new group with default parameters from template
             param_schema = get_parameter_schema(selected_template)
             default_params = {k: v["default"] for k, v in param_schema.items()}
@@ -1087,7 +1326,7 @@ def render_new_group_dialog(all_groups: list):
             new_group = ConfluenceGroup(
                 id=new_id,
                 base_template=selected_template,
-                name=new_name,
+                version=new_version,
                 description=f"Custom {template['name']} configuration",
                 enabled=True,
                 is_default=False,
@@ -1258,11 +1497,13 @@ def render_group_details(group_id: str, all_groups: list):
 
     # TAB 4: Danger Zone
     with tab4:
-        st.markdown("**Rename Group**")
-        new_name = st.text_input("New Name", value=group.name, key=f"rename_{group.id}")
-        if new_name != group.name:
+        st.markdown("**Rename Version**")
+        st.caption(f"Template: {group.template_name}")
+        new_version = st.text_input("Version Name", value=group.version, key=f"rename_{group.id}")
+        st.caption(f"Full name will be: **{group.template_name} ({new_version})**")
+        if new_version != group.version:
             if st.button("Rename", key="rename_btn"):
-                group.name = new_name
+                group.version = new_version
                 save_confluence_groups(all_groups)
                 st.success("Renamed!")
                 st.rerun()

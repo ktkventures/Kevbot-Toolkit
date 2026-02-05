@@ -52,20 +52,36 @@ class TriggerDefinition:
 @dataclass
 class ConfluenceGroup:
     """
-    A configured instance of an indicator template.
+    A configured instance of a Confluence Group Template.
+
+    Terminology:
+    - Template: The base indicator type with coded logic (e.g., "ema_stack")
+    - Version: User's parameter configuration name (e.g., "Default", "Scalping")
+    - Confluence Group: The full combination shown in UI (e.g., "EMA Stack (Scalping)")
 
     Each group generates unique:
     - Interpreter column: {GROUP_ID} (uppercase)
     - Trigger IDs: {group_id}_{trigger_type}
     """
     id: str                           # Unique identifier (e.g., "ema_stack_scalping")
-    base_template: str                # Template type (e.g., "ema_stack")
-    name: str                         # Display name (e.g., "EMA Stack (Scalping)")
+    base_template: str                # Template ID (e.g., "ema_stack")
+    version: str                      # Version name (e.g., "Default", "Scalping")
     description: str                  # User description
     enabled: bool                     # Whether to include in analysis
     is_default: bool                  # Protected from deletion
     parameters: Dict[str, Any]        # Template-specific parameters
     plot_settings: PlotSettings       # Visual settings
+
+    @property
+    def template_name(self) -> str:
+        """Get the human-readable template name (e.g., 'EMA Stack')."""
+        template = TEMPLATES.get(self.base_template)
+        return template["name"] if template else self.base_template
+
+    @property
+    def name(self) -> str:
+        """Get the full Confluence Group name: '{Template} ({Version})'."""
+        return f"{self.template_name} ({self.version})"
 
     def get_interpreter_column(self) -> str:
         """Get the DataFrame column name for this group's interpretation."""
@@ -76,10 +92,8 @@ class ConfluenceGroup:
         return f"{self.id}_{base_trigger}"
 
     def get_trigger_name(self, base_trigger: str, base_name: str) -> str:
-        """Get the display name for a trigger."""
-        # Use group name as prefix
-        short_name = self.name.replace("(", "- ").replace(")", "").strip()
-        return f"{short_name} {base_name}"
+        """Get the display name for a trigger: '{Confluence Group}: {Trigger}'."""
+        return f"{self.name}: {base_name}"
 
 
 # =============================================================================
@@ -274,10 +288,20 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 visible=plot_data.get("visible", True),
             )
 
+            # Support both "version" (new) and "name" (legacy) fields
+            version = group_data.get("version")
+            if not version:
+                # Extract version from legacy "name" field like "EMA Stack (Default)"
+                legacy_name = group_data.get("name", "")
+                if "(" in legacy_name and ")" in legacy_name:
+                    version = legacy_name.split("(")[-1].rstrip(")")
+                else:
+                    version = "Default"
+
             group = ConfluenceGroup(
                 id=group_data["id"],
                 base_template=group_data["base_template"],
-                name=group_data["name"],
+                version=version,
                 description=group_data.get("description", ""),
                 enabled=group_data.get("enabled", True),
                 is_default=group_data.get("is_default", False),
@@ -314,7 +338,7 @@ def save_confluence_groups(groups: List[ConfluenceGroup]) -> bool:
             group_data = {
                 "id": group.id,
                 "base_template": group.base_template,
-                "name": group.name,
+                "version": group.version,
                 "description": group.description,
                 "enabled": group.enabled,
                 "is_default": group.is_default,
@@ -347,7 +371,7 @@ def create_default_groups() -> List[ConfluenceGroup]:
         ConfluenceGroup(
             id="ema_stack_default",
             base_template="ema_stack",
-            name="EMA Stack (Default)",
+            version="Default",
             description="Standard EMA stack with 9/21/200 periods",
             enabled=True,
             is_default=True,
@@ -369,7 +393,7 @@ def create_default_groups() -> List[ConfluenceGroup]:
         ConfluenceGroup(
             id="macd_default",
             base_template="macd",
-            name="MACD (Default)",
+            version="Default",
             description="Standard MACD with 12/26/9 periods",
             enabled=True,
             is_default=True,
@@ -392,7 +416,7 @@ def create_default_groups() -> List[ConfluenceGroup]:
         ConfluenceGroup(
             id="vwap_default",
             base_template="vwap",
-            name="VWAP (Default)",
+            version="Default",
             description="VWAP with 2 standard deviation bands",
             enabled=True,
             is_default=True,
@@ -412,7 +436,7 @@ def create_default_groups() -> List[ConfluenceGroup]:
         ConfluenceGroup(
             id="rvol_default",
             base_template="rvol",
-            name="RVOL (Default)",
+            version="Default",
             description="Relative volume with 20-period SMA baseline",
             enabled=True,
             is_default=True,
@@ -434,7 +458,7 @@ def create_default_groups() -> List[ConfluenceGroup]:
         ConfluenceGroup(
             id="utbot_default",
             base_template="utbot",
-            name="UT Bot (Default)",
+            version="Default",
             description="UT Bot with ATR period 10, multiplier 1.0",
             enabled=True,
             is_default=True,
@@ -488,17 +512,17 @@ def get_groups_by_template(template: str, groups: Optional[List[ConfluenceGroup]
 def duplicate_group(
     source_group: ConfluenceGroup,
     new_id: str,
-    new_name: str,
+    new_version: str,
 ) -> ConfluenceGroup:
     """
-    Create a copy of a confluence group with a new ID and name.
+    Create a copy of a confluence group with a new ID and version.
 
     The duplicate is not a default (can be deleted).
     """
     return ConfluenceGroup(
         id=new_id,
         base_template=source_group.base_template,
-        name=new_name,
+        version=new_version,
         description=f"Copy of {source_group.name}",
         enabled=True,
         is_default=False,

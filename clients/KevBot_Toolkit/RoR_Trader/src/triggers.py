@@ -167,6 +167,14 @@ def generate_trades(
                     exit_triggered = True
                     exit_reason = "time_exit"
 
+            # Check signal-based exit trigger (from confluence groups)
+            # If exit_trigger is not a strategy-level exit type, treat it as a signal trigger
+            if not exit_triggered and exit_trigger not in EXIT_TYPES:
+                exit_col = f"trig_{exit_trigger}"
+                if exit_col in df.columns and row.get(exit_col, False):
+                    exit_triggered = True
+                    exit_reason = "signal_exit"
+
             # Process exit
             if exit_triggered:
                 # Calculate P&L
