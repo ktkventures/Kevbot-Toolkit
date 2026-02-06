@@ -606,16 +606,46 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Mock data simulation** — Same seed produces identical backtest portion; new bars generated beyond save date for forward testing with mock data.
 - **Cache-friendly end dates** — Forward test end_date rounded to market close (4 PM) so cached pipeline results are reused within the same day.
 
-### Phase 4: Portfolios & Prop Firm Compliance
+### Phase 4: Portfolios & Prop Firm Compliance — COMPLETED (Feb 5, 2026)
 *Combine strategies and validate against real trading account rules.*
 
-- [ ] Portfolio builder (select strategies, set allocations)
-- [ ] Combined equity curve and drawdown analysis
-- [ ] Correlation matrix between strategies
-- [ ] Prop firm rule sets (Trade The Pool, FTMO, etc.)
-- [ ] Compliance checker with pass/fail indicators and recommendations
+- [x] Portfolio builder with dollar-based risk sizing per strategy
+- [x] Combined equity curve (multi-line: per-strategy dashed + combined bold)
+- [x] Drawdown analysis with requirement set limit lines
+- [x] Correlation matrix heatmap between strategies
+- [x] Daily P&L distribution histogram
+- [x] Compounding support (compound_rate 0-100% scales risk with account growth)
+- [x] Prop firm rule sets (Trade The Pool, FTMO) as built-in templates
+- [x] Compliance checker with pass/fail indicators, margin of safety, cross-set compatibility
+- [x] Portfolio CRUD (create, edit, clone, delete with inline confirmation)
+- [x] Cached KPIs on portfolio list cards with mini equity curves
 
-### Phase 5: Dashboard
+### Phase 4B: Interactive Builder & Requirements System — COMPLETED (Feb 5, 2026)
+*UX improvements to portfolio creation and prop firm rule management.*
+
+- [x] Interactive portfolio builder (add/remove strategies one at a time with live metric updates)
+- [x] Strategy recommendation engine (composite scoring: P&L, drawdown, PF, correlation, win rate)
+- [x] Portfolio Requirements page (new nav page with CRUD for requirement sets)
+- [x] Built-in TTP + FTMO requirement sets (non-deletable, duplicatable)
+- [x] Custom requirement set creation with full rule editor
+- [x] Migrated portfolios from legacy prop_firm/custom_rules to requirement_set_id
+- [x] Prop Firm Check tab refactored to use requirement set selectbox
+
+### Design Decisions (Phase 4)
+- **Dollar risk per strategy** — Each strategy in a portfolio has its own risk_per_trade (not percentage allocations). Strategies work in R-multiples; portfolios convert to dollars.
+- **Sequential compounding** — Trade-by-trade computation: `scaled_risk = base_risk * (1 + account_growth_pct * compound_rate)`. At 0% = fixed risk; at 100% = risk scales 1:1 with growth.
+- **Requirement sets over inline rules** — Decoupled rule management from portfolio views. Users create/manage requirement sets on a dedicated page, then select from them in portfolio compliance checks.
+- **Strategy recommendation scoring** — Weighted composite: P&L improvement (30%), drawdown reduction (25%), profit factor (20%), low correlation (15%), win rate (10%).
+
+### Phase 5: Alerts & Deployment
+*Make strategies actionable in real time.*
+
+- [ ] Webhook configuration UI
+- [ ] Real-time signal detection from forward-tested strategies
+- [ ] Alert history and management
+- [ ] Trading bot connection framework
+
+### Phase 6: Dashboard
 *Landing page that ties the application together. Deferred until core functionality is complete.*
 
 - [ ] Overview cards (strategy count, best performer, recent activity)
@@ -623,14 +653,6 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Mini equity curves for saved strategies
 - [ ] Data source status and connection health
 - [ ] Empty state for new users
-
-### Phase 6: Alerts & Deployment
-*Make strategies actionable in real time.*
-
-- [ ] Webhook configuration UI
-- [ ] Real-time signal detection from forward-tested strategies
-- [ ] Alert history and management
-- [ ] Trading bot connection framework
 
 ---
 
