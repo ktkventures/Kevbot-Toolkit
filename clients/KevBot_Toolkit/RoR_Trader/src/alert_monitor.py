@@ -39,6 +39,8 @@ from alerts import (
     save_monitor_status,
     get_strategy_alert_config,
     get_portfolio_alert_config,
+    build_placeholder_context,
+    render_payload,
 )
 from portfolios import (
     load_portfolios,
@@ -92,12 +94,27 @@ def get_strategy_by_id(strategy_id: int) -> dict | None:
 def get_monitored_strategies(config: dict) -> list:
     """
     Get all strategies that should be monitored.
-    A strategy is monitored if:
-    - It has forward_testing enabled
-    - It has alerts_enabled in the alert config
+    A strategy is monitored if it has forward_testing enabled AND either:
+    - It has alerts_enabled in its own strategy alert config, OR
+    - It belongs to any portfolio that has alerts_enabled
+
+    This ensures portfolio webhooks fire even if strategy-level alerts
+    are toggled off (those toggles only control Strategy Alerts tab visibility).
     """
     strategies = load_strategies()
     monitored = []
+
+    # Build set of strategy IDs that belong to alert-enabled portfolios
+    from portfolios import load_portfolios
+    portfolio_strategy_ids = set()
+    for pid, pcfg in config.get('portfolios', {}).items():
+        if pcfg.get('alerts_enabled', False):
+            portfolios = load_portfolios()
+            for port in portfolios:
+                if str(port['id']) == pid:
+                    for alloc in port.get('strategies', []):
+                        portfolio_strategy_ids.add(alloc.get('strategy_id'))
+                    break
 
     for strat in strategies:
         if not strat.get('forward_testing'):
@@ -106,7 +123,10 @@ def get_monitored_strategies(config: dict) -> list:
             continue  # skip legacy strategies
 
         strat_config = config.get('strategies', {}).get(str(strat['id']), {})
-        if strat_config.get('alerts_enabled', False):
+        strategy_alerts_on = strat_config.get('alerts_enabled', False)
+        in_active_portfolio = strat['id'] in portfolio_strategy_ids
+
+        if strategy_alerts_on or in_active_portfolio:
             monitored.append(strat)
 
     return monitored
@@ -154,38 +174,95 @@ def log_monitor_error(strategy_id: int, error: str):
     save_monitor_status(status)
 
 
+def _get_event_key(alert_type: str, direction: str) -> str:
+    """Map alert type + direction to webhook event filter key."""
+    if alert_type == "entry_signal":
+        return "entry_long" if direction == "LONG" else "entry_short"
+    elif alert_type == "exit_signal":
+        return "exit_long" if direction == "LONG" else "exit_short"
+    elif alert_type == "compliance_breach":
+        return "compliance_breach"
+    return ""
+
+
 def deliver_alert(alert: dict, config: dict):
     """
-    Deliver an alert via webhook.
-    Priority: strategy-specific URL > portfolio-specific URL > global URL.
+    Deliver an alert to all matching portfolio webhooks.
+    Populates alert['webhook_deliveries'] with per-webhook results.
     """
-    strategy_id = alert.get('strategy_id')
-    webhook_url = None
+    deliveries = []
+    alert_type = alert.get("type", "")
+    direction = alert.get("direction", "")
 
-    # Strategy-specific webhook
-    if strategy_id:
-        strat_config = config.get('strategies', {}).get(str(strategy_id), {})
-        if strat_config.get('webhook_url'):
-            webhook_url = strat_config['webhook_url']
+    # Map alert type + direction to event key
+    event_key = _get_event_key(alert_type, direction)
 
-    # Portfolio-specific webhook (use first portfolio with a configured webhook)
-    if not webhook_url:
-        for ctx in alert.get('portfolio_context', []):
-            pid = ctx.get('portfolio_id')
-            port_config = config.get('portfolios', {}).get(str(pid), {})
-            if port_config.get('webhook_url'):
-                webhook_url = port_config['webhook_url']
-                break
-
-    # Global webhook
-    if not webhook_url:
-        webhook_url = config.get('global', {}).get('webhook_url', '')
-
-    if webhook_url:
-        success = send_webhook(webhook_url, alert)
-        alert['webhook_sent'] = success
+    # Determine which portfolios to check
+    portfolio_ids = set()
+    if alert_type == "compliance_breach":
+        pid = alert.get("portfolio_id")
+        if pid:
+            portfolio_ids.add(pid)
     else:
-        alert['webhook_sent'] = False
+        for ctx in alert.get("portfolio_context", []):
+            portfolio_ids.add(ctx.get("portfolio_id"))
+
+    for pid in portfolio_ids:
+        port_config = config.get("portfolios", {}).get(str(pid), {})
+        if not port_config.get("alerts_enabled", False):
+            continue
+
+        # Get portfolio context for this specific portfolio
+        port_ctx = None
+        for ctx in alert.get("portfolio_context", []):
+            if ctx.get("portfolio_id") == pid:
+                port_ctx = ctx
+                break
+        if not port_ctx and alert_type == "compliance_breach":
+            port_ctx = {
+                "portfolio_id": pid,
+                "portfolio_name": alert.get("portfolio_name", ""),
+            }
+
+        for wh in port_config.get("webhooks", []):
+            if not wh.get("enabled", True):
+                continue
+
+            # Check event filter
+            events = wh.get("events", {})
+            if event_key and not events.get(event_key, False):
+                continue
+
+            # Build payload
+            placeholder_ctx = build_placeholder_context(alert, port_ctx)
+            template = wh.get("payload_template", "")
+            custom_payload = render_payload(template, placeholder_ctx) if template else None
+
+            # Send
+            result = send_webhook(wh.get("url", ""), alert, custom_payload)
+
+            deliveries.append({
+                "webhook_id": wh.get("id", ""),
+                "webhook_name": wh.get("name", ""),
+                "portfolio_id": pid,
+                "sent_at": datetime.now().isoformat(),
+                "success": result["success"],
+                "status_code": result.get("status_code"),
+                "payload_sent": result.get("payload_sent", ""),
+                "error": result.get("error", ""),
+            })
+
+    alert["webhook_deliveries"] = deliveries
+    alert["webhook_sent"] = any(d["success"] for d in deliveries) if deliveries else False
+
+    # Re-save the alert with delivery info
+    from alerts import load_alerts, _save_all_alerts
+    all_alerts = load_alerts(limit=10000)
+    for i, a in enumerate(all_alerts):
+        if a.get("id") == alert.get("id"):
+            all_alerts[i] = alert
+            _save_all_alerts(all_alerts)
+            break
 
 
 def check_portfolio_compliance(portfolio_id: int, config: dict):
@@ -283,16 +360,19 @@ def main():
 
             for strat in strategies:
                 strat_config = config.get('strategies', {}).get(str(strat['id']), {})
+                strategy_alerts_on = strat_config.get('alerts_enabled', False)
 
                 try:
                     signals = detect_signals(strat)
 
                     for sig in signals:
-                        # Check if we should alert on this signal type
+                        # Determine strategy-level visibility
+                        # (controls whether alert shows in Strategy Alerts tab)
+                        strat_visible = strategy_alerts_on
                         if sig['type'] == 'entry_signal' and not strat_config.get('alert_on_entry', True):
-                            continue
+                            strat_visible = False
                         if sig['type'] == 'exit_signal' and not strat_config.get('alert_on_exit', True):
-                            continue
+                            strat_visible = False
 
                         # Enrich with strategy info
                         sig['level'] = 'strategy'
@@ -301,11 +381,13 @@ def main():
                         sig['symbol'] = strat.get('symbol', '?')
                         sig['direction'] = strat.get('direction', '?')
                         sig['risk_per_trade'] = strat.get('risk_per_trade', 100.0)
+                        sig['timeframe'] = strat.get('timeframe', '1Min')
+                        sig['strategy_alerts_visible'] = strat_visible
 
                         # Add portfolio context
                         sig = enrich_signal_with_portfolio_context(sig, strat['id'])
 
-                        # Save and deliver
+                        # Save and deliver (webhooks always fire regardless of strategy toggle)
                         alert = save_alert(sig)
                         deliver_alert(alert, config)
                         print(f"  Alert: {sig['type']} for {strat['name']} ({strat['symbol']})")

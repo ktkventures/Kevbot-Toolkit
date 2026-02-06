@@ -1,0 +1,44 @@
+[
+  {
+    "id": "tpl_default_ttp_market_buy",
+    "name": "TradeThePool - Market Order - Buy",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}"
+  },
+  {
+    "id": "tpl_default_ttp_market_sell",
+    "name": "TradeThePool - Market Order - Sell",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}"
+  },
+  {
+    "id": "tpl_default_ttp_market_close",
+    "name": "TradeThePool - Market Order - Close",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"close\"\n}"
+  },
+  {
+    "id": "tpl_default_ttp_limit_buy",
+    "name": "TradeThePool - Limit Order - Buy",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+  },
+  {
+    "id": "tpl_default_ttp_limit_sell",
+    "name": "TradeThePool - Limit Order - Sell",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+  },
+  {
+    "id": "tpl_default_ttp_limit_close",
+    "name": "TradeThePool - Limit Order - Close",
+    "category": "TradeThePool",
+    "is_default": true,
+    "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"close\"\n}"
+  }
+]

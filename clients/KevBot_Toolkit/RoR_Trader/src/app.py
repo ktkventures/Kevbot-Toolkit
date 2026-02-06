@@ -76,6 +76,21 @@ from alerts import (
     get_alerts_for_portfolio,
     load_monitor_status,
     save_monitor_status,
+    get_portfolio_webhooks,
+    add_portfolio_webhook,
+    update_portfolio_webhook,
+    delete_portfolio_webhook,
+    get_all_active_webhooks,
+    get_active_alert_configs,
+    get_webhook_delivery_log,
+    build_placeholder_context,
+    render_payload,
+    send_webhook,
+    PLACEHOLDER_CATALOG,
+    load_webhook_templates,
+    add_webhook_template,
+    update_webhook_template,
+    delete_webhook_template,
 )
 from confluence_groups import (
     load_confluence_groups,
@@ -951,7 +966,7 @@ def main():
 
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Confluence Groups"],
+            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Webhook Templates", "Confluence Groups"],
             index=0
         )
 
@@ -976,6 +991,8 @@ def main():
         render_requirements_page()
     elif page == "Alerts & Signals":
         render_alerts_page()
+    elif page == "Webhook Templates":
+        render_webhook_templates_page()
     else:
         render_confluence_groups()
 
@@ -2086,7 +2103,7 @@ def render_strategy_alerts_tab(strat: dict):
 
     strat_cfg = get_strategy_alert_config(strategy_id)
 
-    st.subheader("Alert Configuration")
+    st.subheader("Signal Detection")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -2109,20 +2126,13 @@ def render_strategy_alerts_tab(strat: dict):
         )
 
     with col2:
-        webhook = st.text_input(
-            "Webhook URL Override",
-            value=strat_cfg.get('webhook_url', ''),
-            placeholder="Leave empty to use global webhook",
-            key=f"detail_webhook_{strategy_id}",
-            disabled=not alerts_on,
-        )
+        st.info("Webhook delivery is configured per-portfolio on the portfolio's Webhooks tab.")
 
     if st.button("Save Alert Settings", key=f"save_strat_alert_{strategy_id}"):
         new_cfg = {
             'alerts_enabled': alerts_on,
             'alert_on_entry': entry_on,
             'alert_on_exit': exit_on,
-            'webhook_url': webhook,
         }
         set_strategy_alert_config(strategy_id, new_cfg)
         st.toast("Alert settings saved")
@@ -2904,8 +2914,8 @@ def render_portfolio_detail(portfolio_id: int):
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
 
     # Tabs
-    tab_perf, tab_strats, tab_prop, tab_deploy = st.tabs(
-        ["Performance", "Strategies", "Prop Firm Check", "Deploy"]
+    tab_perf, tab_strats, tab_prop, tab_webhooks, tab_deploy = st.tabs(
+        ["Performance", "Strategies", "Prop Firm Check", "Webhooks", "Deploy"]
     )
 
     with tab_perf:
@@ -2916,6 +2926,9 @@ def render_portfolio_detail(portfolio_id: int):
 
     with tab_prop:
         render_portfolio_prop_firm(port, kpis, data['daily_pnl'])
+
+    with tab_webhooks:
+        render_portfolio_webhooks(port)
 
     with tab_deploy:
         render_portfolio_deploy(port)
@@ -3149,9 +3162,8 @@ def render_portfolio_prop_firm(port, kpis, daily_pnl):
 
 
 def render_portfolio_deploy(port):
-    """Render the Deploy tab with alert configuration and recent alerts."""
+    """Render the Deploy tab with monitor status and recent alerts."""
     portfolio_id = port['id']
-    port_cfg = get_portfolio_alert_config(portfolio_id)
 
     # Monitor status inline
     status = load_monitor_status()
@@ -3169,50 +3181,14 @@ def render_portfolio_deploy(port):
 
     st.divider()
 
-    st.subheader("Portfolio Alert Configuration")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        alerts_on = st.toggle(
-            "Portfolio Alerts Enabled",
-            value=port_cfg.get('alerts_enabled', False),
-            key=f"deploy_alert_enabled_{portfolio_id}",
-        )
-        compliance_on = st.toggle(
-            "Compliance Breach Alerts",
-            value=port_cfg.get('alert_on_compliance_breach', True),
-            key=f"deploy_compliance_{portfolio_id}",
-            disabled=not alerts_on,
-        )
-
-    with col2:
-        webhook = st.text_input(
-            "Webhook URL Override",
-            value=port_cfg.get('webhook_url', ''),
-            placeholder="Leave empty to use global webhook",
-            key=f"deploy_webhook_{portfolio_id}",
-            disabled=not alerts_on,
-        )
-
-    if st.button("Save Deploy Settings", key=f"save_deploy_{portfolio_id}"):
-        new_cfg = {
-            'alerts_enabled': alerts_on,
-            'alert_on_signal': True,
-            'alert_on_compliance_breach': compliance_on,
-            'webhook_url': webhook,
-        }
-        set_portfolio_alert_config(portfolio_id, new_cfg)
-        st.toast("Deploy settings saved")
-        st.rerun()
-
     # Requirement set info
     req_id = port.get('requirement_set_id')
     if req_id:
         req_set = get_requirement_set_by_id(req_id)
         if req_set:
             st.caption(f"Compliance monitored against: **{req_set['name']}**")
-    elif alerts_on and compliance_on:
-        st.caption("No requirement set assigned. Assign one in the Prop Firm Check tab to enable compliance alerts.")
+
+    st.info("Configure webhooks on the **Webhooks** tab.")
 
     # Recent alerts
     st.divider()
@@ -3450,37 +3426,40 @@ def render_requirement_set_editor(req_id=None):
 # =============================================================================
 
 def render_alerts_page():
-    """Render the Alerts & Signals management page."""
+    """Render the redesigned Alerts & Signals page."""
     st.header("Alerts & Signals")
-    st.caption("Configure real-time signal detection and alert delivery.")
+    st.caption("Monitor signal detection, alert history, and webhook delivery.")
 
     config = load_alert_config()
     status = load_monitor_status()
 
-    # ── Monitor Status Bar ──
+    # Monitor Status Bar (kept)
     _render_monitor_status_bar(status, config)
 
     st.divider()
 
-    # ── Global Settings ──
-    with st.expander("Global Settings", expanded=False):
-        _render_alert_global_settings(config)
-
-    # ── Strategy Alerts ──
-    st.subheader("Strategy Alerts")
-    _render_strategy_alerts_config(config)
+    # Active Alerts Management (collapsible)
+    with st.expander("Manage Active Alerts & Webhooks", expanded=False):
+        _render_active_alerts_management(config)
 
     st.divider()
 
-    # ── Portfolio Alerts ──
-    st.subheader("Portfolio Alerts")
-    _render_portfolio_alerts_config(config)
+    # Main content tabs
+    tab_strat, tab_port, tab_outbound, tab_inbound = st.tabs([
+        "Strategy Alerts", "Portfolio Alerts", "Outbound Webhooks", "Inbound Webhooks"
+    ])
 
-    st.divider()
+    with tab_strat:
+        _render_strategy_alerts_tab()
 
-    # ── Recent Alerts ──
-    st.subheader("Recent Alerts")
-    _render_recent_alerts()
+    with tab_port:
+        _render_portfolio_alerts_tab()
+
+    with tab_outbound:
+        _render_outbound_webhooks_tab()
+
+    with tab_inbound:
+        _render_inbound_webhooks_tab()
 
 
 def _render_monitor_status_bar(status: dict, config: dict):
@@ -3555,24 +3534,72 @@ def _render_monitor_status_bar(status: dict, config: dict):
                 st.rerun()
 
 
-def _render_alert_global_settings(config: dict):
-    """Render the global alert settings form."""
-    global_cfg = config.get('global', {})
+def _render_active_alerts_management(config: dict):
+    """Show only enabled strategies/portfolios with their alert configs. Allow deactivation."""
+    active = get_active_alert_configs()
+    strategies = load_strategies()
+    portfolios = load_portfolios()
 
+    # Strategy name lookup
+    strat_names = {s['id']: s.get('name', f"Strategy {s['id']}") for s in strategies}
+    port_names = {p['id']: p.get('name', f"Portfolio {p['id']}") for p in portfolios}
+
+    st.markdown("**Active Strategy Alerts**")
+    if not active["strategies"]:
+        st.caption("No strategies have alerts enabled.")
+    else:
+        for s in active["strategies"]:
+            sid = s["strategy_id"]
+            name = strat_names.get(sid, f"Strategy {sid}")
+            col_n, col_e, col_x, col_d = st.columns([4, 1, 1, 1])
+            with col_n:
+                st.markdown(f"{name}")
+            with col_e:
+                st.caption("Entry" if s.get("alert_on_entry") else "~~Entry~~")
+            with col_x:
+                st.caption("Exit" if s.get("alert_on_exit") else "~~Exit~~")
+            with col_d:
+                if st.button("Disable", key=f"disable_strat_{sid}", type="secondary"):
+                    set_strategy_alert_config(sid, {**s, "alerts_enabled": False})
+                    st.rerun()
+
+    st.divider()
+
+    st.markdown("**Active Portfolio Alerts & Webhooks**")
+    if not active["portfolios"]:
+        st.caption("No portfolios have alerts enabled.")
+    else:
+        for p in active["portfolios"]:
+            pid = p["portfolio_id"]
+            name = port_names.get(pid, f"Portfolio {pid}")
+            wh_count = len(p.get("webhooks", []))
+            col_n, col_w, col_d = st.columns([4, 2, 1])
+            with col_n:
+                st.markdown(f"{name}")
+            with col_w:
+                st.caption(f"{wh_count} webhook(s)")
+            with col_d:
+                if st.button("Disable", key=f"disable_port_{pid}", type="secondary"):
+                    set_portfolio_alert_config(pid, {**p, "alerts_enabled": False})
+                    st.rerun()
+
+    st.divider()
+
+    # Global Monitor Settings (compact)
+    st.markdown("**Global Monitor Settings**")
+    global_cfg = config.get('global', {})
     col1, col2 = st.columns(2)
     with col1:
-        webhook_url = st.text_input(
-            "Default Webhook URL",
-            value=global_cfg.get('webhook_url', ''),
-            placeholder="https://discord.com/api/webhooks/...",
-            key="global_webhook_url",
-        )
         enabled = st.toggle(
             "Alerts Enabled",
             value=global_cfg.get('enabled', False),
-            key="global_alerts_enabled",
+            key="mgmt_global_alerts_enabled",
         )
-
+        market_hours = st.toggle(
+            "Market Hours Only",
+            value=global_cfg.get('market_hours_only', True),
+            key="mgmt_global_market_hours",
+        )
     with col2:
         poll_interval = st.slider(
             "Poll Interval (seconds)",
@@ -3580,17 +3607,11 @@ def _render_alert_global_settings(config: dict):
             max_value=300,
             value=global_cfg.get('poll_interval_seconds', 60),
             step=10,
-            key="global_poll_interval",
-        )
-        market_hours = st.toggle(
-            "Market Hours Only",
-            value=global_cfg.get('market_hours_only', True),
-            key="global_market_hours",
+            key="mgmt_global_poll_interval",
         )
 
-    if st.button("Save Global Settings", key="save_global_alert_settings"):
+    if st.button("Save Global Settings", key="mgmt_save_global"):
         config['global'] = {
-            'webhook_url': webhook_url,
             'poll_interval_seconds': poll_interval,
             'market_hours_only': market_hours,
             'enabled': enabled,
@@ -3600,230 +3621,550 @@ def _render_alert_global_settings(config: dict):
         st.rerun()
 
 
-def _render_strategy_alerts_config(config: dict):
-    """Render the strategy alerts configuration table."""
-    strategies = load_strategies()
-    forward_testing = [s for s in strategies
-                       if s.get('forward_testing') and 'entry_trigger_confluence_id' in s]
+def _render_alert_row(alert: dict, prefix: str = ""):
+    """Shared helper to render a single alert row."""
+    alert_type = alert.get('type', 'unknown')
 
-    if not forward_testing:
-        st.info("No forward-testing strategies available. Create and save a strategy with forward testing enabled.")
-        return
+    if alert_type == 'entry_signal':
+        badge = ":green[ENTRY]"
+    elif alert_type == 'exit_signal':
+        badge = ":red[EXIT]"
+    elif alert_type == 'compliance_breach':
+        badge = ":orange[COMPLIANCE]"
+    else:
+        badge = f":gray[{alert_type.upper()}]"
 
-    for strat in forward_testing:
-        sid = str(strat['id'])
-        strat_cfg = config.get('strategies', {}).get(sid, dict(DEFAULT_STRATEGY_ALERT_CONFIG))
+    with st.container():
+        col_time, col_badge, col_detail = st.columns([2, 1, 6])
 
-        with st.container():
-            col_name, col_toggle, col_entry, col_exit, col_webhook = st.columns([3, 1, 1, 1, 3])
+        with col_time:
+            ts = alert.get('timestamp', '')
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    st.caption(dt.strftime("%m/%d %H:%M"))
+                except (ValueError, TypeError):
+                    st.caption(ts[:16])
 
-            with col_name:
-                st.markdown(f"**{strat['name']}**")
-                st.caption(f"{strat['symbol']} {strat['direction']}")
+        with col_badge:
+            st.markdown(badge)
 
-            with col_toggle:
-                alerts_on = st.toggle(
-                    "Enabled",
-                    value=strat_cfg.get('alerts_enabled', False),
-                    key=f"strat_alert_{sid}",
-                    label_visibility="collapsed",
-                )
+        with col_detail:
+            symbol = alert.get('symbol', '')
+            direction = alert.get('direction', '')
+            strategy_name = alert.get('strategy_name', '')
+            price = alert.get('price')
 
-            with col_entry:
-                entry_on = st.toggle(
-                    "Entry",
-                    value=strat_cfg.get('alert_on_entry', True),
-                    key=f"strat_entry_{sid}",
-                    disabled=not alerts_on,
-                )
+            detail_parts = []
+            if strategy_name:
+                detail_parts.append(f"**{strategy_name}**")
+            if symbol and direction:
+                detail_parts.append(f"{symbol} {direction}")
+            if price:
+                detail_parts.append(f"@ ${price:.2f}")
 
-            with col_exit:
-                exit_on = st.toggle(
-                    "Exit",
-                    value=strat_cfg.get('alert_on_exit', True),
-                    key=f"strat_exit_{sid}",
-                    disabled=not alerts_on,
-                )
+            if alert_type == 'compliance_breach':
+                port_name = alert.get('portfolio_name', '')
+                rule_name = alert.get('rule_name', '')
+                detail_parts = [f"**{port_name}**", f"Rule: {rule_name}"]
 
-            with col_webhook:
-                webhook = st.text_input(
-                    "Webhook override",
-                    value=strat_cfg.get('webhook_url', ''),
-                    key=f"strat_webhook_{sid}",
-                    placeholder="(uses global)",
-                    label_visibility="collapsed",
-                    disabled=not alerts_on,
-                )
+            st.markdown(" | ".join(detail_parts) if detail_parts else "Alert")
 
-            # Save on any change
-            new_cfg = {
-                'alerts_enabled': alerts_on,
-                'alert_on_entry': entry_on,
-                'alert_on_exit': exit_on,
-                'webhook_url': webhook,
-            }
-            if new_cfg != strat_cfg:
-                if 'strategies' not in config:
-                    config['strategies'] = {}
-                config['strategies'][sid] = new_cfg
-                save_alert_config(config)
-
-    # Column headers
-    st.caption("Toggle: Enabled | Entry | Exit | Webhook Override")
+            webhook_sent = alert.get('webhook_sent')
+            if webhook_sent:
+                st.caption("Webhook sent")
 
 
-def _render_portfolio_alerts_config(config: dict):
-    """Render the portfolio alerts configuration table."""
-    portfolios = load_portfolios()
-
-    if not portfolios:
-        st.info("No portfolios available. Create a portfolio first.")
-        return
-
-    for port in portfolios:
-        pid = str(port['id'])
-        port_cfg = config.get('portfolios', {}).get(pid, dict(DEFAULT_PORTFOLIO_ALERT_CONFIG))
-
-        with st.container():
-            col_name, col_toggle, col_compliance, col_webhook = st.columns([3, 1, 2, 3])
-
-            with col_name:
-                st.markdown(f"**{port['name']}**")
-                strat_count = len(port.get('strategies', []))
-                st.caption(f"{strat_count} strategies")
-
-            with col_toggle:
-                alerts_on = st.toggle(
-                    "Enabled",
-                    value=port_cfg.get('alerts_enabled', False),
-                    key=f"port_alert_{pid}",
-                    label_visibility="collapsed",
-                )
-
-            with col_compliance:
-                compliance_on = st.toggle(
-                    "Compliance Alerts",
-                    value=port_cfg.get('alert_on_compliance_breach', True),
-                    key=f"port_compliance_{pid}",
-                    disabled=not alerts_on,
-                )
-
-            with col_webhook:
-                webhook = st.text_input(
-                    "Webhook override",
-                    value=port_cfg.get('webhook_url', ''),
-                    key=f"port_webhook_{pid}",
-                    placeholder="(uses global)",
-                    label_visibility="collapsed",
-                    disabled=not alerts_on,
-                )
-
-            new_cfg = {
-                'alerts_enabled': alerts_on,
-                'alert_on_signal': True,
-                'alert_on_compliance_breach': compliance_on,
-                'webhook_url': webhook,
-            }
-            if new_cfg != port_cfg:
-                if 'portfolios' not in config:
-                    config['portfolios'] = {}
-                config['portfolios'][pid] = new_cfg
-                save_alert_config(config)
-
-
-def _render_recent_alerts():
-    """Render the recent alerts list with acknowledge/clear controls."""
-    alerts = load_alerts(limit=50)
-
-    if not alerts:
-        st.info("No alerts yet. Alerts will appear here when the monitor detects signals.")
-        return
-
-    # Clear all button
-    col1, col2 = st.columns([6, 1])
+def _filter_alerts_by_date(alerts: list, key_prefix: str) -> list:
+    """Add date range filter controls and return filtered alerts."""
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "From",
+            value=datetime.now().date() - timedelta(days=30),
+            key=f"{key_prefix}_start_date",
+        )
     with col2:
-        if st.button("Clear All", key="clear_all_alerts", type="secondary"):
-            clear_alerts()
-            st.rerun()
+        end_date = st.date_input(
+            "To",
+            value=datetime.now().date(),
+            key=f"{key_prefix}_end_date",
+        )
 
-    for alert in alerts:
-        alert_type = alert.get('type', 'unknown')
-        acknowledged = alert.get('acknowledged', False)
-
-        # Color-coded type badge
-        if alert_type == 'entry_signal':
-            badge = ":green[ENTRY]"
-        elif alert_type == 'exit_signal':
-            badge = ":red[EXIT]"
-        elif alert_type == 'compliance_breach':
-            badge = ":orange[COMPLIANCE]"
+    filtered = []
+    for a in alerts:
+        ts = a.get('timestamp', '')
+        if ts:
+            try:
+                alert_date = datetime.fromisoformat(ts).date()
+                if start_date <= alert_date <= end_date:
+                    filtered.append(a)
+            except (ValueError, TypeError):
+                filtered.append(a)  # include if we can't parse
         else:
-            badge = f":gray[{alert_type.upper()}]"
+            filtered.append(a)
+    return filtered
+
+
+def _render_strategy_alerts_tab():
+    """Render the Strategy Alerts tab showing recent strategy-level alerts."""
+    alerts = load_alerts(limit=500)
+    # Only show alerts where strategy-level visibility is true (or old alerts without the flag)
+    strategy_alerts = [a for a in alerts
+                       if (a.get('type') in ('entry_signal', 'exit_signal'))
+                       and a.get('strategy_alerts_visible', True)]
+
+    # Date range filter
+    strategy_alerts = _filter_alerts_by_date(strategy_alerts, "strat_alerts")
+
+    st.caption(f"{len(strategy_alerts)} alert(s) in range")
+
+    if not strategy_alerts:
+        st.info("No strategy alerts in this date range.")
+        return
+
+    for alert in strategy_alerts:
+        _render_alert_row(alert, prefix="strat_")
+
+
+def _render_portfolio_alerts_tab():
+    """Render the Portfolio Alerts tab showing portfolio-enriched signals and compliance breaches."""
+    alerts = load_alerts(limit=500)
+
+    # Collect all portfolio-related alerts (signals with context + compliance)
+    portfolio_alerts = [a for a in alerts
+                        if (a.get('type') in ('entry_signal', 'exit_signal') and a.get('portfolio_context'))
+                        or a.get('type') == 'compliance_breach']
+
+    # Date range filter
+    portfolio_alerts = _filter_alerts_by_date(portfolio_alerts, "port_alerts")
+    st.caption(f"{len(portfolio_alerts)} alert(s) in range")
+
+    if not portfolio_alerts:
+        st.info("No portfolio alerts in this date range.")
+        return
+
+    # Signal alerts expanded per portfolio
+    signal_alerts = [a for a in portfolio_alerts if a.get('type') in ('entry_signal', 'exit_signal')]
+    if signal_alerts:
+        st.markdown("**Signal Alerts (by Portfolio)**")
+        for alert in signal_alerts:
+            for ctx in alert.get('portfolio_context', []):
+                alert_type = alert.get('type', 'unknown')
+                if alert_type == 'entry_signal':
+                    badge = ":green[ENTRY]"
+                elif alert_type == 'exit_signal':
+                    badge = ":red[EXIT]"
+                else:
+                    badge = f":gray[{alert_type.upper()}]"
+
+                with st.container():
+                    col_t, col_b, col_d = st.columns([2, 1, 6])
+                    with col_t:
+                        ts = alert.get('timestamp', '')
+                        try:
+                            dt = datetime.fromisoformat(ts)
+                            st.caption(dt.strftime("%m/%d %H:%M"))
+                        except (ValueError, TypeError):
+                            st.caption(ts[:16] if ts else '?')
+                    with col_b:
+                        st.markdown(badge)
+                    with col_d:
+                        strategy_name = alert.get('strategy_name', '')
+                        price = alert.get('price')
+                        port_name = ctx.get('portfolio_name', '')
+                        risk = ctx.get('position_risk', '')
+                        parts = [f"**{port_name}**"]
+                        if strategy_name:
+                            parts.append(strategy_name)
+                        if price:
+                            parts.append(f"@ ${price:.2f}")
+                        if risk:
+                            parts.append(f"Risk: ${risk:.0f}")
+                        st.markdown(" | ".join(parts))
+
+    # Compliance breaches
+    compliance_alerts = [a for a in portfolio_alerts if a.get('type') == 'compliance_breach']
+    if compliance_alerts:
+        st.divider()
+        st.markdown("**Compliance Breaches**")
+        for alert in compliance_alerts:
+            _render_alert_row(alert, prefix="port_comp_")
+
+
+def _render_outbound_webhooks_tab():
+    """Render the Outbound Webhooks tab showing webhook delivery log."""
+    deliveries = get_webhook_delivery_log(limit=500)
+
+    # Date range filter (reuse same pattern but filter on sent_at)
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "From",
+            value=datetime.now().date() - timedelta(days=30),
+            key="outbound_wh_start_date",
+        )
+    with col2:
+        end_date = st.date_input(
+            "To",
+            value=datetime.now().date(),
+            key="outbound_wh_end_date",
+        )
+
+    filtered = []
+    for d in deliveries:
+        ts = d.get('sent_at', '')
+        if ts:
+            try:
+                d_date = datetime.fromisoformat(ts).date()
+                if start_date <= d_date <= end_date:
+                    filtered.append(d)
+            except (ValueError, TypeError):
+                filtered.append(d)
+        else:
+            filtered.append(d)
+    deliveries = filtered
+
+    st.caption(f"{len(deliveries)} delivery(ies) in range")
+
+    if not deliveries:
+        st.info("No webhook deliveries in this date range.")
+        return
+
+    for d in deliveries:
+        success = d.get("success", False)
+        status_badge = ":green[OK]" if success else ":red[FAIL]"
 
         with st.container():
-            col_time, col_badge, col_detail, col_action = st.columns([2, 1, 5, 1])
+            col_time, col_status, col_name, col_detail = st.columns([2, 1, 2, 4])
 
             with col_time:
-                ts = alert.get('timestamp', '')
-                if ts:
-                    try:
-                        dt = datetime.fromisoformat(ts)
-                        st.caption(dt.strftime("%m/%d %H:%M"))
-                    except (ValueError, TypeError):
-                        st.caption(ts[:16])
+                ts = d.get("sent_at", "")
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    st.caption(dt.strftime("%m/%d %H:%M:%S"))
+                except (ValueError, TypeError):
+                    st.caption(ts[:19] if ts else "?")
 
-            with col_badge:
-                st.markdown(badge)
+            with col_status:
+                st.markdown(status_badge)
+
+            with col_name:
+                st.markdown(f"**{d.get('webhook_name', 'Unknown')}**")
+                status_code = d.get("status_code")
+                if status_code:
+                    st.caption(f"HTTP {status_code}")
 
             with col_detail:
-                symbol = alert.get('symbol', '')
-                direction = alert.get('direction', '')
-                strategy_name = alert.get('strategy_name', '')
-                price = alert.get('price')
-
-                detail_parts = []
+                parts = []
+                alert_type = d.get("alert_type", "")
+                if alert_type:
+                    parts.append(alert_type.replace("_", " ").title())
+                symbol = d.get("symbol", "")
+                if symbol:
+                    parts.append(symbol)
+                strategy_name = d.get("strategy_name", "")
                 if strategy_name:
-                    detail_parts.append(f"**{strategy_name}**")
-                if symbol and direction:
-                    detail_parts.append(f"{symbol} {direction}")
-                if price:
-                    detail_parts.append(f"@ ${price:.2f}")
+                    parts.append(strategy_name)
+                st.markdown(" | ".join(parts) if parts else "Delivery")
 
-                # Portfolio/compliance specific
-                if alert_type == 'compliance_breach':
-                    port_name = alert.get('portfolio_name', '')
-                    rule_name = alert.get('rule_name', '')
-                    detail_parts = [f"**{port_name}**", f"Rule: {rule_name}"]
+                error = d.get("error")
+                if error and not success:
+                    st.caption(f"Error: {error}")
 
-                st.markdown(" | ".join(detail_parts) if detail_parts else "Alert")
+                payload = d.get("payload_sent", "")
+                if payload:
+                    with st.expander("View Payload", expanded=False):
+                        st.code(payload, language="json")
 
-                webhook_sent = alert.get('webhook_sent')
-                if webhook_sent:
-                    st.caption("Webhook sent")
 
-            with col_action:
-                if not acknowledged:
-                    if st.button("Ack", key=f"ack_{alert.get('id', 0)}"):
-                        acknowledge_alert(alert.get('id'))
+def _render_inbound_webhooks_tab():
+    """Placeholder for future inbound webhooks feature."""
+    st.info("Inbound Webhooks — Coming Soon. This will allow external systems to send signals into RoR Trader.")
+
+
+# =============================================================================
+# PORTFOLIO WEBHOOKS (on portfolio detail page)
+# =============================================================================
+
+def render_portfolio_webhooks(port: dict):
+    """Render the webhook configuration builder for a portfolio."""
+    portfolio_id = port['id']
+    port_cfg = get_portfolio_alert_config(portfolio_id)
+    webhooks = port_cfg.get('webhooks', [])
+
+    st.subheader("Outbound Webhooks")
+    st.caption(f"{len(webhooks)} webhook(s) configured for this portfolio.")
+
+    # Alert config toggles
+    col1, col2 = st.columns(2)
+    with col1:
+        alerts_on = st.toggle(
+            "Portfolio Alerts Enabled",
+            value=port_cfg.get('alerts_enabled', False),
+            key=f"wh_alert_enabled_{portfolio_id}",
+        )
+    with col2:
+        compliance_on = st.toggle(
+            "Compliance Breach Alerts",
+            value=port_cfg.get('alert_on_compliance_breach', True),
+            key=f"wh_compliance_{portfolio_id}",
+            disabled=not alerts_on,
+        )
+
+    if st.button("Save Alert Settings", key=f"wh_save_alert_{portfolio_id}"):
+        new_cfg = dict(port_cfg)
+        new_cfg['alerts_enabled'] = alerts_on
+        new_cfg['alert_on_compliance_breach'] = compliance_on
+        set_portfolio_alert_config(portfolio_id, new_cfg)
+        st.toast("Alert settings saved")
+
+    st.divider()
+
+    # Existing webhooks
+    for i, wh in enumerate(webhooks):
+        _render_webhook_editor(portfolio_id, port, wh, i)
+
+    # Add new webhook
+    if st.button("+ Add Webhook", key=f"add_wh_{portfolio_id}"):
+        new_wh = {
+            "name": "New Webhook",
+            "url": "",
+            "enabled": True,
+            "events": {
+                "entry_long": True,
+                "entry_short": True,
+                "exit_long": True,
+                "exit_short": True,
+                "compliance_breach": True,
+            },
+            "payload_template": "",
+        }
+        add_portfolio_webhook(portfolio_id, new_wh)
+        st.toast("Webhook added")
+        st.rerun()
+
+    # Recent alerts for this portfolio
+    st.divider()
+    st.subheader("Recent Portfolio Alerts")
+    alerts = get_alerts_for_portfolio(portfolio_id, limit=20)
+    if not alerts:
+        st.caption("No alerts for this portfolio yet.")
+    else:
+        for alert in alerts:
+            _render_alert_row(alert, prefix=f"pwh_{portfolio_id}_")
+
+
+def _render_webhook_editor(portfolio_id: int, port: dict, wh: dict, index: int):
+    """Render an individual webhook configuration card."""
+    wh_id = wh.get('id', '')
+    wh_name = wh.get('name', f'Webhook {index + 1}')
+    enabled = wh.get('enabled', True)
+
+    status_icon = "ON" if enabled else "OFF"
+    with st.expander(f"{wh_name} [{status_icon}]", expanded=False):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            name = st.text_input("Name", value=wh_name, key=f"wh_name_{wh_id}")
+            url = st.text_input("URL", value=wh.get('url', ''),
+                                placeholder="https://hook.us1.make.com/...",
+                                key=f"wh_url_{wh_id}")
+        with col2:
+            wh_enabled = st.toggle("Enabled", value=enabled, key=f"wh_enabled_{wh_id}")
+
+        # Event type checkboxes
+        st.markdown("**Events**")
+        events = wh.get('events', {})
+        ev_cols = st.columns(5)
+        entry_long = ev_cols[0].checkbox("Entry Long", value=events.get('entry_long', True), key=f"ev_el_{wh_id}")
+        entry_short = ev_cols[1].checkbox("Entry Short", value=events.get('entry_short', True), key=f"ev_es_{wh_id}")
+        exit_long = ev_cols[2].checkbox("Exit Long", value=events.get('exit_long', True), key=f"ev_xl_{wh_id}")
+        exit_short = ev_cols[3].checkbox("Exit Short", value=events.get('exit_short', True), key=f"ev_xs_{wh_id}")
+        compliance = ev_cols[4].checkbox("Compliance", value=events.get('compliance_breach', True), key=f"ev_cb_{wh_id}")
+
+        # Payload template
+        st.markdown("**Payload (JSON)**")
+        st.caption("Leave empty for default Discord/Slack format. Use {{placeholder}} tokens for dynamic values.")
+
+        # Insert helpers side-by-side
+        helper_cols = st.columns(2)
+        with helper_cols[0]:
+            ph_options = ["-- Insert Placeholder --"] + list(PLACEHOLDER_CATALOG.keys())
+            selected_ph = st.selectbox("Insert placeholder", ph_options, key=f"ph_select_{wh_id}",
+                                       label_visibility="collapsed")
+        with helper_cols[1]:
+            templates = load_webhook_templates()
+            tpl_options = ["-- Insert Template --"] + [t['name'] for t in templates]
+            selected_tpl = st.selectbox("Insert template", tpl_options, key=f"tpl_select_{wh_id}",
+                                        label_visibility="collapsed")
+
+        # Show placeholder hint
+        if selected_ph != "-- Insert Placeholder --":
+            desc = PLACEHOLDER_CATALOG.get(selected_ph, "")
+            st.caption(f"Copy: `{{{{{selected_ph}}}}}` — {desc}")
+
+        # Handle template selection via session state
+        tpl_key = f"_tpl_payload_{wh_id}"
+        current_template = wh.get('payload_template', '')
+
+        if selected_tpl != "-- Insert Template --":
+            # Find the template and use its payload
+            for t in templates:
+                if t['name'] == selected_tpl:
+                    current_template = t.get('payload_template', '')
+                    break
+
+        template = st.text_area(
+            "Payload Template",
+            value=current_template,
+            height=150,
+            key=f"wh_template_{wh_id}",
+            placeholder='{\n  "content": "{{event_type}}: {{symbol}} {{direction}} @ ${{order_price}}"\n}',
+        )
+
+        # Save / Delete / Test buttons
+        bcol1, bcol2, bcol3 = st.columns([2, 2, 4])
+        with bcol1:
+            if st.button("Save", key=f"save_wh_{wh_id}", type="primary"):
+                updates = {
+                    "name": name,
+                    "url": url,
+                    "enabled": wh_enabled,
+                    "events": {
+                        "entry_long": entry_long,
+                        "entry_short": entry_short,
+                        "exit_long": exit_long,
+                        "exit_short": exit_short,
+                        "compliance_breach": compliance,
+                    },
+                    "payload_template": template,
+                }
+                update_portfolio_webhook(portfolio_id, wh_id, updates)
+                st.toast(f"Webhook '{name}' saved")
+        with bcol2:
+            if st.button("Delete", key=f"del_wh_{wh_id}", type="secondary"):
+                delete_portfolio_webhook(portfolio_id, wh_id)
+                st.toast(f"Webhook '{wh_name}' deleted")
+                st.rerun()
+        with bcol3:
+            if st.button("Test", key=f"test_wh_{wh_id}"):
+                test_alert = {
+                    "type": "entry_signal", "symbol": "TEST", "direction": "LONG",
+                    "strategy_name": "Test Strategy", "strategy_id": 0,
+                    "price": 100.0, "stop_price": 98.5, "atr": 1.5,
+                    "trigger": "test_trigger", "confluence_met": ["TEST-CONDITION"],
+                    "risk_per_trade": 100.0, "timeframe": "1Min",
+                    "timestamp": datetime.now().isoformat(),
+                }
+                ctx = build_placeholder_context(test_alert, {
+                    "portfolio_id": portfolio_id,
+                    "portfolio_name": port.get('name', ''),
+                    "position_risk": 100.0,
+                })
+                payload = render_payload(template, ctx) if template else None
+                result = send_webhook(url, test_alert, payload)
+                if result["success"]:
+                    st.success("Test webhook sent successfully!")
+                else:
+                    st.error(f"Test failed: {result.get('error', 'Unknown error')}")
+
+
+# =============================================================================
+# WEBHOOK TEMPLATES PAGE
+# =============================================================================
+
+def render_webhook_templates_page():
+    """Render the Webhook Templates management page."""
+    st.header("Webhook Templates")
+    st.caption("Create and manage reusable payload templates for webhooks.")
+
+    templates = load_webhook_templates()
+
+    # Group by category
+    categories = {}
+    for t in templates:
+        cat = t.get('category', 'Custom')
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(t)
+
+    # Show templates by category
+    for cat, cat_templates in categories.items():
+        st.subheader(cat)
+        for t in cat_templates:
+            is_default = t.get('is_default', False)
+            tpl_id = t.get('id', '')
+
+            with st.expander(f"{t['name']}" + (" (default)" if is_default else ""), expanded=False):
+                if is_default:
+                    # Read-only display for defaults
+                    st.code(t.get('payload_template', ''), language="json")
+                    if st.button("Duplicate", key=f"dup_tpl_{tpl_id}"):
+                        new_tpl = {
+                            "name": f"{t['name']} (Copy)",
+                            "category": "Custom",
+                            "payload_template": t.get('payload_template', ''),
+                        }
+                        add_webhook_template(new_tpl)
+                        st.toast("Template duplicated")
                         st.rerun()
                 else:
-                    st.caption("Acked")
+                    # Editable for user-created
+                    tpl_name = st.text_input("Name", value=t.get('name', ''), key=f"tpl_name_{tpl_id}")
+                    tpl_cat = st.text_input("Category", value=t.get('category', 'Custom'), key=f"tpl_cat_{tpl_id}")
 
+                    # Insert Placeholder dropdown
+                    ph_options = ["-- Insert Placeholder --"] + list(PLACEHOLDER_CATALOG.keys())
+                    selected = st.selectbox("Insert", ph_options, key=f"tpl_ph_{tpl_id}",
+                                            label_visibility="collapsed")
+                    if selected != "-- Insert Placeholder --":
+                        desc = PLACEHOLDER_CATALOG.get(selected, "")
+                        st.caption(f"Copy: `{{{{{selected}}}}}` — {desc}")
 
-# Default config constants for UI
-DEFAULT_STRATEGY_ALERT_CONFIG = {
-    'alerts_enabled': False,
-    'alert_on_entry': True,
-    'alert_on_exit': True,
-    'webhook_url': '',
-}
+                    tpl_payload = st.text_area("Payload", value=t.get('payload_template', ''),
+                                               height=120, key=f"tpl_payload_{tpl_id}")
 
-DEFAULT_PORTFOLIO_ALERT_CONFIG = {
-    'alerts_enabled': False,
-    'alert_on_signal': True,
-    'alert_on_compliance_breach': True,
-    'webhook_url': '',
-}
+                    bcol1, bcol2 = st.columns(2)
+                    with bcol1:
+                        if st.button("Save", key=f"save_tpl_{tpl_id}", type="primary"):
+                            update_webhook_template(tpl_id, {
+                                "name": tpl_name,
+                                "category": tpl_cat,
+                                "payload_template": tpl_payload,
+                            })
+                            st.toast("Template saved")
+                            st.rerun()
+                    with bcol2:
+                        if st.button("Delete", key=f"del_tpl_{tpl_id}", type="secondary"):
+                            delete_webhook_template(tpl_id)
+                            st.toast("Template deleted")
+                            st.rerun()
+
+    # Create new template
+    st.divider()
+    st.subheader("Create New Template")
+    new_name = st.text_input("Template Name", key="new_tpl_name", placeholder="My Custom Template")
+    new_cat = st.text_input("Category", key="new_tpl_cat", value="Custom")
+
+    ph_options = ["-- Insert Placeholder --"] + list(PLACEHOLDER_CATALOG.keys())
+    new_selected = st.selectbox("Insert Placeholder", ph_options, key="new_tpl_ph",
+                                label_visibility="collapsed")
+    if new_selected != "-- Insert Placeholder --":
+        desc = PLACEHOLDER_CATALOG.get(new_selected, "")
+        st.caption(f"Copy: `{{{{{new_selected}}}}}` — {desc}")
+
+    new_payload = st.text_area("Payload Template", key="new_tpl_payload", height=120,
+                               placeholder='{\n  "symbol": "{{symbol}}",\n  "action": "{{order_action}}"\n}')
+
+    if st.button("Create Template", key="create_tpl", type="primary",
+                 disabled=not new_name.strip()):
+        add_webhook_template({
+            "name": new_name.strip(),
+            "category": new_cat.strip() or "Custom",
+            "payload_template": new_payload,
+        })
+        st.toast("Template created")
+        st.rerun()
 
 
 # =============================================================================

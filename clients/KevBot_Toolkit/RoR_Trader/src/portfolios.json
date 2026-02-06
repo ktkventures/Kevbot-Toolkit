@@ -72,5 +72,69 @@
     "id": 2,
     "created_at": "2026-02-05T16:38:16.464589",
     "updated_at": "2026-02-05T16:42:41.211284"
+  },
+  {
+    "name": "My Portfolio",
+    "starting_balance": 25000.0,
+    "compound_rate": 0.0,
+    "strategies": [
+      {
+        "strategy_id": 1,
+        "risk_per_trade": 100.0
+      },
+      {
+        "strategy_id": 2,
+        "risk_per_trade": 100.0
+      }
+    ],
+    "requirement_set_id": 1,
+    "cached_kpis": {
+      "total_trades": 231,
+      "win_rate": 25.97402597402597,
+      "profit_factor": 1.7474421346680795,
+      "total_pnl": 10488.125372110888,
+      "final_balance": 35488.12537211089,
+      "max_drawdown_pct": -10.399321719389647,
+      "max_drawdown_dollars": -3390.5780008824877,
+      "avg_daily_pnl": 194.22454392797937,
+      "daily_pnl_std": 1003.670269461263,
+      "profitable_days_count": 20,
+      "total_trading_days": 54,
+      "profitable_days_pct": 37.03703703703704
+    },
+    "id": 3,
+    "created_at": "2026-02-06T11:37:43.058294"
+  },
+  {
+    "name": "My Portfolio",
+    "starting_balance": 80000.0,
+    "compound_rate": 0.0,
+    "strategies": [
+      {
+        "strategy_id": 1,
+        "risk_per_trade": 100.0
+      },
+      {
+        "strategy_id": 2,
+        "risk_per_trade": 100.0
+      }
+    ],
+    "requirement_set_id": 1,
+    "cached_kpis": {
+      "total_trades": 231,
+      "win_rate": 25.97402597402597,
+      "profit_factor": 1.7474421346680795,
+      "total_pnl": 10488.125372110888,
+      "final_balance": 90488.1253721109,
+      "max_drawdown_pct": -3.870353263482512,
+      "max_drawdown_dollars": -3390.5780008824804,
+      "avg_daily_pnl": 194.22454392797937,
+      "daily_pnl_std": 1003.670269461263,
+      "profitable_days_count": 20,
+      "total_trading_days": 54,
+      "profitable_days_pct": 37.03703703703704
+    },
+    "id": 4,
+    "created_at": "2026-02-06T12:17:18.418548"
   }
 ]

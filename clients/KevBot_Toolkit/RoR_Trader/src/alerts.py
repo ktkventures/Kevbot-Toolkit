@@ -3,7 +3,7 @@ Alert Engine for RoR Trader
 =============================
 
 Handles alert configuration, signal detection, position tracking,
-portfolio enrichment, webhook delivery, and alert history.
+portfolio enrichment, webhook delivery, webhook templates, and alert history.
 
 The alert monitor (alert_monitor.py) uses this module to detect signals
 and deliver notifications. The Streamlit app uses the CRUD functions
@@ -13,6 +13,7 @@ to configure alerts and display history.
 import json
 import os
 import math
+import secrets
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -33,12 +34,12 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ALERT_CONFIG_FILE = os.path.join(_SCRIPT_DIR, "alert_config.json")
 ALERTS_FILE = os.path.join(_SCRIPT_DIR, "alerts.json")
 MONITOR_STATUS_FILE = os.path.join(_SCRIPT_DIR, "monitor_status.json")
+WEBHOOK_TEMPLATES_FILE = os.path.join(_SCRIPT_DIR, "webhook_templates.json")
 
 # How many bars to load for signal detection (enough for indicator warmup)
 SIGNAL_DETECTION_BARS = 200
 
 DEFAULT_GLOBAL_CONFIG = {
-    "webhook_url": "",
     "poll_interval_seconds": 60,
     "market_hours_only": True,
     "enabled": False,
@@ -48,26 +49,185 @@ DEFAULT_STRATEGY_CONFIG = {
     "alerts_enabled": False,
     "alert_on_entry": True,
     "alert_on_exit": True,
-    "webhook_url": "",
 }
 
 DEFAULT_PORTFOLIO_CONFIG = {
     "alerts_enabled": False,
     "alert_on_signal": True,
     "alert_on_compliance_breach": True,
-    "webhook_url": "",
+    "webhooks": [],
 }
+
+
+# =============================================================================
+# PLACEHOLDER SYSTEM
+# =============================================================================
+
+PLACEHOLDER_CATALOG = {
+    "symbol": "Ticker symbol (e.g., SPY)",
+    "timeframe": "Bar timeframe (e.g., 1Min)",
+    "strategy_name": "Strategy display name",
+    "strategy_id": "Strategy numeric ID",
+    "event_type": "entry_signal, exit_signal, or compliance_breach",
+    "order_action": "buy, sell, or close",
+    "order_price": "Price at signal time",
+    "stop_price": "Calculated stop loss price",
+    "market_position": "long, short, or flat",
+    "direction": "LONG or SHORT",
+    "risk_per_trade": "Dollar risk per trade (portfolio-level)",
+    "quantity": "Shares (derived from risk / stop distance)",
+    "atr": "ATR value at signal bar",
+    "trigger_name": "Trigger ID that fired",
+    "confluence_met": "Comma-separated confluence conditions",
+    "portfolio_name": "Portfolio display name",
+    "portfolio_id": "Portfolio numeric ID",
+    "position_risk": "Position risk in this portfolio",
+    "timestamp": "ISO timestamp of alert",
+    "rule_name": "Breached rule name (compliance only)",
+    "rule_limit": "Rule limit display (compliance only)",
+    "rule_value": "Actual value display (compliance only)",
+}
+
+
+def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> dict:
+    """Build the full placeholder substitution dict from an alert record."""
+    alert_type = alert.get("type", "")
+    direction = alert.get("direction", "")
+
+    # Derive order_action: buy/sell for entries, close for exits
+    if alert_type == "entry_signal":
+        order_action = "buy" if direction == "LONG" else "sell"
+    elif alert_type == "exit_signal":
+        order_action = "close"
+    else:
+        order_action = ""
+
+    # Derive market_position
+    if alert_type == "entry_signal":
+        market_position = direction.lower() if direction else ""
+    elif alert_type == "exit_signal":
+        market_position = "flat"
+    else:
+        market_position = ""
+
+    # Derive quantity from position_risk / |price - stop_price|
+    price = alert.get("price")
+    stop_price = alert.get("stop_price")
+    position_risk = None
+    if portfolio_context:
+        position_risk = portfolio_context.get("position_risk")
+    if not position_risk:
+        position_risk = alert.get("risk_per_trade")
+
+    quantity = ""
+    if price and stop_price and position_risk:
+        try:
+            stop_distance = abs(float(price) - float(stop_price))
+            if stop_distance > 0:
+                quantity = str(int(float(position_risk) / stop_distance))
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
+
+    ctx = {
+        "symbol": str(alert.get("symbol", "")),
+        "timeframe": str(alert.get("timeframe", "1Min")),
+        "strategy_name": str(alert.get("strategy_name", "")),
+        "strategy_id": str(alert.get("strategy_id", "")),
+        "event_type": alert_type,
+        "order_action": order_action,
+        "order_price": str(alert.get("price", "")),
+        "stop_price": str(alert.get("stop_price", "")),
+        "market_position": market_position,
+        "direction": direction,
+        "risk_per_trade": str(position_risk or alert.get("risk_per_trade", "")),
+        "quantity": quantity,
+        "atr": str(alert.get("atr", "")),
+        "trigger_name": str(alert.get("trigger", "")),
+        "confluence_met": ", ".join(alert.get("confluence_met", [])),
+        "timestamp": str(alert.get("timestamp", "")),
+        "rule_name": str(alert.get("rule_name", "")),
+        "rule_limit": str(alert.get("rule_limit", "")),
+        "rule_value": str(alert.get("rule_value", "")),
+    }
+
+    # Portfolio-specific overrides
+    if portfolio_context:
+        ctx["portfolio_name"] = str(portfolio_context.get("portfolio_name", ""))
+        ctx["portfolio_id"] = str(portfolio_context.get("portfolio_id", ""))
+        ctx["position_risk"] = str(portfolio_context.get("position_risk", ""))
+    else:
+        ctx["portfolio_name"] = ""
+        ctx["portfolio_id"] = ""
+        ctx["position_risk"] = ""
+
+    return ctx
+
+
+def render_payload(template: str, context: dict) -> str:
+    """Substitute {{placeholder}} tokens in a payload template string."""
+    result = template
+    for key, value in context.items():
+        result = result.replace("{{" + key + "}}", value)
+    return result
 
 
 # =============================================================================
 # ALERT CONFIG CRUD
 # =============================================================================
 
+def generate_webhook_id() -> str:
+    """Generate a unique webhook ID like 'wh_a1b2c3'."""
+    return f"wh_{secrets.token_hex(3)}"
+
+
 def load_alert_config() -> dict:
-    """Load alert configuration from JSON file. Returns defaults if missing."""
+    """Load alert configuration. Migrates legacy schema if detected."""
     if os.path.exists(ALERT_CONFIG_FILE):
         with open(ALERT_CONFIG_FILE, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
+
+        # Detect and migrate legacy schema
+        migrated = False
+
+        # Remove global webhook_url
+        old_global_url = ""
+        if "webhook_url" in config.get("global", {}):
+            old_global_url = config["global"].pop("webhook_url", "")
+            migrated = True
+
+        # Migrate strategy webhook_urls (remove them)
+        for sid, scfg in config.get("strategies", {}).items():
+            if "webhook_url" in scfg:
+                scfg.pop("webhook_url")
+                migrated = True
+
+        # Migrate portfolio webhook_urls to webhooks array
+        for pid, pcfg in config.get("portfolios", {}).items():
+            if "webhooks" not in pcfg:
+                old_url = pcfg.pop("webhook_url", "") or old_global_url
+                pcfg["webhooks"] = []
+                if old_url:
+                    pcfg["webhooks"].append({
+                        "id": generate_webhook_id(),
+                        "name": "Migrated Webhook",
+                        "url": old_url,
+                        "enabled": True,
+                        "events": {
+                            "entry_long": True,
+                            "entry_short": True,
+                            "exit_long": True,
+                            "exit_short": True,
+                            "compliance_breach": True,
+                        },
+                        "payload_template": "",
+                    })
+                migrated = True
+
+        if migrated:
+            save_alert_config(config)
+
+        return config
+
     return {
         "global": dict(DEFAULT_GLOBAL_CONFIG),
         "strategies": {},
@@ -115,6 +275,78 @@ def set_portfolio_alert_config(portfolio_id: int, port_config: dict):
         config["portfolios"] = {}
     config["portfolios"][str(portfolio_id)] = port_config
     save_alert_config(config)
+
+
+# =============================================================================
+# WEBHOOK CRUD (portfolio-level)
+# =============================================================================
+
+def get_portfolio_webhooks(portfolio_id: int) -> list:
+    """Get all webhooks configured for a portfolio."""
+    config = load_alert_config()
+    port_config = config.get("portfolios", {}).get(str(portfolio_id), {})
+    return port_config.get("webhooks", [])
+
+
+def add_portfolio_webhook(portfolio_id: int, webhook: dict) -> dict:
+    """Add a new webhook to a portfolio. Auto-assigns ID. Returns the saved webhook."""
+    config = load_alert_config()
+    if "portfolios" not in config:
+        config["portfolios"] = {}
+    pid = str(portfolio_id)
+    if pid not in config["portfolios"]:
+        config["portfolios"][pid] = dict(DEFAULT_PORTFOLIO_CONFIG)
+    if "webhooks" not in config["portfolios"][pid]:
+        config["portfolios"][pid]["webhooks"] = []
+
+    webhook["id"] = generate_webhook_id()
+    if "enabled" not in webhook:
+        webhook["enabled"] = True
+    config["portfolios"][pid]["webhooks"].append(webhook)
+    save_alert_config(config)
+    return webhook
+
+
+def update_portfolio_webhook(portfolio_id: int, webhook_id: str, updates: dict) -> bool:
+    """Update an existing webhook. Returns True if found and updated."""
+    config = load_alert_config()
+    webhooks = config.get("portfolios", {}).get(str(portfolio_id), {}).get("webhooks", [])
+    for i, wh in enumerate(webhooks):
+        if wh.get("id") == webhook_id:
+            webhooks[i].update(updates)
+            save_alert_config(config)
+            return True
+    return False
+
+
+def delete_portfolio_webhook(portfolio_id: int, webhook_id: str) -> bool:
+    """Delete a webhook from a portfolio. Returns True if found and removed."""
+    config = load_alert_config()
+    pid = str(portfolio_id)
+    webhooks = config.get("portfolios", {}).get(pid, {}).get("webhooks", [])
+    original_len = len(webhooks)
+    webhooks = [wh for wh in webhooks if wh.get("id") != webhook_id]
+    if len(webhooks) < original_len:
+        config["portfolios"][pid]["webhooks"] = webhooks
+        save_alert_config(config)
+        return True
+    return False
+
+
+def get_all_active_webhooks() -> list:
+    """Get all enabled webhooks across all portfolios.
+    Returns list of dicts with portfolio context added."""
+    config = load_alert_config()
+    result = []
+    for pid, port_config in config.get("portfolios", {}).items():
+        if not port_config.get("alerts_enabled", False):
+            continue
+        for wh in port_config.get("webhooks", []):
+            if wh.get("enabled", True):
+                entry = dict(wh)
+                entry["portfolio_id"] = int(pid)
+                result.append(entry)
+    return result
 
 
 # =============================================================================
@@ -191,6 +423,47 @@ def get_alerts_for_portfolio(portfolio_id: int, limit: int = 50) -> list:
                 filtered.append(a)
                 break
     return filtered[:limit]
+
+
+# =============================================================================
+# QUERY HELPERS FOR UI
+# =============================================================================
+
+def get_webhook_delivery_log(limit: int = 100) -> list:
+    """Get all webhook deliveries across all alerts, flattened for the Outbound Webhooks tab.
+    Returns list sorted by sent_at descending."""
+    alerts = load_alerts(limit=500)
+    deliveries = []
+    for alert in alerts:
+        for delivery in alert.get("webhook_deliveries", []):
+            entry = dict(delivery)
+            entry["alert_id"] = alert.get("id")
+            entry["alert_type"] = alert.get("type")
+            entry["strategy_name"] = alert.get("strategy_name", "")
+            entry["symbol"] = alert.get("symbol", "")
+            entry["direction"] = alert.get("direction", "")
+            entry["alert_timestamp"] = alert.get("timestamp")
+            deliveries.append(entry)
+    deliveries.sort(key=lambda d: d.get("sent_at", ""), reverse=True)
+    return deliveries[:limit]
+
+
+def get_active_alert_configs() -> dict:
+    """Get only strategies/portfolios with alerts currently enabled.
+    Returns {'strategies': [...], 'portfolios': [...]} with enriched info."""
+    config = load_alert_config()
+
+    active_strategies = []
+    for sid, scfg in config.get("strategies", {}).items():
+        if scfg.get("alerts_enabled"):
+            active_strategies.append({"strategy_id": int(sid), **scfg})
+
+    active_portfolios = []
+    for pid, pcfg in config.get("portfolios", {}).items():
+        if pcfg.get("alerts_enabled"):
+            active_portfolios.append({"portfolio_id": int(pid), **pcfg})
+
+    return {"strategies": active_strategies, "portfolios": active_portfolios}
 
 
 # =============================================================================
@@ -395,8 +668,8 @@ def enrich_signal_with_portfolio_context(signal: dict, strategy_id: int) -> dict
 # WEBHOOK DELIVERY
 # =============================================================================
 
-def _format_webhook_payload(alert: dict) -> dict:
-    """Format alert as a Discord/Slack-compatible webhook payload."""
+def _format_default_webhook_payload(alert: dict) -> dict:
+    """Format alert as a Discord/Slack-compatible webhook payload (fallback)."""
     alert_type = alert.get('type', 'signal')
     symbol = alert.get('symbol', '?')
     direction = alert.get('direction', '?')
@@ -449,30 +722,160 @@ def _format_webhook_payload(alert: dict) -> dict:
     return payload
 
 
-def send_webhook(url: str, alert: dict) -> bool:
+def send_webhook(url: str, alert: dict, custom_payload: str = None) -> dict:
     """
     Send alert to webhook URL. Retries once on failure.
-    Returns True if delivery succeeded.
+    Returns dict with 'success', 'status_code', 'error', 'payload_sent' keys.
     """
     if not url:
-        return False
+        return {"success": False, "status_code": None, "error": "No URL", "payload_sent": None}
 
     try:
         import requests
     except ImportError:
-        print("Warning: requests package not installed, cannot send webhooks")
-        return False
+        return {"success": False, "status_code": None, "error": "requests not installed", "payload_sent": None}
 
-    payload = _format_webhook_payload(alert)
+    if custom_payload:
+        try:
+            payload = json.loads(custom_payload)
+        except json.JSONDecodeError:
+            # If template isn't valid JSON, send as raw text
+            payload = {"content": custom_payload}
+    else:
+        payload = _format_default_webhook_payload(alert)
+
+    payload_str = json.dumps(payload)
+    last_status = None
+    last_error = None
 
     for attempt in range(2):
         try:
             resp = requests.post(url, json=payload, timeout=5)
+            last_status = resp.status_code
             if resp.status_code < 300:
-                return True
+                return {"success": True, "status_code": resp.status_code, "error": None, "payload_sent": payload_str}
+            last_error = f"HTTP {resp.status_code}"
         except Exception as e:
+            last_error = str(e)
             if attempt == 0:
                 continue
-            print(f"Webhook delivery failed: {e}")
 
+    return {"success": False, "status_code": last_status, "error": last_error, "payload_sent": payload_str}
+
+
+# =============================================================================
+# WEBHOOK TEMPLATES
+# =============================================================================
+
+DEFAULT_WEBHOOK_TEMPLATES = [
+    {
+        "id": "tpl_default_ttp_market_buy",
+        "name": "TradeThePool - Market Order - Buy",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "buy",\n  "quantity": {{quantity}}\n}',
+    },
+    {
+        "id": "tpl_default_ttp_market_sell",
+        "name": "TradeThePool - Market Order - Sell",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "sell",\n  "quantity": {{quantity}}\n}',
+    },
+    {
+        "id": "tpl_default_ttp_market_close",
+        "name": "TradeThePool - Market Order - Close",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "close"\n}',
+    },
+    {
+        "id": "tpl_default_ttp_limit_buy",
+        "name": "TradeThePool - Limit Order - Buy",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "buy",\n  "quantity": {{quantity}},\n  "limit_price": {{order_price}}\n}',
+    },
+    {
+        "id": "tpl_default_ttp_limit_sell",
+        "name": "TradeThePool - Limit Order - Sell",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "sell",\n  "quantity": {{quantity}},\n  "limit_price": {{order_price}}\n}',
+    },
+    {
+        "id": "tpl_default_ttp_limit_close",
+        "name": "TradeThePool - Limit Order - Close",
+        "category": "TradeThePool",
+        "is_default": True,
+        "payload_template": '{\n  "symbol": "{{symbol}}",\n  "action": "close"\n}',
+    },
+]
+
+
+def load_webhook_templates() -> list:
+    """Load webhook templates. Seeds defaults if file missing."""
+    if os.path.exists(WEBHOOK_TEMPLATES_FILE):
+        with open(WEBHOOK_TEMPLATES_FILE, 'r') as f:
+            templates = json.load(f)
+        # Ensure all defaults are present
+        existing_ids = {t.get("id") for t in templates}
+        added = False
+        for default in DEFAULT_WEBHOOK_TEMPLATES:
+            if default["id"] not in existing_ids:
+                templates.append(dict(default))
+                added = True
+        if added:
+            save_webhook_templates(templates)
+        return templates
+
+    # Seed defaults
+    templates = [dict(t) for t in DEFAULT_WEBHOOK_TEMPLATES]
+    save_webhook_templates(templates)
+    return templates
+
+
+def save_webhook_templates(templates: list):
+    """Save webhook templates to file."""
+    with open(WEBHOOK_TEMPLATES_FILE, 'w') as f:
+        json.dump(templates, f, indent=2)
+
+
+def add_webhook_template(template: dict) -> dict:
+    """Add a user-created webhook template. Auto-assigns ID."""
+    templates = load_webhook_templates()
+    template["id"] = f"tpl_{secrets.token_hex(3)}"
+    template["is_default"] = False
+    templates.append(template)
+    save_webhook_templates(templates)
+    return template
+
+
+def update_webhook_template(template_id: str, updates: dict) -> bool:
+    """Update an existing webhook template. Returns True if found and updated."""
+    templates = load_webhook_templates()
+    for i, t in enumerate(templates):
+        if t.get("id") == template_id:
+            templates[i].update(updates)
+            save_webhook_templates(templates)
+            return True
     return False
+
+
+def delete_webhook_template(template_id: str) -> bool:
+    """Delete a webhook template (only user-created). Returns True if removed."""
+    templates = load_webhook_templates()
+    original_len = len(templates)
+    templates = [t for t in templates if not (t.get("id") == template_id and not t.get("is_default", False))]
+    if len(templates) < original_len:
+        save_webhook_templates(templates)
+        return True
+    return False
+
+
+def get_webhook_template_by_id(template_id: str) -> dict | None:
+    """Get a single webhook template by ID."""
+    for t in load_webhook_templates():
+        if t.get("id") == template_id:
+            return t
+    return None
