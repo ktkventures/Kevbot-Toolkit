@@ -50,8 +50,14 @@ from portfolios import (
     calculate_portfolio_kpis,
     compute_drawdown_series,
     compute_strategy_correlation,
-    evaluate_prop_firm_rules,
-    PROP_FIRM_RULES,
+    evaluate_requirement_set,
+    load_requirements,
+    get_requirement_set_by_id,
+    save_requirement_set,
+    update_requirement_set,
+    delete_requirement_set,
+    duplicate_requirement_set,
+    compute_strategy_recommendations,
 )
 from confluence_groups import (
     load_confluence_groups,
@@ -898,6 +904,18 @@ def main():
         st.session_state.creating_portfolio = False
     if 'confirm_delete_portfolio_id' not in st.session_state:
         st.session_state.confirm_delete_portfolio_id = None
+    if 'portfolio_builder_strategies' not in st.session_state:
+        st.session_state.portfolio_builder_strategies = []
+    if 'builder_recommendations' not in st.session_state:
+        st.session_state.builder_recommendations = None
+    if 'strategy_trades_cache' not in st.session_state:
+        st.session_state.strategy_trades_cache = {}
+    if 'editing_requirement_id' not in st.session_state:
+        st.session_state.editing_requirement_id = None
+    if 'creating_requirement' not in st.session_state:
+        st.session_state.creating_requirement = False
+    if 'confirm_delete_requirement_id' not in st.session_state:
+        st.session_state.confirm_delete_requirement_id = None
 
     # Sidebar navigation
     with st.sidebar:
@@ -915,7 +933,7 @@ def main():
 
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Portfolios", "Confluence Groups"],
+            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Confluence Groups"],
             index=0
         )
 
@@ -936,6 +954,8 @@ def main():
         render_my_strategies()
     elif page == "Portfolios":
         render_portfolios()
+    elif page == "Portfolio Requirements":
+        render_requirements_page()
     else:
         render_confluence_groups()
 
@@ -2309,6 +2329,9 @@ def render_portfolio_list():
     with col_btn:
         if st.button("+ New Portfolio", type="primary"):
             st.session_state.creating_portfolio = True
+            st.session_state.portfolio_builder_strategies = []
+            st.session_state.builder_recommendations = None
+            st.session_state.pop('_builder_initialized', None)
             st.rerun()
 
     portfolios = load_portfolios()
@@ -2341,10 +2364,12 @@ def render_portfolio_list():
                     kpi_cols[1].metric("Max DD", f"{max_dd:.1f}%")
                     kpi_cols[2].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
 
-                # Prop firm badge
-                firm_key = port.get('prop_firm')
-                if firm_key and firm_key in PROP_FIRM_RULES:
-                    st.caption(f"Prop Firm: {PROP_FIRM_RULES[firm_key]['name']}")
+                # Requirement set badge
+                req_id = port.get('requirement_set_id')
+                if req_id:
+                    rs = get_requirement_set_by_id(req_id)
+                    if rs:
+                        st.caption(f"Requirements: {rs['name']}")
 
             with chart_col:
                 # Strategy names
@@ -2392,6 +2417,9 @@ def render_portfolio_list():
             with btn_cols[1]:
                 if st.button("Edit", key=f"port_edit_{pid}"):
                     st.session_state.editing_portfolio_id = pid
+                    st.session_state.portfolio_builder_strategies = []
+                    st.session_state.builder_recommendations = None
+                    st.session_state.pop('_builder_initialized', None)
                     st.rerun()
             with btn_cols[2]:
                 if st.button("Clone", key=f"port_clone_{pid}"):
@@ -2419,8 +2447,16 @@ def render_portfolio_list():
                         st.rerun()
 
 
+def get_cached_strategy_trades(strat):
+    """Get strategy trades with session state caching."""
+    sid = strat['id']
+    if sid not in st.session_state.strategy_trades_cache:
+        st.session_state.strategy_trades_cache[sid] = get_strategy_trades(strat)
+    return st.session_state.strategy_trades_cache[sid]
+
+
 def render_portfolio_builder():
-    """Render the portfolio create/edit form."""
+    """Render the interactive portfolio builder with live metrics."""
     editing_id = st.session_state.editing_portfolio_id
     is_edit = editing_id is not None
 
@@ -2432,6 +2468,10 @@ def render_portfolio_builder():
             st.rerun()
             return
         st.header(f"Edit Portfolio: {existing['name']}")
+        # Initialize builder strategies from existing portfolio (once)
+        if not st.session_state.get('_builder_initialized'):
+            st.session_state.portfolio_builder_strategies = copy.deepcopy(existing.get('strategies', []))
+            st.session_state._builder_initialized = True
     else:
         existing = None
         st.header("New Portfolio")
@@ -2439,123 +2479,230 @@ def render_portfolio_builder():
     if st.button("Cancel"):
         st.session_state.creating_portfolio = False
         st.session_state.editing_portfolio_id = None
+        st.session_state.portfolio_builder_strategies = []
+        st.session_state.builder_recommendations = None
+        st.session_state.pop('_builder_initialized', None)
         st.rerun()
 
-    # Portfolio settings
-    st.subheader("Portfolio Settings")
-    col1, col2 = st.columns(2)
-    with col1:
+    # --- Settings row ---
+    st.subheader("Settings")
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
         name = st.text_input("Portfolio Name",
                               value=existing['name'] if existing else "My Portfolio")
+    with s2:
         starting_balance = st.number_input(
             "Starting Balance ($)", min_value=1000.0, step=1000.0,
             value=existing.get('starting_balance', 25000.0) if existing else 25000.0)
-    with col2:
+    with s3:
         compound_pct = st.slider(
-            "Risk Scaling (Compound Rate)",
+            "Risk Scaling (%)",
             min_value=0, max_value=100, step=5,
             value=int((existing.get('compound_rate', 0.0) if existing else 0.0) * 100),
-            help="0% = fixed risk per trade. 100% = risk scales 1:1 with account growth. "
-                 "E.g., at 50%, if your account is up 20%, risk per trade increases by 10%."
+            help="0% = fixed risk per trade. 100% = risk scales 1:1 with account growth."
         )
         compound_rate = compound_pct / 100.0
-
-        prop_firm_options = {"": "None", "ttp": "Trade The Pool", "ftmo": "FTMO"}
-        current_firm = existing.get('prop_firm', '') if existing else ''
-        prop_firm = st.selectbox(
-            "Prop Firm (for compliance check)",
-            options=list(prop_firm_options.keys()),
-            format_func=lambda k: prop_firm_options[k],
-            index=list(prop_firm_options.keys()).index(current_firm) if current_firm in prop_firm_options else 0
+    with s4:
+        req_sets = load_requirements()
+        req_options = {0: "None"} | {r['id']: r['name'] for r in req_sets}
+        current_req_id = existing.get('requirement_set_id', 0) if existing else 0
+        if current_req_id is None:
+            current_req_id = 0
+        req_set_id = st.selectbox(
+            "Requirement Set",
+            options=list(req_options.keys()),
+            format_func=lambda k: req_options[k],
+            index=list(req_options.keys()).index(current_req_id) if current_req_id in req_options else 0
         )
 
-    # Strategy selection
-    st.subheader("Select Strategies")
+    builder_strategies = st.session_state.portfolio_builder_strategies
 
-    all_strategies = load_strategies()
-    modern_strategies = [s for s in all_strategies if 'entry_trigger_confluence_id' in s]
+    # --- Compute live metrics ---
+    preview_portfolio = {
+        'starting_balance': starting_balance,
+        'compound_rate': compound_rate,
+        'strategies': builder_strategies,
+    }
 
-    if len(modern_strategies) == 0:
-        st.warning("No strategies available. Create strategies in the Strategy Builder first.")
-        return
+    data = None
+    kpis = None
+    if builder_strategies:
+        data = get_portfolio_trades(preview_portfolio, get_strategy_by_id, get_cached_strategy_trades)
+        if len(data['combined_trades']) > 0:
+            kpis = calculate_portfolio_kpis(preview_portfolio, data['combined_trades'], data['daily_pnl'])
 
-    # Build strategy options
-    strat_options = {s['id']: f"{s['name']} ({s['symbol']} {s['direction']})" for s in modern_strategies}
-
-    # Pre-populate if editing
-    if existing:
-        default_ids = [ps['strategy_id'] for ps in existing.get('strategies', [])
-                       if ps['strategy_id'] in strat_options]
-        existing_risks = {ps['strategy_id']: ps['risk_per_trade']
-                         for ps in existing.get('strategies', [])}
+    # --- Live KPI row ---
+    st.subheader("Live Metrics")
+    if kpis:
+        kpi_cols = st.columns(6)
+        kpi_cols[0].metric("Trades", kpis['total_trades'])
+        kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+        pf = kpis['profit_factor']
+        kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[3].metric("Total P&L", f"${kpis['total_pnl']:+,.0f}")
+        kpi_cols[4].metric("Final Balance", f"${kpis['final_balance']:,.0f}")
+        kpi_cols[5].metric("Max Drawdown", f"{kpis['max_drawdown_pct']:.1f}%")
     else:
-        default_ids = []
-        existing_risks = {}
+        st.caption("Add strategies to see portfolio analytics.")
 
-    selected_ids = st.multiselect(
-        "Choose strategies to include",
-        options=list(strat_options.keys()),
-        default=default_ids,
-        format_func=lambda sid: strat_options[sid]
-    )
+    # --- Charts (left) + Strategy Management (right) ---
+    chart_col, mgmt_col = st.columns([3, 2])
 
-    # Risk per trade for each selected strategy
-    strategy_configs = []
-    if selected_ids:
-        st.markdown("**Risk Per Trade**")
-        for sid in selected_ids:
-            strat = next((s for s in modern_strategies if s['id'] == sid), None)
-            if strat is None:
-                continue
-            default_risk = existing_risks.get(sid, strat.get('risk_per_trade', 100.0))
-            risk = st.number_input(
-                f"{strat['name']}",
-                min_value=1.0, step=10.0,
-                value=float(default_risk),
-                key=f"port_risk_{sid}"
+    with chart_col:
+        if data and kpis and len(data['combined_trades']) > 0:
+            # Combined equity curve
+            st.markdown("**Combined Equity Curve**")
+            combined = data['combined_trades']
+            fig = go.Figure()
+
+            colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC", "#EF5350", "#26C6DA"]
+            for i, (sid, strat_trades) in enumerate(data['strategy_trades'].items()):
+                if len(strat_trades) == 0:
+                    continue
+                sorted_t = strat_trades.sort_values('exit_time')
+                ps_config = next((ps for ps in builder_strategies if ps['strategy_id'] == sid), None)
+                if ps_config:
+                    cum_pnl = (sorted_t['r_multiple'] * ps_config['risk_per_trade']).cumsum()
+                    fig.add_trace(go.Scatter(
+                        x=sorted_t['exit_time'], y=cum_pnl,
+                        mode='lines', name=strat_trades['strategy_name'].iloc[0],
+                        line=dict(color=colors[i % len(colors)], width=1, dash='dot'),
+                        opacity=0.6
+                    ))
+
+            fig.add_trace(go.Scatter(
+                x=combined['exit_time'], y=combined['cumulative_pnl'],
+                mode='lines', name='Combined Portfolio',
+                line=dict(color='white', width=2.5)
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+            fig.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title="", yaxis_title="Cumulative P&L ($)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
             )
-            strategy_configs.append({'strategy_id': sid, 'risk_per_trade': risk})
+            st.plotly_chart(fig, use_container_width=True, key="builder_equity")
 
-    # Preview
-    if strategy_configs:
-        with st.expander("Preview Combined KPIs"):
-            preview_portfolio = {
-                'starting_balance': starting_balance,
-                'compound_rate': compound_rate,
-                'strategies': strategy_configs,
-            }
-            with st.spinner("Computing..."):
-                data = get_portfolio_trades(preview_portfolio, get_strategy_by_id, get_strategy_trades)
-                kpis = calculate_portfolio_kpis(preview_portfolio, data['combined_trades'], data['daily_pnl'])
+            # Drawdown chart
+            st.markdown("**Drawdown**")
+            dd = compute_drawdown_series(combined, starting_balance)
+            if len(dd) > 0:
+                fig_dd = go.Figure()
+                fig_dd.add_trace(go.Scatter(
+                    x=dd['exit_time'], y=dd['drawdown_pct'],
+                    mode='lines', name='Drawdown',
+                    line=dict(color='#f44336', width=1.5),
+                    fill='tozeroy', fillcolor='rgba(244, 67, 54, 0.15)'
+                ))
+                fig_dd.add_hline(y=0, line_color="gray", opacity=0.3)
+                fig_dd.update_layout(
+                    height=200, margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="", yaxis_title="Drawdown %",
+                )
+                st.plotly_chart(fig_dd, use_container_width=True, key="builder_dd")
 
-            kpi_cols = st.columns(6)
-            kpi_cols[0].metric("Trades", kpis['total_trades'])
-            kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
-            pf = kpis['profit_factor']
-            kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-            kpi_cols[3].metric("Total P&L", f"${kpis['total_pnl']:+,.0f}")
-            kpi_cols[4].metric("Final Balance", f"${kpis['final_balance']:,.0f}")
-            max_dd = kpis['max_drawdown_pct']
-            kpi_cols[5].metric("Max Drawdown", f"{max_dd:.1f}%")
+    with mgmt_col:
+        # --- Add Strategy ---
+        st.markdown("**Add Strategy**")
+        all_strategies = load_strategies()
+        modern_strategies = [s for s in all_strategies if 'entry_trigger_confluence_id' in s]
+        current_ids = {ps['strategy_id'] for ps in builder_strategies}
+        available = [s for s in modern_strategies if s['id'] not in current_ids]
+
+        if available:
+            strat_options = {s['id']: f"{s['name']} ({s['symbol']} {s['direction']})" for s in available}
+            selected_strat_id = st.selectbox(
+                "Choose Strategy",
+                options=list(strat_options.keys()),
+                format_func=lambda sid: strat_options[sid],
+                key="builder_add_strat"
+            )
+            add_risk = st.number_input("Risk Per Trade ($)", min_value=1.0, step=10.0,
+                                       value=100.0, key="builder_add_risk")
+            if st.button("Add Strategy", type="primary", key="builder_add_btn"):
+                st.session_state.portfolio_builder_strategies.append({
+                    'strategy_id': selected_strat_id,
+                    'risk_per_trade': add_risk,
+                })
+                st.session_state.builder_recommendations = None
+                st.rerun()
+        elif len(modern_strategies) == 0:
+            st.caption("No strategies available. Create strategies first.")
+        else:
+            st.caption("All available strategies are already added.")
+
+        # --- Current Strategies ---
+        st.markdown("**Current Strategies**")
+        if not builder_strategies:
+            st.caption("No strategies added yet.")
+        for i, ps in enumerate(builder_strategies):
+            strat = get_strategy_by_id(ps['strategy_id'])
+            if strat is None:
+                st.warning(f"Strategy {ps['strategy_id']} not found.")
+                continue
+            with st.container(border=True):
+                rc1, rc2, rc3 = st.columns([3, 2, 0.5])
+                rc1.markdown(f"**{strat['symbol']} {strat['direction']}**")
+                rc1.caption(strat['name'])
+                new_risk = rc2.number_input(
+                    "$/trade", min_value=1.0, step=10.0,
+                    value=float(ps['risk_per_trade']),
+                    key=f"builder_risk_{ps['strategy_id']}",
+                    label_visibility="collapsed"
+                )
+                if new_risk != ps['risk_per_trade']:
+                    st.session_state.portfolio_builder_strategies[i]['risk_per_trade'] = new_risk
+                if rc3.button("x", key=f"builder_rm_{i}"):
+                    st.session_state.portfolio_builder_strategies.pop(i)
+                    st.session_state.builder_recommendations = None
+                    st.rerun()
+
+        # --- Recommendations ---
+        if builder_strategies and available:
+            with st.expander("Strategy Recommendations"):
+                if st.button("Analyze Recommendations", key="builder_rec_btn"):
+                    with st.spinner("Evaluating candidates..."):
+                        recs = compute_strategy_recommendations(
+                            preview_portfolio, data if data else {'combined_trades': pd.DataFrame(), 'daily_pnl': pd.DataFrame(), 'strategy_daily_pnl': pd.DataFrame(), 'strategy_trades': {}, 'equity_curve': pd.Series(dtype=float)},
+                            available, get_strategy_by_id, get_cached_strategy_trades, top_n=5,
+                        )
+                        st.session_state.builder_recommendations = recs
+
+                recs = st.session_state.builder_recommendations
+                if recs:
+                    for rec in recs:
+                        with st.container(border=True):
+                            c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 1])
+                            c1.markdown(f"**{rec['strategy_name']}**")
+                            c2.caption(f"P&L: {rec['pnl_change']:+,.0f}")
+                            c3.caption(f"DD: {rec['dd_change']:+.1f}%")
+                            if c4.button("Add", key=f"rec_add_{rec['strategy_id']}"):
+                                s = get_strategy_by_id(rec['strategy_id'])
+                                st.session_state.portfolio_builder_strategies.append({
+                                    'strategy_id': rec['strategy_id'],
+                                    'risk_per_trade': s.get('risk_per_trade', 100.0) if s else 100.0,
+                                })
+                                st.session_state.builder_recommendations = None
+                                st.rerun()
+                elif recs is not None:
+                    st.caption("No recommendations available.")
 
     st.divider()
 
-    # Save button
+    # --- Save button ---
     btn_label = "Update Portfolio" if is_edit else "Save Portfolio"
-    if st.button(btn_label, type="primary", disabled=len(strategy_configs) == 0):
-        # Build portfolio dict
+    if st.button(btn_label, type="primary", disabled=len(builder_strategies) == 0):
         portfolio = {
             'name': name,
             'starting_balance': starting_balance,
             'compound_rate': compound_rate,
-            'strategies': strategy_configs,
-            'prop_firm': prop_firm if prop_firm else None,
-            'custom_rules': existing.get('custom_rules', []) if existing else [],
+            'strategies': builder_strategies,
+            'requirement_set_id': req_set_id if req_set_id else None,
         }
 
         # Compute and cache KPIs
-        data = get_portfolio_trades(portfolio, get_strategy_by_id, get_strategy_trades)
-        portfolio['cached_kpis'] = calculate_portfolio_kpis(portfolio, data['combined_trades'], data['daily_pnl'])
+        save_data = get_portfolio_trades(portfolio, get_strategy_by_id, get_strategy_trades)
+        portfolio['cached_kpis'] = calculate_portfolio_kpis(portfolio, save_data['combined_trades'], save_data['daily_pnl'])
 
         if is_edit:
             update_portfolio(editing_id, portfolio)
@@ -2566,6 +2713,9 @@ def render_portfolio_builder():
 
         st.session_state.creating_portfolio = False
         st.session_state.editing_portfolio_id = None
+        st.session_state.portfolio_builder_strategies = []
+        st.session_state.builder_recommendations = None
+        st.session_state.pop('_builder_initialized', None)
         st.rerun()
 
 
@@ -2718,16 +2868,18 @@ def render_portfolio_performance(port, kpis, data, drawdown):
             fill='tozeroy', fillcolor='rgba(244, 67, 54, 0.15)'
         ))
 
-        # Prop firm limit line
-        firm_key = port.get('prop_firm')
-        if firm_key and firm_key in PROP_FIRM_RULES:
-            for rule in PROP_FIRM_RULES[firm_key]['rules']:
-                if rule['type'] == 'max_total_drawdown_pct':
-                    fig_dd.add_hline(
-                        y=-rule['value'], line_dash="dash", line_color="orange",
-                        annotation_text=f"{PROP_FIRM_RULES[firm_key]['name']} Limit",
-                        annotation_font_color="orange"
-                    )
+        # Requirement set limit line
+        req_id = port.get('requirement_set_id')
+        if req_id:
+            rs = get_requirement_set_by_id(req_id)
+            if rs:
+                for rule in rs.get('rules', []):
+                    if rule['type'] == 'max_total_drawdown_pct':
+                        fig_dd.add_hline(
+                            y=-rule['value'], line_dash="dash", line_color="orange",
+                            annotation_text=f"{rs['name']} Limit",
+                            annotation_font_color="orange"
+                        )
 
         fig_dd.add_hline(y=0, line_color="gray", opacity=0.3)
         fig_dd.update_layout(
@@ -2807,39 +2959,41 @@ def render_portfolio_strategies(port, data):
 
 
 def render_portfolio_prop_firm(port, kpis, daily_pnl):
-    """Render the Prop Firm Check tab."""
-    firm_options = list(PROP_FIRM_RULES.keys()) + ["custom"]
-    firm_labels = {k: PROP_FIRM_RULES[k]['name'] for k in PROP_FIRM_RULES}
-    firm_labels["custom"] = "Custom Rules"
+    """Render the Prop Firm Check tab using requirement sets."""
+    req_sets = load_requirements()
 
-    current_firm = port.get('prop_firm', '') or 'ttp'
-    if current_firm not in firm_options:
-        current_firm = 'ttp'
+    if not req_sets:
+        st.info("No requirement sets available. Create one on the Portfolio Requirements page.")
+        return
 
-    firm_key = st.radio(
-        "Select Prop Firm",
-        firm_options,
-        format_func=lambda k: firm_labels.get(k, k),
-        horizontal=True,
-        index=firm_options.index(current_firm)
+    # Build options
+    req_options = {r['id']: r['name'] for r in req_sets}
+    current_req_id = port.get('requirement_set_id')
+    if current_req_id not in req_options:
+        current_req_id = req_sets[0]['id']
+
+    selected_req_id = st.selectbox(
+        "Select Requirement Set",
+        options=list(req_options.keys()),
+        format_func=lambda k: req_options[k],
+        index=list(req_options.keys()).index(current_req_id) if current_req_id in req_options else 0
     )
 
     st.divider()
 
-    # Custom rules editor
-    if firm_key == "custom":
-        render_custom_rules_editor(port)
-        st.divider()
-
     # Evaluate
-    custom_rules = port.get('custom_rules', []) if firm_key == "custom" else None
-    result = evaluate_prop_firm_rules(firm_key, port, kpis, daily_pnl, custom_rules=custom_rules)
+    req_set = get_requirement_set_by_id(selected_req_id)
+    if req_set is None:
+        st.error("Requirement set not found.")
+        return
+
+    result = evaluate_requirement_set(req_set, port, kpis, daily_pnl)
 
     # Rules table
     st.subheader(f"{result['firm_name']} — Rules Compliance")
 
     if not result['rules']:
-        st.info("No rules defined." if firm_key == "custom" else "No rules found for this firm.")
+        st.info("No rules defined in this requirement set.")
         return
 
     for r in result['rules']:
@@ -2869,59 +3023,15 @@ def render_portfolio_prop_firm(port, kpis, daily_pnl):
         else:
             st.caption(f"{r['name']}: {r['margin']:+.1f} (needs improvement)")
 
-    # Recommendations — check all firms
-    st.subheader("Firm Compatibility")
-    for fk, fdef in PROP_FIRM_RULES.items():
-        other_result = evaluate_prop_firm_rules(fk, port, kpis, daily_pnl)
+    # Compatibility — check all requirement sets
+    st.subheader("Requirement Set Compatibility")
+    for rs in req_sets:
+        other_result = evaluate_requirement_set(rs, port, kpis, daily_pnl)
         if other_result['overall_pass']:
-            st.markdown(f":green[Pass] — {fdef['name']}")
+            st.markdown(f":green[Pass] — {rs['name']}")
         else:
             failed = [r['name'] for r in other_result['rules'] if not r['passed']]
-            st.markdown(f":red[Fail] — {fdef['name']} ({', '.join(failed)})")
-
-
-def render_custom_rules_editor(port):
-    """Render the custom prop firm rules editor."""
-    custom_rules = port.get('custom_rules', [])
-
-    st.subheader("Custom Rules")
-
-    if custom_rules:
-        for i, rule in enumerate(custom_rules):
-            cols = st.columns([3, 2, 1])
-            cols[0].markdown(f"**{rule['name']}** ({rule['type']})")
-            cols[1].markdown(f"Value: {rule['value']}")
-            if cols[2].button("Remove", key=f"rm_crule_{i}"):
-                custom_rules.pop(i)
-                port['custom_rules'] = custom_rules
-                update_portfolio(port['id'], port)
-                st.rerun()
-    else:
-        st.caption("No custom rules defined.")
-
-    type_labels = {
-        "min_profit_pct": "Minimum Profit %",
-        "max_daily_loss_pct": "Maximum Daily Loss %",
-        "max_total_drawdown_pct": "Maximum Total Drawdown %",
-        "min_profitable_days": "Minimum Profitable Days",
-        "min_trading_days": "Minimum Trading Days",
-    }
-
-    with st.expander("+ Add Rule"):
-        rule_name = st.text_input("Rule Name", key="crule_name")
-        rule_type = st.selectbox("Rule Type", list(type_labels.keys()),
-                                  format_func=lambda t: type_labels[t], key="crule_type")
-        rule_value = st.number_input("Value", min_value=0.0, step=0.5, key="crule_value")
-
-        if st.button("Add Rule", key="crule_add"):
-            if rule_name:
-                new_rule = {'name': rule_name, 'type': rule_type, 'value': rule_value}
-                if rule_type == 'min_profitable_days':
-                    new_rule['threshold_pct'] = 0.5
-                custom_rules.append(new_rule)
-                port['custom_rules'] = custom_rules
-                update_portfolio(port['id'], port)
-                st.rerun()
+            st.markdown(f":red[Fail] — {rs['name']} ({', '.join(failed)})")
 
 
 def render_portfolio_deploy(port):
@@ -2929,6 +3039,197 @@ def render_portfolio_deploy(port):
     st.info("Deploy functionality is coming soon.")
     st.caption("This tab will allow you to deploy your portfolio strategies as live alerts "
                "and connect to trading bots.")
+
+
+# =============================================================================
+# PORTFOLIO REQUIREMENTS PAGE
+# =============================================================================
+
+RULE_TYPE_LABELS = {
+    "min_profit_pct": "Minimum Profit %",
+    "max_daily_loss_pct": "Maximum Daily Loss %",
+    "max_total_drawdown_pct": "Maximum Total Drawdown %",
+    "min_profitable_days": "Minimum Profitable Days",
+    "min_trading_days": "Minimum Trading Days",
+}
+
+
+def render_requirements_page():
+    """Render the Portfolio Requirements management page."""
+    # Route to editor if creating/editing
+    if st.session_state.creating_requirement:
+        render_requirement_set_editor()
+        return
+    if st.session_state.editing_requirement_id is not None:
+        render_requirement_set_editor(st.session_state.editing_requirement_id)
+        return
+
+    st.header("Portfolio Requirements")
+    st.caption("Manage prop firm rule sets and custom requirement sets for portfolio compliance checking.")
+
+    col_header, col_btn = st.columns([4, 1])
+    with col_btn:
+        if st.button("+ New Requirement Set", type="primary"):
+            st.session_state.creating_requirement = True
+            st.rerun()
+
+    req_sets = load_requirements()
+
+    if len(req_sets) == 0:
+        st.info("No requirement sets yet.")
+        return
+
+    for rs in req_sets:
+        rid = rs.get('id', 0)
+        with st.container(border=True):
+            info_col, action_col = st.columns([4, 2])
+
+            with info_col:
+                name_parts = [f"### {rs['name']}"]
+                if rs.get('built_in'):
+                    name_parts.append("  `Built-in`")
+                st.markdown("".join(name_parts))
+                n_rules = len(rs.get('rules', []))
+                st.caption(f"{n_rules} rule{'s' if n_rules != 1 else ''}")
+
+                # Show rules summary
+                for rule in rs.get('rules', [])[:4]:
+                    st.caption(f"  - {rule['name']}: {RULE_TYPE_LABELS.get(rule['type'], rule['type'])} = {rule['value']}")
+                if n_rules > 4:
+                    st.caption(f"  ... and {n_rules - 4} more")
+
+            with action_col:
+                btn_cols = st.columns(3)
+                with btn_cols[0]:
+                    if st.button("Edit", key=f"req_edit_{rid}"):
+                        st.session_state.editing_requirement_id = rid
+                        st.rerun()
+                with btn_cols[1]:
+                    if st.button("Clone", key=f"req_clone_{rid}"):
+                        new = duplicate_requirement_set(rid)
+                        if new:
+                            st.toast(f"Cloned as '{new['name']}'")
+                            st.rerun()
+                with btn_cols[2]:
+                    if rs.get('built_in'):
+                        st.button("Delete", key=f"req_del_{rid}", disabled=True,
+                                  help="Built-in sets cannot be deleted")
+                    else:
+                        if st.button("Delete", key=f"req_del_{rid}", type="secondary"):
+                            st.session_state.confirm_delete_requirement_id = rid
+                            st.rerun()
+
+            # Inline delete confirmation
+            if st.session_state.confirm_delete_requirement_id == rid:
+                st.warning(f"Delete '{rs['name']}'? This cannot be undone.")
+                dc = st.columns([1, 1, 6])
+                with dc[0]:
+                    if st.button("Yes, Delete", key=f"req_cdel_{rid}", type="primary"):
+                        delete_requirement_set(rid)
+                        st.session_state.confirm_delete_requirement_id = None
+                        st.rerun()
+                with dc[1]:
+                    if st.button("Cancel", key=f"req_cancel_del_{rid}"):
+                        st.session_state.confirm_delete_requirement_id = None
+                        st.rerun()
+
+
+def render_requirement_set_editor(req_id=None):
+    """Render the requirement set create/edit form."""
+    is_edit = req_id is not None
+
+    if is_edit:
+        existing = get_requirement_set_by_id(req_id)
+        if existing is None:
+            st.error("Requirement set not found.")
+            st.session_state.editing_requirement_id = None
+            st.rerun()
+            return
+        st.header(f"Edit: {existing['name']}")
+        is_built_in = existing.get('built_in', False)
+    else:
+        existing = None
+        is_built_in = False
+        st.header("New Requirement Set")
+
+    if st.button("Cancel"):
+        st.session_state.creating_requirement = False
+        st.session_state.editing_requirement_id = None
+        st.rerun()
+
+    name = st.text_input("Requirement Set Name",
+                          value=existing['name'] if existing else "My Requirements",
+                          disabled=is_built_in)
+
+    # Rules editor
+    st.subheader("Rules")
+
+    # Use session state to track rules being edited
+    rules_key = f"_req_rules_{req_id if req_id else 'new'}"
+    if rules_key not in st.session_state:
+        st.session_state[rules_key] = copy.deepcopy(existing.get('rules', [])) if existing else []
+
+    rules = st.session_state[rules_key]
+
+    if rules:
+        for i, rule in enumerate(rules):
+            cols = st.columns([3, 2, 1, 0.5])
+            cols[0].markdown(f"**{rule['name']}**")
+            cols[1].caption(f"{RULE_TYPE_LABELS.get(rule['type'], rule['type'])} = {rule['value']}")
+            if rule.get('threshold_pct'):
+                cols[2].caption(f"Threshold: {rule['threshold_pct']}%")
+            if cols[3].button("x", key=f"req_rm_rule_{i}"):
+                rules.pop(i)
+                st.session_state[rules_key] = rules
+                st.rerun()
+    else:
+        st.caption("No rules defined yet.")
+
+    # Add rule form
+    with st.expander("+ Add Rule"):
+        r1, r2 = st.columns(2)
+        with r1:
+            new_rule_name = st.text_input("Rule Name", key="new_req_rule_name")
+            new_rule_type = st.selectbox("Rule Type", list(RULE_TYPE_LABELS.keys()),
+                                          format_func=lambda t: RULE_TYPE_LABELS[t],
+                                          key="new_req_rule_type")
+        with r2:
+            new_rule_value = st.number_input("Value", min_value=0.0, step=0.5, key="new_req_rule_value")
+            if new_rule_type == 'min_profitable_days':
+                new_threshold = st.number_input("Threshold %", min_value=0.0, step=0.1,
+                                                value=0.5, key="new_req_threshold")
+
+        if st.button("Add Rule", key="req_add_rule_btn"):
+            if new_rule_name:
+                new_rule = {'name': new_rule_name, 'type': new_rule_type, 'value': new_rule_value}
+                if new_rule_type == 'min_profitable_days':
+                    new_rule['threshold_pct'] = new_threshold
+                rules.append(new_rule)
+                st.session_state[rules_key] = rules
+                st.rerun()
+
+    st.divider()
+
+    # Save
+    btn_label = "Update Requirement Set" if is_edit else "Save Requirement Set"
+    if st.button(btn_label, type="primary"):
+        req_set = {
+            'name': name if not is_built_in else existing['name'],
+            'rules': rules,
+        }
+
+        if is_edit:
+            update_requirement_set(req_id, req_set)
+            st.toast("Requirement set updated!")
+        else:
+            save_requirement_set(req_set)
+            st.toast("Requirement set saved!")
+
+        # Cleanup
+        st.session_state.pop(rules_key, None)
+        st.session_state.creating_requirement = False
+        st.session_state.editing_requirement_id = None
+        st.rerun()
 
 
 def render_confluence_groups():

@@ -16,6 +16,7 @@ from typing import Optional, Callable
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PORTFOLIOS_FILE = os.path.join(_SCRIPT_DIR, "portfolios.json")
+REQUIREMENTS_FILE = os.path.join(_SCRIPT_DIR, "requirements.json")
 
 
 # =============================================================================
@@ -58,11 +59,22 @@ PROP_FIRM_RULES = {
 # =============================================================================
 
 def load_portfolios() -> list:
-    """Load saved portfolios from file."""
+    """Load saved portfolios from file. Migrates legacy prop_firm fields."""
     if not os.path.exists(PORTFOLIOS_FILE):
         return []
     with open(PORTFOLIOS_FILE, 'r') as f:
-        return json.load(f)
+        portfolios = json.load(f)
+
+    # Migrate legacy prop_firm/custom_rules → requirement_set_id
+    migrated = False
+    for i, p in enumerate(portfolios):
+        if 'requirement_set_id' not in p:
+            portfolios[i] = _migrate_portfolio_prop_firm(p)
+            migrated = True
+    if migrated:
+        _save_all(portfolios)
+
+    return portfolios
 
 
 def _save_all(portfolios: list):
@@ -133,6 +145,144 @@ def duplicate_portfolio(portfolio_id: int) -> Optional[dict]:
     portfolios.append(new)
     _save_all(portfolios)
     return new
+
+
+# =============================================================================
+# REQUIREMENT SET CRUD
+# =============================================================================
+
+def _seed_built_in_requirements() -> list:
+    """Create initial requirement sets from PROP_FIRM_RULES constant."""
+    seeds = []
+    for i, (firm_key, firm_def) in enumerate(PROP_FIRM_RULES.items(), start=1):
+        seeds.append({
+            'id': i,
+            'name': firm_def['name'],
+            'built_in': True,
+            'firm_key': firm_key,
+            'rules': copy.deepcopy(firm_def['rules']),
+            'created_at': datetime.now().isoformat(),
+        })
+    return seeds
+
+
+def load_requirements() -> list:
+    """Load requirement sets from file. Seeds built-in templates on first call."""
+    if not os.path.exists(REQUIREMENTS_FILE):
+        seeds = _seed_built_in_requirements()
+        _save_all_requirements(seeds)
+        return seeds
+    with open(REQUIREMENTS_FILE, 'r') as f:
+        return json.load(f)
+
+
+def _save_all_requirements(requirements: list):
+    """Write requirements list to file."""
+    with open(REQUIREMENTS_FILE, 'w') as f:
+        json.dump(requirements, f, indent=2)
+
+
+def save_requirement_set(req_set: dict) -> dict:
+    """Save a new requirement set. Assigns ID and created_at."""
+    requirements = load_requirements()
+    req_set['id'] = max((r.get('id', 0) for r in requirements), default=0) + 1
+    req_set['created_at'] = datetime.now().isoformat()
+    req_set.setdefault('built_in', False)
+    req_set.setdefault('firm_key', None)
+    requirements.append(req_set)
+    _save_all_requirements(requirements)
+    return req_set
+
+
+def get_requirement_set_by_id(req_id: int) -> Optional[dict]:
+    """Get a single requirement set by ID."""
+    for r in load_requirements():
+        if r.get('id') == req_id:
+            return r
+    return None
+
+
+def update_requirement_set(req_id: int, updated: dict) -> bool:
+    """Update an existing requirement set. Preserves id, created_at, built_in."""
+    requirements = load_requirements()
+    for i, r in enumerate(requirements):
+        if r.get('id') == req_id:
+            updated['id'] = req_id
+            updated['created_at'] = r['created_at']
+            updated['built_in'] = r.get('built_in', False)
+            updated['firm_key'] = r.get('firm_key')
+            updated['updated_at'] = datetime.now().isoformat()
+            requirements[i] = updated
+            _save_all_requirements(requirements)
+            return True
+    return False
+
+
+def delete_requirement_set(req_id: int) -> bool:
+    """Delete a requirement set by ID. Blocks deletion of built_in sets."""
+    requirements = load_requirements()
+    original_len = len(requirements)
+    requirements = [r for r in requirements if not (r.get('id') == req_id and not r.get('built_in'))]
+    if len(requirements) < original_len:
+        _save_all_requirements(requirements)
+        return True
+    return False
+
+
+def duplicate_requirement_set(req_id: int) -> Optional[dict]:
+    """Duplicate a requirement set. Always creates non-built_in copy."""
+    requirements = load_requirements()
+    source = None
+    for r in requirements:
+        if r.get('id') == req_id:
+            source = r
+            break
+    if source is None:
+        return None
+
+    new = copy.deepcopy(source)
+    new['id'] = max((r.get('id', 0) for r in requirements), default=0) + 1
+    new['created_at'] = datetime.now().isoformat()
+    new['name'] = source['name'] + " (Copy)"
+    new['built_in'] = False
+    new['firm_key'] = None
+    new.pop('updated_at', None)
+    requirements.append(new)
+    _save_all_requirements(requirements)
+    return new
+
+
+# =============================================================================
+# PORTFOLIO MIGRATION
+# =============================================================================
+
+def _migrate_portfolio_prop_firm(portfolio: dict) -> dict:
+    """Migrate legacy prop_firm/custom_rules to requirement_set_id."""
+    if 'requirement_set_id' in portfolio:
+        return portfolio
+
+    firm_key = portfolio.get('prop_firm')
+    custom_rules = portfolio.get('custom_rules', [])
+
+    if custom_rules:
+        req_set = save_requirement_set({
+            'name': f"{portfolio.get('name', 'Unknown')} - Custom Rules",
+            'rules': custom_rules,
+        })
+        portfolio['requirement_set_id'] = req_set['id']
+    elif firm_key:
+        for rs in load_requirements():
+            if rs.get('firm_key') == firm_key:
+                portfolio['requirement_set_id'] = rs['id']
+                break
+        else:
+            portfolio['requirement_set_id'] = None
+    else:
+        portfolio['requirement_set_id'] = None
+
+    portfolio.pop('prop_firm', None)
+    portfolio.pop('custom_rules', None)
+    return portfolio
 
 
 # =============================================================================
@@ -412,3 +562,135 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
         'passed': passed,
         'margin': margin,
     }
+
+
+def evaluate_requirement_set(
+    requirement_set: dict,
+    portfolio: dict,
+    kpis: dict,
+    daily_pnl: pd.DataFrame,
+) -> dict:
+    """Evaluate portfolio against a requirement set's rules."""
+    starting_balance = portfolio.get('starting_balance', 10000.0)
+    rules = requirement_set.get('rules', [])
+    firm_name = requirement_set.get('name', 'Unknown')
+
+    results = []
+    for rule in rules:
+        result = _evaluate_single_rule(rule, starting_balance, kpis, daily_pnl)
+        results.append(result)
+
+    overall_pass = all(r['passed'] for r in results) if results else True
+
+    return {
+        'firm_name': firm_name,
+        'rules': results,
+        'overall_pass': overall_pass,
+    }
+
+
+# =============================================================================
+# STRATEGY RECOMMENDATION ENGINE
+# =============================================================================
+
+def _score_candidate(current_kpis: dict, hypo_kpis: dict,
+                     hypo_corr: pd.DataFrame) -> float:
+    """Score a candidate strategy addition. Higher = better complement."""
+    score = 0.0
+
+    # P&L improvement (30% weight)
+    current_pnl = current_kpis.get('total_pnl', 0)
+    pnl_improvement = hypo_kpis['total_pnl'] - current_pnl
+    pnl_score = pnl_improvement / max(abs(current_pnl), 1)
+    score += pnl_score * 30
+
+    # Drawdown reduction (25% weight)
+    dd_current = abs(current_kpis.get('max_drawdown_pct', 0))
+    dd_new = abs(hypo_kpis['max_drawdown_pct'])
+    dd_improvement = dd_current - dd_new
+    dd_score = dd_improvement / max(dd_current, 0.1)
+    score += dd_score * 25
+
+    # Profit Factor improvement (20% weight)
+    pf_current = current_kpis.get('profit_factor', 0)
+    if pf_current == float('inf'):
+        pf_current = 10
+    pf_new = hypo_kpis['profit_factor']
+    if pf_new == float('inf'):
+        pf_new = 10
+    pf_improvement = pf_new - pf_current
+    score += min(pf_improvement, 5) * 4
+
+    # Low correlation bonus (15% weight)
+    if hypo_corr is not None and len(hypo_corr) >= 2:
+        mask = ~np.eye(len(hypo_corr), dtype=bool)
+        avg_corr = hypo_corr.values[mask].mean()
+        score += (1 - avg_corr) * 15
+
+    # Win rate improvement (10% weight)
+    wr_change = hypo_kpis['win_rate'] - current_kpis.get('win_rate', 0)
+    score += min(wr_change, 10) * 1
+
+    return score
+
+
+def compute_strategy_recommendations(
+    current_portfolio: dict,
+    current_data: dict,
+    candidate_strategies: list,
+    get_strategy_fn: Callable,
+    get_trades_fn: Callable,
+    top_n: int = 5,
+) -> list:
+    """
+    For each candidate strategy, compute what portfolio KPIs would be
+    if that strategy were added. Return ranked list of recommendations.
+    """
+    current_kpis = calculate_portfolio_kpis(
+        current_portfolio,
+        current_data['combined_trades'],
+        current_data['daily_pnl']
+    )
+
+    recommendations = []
+    for strat in candidate_strategies:
+        hypo_strategies = copy.deepcopy(current_portfolio.get('strategies', [])) + [{
+            'strategy_id': strat['id'],
+            'risk_per_trade': strat.get('risk_per_trade', 100.0),
+        }]
+        hypo_portfolio = {
+            'starting_balance': current_portfolio.get('starting_balance', 10000.0),
+            'compound_rate': current_portfolio.get('compound_rate', 0.0),
+            'strategies': hypo_strategies,
+        }
+
+        hypo_data = get_portfolio_trades(hypo_portfolio, get_strategy_fn, get_trades_fn)
+        if len(hypo_data['combined_trades']) == 0:
+            continue
+
+        hypo_kpis = calculate_portfolio_kpis(
+            hypo_portfolio, hypo_data['combined_trades'], hypo_data['daily_pnl']
+        )
+        hypo_corr = compute_strategy_correlation(hypo_data['strategy_daily_pnl'])
+
+        score = _score_candidate(current_kpis, hypo_kpis, hypo_corr)
+
+        avg_correlation = 0.0
+        if hypo_corr is not None and len(hypo_corr) >= 2:
+            mask = ~np.eye(len(hypo_corr), dtype=bool)
+            avg_correlation = float(hypo_corr.values[mask].mean())
+
+        recommendations.append({
+            'strategy_id': strat['id'],
+            'strategy_name': strat.get('name', f"Strategy {strat['id']}"),
+            'score': score,
+            'pnl_change': hypo_kpis['total_pnl'] - current_kpis.get('total_pnl', 0),
+            'dd_change': hypo_kpis['max_drawdown_pct'] - current_kpis.get('max_drawdown_pct', 0),
+            'pf_change': (hypo_kpis['profit_factor'] if hypo_kpis['profit_factor'] != float('inf') else 10)
+                       - (current_kpis.get('profit_factor', 0) if current_kpis.get('profit_factor', 0) != float('inf') else 10),
+            'wr_change': hypo_kpis['win_rate'] - current_kpis.get('win_rate', 0),
+            'avg_correlation': avg_correlation,
+        })
+
+    recommendations.sort(key=lambda r: r['score'], reverse=True)
+    return recommendations[:top_n]
