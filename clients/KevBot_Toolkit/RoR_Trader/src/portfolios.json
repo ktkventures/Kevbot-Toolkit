@@ -1,0 +1,40 @@
+[
+  {
+    "name": "Test Portfolio 1",
+    "starting_balance": 25000.0,
+    "compound_rate": 1.0,
+    "strategies": [
+      {
+        "strategy_id": 1,
+        "risk_per_trade": 50.0
+      },
+      {
+        "strategy_id": 2,
+        "risk_per_trade": 50.0
+      },
+      {
+        "strategy_id": 3,
+        "risk_per_trade": 50.0
+      }
+    ],
+    "prop_firm": "ttp",
+    "custom_rules": [],
+    "cached_kpis": {
+      "total_trades": 1177,
+      "win_rate": 20.390824129141887,
+      "profit_factor": 1.1249393481082122,
+      "total_pnl": 5301.958382724505,
+      "final_balance": 30301.958382724504,
+      "max_drawdown_pct": -18.27029647012731,
+      "max_drawdown_dollars": -4970.699615259946,
+      "avg_daily_pnl": 88.36597304540841,
+      "daily_pnl_std": 1662.6223604435231,
+      "profitable_days_count": 16,
+      "total_trading_days": 60,
+      "profitable_days_pct": 26.666666666666668
+    },
+    "id": 1,
+    "created_at": "2026-02-05T15:36:50.448444",
+    "updated_at": "2026-02-05T15:46:43.787905"
+  }
+]
