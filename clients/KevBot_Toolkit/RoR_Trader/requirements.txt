@@ -20,5 +20,8 @@ streamlit-lightweight-charts>=0.7.0
 # Database (local storage for MVP)
 # sqlite3 is built-in to Python
 
+# HTTP (webhooks)
+requests>=2.31.0
+
 # Environment Variables
 python-dotenv>=1.0.0

@@ -1,0 +1,318 @@
+[
+  {
+    "id": 12,
+    "timestamp": "2026-02-05T15:47:00",
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "price": 602.18,
+    "stop_price": null,
+    "atr": 1.35,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      },
+      {
+        "portfolio_id": 2,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 11,
+    "timestamp": "2026-02-05T15:32:00",
+    "type": "compliance_breach",
+    "level": "portfolio",
+    "portfolio_id": 1,
+    "portfolio_name": "Test Portfolio 1",
+    "rule_name": "Max Total Drawdown",
+    "rule_limit": "-4%",
+    "rule_value": "-18.3%",
+    "strategy_id": null,
+    "symbol": null,
+    "direction": null,
+    "price": null,
+    "trigger": null,
+    "webhook_sent": true,
+    "acknowledged": false
+  },
+  {
+    "id": 10,
+    "timestamp": "2026-02-05T14:55:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 3,
+    "strategy_name": "AMD LONG - EMA Cross (7d Forward Test)",
+    "symbol": "AMD",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [],
+    "price": 118.42,
+    "stop_price": 116.9,
+    "atr": 1.01,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": false
+  },
+  {
+    "id": 9,
+    "timestamp": "2026-02-05T14:22:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 2,
+    "strategy_name": "NVDA LONG - EMA Cross (14d Forward Test)",
+    "symbol": "NVDA",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-RVOL-HIGH"
+    ],
+    "price": 875.3,
+    "stop_price": 869.1,
+    "atr": 3.1,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      }
+    ],
+    "webhook_sent": false,
+    "acknowledged": false
+  },
+  {
+    "id": 8,
+    "timestamp": "2026-02-05T13:48:00",
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 4,
+    "strategy_name": "SPY LONG - EMA Cross (1d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "trigger": "ema_cross_bear",
+    "confluence_met": [
+      "1M-VWAP-AT",
+      "1M-MACD_LINE-M>S+"
+    ],
+    "price": 601.55,
+    "stop_price": null,
+    "atr": 1.28,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 2,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 7,
+    "timestamp": "2026-02-05T12:15:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "price": 600.85,
+    "stop_price": 598.82,
+    "atr": 1.35,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      },
+      {
+        "portfolio_id": 2,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 6,
+    "timestamp": "2026-02-05T11:30:00",
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 3,
+    "strategy_name": "AMD LONG - EMA Cross (7d Forward Test)",
+    "symbol": "AMD",
+    "direction": "LONG",
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "price": 117.95,
+    "stop_price": null,
+    "atr": 0.98,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 5,
+    "timestamp": "2026-02-05T10:45:00",
+    "type": "compliance_breach",
+    "level": "portfolio",
+    "portfolio_id": 1,
+    "portfolio_name": "Test Portfolio 1",
+    "rule_name": "Max Daily Loss",
+    "rule_limit": "-2%",
+    "rule_value": "-2.8%",
+    "strategy_id": null,
+    "symbol": null,
+    "direction": null,
+    "price": null,
+    "trigger": null,
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 4,
+    "timestamp": "2026-02-05T10:12:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 4,
+    "strategy_name": "SPY LONG - EMA Cross (1d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-VWAP-AT",
+      "1M-MACD_LINE-M>S+"
+    ],
+    "price": 599.2,
+    "stop_price": 597.92,
+    "atr": 1.28,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 2,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 3,
+    "timestamp": "2026-02-05T09:52:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 3,
+    "strategy_name": "AMD LONG - EMA Cross (7d Forward Test)",
+    "symbol": "AMD",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [],
+    "price": 117.1,
+    "stop_price": 115.58,
+    "atr": 1.01,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  },
+  {
+    "id": 2,
+    "timestamp": "2026-02-05T09:38:00",
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 2,
+    "strategy_name": "NVDA LONG - EMA Cross (14d Forward Test)",
+    "symbol": "NVDA",
+    "direction": "LONG",
+    "trigger": "ema_cross_bear",
+    "confluence_met": [
+      "1M-RVOL-HIGH"
+    ],
+    "price": 872.45,
+    "stop_price": null,
+    "atr": 3.05,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      }
+    ],
+    "webhook_sent": false,
+    "acknowledged": true
+  },
+  {
+    "id": 1,
+    "timestamp": "2026-02-05T09:35:00",
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "price": 598.7,
+    "stop_price": 596.68,
+    "atr": 1.35,
+    "risk_per_trade": 100.0,
+    "portfolio_context": [
+      {
+        "portfolio_id": 1,
+        "portfolio_name": "Test Portfolio 1",
+        "position_risk": 50.0
+      },
+      {
+        "portfolio_id": 2,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "webhook_sent": true,
+    "acknowledged": true
+  }
+]

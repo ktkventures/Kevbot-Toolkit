@@ -187,6 +187,37 @@ def get_data_source() -> str:
 
 
 # =============================================================================
+# CONVENIENCE HELPERS
+# =============================================================================
+
+def load_latest_bars(
+    symbol: str,
+    bars: int = 200,
+    timeframe: str = "1Min",
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Load the most recent N bars for a symbol.
+
+    Calculates the minimum number of days needed to cover `bars` rows
+    of 1-minute data (~390 bars per trading day).
+
+    Args:
+        symbol: Stock symbol
+        bars: Minimum number of bars to fetch
+        timeframe: Bar timeframe
+        seed: Random seed for mock data
+
+    Returns:
+        DataFrame with OHLCV data
+    """
+    import math
+    bars_per_day = 390  # ~6.5 hours of 1-min bars per trading day
+    days = max(1, math.ceil(bars / bars_per_day) + 1)  # +1 for safety margin
+    return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed)
+
+
+# =============================================================================
 # TEST
 # =============================================================================
 

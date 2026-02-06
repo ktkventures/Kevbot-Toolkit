@@ -637,13 +637,25 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Requirement sets over inline rules** — Decoupled rule management from portfolio views. Users create/manage requirement sets on a dedicated page, then select from them in portfolio compliance checks.
 - **Strategy recommendation scoring** — Weighted composite: P&L improvement (30%), drawdown reduction (25%), profit factor (20%), low correlation (15%), win rate (10%).
 
-### Phase 5: Alerts & Deployment
+### Phase 5: Alerts & Deployment *(COMPLETED 2026-02-05)*
 *Make strategies actionable in real time.*
 
-- [ ] Webhook configuration UI
-- [ ] Real-time signal detection from forward-tested strategies
-- [ ] Alert history and management
-- [ ] Trading bot connection framework
+- [x] Alert engine (`alerts.py`) — config CRUD, signal detection, position tracking, webhook delivery
+- [x] Background monitor (`alert_monitor.py`) — standalone polling script with market hours awareness
+- [x] Alerts & Signals navigation page — monitor start/stop, global settings, per-strategy/portfolio config, recent alerts list
+- [x] Strategy detail Alerts tab — toggle entry/exit alerts, webhook override, recent alerts
+- [x] Portfolio detail Deploy tab — toggle compliance breach alerts, webhook override, recent alerts
+- [x] Webhook configuration UI — global + per-strategy + per-portfolio override URLs
+- [x] Real-time signal detection — reuses existing indicator/interpreter/trigger pipeline on latest bars
+- [x] Alert history and management — acknowledge/clear, color-coded by type, capped at 500
+- [x] Portfolio-level enrichment — strategy signals include portfolio allocation context
+- [x] Discord/Slack-compatible webhook payload format with embeds
+
+### Design Decisions (Phase 5)
+- **Strategy-level detection, portfolio-level enrichment** — Signals are detected per-strategy (unique symbol+trigger combinations). Portfolio context (position sizing, compliance) is added after detection. This avoids duplicate data fetches for the same symbol across portfolios.
+- **Stateless position tracking** — Instead of maintaining a persistent position state machine, the monitor runs `generate_trades()` on recent bars and checks if the last trade is still open. Leverages existing engine without complex state management.
+- **JSON file communication** — Monitor and Streamlit app communicate via `alert_config.json`, `alerts.json`, and `monitor_status.json`. Simple, no database needed, human-readable.
+- **Process management** — Monitor writes PID to status file, Streamlit sends SIGTERM to stop. Status file is verified against actual process liveness on each UI render.
 
 ### Phase 6: Dashboard
 *Landing page that ties the application together. Deferred until core functionality is complete.*

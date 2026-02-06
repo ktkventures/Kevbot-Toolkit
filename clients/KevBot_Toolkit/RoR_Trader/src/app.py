@@ -19,6 +19,8 @@ from streamlit_lightweight_charts import renderLightweightCharts
 import json
 import os
 import copy
+import subprocess
+import signal as signal_module
 
 from data_loader import load_market_data, get_data_source, is_alpaca_configured
 from indicators import (
@@ -58,6 +60,22 @@ from portfolios import (
     delete_requirement_set,
     duplicate_requirement_set,
     compute_strategy_recommendations,
+)
+from alerts import (
+    load_alert_config,
+    save_alert_config,
+    get_strategy_alert_config,
+    set_strategy_alert_config,
+    get_portfolio_alert_config,
+    set_portfolio_alert_config,
+    load_alerts,
+    save_alert,
+    acknowledge_alert,
+    clear_alerts,
+    get_alerts_for_strategy,
+    get_alerts_for_portfolio,
+    load_monitor_status,
+    save_monitor_status,
 )
 from confluence_groups import (
     load_confluence_groups,
@@ -933,7 +951,7 @@ def main():
 
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Confluence Groups"],
+            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Confluence Groups"],
             index=0
         )
 
@@ -956,6 +974,8 @@ def main():
         render_portfolios()
     elif page == "Portfolio Requirements":
         render_requirements_page()
+    elif page == "Alerts & Signals":
+        render_alerts_page()
     else:
         render_confluence_groups()
 
@@ -1836,7 +1856,7 @@ def render_live_backtest(strat: dict):
     kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
 
     # Tabbed content
-    tab_backtest, tab_config = st.tabs(["Backtest Results", "Configuration"])
+    tab_backtest, tab_config, tab_alerts = st.tabs(["Backtest Results", "Configuration", "Alerts"])
 
     with tab_backtest:
         # Charts side by side
@@ -1962,6 +1982,9 @@ def render_live_backtest(strat: dict):
         else:
             st.caption("No confluence conditions")
 
+    with tab_alerts:
+        render_strategy_alerts_tab(strat)
+
 
 # =============================================================================
 # FORWARD TEST VIEW
@@ -1989,7 +2012,9 @@ def render_forward_test_view(strat: dict):
     render_kpi_comparison(backtest_trades, forward_trades)
 
     # Tabs
-    tab_charts, tab_trades, tab_config = st.tabs(["Equity & Charts", "Trade History", "Configuration"])
+    tab_charts, tab_trades, tab_config, tab_alerts = st.tabs(
+        ["Equity & Charts", "Trade History", "Configuration", "Alerts"]
+    )
 
     with tab_charts:
         # Combined equity curve
@@ -2046,6 +2071,95 @@ def render_forward_test_view(strat: dict):
                 st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
         else:
             st.caption("No confluence conditions")
+
+    with tab_alerts:
+        render_strategy_alerts_tab(strat)
+
+
+def render_strategy_alerts_tab(strat: dict):
+    """Render the Alerts tab for a strategy detail view."""
+    strategy_id = strat['id']
+
+    if not strat.get('forward_testing'):
+        st.info("Enable forward testing on this strategy to use alerts.")
+        return
+
+    strat_cfg = get_strategy_alert_config(strategy_id)
+
+    st.subheader("Alert Configuration")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        alerts_on = st.toggle(
+            "Alerts Enabled",
+            value=strat_cfg.get('alerts_enabled', False),
+            key=f"detail_alert_enabled_{strategy_id}",
+        )
+        entry_on = st.toggle(
+            "Alert on Entry Signals",
+            value=strat_cfg.get('alert_on_entry', True),
+            key=f"detail_alert_entry_{strategy_id}",
+            disabled=not alerts_on,
+        )
+        exit_on = st.toggle(
+            "Alert on Exit Signals",
+            value=strat_cfg.get('alert_on_exit', True),
+            key=f"detail_alert_exit_{strategy_id}",
+            disabled=not alerts_on,
+        )
+
+    with col2:
+        webhook = st.text_input(
+            "Webhook URL Override",
+            value=strat_cfg.get('webhook_url', ''),
+            placeholder="Leave empty to use global webhook",
+            key=f"detail_webhook_{strategy_id}",
+            disabled=not alerts_on,
+        )
+
+    if st.button("Save Alert Settings", key=f"save_strat_alert_{strategy_id}"):
+        new_cfg = {
+            'alerts_enabled': alerts_on,
+            'alert_on_entry': entry_on,
+            'alert_on_exit': exit_on,
+            'webhook_url': webhook,
+        }
+        set_strategy_alert_config(strategy_id, new_cfg)
+        st.toast("Alert settings saved")
+        st.rerun()
+
+    # Recent alerts for this strategy
+    st.divider()
+    st.subheader("Recent Alerts")
+    alerts = get_alerts_for_strategy(strategy_id, limit=20)
+
+    if not alerts:
+        st.caption("No alerts for this strategy yet.")
+    else:
+        for alert in alerts:
+            alert_type = alert.get('type', 'unknown')
+            if alert_type == 'entry_signal':
+                badge = ":green[ENTRY]"
+            elif alert_type == 'exit_signal':
+                badge = ":red[EXIT]"
+            else:
+                badge = f":gray[{alert_type.upper()}]"
+
+            col_t, col_b, col_d = st.columns([2, 1, 5])
+            with col_t:
+                ts = alert.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    st.caption(dt.strftime("%m/%d %H:%M"))
+                except (ValueError, TypeError):
+                    st.caption(ts[:16] if ts else '?')
+            with col_b:
+                st.markdown(badge)
+            with col_d:
+                price = alert.get('price')
+                st.markdown(
+                    f"@ ${price:.2f}" if price else "Signal detected"
+                )
 
 
 def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
@@ -3035,10 +3149,109 @@ def render_portfolio_prop_firm(port, kpis, daily_pnl):
 
 
 def render_portfolio_deploy(port):
-    """Render the Deploy tab placeholder."""
-    st.info("Deploy functionality is coming soon.")
-    st.caption("This tab will allow you to deploy your portfolio strategies as live alerts "
-               "and connect to trading bots.")
+    """Render the Deploy tab with alert configuration and recent alerts."""
+    portfolio_id = port['id']
+    port_cfg = get_portfolio_alert_config(portfolio_id)
+
+    # Monitor status inline
+    status = load_monitor_status()
+    is_running = status.get('running', False)
+    if is_running and status.get('pid'):
+        try:
+            os.kill(status['pid'], 0)
+        except (OSError, ProcessLookupError):
+            is_running = False
+
+    if is_running:
+        st.success("Alert Monitor: Running")
+    else:
+        st.warning("Alert Monitor: Stopped — Go to Alerts & Signals page to start it.")
+
+    st.divider()
+
+    st.subheader("Portfolio Alert Configuration")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        alerts_on = st.toggle(
+            "Portfolio Alerts Enabled",
+            value=port_cfg.get('alerts_enabled', False),
+            key=f"deploy_alert_enabled_{portfolio_id}",
+        )
+        compliance_on = st.toggle(
+            "Compliance Breach Alerts",
+            value=port_cfg.get('alert_on_compliance_breach', True),
+            key=f"deploy_compliance_{portfolio_id}",
+            disabled=not alerts_on,
+        )
+
+    with col2:
+        webhook = st.text_input(
+            "Webhook URL Override",
+            value=port_cfg.get('webhook_url', ''),
+            placeholder="Leave empty to use global webhook",
+            key=f"deploy_webhook_{portfolio_id}",
+            disabled=not alerts_on,
+        )
+
+    if st.button("Save Deploy Settings", key=f"save_deploy_{portfolio_id}"):
+        new_cfg = {
+            'alerts_enabled': alerts_on,
+            'alert_on_signal': True,
+            'alert_on_compliance_breach': compliance_on,
+            'webhook_url': webhook,
+        }
+        set_portfolio_alert_config(portfolio_id, new_cfg)
+        st.toast("Deploy settings saved")
+        st.rerun()
+
+    # Requirement set info
+    req_id = port.get('requirement_set_id')
+    if req_id:
+        req_set = get_requirement_set_by_id(req_id)
+        if req_set:
+            st.caption(f"Compliance monitored against: **{req_set['name']}**")
+    elif alerts_on and compliance_on:
+        st.caption("No requirement set assigned. Assign one in the Prop Firm Check tab to enable compliance alerts.")
+
+    # Recent alerts
+    st.divider()
+    st.subheader("Recent Portfolio Alerts")
+    alerts = get_alerts_for_portfolio(portfolio_id, limit=20)
+
+    if not alerts:
+        st.caption("No alerts for this portfolio yet.")
+    else:
+        for alert in alerts:
+            alert_type = alert.get('type', 'unknown')
+            if alert_type == 'entry_signal':
+                badge = ":green[ENTRY]"
+            elif alert_type == 'exit_signal':
+                badge = ":red[EXIT]"
+            elif alert_type == 'compliance_breach':
+                badge = ":orange[COMPLIANCE]"
+            else:
+                badge = f":gray[{alert_type.upper()}]"
+
+            col_t, col_b, col_d = st.columns([2, 1, 5])
+            with col_t:
+                ts = alert.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    st.caption(dt.strftime("%m/%d %H:%M"))
+                except (ValueError, TypeError):
+                    st.caption(ts[:16] if ts else '?')
+            with col_b:
+                st.markdown(badge)
+            with col_d:
+                strategy_name = alert.get('strategy_name', '')
+                price = alert.get('price')
+                if alert_type == 'compliance_breach':
+                    st.markdown(f"Rule: {alert.get('rule_name', '?')}")
+                elif price:
+                    st.markdown(f"{strategy_name} @ ${price:.2f}")
+                else:
+                    st.markdown(strategy_name or "Alert")
 
 
 # =============================================================================
@@ -3231,6 +3444,391 @@ def render_requirement_set_editor(req_id=None):
         st.session_state.editing_requirement_id = None
         st.rerun()
 
+
+# =============================================================================
+# ALERTS & SIGNALS PAGE
+# =============================================================================
+
+def render_alerts_page():
+    """Render the Alerts & Signals management page."""
+    st.header("Alerts & Signals")
+    st.caption("Configure real-time signal detection and alert delivery.")
+
+    config = load_alert_config()
+    status = load_monitor_status()
+
+    # ── Monitor Status Bar ──
+    _render_monitor_status_bar(status, config)
+
+    st.divider()
+
+    # ── Global Settings ──
+    with st.expander("Global Settings", expanded=False):
+        _render_alert_global_settings(config)
+
+    # ── Strategy Alerts ──
+    st.subheader("Strategy Alerts")
+    _render_strategy_alerts_config(config)
+
+    st.divider()
+
+    # ── Portfolio Alerts ──
+    st.subheader("Portfolio Alerts")
+    _render_portfolio_alerts_config(config)
+
+    st.divider()
+
+    # ── Recent Alerts ──
+    st.subheader("Recent Alerts")
+    _render_recent_alerts()
+
+
+def _render_monitor_status_bar(status: dict, config: dict):
+    """Render the monitor status bar with start/stop controls."""
+    is_running = status.get('running', False)
+
+    # Verify PID is actually alive if status says running
+    if is_running and status.get('pid'):
+        try:
+            os.kill(status['pid'], 0)  # signal 0 = check if process exists
+        except (OSError, ProcessLookupError):
+            is_running = False
+            status['running'] = False
+            save_monitor_status(status)
+
+    col_status, col_info, col_action = st.columns([2, 4, 2])
+
+    with col_status:
+        if is_running:
+            st.success("Monitor: Running")
+        else:
+            st.error("Monitor: Stopped")
+
+    with col_info:
+        if is_running:
+            last_poll = status.get('last_poll', 'Never')
+            strats = status.get('strategies_monitored', 0)
+            duration = status.get('last_poll_duration_ms')
+            info_parts = [f"Last poll: {last_poll}", f"Strategies: {strats}"]
+            if duration is not None:
+                info_parts.append(f"Duration: {duration}ms")
+            st.caption(" | ".join(info_parts))
+
+            errors = status.get('errors', [])
+            if errors:
+                st.warning(f"{len(errors)} recent error(s). Latest: {errors[-1].get('error', '?')}")
+        else:
+            if not config.get('global', {}).get('enabled', False):
+                st.caption("Enable alerts in Global Settings to start the monitor.")
+            else:
+                st.caption("Monitor is not running. Click Start to begin polling.")
+
+    with col_action:
+        if is_running:
+            if st.button("Stop Monitor", type="secondary", use_container_width=True):
+                pid = status.get('pid')
+                if pid:
+                    try:
+                        os.kill(pid, signal_module.SIGTERM)
+                    except (OSError, ProcessLookupError):
+                        pass
+                status['running'] = False
+                save_monitor_status(status)
+                st.rerun()
+        else:
+            can_start = config.get('global', {}).get('enabled', False)
+            if st.button("Start Monitor", type="primary", disabled=not can_start,
+                         use_container_width=True):
+                # Launch alert_monitor.py as a background process
+                monitor_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "alert_monitor.py"
+                )
+                subprocess.Popen(
+                    ["python", monitor_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                st.toast("Monitor starting...")
+                import time
+                time.sleep(1)  # brief delay for status file to be written
+                st.rerun()
+
+
+def _render_alert_global_settings(config: dict):
+    """Render the global alert settings form."""
+    global_cfg = config.get('global', {})
+
+    col1, col2 = st.columns(2)
+    with col1:
+        webhook_url = st.text_input(
+            "Default Webhook URL",
+            value=global_cfg.get('webhook_url', ''),
+            placeholder="https://discord.com/api/webhooks/...",
+            key="global_webhook_url",
+        )
+        enabled = st.toggle(
+            "Alerts Enabled",
+            value=global_cfg.get('enabled', False),
+            key="global_alerts_enabled",
+        )
+
+    with col2:
+        poll_interval = st.slider(
+            "Poll Interval (seconds)",
+            min_value=30,
+            max_value=300,
+            value=global_cfg.get('poll_interval_seconds', 60),
+            step=10,
+            key="global_poll_interval",
+        )
+        market_hours = st.toggle(
+            "Market Hours Only",
+            value=global_cfg.get('market_hours_only', True),
+            key="global_market_hours",
+        )
+
+    if st.button("Save Global Settings", key="save_global_alert_settings"):
+        config['global'] = {
+            'webhook_url': webhook_url,
+            'poll_interval_seconds': poll_interval,
+            'market_hours_only': market_hours,
+            'enabled': enabled,
+        }
+        save_alert_config(config)
+        st.toast("Global settings saved")
+        st.rerun()
+
+
+def _render_strategy_alerts_config(config: dict):
+    """Render the strategy alerts configuration table."""
+    strategies = load_strategies()
+    forward_testing = [s for s in strategies
+                       if s.get('forward_testing') and 'entry_trigger_confluence_id' in s]
+
+    if not forward_testing:
+        st.info("No forward-testing strategies available. Create and save a strategy with forward testing enabled.")
+        return
+
+    for strat in forward_testing:
+        sid = str(strat['id'])
+        strat_cfg = config.get('strategies', {}).get(sid, dict(DEFAULT_STRATEGY_ALERT_CONFIG))
+
+        with st.container():
+            col_name, col_toggle, col_entry, col_exit, col_webhook = st.columns([3, 1, 1, 1, 3])
+
+            with col_name:
+                st.markdown(f"**{strat['name']}**")
+                st.caption(f"{strat['symbol']} {strat['direction']}")
+
+            with col_toggle:
+                alerts_on = st.toggle(
+                    "Enabled",
+                    value=strat_cfg.get('alerts_enabled', False),
+                    key=f"strat_alert_{sid}",
+                    label_visibility="collapsed",
+                )
+
+            with col_entry:
+                entry_on = st.toggle(
+                    "Entry",
+                    value=strat_cfg.get('alert_on_entry', True),
+                    key=f"strat_entry_{sid}",
+                    disabled=not alerts_on,
+                )
+
+            with col_exit:
+                exit_on = st.toggle(
+                    "Exit",
+                    value=strat_cfg.get('alert_on_exit', True),
+                    key=f"strat_exit_{sid}",
+                    disabled=not alerts_on,
+                )
+
+            with col_webhook:
+                webhook = st.text_input(
+                    "Webhook override",
+                    value=strat_cfg.get('webhook_url', ''),
+                    key=f"strat_webhook_{sid}",
+                    placeholder="(uses global)",
+                    label_visibility="collapsed",
+                    disabled=not alerts_on,
+                )
+
+            # Save on any change
+            new_cfg = {
+                'alerts_enabled': alerts_on,
+                'alert_on_entry': entry_on,
+                'alert_on_exit': exit_on,
+                'webhook_url': webhook,
+            }
+            if new_cfg != strat_cfg:
+                if 'strategies' not in config:
+                    config['strategies'] = {}
+                config['strategies'][sid] = new_cfg
+                save_alert_config(config)
+
+    # Column headers
+    st.caption("Toggle: Enabled | Entry | Exit | Webhook Override")
+
+
+def _render_portfolio_alerts_config(config: dict):
+    """Render the portfolio alerts configuration table."""
+    portfolios = load_portfolios()
+
+    if not portfolios:
+        st.info("No portfolios available. Create a portfolio first.")
+        return
+
+    for port in portfolios:
+        pid = str(port['id'])
+        port_cfg = config.get('portfolios', {}).get(pid, dict(DEFAULT_PORTFOLIO_ALERT_CONFIG))
+
+        with st.container():
+            col_name, col_toggle, col_compliance, col_webhook = st.columns([3, 1, 2, 3])
+
+            with col_name:
+                st.markdown(f"**{port['name']}**")
+                strat_count = len(port.get('strategies', []))
+                st.caption(f"{strat_count} strategies")
+
+            with col_toggle:
+                alerts_on = st.toggle(
+                    "Enabled",
+                    value=port_cfg.get('alerts_enabled', False),
+                    key=f"port_alert_{pid}",
+                    label_visibility="collapsed",
+                )
+
+            with col_compliance:
+                compliance_on = st.toggle(
+                    "Compliance Alerts",
+                    value=port_cfg.get('alert_on_compliance_breach', True),
+                    key=f"port_compliance_{pid}",
+                    disabled=not alerts_on,
+                )
+
+            with col_webhook:
+                webhook = st.text_input(
+                    "Webhook override",
+                    value=port_cfg.get('webhook_url', ''),
+                    key=f"port_webhook_{pid}",
+                    placeholder="(uses global)",
+                    label_visibility="collapsed",
+                    disabled=not alerts_on,
+                )
+
+            new_cfg = {
+                'alerts_enabled': alerts_on,
+                'alert_on_signal': True,
+                'alert_on_compliance_breach': compliance_on,
+                'webhook_url': webhook,
+            }
+            if new_cfg != port_cfg:
+                if 'portfolios' not in config:
+                    config['portfolios'] = {}
+                config['portfolios'][pid] = new_cfg
+                save_alert_config(config)
+
+
+def _render_recent_alerts():
+    """Render the recent alerts list with acknowledge/clear controls."""
+    alerts = load_alerts(limit=50)
+
+    if not alerts:
+        st.info("No alerts yet. Alerts will appear here when the monitor detects signals.")
+        return
+
+    # Clear all button
+    col1, col2 = st.columns([6, 1])
+    with col2:
+        if st.button("Clear All", key="clear_all_alerts", type="secondary"):
+            clear_alerts()
+            st.rerun()
+
+    for alert in alerts:
+        alert_type = alert.get('type', 'unknown')
+        acknowledged = alert.get('acknowledged', False)
+
+        # Color-coded type badge
+        if alert_type == 'entry_signal':
+            badge = ":green[ENTRY]"
+        elif alert_type == 'exit_signal':
+            badge = ":red[EXIT]"
+        elif alert_type == 'compliance_breach':
+            badge = ":orange[COMPLIANCE]"
+        else:
+            badge = f":gray[{alert_type.upper()}]"
+
+        with st.container():
+            col_time, col_badge, col_detail, col_action = st.columns([2, 1, 5, 1])
+
+            with col_time:
+                ts = alert.get('timestamp', '')
+                if ts:
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        st.caption(dt.strftime("%m/%d %H:%M"))
+                    except (ValueError, TypeError):
+                        st.caption(ts[:16])
+
+            with col_badge:
+                st.markdown(badge)
+
+            with col_detail:
+                symbol = alert.get('symbol', '')
+                direction = alert.get('direction', '')
+                strategy_name = alert.get('strategy_name', '')
+                price = alert.get('price')
+
+                detail_parts = []
+                if strategy_name:
+                    detail_parts.append(f"**{strategy_name}**")
+                if symbol and direction:
+                    detail_parts.append(f"{symbol} {direction}")
+                if price:
+                    detail_parts.append(f"@ ${price:.2f}")
+
+                # Portfolio/compliance specific
+                if alert_type == 'compliance_breach':
+                    port_name = alert.get('portfolio_name', '')
+                    rule_name = alert.get('rule_name', '')
+                    detail_parts = [f"**{port_name}**", f"Rule: {rule_name}"]
+
+                st.markdown(" | ".join(detail_parts) if detail_parts else "Alert")
+
+                webhook_sent = alert.get('webhook_sent')
+                if webhook_sent:
+                    st.caption("Webhook sent")
+
+            with col_action:
+                if not acknowledged:
+                    if st.button("Ack", key=f"ack_{alert.get('id', 0)}"):
+                        acknowledge_alert(alert.get('id'))
+                        st.rerun()
+                else:
+                    st.caption("Acked")
+
+
+# Default config constants for UI
+DEFAULT_STRATEGY_ALERT_CONFIG = {
+    'alerts_enabled': False,
+    'alert_on_entry': True,
+    'alert_on_exit': True,
+    'webhook_url': '',
+}
+
+DEFAULT_PORTFOLIO_ALERT_CONFIG = {
+    'alerts_enabled': False,
+    'alert_on_signal': True,
+    'alert_on_compliance_breach': True,
+    'webhook_url': '',
+}
+
+
+# =============================================================================
+# CONFLUENCE GROUPS PAGE
+# =============================================================================
 
 def render_confluence_groups():
     """Render the Confluence Groups management page."""

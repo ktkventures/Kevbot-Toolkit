@@ -694,3 +694,31 @@ def compute_strategy_recommendations(
 
     recommendations.sort(key=lambda r: r['score'], reverse=True)
     return recommendations[:top_n]
+
+
+# =============================================================================
+# ALERT CONTEXT
+# =============================================================================
+
+def get_portfolio_alert_context(strategy_id: int) -> list:
+    """
+    Find all portfolios containing a strategy and return context for alerts.
+
+    Returns list of dicts with portfolio_id, portfolio_name, risk_per_trade,
+    and requirement_set_id for each portfolio that includes this strategy.
+    """
+    portfolios = load_portfolios()
+    context = []
+
+    for port in portfolios:
+        for alloc in port.get('strategies', []):
+            if alloc.get('strategy_id') == strategy_id:
+                context.append({
+                    "portfolio_id": port['id'],
+                    "portfolio_name": port.get('name', f"Portfolio {port['id']}"),
+                    "risk_per_trade": alloc.get('risk_per_trade', 100.0),
+                    "requirement_set_id": port.get('requirement_set_id'),
+                })
+                break
+
+    return context
