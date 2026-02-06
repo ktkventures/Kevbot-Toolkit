@@ -949,6 +949,8 @@ def main():
         st.session_state.creating_requirement = False
     if 'confirm_delete_requirement_id' not in st.session_state:
         st.session_state.confirm_delete_requirement_id = None
+    if 'nav_target' not in st.session_state:
+        st.session_state.nav_target = None
 
     # Sidebar navigation
     with st.sidebar:
@@ -964,10 +966,16 @@ def main():
 
         st.divider()
 
+        nav_options = ["Dashboard", "Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Webhook Templates", "Confluence Groups"]
+        default_idx = 0
+        if st.session_state.nav_target and st.session_state.nav_target in nav_options:
+            default_idx = nav_options.index(st.session_state.nav_target)
+            st.session_state.nav_target = None
+
         page = st.radio(
             "Navigation",
-            ["Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Webhook Templates", "Confluence Groups"],
-            index=0
+            nav_options,
+            index=default_idx
         )
 
         st.divider()
@@ -981,7 +989,9 @@ def main():
             data_seed = 42  # Not used with real data
 
     # Main content
-    if page == "Strategy Builder":
+    if page == "Dashboard":
+        render_dashboard()
+    elif page == "Strategy Builder":
         render_strategy_builder(data_days, data_seed)
     elif page == "My Strategies":
         render_my_strategies()
@@ -995,6 +1005,172 @@ def main():
         render_webhook_templates_page()
     else:
         render_confluence_groups()
+
+
+def render_dashboard():
+    """Render the Dashboard landing page."""
+    st.header("Dashboard")
+
+    strategies = load_strategies()
+    portfolios = load_portfolios()
+
+    # --- Empty State ---
+    if not strategies:
+        st.markdown("### Welcome to RoR Trader")
+        st.markdown(
+            "Build data-backed trading strategies without writing code. "
+            "RoR Trader uses an **Indicator → Interpreter → Trigger** pipeline "
+            "to eliminate subjective chart reading and quantify every trading decision."
+        )
+        st.markdown(
+            "1. **Indicators** calculate values on price data (EMA, VWAP, RSI, etc.)\n"
+            "2. **Interpreters** classify indicator states into clear conditions\n"
+            "3. **Triggers** fire entry/exit signals when conditions align\n"
+            "4. **Confluence** layers multiple conditions to filter for high-probability setups"
+        )
+        if st.button("Create Your First Strategy", type="primary"):
+            st.session_state.nav_target = "Strategy Builder"
+            st.rerun()
+        return
+
+    # --- Overview Cards ---
+    forward_testing = [s for s in strategies if s.get('forward_testing')]
+    alerts = load_alerts(limit=100)
+    recent_alerts = [
+        a for a in alerts
+        if a.get('timestamp') and _is_within_days(a['timestamp'], 7)
+    ]
+
+    card_cols = st.columns(4)
+    card_cols[0].metric("Strategies", len(strategies))
+    card_cols[1].metric("Forward Testing", len(forward_testing))
+    card_cols[2].metric("Portfolios", len(portfolios))
+    card_cols[3].metric("Recent Alerts (7d)", len(recent_alerts))
+
+    st.divider()
+
+    # --- Two-Column Layout ---
+    left_col, right_col = st.columns([3, 2])
+
+    with left_col:
+        # Best Performing Strategy (by Total R)
+        best_strat = max(strategies, key=lambda s: s.get('kpis', {}).get('total_r', 0))
+        best_kpis = best_strat.get('kpis', {})
+
+        st.subheader("Top Strategy")
+        st.markdown(f"**{best_strat['name']}**")
+        st.caption(f"{best_strat.get('symbol', '?')} | {best_strat.get('direction', '?')}")
+
+        kpi_cols = st.columns(3)
+        kpi_cols[0].metric("Win Rate", f"{best_kpis.get('win_rate', 0):.1f}%")
+        pf = best_kpis.get('profit_factor', 0)
+        kpi_cols[1].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[2].metric("Total R", f"{best_kpis.get('total_r', 0):+.1f}")
+
+        # Mini equity curve for best strategy
+        try:
+            trades = get_strategy_trades(best_strat)
+            if len(trades) > 0:
+                boundary = None
+                if best_strat.get('forward_testing') and best_strat.get('forward_test_start'):
+                    boundary = datetime.fromisoformat(best_strat['forward_test_start'])
+                render_mini_equity_curve(trades, key="dash_best_strat_eq", boundary_dt=boundary)
+        except Exception:
+            st.caption("Could not load equity curve")
+
+        if st.button("View Strategy", key="dash_view_best_strat"):
+            st.session_state.viewing_strategy_id = best_strat['id']
+            st.session_state.nav_target = "My Strategies"
+            st.rerun()
+
+        # Best Performing Portfolio (by Total P&L)
+        if portfolios:
+            st.divider()
+            best_port = max(portfolios, key=lambda p: p.get('cached_kpis', {}).get('total_pnl', 0))
+            best_port_kpis = best_port.get('cached_kpis', {})
+
+            st.subheader("Top Portfolio")
+            st.markdown(f"**{best_port['name']}**")
+            st.caption(f"{len(best_port.get('strategies', []))} strategies | ${best_port.get('starting_balance', 0):,.0f} starting balance")
+
+            pkpi_cols = st.columns(3)
+            pkpi_cols[0].metric("Total P&L", f"${best_port_kpis.get('total_pnl', 0):+,.0f}")
+            pkpi_cols[1].metric("Max DD", f"{best_port_kpis.get('max_drawdown_pct', 0):.1f}%")
+            pkpi_cols[2].metric("Win Rate", f"{best_port_kpis.get('win_rate', 0):.1f}%")
+
+            if st.button("View Portfolio", key="dash_view_best_port"):
+                st.session_state.viewing_portfolio_id = best_port['id']
+                st.session_state.nav_target = "Portfolios"
+                st.rerun()
+
+    with right_col:
+        # Recent Alerts
+        st.subheader("Recent Alerts")
+        last_alerts = load_alerts(limit=5)
+        if last_alerts:
+            for alert in last_alerts:
+                _render_alert_row(alert, prefix="dash_")
+            if st.button("View All Alerts", key="dash_view_alerts"):
+                st.session_state.nav_target = "Alerts & Signals"
+                st.rerun()
+        else:
+            st.caption("No alerts yet.")
+
+        st.divider()
+
+        # System Status
+        st.subheader("System Status")
+
+        # Data source
+        if is_alpaca_configured():
+            st.markdown(":green[Alpaca API] — Live market data")
+        else:
+            st.markdown(":orange[Mock Data] — Configure Alpaca for live data")
+
+        # Alert monitor
+        monitor = load_monitor_status()
+        if monitor.get('running'):
+            last_poll = monitor.get('last_poll', '')
+            poll_time = ''
+            if last_poll:
+                try:
+                    dt = datetime.fromisoformat(last_poll)
+                    poll_time = f" (last poll: {dt.strftime('%H:%M:%S')})"
+                except (ValueError, TypeError):
+                    pass
+            strats_mon = monitor.get('strategies_monitored', 0)
+            st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+        else:
+            st.markdown(":gray[Alert Monitor Stopped]")
+
+        # Forward tests
+        st.markdown(f"**{len(forward_testing)}** strategies in forward testing")
+
+    # --- Quick Actions ---
+    st.divider()
+    action_cols = st.columns(3)
+    with action_cols[0]:
+        if st.button("New Strategy", use_container_width=True):
+            st.session_state.nav_target = "Strategy Builder"
+            st.session_state.step = 1
+            st.rerun()
+    with action_cols[1]:
+        if st.button("View Strategies", use_container_width=True):
+            st.session_state.nav_target = "My Strategies"
+            st.rerun()
+    with action_cols[2]:
+        if st.button("View Portfolios", use_container_width=True):
+            st.session_state.nav_target = "Portfolios"
+            st.rerun()
+
+
+def _is_within_days(timestamp_str: str, days: int) -> bool:
+    """Check if an ISO timestamp string is within the last N days."""
+    try:
+        dt = datetime.fromisoformat(timestamp_str)
+        return (datetime.now() - dt).days <= days
+    except (ValueError, TypeError):
+        return False
 
 
 def render_strategy_builder(data_days: int, data_seed: int):

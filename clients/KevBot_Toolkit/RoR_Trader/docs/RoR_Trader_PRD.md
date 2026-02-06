@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.2
-**Date:** February 5, 2026
+**Version:** 0.3
+**Date:** February 6, 2026
 **Author:** Kevin Johnson
-**Status:** MVP Built — Active Development
+**Status:** MVP Complete — Entering QA & Polish
 
 ---
 
@@ -651,20 +651,54 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Portfolio-level enrichment — strategy signals include portfolio allocation context
 - [x] Discord/Slack-compatible webhook payload format with embeds
 
-### Design Decisions (Phase 5)
+### Phase 5B: Alert System Redesign *(COMPLETED 2026-02-06)*
+*Overhaul alerts from single-webhook to a production-ready multi-webhook system.*
+
+- [x] Replace global/strategy webhook URLs with per-portfolio multi-webhook system
+- [x] LuxAlgo-style webhook builder — name, URL, event checkboxes (Entry Long/Short, Exit Long/Short, Compliance Breach), custom JSON payloads with {{placeholder}} insertion
+- [x] Placeholder system — 22 dynamic placeholders including derived quantity, order_action, market_position
+- [x] Webhook templates — default TradeThePool templates (Market/Limit Order Buy/Sell/Close) + user-created template CRUD
+- [x] "Insert Template" and "Insert Placeholder" dropdowns in webhook editor
+- [x] Alerts page redesign — 4 tabs (Strategy Alerts, Portfolio Alerts, Outbound Webhooks, Inbound Webhooks placeholder)
+- [x] Date range filtering on all alert tabs (replaces Ack/Clear buttons)
+- [x] Active alerts/webhooks management expander for quick deactivation at scale
+- [x] Decouple strategy alert toggles from portfolio webhook delivery — webhooks always fire regardless of strategy-level toggle
+- [x] Per-webhook delivery tracking with payload inspection on Outbound tab
+- [x] Auto-migration of old alert_config.json schema on load
+- [x] Webhook Templates navigation page with category grouping, default duplication, and custom CRUD
+
+### Design Decisions (Phase 5/5B)
 - **Strategy-level detection, portfolio-level enrichment** — Signals are detected per-strategy (unique symbol+trigger combinations). Portfolio context (position sizing, compliance) is added after detection. This avoids duplicate data fetches for the same symbol across portfolios.
 - **Stateless position tracking** — Instead of maintaining a persistent position state machine, the monitor runs `generate_trades()` on recent bars and checks if the last trade is still open. Leverages existing engine without complex state management.
-- **JSON file communication** — Monitor and Streamlit app communicate via `alert_config.json`, `alerts.json`, and `monitor_status.json`. Simple, no database needed, human-readable.
+- **JSON file communication** — Monitor and Streamlit app communicate via `alert_config.json`, `alerts.json`, `monitor_status.json`, and `webhook_templates.json`. Simple, no database needed, human-readable.
 - **Process management** — Monitor writes PID to status file, Streamlit sends SIGTERM to stop. Status file is verified against actual process liveness on each UI render.
+- **Webhooks at portfolio level only** — Webhooks live on portfolios, not strategies or globally. A strategy signal enriched with portfolio context fires all matching portfolio webhooks. Strategy-level toggles only control in-app visibility, not webhook delivery.
+- **Placeholder-driven payloads** — Custom JSON templates use `{{placeholder}}` tokens resolved at delivery time. Derived values (quantity from risk/stop distance, order_action from signal type) are computed dynamically.
 
-### Phase 6: Dashboard
-*Landing page that ties the application together. Deferred until core functionality is complete.*
+### Phase 6: Dashboard — COMPLETED (Feb 6, 2026)
+*Landing page that ties the application together.*
 
-- [ ] Overview cards (strategy count, best performer, recent activity)
-- [ ] Quick actions (New Strategy, View Strategies)
-- [ ] Mini equity curves for saved strategies
-- [ ] Data source status and connection health
-- [ ] Empty state for new users
+- [x] Overview cards (strategy count, forward testing count, portfolio count, recent alerts)
+- [x] Top strategy highlight with mini equity curve (best by Total R)
+- [x] Top portfolio highlight with key KPIs (best by P&L)
+- [x] Recent alerts feed (last 5, reusing alert row component)
+- [x] System status panel (data source, alert monitor state, forward test count)
+- [x] Quick actions (New Strategy, View Strategies, View Portfolios) with programmatic navigation
+- [x] Empty state for new users with onboarding message and pipeline explanation
+- [x] `nav_target` session state pattern for cross-page button navigation
+
+### Phase 7: QA & Polish
+*Comprehensive review pass — verify everything works end-to-end before expanding scope.*
+
+- [ ] Indicator verification — confirm all indicators calculate correctly against known values
+- [ ] Interpreter verification — validate all interpreter states produce expected outputs
+- [ ] KPI accuracy audit — ensure metrics are correct and displayed in the right places
+- [ ] UI/UX polish — layout consistency, responsive behavior, edge case handling
+- [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
+- [ ] Forward testing validation — confirm live data pipeline produces accurate results
+- [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
+- [ ] Performance — identify and address any slow-loading pages or redundant data fetches
+- [ ] Bug fixes — address all known issues surfaced during development
 
 ---
 
