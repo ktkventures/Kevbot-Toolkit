@@ -41,9 +41,11 @@ INDICATOR_COLORS = {
     "macd_line": "#FFD93D",     # Yellow
     "macd_signal": "#6BCB77",   # Green
     "macd_hist": "#4D96FF",     # Blue
-    "vwap": "#A8E6CF",          # Light green
-    "vwap_upper": "#A8E6CF",    # Light green (lighter)
-    "vwap_lower": "#A8E6CF",    # Light green (lighter)
+    "vwap": "#A8E6CF",              # Light green
+    "vwap_sd1_upper": "#C8F0DF",   # Light green (lighter)
+    "vwap_sd1_lower": "#C8F0DF",   # Light green (lighter)
+    "vwap_sd2_upper": "#E0F7ED",   # Light green (lightest)
+    "vwap_sd2_lower": "#E0F7ED",   # Light green (lightest)
     "atr": "#FFB6B9",           # Pink
     "vol_sma": "#DDA0DD",       # Plum
 }
@@ -94,10 +96,10 @@ INDICATORS: Dict[str, IndicatorConfig] = {
         id="vwap",
         name="VWAP",
         category="Volume",
-        parameters={"std_dev": 2.0},
+        parameters={"sd1_mult": 1.0, "sd2_mult": 2.0},
         overlay_type="line",
         color=INDICATOR_COLORS["vwap"],
-        columns=["vwap", "vwap_upper", "vwap_lower"]
+        columns=["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"]
     ),
     "atr": IndicatorConfig(
         id="atr",
@@ -178,16 +180,21 @@ def calculate_macd(
     }
 
 
-def calculate_vwap(df: pd.DataFrame, std_dev: float = 2.0) -> Dict[str, pd.Series]:
+def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.0) -> Dict[str, pd.Series]:
     """
-    Calculate VWAP with standard deviation bands.
+    Calculate VWAP with dual standard deviation bands (7-zone system).
 
     If VWAP already exists in df, use it. Otherwise calculate.
 
+    Args:
+        df: DataFrame with OHLCV data
+        sd1_mult: Inner band multiplier (default 1.0)
+        sd2_mult: Outer band multiplier (default 2.0)
+
     Returns dict with:
     - vwap: Volume Weighted Average Price
-    - vwap_upper: Upper band (VWAP + std_dev * rolling std)
-    - vwap_lower: Lower band (VWAP - std_dev * rolling std)
+    - vwap_sd1_upper/lower: Inner SD bands (±sd1_mult × rolling std)
+    - vwap_sd2_upper/lower: Outer SD bands (±sd2_mult × rolling std)
     """
     if 'vwap' in df.columns and df['vwap'].notna().any():
         vwap = df['vwap']
@@ -202,8 +209,10 @@ def calculate_vwap(df: pd.DataFrame, std_dev: float = 2.0) -> Dict[str, pd.Serie
 
     return {
         "vwap": vwap,
-        "vwap_upper": vwap + (std_dev * rolling_std),
-        "vwap_lower": vwap - (std_dev * rolling_std)
+        "vwap_sd1_upper": vwap + (sd1_mult * rolling_std),
+        "vwap_sd1_lower": vwap - (sd1_mult * rolling_std),
+        "vwap_sd2_upper": vwap + (sd2_mult * rolling_std),
+        "vwap_sd2_lower": vwap - (sd2_mult * rolling_std),
     }
 
 
@@ -271,7 +280,11 @@ def run_all_indicators(
 
         # VWAP
         elif ind_id == "vwap":
-            vwap_result = calculate_vwap(df, config.parameters["std_dev"])
+            vwap_result = calculate_vwap(
+                df,
+                sd1_mult=config.parameters.get("sd1_mult", 1.0),
+                sd2_mult=config.parameters.get("sd2_mult", 2.0),
+            )
             for col, values in vwap_result.items():
                 result[col] = values
 
@@ -368,7 +381,7 @@ def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
                     result = result.copy() if result is df else result
                     result[col_name] = calculate_ema(result, period)
 
-    elif group.base_template == "macd":
+    elif group.base_template in ("macd_line", "macd_histogram"):
         if "macd_line" not in result.columns:
             fast = group.parameters.get("fast_period", 12)
             slow = group.parameters.get("slow_period", 26)
@@ -379,10 +392,11 @@ def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
                 result[col] = values
 
     elif group.base_template == "vwap":
-        if "vwap" not in result.columns:
-            std_dev = group.parameters.get("std_dev", 2.0)
+        if "vwap_sd1_upper" not in result.columns:
+            sd1_mult = group.parameters.get("sd1_mult", 1.0)
+            sd2_mult = group.parameters.get("sd2_mult", 2.0)
             result = result.copy() if result is df else result
-            vwap_result = calculate_vwap(result, std_dev)
+            vwap_result = calculate_vwap(result, sd1_mult=sd1_mult, sd2_mult=sd2_mult)
             for col, values in vwap_result.items():
                 result[col] = values
 

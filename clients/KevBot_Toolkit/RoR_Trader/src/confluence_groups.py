@@ -137,11 +137,11 @@ TEMPLATES: Dict[str, Dict] = {
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
 
-    "macd": {
-        "name": "MACD",
+    "macd_line": {
+        "name": "MACD Line",
         "category": "Momentum",
-        "description": "Moving Average Convergence Divergence",
-        "interpreters": ["MACD_LINE", "MACD_HISTOGRAM"],
+        "description": "MACD line vs Signal line with zero-line context",
+        "interpreters": ["MACD_LINE"],
         "trigger_prefix": "macd",
         "parameters_schema": {
             "fast_period": {"type": "int", "default": 12, "min": 1, "max": 100, "label": "Fast Period"},
@@ -151,8 +151,6 @@ TEMPLATES: Dict[str, Dict] = {
         "plot_schema": {
             "macd_color": {"type": "color", "default": "#2563eb", "label": "MACD Line Color"},
             "signal_color": {"type": "color", "default": "#f97316", "label": "Signal Line Color"},
-            "hist_pos_color": {"type": "color", "default": "#22c55e", "label": "Histogram Positive"},
-            "hist_neg_color": {"type": "color", "default": "#ef4444", "label": "Histogram Negative"},
         },
         "outputs": ["M>S+", "M>S-", "M<S-", "M<S+"],
         "output_descriptions": {
@@ -166,37 +164,74 @@ TEMPLATES: Dict[str, Dict] = {
             {"base": "cross_bear", "name": "Bearish Cross", "direction": "SHORT", "type": "ENTRY"},
             {"base": "zero_cross_up", "name": "Zero Line Cross Up", "direction": "LONG", "type": "ENTRY"},
             {"base": "zero_cross_down", "name": "Zero Line Cross Down", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "hist_flip_pos", "name": "Histogram Flip Positive", "direction": "LONG", "type": "ENTRY"},
-            {"base": "hist_flip_neg", "name": "Histogram Flip Negative", "direction": "SHORT", "type": "ENTRY"},
         ],
-        "indicator_columns": ["macd_line", "macd_signal", "macd_hist"],
+        "indicator_columns": ["macd_line", "macd_signal"],
+    },
+
+    "macd_histogram": {
+        "name": "MACD Histogram",
+        "category": "Momentum",
+        "description": "MACD histogram momentum and direction",
+        "interpreters": ["MACD_HISTOGRAM"],
+        "trigger_prefix": "macd_hist",
+        "parameters_schema": {
+            "fast_period": {"type": "int", "default": 12, "min": 1, "max": 100, "label": "Fast Period"},
+            "slow_period": {"type": "int", "default": 26, "min": 1, "max": 100, "label": "Slow Period"},
+            "signal_period": {"type": "int", "default": 9, "min": 1, "max": 50, "label": "Signal Period"},
+        },
+        "plot_schema": {
+            "hist_pos_color": {"type": "color", "default": "#22c55e", "label": "Histogram Positive"},
+            "hist_neg_color": {"type": "color", "default": "#ef4444", "label": "Histogram Negative"},
+        },
+        "outputs": ["H+up", "H+dn", "H-dn", "H-up"],
+        "output_descriptions": {
+            "H+up": "Positive and rising (accelerating bullish)",
+            "H+dn": "Positive but falling (decelerating bullish)",
+            "H-dn": "Negative and falling (accelerating bearish)",
+            "H-up": "Negative but rising (decelerating bearish)",
+        },
+        "triggers": [
+            {"base": "flip_pos", "name": "Histogram Flip Bullish", "direction": "LONG", "type": "ENTRY"},
+            {"base": "flip_neg", "name": "Histogram Flip Bearish", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "momentum_shift_up", "name": "Momentum Shift Up", "direction": "LONG", "type": "ENTRY"},
+            {"base": "momentum_shift_down", "name": "Momentum Shift Down", "direction": "SHORT", "type": "ENTRY"},
+        ],
+        "indicator_columns": ["macd_hist"],
     },
 
     "vwap": {
         "name": "VWAP",
         "category": "Volume",
-        "description": "Volume Weighted Average Price with bands",
+        "description": "Volume Weighted Average Price with SD bands (7-zone system)",
         "interpreters": ["VWAP"],
         "trigger_prefix": "vwap",
         "parameters_schema": {
-            "std_dev": {"type": "float", "default": 2.0, "min": 0.5, "max": 5.0, "label": "Std Dev Multiplier"},
-            "tolerance_pct": {"type": "float", "default": 0.1, "min": 0.01, "max": 1.0, "label": "AT Tolerance %"},
+            "sd1_mult": {"type": "float", "default": 1.0, "min": 0.5, "max": 5.0, "label": "Inner Band (SD1) Multiplier"},
+            "sd2_mult": {"type": "float", "default": 2.0, "min": 0.5, "max": 5.0, "label": "Outer Band (SD2) Multiplier"},
         },
         "plot_schema": {
             "vwap_color": {"type": "color", "default": "#8b5cf6", "label": "VWAP Line Color"},
-            "band_color": {"type": "color", "default": "#c4b5fd", "label": "Band Color"},
+            "sd1_band_color": {"type": "color", "default": "#c4b5fd", "label": "SD1 Band Color"},
+            "sd2_band_color": {"type": "color", "default": "#ddd6fe", "label": "SD2 Band Color"},
         },
-        "outputs": ["ABOVE", "AT", "BELOW"],
+        "outputs": [">+2σ", ">+1σ", ">V", "@V", "<V", "<-1σ", "<-2σ"],
         "output_descriptions": {
-            "ABOVE": "Price above VWAP",
-            "AT": "Price near VWAP (within tolerance)",
-            "BELOW": "Price below VWAP",
+            ">+2σ": "Price above VWAP + 2×SD (extended high)",
+            ">+1σ": "Price between +1σ and +2σ",
+            ">V": "Price between VWAP and +1σ (above VWAP zone)",
+            "@V": "Price within ±0.5σ of VWAP (at VWAP)",
+            "<V": "Price between VWAP and -1σ (below VWAP zone)",
+            "<-1σ": "Price between -1σ and -2σ",
+            "<-2σ": "Price below VWAP - 2×SD (extended low)",
         },
         "triggers": [
-            {"base": "cross_above", "name": "Cross Above", "direction": "LONG", "type": "ENTRY"},
-            {"base": "cross_below", "name": "Cross Below", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY"},
+            {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY"},
+            {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT"},
         ],
-        "indicator_columns": ["vwap", "vwap_upper", "vwap_lower"],
+        "indicator_columns": ["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"],
     },
 
     "rvol": {
@@ -308,14 +343,27 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 else:
                     version = "Default"
 
+            # Backward compat: old "macd" template → "macd_line"
+            base_template = group_data["base_template"]
+            if base_template == "macd":
+                base_template = "macd_line"
+
+            # Backward compat: old VWAP parameters (std_dev) → (sd1_mult, sd2_mult)
+            params = group_data.get("parameters", {})
+            if base_template == "vwap" and "std_dev" in params and "sd1_mult" not in params:
+                old_std = params.pop("std_dev")
+                params["sd1_mult"] = 1.0
+                params["sd2_mult"] = float(old_std)
+                params.pop("tolerance_pct", None)
+
             group = ConfluenceGroup(
                 id=group_data["id"],
-                base_template=group_data["base_template"],
+                base_template=base_template,
                 version=version,
                 description=group_data.get("description", ""),
                 enabled=group_data.get("enabled", True),
                 is_default=group_data.get("is_default", False),
-                parameters=group_data.get("parameters", {}),
+                parameters=params,
                 plot_settings=plot_settings,
             )
             groups.append(group)
@@ -401,10 +449,10 @@ def create_default_groups() -> List[ConfluenceGroup]:
             ),
         ),
         ConfluenceGroup(
-            id="macd_default",
-            base_template="macd",
+            id="macd_line_default",
+            base_template="macd_line",
             version="Default",
-            description="Standard MACD with 12/26/9 periods",
+            description="MACD Line vs Signal with 12/26/9 periods",
             enabled=True,
             is_default=True,
             parameters={
@@ -416,6 +464,25 @@ def create_default_groups() -> List[ConfluenceGroup]:
                 colors={
                     "macd_color": "#2563eb",
                     "signal_color": "#f97316",
+                },
+                line_width=1,
+                visible=True,
+            ),
+        ),
+        ConfluenceGroup(
+            id="macd_histogram_default",
+            base_template="macd_histogram",
+            version="Default",
+            description="MACD Histogram momentum with 12/26/9 periods",
+            enabled=True,
+            is_default=True,
+            parameters={
+                "fast_period": 12,
+                "slow_period": 26,
+                "signal_period": 9,
+            },
+            plot_settings=PlotSettings(
+                colors={
                     "hist_pos_color": "#22c55e",
                     "hist_neg_color": "#ef4444",
                 },
@@ -427,17 +494,18 @@ def create_default_groups() -> List[ConfluenceGroup]:
             id="vwap_default",
             base_template="vwap",
             version="Default",
-            description="VWAP with 2 standard deviation bands",
+            description="VWAP with 1σ/2σ standard deviation bands (7-zone system)",
             enabled=True,
             is_default=True,
             parameters={
-                "std_dev": 2.0,
-                "tolerance_pct": 0.1,
+                "sd1_mult": 1.0,
+                "sd2_mult": 2.0,
             },
             plot_settings=PlotSettings(
                 colors={
                     "vwap_color": "#8b5cf6",
-                    "band_color": "#c4b5fd",
+                    "sd1_band_color": "#c4b5fd",
+                    "sd2_band_color": "#ddd6fe",
                 },
                 line_width=2,
                 visible=True,

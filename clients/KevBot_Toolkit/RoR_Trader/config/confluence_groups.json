@@ -24,10 +24,10 @@
       }
     },
     {
-      "id": "macd_default",
-      "base_template": "macd",
+      "id": "macd_line_default",
+      "base_template": "macd_line",
       "version": "Default",
-      "description": "Standard MACD with 12/26/9 periods",
+      "description": "MACD Line vs Signal with 12/26/9 periods",
       "enabled": true,
       "is_default": true,
       "parameters": {
@@ -38,7 +38,26 @@
       "plot_settings": {
         "colors": {
           "macd_color": "#2563eb",
-          "signal_color": "#f97316",
+          "signal_color": "#f97316"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "macd_histogram_default",
+      "base_template": "macd_histogram",
+      "version": "Default",
+      "description": "MACD Histogram momentum with 12/26/9 periods",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9
+      },
+      "plot_settings": {
+        "colors": {
           "hist_pos_color": "#22c55e",
           "hist_neg_color": "#ef4444"
         },
@@ -50,17 +69,18 @@
       "id": "vwap_default",
       "base_template": "vwap",
       "version": "Default",
-      "description": "VWAP with 2 standard deviation bands",
+      "description": "VWAP with 1σ/2σ standard deviation bands (7-zone system)",
       "enabled": true,
       "is_default": true,
       "parameters": {
-        "std_dev": 2.0,
-        "tolerance_pct": 0.1
+        "sd1_mult": 1.0,
+        "sd2_mult": 2.0
       },
       "plot_settings": {
         "colors": {
           "vwap_color": "#8b5cf6",
-          "band_color": "#c4b5fd"
+          "sd1_band_color": "#c4b5fd",
+          "sd2_band_color": "#ddd6fe"
         },
         "line_width": 2,
         "visible": true

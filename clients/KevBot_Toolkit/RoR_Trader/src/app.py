@@ -280,11 +280,10 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
         colors[f"ema_{long}"] = group.plot_settings.colors.get("long_color", "#ef4444")
     elif group.base_template == "vwap":
         colors["vwap"] = group.plot_settings.colors.get("vwap_color", "#8b5cf6")
-        colors["vwap_upper"] = group.plot_settings.colors.get("band_color", "#c4b5fd")
-        colors["vwap_lower"] = group.plot_settings.colors.get("band_color", "#c4b5fd")
-    elif group.base_template == "macd":
-        colors["macd_line"] = group.plot_settings.colors.get("macd_color", "#2563eb")
-        colors["macd_signal"] = group.plot_settings.colors.get("signal_color", "#f97316")
+        colors["vwap_sd1_upper"] = group.plot_settings.colors.get("sd1_band_color", "#c4b5fd")
+        colors["vwap_sd1_lower"] = group.plot_settings.colors.get("sd1_band_color", "#c4b5fd")
+        colors["vwap_sd2_upper"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
+        colors["vwap_sd2_lower"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
     elif group.base_template == "utbot":
         colors["utbot_stop"] = group.plot_settings.colors.get("trail_color", "#64748b")
 
@@ -2078,7 +2077,7 @@ def render_live_backtest(strat: dict):
     kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
 
     # Tabbed content
-    tab_backtest, tab_config, tab_alerts = st.tabs(["Backtest Results", "Configuration", "Alerts"])
+    tab_backtest, tab_confluence, tab_config, tab_alerts = st.tabs(["Backtest Results", "Confluence Analysis", "Configuration", "Alerts"])
 
     with tab_backtest:
         # Charts side by side
@@ -2177,6 +2176,9 @@ def render_live_backtest(strat: dict):
         else:
             st.info("No trades to display.")
 
+    with tab_confluence:
+        render_confluence_analysis_tab(df, strat)
+
     with tab_config:
         col1, col2 = st.columns(2)
         with col1:
@@ -2209,6 +2211,49 @@ def render_live_backtest(strat: dict):
 
 
 # =============================================================================
+# CONFLUENCE ANALYSIS TAB (shared by backtest + forward test detail views)
+# =============================================================================
+
+def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
+    """
+    Render interpreter states and trigger events for each confluence group
+    used by this strategy, organized as sub-tabs by group.
+    """
+    enabled_groups = get_enabled_groups()
+
+    if not enabled_groups:
+        st.info("No confluence groups are enabled.")
+        return
+
+    # Create sub-tabs, one per enabled confluence group
+    group_tabs = st.tabs([g.name for g in enabled_groups])
+
+    for group, gtab in zip(enabled_groups, group_tabs):
+        with gtab:
+            template = get_template(group.base_template)
+            if not template:
+                st.caption(f"Template '{group.base_template}' not found.")
+                continue
+
+            # Show group's active parameters
+            param_schema = template.get("parameters_schema", {})
+            param_parts = []
+            for key, schema in param_schema.items():
+                value = group.parameters.get(key, schema.get("default", "?"))
+                param_parts.append(f"{schema.get('label', key)}: **{value}**")
+            if param_parts:
+                st.caption(" | ".join(param_parts))
+
+            # Interpreter state timeline
+            st.markdown("**Interpreter States**")
+            _render_interpreter_timeline(df, group, template)
+
+            # Trigger events
+            st.markdown("**Trigger Events**")
+            _render_trigger_events_table(df, group, template)
+
+
+# =============================================================================
 # FORWARD TEST VIEW
 # =============================================================================
 
@@ -2234,8 +2279,8 @@ def render_forward_test_view(strat: dict):
     render_kpi_comparison(backtest_trades, forward_trades)
 
     # Tabs
-    tab_charts, tab_trades, tab_config, tab_alerts = st.tabs(
-        ["Equity & Charts", "Trade History", "Configuration", "Alerts"]
+    tab_charts, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs(
+        ["Equity & Charts", "Trade History", "Confluence Analysis", "Configuration", "Alerts"]
     )
 
     with tab_charts:
@@ -2265,6 +2310,9 @@ def render_forward_test_view(strat: dict):
 
     with tab_trades:
         render_split_trade_history(backtest_trades, forward_trades)
+
+    with tab_confluence_ft:
+        render_confluence_analysis_tab(df, strat)
 
     with tab_config:
         col1, col2 = st.columns(2)
@@ -4565,10 +4613,15 @@ TEMPLATE_FUNCTIONS = {
         "Interpreter": [interpret_ema_stack],
         "Triggers": [detect_ema_triggers],
     },
-    "macd": {
+    "macd_line": {
         "Indicator": [calculate_macd],
-        "Interpreter": [interpret_macd_line, interpret_macd_histogram],
-        "Triggers": [detect_macd_triggers, detect_macd_hist_triggers],
+        "Interpreter": [interpret_macd_line],
+        "Triggers": [detect_macd_triggers],
+    },
+    "macd_histogram": {
+        "Indicator": [calculate_macd],
+        "Interpreter": [interpret_macd_histogram],
+        "Triggers": [detect_macd_hist_triggers],
     },
     "vwap": {
         "Indicator": [calculate_vwap],
@@ -4596,6 +4649,20 @@ def render_code_tab(group: ConfluenceGroup):
         st.info(f"No source code available for template '{group.base_template}'. Implementation pending.")
         return
 
+    # Show this group's effective parameters
+    st.markdown("**Active Parameters for this Group**")
+    template = get_template(group.base_template)
+    param_schema = template.get("parameters_schema", {}) if template else {}
+    param_items = []
+    for key, schema in param_schema.items():
+        value = group.parameters.get(key, schema.get("default", "?"))
+        param_items.append(f"`{schema.get('label', key)}` = **{value}**")
+    if param_items:
+        st.markdown(" | ".join(param_items))
+    else:
+        st.caption("No parameters")
+
+    st.divider()
     st.caption("Source code for this confluence group's indicator, interpreter, and trigger logic.")
 
     for section_name, func_list in funcs.items():
@@ -4687,7 +4754,7 @@ def render_preview_tab(group: ConfluenceGroup):
         )
 
     # --- Section 2: Secondary Chart for Non-Overlay Indicators ---
-    if group.base_template == "macd":
+    if group.base_template in ("macd_line", "macd_histogram"):
         st.markdown("**MACD Chart**")
         _render_macd_preview_chart(df, group)
     elif group.base_template == "rvol":

@@ -58,15 +58,15 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
         category="MACD",
         requires_indicators=["macd"],
         outputs=["H+up", "H+dn", "H-dn", "H-up"],
-        triggers=["macd_hist_flip_pos", "macd_hist_flip_neg"]
+        triggers=["macd_hist_flip_pos", "macd_hist_flip_neg", "macd_hist_momentum_shift_up", "macd_hist_momentum_shift_down"]
     ),
     "VWAP": InterpreterConfig(
         name="VWAP Position",
-        description="Price position relative to VWAP",
+        description="Price position relative to VWAP with SD bands (7 zones)",
         category="Volume",
         requires_indicators=["vwap"],
-        outputs=["ABOVE", "AT", "BELOW"],
-        triggers=["vwap_cross_above", "vwap_cross_below"]
+        outputs=[">+2σ", ">+1σ", ">V", "@V", "<V", "<-1σ", "<-2σ"],
+        triggers=["vwap_cross_above", "vwap_cross_below", "vwap_enter_upper_extreme", "vwap_enter_lower_extreme", "vwap_return_to_vwap"]
     ),
     "RVOL": InterpreterConfig(
         name="Relative Volume",
@@ -280,16 +280,28 @@ def detect_macd_hist_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
     """Detect MACD histogram triggers."""
     triggers = {}
 
-    # Histogram flips positive
+    # Histogram flips positive (neg → pos)
     triggers['macd_hist_flip_pos'] = (
         (df['macd_hist'] > 0) &
         (df['macd_hist'].shift(1) <= 0)
     )
 
-    # Histogram flips negative
+    # Histogram flips negative (pos → neg)
     triggers['macd_hist_flip_neg'] = (
         (df['macd_hist'] < 0) &
         (df['macd_hist'].shift(1) >= 0)
+    )
+
+    # Momentum shift up (was falling, now rising)
+    triggers['macd_hist_momentum_shift_up'] = (
+        (df['macd_hist'] > df['macd_hist'].shift(1)) &
+        (df['macd_hist'].shift(1) < df['macd_hist'].shift(2))
+    )
+
+    # Momentum shift down (was rising, now falling)
+    triggers['macd_hist_momentum_shift_down'] = (
+        (df['macd_hist'] < df['macd_hist'].shift(1)) &
+        (df['macd_hist'].shift(1) > df['macd_hist'].shift(2))
     )
 
     return triggers
@@ -299,40 +311,74 @@ def detect_macd_hist_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
 # VWAP INTERPRETER
 # =============================================================================
 
-def interpret_vwap(df: pd.DataFrame, tolerance_pct: float = 0.1) -> pd.Series:
+def interpret_vwap(df: pd.DataFrame) -> pd.Series:
     """
-    Interpret VWAP Position.
+    Interpret VWAP Position using 7 mutually exclusive zones.
 
-    Requires: vwap column
+    Requires: vwap, vwap_sd1_upper, vwap_sd1_lower, vwap_sd2_upper, vwap_sd2_lower columns
+    Falls back to rolling std if SD band columns not present.
 
-    Outputs:
-    - ABOVE: Price significantly above VWAP
-    - AT: Price near VWAP (within tolerance)
-    - BELOW: Price significantly below VWAP
+    Zones (from KevBot reference):
+    - >+2σ: Price above VWAP + 2×SD (extended high)
+    - >+1σ: Price between +1σ and +2σ
+    - >V:   Price between VWAP+0.5σ and +1σ (above VWAP zone)
+    - @V:   Price within ±0.5σ of VWAP (at VWAP)
+    - <V:   Price between VWAP-0.5σ and -1σ (below VWAP zone)
+    - <-1σ: Price between -1σ and -2σ
+    - <-2σ: Price below VWAP - 2×SD (extended low)
     """
-    tolerance = tolerance_pct / 100
+    has_bands = all(c in df.columns for c in ['vwap_sd1_upper', 'vwap_sd1_lower', 'vwap_sd2_upper', 'vwap_sd2_lower'])
 
     def interpret(row):
-        vwap = row.get('vwap', np.nan)
+        vwap_val = row.get('vwap', np.nan)
         price = row['close']
 
-        if pd.isna(vwap) or vwap == 0:
+        if pd.isna(vwap_val) or vwap_val == 0:
             return None
 
-        pct_diff = (price - vwap) / vwap
+        if has_bands:
+            sd1_upper = row.get('vwap_sd1_upper', np.nan)
+            sd1_lower = row.get('vwap_sd1_lower', np.nan)
+            sd2_upper = row.get('vwap_sd2_upper', np.nan)
+            sd2_lower = row.get('vwap_sd2_lower', np.nan)
 
-        if pct_diff > tolerance:
-            return "ABOVE"
-        elif pct_diff < -tolerance:
-            return "BELOW"
+            if pd.isna(sd1_upper):
+                return None
+
+            # Compute half-SD for the @V zone (midpoint between VWAP and SD1)
+            half_sd = (sd1_upper - vwap_val) * 0.5
+            at_upper = vwap_val + half_sd
+            at_lower = vwap_val - half_sd
         else:
-            return "AT"
+            # Fallback: use a simple percentage tolerance
+            half_sd = vwap_val * 0.001
+            at_upper = vwap_val + half_sd
+            at_lower = vwap_val - half_sd
+            sd1_upper = vwap_val + half_sd * 2
+            sd1_lower = vwap_val - half_sd * 2
+            sd2_upper = vwap_val + half_sd * 4
+            sd2_lower = vwap_val - half_sd * 4
+
+        if price > sd2_upper:
+            return ">+2σ"
+        elif price > sd1_upper:
+            return ">+1σ"
+        elif price > at_upper:
+            return ">V"
+        elif price >= at_lower:
+            return "@V"
+        elif price >= sd1_lower:
+            return "<V"
+        elif price >= sd2_lower:
+            return "<-1σ"
+        else:
+            return "<-2σ"
 
     return df.apply(interpret, axis=1)
 
 
 def detect_vwap_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
-    """Detect VWAP-based triggers."""
+    """Detect VWAP-based triggers (5 triggers matching KevBot reference)."""
     triggers = {}
 
     # Price crosses above VWAP
@@ -346,6 +392,36 @@ def detect_vwap_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
         (df['close'] < df['vwap']) &
         (df['close'].shift(1) >= df['vwap'].shift(1))
     )
+
+    # Enter upper extreme (price enters >+2σ zone)
+    if 'vwap_sd2_upper' in df.columns:
+        triggers['vwap_enter_upper_extreme'] = (
+            (df['close'] > df['vwap_sd2_upper']) &
+            (df['close'].shift(1) <= df['vwap_sd2_upper'].shift(1))
+        )
+
+        # Enter lower extreme (price enters <-2σ zone)
+        triggers['vwap_enter_lower_extreme'] = (
+            (df['close'] < df['vwap_sd2_lower']) &
+            (df['close'].shift(1) >= df['vwap_sd2_lower'].shift(1))
+        )
+
+    # Return to VWAP zone (from extreme back to @V)
+    if 'vwap_sd1_upper' in df.columns:
+        half_sd = (df['vwap_sd1_upper'] - df['vwap']) * 0.5
+        at_upper = df['vwap'] + half_sd
+        at_lower = df['vwap'] - half_sd
+        prev_half_sd = (df['vwap_sd1_upper'].shift(1) - df['vwap'].shift(1)) * 0.5
+        prev_at_upper = df['vwap'].shift(1) + prev_half_sd
+        prev_at_lower = df['vwap'].shift(1) - prev_half_sd
+
+        # Was outside ±1σ, now within ±0.5σ (at VWAP)
+        was_extreme = (
+            (df['close'].shift(1) > df['vwap_sd1_upper'].shift(1)) |
+            (df['close'].shift(1) < df['vwap_sd1_lower'].shift(1))
+        )
+        now_at_vwap = (df['close'] >= at_lower) & (df['close'] <= at_upper)
+        triggers['vwap_return_to_vwap'] = was_extreme & now_at_vwap
 
     return triggers
 
@@ -526,9 +602,14 @@ def get_available_triggers() -> Dict[str, str]:
         "macd_zero_cross_down": "MACD Zero Cross Down",
         "macd_hist_flip_pos": "MACD Histogram Flip Positive",
         "macd_hist_flip_neg": "MACD Histogram Flip Negative",
+        "macd_hist_momentum_shift_up": "MACD Histogram Momentum Shift Up",
+        "macd_hist_momentum_shift_down": "MACD Histogram Momentum Shift Down",
         # VWAP triggers
         "vwap_cross_above": "VWAP Cross Above",
         "vwap_cross_below": "VWAP Cross Below",
+        "vwap_enter_upper_extreme": "VWAP Enter Upper Extreme (>+2σ)",
+        "vwap_enter_lower_extreme": "VWAP Enter Lower Extreme (<-2σ)",
+        "vwap_return_to_vwap": "VWAP Return to VWAP Zone (@V)",
         # RVOL triggers
         "rvol_spike": "Volume Spike (1.5x)",
         "rvol_extreme": "Extreme Volume (3x)",
