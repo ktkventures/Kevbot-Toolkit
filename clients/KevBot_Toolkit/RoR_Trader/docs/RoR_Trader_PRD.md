@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.3
-**Date:** February 6, 2026
+**Version:** 0.4
+**Date:** February 9, 2026
 **Author:** Kevin Johnson
-**Status:** MVP Complete — Entering QA & Polish
+**Status:** MVP Complete — Phases 7-11 Roadmap Defined
 
 ---
 
@@ -687,18 +687,65 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Empty state for new users with onboarding message and pipeline explanation
 - [x] `nav_target` session state pattern for cross-page button navigation
 
-### Phase 7: QA & Polish
-*Comprehensive review pass — verify everything works end-to-end before expanding scope.*
+### Phase 7: Confluence Group Enhancements
+*Verify and expand confluence group tooling — ensure indicators/interpreters are behaving correctly before going live.*
 
+- [ ] Code tab on Confluence Group detail page — display the underlying indicator/interpreter source code for transparency and debugging
+- [ ] Preview tab on Confluence Group detail page — live preview showing indicator plots and interpreter state outputs on sample data
+- [ ] Indicator overlay on all strategy charts — plot confluence group indicators on strategy detail charts (backtest, forward test) so users can visually verify indicators align with triggers and interpretations
+- [ ] Verify confluence plots render correctly across all chart contexts (strategy detail, portfolio detail, dashboard)
+
+### Phase 8: QA, Polish & UX — "Get Live-Tradeable"
+*Comprehensive review pass and UX improvements — the gate to live trading with real money.*
+
+**QA & Verification:**
 - [ ] Indicator verification — confirm all indicators calculate correctly against known values
 - [ ] Interpreter verification — validate all interpreter states produce expected outputs
 - [ ] KPI accuracy audit — ensure metrics are correct and displayed in the right places
-- [ ] UI/UX polish — layout consistency, responsive behavior, edge case handling
 - [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
 - [ ] Forward testing validation — confirm live data pipeline produces accurate results
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
 - [ ] Bug fixes — address all known issues surfaced during development
+
+**UX Improvements:**
+- [ ] "Create New Strategy" button on My Strategies page (consistent with Portfolios page pattern)
+- [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
+- [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
+- [ ] Multiple exit triggers — expand from single exit trigger to array of exit triggers per strategy; first-to-fire wins; backward-compatible schema migration (string → array with auto-wrap); new exit triggers can be layered from confluence groups (e.g., end-of-day exit, time-based exit)
+- [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
+
+**After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
+
+### Phase 9: Analytics & Edge Detection
+*Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
+*Reference images: `/docs/reference_images/DaviddTech *.png`*
+
+- [ ] Edge Check overlay on equity curves — toggleable 21-period MA + Bollinger Bands on equity curve chart (visual indicator of strategy health; equity below lower BB = statistically unusual underperformance)
+- [ ] Expanded KPI panel — add: Sharpe Ratio, Sortino Ratio, Calmar Ratio, Kelly Criterion, Daily Value-at-Risk, Expected Shortfall (CVaR), Max Consecutive Wins/Losses, Gain/Pain Ratio, Payoff Ratio, Common Sense Ratio, Tail Ratio, Outlier Win/Loss Ratio, Recovery Factor, Ulcer Index, Serenity Index, Skewness, Kurtosis, Expected Daily/Monthly/Yearly returns
+- [ ] Rolling performance metrics chart — interactive chart with toggle buttons for rolling Win Rate, Profit Factor, and Sharpe over a configurable trade window
+- [ ] Return distribution analysis — histogram, box plot, and violin plot views with skewness/kurtosis/tail risk callouts
+- [ ] Cumulative vs. Simple P&L views — compounded equity curve (reinvested gains) alongside simple/sum-based P&L
+- [ ] Markov Motor Analysis (advanced tab) — win/loss transition probabilities, win/loss streak distribution chart, consistency score, stability index, trend strength, market regime detection (favorable/unfavorable/neutral clustering), edge decay chart (rolling PF with threshold line), and Markov Intelligence Insights summary
+- [ ] KPI placement audit — map out primary vs. secondary KPIs for strategy cards, strategy detail, portfolio cards, portfolio detail; ensure consistent and useful placement across all views
+
+### Phase 10: Strategy Origins
+*Expand strategy creation beyond the standard trigger-based approach — support webhook-driven and scanner-based strategies.*
+
+- [ ] Step 0: Strategy Origin selection — new first step in Strategy Builder where user selects origin type: Standard (current), Webhook Inbound, or Scanner
+- [ ] Origin-specific fields in Step 1 — after origin selection, show relevant configuration fields (additional fields per origin type; existing strategies default to "standard" with no migration needed)
+- [ ] Webhook Inbound origin — entries/exits driven by inbound webhooks (e.g., TradingView alerts, LuxAlgo signals); user can still layer confluence conditions from market data on top of webhook triggers; CSV upload for backtest data from TradingView or spreadsheets
+- [ ] Scanner origin — strategy not tied to a single ticker; runs against a universe of stocks matching screener criteria (Alpaca screener APIs); targets active day trading / scalping use cases (S&B Capital, Warrior Trading style); requires separate planning session for architecture given 1:many ticker relationship
+- [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; origin-specific fields only present when relevant
+
+### Phase 11: Live Portfolio Management
+*Active trading account management — bridge between backtesting and real-world trading.*
+
+- [ ] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
+- [ ] Deposit/withdrawal ledger — track additions to and deductions from the trading account balance
+- [ ] Webhook trigger audit log — plot actual fired webhook alerts on the price chart for visual verification that signals are firing correctly in production
+- [ ] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
+- [ ] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
 
 ---
 

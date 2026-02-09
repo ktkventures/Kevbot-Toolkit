@@ -21,21 +21,38 @@ import os
 import copy
 import subprocess
 import signal as signal_module
+import inspect
 
 from data_loader import load_market_data, get_data_source, is_alpaca_configured
 from indicators import (
     INDICATORS,
     run_all_indicators,
+    run_indicators_for_group,
     get_indicator_overlay_config,
     get_available_overlay_indicators,
-    INDICATOR_COLORS
+    INDICATOR_COLORS,
+    calculate_ema,
+    calculate_macd,
+    calculate_vwap,
+    calculate_volume_sma,
+    calculate_atr,
 )
 from interpreters import (
     INTERPRETERS,
     run_all_interpreters,
     detect_all_triggers,
     get_confluence_records,
-    get_available_triggers
+    get_available_triggers,
+    interpret_ema_stack,
+    interpret_macd_line,
+    interpret_macd_histogram,
+    interpret_vwap,
+    interpret_rvol,
+    detect_ema_triggers,
+    detect_macd_triggers,
+    detect_macd_hist_triggers,
+    detect_vwap_triggers,
+    detect_rvol_triggers,
 )
 from triggers import (
     generate_trades,
@@ -121,6 +138,7 @@ from confluence_groups import (
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
 TIMEFRAMES = ["1Min", "5Min", "15Min", "1Hour"]
 DIRECTIONS = ["LONG", "SHORT"]
+OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
 
 # Strategies storage path (resolve relative to this script, not cwd)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -222,21 +240,28 @@ def format_confluence_set(records: set, groups: list = None) -> str:
 
 def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
     """
-    Get the indicator column names for a confluence group.
+    Get the actual DataFrame column names for a confluence group's indicators.
 
-    Returns list of column names that should be displayed for this group.
+    Resolves template abstract names (ema_short) to real column names (ema_9)
+    based on the group's configured parameters.
     """
     template = get_template(group.base_template)
     if not template:
         return []
 
-    # Return the indicator columns defined in the template
+    if group.base_template == "ema_stack":
+        short = group.parameters.get("short_period", 9)
+        mid = group.parameters.get("mid_period", 21)
+        long = group.parameters.get("long_period", 200)
+        return [f"ema_{short}", f"ema_{mid}", f"ema_{long}"]
+
+    # Other templates have indicator_columns that match actual DataFrame names
     return template.get("indicator_columns", [])
 
 
 def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
     """
-    Get the colors for a confluence group's indicators.
+    Get colors mapped to actual DataFrame column names for a confluence group.
 
     Returns dict mapping column_name -> color
     """
@@ -244,16 +269,15 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
     if not template:
         return {}
 
-    # Map template indicator columns to their colors from plot_settings
     colors = {}
-    indicator_cols = template.get("indicator_columns", [])
-    plot_schema = template.get("plot_schema", {})
 
-    # Build color mapping based on template type
     if group.base_template == "ema_stack":
-        colors["ema_short"] = group.plot_settings.colors.get("short_color", "#22c55e")
-        colors["ema_mid"] = group.plot_settings.colors.get("mid_color", "#eab308")
-        colors["ema_long"] = group.plot_settings.colors.get("long_color", "#ef4444")
+        short = group.parameters.get("short_period", 9)
+        mid = group.parameters.get("mid_period", 21)
+        long = group.parameters.get("long_period", 200)
+        colors[f"ema_{short}"] = group.plot_settings.colors.get("short_color", "#22c55e")
+        colors[f"ema_{mid}"] = group.plot_settings.colors.get("mid_color", "#eab308")
+        colors[f"ema_{long}"] = group.plot_settings.colors.get("long_color", "#ef4444")
     elif group.base_template == "vwap":
         colors["vwap"] = group.plot_settings.colors.get("vwap_color", "#8b5cf6")
         colors["vwap_upper"] = group.plot_settings.colors.get("band_color", "#c4b5fd")
@@ -297,6 +321,11 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
 
     # Run indicators
     df = run_all_indicators(df)
+
+    # Run group-specific indicators for custom parameters (e.g., custom EMA periods)
+    from confluence_groups import get_enabled_groups
+    for group in get_enabled_groups(load_confluence_groups()):
+        df = run_indicators_for_group(df, group)
 
     # Run interpreters
     df = run_all_interpreters(df)
@@ -1453,7 +1482,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
             with chart_tab2:
                 # Confluence group selector for indicator overlays
                 # Only show groups that have chart overlays (not MACD which is typically a separate pane)
-                overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+                overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
 
                 if len(overlay_groups) > 0:
                     selected_overlay_groups = st.multiselect(
@@ -2111,7 +2140,7 @@ def render_live_backtest(strat: dict):
         # Price chart (full width)
         st.subheader("Price Chart")
         enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
         show_indicators = []
         indicator_colors = {}
         for group in overlay_groups:
@@ -2220,7 +2249,7 @@ def render_forward_test_view(strat: dict):
         # Price chart
         st.subheader("Price Chart")
         enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in ["ema_stack", "vwap", "utbot"]]
+        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
         show_indicators = []
         indicator_colors = {}
         for group in overlay_groups:
@@ -4525,6 +4554,328 @@ def render_new_group_dialog(all_groups: list):
             st.rerun()
 
 
+# =============================================================================
+# CONFLUENCE GROUP: CODE & PREVIEW TABS
+# =============================================================================
+
+# Template -> function mapping for the Code tab
+TEMPLATE_FUNCTIONS = {
+    "ema_stack": {
+        "Indicator": [calculate_ema],
+        "Interpreter": [interpret_ema_stack],
+        "Triggers": [detect_ema_triggers],
+    },
+    "macd": {
+        "Indicator": [calculate_macd],
+        "Interpreter": [interpret_macd_line, interpret_macd_histogram],
+        "Triggers": [detect_macd_triggers, detect_macd_hist_triggers],
+    },
+    "vwap": {
+        "Indicator": [calculate_vwap],
+        "Interpreter": [interpret_vwap],
+        "Triggers": [detect_vwap_triggers],
+    },
+    "rvol": {
+        "Indicator": [calculate_volume_sma],
+        "Interpreter": [interpret_rvol],
+        "Triggers": [detect_rvol_triggers],
+    },
+    "utbot": {
+        "Indicator": [],
+        "Interpreter": [],
+        "Triggers": [],
+    },
+}
+
+
+def render_code_tab(group: ConfluenceGroup):
+    """Render the Code tab showing source code for indicator, interpreter, and trigger functions."""
+    funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
+
+    if not funcs or all(len(v) == 0 for v in funcs.values()):
+        st.info(f"No source code available for template '{group.base_template}'. Implementation pending.")
+        return
+
+    st.caption("Source code for this confluence group's indicator, interpreter, and trigger logic.")
+
+    for section_name, func_list in funcs.items():
+        if not func_list:
+            continue
+        with st.expander(f"{section_name}", expanded=True):
+            for func in func_list:
+                try:
+                    source = inspect.getsource(func)
+                    st.code(source, language="python")
+                except (OSError, TypeError):
+                    st.warning(f"Could not retrieve source for {func.__name__}")
+
+
+def render_preview_tab(group: ConfluenceGroup):
+    """
+    Render the Preview tab with live indicator visualization on sample data.
+
+    Shows:
+    - Price chart with indicator overlays (for overlay-compatible templates)
+    - Secondary chart for non-overlay indicators (MACD, RVOL)
+    - Interpreter state timeline
+    - Trigger event markers
+    """
+    from mock_data import generate_mock_bars
+
+    template = get_template(group.base_template)
+    if not template:
+        st.error("Template not found.")
+        return
+
+    st.caption("Live preview using sample data to verify indicator, interpreter, and trigger behavior.")
+
+    # Preview controls
+    preview_symbol = st.selectbox(
+        "Preview Symbol",
+        AVAILABLE_SYMBOLS,
+        index=0,
+        key=f"preview_symbol_{group.id}"
+    )
+
+    # Generate sample data
+    with st.spinner("Generating preview data..."):
+        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=3)
+
+        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
+
+        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
+            df = bars.loc[preview_symbol]
+        elif len(bars) > 0:
+            df = bars
+        else:
+            st.error("Could not generate sample data.")
+            return
+
+        if len(df) == 0:
+            st.error("No sample data generated.")
+            return
+
+        # Run the full indicator pipeline
+        df = run_all_indicators(df)
+
+        # Run group-specific indicators for custom parameters
+        df = run_indicators_for_group(df, group)
+
+        # Run interpreters and triggers
+        df = run_all_interpreters(df)
+        df = detect_all_triggers(df)
+
+    # --- Section 1: Price Chart with Overlays ---
+    is_overlay = group.base_template in OVERLAY_COMPATIBLE_TEMPLATES
+
+    if is_overlay:
+        st.markdown("**Price Chart with Indicator Overlay**")
+        show_indicators = get_overlay_indicators_for_group(group)
+        indicator_colors = get_overlay_colors_for_group(group)
+
+        # Empty trades DataFrame — no trade markers on preview
+        empty_trades = pd.DataFrame()
+
+        render_price_chart(
+            df,
+            empty_trades,
+            {"direction": "LONG"},
+            show_indicators=show_indicators,
+            indicator_colors=indicator_colors,
+            chart_key=f"preview_chart_{group.id}"
+        )
+
+    # --- Section 2: Secondary Chart for Non-Overlay Indicators ---
+    if group.base_template == "macd":
+        st.markdown("**MACD Chart**")
+        _render_macd_preview_chart(df, group)
+    elif group.base_template == "rvol":
+        st.markdown("**Relative Volume Chart**")
+        _render_rvol_preview_chart(df, group)
+
+    # --- Section 3: Interpreter State Timeline ---
+    st.markdown("**Interpreter States**")
+    _render_interpreter_timeline(df, group, template)
+
+    # --- Section 4: Trigger Events ---
+    st.markdown("**Trigger Events**")
+    _render_trigger_events_table(df, group, template)
+
+
+def _render_macd_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
+    """Render a Plotly chart showing MACD line, signal, and histogram."""
+    if "macd_line" not in df.columns:
+        st.info("MACD columns not available in data.")
+        return
+
+    macd_color = group.plot_settings.colors.get("macd_color", "#2563eb")
+    signal_color = group.plot_settings.colors.get("signal_color", "#f97316")
+    hist_pos_color = group.plot_settings.colors.get("hist_pos_color", "#22c55e")
+    hist_neg_color = group.plot_settings.colors.get("hist_neg_color", "#ef4444")
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+
+    # Histogram bars with color based on value
+    hist_colors = [hist_pos_color if v >= 0 else hist_neg_color for v in plot_df["macd_hist"].fillna(0)]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=plot_df[time_col],
+        y=plot_df["macd_hist"],
+        marker_color=hist_colors,
+        name="Histogram",
+        opacity=0.6,
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df[time_col], y=plot_df["macd_line"],
+        mode="lines", name="MACD",
+        line=dict(color=macd_color, width=1.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df[time_col], y=plot_df["macd_signal"],
+        mode="lines", name="Signal",
+        line=dict(color=signal_color, width=1.5),
+    ))
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+    fig.update_layout(
+        height=300,
+        margin=dict(l=0, r=0, t=10, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        xaxis_title="",
+        yaxis_title="MACD",
+    )
+    st.plotly_chart(fig, width="stretch", key=f"macd_preview_{group.id}")
+
+
+def _render_rvol_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
+    """Render a Plotly chart showing relative volume bars with threshold lines."""
+    if "rvol" not in df.columns:
+        st.info("RVOL columns not available in data.")
+        return
+
+    bar_color = group.plot_settings.colors.get("bar_color", "#64748b")
+    high_color = group.plot_settings.colors.get("high_color", "#f59e0b")
+    extreme_color = group.plot_settings.colors.get("extreme_color", "#ef4444")
+
+    high_thresh = group.parameters.get("high_threshold", 1.5)
+    extreme_thresh = group.parameters.get("extreme_threshold", 3.0)
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+
+    # Color bars based on thresholds
+    colors = []
+    for v in plot_df["rvol"].fillna(0):
+        if v >= extreme_thresh:
+            colors.append(extreme_color)
+        elif v >= high_thresh:
+            colors.append(high_color)
+        else:
+            colors.append(bar_color)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=plot_df[time_col],
+        y=plot_df["rvol"],
+        marker_color=colors,
+        name="Relative Volume",
+    ))
+    fig.add_hline(y=high_thresh, line_dash="dash", line_color=high_color, opacity=0.5,
+                  annotation_text=f"High ({high_thresh}x)")
+    fig.add_hline(y=extreme_thresh, line_dash="dash", line_color=extreme_color, opacity=0.5,
+                  annotation_text=f"Extreme ({extreme_thresh}x)")
+    fig.add_hline(y=1.0, line_dash="dot", line_color="gray", opacity=0.3)
+    fig.update_layout(
+        height=250,
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="",
+        yaxis_title="RVOL (x)",
+    )
+    st.plotly_chart(fig, width="stretch", key=f"rvol_preview_{group.id}")
+
+
+def _render_interpreter_timeline(df: pd.DataFrame, group: ConfluenceGroup, template: dict):
+    """Render a table showing interpreter state changes over time."""
+    interpreter_keys = template.get("interpreters", [])
+
+    if not interpreter_keys:
+        st.caption("No interpreters defined for this template.")
+        return
+
+    for interp_key in interpreter_keys:
+        if interp_key not in df.columns:
+            st.caption(f"Interpreter '{interp_key}' not in data.")
+            continue
+
+        states = df[interp_key].dropna()
+        if len(states) == 0:
+            st.caption(f"No state data for '{interp_key}'.")
+            continue
+
+        # Detect state changes
+        changes = states[states != states.shift(1)]
+
+        if len(changes) == 0:
+            st.caption(f"No state changes detected for '{interp_key}'.")
+            continue
+
+        # Build summary table (last 25 state changes)
+        change_records = []
+        for idx, state in changes.tail(25).items():
+            change_records.append({
+                "Time": str(idx),
+                "State": state,
+            })
+
+        st.caption(f"**{interp_key}** — Last {len(change_records)} state changes (of {len(changes)} total):")
+        st.dataframe(
+            pd.DataFrame(change_records),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def _render_trigger_events_table(df: pd.DataFrame, group: ConfluenceGroup, template: dict):
+    """Render a table of trigger firings for this group."""
+    trigger_defs = template.get("triggers", [])
+    if not trigger_defs:
+        st.caption("No triggers defined for this template.")
+        return
+
+    events = []
+    for trig_def in trigger_defs:
+        # Triggers in the DataFrame use the base trigger names (not group-prefixed)
+        base = trig_def["base"]
+        # Try group-prefixed trigger column first, then base trigger columns
+        possible_cols = [
+            f"trig_{group.id}_{base}",
+            f"trig_{template.get('trigger_prefix', '')}_{base}",
+        ]
+
+        for col in possible_cols:
+            if col in df.columns:
+                fired = df[df[col] == True]
+                for idx in fired.index:
+                    events.append({
+                        "Time": str(idx),
+                        "Trigger": trig_def["name"],
+                        "Direction": trig_def["direction"],
+                        "Type": trig_def["type"],
+                        "Price": f"${df.loc[idx, 'close']:.2f}" if 'close' in df.columns else "N/A",
+                    })
+                break
+
+    if not events:
+        st.caption("No triggers fired in the sample data period.")
+        return
+
+    events_df = pd.DataFrame(events).sort_values("Time", ascending=False).head(30)
+    st.dataframe(events_df, use_container_width=True, hide_index=True)
+    st.caption(f"{len(events)} total trigger events in sample data")
+
+
 def render_group_details(group_id: str, all_groups: list):
     """Render the detailed view/edit panel for a confluence group."""
     group = get_group_by_id(group_id, all_groups)
@@ -4548,7 +4899,9 @@ def render_group_details(group_id: str, all_groups: list):
             st.rerun()
 
     # Tabs for different sections
-    tab1, tab2, tab3, tab4 = st.tabs(["Parameters", "Plot Settings", "Outputs & Triggers", "Danger Zone"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Parameters", "Plot Settings", "Outputs & Triggers", "Preview", "Code", "Danger Zone"
+    ])
 
     # TAB 1: Parameters
     with tab1:
@@ -4674,8 +5027,16 @@ def render_group_details(group_id: str, all_groups: list):
                 st.markdown(f"- **{trigger.name}**")
                 st.caption(f"  {direction_icon} {type_icon} | ID: `{trigger.id}`")
 
-    # TAB 4: Danger Zone
+    # TAB 4: Preview
     with tab4:
+        render_preview_tab(group)
+
+    # TAB 5: Code
+    with tab5:
+        render_code_tab(group)
+
+    # TAB 6: Danger Zone
+    with tab6:
         st.markdown("**Rename Version**")
         st.caption(f"Template: {group.template_name}")
         new_version = st.text_input("Version Name", value=group.version, key=f"rename_{group.id}")

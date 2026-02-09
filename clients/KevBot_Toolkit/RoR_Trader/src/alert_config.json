@@ -47,6 +47,27 @@
           "id": "wh_ff0033"
         }
       ]
+    },
+    "5": {
+      "alerts_enabled": false,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "New Webhook",
+          "url": "",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": true,
+            "exit_long": true,
+            "exit_short": true,
+            "compliance_breach": true
+          },
+          "payload_template": "",
+          "id": "wh_27eaaf"
+        }
+      ]
     }
   }
 }

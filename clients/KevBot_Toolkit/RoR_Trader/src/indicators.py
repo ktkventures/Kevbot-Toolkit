@@ -343,6 +343,60 @@ def get_available_overlay_indicators() -> List[str]:
     ]
 
 
+def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
+    """
+    Run indicators for a specific confluence group using its parameters.
+
+    Ensures that custom-parameterized groups (e.g., EMA stack with non-default
+    periods) have their indicator columns present in the DataFrame.
+
+    Args:
+        df: DataFrame with OHLCV data (may already have standard indicators)
+        group: ConfluenceGroup instance with parameters
+
+    Returns:
+        DataFrame with additional indicator columns for this group's parameters
+    """
+    result = df
+
+    if group.base_template == "ema_stack":
+        for period_key in ["short_period", "mid_period", "long_period"]:
+            period = group.parameters.get(period_key)
+            if period:
+                col_name = f"ema_{period}"
+                if col_name not in result.columns:
+                    result = result.copy() if result is df else result
+                    result[col_name] = calculate_ema(result, period)
+
+    elif group.base_template == "macd":
+        if "macd_line" not in result.columns:
+            fast = group.parameters.get("fast_period", 12)
+            slow = group.parameters.get("slow_period", 26)
+            signal = group.parameters.get("signal_period", 9)
+            result = result.copy() if result is df else result
+            macd_result = calculate_macd(result, fast, slow, signal)
+            for col, values in macd_result.items():
+                result[col] = values
+
+    elif group.base_template == "vwap":
+        if "vwap" not in result.columns:
+            std_dev = group.parameters.get("std_dev", 2.0)
+            result = result.copy() if result is df else result
+            vwap_result = calculate_vwap(result, std_dev)
+            for col, values in vwap_result.items():
+                result[col] = values
+
+    elif group.base_template == "rvol":
+        if "vol_sma" not in result.columns:
+            period = group.parameters.get("sma_period", 20)
+            result = result.copy() if result is df else result
+            vol_result = calculate_volume_sma(result, period)
+            for col, values in vol_result.items():
+                result[col] = values
+
+    return result
+
+
 # =============================================================================
 # TEST
 # =============================================================================

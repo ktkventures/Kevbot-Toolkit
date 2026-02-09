@@ -243,5 +243,42 @@
     "id": 7,
     "created_at": "2026-02-06T12:14:13.544551",
     "forward_test_start": "2026-02-06T12:14:13.544551"
+  },
+  {
+    "name": "TSLA LONG - EMA Stack (Default): Short > Mid Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "starting_balance": 10000.0,
+    "data_days": 90,
+    "data_seed": 42,
+    "confluence": [
+      "1M-RVOL-EXTREME",
+      "1M-VWAP-AT",
+      "1M-EMA_STACK-SML"
+    ],
+    "kpis": {
+      "total_trades": 24,
+      "win_rate": 25.0,
+      "profit_factor": 4.34491559602772,
+      "avg_r": 2.1912352864879363,
+      "total_r": 52.58964687571047,
+      "daily_r": 2.504268898843356,
+      "final_balance": 15258.964687571046,
+      "total_pnl": 5258.964687571047
+    },
+    "forward_testing": true,
+    "alerts": true,
+    "id": 8,
+    "created_at": "2026-02-06T16:41:59.859526",
+    "forward_test_start": "2026-02-06T16:41:59.859526"
   }
 ]
