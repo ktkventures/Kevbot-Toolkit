@@ -2261,8 +2261,26 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
                     chart_key=f"confluence_chart_{group.id}"
                 )
             elif group.base_template in ("macd_line", "macd_histogram"):
+                # Price chart for context, then MACD oscillator below
+                render_price_chart(
+                    df,
+                    pd.DataFrame(),
+                    strat,
+                    show_indicators=[],
+                    indicator_colors={},
+                    chart_key=f"confluence_chart_{group.id}"
+                )
                 _render_macd_preview_chart(df, group)
             elif group.base_template == "rvol":
+                # Price chart for context, then volume chart below
+                render_price_chart(
+                    df,
+                    pd.DataFrame(),
+                    strat,
+                    show_indicators=[],
+                    indicator_colors={},
+                    chart_key=f"confluence_chart_{group.id}"
+                )
                 _render_rvol_preview_chart(df, group)
 
             # Interpreter state timeline
@@ -2330,18 +2348,10 @@ def render_forward_test_view(strat: dict):
         )
 
     with tab_trades:
-        enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
-        ft_show_indicators = []
-        ft_indicator_colors = {}
-        for group in overlay_groups:
-            ft_show_indicators.extend(get_overlay_indicators_for_group(group))
-            ft_indicator_colors.update(get_overlay_colors_for_group(group))
-
         render_price_chart(
             df, all_trades, strat,
-            show_indicators=ft_show_indicators,
-            indicator_colors=ft_indicator_colors,
+            show_indicators=[],
+            indicator_colors={},
             chart_key='trade_history_chart'
         )
 
