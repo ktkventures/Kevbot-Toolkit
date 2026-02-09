@@ -2218,6 +2218,9 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
     """
     Render interpreter states and trigger events for each confluence group
     used by this strategy, organized as sub-tabs by group.
+
+    Each sub-tab shows a relevant chart followed by interpreter state
+    timeline and trigger event tables.
     """
     enabled_groups = get_enabled_groups()
 
@@ -2243,6 +2246,24 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
                 param_parts.append(f"{schema.get('label', key)}: **{value}**")
             if param_parts:
                 st.caption(" | ".join(param_parts))
+
+            # Chart relevant to this confluence group
+            if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
+                # Price chart with this group's indicator overlays
+                grp_indicators = get_overlay_indicators_for_group(group)
+                grp_colors = get_overlay_colors_for_group(group)
+                render_price_chart(
+                    df,
+                    pd.DataFrame(),  # no trade markers
+                    strat,
+                    show_indicators=grp_indicators,
+                    indicator_colors=grp_colors,
+                    chart_key=f"confluence_chart_{group.id}"
+                )
+            elif group.base_template in ("macd_line", "macd_histogram"):
+                _render_macd_preview_chart(df, group)
+            elif group.base_template == "rvol":
+                _render_rvol_preview_chart(df, group)
 
             # Interpreter state timeline
             st.markdown("**Interpreter States**")
@@ -2309,6 +2330,21 @@ def render_forward_test_view(strat: dict):
         )
 
     with tab_trades:
+        enabled_groups = get_enabled_groups()
+        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+        ft_show_indicators = []
+        ft_indicator_colors = {}
+        for group in overlay_groups:
+            ft_show_indicators.extend(get_overlay_indicators_for_group(group))
+            ft_indicator_colors.update(get_overlay_colors_for_group(group))
+
+        render_price_chart(
+            df, all_trades, strat,
+            show_indicators=ft_show_indicators,
+            indicator_colors=ft_indicator_colors,
+            chart_key='trade_history_chart'
+        )
+
         render_split_trade_history(backtest_trades, forward_trades)
 
     with tab_confluence_ft:
