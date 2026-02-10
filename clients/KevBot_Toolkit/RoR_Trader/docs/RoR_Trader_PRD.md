@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.5
-**Date:** February 9, 2026
+**Version:** 0.7
+**Date:** February 10, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 7 Complete — Phases 8-11 Roadmap Defined
+**Status:** Phase 8 In Progress — Execution Model Complete; Bug Fixes, KPI Audit, QA Sandbox, Drill-Down Enhancements, UX Polish, and Backtest Settings Remaining
 
 ---
 
@@ -557,6 +557,7 @@ My Strategies → Strategy Detail → Edit Strategy
 11. [x] Add Code/Preview tabs to Confluence Groups, fix EMA overlay bug, add strategy detail charts and confluence analysis
 12. [x] Split MACD into separate templates (macd_line, macd_histogram), upgrade VWAP to 7-zone system
 13. [x] Replace Plotly oscillator charts with synchronized lightweight-charts multi-pane rendering
+14. [x] Execution model expansion — 4 stop loss methods, 5 take profit methods, up to 3 exit triggers, execution type metadata, `[C]`/`[I]` labels, full backward compatibility
 
 ---
 
@@ -715,18 +716,47 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Chart presets via data trimming** — The `streamlit_lightweight_charts` component unconditionally calls `fitContent()` on render, overriding `barSpacing`. To control initial zoom, we trim rendered data to the last N candles so `fitContent()` fits only those. All upstream indicator/interpreter/backtest calculations use the full dataset.
 - **Relevant groups only in Confluence Analysis** — Strategies may use only 2-3 of many enabled confluence groups. Showing all groups creates noise; filtering to groups referenced by the strategy's triggers or confluence conditions keeps the UI focused. Scales well as the group library grows.
 
+### Design Decisions (Phase 8 — Execution Model)
+- **Five exit mechanisms, three categories** — Built-in exits (stop loss required, take profit optional) are price-level-based and checked every bar. Signal-based exits (up to 3 exit triggers from confluence groups) fire at bar close when any one triggers. Priority: stop > target > exit triggers. First to fire wins.
+- **Nested config dicts over flat fields** — `stop_config: {"method": "atr", "atr_mult": 1.5}` is extensible (add new methods without schema changes) vs. flat fields like `stop_atr_mult`, `stop_dollar_amount`, etc. Backward compat: if `stop_config` is absent, engine builds it from legacy `stop_atr_mult`.
+- **Up to 3 exit triggers** — Balances flexibility with UI simplicity. Any-of-3 semantics (first to fire wins) covers common multi-signal exit patterns without complex logic operators.
+- **Execution type as metadata only (for now)** — All current triggers are `bar_close`. Adding `execution` field to TriggerDefinition and `[C]`/`[I]` labels builds the infrastructure without implementing intra-bar pricing, which requires UT Bot or other price-level triggers to be meaningful.
+- **Same-bar conflict = worst outcome** — When stop and target are both breachable within a bar (high > target, low < stop), assume stop hit first. Keeps backtests pessimistic, giving strategies a built-in margin of safety.
+
 ### Phase 8: QA, Polish & UX — "Get Live-Tradeable"
 *Comprehensive review pass and UX improvements — the gate to live trading with real money.*
+
+**Bug Fixes (from Feb 10 testing):**
+- [ ] Edit strategy navigation broken — `load_strategy_into_builder()` sets `step=2` but never sets `nav_target = "Strategy Builder"`, so "Edit Anyway" reruns the current page without navigating to the builder (appears to "fade out and do nothing")
+- [ ] Fixed dollar stop exit reason incorrect — fixed dollar stop losses appear to trigger at -1R correctly but `exit_reason` shows `"signal_exit"` instead of `"stop_loss"`; investigate priority logic in `generate_trades()` for fixed_dollar interaction with signal-based exit triggers
+- [ ] Step 1 state lost on "Back" from Step 2 — clicking "← Back to Setup" resets all Step 1 inputs to defaults because Streamlit widgets re-render with initial values rather than reading from `st.session_state.strategy_config`; fix by either (a) pre-populating widget defaults from session state or (b) making Step 1 parameters editable inline on Step 2 via sidebar/expander
+
+**KPI Accuracy Audit:**
+- [ ] Fix Daily R calculation — currently `total_r / unique_exit_dates` (only counts days with trade exits); should be `total_r / total_trading_days_in_period` (all market days from first bar to last bar in backtest range, regardless of trade activity); this makes Daily R a true capital efficiency metric that penalizes infrequent trading
+- [ ] Add equity curve smoothness metric — **R-squared (R²) of equity curve** as primary smoothness KPI: measures how closely cumulative R follows a straight line (1.0 = perfectly linear growth, lower = choppier); add to KPI panel on Strategy Builder Step 2, strategy detail, and drill-down results; complements profit factor by detecting strategies that look profitable only due to one big outlier trade
+- [ ] General KPI accuracy audit — ensure all metrics are correct and displayed in the right places across all views
+- [ ] Validate KPI consistency — same strategy should show identical metrics on cards, detail pages, and drill-down
+
+**QA Sandbox Page:**
+- [ ] New "QA Sandbox" navigation page — developer/QA testing ground for validating app subsystems before going live (not visible to end users in production)
+- [ ] Stop/Target Validation tab — configure any stop method + target method, run on sample data, render price chart with stop/target price levels plotted per trade (horizontal lines from entry to exit), entry/exit markers, and trade outcome annotations; visually confirms stop/target calculations match expectations
+- [ ] Backtesting Verification tab — controlled input scenarios with known expected outputs (e.g., synthetic price series where exact trade outcomes are predictable); displays actual vs. expected results
+- [ ] Signal Detection tab — verify triggers fire on correct bars; display trigger column values alongside interpreter states for a selected confluence group and date range
+- [ ] Extensible design — easy to add new validation tabs as new subsystems are built (e.g., alert delivery, forward test pipeline)
 
 **QA & Verification:**
 - [ ] Indicator verification — confirm all indicators calculate correctly against known values
 - [ ] Interpreter verification — validate all interpreter states produce expected outputs
-- [ ] KPI accuracy audit — ensure metrics are correct and displayed in the right places
 - [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
 - [ ] Forward testing validation — confirm live data pipeline produces accurate results
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
-- [ ] Bug fixes — address all known issues surfaced during development
+
+**Confluence Drill-Down Enhancements:**
+- [ ] Card-style result layout — replace current single-row display with card format: confluence name/combination at top, multiple KPIs below (Trades, Win Rate, Profit Factor, Avg R, Total R, Daily R, R² smoothness); applies to both Drill-Down and Auto-Search modes
+- [ ] Sort by any KPI — expand sort selectbox to include all displayed KPIs (not just PF, WR, Daily R, Trades); default remains Profit Factor
+- [ ] Advanced filtering — min/max inputs for key KPIs (e.g., "Min Win Rate: 30%, Max Drawdown: -5R, Min Trades: 10") to narrow results before display; replaces current fixed `min_trades=3` with user-configurable thresholds
+- [ ] Auto-Search parity — Auto-Search results should display the same KPI card format as Drill-Down, not just PF and depth
 
 **Backtest Settings Overhaul:**
 - [ ] Replace "Data Settings" sidebar section with "Backtest Settings" — expanded controls for backtest data range
@@ -743,35 +773,50 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
 - [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
 
-**Execution Model & Stop/Target Expansion:**
-- [ ] Expand stop loss methods (match KevBot Toolkit v3.0) — add to Strategy Builder Step 1 as a selectbox:
-  - **ATR** (current) — `entry - ATR × multiplier`
-  - **Fixed Dollar** — `entry - $X`
-  - **Percentage** — `entry × (1 - X%)`
-  - **Candle Wicks / Swing Low** — `low[lookback] - padding` (recent swing low with configurable lookback and padding)
-- [ ] Expand take profit / exit target methods:
-  - **Risk:Reward** (current) — `entry + risk × R:R ratio` (fixed_r_2, fixed_r_3)
-  - **ATR** — `entry + ATR × multiplier`
-  - **Fixed Dollar** — `entry + $X`
-  - **Percentage** — `entry × (1 + X%)`
-  - **Candle Wicks / Swing High** — `high[lookback] + padding`
-- [ ] Intra-bar entry pricing — instead of always entering at bar close, use trigger-specific pricing logic:
-  - **Price-level triggers** `[I]` — fill at the trigger price (e.g., UT Bot trail cross fills at the trail price using bar high/low). Candidates: UT Bot trail, VWAP band crosses, any trigger defined by a price level breach
-  - **Indicator-state triggers** `[C]` — fill at bar close (e.g., EMA crossover, MACD cross, RVOL threshold). These are computed from closed bar values and have no meaningful intra-bar price
-- [ ] Execution type as trigger property — add `"execution": "bar_close"` or `"execution": "intra_bar"` to trigger definitions in TEMPLATES config; `generate_trades()` uses this to select pricing logic
-- [ ] Execution type labels — display `[C]` (bar close) or `[I]` (intra-bar) suffix on trigger names throughout the UI (Strategy Builder dropdowns, strategy detail, trade history) so users always know how each trigger fills
-- [ ] *(Optional)* Strategy-level execution mode — setting in Strategy Builder Step 1:
-  - **Conservative `[C]`** (default) — all entries/exits at bar close in backtests; live trading can still use intra-bar. Backtests under-promise so strategies that pass have a built-in margin of safety.
-  - **Intra-bar `[I]`** — entries/exits at estimated trigger price using bar high/low in backtests. More realistic but relies on OHLCV approximation. Live trading uses precise real-time fills.
-- [ ] Same-bar conflict resolution — when both stop and target are breached within the same bar, always assume the **worse outcome** (stop hit first). Keeps backtests pessimistic regardless of execution mode.
-- [ ] Note: stop losses and take profits already use intra-bar logic (fills at stop/target price using bar high/low, not candle close). This work extends that precision to entry triggers and adds the execution type transparency layer.
+**Execution Model & Stop/Target Expansion — COMPLETED (Feb 10, 2026):**
+- [x] Expand stop loss methods — Strategy Builder Step 1 "Risk Management" section with selectbox:
+  - **ATR** (default) — `entry ± ATR × multiplier`
+  - **Fixed Dollar** — `entry ± $X`
+  - **Percentage** — `entry ± (entry × X%)`
+  - **Swing Low/High** — `min(low[lookback]) - padding` / `max(high[lookback]) + padding`
+- [x] Expand take profit / exit target methods (optional, default None):
+  - **Risk:Reward** — `entry ± (risk × R:R ratio)`
+  - **ATR** — `entry ± ATR × multiplier`
+  - **Fixed Dollar** — `entry ± $X`
+  - **Percentage** — `entry ± (entry × X%)`
+  - **Swing High/Low** — `max(high[lookback]) + padding` / `min(low[lookback]) - padding`
+- [x] Multiple exit triggers — up to 3 signal-based exit triggers from confluence groups per strategy; any-of-3 fires → exit at bar close; add/remove UI with duplicate and entry-conflict validation
+- [x] Nested config dicts — `stop_config` and `target_config` dicts in strategy schema (e.g., `{"method": "atr", "atr_mult": 1.5}`); backward-compatible with legacy `stop_atr_mult` field
+- [x] Execution type metadata — `"execution": "bar_close"` added to TriggerDefinition dataclass and all TEMPLATES trigger dicts; infrastructure ready for future `"intra_bar"` triggers
+- [x] Execution type labels — `[C]` (bar close) / `[I]` (intra-bar) suffix on trigger names in Strategy Builder entry/exit dropdowns
+- [x] Same-bar conflict resolution — stop checked before target before signal triggers; worst-outcome assumption documented in engine
+- [x] Display helpers — `format_stop_display()`, `format_target_display()`, `format_exit_triggers_display()` used across strategy detail pages (backtest tab, forward test tab, saved KPIs), Step 2 header, and Step 3 summary
+- [x] Alert engine updated — `alerts.py` uses `calculate_stop_price()` for all stop methods; supports multi-exit trigger detection
+- [x] Full backward compatibility — no migration needed; existing strategies load and backtest correctly via fallback logic
+- [ ] Intra-bar entry pricing — deferred until UT Bot or other `[I]` triggers are implemented:
+  - **Price-level triggers** `[I]` — fill at the trigger price (e.g., UT Bot trail cross fills at the trail price using bar high/low)
+  - **Indicator-state triggers** `[C]` — fill at bar close (e.g., EMA crossover, MACD cross, RVOL threshold)
+- [ ] *(Optional)* Strategy-level execution mode — deferred:
+  - **Conservative `[C]`** (default) — all entries/exits at bar close in backtests
+  - **Intra-bar `[I]`** — entries/exits at estimated trigger price using bar high/low in backtests
 
 **UX Improvements:**
+- [ ] Oscillator panes on Strategy Builder Step 2 chart — detect relevant oscillator groups (MACD, RVOL) from enabled groups and pass `secondary_panes` to `render_price_chart()`; infrastructure already exists via the `secondary_panes` parameter, just needs to be wired up (same pattern as Confluence Analysis tab)
+- [ ] Oscillator panes on Strategy Detail main chart — Backtest Results tab and Forward Test tab price charts should auto-include oscillator panes for relevant groups used by the strategy (entry/exit triggers or confluence conditions); currently only shown in the Confluence Analysis sub-tabs
+- [ ] Save navigates to strategy detail — after saving/updating a strategy, navigate to the saved strategy's detail page (`viewing_strategy_id` + `nav_target = "My Strategies"`) instead of resetting to Step 1; gives immediate feedback that the strategy was saved correctly
+- [ ] Strategy name and trigger display improvements — shorter default name format (e.g., `"{symbol} {direction} - {entry_trigger_short_name}"`); display entry trigger(s), exit trigger(s), stop method, and target method as small reference badges/text on strategy cards and strategy detail header; currently only confluence conditions are shown
+- [ ] Step 1 state preservation — ensure navigating back from Step 2 to Step 1 preserves all current settings (symbol, direction, triggers, stop/target config) by pre-populating widget defaults from `st.session_state.strategy_config`; alternatively, make Step 1 parameters editable inline on Step 2 (sidebar or expander) to eliminate the need to go back
 - [ ] "Create New Strategy" button on My Strategies page (consistent with Portfolios page pattern)
 - [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
-- [ ] Multiple exit triggers — expand from single exit trigger to array of exit triggers per strategy; first-to-fire wins; backward-compatible schema migration (string → array with auto-wrap); new exit triggers can be layered from confluence groups (e.g., end-of-day exit, time-based exit)
 - [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
+
+### Design Decisions (Phase 8 — QA & UX)
+- **Daily R as capital efficiency metric** — `total_r / all_trading_days` (not just days with exits) answers "where should I park my capital for the best risk-adjusted return?" A strategy that trades once per week but earns 5R should show lower Daily R than one earning 3R every day, because capital is idle in the first scenario.
+- **R-squared for equity curve smoothness** — Linear regression R² of the cumulative equity curve. R² ≈ 1.0 means steady, predictable growth. R² < 0.7 means choppy or dependent on outlier trades. Chosen over Ulcer Index/Serenity Index for Phase 8 because it's intuitive (0–1 scale), fast to compute, and directly answers "is this strategy consistently profitable or just lucky?" The full suite (Ulcer, Serenity, etc.) deferred to Phase 9.
+- **QA Sandbox as dev-only page** — Not exposed to end users; exists purely for developer QA. Validates that stop/target calculations, trade generation, and signal detection behave as intended. Charts plot stop/target price levels as horizontal lines per trade for visual verification. This replaces ad-hoc testing with a systematic, repeatable QA workflow.
+- **Card-style drill-down over row tables** — Showing multiple KPIs per confluence combination requires more vertical space than a 5-column table row allows. Cards give room for 6+ KPIs while keeping the combination name prominent. The same card format is reused for both Drill-Down (single-factor) and Auto-Search (multi-factor combinations).
+- **Step 1 state preservation approach** — Streamlit widget defaults are set from `st.session_state.strategy_config` when navigating back from Step 2. This preserves the user's selections without requiring a full UI restructure. Future consideration: moving all Step 1 parameters into an editable sidebar on Step 2 would eliminate the back-navigation need entirely.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
@@ -780,7 +825,7 @@ My Strategies → Strategy Detail → Edit Strategy
 *Reference images: `/docs/reference_images/DaviddTech *.png`*
 
 - [ ] Edge Check overlay on equity curves — toggleable 21-period MA + Bollinger Bands on equity curve chart (visual indicator of strategy health; equity below lower BB = statistically unusual underperformance)
-- [ ] Expanded KPI panel — add: Sharpe Ratio, Sortino Ratio, Calmar Ratio, Kelly Criterion, Daily Value-at-Risk, Expected Shortfall (CVaR), Max Consecutive Wins/Losses, Gain/Pain Ratio, Payoff Ratio, Common Sense Ratio, Tail Ratio, Outlier Win/Loss Ratio, Recovery Factor, Ulcer Index, Serenity Index, Skewness, Kurtosis, Expected Daily/Monthly/Yearly returns
+- [ ] Expanded KPI panel — add: Sharpe Ratio, Sortino Ratio, Calmar Ratio, Kelly Criterion, Daily Value-at-Risk, Expected Shortfall (CVaR), Max Consecutive Wins/Losses, Gain/Pain Ratio, Payoff Ratio, Common Sense Ratio, Tail Ratio, Outlier Win/Loss Ratio, Recovery Factor, Ulcer Index, Serenity Index (builds on R² from Phase 8), Skewness, Kurtosis, Expected Daily/Monthly/Yearly returns
 - [ ] Rolling performance metrics chart — interactive chart with toggle buttons for rolling Win Rate, Profit Factor, and Sharpe over a configurable trade window
 - [ ] Return distribution analysis — histogram, box plot, and violin plot views with skewness/kurtosis/tail risk callouts
 - [ ] Cumulative vs. Simple P&L views — compounded equity curve (reinvested gains) alongside simple/sum-based P&L

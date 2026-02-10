@@ -366,10 +366,13 @@ def prepare_forward_test_data(strat: dict):
         df,
         direction=strat['direction'],
         entry_trigger=strat['entry_trigger'],
-        exit_trigger=strat['exit_trigger'],
+        exit_trigger=strat.get('exit_trigger'),
+        exit_triggers=strat.get('exit_triggers'),
         confluence_required=confluence_set,
         risk_per_trade=strat.get('risk_per_trade', 100.0),
         stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+        stop_config=strat.get('stop_config'),
+        target_config=strat.get('target_config'),
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -398,10 +401,13 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             df,
             direction=strat['direction'],
             entry_trigger=strat['entry_trigger'],
-            exit_trigger=strat['exit_trigger'],
+            exit_trigger=strat.get('exit_trigger'),
+            exit_triggers=strat.get('exit_triggers'),
             confluence_required=confluence_set,
             risk_per_trade=strat.get('risk_per_trade', 100.0),
             stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+            stop_config=strat.get('stop_config'),
+            target_config=strat.get('target_config'),
         )
 
 
@@ -494,6 +500,59 @@ def safe_subtract(a: float, b: float) -> float:
     if a == float('-inf') and b == float('-inf'):
         return 0.0
     return a - b
+
+# =============================================================================
+# STRATEGY DISPLAY HELPERS
+# =============================================================================
+
+def format_stop_display(strat: dict) -> str:
+    """Format stop loss config for human-readable display."""
+    sc = strat.get('stop_config')
+    if sc is None:
+        return f"{strat.get('stop_atr_mult', 1.5):.1f}x ATR"
+    method = sc.get('method', 'atr')
+    if method == 'atr':
+        return f"{sc.get('atr_mult', 1.5):.1f}x ATR"
+    elif method == 'fixed_dollar':
+        return f"${sc.get('dollar_amount', 1.0):.2f} Fixed"
+    elif method == 'percentage':
+        return f"{sc.get('percentage', 0.5):.2f}%"
+    elif method == 'swing':
+        return f"Swing ({sc.get('lookback', 5)} bars, ${sc.get('padding', 0.05):.2f} pad)"
+    return f"{strat.get('stop_atr_mult', 1.5):.1f}x ATR"
+
+
+def format_target_display(strat: dict) -> str:
+    """Format target config for human-readable display."""
+    tc = strat.get('target_config')
+    if tc is None:
+        return "None (signal exit only)"
+    method = tc.get('method')
+    if method is None:
+        return "None (signal exit only)"
+    if method == 'risk_reward':
+        return f"{tc.get('rr_ratio', 2.0):.1f}R"
+    elif method == 'atr':
+        return f"{tc.get('atr_mult', 2.0):.1f}x ATR"
+    elif method == 'fixed_dollar':
+        return f"${tc.get('dollar_amount', 2.0):.2f} Fixed"
+    elif method == 'percentage':
+        return f"{tc.get('percentage', 1.0):.2f}%"
+    elif method == 'swing':
+        return f"Swing ({tc.get('lookback', 5)} bars, ${tc.get('padding', 0.05):.2f} pad)"
+    return "None"
+
+
+def format_exit_triggers_display(strat: dict) -> str:
+    """Format exit triggers for human-readable display."""
+    names = strat.get('exit_trigger_names')
+    if names:
+        return ", ".join(names)
+    name = strat.get('exit_trigger_name')
+    if name:
+        return name
+    return strat.get('exit_trigger', 'Unknown')
+
 
 def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, risk_per_trade: float = 100) -> dict:
     """Calculate strategy KPIs."""
@@ -1309,13 +1368,23 @@ def render_strategy_builder(data_days: int, data_seed: int):
             enabled_groups = get_enabled_groups()
             entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
 
+            # Also get TriggerDefinition objects for execution type labels
+            all_trigger_defs = get_all_triggers(enabled_groups)
+
             if len(entry_triggers) == 0:
                 st.warning("No entry triggers available. Enable confluence groups in the Confluence Groups page.")
                 entry_trigger = None
                 entry_trigger_name = None
             else:
                 entry_trigger_options = list(entry_triggers.keys())
-                entry_trigger_labels = list(entry_triggers.values())
+                # Add [C]/[I] execution type labels to display names
+                entry_trigger_labels = []
+                for tid in entry_trigger_options:
+                    name = entry_triggers[tid]
+                    tdef = all_trigger_defs.get(tid)
+                    exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
+                    exec_label = f"[{exec_tag}]"
+                    entry_trigger_labels.append(f"{name} {exec_label}")
                 # Pre-select saved entry trigger when editing
                 saved_entry = edit_config.get('entry_trigger_confluence_id', '')
                 entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
@@ -1324,7 +1393,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     range(len(entry_trigger_options)),
                     index=entry_default_idx,
                     format_func=lambda i: entry_trigger_labels[i],
-                    help="Triggers from your enabled Confluence Groups"
+                    help="Triggers from your enabled Confluence Groups. [C] = bar close, [I] = intra-bar"
                 )
                 entry_trigger = entry_trigger_options[entry_trigger_idx]
                 entry_trigger_name = entry_triggers[entry_trigger]
@@ -1334,42 +1403,204 @@ def render_strategy_builder(data_days: int, data_seed: int):
             timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=tf_idx)
             st.write("")  # Spacer
 
-            # Exit triggers use the same confluence group triggers
-            # Get ALL triggers (not filtered by direction) - user decides how to use them
-            all_triggers = get_all_triggers(enabled_groups)
-            exit_triggers = {tid: tdef.name for tid, tdef in all_triggers.items()}
-
-            if len(exit_triggers) == 0:
-                st.warning("No exit triggers available. Enable confluence groups in the Confluence Groups page.")
-                exit_trigger = None
-                exit_trigger_name = None
-            else:
-                exit_trigger_options = list(exit_triggers.keys())
-                exit_trigger_labels = list(exit_triggers.values())
-                # Pre-select saved exit trigger when editing
-                saved_exit = edit_config.get('exit_trigger_confluence_id', '')
-                exit_default_idx = exit_trigger_options.index(saved_exit) if saved_exit in exit_trigger_options else 0
-                exit_trigger_idx = st.selectbox(
-                    "Exit Trigger",
-                    range(len(exit_trigger_options)),
-                    index=exit_default_idx,
-                    format_func=lambda i: exit_trigger_labels[i],
-                    help="Triggers from your enabled Confluence Groups"
-                )
-                exit_trigger = exit_trigger_options[exit_trigger_idx]
-                exit_trigger_name = exit_triggers[exit_trigger]
-
-        # Stop Loss Settings
+        # --- Exit Triggers (up to 3) ---
         st.divider()
-        st.subheader("Stop Loss")
-        stop_atr_mult = st.number_input(
-            "Stop Loss (ATR x)",
-            min_value=0.5,
-            max_value=5.0,
-            value=float(edit_config.get('stop_atr_mult', 1.5)),
-            step=0.1,
-            help="Stop loss distance as a multiple of ATR. Acts as an early exit if price moves against you."
-        )
+        st.subheader("Exit Triggers")
+        st.caption("Select up to 3 signal-based exit triggers from your Confluence Groups. If any fires, the position exits.")
+
+        # Get ALL triggers (not filtered by direction) - user decides how to use them
+        all_triggers = get_all_triggers(enabled_groups)
+        all_trigger_map = {tid: tdef for tid, tdef in all_triggers.items()}
+        exit_trigger_display = {tid: f"{tdef.name} [{'C' if tdef.execution == 'bar_close' else 'I'}]" for tid, tdef in all_triggers.items()}
+
+        # Load saved exit triggers (new array format or legacy single)
+        saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+        if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+            saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+
+        # Initialize exit trigger count in session state
+        if 'exit_trigger_count' not in st.session_state:
+            st.session_state.exit_trigger_count = max(1, len(saved_exit_cids)) if saved_exit_cids else 1
+
+        exit_trigger_selections = []  # list of (confluence_id, name) tuples
+        has_exit_triggers = len(exit_trigger_display) > 0
+
+        if not has_exit_triggers:
+            st.warning("No exit triggers available. Enable confluence groups in the Confluence Groups page.")
+        else:
+            exit_options = list(exit_trigger_display.keys())
+            exit_labels = list(exit_trigger_display.values())
+
+            for et_idx in range(st.session_state.exit_trigger_count):
+                label = f"Exit Trigger {et_idx + 1}" if st.session_state.exit_trigger_count > 1 else "Exit Trigger"
+                saved_val = saved_exit_cids[et_idx] if et_idx < len(saved_exit_cids) else ''
+                default_idx = exit_options.index(saved_val) if saved_val in exit_options else 0
+                selected_idx = st.selectbox(
+                    label,
+                    range(len(exit_options)),
+                    index=default_idx,
+                    format_func=lambda i, _labels=exit_labels: _labels[i],
+                    help="Triggers from your enabled Confluence Groups",
+                    key=f"exit_trigger_{et_idx}",
+                )
+                selected_cid = exit_options[selected_idx]
+                selected_name = all_trigger_map[selected_cid].name if selected_cid in all_trigger_map else ""
+                exit_trigger_selections.append((selected_cid, selected_name))
+
+            # Add/remove exit trigger buttons
+            btn_cols = st.columns(4)
+            if st.session_state.exit_trigger_count < 3:
+                if btn_cols[0].button("+ Add Exit Trigger", key="add_exit_trig"):
+                    st.session_state.exit_trigger_count += 1
+                    st.rerun()
+            if st.session_state.exit_trigger_count > 1:
+                if btn_cols[1].button("- Remove Last", key="remove_exit_trig"):
+                    st.session_state.exit_trigger_count -= 1
+                    st.rerun()
+
+        # --- Risk Management ---
+        st.divider()
+        st.subheader("Risk Management")
+
+        rm_col1, rm_col2 = st.columns(2)
+
+        with rm_col1:
+            st.markdown("**Stop Loss**")
+            stop_methods = ["ATR", "Fixed Dollar", "Percentage", "Swing Low/High"]
+            stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
+
+            saved_stop = edit_config.get('stop_config') or {}
+            saved_stop_method = saved_stop.get('method', 'atr')
+            default_stop_idx = stop_method_keys.index(saved_stop_method) if saved_stop_method in stop_method_keys else 0
+
+            stop_method_idx = st.selectbox(
+                "Method",
+                range(len(stop_methods)),
+                index=default_stop_idx,
+                format_func=lambda i: stop_methods[i],
+                key="stop_method",
+            )
+            stop_method = stop_method_keys[stop_method_idx]
+
+            stop_config_dict = {"method": stop_method}
+
+            if stop_method == "atr":
+                stop_config_dict["atr_mult"] = st.number_input(
+                    "ATR Multiplier",
+                    min_value=0.5, max_value=5.0,
+                    value=float(saved_stop.get('atr_mult', edit_config.get('stop_atr_mult', 1.5))),
+                    step=0.1,
+                    help="Stop loss distance as a multiple of ATR",
+                )
+            elif stop_method == "fixed_dollar":
+                stop_config_dict["dollar_amount"] = st.number_input(
+                    "Dollar Amount ($)",
+                    min_value=0.01, max_value=100.0,
+                    value=float(saved_stop.get('dollar_amount', 1.0)),
+                    step=0.1,
+                    help="Fixed dollar distance from entry price",
+                )
+            elif stop_method == "percentage":
+                stop_config_dict["percentage"] = st.number_input(
+                    "Percentage (%)",
+                    min_value=0.01, max_value=10.0,
+                    value=float(saved_stop.get('percentage', 0.5)),
+                    step=0.05,
+                    help="Stop loss as percentage of entry price",
+                )
+            elif stop_method == "swing":
+                stop_config_dict["lookback"] = st.number_input(
+                    "Lookback Bars",
+                    min_value=2, max_value=50,
+                    value=int(saved_stop.get('lookback', 5)),
+                    step=1,
+                    help="Number of bars to look back for swing low/high",
+                )
+                stop_config_dict["padding"] = st.number_input(
+                    "Padding ($)",
+                    min_value=0.0, max_value=10.0,
+                    value=float(saved_stop.get('padding', 0.05)),
+                    step=0.01,
+                    help="Extra distance beyond the swing level",
+                )
+
+            # Keep backward-compat flat field
+            stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
+
+        with rm_col2:
+            st.markdown("**Take Profit Target** *(optional)*")
+            target_methods = ["None", "Risk:Reward", "ATR", "Fixed Dollar", "Percentage", "Swing High/Low"]
+            target_method_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
+
+            saved_target = edit_config.get('target_config') or {}
+            saved_t_method = saved_target.get('method')
+            default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
+
+            target_method_idx = st.selectbox(
+                "Method",
+                range(len(target_methods)),
+                index=default_target_idx,
+                format_func=lambda i: target_methods[i],
+                key="target_method",
+            )
+            target_method = target_method_keys[target_method_idx]
+
+            if target_method is None:
+                target_config_dict = None
+            else:
+                target_config_dict = {"method": target_method}
+                if target_method == "risk_reward":
+                    target_config_dict["rr_ratio"] = st.number_input(
+                        "R:R Ratio",
+                        min_value=0.5, max_value=10.0,
+                        value=float(saved_target.get('rr_ratio', 2.0)),
+                        step=0.5,
+                        help="Target distance as multiple of risk (stop distance)",
+                    )
+                elif target_method == "atr":
+                    target_config_dict["atr_mult"] = st.number_input(
+                        "ATR Multiplier",
+                        min_value=0.5, max_value=10.0,
+                        value=float(saved_target.get('atr_mult', 2.0)),
+                        step=0.1,
+                        key="target_atr_mult",
+                        help="Target distance as multiple of ATR",
+                    )
+                elif target_method == "fixed_dollar":
+                    target_config_dict["dollar_amount"] = st.number_input(
+                        "Dollar Amount ($)",
+                        min_value=0.01, max_value=100.0,
+                        value=float(saved_target.get('dollar_amount', 2.0)),
+                        step=0.1,
+                        key="target_dollar",
+                        help="Fixed dollar distance from entry price",
+                    )
+                elif target_method == "percentage":
+                    target_config_dict["percentage"] = st.number_input(
+                        "Percentage (%)",
+                        min_value=0.01, max_value=20.0,
+                        value=float(saved_target.get('percentage', 1.0)),
+                        step=0.05,
+                        key="target_pct",
+                        help="Target as percentage of entry price",
+                    )
+                elif target_method == "swing":
+                    target_config_dict["lookback"] = st.number_input(
+                        "Lookback Bars",
+                        min_value=2, max_value=50,
+                        value=int(saved_target.get('lookback', 5)),
+                        step=1,
+                        key="target_lookback",
+                        help="Number of bars to look back for swing high/low",
+                    )
+                    target_config_dict["padding"] = st.number_input(
+                        "Padding ($)",
+                        min_value=0.0, max_value=10.0,
+                        value=float(saved_target.get('padding', 0.05)),
+                        step=0.01,
+                        key="target_padding",
+                        help="Extra distance beyond the swing level",
+                    )
 
         # Dollar sizing deferred to portfolio level — use fixed defaults for R calculations
         risk_per_trade = 100.0
@@ -1377,15 +1608,31 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
         st.divider()
 
-        same_trigger = entry_trigger is not None and entry_trigger == exit_trigger
-        if same_trigger:
-            st.warning("Entry and exit triggers cannot be the same.")
-        can_proceed = entry_trigger is not None and exit_trigger is not None and not same_trigger
+        # Validation
+        exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
+        has_duplicate_exits = len(exit_cids) != len(set(exit_cids))
+        entry_in_exits = entry_trigger is not None and entry_trigger in exit_cids
+        if has_duplicate_exits:
+            st.warning("Exit triggers must be unique — remove duplicates.")
+        if entry_in_exits:
+            st.warning("An exit trigger cannot be the same as the entry trigger.")
+
+        can_proceed = (
+            entry_trigger is not None
+            and has_exit_triggers
+            and len(exit_trigger_selections) > 0
+            and not has_duplicate_exits
+            and not entry_in_exits
+        )
         if st.button("Next: Add Confluence →", type="primary", use_container_width=True, disabled=not can_proceed):
             # Save config and move to step 2
             # Map the confluence trigger IDs to the base trigger IDs for trade generation
             base_entry_trigger_id = get_base_trigger_id(entry_trigger)
-            base_exit_trigger_id = get_base_trigger_id(exit_trigger)
+
+            # Build exit trigger arrays
+            exit_base_ids = [get_base_trigger_id(cid) for cid, _ in exit_trigger_selections]
+            exit_confluence_ids = [cid for cid, _ in exit_trigger_selections]
+            exit_names = [name for _, name in exit_trigger_selections]
 
             st.session_state.strategy_config = {
                 'symbol': symbol,
@@ -1393,18 +1640,26 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 'timeframe': timeframe,
                 'entry_trigger': base_entry_trigger_id,  # Base trigger ID for trade generation
                 'entry_trigger_confluence_id': entry_trigger,  # Full confluence ID for display
-                'exit_trigger': base_exit_trigger_id,  # Base trigger ID for trade generation
-                'exit_trigger_confluence_id': exit_trigger,  # Full confluence ID for display
+                # New multi-exit format
+                'exit_triggers': exit_base_ids,
+                'exit_trigger_confluence_ids': exit_confluence_ids,
+                'exit_trigger_names': exit_names,
+                # Legacy single-exit fields (backward compat)
+                'exit_trigger': exit_base_ids[0] if exit_base_ids else None,
+                'exit_trigger_confluence_id': exit_confluence_ids[0] if exit_confluence_ids else None,
                 'entry_trigger_name': entry_trigger_name,
-                'exit_trigger_name': exit_trigger_name,
+                'exit_trigger_name': exit_names[0] if exit_names else None,
                 'risk_per_trade': risk_per_trade,
                 'stop_atr_mult': stop_atr_mult,
+                'stop_config': stop_config_dict,
+                'target_config': target_config_dict,
                 'starting_balance': starting_balance,
                 'data_days': data_days,
                 'data_seed': data_seed,
             }
             st.session_state.step = 2
             st.session_state.selected_confluences = set()
+            st.session_state.pop('exit_trigger_count', None)  # Clean up
             st.rerun()
 
     # =========================================================================
@@ -1418,10 +1673,13 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
         # Header with strategy summary
         entry_name = config.get('entry_trigger_name', config['entry_trigger'])
-        exit_name = config.get('exit_trigger_name', config['exit_trigger'])
+        exit_names = config.get('exit_trigger_names', [])
+        if not exit_names:
+            exit_names = [config.get('exit_trigger_name', config.get('exit_trigger', ''))]
+        exit_str = " / ".join(exit_names)
         st.markdown(
             f"### {config['symbol']} | {config['direction']} | "
-            f"{entry_name} → {exit_name}"
+            f"{entry_name} → {exit_str}"
         )
 
         # Load data with indicators, interpreters, and triggers
@@ -1437,10 +1695,13 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 df,
                 direction=config['direction'],
                 entry_trigger=config['entry_trigger'],
-                exit_trigger=config['exit_trigger'],
+                exit_trigger=config.get('exit_trigger'),
+                exit_triggers=config.get('exit_triggers'),
                 confluence_required=None,  # Will filter after generation
                 risk_per_trade=config.get('risk_per_trade', 100.0),
                 stop_atr_mult=config.get('stop_atr_mult', 1.5),
+                stop_config=config.get('stop_config'),
+                target_config=config.get('target_config'),
             )
 
         # Apply confluence filter
@@ -1705,7 +1966,10 @@ def render_strategy_builder(data_days: int, data_seed: int):
         col1, col2 = st.columns(2)
 
         # Get display names
-        exit_display_name = config.get('exit_trigger_name', config['exit_trigger'])
+        exit_display_names = config.get('exit_trigger_names', [])
+        if not exit_display_names:
+            exit_display_names = [config.get('exit_trigger_name', config.get('exit_trigger', ''))]
+        exit_display_str = ", ".join(exit_display_names)
 
         with col1:
             st.markdown(f"""
@@ -1714,7 +1978,9 @@ def render_strategy_builder(data_days: int, data_seed: int):
             - Direction: {config['direction']}
             - Timeframe: {config['timeframe']}
             - Entry: {entry_display_name}
-            - Exit: {exit_display_name}
+            - Exit: {exit_display_str}
+            - Stop Loss: {format_stop_display(config)}
+            - Target: {format_target_display(config)}
             """)
 
         with col2:
@@ -2074,9 +2340,9 @@ def render_saved_kpis(strat: dict):
     kpi_cols[5].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
 
     st.subheader("Strategy Configuration")
-    stop = strat.get('stop_atr_mult')
-    if stop:
-        st.markdown(f"**Stop Loss:** {stop}x ATR")
+    st.markdown(f"**Stop Loss:** {format_stop_display(strat)}")
+    st.markdown(f"**Target:** {format_target_display(strat)}")
+    st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat)}")
     created = strat.get('created_at', 'Unknown')
     st.markdown(f"**Created:** {created[:10] if len(created) >= 10 else created}")
 
@@ -2099,10 +2365,13 @@ def render_live_backtest(strat: dict):
             df,
             direction=strat['direction'],
             entry_trigger=strat['entry_trigger'],
-            exit_trigger=strat['exit_trigger'],
+            exit_trigger=strat.get('exit_trigger'),
+            exit_triggers=strat.get('exit_triggers'),
             confluence_required=confluence_set,
             risk_per_trade=strat.get('risk_per_trade', 100.0),
             stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+            stop_config=strat.get('stop_config'),
+            target_config=strat.get('target_config'),
         )
 
     if len(trades) == 0:
@@ -2236,10 +2505,11 @@ def render_live_backtest(strat: dict):
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
             st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {get_trigger_display_name(strat, 'exit_trigger')}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
         with col2:
             st.markdown("**Settings**")
-            st.markdown(f"- Stop Loss: {strat.get('stop_atr_mult', 1.5):.1f}x ATR")
+            st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
+            st.markdown(f"- Target: {format_target_display(strat)}")
             st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
@@ -2461,10 +2731,11 @@ def render_forward_test_view(strat: dict):
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
             st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {get_trigger_display_name(strat, 'exit_trigger')}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
         with col2:
             st.markdown("**Settings**")
-            st.markdown(f"- Stop Loss: {strat.get('stop_atr_mult', 1.5):.1f}x ATR")
+            st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
+            st.markdown(f"- Target: {format_target_display(strat)}")
             st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
@@ -2797,22 +3068,45 @@ def load_strategy_into_builder(strat: dict):
 
     st.session_state.editing_strategy_id = strat['id']
 
+    # Build exit trigger arrays from new or legacy format
+    exit_triggers_list = strat.get('exit_triggers')
+    exit_cids = strat.get('exit_trigger_confluence_ids')
+    exit_names = strat.get('exit_trigger_names')
+    if not exit_cids:
+        # Legacy single-exit format — wrap in arrays
+        legacy_cid = strat.get('exit_trigger_confluence_id', '')
+        legacy_name = strat.get('exit_trigger_name', strat.get('exit_trigger', ''))
+        legacy_base = strat.get('exit_trigger', '')
+        exit_cids = [legacy_cid] if legacy_cid else []
+        exit_names = [legacy_name] if legacy_name else []
+        exit_triggers_list = [legacy_base] if legacy_base else []
+
     st.session_state.strategy_config = {
         'symbol': strat['symbol'],
         'direction': strat['direction'],
         'timeframe': strat.get('timeframe', '1Min'),
         'entry_trigger': strat['entry_trigger'],
         'entry_trigger_confluence_id': strat.get('entry_trigger_confluence_id', ''),
-        'exit_trigger': strat['exit_trigger'],
+        # New multi-exit format
+        'exit_triggers': exit_triggers_list,
+        'exit_trigger_confluence_ids': exit_cids,
+        'exit_trigger_names': exit_names,
+        # Legacy single-exit fields
+        'exit_trigger': strat.get('exit_trigger', ''),
         'exit_trigger_confluence_id': strat.get('exit_trigger_confluence_id', ''),
         'entry_trigger_name': strat.get('entry_trigger_name', strat['entry_trigger']),
-        'exit_trigger_name': strat.get('exit_trigger_name', strat['exit_trigger']),
+        'exit_trigger_name': strat.get('exit_trigger_name', strat.get('exit_trigger', '')),
         'risk_per_trade': strat.get('risk_per_trade', 100.0),
         'stop_atr_mult': strat.get('stop_atr_mult', 1.5),
+        'stop_config': strat.get('stop_config'),
+        'target_config': strat.get('target_config'),
         'starting_balance': strat.get('starting_balance', 10000.0),
         'data_days': strat.get('data_days', 30),
         'data_seed': strat.get('data_seed', 42),
     }
+
+    # Set exit trigger count for UI
+    st.session_state.exit_trigger_count = max(1, len(exit_cids))
 
     st.session_state.selected_confluences = set(strat.get('confluence', []))
     st.session_state.step = 2

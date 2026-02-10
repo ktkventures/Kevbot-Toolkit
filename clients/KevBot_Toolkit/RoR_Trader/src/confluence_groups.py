@@ -47,6 +47,7 @@ class TriggerDefinition:
     base_trigger: str        # Base trigger type (e.g., "cross_bull")
     direction: str           # "LONG", "SHORT", or "BOTH"
     trigger_type: str        # "ENTRY" or "EXIT"
+    execution: str = "bar_close"  # "bar_close" or "intra_bar"
 
 
 @dataclass
@@ -129,10 +130,10 @@ TEMPLATES: Dict[str, Dict] = {
             "LMS": "Bearish - Long > Mid > Short",
         },
         "triggers": [
-            {"base": "cross_bull", "name": "Short > Mid Cross", "direction": "LONG", "type": "ENTRY"},
-            {"base": "cross_bear", "name": "Short < Mid Cross", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "mid_cross_bull", "name": "Mid > Long Cross", "direction": "LONG", "type": "ENTRY"},
-            {"base": "mid_cross_bear", "name": "Mid < Long Cross", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "cross_bull", "name": "Short > Mid Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_bear", "name": "Short < Mid Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "mid_cross_bull", "name": "Mid > Long Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "mid_cross_bear", "name": "Mid < Long Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
         ],
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
@@ -160,10 +161,10 @@ TEMPLATES: Dict[str, Dict] = {
             "M<S+": "MACD below signal, above zero (weakening)",
         },
         "triggers": [
-            {"base": "cross_bull", "name": "Bullish Cross", "direction": "LONG", "type": "ENTRY"},
-            {"base": "cross_bear", "name": "Bearish Cross", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "zero_cross_up", "name": "Zero Line Cross Up", "direction": "LONG", "type": "ENTRY"},
-            {"base": "zero_cross_down", "name": "Zero Line Cross Down", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "cross_bull", "name": "Bullish Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_bear", "name": "Bearish Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "zero_cross_up", "name": "Zero Line Cross Up", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "zero_cross_down", "name": "Zero Line Cross Down", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
         ],
         "indicator_columns": ["macd_line", "macd_signal"],
     },
@@ -191,10 +192,10 @@ TEMPLATES: Dict[str, Dict] = {
             "H-up": "Negative but rising (decelerating bearish)",
         },
         "triggers": [
-            {"base": "flip_pos", "name": "Histogram Flip Bullish", "direction": "LONG", "type": "ENTRY"},
-            {"base": "flip_neg", "name": "Histogram Flip Bearish", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "momentum_shift_up", "name": "Momentum Shift Up", "direction": "LONG", "type": "ENTRY"},
-            {"base": "momentum_shift_down", "name": "Momentum Shift Down", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "flip_pos", "name": "Histogram Flip Bullish", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "flip_neg", "name": "Histogram Flip Bearish", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "momentum_shift_up", "name": "Momentum Shift Up", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "momentum_shift_down", "name": "Momentum Shift Down", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
         ],
         "indicator_columns": ["macd_hist"],
     },
@@ -225,11 +226,11 @@ TEMPLATES: Dict[str, Dict] = {
             "<-2σ": "Price below VWAP - 2×SD (extended low)",
         },
         "triggers": [
-            {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY"},
-            {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY"},
-            {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY"},
-            {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT"},
+            {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
         ],
         "indicator_columns": ["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"],
     },
@@ -259,9 +260,9 @@ TEMPLATES: Dict[str, Dict] = {
             "MINIMAL": "Volume < 50% of average",
         },
         "triggers": [
-            {"base": "spike", "name": "Volume Spike", "direction": "BOTH", "type": "ENTRY"},
-            {"base": "extreme", "name": "Extreme Volume", "direction": "BOTH", "type": "ENTRY"},
-            {"base": "fade", "name": "Volume Fade", "direction": "BOTH", "type": "EXIT"},
+            {"base": "spike", "name": "Volume Spike", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "extreme", "name": "Extreme Volume", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "fade", "name": "Volume Fade", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
         ],
         "indicator_columns": ["vol_sma", "rvol"],
     },
@@ -287,8 +288,8 @@ TEMPLATES: Dict[str, Dict] = {
             "BEAR": "Price below trailing stop (bearish)",
         },
         "triggers": [
-            {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY"},
-            {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY"},
+            {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
         ],
         "indicator_columns": ["utbot_stop", "utbot_direction"],
     },
@@ -657,6 +658,7 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
             base_trigger=trig_def["base"],
             direction=trig_def["direction"],
             trigger_type=trig_def["type"],
+            execution=trig_def.get("execution", "bar_close"),
         )
         triggers.append(trigger)
 

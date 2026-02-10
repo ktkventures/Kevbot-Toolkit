@@ -27,7 +27,7 @@ from interpreters import (
     detect_all_triggers,
     get_confluence_records,
 )
-from triggers import generate_trades
+from triggers import generate_trades, calculate_stop_price
 from portfolios import load_portfolios, get_requirement_set_by_id
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -564,6 +564,13 @@ def detect_signals(strategy: dict) -> list:
     if strategy.get('exit_trigger_confluence_id'):
         exit_trigger = _get_base_trigger_id(strategy['exit_trigger_confluence_id'])
 
+    # Build exit triggers list (new multi-exit format or legacy single)
+    exit_triggers_list = None
+    if strategy.get('exit_trigger_confluence_ids'):
+        exit_triggers_list = [_get_base_trigger_id(tid) for tid in strategy['exit_trigger_confluence_ids']]
+    elif strategy.get('exit_triggers'):
+        exit_triggers_list = strategy['exit_triggers']
+
     # Determine position state via generate_trades on recent bars
     confluence_set = set(strategy.get('confluence', [])) if strategy.get('confluence') else None
     trades = generate_trades(
@@ -571,9 +578,12 @@ def detect_signals(strategy: dict) -> list:
         direction=strategy.get('direction', 'LONG'),
         entry_trigger=entry_trigger,
         exit_trigger=exit_trigger,
+        exit_triggers=exit_triggers_list,
         confluence_required=confluence_set,
         risk_per_trade=strategy.get('risk_per_trade', 100.0),
         stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+        stop_config=strategy.get('stop_config'),
+        target_config=strategy.get('target_config'),
     )
 
     signals = []
@@ -583,7 +593,13 @@ def detect_signals(strategy: dict) -> list:
 
     # Check the last bar for trigger signals
     entry_col = f"trig_{entry_trigger}"
-    exit_col = f"trig_{exit_trigger}"
+
+    # Build list of exit trigger columns to check
+    exit_cols = []
+    if exit_triggers_list:
+        exit_cols = [f"trig_{et}" for et in exit_triggers_list]
+    elif exit_trigger and exit_trigger not in ("opposite_signal", "fixed_r_2", "fixed_r_3", "trailing_stop", "time_exit_50"):
+        exit_cols = [f"trig_{exit_trigger}"]
 
     # Determine if currently in position
     in_position = False
@@ -607,10 +623,9 @@ def detect_signals(strategy: dict) -> list:
             if confluence_set and not confluence_set.issubset(confluence_records):
                 pass  # Confluence not met
             else:
-                if direction == "LONG":
-                    stop_price = close_price - (atr_val * strategy.get('stop_atr_mult', 1.5))
-                else:
-                    stop_price = close_price + (atr_val * strategy.get('stop_atr_mult', 1.5))
+                # Calculate stop price using configured method
+                effective_stop = strategy.get('stop_config') or {"method": "atr", "atr_mult": strategy.get("stop_atr_mult", 1.5)}
+                stop_price = calculate_stop_price(close_price, direction, last_bar, df, len(df) - 1, effective_stop)
 
                 signals.append({
                     "type": "entry_signal",
@@ -622,17 +637,19 @@ def detect_signals(strategy: dict) -> list:
                     "atr": float(atr_val),
                 })
     else:
-        # Look for exit signal
-        if exit_col in df.columns and last_bar.get(exit_col, False):
-            signals.append({
-                "type": "exit_signal",
-                "trigger": exit_trigger,
-                "confluence_met": list(confluence_records),
-                "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
-                "price": close_price,
-                "stop_price": None,
-                "atr": float(atr_val),
-            })
+        # Look for exit signal on any exit trigger column
+        for ec in exit_cols:
+            if ec in df.columns and last_bar.get(ec, False):
+                signals.append({
+                    "type": "exit_signal",
+                    "trigger": ec.replace("trig_", ""),
+                    "confluence_met": list(confluence_records),
+                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
+                    "price": close_price,
+                    "stop_price": None,
+                    "atr": float(atr_val),
+                })
+                break  # First exit trigger to fire wins
 
     return signals
 
