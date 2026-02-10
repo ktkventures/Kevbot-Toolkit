@@ -709,6 +709,21 @@ def render_price_chart(
                 'text': f"{trade['r_multiple']:+.1f}R"
             })
 
+    # Compute barSpacing from the chart presets setting
+    # barSpacing controls how many candles are visible on initial render.
+    # Streamlit content area is ~700-900px wide; we target ~800px.
+    visible_candles = st.session_state.get('chart_visible_candles', 200)
+    time_scale_opts = {
+        "borderColor": "#2B2B2B",
+        "timeVisible": True,
+        "secondsVisible": False,
+    }
+    if visible_candles > 0 and len(candle_data) > 0:
+        # barSpacing = pixels per candle. Lower = more zoomed out.
+        # Estimate ~800px chart width; clamp barSpacing to reasonable range.
+        bar_spacing = max(1, min(20, 800 / visible_candles))
+        time_scale_opts["barSpacing"] = bar_spacing
+
     # Chart configuration
     chart_options = {
         "layout": {
@@ -722,11 +737,7 @@ def render_price_chart(
         "crosshair": {
             "mode": 0
         },
-        "timeScale": {
-            "borderColor": "#2B2B2B",
-            "timeVisible": True,
-            "secondsVisible": False
-        },
+        "timeScale": time_scale_opts,
         "rightPriceScale": {
             "borderColor": "#2B2B2B"
         },
@@ -985,6 +996,8 @@ def main():
         st.session_state.confirm_delete_requirement_id = None
     if 'nav_target' not in st.session_state:
         st.session_state.nav_target = None
+    if 'chart_visible_candles' not in st.session_state:
+        st.session_state.chart_visible_candles = 200
 
     # Sidebar navigation
     with st.sidebar:
@@ -1021,6 +1034,23 @@ def main():
             data_seed = st.number_input("Data Seed", value=42, help="Change for different random data")
         else:
             data_seed = 42  # Not used with real data
+
+        # Chart presets
+        st.subheader("Chart Presets")
+        candle_presets = {
+            "Tight (50)": 50,
+            "Close (100)": 100,
+            "Default (200)": 200,
+            "Wide (400)": 400,
+            "Full (All)": 0,
+        }
+        preset_label = st.selectbox(
+            "Visible Candles",
+            list(candle_presets.keys()),
+            index=2,  # Default (200)
+            help="Number of candles visible when a chart first loads. You can still zoom/scroll manually."
+        )
+        st.session_state['chart_visible_candles'] = candle_presets[preset_label]
 
     # Main content
     if page == "Dashboard":
