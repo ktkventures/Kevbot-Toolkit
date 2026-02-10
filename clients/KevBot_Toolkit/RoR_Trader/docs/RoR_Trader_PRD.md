@@ -728,6 +728,21 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
 - [ ] Bug fixes — address all known issues surfaced during development
 
+**Backtest Settings Overhaul:**
+- [ ] Replace "Data Settings" sidebar section with "Backtest Settings" — expanded controls for backtest data range
+- [ ] Three look-back modes via selectbox:
+  - **Days** (default) — slider from 7 to 1,825 (5 years); recommended for apples-to-apples comparison across strategies on different timeframes
+  - **Bars/Candles** — number input (e.g., 500, 1000, 2000 candles); app calculates equivalent days based on selected timeframe
+  - **Date Range** — two date pickers (start/end) for precise control
+- [ ] Estimated bar count display — show "~98,000 bars" next to the setting so users understand data volume before running
+- [ ] Performance warning — yellow banner when estimated bars exceed ~50K: "Large dataset — backtest may take longer"
+- [ ] Result caching — cache trades/KPIs keyed on (symbol, timeframe, date range, strategy config) so repeated views load instantly after first computation
+- [ ] Expand supported Alpaca timeframes — currently 7 presets; Alpaca supports any minute increment (1–59Min), 1–23Hour, and Day/Week/Month
+- [ ] Timeframe-aware max range guidance — show recommended max alongside the slider (e.g., "1Min: up to 1 year recommended, Daily: up to 5 years")
+- [ ] Fix mock data timeframe — mock data generator currently always produces 1Min bars regardless of selected timeframe
+- [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
+- [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
+
 **UX Improvements:**
 - [ ] "Create New Strategy" button on My Strategies page (consistent with Portfolios page pattern)
 - [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
