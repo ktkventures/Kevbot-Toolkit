@@ -743,6 +743,25 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
 - [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
 
+**Execution Model & Stop/Target Expansion:**
+- [ ] Expand stop loss methods (match KevBot Toolkit v3.0) — add to Strategy Builder Step 1 as a selectbox:
+  - **ATR** (current) — `entry - ATR × multiplier`
+  - **Fixed Dollar** — `entry - $X`
+  - **Percentage** — `entry × (1 - X%)`
+  - **Candle Wicks / Swing Low** — `low[lookback] - padding` (recent swing low with configurable lookback and padding)
+- [ ] Expand take profit / exit target methods:
+  - **Risk:Reward** (current) — `entry + risk × R:R ratio` (fixed_r_2, fixed_r_3)
+  - **ATR** — `entry + ATR × multiplier`
+  - **Fixed Dollar** — `entry + $X`
+  - **Percentage** — `entry × (1 + X%)`
+  - **Candle Wicks / Swing High** — `high[lookback] + padding`
+- [ ] Intra-bar entry pricing — instead of always entering at bar close, use trigger-specific pricing logic:
+  - **Price-level triggers** `[I]` — fill at the trigger price (e.g., UT Bot trail cross fills at the trail price using bar high/low). Candidates: UT Bot trail, VWAP band crosses, any trigger defined by a price level breach
+  - **Indicator-state triggers** `[C]` — fill at bar close (e.g., EMA crossover, MACD cross, RVOL threshold). These are computed from closed bar values and have no meaningful intra-bar price
+- [ ] Execution type as trigger property — add `"execution": "bar_close"` or `"execution": "intra_bar"` to trigger definitions in TEMPLATES config; `generate_trades()` uses this to select pricing logic
+- [ ] Execution type labels — display `[C]` (bar close) or `[I]` (intra-bar) suffix on trigger names throughout the UI (Strategy Builder dropdowns, strategy detail, trade history) so users always know how each trigger fills
+- [ ] Note: stop losses and take profits already use intra-bar logic (fills at stop/target price using bar high/low, not candle close). This work extends that precision to entry triggers and adds the execution type transparency layer.
+
 **UX Improvements:**
 - [ ] "Create New Strategy" button on My Strategies page (consistent with Portfolios page pattern)
 - [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
