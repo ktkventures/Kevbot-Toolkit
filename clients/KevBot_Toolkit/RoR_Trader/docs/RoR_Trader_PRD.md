@@ -760,7 +760,7 @@ My Strategies → Strategy Detail → Edit Strategy
   - **Indicator-state triggers** `[C]` — fill at bar close (e.g., EMA crossover, MACD cross, RVOL threshold). These are computed from closed bar values and have no meaningful intra-bar price
 - [ ] Execution type as trigger property — add `"execution": "bar_close"` or `"execution": "intra_bar"` to trigger definitions in TEMPLATES config; `generate_trades()` uses this to select pricing logic
 - [ ] Execution type labels — display `[C]` (bar close) or `[I]` (intra-bar) suffix on trigger names throughout the UI (Strategy Builder dropdowns, strategy detail, trade history) so users always know how each trigger fills
-- [ ] Strategy-level execution mode — setting in Strategy Builder Step 1:
+- [ ] *(Optional)* Strategy-level execution mode — setting in Strategy Builder Step 1:
   - **Conservative `[C]`** (default) — all entries/exits at bar close in backtests; live trading can still use intra-bar. Backtests under-promise so strategies that pass have a built-in margin of safety.
   - **Intra-bar `[I]`** — entries/exits at estimated trigger price using bar high/low in backtests. More realistic but relies on OHLCV approximation. Live trading uses precise real-time fills.
 - [ ] Same-bar conflict resolution — when both stop and target are breached within the same bar, always assume the **worse outcome** (stop hit first). Keeps backtests pessimistic regardless of execution mode.
