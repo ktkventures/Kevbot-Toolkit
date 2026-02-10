@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.4
+**Version:** 0.5
 **Date:** February 9, 2026
 **Author:** Kevin Johnson
-**Status:** MVP Complete — Phases 7-11 Roadmap Defined
+**Status:** Phase 7 Complete — Phases 8-11 Roadmap Defined
 
 ---
 
@@ -554,6 +554,9 @@ My Strategies → Strategy Detail → Edit Strategy
 8. [x] Integrate Alpaca API for real market data with mock data fallback
 9. [x] Build backtesting engine with trade generation and KPI calculations
 10. [x] Build My Strategies page (basic list view)
+11. [x] Add Code/Preview tabs to Confluence Groups, fix EMA overlay bug, add strategy detail charts and confluence analysis
+12. [x] Split MACD into separate templates (macd_line, macd_histogram), upgrade VWAP to 7-zone system
+13. [x] Replace Plotly oscillator charts with synchronized lightweight-charts multi-pane rendering
 
 ---
 
@@ -687,13 +690,25 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Empty state for new users with onboarding message and pipeline explanation
 - [x] `nav_target` session state pattern for cross-page button navigation
 
-### Phase 7: Confluence Group Enhancements
+### Phase 7: Confluence Group Enhancements — COMPLETED (Feb 9, 2026)
 *Verify and expand confluence group tooling — ensure indicators/interpreters are behaving correctly before going live.*
 
-- [ ] Code tab on Confluence Group detail page — display the underlying indicator/interpreter source code for transparency and debugging
-- [ ] Preview tab on Confluence Group detail page — live preview showing indicator plots and interpreter state outputs on sample data
-- [ ] Indicator overlay on all strategy charts — plot confluence group indicators on strategy detail charts (backtest, forward test) so users can visually verify indicators align with triggers and interpretations
-- [ ] Verify confluence plots render correctly across all chart contexts (strategy detail, portfolio detail, dashboard)
+- [x] Code tab on Confluence Group detail page — displays underlying indicator/interpreter/trigger source code with active parameter values for transparency and debugging
+- [x] Preview tab on Confluence Group detail page — generates sample data and shows price chart with indicator overlays (or synced oscillator pane), interpreter state timeline, and trigger event table
+- [x] Indicator overlay on all strategy charts — fixed EMA overlay bug (template names → actual column names) so overlays now render correctly on strategy detail backtest and forward test views
+- [x] Confluence Analysis tab on strategy detail pages — sub-tabs per enabled confluence group showing relevant chart, interpreter state changes, and trigger events for visual verification
+- [x] Trade History price charts — candlestick chart with entry/exit markers on strategy detail trade history tabs (backtest and forward test)
+- [x] Synchronized multi-pane charts — MACD and RVOL oscillator charts render as lightweight-charts panes below the price chart with shared zoom/scroll (TradingView-style), replacing standalone Plotly charts
+- [x] Split MACD into separate templates — macd_line and macd_histogram are now independent confluence groups following the one-interpreter-per-group principle
+- [x] Upgraded VWAP to 7-zone system — dual standard deviation bands (±1σ, ±2σ) with 7 mutually exclusive zones (ABOVE_SD2_UPPER through BELOW_SD2_LOWER), matching KevBot Toolkit reference
+- [x] Backward-compatible config migrations — old MACD template name auto-converts to macd_line; old VWAP std_dev parameter auto-converts to sd1_mult/sd2_mult
+
+### Design Decisions (Phase 7)
+- **One interpreter per confluence group** — Each group maps to exactly one interpreter for clean state tracking and confluence analysis. MACD Line (bullish/bearish crossover states) and MACD Histogram (positive/negative momentum states) are separate groups because they produce different interpretations.
+- **7-zone VWAP** — Matches KevBot Toolkit's proven zone system: >+2σ, >+1σ, >VWAP, @VWAP, <VWAP, <-1σ, <-2σ. More granular than the original 3-zone (above/at/below) system, enabling better confluence precision.
+- **Synced chart panes via lightweight-charts** — `renderLightweightCharts` accepts a list of pane configs; multiple panes share a synchronized time axis for zoom/scroll. This replaces Plotly charts that couldn't sync with the price chart above. Used for MACD oscillator and RVOL histogram panes.
+- **Code tab transparency** — Uses `inspect.getsource()` to show actual running Python code. Active parameter values are displayed alongside the source so users can see exactly what periods/multipliers are in effect.
+- **Template → column name resolution** — The EMA overlay bug was caused by returning template abstract names (ema_short) instead of actual DataFrame column names (ema_9). Fixed by resolving group parameters to concrete column names in the overlay helper functions.
 
 ### Phase 8: QA, Polish & UX — "Get Live-Tradeable"
 *Comprehensive review pass and UX improvements — the gate to live trading with real money.*
@@ -764,15 +779,17 @@ Outputs:
   - FULL_BEAR_STACK
 ```
 
-### A.2 VWAP Interpreter
+### A.2 VWAP Interpreter (7-Zone System)
 ```
-Inputs: Price, VWAP, VWAP StdDev Bands
+Inputs: Price, VWAP, ±1σ Bands, ±2σ Bands
 Outputs:
-  - ABOVE_UPPER_BAND
-  - ABOVE_VWAP
-  - AT_VWAP
-  - BELOW_VWAP
-  - BELOW_LOWER_BAND
+  - ABOVE_SD2_UPPER   (Price > VWAP + 2σ)
+  - ABOVE_SD1_UPPER   (Price > VWAP + 1σ)
+  - ABOVE_VWAP        (Price > VWAP)
+  - AT_VWAP           (Price ≈ VWAP within 0.05%)
+  - BELOW_VWAP        (Price < VWAP)
+  - BELOW_SD1_LOWER   (Price < VWAP - 1σ)
+  - BELOW_SD2_LOWER   (Price < VWAP - 2σ)
 ```
 
 ### A.3 Volume Interpreter

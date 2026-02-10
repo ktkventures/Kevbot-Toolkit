@@ -650,10 +650,14 @@ def render_price_chart(
     config: dict,
     show_indicators: list = None,
     indicator_colors: dict = None,
-    chart_key: str = 'price_chart'
+    chart_key: str = 'price_chart',
+    secondary_panes: list = None
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
+
+    Supports synchronized secondary panes (e.g., MACD oscillator, RVOL) that share
+    the same time axis with zoom/scroll sync, like TradingView.
 
     Args:
         df: DataFrame with OHLCV data and indicator columns (timestamp index)
@@ -661,6 +665,7 @@ def render_price_chart(
         config: Strategy config with 'direction' key
         show_indicators: List of indicator column names to overlay (e.g., ['ema_short', 'ema_mid'])
         indicator_colors: Dict mapping column names to colors (from confluence group settings)
+        secondary_panes: List of lightweight-charts pane config dicts to render below the price chart
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -725,7 +730,7 @@ def render_price_chart(
         "rightPriceScale": {
             "borderColor": "#2B2B2B"
         },
-        "height": 450
+        "height": 350 if secondary_panes else 450
     }
 
     # Candlestick series with markers
@@ -775,11 +780,12 @@ def render_price_chart(
                         }
                     })
 
-    # Render the chart
-    renderLightweightCharts([{
-        "chart": chart_options,
-        "series": series
-    }], key=chart_key)
+    # Build chart pane list (price chart + optional synced secondary panes)
+    chart_panes = [{"chart": chart_options, "series": series}]
+    if secondary_panes:
+        chart_panes.extend(secondary_panes)
+
+    renderLightweightCharts(chart_panes, key=chart_key)
 
 
 # =============================================================================
@@ -2248,40 +2254,31 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
                 st.caption(" | ".join(param_parts))
 
             # Chart relevant to this confluence group
+            # Overlay templates get indicator lines on the price chart;
+            # oscillator templates get a synced secondary pane below.
+            grp_indicators = []
+            grp_colors = {}
+            secondary_panes = []
+
             if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
-                # Price chart with this group's indicator overlays
                 grp_indicators = get_overlay_indicators_for_group(group)
                 grp_colors = get_overlay_colors_for_group(group)
-                render_price_chart(
-                    df,
-                    pd.DataFrame(),  # no trade markers
-                    strat,
-                    show_indicators=grp_indicators,
-                    indicator_colors=grp_colors,
-                    chart_key=f"confluence_chart_{group.id}"
-                )
             elif group.base_template in ("macd_line", "macd_histogram"):
-                # Price chart for context, then MACD oscillator below
-                render_price_chart(
-                    df,
-                    pd.DataFrame(),
-                    strat,
-                    show_indicators=[],
-                    indicator_colors={},
-                    chart_key=f"confluence_chart_{group.id}"
-                )
-                _render_macd_preview_chart(df, group)
+                if "macd_line" in df.columns:
+                    secondary_panes.append(_build_macd_lwc_pane(df, group))
             elif group.base_template == "rvol":
-                # Price chart for context, then volume chart below
-                render_price_chart(
-                    df,
-                    pd.DataFrame(),
-                    strat,
-                    show_indicators=[],
-                    indicator_colors={},
-                    chart_key=f"confluence_chart_{group.id}"
-                )
-                _render_rvol_preview_chart(df, group)
+                if "rvol" in df.columns:
+                    secondary_panes.append(_build_rvol_lwc_pane(df, group))
+
+            render_price_chart(
+                df,
+                pd.DataFrame(),  # no trade markers
+                strat,
+                show_indicators=grp_indicators,
+                indicator_colors=grp_colors,
+                chart_key=f"confluence_chart_{group.id}",
+                secondary_panes=secondary_panes if secondary_panes else None
+            )
 
             # Interpreter state timeline
             st.markdown("**Interpreter States**")
@@ -4779,49 +4776,52 @@ def render_preview_tab(group: ConfluenceGroup):
         df = run_all_interpreters(df)
         df = detect_all_triggers(df)
 
-    # --- Section 1: Price Chart with Overlays ---
-    is_overlay = group.base_template in OVERLAY_COMPATIBLE_TEMPLATES
+    # --- Section 1: Chart ---
+    # Overlay templates show indicator lines on the price chart.
+    # Oscillator templates show a synced secondary pane (MACD/RVOL) below the price chart.
+    show_indicators = []
+    indicator_colors_map = {}
+    secondary_panes = []
 
-    if is_overlay:
+    if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
         st.markdown("**Price Chart with Indicator Overlay**")
         show_indicators = get_overlay_indicators_for_group(group)
-        indicator_colors = get_overlay_colors_for_group(group)
-
-        # Empty trades DataFrame — no trade markers on preview
-        empty_trades = pd.DataFrame()
-
-        render_price_chart(
-            df,
-            empty_trades,
-            {"direction": "LONG"},
-            show_indicators=show_indicators,
-            indicator_colors=indicator_colors,
-            chart_key=f"preview_chart_{group.id}"
-        )
-
-    # --- Section 2: Secondary Chart for Non-Overlay Indicators ---
-    if group.base_template in ("macd_line", "macd_histogram"):
-        st.markdown("**MACD Chart**")
-        _render_macd_preview_chart(df, group)
+        indicator_colors_map = get_overlay_colors_for_group(group)
+    elif group.base_template in ("macd_line", "macd_histogram"):
+        st.markdown("**Price Chart + MACD**")
+        if "macd_line" in df.columns:
+            secondary_panes.append(_build_macd_lwc_pane(df, group))
     elif group.base_template == "rvol":
-        st.markdown("**Relative Volume Chart**")
-        _render_rvol_preview_chart(df, group)
+        st.markdown("**Price Chart + Relative Volume**")
+        if "rvol" in df.columns:
+            secondary_panes.append(_build_rvol_lwc_pane(df, group))
 
-    # --- Section 3: Interpreter State Timeline ---
+    render_price_chart(
+        df,
+        pd.DataFrame(),  # no trade markers on preview
+        {"direction": "LONG"},
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors_map,
+        chart_key=f"preview_chart_{group.id}",
+        secondary_panes=secondary_panes if secondary_panes else None
+    )
+
+    # --- Section 2: Interpreter State Timeline ---
     st.markdown("**Interpreter States**")
     _render_interpreter_timeline(df, group, template)
 
-    # --- Section 4: Trigger Events ---
+    # --- Section 3: Trigger Events ---
     st.markdown("**Trigger Events**")
     _render_trigger_events_table(df, group, template)
 
 
-def _render_macd_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
-    """Render a Plotly chart showing MACD line, signal, and histogram."""
-    if "macd_line" not in df.columns:
-        st.info("MACD columns not available in data.")
-        return
+def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
+    """
+    Build a lightweight-charts pane config for MACD histogram + lines.
 
+    Returns a pane dict that can be passed to render_price_chart's secondary_panes
+    for synchronized zoom/scroll with the price chart above.
+    """
     macd_color = group.plot_settings.colors.get("macd_color", "#2563eb")
     signal_color = group.plot_settings.colors.get("signal_color", "#f97316")
     hist_pos_color = group.plot_settings.colors.get("hist_pos_color", "#22c55e")
@@ -4829,45 +4829,88 @@ def _render_macd_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
+    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
 
-    # Histogram bars with color based on value
-    hist_colors = [hist_pos_color if v >= 0 else hist_neg_color for v in plot_df["macd_hist"].fillna(0)]
+    hist_data = []
+    macd_data = []
+    signal_data = []
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=plot_df[time_col],
-        y=plot_df["macd_hist"],
-        marker_color=hist_colors,
-        name="Histogram",
-        opacity=0.6,
-    ))
-    fig.add_trace(go.Scatter(
-        x=plot_df[time_col], y=plot_df["macd_line"],
-        mode="lines", name="MACD",
-        line=dict(color=macd_color, width=1.5),
-    ))
-    fig.add_trace(go.Scatter(
-        x=plot_df[time_col], y=plot_df["macd_signal"],
-        mode="lines", name="Signal",
-        line=dict(color=signal_color, width=1.5),
-    ))
-    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
-    fig.update_layout(
-        height=300,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        xaxis_title="",
-        yaxis_title="MACD",
-    )
-    st.plotly_chart(fig, width="stretch", key=f"macd_preview_{group.id}")
+    for _, row in plot_df.iterrows():
+        t = int(row['_time'])
+        if pd.notna(row.get('macd_hist')):
+            hist_data.append({
+                "time": t,
+                "value": float(row['macd_hist']),
+                "color": hist_pos_color if row['macd_hist'] >= 0 else hist_neg_color
+            })
+        if pd.notna(row.get('macd_line')):
+            macd_data.append({"time": t, "value": float(row['macd_line'])})
+        if pd.notna(row.get('macd_signal')):
+            signal_data.append({"time": t, "value": float(row['macd_signal'])})
+
+    series = []
+    if hist_data:
+        series.append({
+            "type": "Histogram",
+            "data": hist_data,
+            "options": {
+                "priceLineVisible": False,
+                "title": "Hist",
+            }
+        })
+    if macd_data:
+        series.append({
+            "type": "Line",
+            "data": macd_data,
+            "options": {
+                "color": macd_color,
+                "lineWidth": 1,
+                "priceLineVisible": False,
+                "title": "MACD",
+            }
+        })
+    if signal_data:
+        series.append({
+            "type": "Line",
+            "data": signal_data,
+            "options": {
+                "color": signal_color,
+                "lineWidth": 1,
+                "priceLineVisible": False,
+                "title": "Signal",
+            }
+        })
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 200,
+        },
+        "series": series
+    }
 
 
-def _render_rvol_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
-    """Render a Plotly chart showing relative volume bars with threshold lines."""
-    if "rvol" not in df.columns:
-        st.info("RVOL columns not available in data.")
-        return
+def _build_rvol_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
+    """
+    Build a lightweight-charts pane config for relative volume histogram.
 
+    Returns a pane dict that can be passed to render_price_chart's secondary_panes
+    for synchronized zoom/scroll with the price chart above.
+    """
     bar_color = group.plot_settings.colors.get("bar_color", "#64748b")
     high_color = group.plot_settings.colors.get("high_color", "#f59e0b")
     extreme_color = group.plot_settings.colors.get("extreme_color", "#ef4444")
@@ -4877,36 +4920,56 @@ def _render_rvol_preview_chart(df: pd.DataFrame, group: ConfluenceGroup):
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
+    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
 
-    # Color bars based on thresholds
-    colors = []
-    for v in plot_df["rvol"].fillna(0):
-        if v >= extreme_thresh:
-            colors.append(extreme_color)
-        elif v >= high_thresh:
-            colors.append(high_color)
-        else:
-            colors.append(bar_color)
+    rvol_data = []
+    for _, row in plot_df.iterrows():
+        if pd.notna(row.get('rvol')):
+            val = float(row['rvol'])
+            if val >= extreme_thresh:
+                color = extreme_color
+            elif val >= high_thresh:
+                color = high_color
+            else:
+                color = bar_color
+            rvol_data.append({
+                "time": int(row['_time']),
+                "value": val,
+                "color": color
+            })
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=plot_df[time_col],
-        y=plot_df["rvol"],
-        marker_color=colors,
-        name="Relative Volume",
-    ))
-    fig.add_hline(y=high_thresh, line_dash="dash", line_color=high_color, opacity=0.5,
-                  annotation_text=f"High ({high_thresh}x)")
-    fig.add_hline(y=extreme_thresh, line_dash="dash", line_color=extreme_color, opacity=0.5,
-                  annotation_text=f"Extreme ({extreme_thresh}x)")
-    fig.add_hline(y=1.0, line_dash="dot", line_color="gray", opacity=0.3)
-    fig.update_layout(
-        height=250,
-        margin=dict(l=0, r=0, t=10, b=0),
-        xaxis_title="",
-        yaxis_title="RVOL (x)",
-    )
-    st.plotly_chart(fig, width="stretch", key=f"rvol_preview_{group.id}")
+    series = []
+    if rvol_data:
+        series.append({
+            "type": "Histogram",
+            "data": rvol_data,
+            "options": {
+                "priceLineVisible": False,
+                "title": "RVOL",
+            }
+        })
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 180,
+        },
+        "series": series
+    }
 
 
 def _render_interpreter_timeline(df: pd.DataFrame, group: ConfluenceGroup, template: dict):
