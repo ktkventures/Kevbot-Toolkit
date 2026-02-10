@@ -2183,7 +2183,7 @@ def render_live_backtest(strat: dict):
             st.info("No trades to display.")
 
     with tab_confluence:
-        render_confluence_analysis_tab(df, strat)
+        render_confluence_analysis_tab(df, strat, trades)
 
     with tab_config:
         col1, col2 = st.columns(2)
@@ -2220,24 +2220,75 @@ def render_live_backtest(strat: dict):
 # CONFLUENCE ANALYSIS TAB (shared by backtest + forward test detail views)
 # =============================================================================
 
-def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
+def _get_strategy_relevant_groups(strat: dict) -> list:
+    """
+    Get only the confluence groups that are actively used by this strategy.
+
+    A group is "used" if:
+    - Its trigger ID matches the strategy's entry or exit trigger confluence ID
+    - Its interpreter key appears in any of the strategy's confluence conditions
+    """
+    enabled_groups = get_enabled_groups()
+    if not enabled_groups:
+        return []
+
+    entry_conf_id = strat.get('entry_trigger_confluence_id', '')
+    exit_conf_id = strat.get('exit_trigger_confluence_id', '')
+    confluence_records = strat.get('confluence', [])
+
+    # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
+    confluence_interpreters = set()
+    for record in confluence_records:
+        parts = record.split("-")
+        if len(parts) >= 2:
+            confluence_interpreters.add(parts[1])
+
+    relevant = []
+    for group in enabled_groups:
+        # Check if group owns the entry or exit trigger
+        if entry_conf_id.startswith(group.id + "_") or exit_conf_id.startswith(group.id + "_"):
+            relevant.append(group)
+            continue
+
+        # Check if group's interpreter appears in confluence conditions
+        template = get_template(group.base_template)
+        if template:
+            for interp_key in template.get("interpreters", []):
+                if interp_key in confluence_interpreters:
+                    relevant.append(group)
+                    break
+
+    return relevant
+
+
+def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.DataFrame = None):
     """
     Render interpreter states and trigger events for each confluence group
     used by this strategy, organized as sub-tabs by group.
 
-    Each sub-tab shows a relevant chart followed by interpreter state
-    timeline and trigger event tables.
-    """
-    enabled_groups = get_enabled_groups()
+    Only shows groups that are actively used by the strategy (as triggers
+    or confluence conditions). Each sub-tab shows a relevant chart with
+    trade entry/exit markers, followed by interpreter state timeline and
+    trigger event tables.
 
-    if not enabled_groups:
-        st.info("No confluence groups are enabled.")
+    Args:
+        df: DataFrame with OHLCV + indicator/interpreter/trigger columns
+        strat: Strategy config dict
+        trades: DataFrame with trade data for entry/exit markers on charts
+    """
+    relevant_groups = _get_strategy_relevant_groups(strat)
+
+    if not relevant_groups:
+        st.info("No confluence groups are used by this strategy.")
         return
 
-    # Create sub-tabs, one per enabled confluence group
-    group_tabs = st.tabs([g.name for g in enabled_groups])
+    if trades is None:
+        trades = pd.DataFrame()
 
-    for group, gtab in zip(enabled_groups, group_tabs):
+    # Create sub-tabs, one per relevant confluence group
+    group_tabs = st.tabs([g.name for g in relevant_groups])
+
+    for group, gtab in zip(relevant_groups, group_tabs):
         with gtab:
             template = get_template(group.base_template)
             if not template:
@@ -2256,6 +2307,7 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
             # Chart relevant to this confluence group
             # Overlay templates get indicator lines on the price chart;
             # oscillator templates get a synced secondary pane below.
+            # All charts show trade entry/exit markers for reference.
             grp_indicators = []
             grp_colors = {}
             secondary_panes = []
@@ -2272,7 +2324,7 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict):
 
             render_price_chart(
                 df,
-                pd.DataFrame(),  # no trade markers
+                trades,
                 strat,
                 show_indicators=grp_indicators,
                 indicator_colors=grp_colors,
@@ -2315,13 +2367,14 @@ def render_forward_test_view(strat: dict):
     render_kpi_comparison(backtest_trades, forward_trades)
 
     # Tabs
+    all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+
     tab_charts, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs(
         ["Equity & Charts", "Trade History", "Confluence Analysis", "Configuration", "Alerts"]
     )
 
     with tab_charts:
         # Combined equity curve
-        all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
         render_combined_equity_curve(all_trades, boundary_dt)
 
         # R-distribution comparison
@@ -2355,7 +2408,7 @@ def render_forward_test_view(strat: dict):
         render_split_trade_history(backtest_trades, forward_trades)
 
     with tab_confluence_ft:
-        render_confluence_analysis_tab(df, strat)
+        render_confluence_analysis_tab(df, strat, all_trades)
 
     with tab_config:
         col1, col2 = st.columns(2)
