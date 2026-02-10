@@ -680,26 +680,43 @@ def render_price_chart(
         time_col = candles.columns[0]
     candles['time'] = pd.to_datetime(candles[time_col]).astype(int) // 10**9
 
+    # Apply visible candles preset — trim to last N candles.
+    # The lightweight-charts component always calls fitContent() on render,
+    # so barSpacing cannot control the initial zoom. Instead we limit the
+    # data to the last N candles so fitContent() fits only those.
+    visible_candles = st.session_state.get('chart_visible_candles', 200)
+    if visible_candles > 0 and len(candles) > visible_candles:
+        candles = candles.tail(visible_candles).reset_index(drop=True)
+
     candle_data = candles[['time', 'open', 'high', 'low', 'close']].to_dict('records')
 
-    # Create entry/exit markers from trades
+    # Time window for filtering markers and secondary pane data
+    min_time = candles['time'].min() if len(candles) > 0 else 0
+
+    # Create entry/exit markers from trades (only within visible window)
     markers = []
     direction = config.get('direction', 'LONG')
 
     if len(trades) > 0:
         for _, trade in trades.iterrows():
-            # Entry marker
             entry_time = int(pd.to_datetime(trade['entry_time']).timestamp())
-            markers.append({
-                'time': entry_time,
-                'position': 'belowBar' if direction == 'LONG' else 'aboveBar',
-                'color': '#2196F3',
-                'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
-                'text': 'Entry'
-            })
+            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
+
+            # Skip trades entirely outside the visible window
+            if exit_time < min_time:
+                continue
+
+            # Entry marker
+            if entry_time >= min_time:
+                markers.append({
+                    'time': entry_time,
+                    'position': 'belowBar' if direction == 'LONG' else 'aboveBar',
+                    'color': '#2196F3',
+                    'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
+                    'text': 'Entry'
+                })
 
             # Exit marker
-            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
             is_win = trade.get('win', trade.get('pnl', 0) > 0)
             markers.append({
                 'time': exit_time,
@@ -709,20 +726,11 @@ def render_price_chart(
                 'text': f"{trade['r_multiple']:+.1f}R"
             })
 
-    # Compute barSpacing from the chart presets setting
-    # barSpacing controls how many candles are visible on initial render.
-    # Streamlit content area is ~700-900px wide; we target ~800px.
-    visible_candles = st.session_state.get('chart_visible_candles', 200)
     time_scale_opts = {
         "borderColor": "#2B2B2B",
         "timeVisible": True,
         "secondsVisible": False,
     }
-    if visible_candles > 0 and len(candle_data) > 0:
-        # barSpacing = pixels per candle. Lower = more zoomed out.
-        # Estimate ~800px chart width; clamp barSpacing to reasonable range.
-        bar_spacing = max(1, min(20, 800 / visible_candles))
-        time_scale_opts["barSpacing"] = bar_spacing
 
     # Chart configuration
     chart_options = {
@@ -794,6 +802,11 @@ def render_price_chart(
     # Build chart pane list (price chart + optional synced secondary panes)
     chart_panes = [{"chart": chart_options, "series": series}]
     if secondary_panes:
+        # Trim secondary pane data to match the visible candle window
+        for pane in secondary_panes:
+            if visible_candles > 0 and min_time > 0:
+                for s in pane.get("series", []):
+                    s["data"] = [d for d in s["data"] if d["time"] >= min_time]
         chart_panes.extend(secondary_panes)
 
     renderLightweightCharts(chart_panes, key=chart_key)
