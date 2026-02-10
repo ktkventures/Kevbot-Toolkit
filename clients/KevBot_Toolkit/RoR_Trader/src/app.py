@@ -1635,8 +1635,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     )
 
         # Dollar sizing deferred to portfolio level — use fixed defaults for R calculations
-        risk_per_trade = 100.0
-        starting_balance = 10000.0
+        risk_per_trade = float(edit_config.get('risk_per_trade', 100.0))
+        starting_balance = float(edit_config.get('starting_balance', 10000.0))
 
         st.divider()
 
@@ -1856,8 +1856,10 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 else:
                     st.caption(f"{config['symbol']} price data (no trades match filters)")
 
-                # Render the TradingView-style chart with indicator overlays
-                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors)
+                # Render the TradingView-style chart with indicator overlays + oscillator panes
+                osc_panes = build_secondary_panes(df, enabled_groups)
+                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
+                                   secondary_panes=osc_panes if osc_panes else None)
 
         # -----------------------------------------------------------------
         # RIGHT COLUMN: Confluence Drill-Down (always visible)
@@ -2080,18 +2082,19 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
                 if editing_id:
                     update_strategy(editing_id, strategy)
-                    st.success(f"Strategy '{strategy_name}' updated!")
+                    saved_id = editing_id
                 else:
                     save_strategy(strategy)
-                    st.success(f"Strategy '{strategy_name}' saved!")
+                    saved_id = strategy['id']
 
-                st.balloons()
-
-                # Reset for new strategy
+                # Clear builder state and navigate to saved strategy detail
                 st.session_state.step = 1
                 st.session_state.selected_confluences = set()
                 st.session_state.strategy_config = {}
                 st.session_state.editing_strategy_id = None
+                st.session_state.viewing_strategy_id = saved_id
+                st.session_state.nav_target = "My Strategies"
+                st.rerun()
 
 
 def render_my_strategies():
@@ -2104,7 +2107,18 @@ def render_my_strategies():
 
 def render_strategy_list():
     """Render the strategy list view with sorting and filtering."""
-    st.header("My Strategies")
+    col_header, col_btn = st.columns([4, 1])
+    with col_header:
+        st.header("My Strategies")
+    with col_btn:
+        st.write("")  # vertical spacing to align with header
+        if st.button("+ New Strategy", type="primary"):
+            st.session_state.nav_target = "Strategy Builder"
+            st.session_state.step = 1
+            st.session_state.strategy_config = {}
+            st.session_state.selected_confluences = set()
+            st.session_state.editing_strategy_id = None
+            st.rerun()
 
     strategies = load_strategies()
 
@@ -2517,11 +2531,13 @@ def render_live_backtest(strat: dict):
             show_indicators.extend(get_overlay_indicators_for_group(group))
             indicator_colors.update(get_overlay_colors_for_group(group))
 
+        osc_panes = build_secondary_panes(df, enabled_groups)
         render_price_chart(
             df, trades, strat,
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
-            chart_key='detail_price_chart'
+            chart_key='detail_price_chart',
+            secondary_panes=osc_panes if osc_panes else None
         )
 
         # Trade history table
@@ -2676,17 +2692,12 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
             # All charts show trade entry/exit markers for reference.
             grp_indicators = []
             grp_colors = {}
-            secondary_panes = []
 
             if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
                 grp_indicators = get_overlay_indicators_for_group(group)
                 grp_colors = get_overlay_colors_for_group(group)
-            elif group.base_template in ("macd_line", "macd_histogram"):
-                if "macd_line" in df.columns:
-                    secondary_panes.append(_build_macd_lwc_pane(df, group))
-            elif group.base_template == "rvol":
-                if "rvol" in df.columns:
-                    secondary_panes.append(_build_rvol_lwc_pane(df, group))
+
+            secondary_panes = build_secondary_panes(df, [group])
 
             render_price_chart(
                 df,
@@ -2761,11 +2772,13 @@ def render_forward_test_view(strat: dict):
             show_indicators.extend(get_overlay_indicators_for_group(group))
             indicator_colors.update(get_overlay_colors_for_group(group))
 
+        osc_panes = build_secondary_panes(df, enabled_groups)
         render_price_chart(
             df, all_trades, strat,
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
-            chart_key='forward_test_chart'
+            chart_key='forward_test_chart',
+            secondary_panes=osc_panes if osc_panes else None
         )
 
     with tab_trades:
@@ -5237,7 +5250,6 @@ def render_preview_tab(group: ConfluenceGroup):
     # Oscillator templates show a synced secondary pane (MACD/RVOL) below the price chart.
     show_indicators = []
     indicator_colors_map = {}
-    secondary_panes = []
 
     if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
         st.markdown("**Price Chart with Indicator Overlay**")
@@ -5245,12 +5257,10 @@ def render_preview_tab(group: ConfluenceGroup):
         indicator_colors_map = get_overlay_colors_for_group(group)
     elif group.base_template in ("macd_line", "macd_histogram"):
         st.markdown("**Price Chart + MACD**")
-        if "macd_line" in df.columns:
-            secondary_panes.append(_build_macd_lwc_pane(df, group))
     elif group.base_template == "rvol":
         st.markdown("**Price Chart + Relative Volume**")
-        if "rvol" in df.columns:
-            secondary_panes.append(_build_rvol_lwc_pane(df, group))
+
+    secondary_panes = build_secondary_panes(df, [group])
 
     render_price_chart(
         df,
@@ -5269,6 +5279,23 @@ def render_preview_tab(group: ConfluenceGroup):
     # --- Section 3: Trigger Events ---
     st.markdown("**Trigger Events**")
     _render_trigger_events_table(df, group, template)
+
+
+def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
+    """Build lightweight-charts secondary panes for oscillator-type confluence groups."""
+    panes = []
+    has_macd = False
+    has_rvol = False
+    for group in groups:
+        if group.base_template in ("macd_line", "macd_histogram") and not has_macd:
+            if "macd_line" in df.columns:
+                panes.append(_build_macd_lwc_pane(df, group))
+                has_macd = True
+        elif group.base_template == "rvol" and not has_rvol:
+            if "rvol" in df.columns:
+                panes.append(_build_rvol_lwc_pane(df, group))
+                has_rvol = True
+    return panes
 
 
 def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:

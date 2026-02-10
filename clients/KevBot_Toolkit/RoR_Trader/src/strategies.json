@@ -421,5 +421,55 @@
     "id": 11,
     "created_at": "2026-02-10T15:16:14.867027",
     "forward_test_start": "2026-02-10T15:16:14.867027"
+  },
+  {
+    "name": "MSFT LONG - MACD Line (Default): Bullish Cross",
+    "symbol": "MSFT",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "macd_cross_bull",
+    "entry_trigger_confluence_id": "macd_line_default_cross_bull",
+    "exit_triggers": [
+      "macd_cross_bear"
+    ],
+    "exit_trigger_confluence_ids": [
+      "macd_line_default_cross_bear"
+    ],
+    "exit_trigger_names": [
+      "MACD Line (Default): Bearish Cross"
+    ],
+    "exit_trigger": "macd_cross_bear",
+    "exit_trigger_confluence_id": "macd_line_default_cross_bear",
+    "entry_trigger_name": "MACD Line (Default): Bullish Cross",
+    "exit_trigger_name": "MACD Line (Default): Bearish Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "stop_config": {
+      "method": "atr",
+      "atr_mult": 1.5
+    },
+    "target_config": null,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 42,
+    "confluence": [
+      "1M-RVOL-LOW"
+    ],
+    "kpis": {
+      "total_trades": 140,
+      "win_rate": 36.42857142857142,
+      "profit_factor": 1.7418119406508725,
+      "avg_r": 0.37315416074754115,
+      "total_r": 52.24158250465576,
+      "daily_r": 2.0896633001862304,
+      "r_squared": 0.7634,
+      "final_balance": 15224.158250465576,
+      "total_pnl": 5224.158250465576
+    },
+    "forward_testing": true,
+    "alerts": true,
+    "id": 12,
+    "created_at": "2026-02-10T15:39:14.040032",
+    "forward_test_start": "2026-02-10T15:39:14.040032"
   }
 ]
