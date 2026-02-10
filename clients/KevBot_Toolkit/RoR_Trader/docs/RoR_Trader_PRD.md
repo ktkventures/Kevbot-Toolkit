@@ -760,6 +760,10 @@ My Strategies → Strategy Detail → Edit Strategy
   - **Indicator-state triggers** `[C]` — fill at bar close (e.g., EMA crossover, MACD cross, RVOL threshold). These are computed from closed bar values and have no meaningful intra-bar price
 - [ ] Execution type as trigger property — add `"execution": "bar_close"` or `"execution": "intra_bar"` to trigger definitions in TEMPLATES config; `generate_trades()` uses this to select pricing logic
 - [ ] Execution type labels — display `[C]` (bar close) or `[I]` (intra-bar) suffix on trigger names throughout the UI (Strategy Builder dropdowns, strategy detail, trade history) so users always know how each trigger fills
+- [ ] Strategy-level execution mode — setting in Strategy Builder Step 1:
+  - **Conservative `[C]`** (default) — all entries/exits at bar close in backtests; live trading can still use intra-bar. Backtests under-promise so strategies that pass have a built-in margin of safety.
+  - **Intra-bar `[I]`** — entries/exits at estimated trigger price using bar high/low in backtests. More realistic but relies on OHLCV approximation. Live trading uses precise real-time fills.
+- [ ] Same-bar conflict resolution — when both stop and target are breached within the same bar, always assume the **worse outcome** (stop hit first). Keeps backtests pessimistic regardless of execution mode.
 - [ ] Note: stop losses and take profits already use intra-bar logic (fills at stop/target price using bar high/low, not candle close). This work extends that precision to entry triggers and adds the execution type transparency layer.
 
 **UX Improvements:**
@@ -800,6 +804,15 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Webhook trigger audit log — plot actual fired webhook alerts on the price chart for visual verification that signals are firing correctly in production
 - [ ] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
 - [ ] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
+- [ ] Intra-bar real-time alert engine — WebSocket streaming via Alpaca for `[I]` triggers:
+  - Subscribe to real-time trades/quotes for active strategy symbols
+  - Build partial OHLCV bars from tick data
+  - Check price-level trigger conditions against live ticks (e.g., price crossing UT Bot trail)
+  - Fire alerts the moment condition is met, not at bar close
+  - `[C]` triggers continue using the existing bar-close polling model
+  - Mirrors TradingView's "once per bar" (intra-bar) vs. "once per bar close" alert modes
+  - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
+  - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
 
 ---
 
