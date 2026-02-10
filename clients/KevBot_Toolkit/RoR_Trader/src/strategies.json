@@ -369,5 +369,57 @@
     "id": 10,
     "created_at": "2026-02-10T12:13:34.360988",
     "forward_test_start": "2026-02-10T12:13:34.360988"
+  },
+  {
+    "name": "QQQ LONG - EMA Stack (Default): Short > Mid Cross",
+    "symbol": "QQQ",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_triggers": [
+      "ema_cross_bear"
+    ],
+    "exit_trigger_confluence_ids": [
+      "ema_stack_default_cross_bear"
+    ],
+    "exit_trigger_names": [
+      "EMA Stack (Default): Short < Mid Cross"
+    ],
+    "exit_trigger": "ema_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "EMA Stack (Default): Short < Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "stop_config": {
+      "method": "swing",
+      "lookback": 5,
+      "padding": 0.05
+    },
+    "target_config": null,
+    "starting_balance": 10000.0,
+    "data_days": 90,
+    "data_seed": 42,
+    "confluence": [
+      "1M-MACD_LINE-M<S+",
+      "1M-EMA_STACK-SML"
+    ],
+    "kpis": {
+      "total_trades": 202,
+      "win_rate": 27.722772277227726,
+      "profit_factor": 1.5918965857103113,
+      "avg_r": 0.24342530981599186,
+      "total_r": 49.17191258283036,
+      "daily_r": 0.6556255011044048,
+      "r_squared": 0.304,
+      "final_balance": 14917.191258283035,
+      "total_pnl": 4917.1912582830355
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 11,
+    "created_at": "2026-02-10T15:16:14.867027",
+    "forward_test_start": "2026-02-10T15:16:14.867027"
   }
 ]

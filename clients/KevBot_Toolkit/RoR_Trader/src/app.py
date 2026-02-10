@@ -554,12 +554,24 @@ def format_exit_triggers_display(strat: dict) -> str:
     return strat.get('exit_trigger', 'Unknown')
 
 
-def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, risk_per_trade: float = 100) -> dict:
-    """Calculate strategy KPIs."""
+def count_trading_days(df: pd.DataFrame) -> int:
+    """Count unique trading days in a DataFrame with a DatetimeIndex."""
+    return max(df.index.normalize().nunique(), 1)
+
+
+def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
+                   risk_per_trade: float = 100, total_trading_days: int = None) -> dict:
+    """Calculate strategy KPIs.
+
+    Args:
+        total_trading_days: Total trading days in the data period (all market days,
+            not just days with trades). When provided, Daily R = total_r / total_trading_days.
+            When None, falls back to counting unique exit dates.
+    """
     if len(trades_df) == 0:
         return {
             "total_trades": 0, "win_rate": 0, "profit_factor": 0,
-            "avg_r": 0, "total_r": 0, "daily_r": 0,
+            "avg_r": 0, "total_r": 0, "daily_r": 0, "r_squared": 0.0,
             "final_balance": starting_balance, "total_pnl": 0
         }
 
@@ -570,12 +582,23 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, ris
     gross_loss = abs(losses["r_multiple"].sum()) if len(losses) > 0 else 0
     total_r = trades_df["r_multiple"].sum()
 
-    # Trading days
-    if "exit_time" in trades_df.columns:
+    # Trading days — prefer total period days over just days with exits
+    if total_trading_days is not None and total_trading_days > 0:
+        trading_days = total_trading_days
+    elif "exit_time" in trades_df.columns:
         trading_days = trades_df["exit_time"].dt.date.nunique()
     else:
         trading_days = 1
     trading_days = max(trading_days, 1)
+
+    # R-squared of equity curve (smoothness: 1.0 = perfectly linear growth)
+    if len(trades_df) >= 2:
+        cumulative_r = trades_df["r_multiple"].cumsum().values
+        x = np.arange(len(cumulative_r))
+        correlation = np.corrcoef(x, cumulative_r)[0, 1]
+        r_squared = round(correlation ** 2, 4) if not np.isnan(correlation) else 0.0
+    else:
+        r_squared = 0.0
 
     # Dollar P&L
     total_pnl = total_r * risk_per_trade
@@ -588,6 +611,7 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, ris
         "avg_r": trades_df["r_multiple"].mean(),
         "total_r": total_r,
         "daily_r": total_r / trading_days,
+        "r_squared": r_squared,
         "final_balance": final_balance,
         "total_pnl": total_pnl,
     }
@@ -598,7 +622,8 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000, ris
 # =============================================================================
 
 def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trades: int = 5,
-                        starting_balance: float = 10000, risk_per_trade: float = 100) -> pd.DataFrame:
+                        starting_balance: float = 10000, risk_per_trade: float = 100,
+                        total_trading_days: int = None) -> pd.DataFrame:
     """
     Analyze how different confluence conditions affect results.
 
@@ -618,7 +643,8 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
     if len(base_trades) < min_trades:
         return pd.DataFrame()
 
-    base_kpis = calculate_kpis(base_trades, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
+    base_kpis = calculate_kpis(base_trades, starting_balance=starting_balance,
+                               risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
     # Find all unique confluence records
     all_records = set()
@@ -636,7 +662,8 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
         subset = base_trades[mask]
 
         if len(subset) >= min_trades:
-            kpis = calculate_kpis(subset, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
+            kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
             results.append({
                 "confluence": record,
@@ -646,6 +673,7 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
                 "avg_r": kpis["avg_r"],
                 "total_r": kpis["total_r"],
                 "daily_r": kpis["daily_r"],
+                "r_squared": kpis["r_squared"],
                 "pf_change": safe_subtract(kpis["profit_factor"], base_kpis["profit_factor"]),
                 "wr_change": kpis["win_rate"] - base_kpis["win_rate"],
             })
@@ -658,7 +686,8 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
 
 
 def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10,
-                           starting_balance: float = 10000, risk_per_trade: float = 100) -> pd.DataFrame:
+                           starting_balance: float = 10000, risk_per_trade: float = 100,
+                           total_trading_days: int = None) -> pd.DataFrame:
     """Find the best confluence combinations automatically."""
     if len(trades_df) == 0:
         return pd.DataFrame()
@@ -679,7 +708,8 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
             subset = trades_df[mask]
 
             if len(subset) >= min_trades:
-                kpis = calculate_kpis(subset, starting_balance=starting_balance, risk_per_trade=risk_per_trade)
+                kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                      risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
                 results.append({
                     "combination": combo_set,
@@ -1101,9 +1131,11 @@ def main():
 
         # Data settings (always visible)
         st.subheader("Data Settings")
-        data_days = st.slider("Historical Days", 7, 90, 30)
+        saved_data_days = st.session_state.get('strategy_config', {}).get('data_days', 30)
+        data_days = st.slider("Historical Days", 7, 90, saved_data_days)
         if not is_alpaca_configured():
-            data_seed = st.number_input("Data Seed", value=42, help="Change for different random data")
+            saved_data_seed = st.session_state.get('strategy_config', {}).get('data_seed', 42)
+            data_seed = st.number_input("Data Seed", value=saved_data_seed, help="Change for different random data")
         else:
             data_seed = 42  # Not used with real data
 
@@ -1731,19 +1763,22 @@ def render_strategy_builder(data_days: int, data_seed: int):
             st.caption("No confluence filters active. Add conditions below to refine your strategy.")
 
         # KPIs
+        period_trading_days = count_trading_days(df)
         kpis = calculate_kpis(
             filtered_trades,
             starting_balance=config.get('starting_balance', 10000.0),
             risk_per_trade=config.get('risk_per_trade', 100.0),
+            total_trading_days=period_trading_days,
         )
 
-        kpi_cols = st.columns(6)
+        kpi_cols = st.columns(7)
         kpi_cols[0].metric("Trades", kpis["total_trades"])
         kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
         kpi_cols[2].metric("Profit Factor", f"{kpis['profit_factor']:.2f}" if kpis['profit_factor'] != float('inf') else "∞")
         kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
         kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
         kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+        kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
 
         # Main content: Chart/Equity (left) + Confluence panel (right)
         left_col, right_col = st.columns([1, 1])
@@ -1833,14 +1868,15 @@ def render_strategy_builder(data_days: int, data_seed: int):
             mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
 
             if mode == "Drill-Down":
-                sort_by = st.selectbox("Sort by", ["Profit Factor", "Win Rate", "Daily R", "Trades"], index=0, label_visibility="collapsed")
+                sort_by = st.selectbox("Sort by", ["Profit Factor", "Win Rate", "Daily R", "R² Smoothness", "Trades"], index=0, label_visibility="collapsed")
 
-                sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "Trades": "total_trades"}
+                sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "R² Smoothness": "r_squared", "Trades": "total_trades"}
 
                 confluence_df = analyze_confluences(
                     trades, selected, min_trades=3,
                     starting_balance=config.get('starting_balance', 10000.0),
                     risk_per_trade=config.get('risk_per_trade', 100.0),
+                    total_trading_days=period_trading_days,
                 )
 
                 if len(confluence_df) > 0:
@@ -1852,7 +1888,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
                         conf_display = format_confluence_record(conf, enabled_groups)  # Formatted for display
                         is_selected = conf in selected
 
-                        col1, col2, col3, col4, col5 = st.columns([0.5, 3, 1, 1, 1])
+                        col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2.5, 1, 1, 1, 1])
 
                         with col1:
                             if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
@@ -1872,6 +1908,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
                             st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "PF: ∞")
                         with col5:
                             st.caption(f"WR: {row['win_rate']:.0f}%")
+                        with col6:
+                            st.caption(f"R²: {row['r_squared']:.2f}")
                 else:
                     st.info("Not enough trades for analysis")
 
@@ -1888,6 +1926,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
                             trades, max_depth, min_trades, top_n=10,
                             starting_balance=config.get('starting_balance', 10000.0),
                             risk_per_trade=config.get('risk_per_trade', 100.0),
+                            total_trading_days=period_trading_days,
                         )
 
                     if len(best) > 0:
@@ -1895,7 +1934,7 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
                 if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
                     for _, row in st.session_state.auto_results.iterrows():
-                        col1, col2, col3, col4 = st.columns([0.5, 3, 1, 1])
+                        col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1, 1, 1])
 
                         # Format the combination for display
                         combo_display = format_confluence_set(row['combination'], enabled_groups)
@@ -1908,6 +1947,8 @@ def render_strategy_builder(data_days: int, data_seed: int):
                             pf = row['profit_factor']
                             st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "∞")
                         with col4:
+                            st.caption(f"R²: {row['r_squared']:.2f}")
+                        with col5:
                             if st.button("Apply", key=f"apply_{row['combo_str']}"):
                                 st.session_state.selected_confluences = row['combination'].copy()
                                 st.rerun()
@@ -1925,9 +1966,17 @@ def render_strategy_builder(data_days: int, data_seed: int):
                 )
 
                 st.dataframe(
-                    display[['time', 'entry_trigger', 'exit_trigger', 'R', 'result', 'confluences']],
+                    display[['time', 'entry_trigger', 'exit_reason', 'R', 'result', 'confluences']],
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    column_config={
+                        'time': 'Time',
+                        'entry_trigger': 'Entry',
+                        'exit_reason': 'Exit Reason',
+                        'R': 'R-Multiple',
+                        'result': 'Result',
+                        'confluences': 'Confluences',
+                    }
                 )
 
         # Navigation
@@ -1993,12 +2042,13 @@ def render_strategy_builder(data_days: int, data_seed: int):
 
         # KPIs
         st.subheader("Backtest Results")
-        kpi_cols = st.columns(5)
+        kpi_cols = st.columns(6)
         kpi_cols[0].metric("Trades", kpis.get("total_trades", 0))
         kpi_cols[1].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
         kpi_cols[2].metric("Profit Factor", f"{kpis.get('profit_factor', 0):.2f}")
         kpi_cols[3].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
         kpi_cols[4].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+        kpi_cols[5].metric("R²", f"{kpis.get('r_squared', 0):.2f}")
 
         # Options
         st.subheader("Options")
@@ -2330,7 +2380,7 @@ def render_saved_kpis(strat: dict):
     """Display saved KPIs for legacy strategies that cannot be re-backtested."""
     kpis = strat.get('kpis', {})
 
-    kpi_cols = st.columns(6)
+    kpi_cols = st.columns(7)
     kpi_cols[0].metric("Trades", kpis.get("total_trades", 0))
     kpi_cols[1].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
     pf = kpis.get('profit_factor', 0)
@@ -2338,6 +2388,7 @@ def render_saved_kpis(strat: dict):
     kpi_cols[3].metric("Avg R", f"{kpis.get('avg_r', 0):+.2f}")
     kpi_cols[4].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
     kpi_cols[5].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+    kpi_cols[6].metric("R²", f"{kpis.get('r_squared', 0):.2f}")
 
     st.subheader("Strategy Configuration")
     st.markdown(f"**Stop Loss:** {format_stop_display(strat)}")
@@ -2382,10 +2433,11 @@ def render_live_backtest(strat: dict):
         trades,
         starting_balance=strat.get('starting_balance', 10000.0),
         risk_per_trade=strat.get('risk_per_trade', 100.0),
+        total_trading_days=count_trading_days(df),
     )
 
     # KPI row (R-based metrics only — dollar sizing deferred to portfolio level)
-    kpi_cols = st.columns(6)
+    kpi_cols = st.columns(7)
     kpi_cols[0].metric("Trades", kpis["total_trades"])
     kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
     pf = kpis['profit_factor']
@@ -2393,6 +2445,7 @@ def render_live_backtest(strat: dict):
     kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
     kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
     kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+    kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
 
     # Tabbed content
     tab_backtest, tab_confluence, tab_config, tab_alerts = st.tabs(["Backtest Results", "Confluence Analysis", "Configuration", "Alerts"])
@@ -2677,7 +2730,12 @@ def render_forward_test_view(strat: dict):
         return
 
     # KPI comparison
-    render_kpi_comparison(backtest_trades, forward_trades)
+    boundary_ts = boundary_dt
+    if df.index.tz is not None and boundary_ts.tzinfo is None:
+        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
+    bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
+    fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
+    render_kpi_comparison(backtest_trades, forward_trades, bt_trading_days, fw_trading_days)
 
     # Tabs
     all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
@@ -2835,16 +2893,17 @@ def render_strategy_alerts_tab(strat: dict):
                 )
 
 
-def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
+def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame,
+                          bt_trading_days: int = None, fw_trading_days: int = None):
     """Render side-by-side KPI comparison between backtest and forward test."""
-    bt_kpis = calculate_kpis(backtest_trades)
-    fw_kpis = calculate_kpis(forward_trades)
+    bt_kpis = calculate_kpis(backtest_trades, total_trading_days=bt_trading_days)
+    fw_kpis = calculate_kpis(forward_trades, total_trading_days=fw_trading_days)
 
     col_bt, col_fw = st.columns(2)
 
     with col_bt:
         st.subheader("Backtest")
-        kpi_cols = st.columns(6)
+        kpi_cols = st.columns(7)
         kpi_cols[0].metric("Trades", bt_kpis["total_trades"])
         kpi_cols[1].metric("Win Rate", f"{bt_kpis['win_rate']:.1f}%")
         pf = bt_kpis['profit_factor']
@@ -2852,13 +2911,14 @@ def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.Data
         kpi_cols[3].metric("Avg R", f"{bt_kpis['avg_r']:+.2f}")
         kpi_cols[4].metric("Total R", f"{bt_kpis['total_r']:+.1f}")
         kpi_cols[5].metric("Daily R", f"{bt_kpis['daily_r']:+.2f}")
+        kpi_cols[6].metric("R²", f"{bt_kpis['r_squared']:.2f}")
 
     with col_fw:
         st.subheader("Forward Test")
         if len(forward_trades) == 0:
             st.info("No forward test trades yet.")
         else:
-            kpi_cols = st.columns(6)
+            kpi_cols = st.columns(7)
 
             # Trades (no delta — count isn't comparable)
             kpi_cols[0].metric("Trades", fw_kpis["total_trades"])
@@ -2890,6 +2950,11 @@ def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.Data
             daily_r_delta = fw_kpis['daily_r'] - bt_kpis['daily_r']
             kpi_cols[5].metric("Daily R", f"{fw_kpis['daily_r']:+.2f}",
                                delta=f"{daily_r_delta:+.2f}")
+
+            # R² with delta
+            r2_delta = fw_kpis['r_squared'] - bt_kpis['r_squared']
+            kpi_cols[6].metric("R²", f"{fw_kpis['r_squared']:.2f}",
+                               delta=f"{r2_delta:+.2f}")
 
 
 def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime):
@@ -3112,6 +3177,7 @@ def load_strategy_into_builder(strat: dict):
     st.session_state.step = 2
     st.session_state.viewing_strategy_id = None
     st.session_state.confirm_edit_id = None
+    st.session_state.nav_target = "Strategy Builder"
 
     st.rerun()
 

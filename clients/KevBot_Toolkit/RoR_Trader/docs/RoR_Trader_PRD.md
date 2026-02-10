@@ -726,14 +726,14 @@ My Strategies → Strategy Detail → Edit Strategy
 ### Phase 8: QA, Polish & UX — "Get Live-Tradeable"
 *Comprehensive review pass and UX improvements — the gate to live trading with real money.*
 
-**Bug Fixes (from Feb 10 testing):**
-- [ ] Edit strategy navigation broken — `load_strategy_into_builder()` sets `step=2` but never sets `nav_target = "Strategy Builder"`, so "Edit Anyway" reruns the current page without navigating to the builder (appears to "fade out and do nothing")
-- [ ] Fixed dollar stop exit reason incorrect — fixed dollar stop losses appear to trigger at -1R correctly but `exit_reason` shows `"signal_exit"` instead of `"stop_loss"`; investigate priority logic in `generate_trades()` for fixed_dollar interaction with signal-based exit triggers
-- [ ] Step 1 state lost on "Back" from Step 2 — clicking "← Back to Setup" resets all Step 1 inputs to defaults because Streamlit widgets re-render with initial values rather than reading from `st.session_state.strategy_config`; fix by either (a) pre-populating widget defaults from session state or (b) making Step 1 parameters editable inline on Step 2 via sidebar/expander
+**Bug Fixes (from Feb 10 testing) — COMPLETED (Feb 10, 2026):**
+- [x] Edit strategy navigation broken — `load_strategy_into_builder()` was missing `nav_target = "Strategy Builder"`; added before `st.rerun()` so Edit now navigates to the builder
+- [x] Fixed dollar stop exit reason incorrect — was a display bug, not logic: Step 2 Trade List showed `exit_trigger` column (trigger ID) instead of `exit_reason` column ("stop_loss", "target", etc.); swapped column and added proper labels
+- [x] Step 1 state lost on "Back" from Step 2 — `data_days` and `data_seed` widgets had hardcoded defaults; now read from `st.session_state.strategy_config` so values persist when navigating back
 
-**KPI Accuracy Audit:**
-- [ ] Fix Daily R calculation — currently `total_r / unique_exit_dates` (only counts days with trade exits); should be `total_r / total_trading_days_in_period` (all market days from first bar to last bar in backtest range, regardless of trade activity); this makes Daily R a true capital efficiency metric that penalizes infrequent trading
-- [ ] Add equity curve smoothness metric — **R-squared (R²) of equity curve** as primary smoothness KPI: measures how closely cumulative R follows a straight line (1.0 = perfectly linear growth, lower = choppier); add to KPI panel on Strategy Builder Step 2, strategy detail, and drill-down results; complements profit factor by detecting strategies that look profitable only due to one big outlier trade
+**KPI Accuracy Audit — COMPLETED (Feb 10, 2026):**
+- [x] Fix Daily R calculation — `calculate_kpis()` now accepts `total_trading_days` param; all call sites pass `count_trading_days(df)` which counts unique trading days in the full data period (not just days with exits); makes Daily R a true capital efficiency metric
+- [x] Add equity curve smoothness metric — **R² of equity curve** added to `calculate_kpis()` return dict; displayed on Strategy Builder Step 2, Step 3 summary, live backtest, saved KPIs, forward test comparison (with delta), confluence drill-down (with sort option), and auto-search results
 - [ ] General KPI accuracy audit — ensure all metrics are correct and displayed in the right places across all views
 - [ ] Validate KPI consistency — same strategy should show identical metrics on cards, detail pages, and drill-down
 
