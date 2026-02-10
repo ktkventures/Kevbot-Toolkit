@@ -800,13 +800,15 @@ My Strategies → Strategy Detail → Edit Strategy
   - **Conservative `[C]`** (default) — all entries/exits at bar close in backtests
   - **Intra-bar `[I]`** — entries/exits at estimated trigger price using bar high/low in backtests
 
-**UX Improvements:**
-- [ ] Oscillator panes on Strategy Builder Step 2 chart — detect relevant oscillator groups (MACD, RVOL) from enabled groups and pass `secondary_panes` to `render_price_chart()`; infrastructure already exists via the `secondary_panes` parameter, just needs to be wired up (same pattern as Confluence Analysis tab)
-- [ ] Oscillator panes on Strategy Detail main chart — Backtest Results tab and Forward Test tab price charts should auto-include oscillator panes for relevant groups used by the strategy (entry/exit triggers or confluence conditions); currently only shown in the Confluence Analysis sub-tabs
-- [ ] Save navigates to strategy detail — after saving/updating a strategy, navigate to the saved strategy's detail page (`viewing_strategy_id` + `nav_target = "My Strategies"`) instead of resetting to Step 1; gives immediate feedback that the strategy was saved correctly
+**UX Improvements — Quick Wins COMPLETED (Feb 10, 2026):**
+- [x] Oscillator panes on Strategy Builder Step 2 chart — new `build_secondary_panes()` helper detects MACD/RVOL groups from enabled groups, deduplicates (one pane per type), and passes `secondary_panes` to `render_price_chart()`; also refactored Confluence Analysis and Preview tabs to use the same helper
+- [x] Oscillator panes on Strategy Detail main chart — Live Backtest and Forward Test price charts now auto-include oscillator panes via `build_secondary_panes()`
+- [x] Save navigates to strategy detail — after save/update, sets `viewing_strategy_id` + `nav_target = "My Strategies"` and calls `st.rerun()` to land on the saved strategy's detail page
+- [x] Step 1 state preservation — all widgets now read from `edit_config` (session state); `risk_per_trade` and `starting_balance` were the last two hardcoded defaults, now fixed
+- [x] "Create New Strategy" button on My Strategies page — follows Portfolios page pattern with `st.columns([4, 1])` header layout
+
+**UX Improvements — Remaining:**
 - [ ] Strategy name and trigger display improvements — shorter default name format (e.g., `"{symbol} {direction} - {entry_trigger_short_name}"`); display entry trigger(s), exit trigger(s), stop method, and target method as small reference badges/text on strategy cards and strategy detail header; currently only confluence conditions are shown
-- [ ] Step 1 state preservation — ensure navigating back from Step 2 to Step 1 preserves all current settings (symbol, direction, triggers, stop/target config) by pre-populating widget defaults from `st.session_state.strategy_config`; alternatively, make Step 1 parameters editable inline on Step 2 (sidebar or expander) to eliminate the need to go back
-- [ ] "Create New Strategy" button on My Strategies page (consistent with Portfolios page pattern)
 - [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 - [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
