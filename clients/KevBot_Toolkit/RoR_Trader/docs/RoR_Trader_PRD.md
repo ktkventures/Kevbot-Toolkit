@@ -3,7 +3,7 @@
 **Version:** 0.8
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 9 Up Next — Optimization Workflow (Systematic Strategy Construction); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
+**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
 
 ---
 
@@ -544,6 +544,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 19. [x] Per-chart visible candles selector — compact selectbox above every price chart (7 call sites); `@st.fragment` wrapper prevents full-page rerun on selection change (preserves active tab); options: Default, 50, 100, 200, 400, All
 20. [x] 2-column card grid and trigger badges — strategy and portfolio lists in 2-column grid with stacked cards; strategy cards show Entry/Exit, Stop/Target, and Confluence badges below KPIs; strategy detail header adds Stop and Target metadata row; default strategy name shortened to `"{symbol} {direction} - {id}"`
 21. [x] Confluence drill-down enhancements — unified search bar + filter dialog (`@st.dialog`) across Drill-Down and Auto-Search modes; text search filters by indicator/combination name; filter lightbox with sort (6 KPIs + direction), min thresholds (Trades, Win Rate, Profit Factor, Daily R, R²), and Auto-Search max depth; all settings persisted in `confluence_filters` session state; replaces hardcoded `min_trades=3` and inline sort dropdown
+22. [x] "Exit After N Candles" bar count exit trigger — new `bar_count` EXIT-only template in TEMPLATES (no indicators/outputs); hybrid approach with `bar_count_exit` parameter in `generate_trades()` trade loop (can't pre-compute as DataFrame column); default 4 candles; priority 3 in exit chain (stop > target > bar_count > signal); migration auto-appends `bar_count_default` group for existing users; validation prevents multiple bar count exits per strategy
 
 ---
 
@@ -852,12 +853,12 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] "None" as a valid variation — compare having no take profit vs. various target levels
 - [ ] Custom packs — users can create custom target packs
 
-**"Exit After N Candles" Default Exit:**
-- [ ] New interpreter/trigger — "Bar Count Exit" that fires after N candles since entry (configurable N)
-- [ ] Default exit trigger for new strategies — when creating a new strategy, start with "Exit after N candles" as the default exit trigger
-- [ ] Purpose — isolates entry trigger quality by removing exit signal noise; if an entry consistently produces positive movement within N bars, the entry has genuine edge
-- [ ] Configurable N — parameter on the trigger (e.g., 1, 2, 3, 4, 5, 10, 20 bars)
-- [ ] Works as a confluence group template — follows existing template/version structure so it appears in exit trigger dropdowns
+**"Exit After N Candles" Default Exit:** ✓
+- [x] New interpreter/trigger — "Bar Count Exit" that fires after N candles since entry (configurable N)
+- [x] Default exit trigger for new strategies — when creating a new strategy, start with "Exit after N candles" as the default exit trigger
+- [x] Purpose — isolates entry trigger quality by removing exit signal noise; if an entry consistently produces positive movement within N bars, the entry has genuine edge
+- [x] Configurable N — parameter on the trigger (e.g., 1, 2, 3, 4, 5, 10, 20 bars)
+- [x] Works as a confluence group template — follows existing template/version structure so it appears in exit trigger dropdowns
 
 **Optimizable Variables Box (Strategy Builder):**
 - [ ] Collapsible section on Strategy Builder main area — styled like the Extended KPIs expander
