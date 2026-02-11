@@ -821,6 +821,97 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
 
 
 # =============================================================================
+# CONFLUENCE FILTER DIALOG & HELPERS
+# =============================================================================
+
+@st.dialog("Filter & Sort")
+def confluence_filter_dialog(show_auto_search_options: bool = False):
+    """Lightbox dialog for confluence drill-down filter and sort settings."""
+    filters = st.session_state.confluence_filters
+
+    st.markdown("**Sort**")
+    sort_options = ["Profit Factor", "Win Rate", "Daily R", "R² Smoothness", "Trades", "Avg R"]
+    sort_map = {
+        "Profit Factor": "profit_factor", "Win Rate": "win_rate",
+        "Daily R": "daily_r", "R² Smoothness": "r_squared",
+        "Trades": "total_trades", "Avg R": "avg_r"
+    }
+    reverse_sort_map = {v: k for k, v in sort_map.items()}
+    current_sort_label = reverse_sort_map.get(filters['sort_by'], "Profit Factor")
+    sort_by = st.selectbox("Sort by", sort_options, index=sort_options.index(current_sort_label))
+    sort_dir = st.radio("Direction", ["Descending", "Ascending"], horizontal=True,
+                        index=0 if not filters['sort_ascending'] else 1)
+
+    st.markdown("**Minimum Thresholds**")
+    min_trades = st.number_input("Min Trades", min_value=1, max_value=100,
+                                  value=filters.get('min_trades', 3))
+    min_wr = st.number_input("Min Win Rate (%)", min_value=0.0, max_value=100.0,
+                              value=filters.get('min_win_rate') or 0.0, step=5.0)
+    min_pf = st.number_input("Min Profit Factor", min_value=0.0, max_value=100.0,
+                              value=filters.get('min_profit_factor') or 0.0, step=0.1)
+    min_dr = st.number_input("Min Daily R", min_value=-10.0, max_value=10.0,
+                              value=filters.get('min_daily_r') or -10.0, step=0.05)
+    min_r2 = st.number_input("Min R²", min_value=0.0, max_value=1.0,
+                              value=filters.get('min_r_squared') or 0.0, step=0.05)
+
+    if show_auto_search_options:
+        st.markdown("**Auto-Search Settings**")
+        max_depth = st.slider("Max factors", 1, 4, filters.get('max_depth', 2))
+    else:
+        max_depth = filters.get('max_depth', 2)
+
+    if st.button("Apply Filters", type="primary", use_container_width=True):
+        st.session_state.confluence_filters = {
+            'sort_by': sort_map[sort_by],
+            'sort_ascending': sort_dir == "Ascending",
+            'min_trades': int(min_trades),
+            'min_win_rate': min_wr if min_wr > 0 else None,
+            'min_profit_factor': min_pf if min_pf > 0 else None,
+            'min_daily_r': min_dr if min_dr > -10 else None,
+            'min_r_squared': min_r2 if min_r2 > 0 else None,
+            'max_depth': max_depth,
+            'search_query': st.session_state.confluence_filters.get('search_query', ''),
+        }
+        st.rerun()
+
+
+def apply_confluence_filters(df: pd.DataFrame, filters: dict, search_query: str, groups: list) -> pd.DataFrame:
+    """Apply search, KPI filters, and sorting to confluence results."""
+    if len(df) == 0:
+        return df
+
+    # Text search on formatted display name
+    if search_query.strip():
+        query_lower = search_query.strip().lower()
+        if 'confluence' in df.columns:
+            df = df[df['confluence'].apply(
+                lambda c: query_lower in format_confluence_record(c, groups).lower()
+            )]
+        elif 'combo_str' in df.columns:
+            df = df[df['combination'].apply(
+                lambda combo: any(query_lower in format_confluence_record(c, groups).lower() for c in combo)
+            )]
+
+    # KPI filters
+    if filters.get('min_win_rate') is not None:
+        df = df[df['win_rate'] >= filters['min_win_rate']]
+    if filters.get('min_profit_factor') is not None:
+        df = df[df['profit_factor'] >= filters['min_profit_factor']]
+    if filters.get('min_daily_r') is not None:
+        df = df[df['daily_r'] >= filters['min_daily_r']]
+    if filters.get('min_r_squared') is not None:
+        df = df[df['r_squared'] >= filters['min_r_squared']]
+
+    # Sort
+    sort_col = filters.get('sort_by', 'profit_factor')
+    ascending = filters.get('sort_ascending', False)
+    if sort_col in df.columns:
+        df = df.sort_values(sort_col, ascending=ascending, na_position="last")
+
+    return df
+
+
+# =============================================================================
 # CHART RENDERING
 # =============================================================================
 
@@ -1220,6 +1311,18 @@ def main():
         st.session_state.nav_target = None
     if 'chart_visible_candles' not in st.session_state:
         st.session_state.chart_visible_candles = 200
+    if 'confluence_filters' not in st.session_state:
+        st.session_state.confluence_filters = {
+            'sort_by': 'profit_factor',
+            'sort_ascending': False,
+            'min_trades': 3,
+            'min_win_rate': None,
+            'min_profit_factor': None,
+            'min_daily_r': None,
+            'min_r_squared': None,
+            'max_depth': 2,
+            'search_query': '',
+        }
 
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Groups", "Strategies", "Portfolios", "Alerts"]
@@ -1976,19 +2079,31 @@ def render_strategy_builder():
 
         mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
 
-        if mode == "Drill-Down":
-            sort_by = st.selectbox("Sort by", ["Profit Factor", "Win Rate", "Daily R", "R² Smoothness", "Trades"], index=0, label_visibility="collapsed")
-            sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "R² Smoothness": "r_squared", "Trades": "total_trades"}
+        # Shared search bar + filter button toolbar
+        filters = st.session_state.confluence_filters
+        search_col, filter_col = st.columns([4, 1])
+        with search_col:
+            search_key = "dd_search" if mode == "Drill-Down" else "as_search"
+            search_placeholder = "Search indicators..." if mode == "Drill-Down" else "Search combinations..."
+            search_query = st.text_input("Search", placeholder=search_placeholder,
+                                          value=filters.get('search_query', ''),
+                                          key=search_key, label_visibility="collapsed")
+            st.session_state.confluence_filters['search_query'] = search_query
+        with filter_col:
+            if st.button("⚙ Filter", use_container_width=True):
+                confluence_filter_dialog(show_auto_search_options=(mode == "Auto-Search"))
 
+        if mode == "Drill-Down":
             confluence_df = analyze_confluences(
-                trades, selected, min_trades=3,
+                trades, selected, min_trades=filters.get('min_trades', 3),
                 starting_balance=starting_balance,
                 risk_per_trade=risk_per_trade,
                 total_trading_days=period_trading_days,
             )
 
             if len(confluence_df) > 0:
-                confluence_df = confluence_df.sort_values(sort_map[sort_by], ascending=False, na_position="last").head(15)
+                confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
+                confluence_df = confluence_df.head(20)
 
                 for _, row in confluence_df.iterrows():
                     conf = row['confluence']
@@ -2022,16 +2137,10 @@ def render_strategy_builder():
                 st.info("Not enough trades for analysis")
 
         else:  # Auto-Search
-            search_cols = st.columns([1, 1, 2])
-            with search_cols[0]:
-                max_depth = st.slider("Max factors", 1, 4, 2)
-            with search_cols[1]:
-                min_trades = st.slider("Min trades", 1, 20, 5)
-
             if st.button("Find Best Combinations", type="primary"):
                 with st.spinner("Searching..."):
                     best = find_best_combinations(
-                        trades, max_depth, min_trades, top_n=10,
+                        trades, filters.get('max_depth', 2), filters.get('min_trades', 5), top_n=50,
                         starting_balance=starting_balance,
                         risk_per_trade=risk_per_trade,
                         total_trading_days=period_trading_days,
@@ -2040,7 +2149,12 @@ def render_strategy_builder():
                     st.session_state.auto_results = best
 
             if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
-                for _, row in st.session_state.auto_results.iterrows():
+                results = apply_confluence_filters(
+                    st.session_state.auto_results, filters, search_query, enabled_groups
+                )
+                results = results.head(20)
+
+                for _, row in results.iterrows():
                     combo_display = format_confluence_set(row['combination'], enabled_groups)
 
                     with st.container(border=True):

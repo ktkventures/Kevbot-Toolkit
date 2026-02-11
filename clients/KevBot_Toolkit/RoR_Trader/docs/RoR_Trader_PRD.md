@@ -3,7 +3,7 @@
 **Version:** 0.8
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring, Per-Chart Candle Selector, 2-Column Card Grid Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
+**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring, Per-Chart Candle Selector, 2-Column Card Grid, Confluence Drill-Down Enhancements Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
 
 ---
 
@@ -508,6 +508,7 @@ My Strategies → Strategy Detail → Edit Strategy
 18. [x] Strategy detail tab restructuring — split "Equity & Charts" / "Backtest Results" into 7-tab layout: Equity & KPIs, Equity & KPIs (Extended), Price Chart, Trade History, Confluence Analysis, Configuration, Alerts; KPIs moved into tabs; Extended tab loads configurable longer lookback (90–1825 days, default 365) with adjustable slider; Price Chart tab has full indicators + trade table; Trade History tab has clean chart + trade table; applies to both backtest-only and forward test views
 19. [x] Per-chart visible candles selector — compact selectbox above every price chart (7 call sites); `@st.fragment` wrapper prevents full-page rerun on selection change (preserves active tab); options: Default, 50, 100, 200, 400, All
 20. [x] 2-column card grid and trigger badges — strategy and portfolio lists in 2-column grid with stacked cards; strategy cards show Entry/Exit, Stop/Target, and Confluence badges below KPIs; strategy detail header adds Stop and Target metadata row; default strategy name shortened to `"{symbol} {direction} - {id}"`
+21. [x] Confluence drill-down enhancements — unified search bar + filter dialog (`@st.dialog`) across Drill-Down and Auto-Search modes; text search filters by indicator/combination name; filter lightbox with sort (6 KPIs + direction), min thresholds (Trades, Win Rate, Profit Factor, Daily R, R²), and Auto-Search max depth; all settings persisted in `confluence_filters` session state; replaces hardcoded `min_trades=3` and inline sort dropdown
 
 ---
 
@@ -702,11 +703,13 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
 
-**Confluence Drill-Down Enhancements:**
+**Confluence Drill-Down Enhancements — COMPLETED (Feb 11, 2026):**
 - [x] Card-style result layout — replaced single-row display with `st.container(border=True)` cards: confluence name on top row (with checkbox for drill-down / depth badge for auto-search), 6 KPIs on bottom row (Trades, PF, WR, Avg R, Daily R, R²); applies to both Drill-Down and Auto-Search modes
-- [ ] Sort by any KPI — expand sort selectbox to include all displayed KPIs (not just PF, WR, Daily R, Trades); default remains Profit Factor
-- [ ] Advanced filtering — min/max inputs for key KPIs (e.g., "Min Win Rate: 30%, Max Drawdown: -5R, Min Trades: 10") to narrow results before display; replaces current fixed `min_trades=3` with user-configurable thresholds
-- [x] Auto-Search parity — Auto-Search results now display the same 6-KPI card format as Drill-Down, with depth badge and Apply button
+- [x] Sort by any KPI — `@st.dialog` filter lightbox with 6 sort options (Profit Factor, Win Rate, Daily R, R² Smoothness, Trades, Avg R) plus ascending/descending direction toggle; replaces inline sort selectbox
+- [x] Advanced filtering — min threshold inputs for key KPIs (Min Trades, Min Win Rate, Min Profit Factor, Min Daily R, Min R²) in filter dialog; replaces hardcoded `min_trades=3` with user-configurable value; all filter settings persisted in `confluence_filters` session state across mode switches and reruns
+- [x] Text search — search bar above results filters by indicator/combination display name (case-insensitive); shared across Drill-Down and Auto-Search modes
+- [x] Unified toolbar — both modes share identical search bar + filter button layout; Auto-Search filter dialog additionally exposes Max Factors depth slider
+- [x] Auto-Search parity — Auto-Search results now display the same 6-KPI card format as Drill-Down, with depth badge and Apply button; `top_n` increased to 50 for broader initial search with UI-side filtering to 20
 
 **Backtest Settings Overhaul:**
 - [ ] Replace "Data Settings" sidebar section with "Backtest Settings" — expanded controls for backtest data range
@@ -793,6 +796,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - **`@st.fragment` for per-chart candle selector** — Without `@st.fragment`, changing a selectbox inside `st.tabs()` triggers a full page rerun which resets the active tab to the first one. Wrapping the candle selector + chart in `@st.fragment` isolates the rerun to just the chart fragment, preserving tab state. Each `render_chart_with_candle_selector()` call creates its own fragment instance.
 - **2-column stacked cards over side-by-side split** — At full width, strategy cards used a `[3, 2]` info/chart split. At half width in a 2-column grid, that split wastes horizontal space. Stacking vertically (name → status → equity curve → KPIs → badges → buttons) uses the narrower column more efficiently. Entry/Exit, Stop/Target, and Confluence badges placed below KPIs so the most scannable info (name, status, equity curve, KPIs) is at top.
 - **Confluence "None" placeholder** — Cards without confluence conditions show "Confluence: None" to maintain uniform card height across the grid, preventing visual misalignment between adjacent cards.
+- **`@st.dialog` filter lightbox over inline controls** — Confluence drill-down previously used inline sort selectbox (Drill-Down) and inline sliders (Auto-Search), creating inconsistent UIs. Moving all filter/sort controls into a shared `@st.dialog` lightbox keeps the main view clean (just search bar + filter button), unifies the two modes, and provides room for KPI threshold inputs without cluttering the card results area. Filter state persists in `confluence_filters` session state so settings survive mode switches and page reruns.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
