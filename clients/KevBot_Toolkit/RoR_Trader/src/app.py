@@ -335,15 +335,20 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
     return df
 
 
-def prepare_forward_test_data(strat: dict):
+def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     """
     Load continuous data from before forward_test_start to now,
     run the full pipeline, and split trades at the boundary.
 
+    Args:
+        strat: Strategy config dict
+        data_days_override: If provided, use this instead of strat's data_days
+            (used for the extended data view)
+
     Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
     """
     forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
-    data_days = strat.get('data_days', 30)
+    data_days = data_days_override if data_days_override is not None else strat.get('data_days', 30)
     data_seed = strat.get('data_seed', 42)
 
     # Start before forward_test_start to have backtest data + indicator warmup
@@ -572,7 +577,7 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
         return {
             "total_trades": 0, "win_rate": 0, "profit_factor": 0,
             "avg_r": 0, "total_r": 0, "daily_r": 0, "r_squared": 0.0,
-            "final_balance": starting_balance, "total_pnl": 0
+            "max_r_drawdown": 0, "final_balance": starting_balance, "total_pnl": 0
         }
 
     wins = trades_df[trades_df["win"] == True]
@@ -591,14 +596,20 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
         trading_days = 1
     trading_days = max(trading_days, 1)
 
-    # R-squared of equity curve (smoothness: 1.0 = perfectly linear growth)
+    # Cumulative R curve (used for R-squared and Max R Drawdown)
     if len(trades_df) >= 2:
         cumulative_r = trades_df["r_multiple"].cumsum().values
+        # R-squared of equity curve (smoothness: 1.0 = perfectly linear growth)
         x = np.arange(len(cumulative_r))
         correlation = np.corrcoef(x, cumulative_r)[0, 1]
         r_squared = round(correlation ** 2, 4) if not np.isnan(correlation) else 0.0
+        # Max R Drawdown (peak-to-trough in cumulative R space)
+        running_max = np.maximum.accumulate(cumulative_r)
+        drawdown = cumulative_r - running_max
+        max_r_drawdown = round(float(drawdown.min()), 2)
     else:
         r_squared = 0.0
+        max_r_drawdown = 0.0
 
     # Dollar P&L
     total_pnl = total_r * risk_per_trade
@@ -612,8 +623,88 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
         "total_r": total_r,
         "daily_r": total_r / trading_days,
         "r_squared": r_squared,
+        "max_r_drawdown": max_r_drawdown,
         "final_balance": final_balance,
         "total_pnl": total_pnl,
+    }
+
+
+def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
+    """Calculate secondary/extended KPIs from trade data (always computed live, not saved)."""
+    if len(trades_df) == 0:
+        return {
+            "win_count": 0, "loss_count": 0,
+            "best_trade_r": 0, "worst_trade_r": 0,
+            "avg_win_r": 0, "avg_loss_r": 0,
+            "max_consec_wins": 0, "max_consec_losses": 0,
+            "payoff_ratio": 0, "recovery_factor": 0,
+            "longest_dd_trades": 0,
+        }
+
+    wins_mask = trades_df["win"].values
+    r_mult = trades_df["r_multiple"].values
+
+    # Win/loss counts
+    win_count = int(wins_mask.sum())
+    loss_count = len(wins_mask) - win_count
+
+    # Best/worst trade
+    best_trade_r = float(r_mult.max())
+    worst_trade_r = float(r_mult.min())
+
+    # Avg win / avg loss
+    avg_win_r = float(r_mult[wins_mask].mean()) if win_count > 0 else 0
+    avg_loss_r = float(r_mult[~wins_mask].mean()) if loss_count > 0 else 0
+
+    # Max consecutive wins/losses
+    max_consec_wins = max_consec_losses = 0
+    current_wins = current_losses = 0
+    for w in wins_mask:
+        if w:
+            current_wins += 1
+            current_losses = 0
+            max_consec_wins = max(max_consec_wins, current_wins)
+        else:
+            current_losses += 1
+            current_wins = 0
+            max_consec_losses = max(max_consec_losses, current_losses)
+
+    # Payoff ratio (avg win R / abs(avg loss R))
+    abs_avg_loss = abs(avg_loss_r)
+    payoff_ratio = avg_win_r / abs_avg_loss if abs_avg_loss > 0 else float('inf')
+
+    # Recovery factor (Total R / abs(Max R DD))
+    max_r_dd_abs = abs(kpis.get("max_r_drawdown", 0))
+    recovery_factor = kpis["total_r"] / max_r_dd_abs if max_r_dd_abs > 0 else float('inf')
+
+    # Longest drawdown in trades (consecutive trades from peak to recovery)
+    if len(r_mult) >= 2:
+        cumulative = np.cumsum(r_mult)
+        running_max = np.maximum.accumulate(cumulative)
+        in_dd = cumulative < running_max
+        longest_dd = 0
+        current_dd = 0
+        for d in in_dd:
+            if d:
+                current_dd += 1
+                longest_dd = max(longest_dd, current_dd)
+            else:
+                current_dd = 0
+    else:
+        longest_dd = 0
+
+    return {
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "best_trade_r": round(best_trade_r, 2),
+        "worst_trade_r": round(worst_trade_r, 2),
+        "avg_win_r": round(avg_win_r, 2),
+        "avg_loss_r": round(avg_loss_r, 2),
+        "max_consec_wins": max_consec_wins,
+        "max_consec_losses": max_consec_losses,
+        "payoff_ratio": round(payoff_ratio, 2) if payoff_ratio != float('inf') else float('inf'),
+        "recovery_factor": round(recovery_factor, 1) if recovery_factor != float('inf') else float('inf'),
+        "longest_dd_trades": longest_dd,
     }
 
 
@@ -1238,11 +1329,14 @@ def render_dashboard():
         st.markdown(f"**{best_strat['name']}**")
         st.caption(f"{best_strat.get('symbol', '?')} | {best_strat.get('direction', '?')}")
 
-        kpi_cols = st.columns(3)
+        kpi_cols = st.columns(5)
         kpi_cols[0].metric("Win Rate", f"{best_kpis.get('win_rate', 0):.1f}%")
         pf = best_kpis.get('profit_factor', 0)
-        kpi_cols[1].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-        kpi_cols[2].metric("Total R", f"{best_kpis.get('total_r', 0):+.1f}")
+        kpi_cols[1].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[2].metric("Daily R", f"{best_kpis.get('daily_r', 0):+.2f}")
+        kpi_cols[3].metric("Trades", best_kpis.get('total_trades', 0))
+        max_rdd = best_kpis.get('max_r_drawdown', 0)
+        kpi_cols[4].metric("Max R DD", f"{max_rdd:+.1f}R")
 
         # Mini equity curve for best strategy
         try:
@@ -1268,12 +1362,13 @@ def render_dashboard():
 
             st.subheader("Top Portfolio")
             st.markdown(f"**{best_port['name']}**")
-            st.caption(f"{len(best_port.get('strategies', []))} strategies | ${best_port.get('starting_balance', 0):,.0f} starting balance")
+            st.caption(f"{len(best_port.get('strategies', []))} strategies | \\${best_port.get('starting_balance', 0):,.0f} starting balance")
 
-            pkpi_cols = st.columns(3)
+            pkpi_cols = st.columns(4)
             pkpi_cols[0].metric("Total P&L", f"${best_port_kpis.get('total_pnl', 0):+,.0f}")
             pkpi_cols[1].metric("Max DD", f"{best_port_kpis.get('max_drawdown_pct', 0):.1f}%")
             pkpi_cols[2].metric("Win Rate", f"{best_port_kpis.get('win_rate', 0):.1f}%")
+            pkpi_cols[3].metric("Avg Daily P&L", f"${best_port_kpis.get('avg_daily_pnl', 0):+,.0f}")
 
             if st.button("View Portfolio", key="dash_view_best_port"):
                 st.session_state.viewing_portfolio_id = best_port['id']
@@ -1394,6 +1489,11 @@ def render_strategy_builder():
 
         saved_data_days = edit_config.get('data_days', 30)
         data_days = st.slider("Data Days", 7, 90, saved_data_days, key="sb_data_days")
+
+        saved_ext_days = edit_config.get('extended_data_days', 365)
+        extended_data_days = st.slider("Extended Data Days", 90, 1825, saved_ext_days,
+            key="sb_extended_data_days",
+            help="Default lookback for the Extended Equity & KPIs tab (up to 5 years)")
 
         if not is_alpaca_configured():
             saved_data_seed = edit_config.get('data_seed', 42)
@@ -1652,6 +1752,7 @@ def render_strategy_builder():
         'target_config': target_config_dict,
         'starting_balance': starting_balance,
         'data_days': data_days,
+        'extended_data_days': extended_data_days,
         'data_seed': data_seed,
         'strategy_origin': strategy_origin.lower(),
     }
@@ -1735,14 +1836,17 @@ def render_strategy_builder():
         total_trading_days=period_trading_days,
     )
 
-    kpi_cols = st.columns(7)
+    kpi_cols = st.columns(8)
     kpi_cols[0].metric("Trades", kpis["total_trades"])
     kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
-    kpi_cols[2].metric("Profit Factor", f"{kpis['profit_factor']:.2f}" if kpis['profit_factor'] != float('inf') else "∞")
+    kpi_cols[2].metric("Profit Factor", "∞" if kpis['profit_factor'] == float('inf') else f"{kpis['profit_factor']:.2f}")
     kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
     kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
     kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
     kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
+    kpi_cols[7].metric("Max R DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+    render_secondary_kpis(filtered_trades, kpis, key_prefix="builder")
 
     # Main content: Chart/Equity (left) + Confluence panel (right)
     left_col, right_col = st.columns([1, 1])
@@ -1842,28 +1946,29 @@ def render_strategy_builder():
                     conf_display = format_confluence_record(conf, enabled_groups)
                     is_selected = conf in selected
 
-                    col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2.5, 1, 1, 1, 1])
-
-                    with col1:
-                        if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
-                            if not is_selected:
-                                st.session_state.selected_confluences.add(conf)
+                    with st.container(border=True):
+                        # Top row: checkbox + name
+                        top1, top2 = st.columns([0.3, 4])
+                        with top1:
+                            if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
+                                if not is_selected:
+                                    st.session_state.selected_confluences.add(conf)
+                                    st.rerun()
+                            elif is_selected:
+                                st.session_state.selected_confluences.discard(conf)
                                 st.rerun()
-                        elif is_selected:
-                            st.session_state.selected_confluences.discard(conf)
-                            st.rerun()
+                        with top2:
+                            st.markdown(f"**{conf_display}**" if is_selected else conf_display)
 
-                    with col2:
-                        st.markdown(f"**{conf_display}**" if is_selected else conf_display)
-                    with col3:
-                        st.caption(f"{row['total_trades']} trades")
-                    with col4:
+                        # Bottom row: KPIs
+                        k1, k2, k3, k4, k5, k6 = st.columns(6)
+                        k1.caption(f"Trades: {row['total_trades']}")
                         pf = row['profit_factor']
-                        st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "PF: ∞")
-                    with col5:
-                        st.caption(f"WR: {row['win_rate']:.0f}%")
-                    with col6:
-                        st.caption(f"R²: {row['r_squared']:.2f}")
+                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                        k3.caption(f"WR: {row['win_rate']:.1f}%")
+                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                        k6.caption(f"R²: {row['r_squared']:.2f}")
             else:
                 st.info("Not enough trades for analysis")
 
@@ -1887,21 +1992,29 @@ def render_strategy_builder():
 
             if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
                 for _, row in st.session_state.auto_results.iterrows():
-                    col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1, 1, 1])
                     combo_display = format_confluence_set(row['combination'], enabled_groups)
-                    with col1:
-                        st.caption(f"{row['depth']}")
-                    with col2:
-                        st.markdown(f"**{combo_display}**")
-                    with col3:
+
+                    with st.container(border=True):
+                        # Top row: depth badge + name + apply button
+                        t1, t2, t3 = st.columns([0.3, 3.5, 0.8])
+                        with t1:
+                            st.caption(f"D{row['depth']}")
+                        with t2:
+                            st.markdown(f"**{combo_display}**")
+                        with t3:
+                            if st.button("Apply", key=f"apply_{row['combo_str']}"):
+                                st.session_state.selected_confluences = row['combination'].copy()
+                                st.rerun()
+
+                        # Bottom row: KPIs
+                        k1, k2, k3, k4, k5, k6 = st.columns(6)
+                        k1.caption(f"Trades: {row['total_trades']}")
                         pf = row['profit_factor']
-                        st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "∞")
-                    with col4:
-                        st.caption(f"R²: {row['r_squared']:.2f}")
-                    with col5:
-                        if st.button("Apply", key=f"apply_{row['combo_str']}"):
-                            st.session_state.selected_confluences = row['combination'].copy()
-                            st.rerun()
+                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                        k3.caption(f"WR: {row['win_rate']:.1f}%")
+                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                        k6.caption(f"R²: {row['r_squared']:.2f}")
 
     # Trade list (expandable)
     with st.expander("Trade List"):
@@ -1995,7 +2108,7 @@ def render_strategy_list():
     with filter_cols[3]:
         sort_option = st.selectbox(
             "Sort By",
-            ["Newest First", "Oldest First", "Name A-Z", "Win Rate (High)", "Profit Factor (High)", "Total R (High)"],
+            ["Newest First", "Oldest First", "Name A-Z", "Win Rate (High)", "Profit Factor (High)", "Total R (High)", "Daily R (High)", "Max R DD (Best)"],
             key="strat_sort"
         )
 
@@ -2017,6 +2130,8 @@ def render_strategy_list():
         "Win Rate (High)": (lambda s: s.get('kpis', {}).get('win_rate', 0), True),
         "Profit Factor (High)": (lambda s: s.get('kpis', {}).get('profit_factor', 0), True),
         "Total R (High)": (lambda s: s.get('kpis', {}).get('total_r', 0), True),
+        "Daily R (High)": (lambda s: s.get('kpis', {}).get('daily_r', 0), True),
+        "Max R DD (Best)": (lambda s: s.get('kpis', {}).get('max_r_drawdown', 0), True),
     }
     key_fn, reverse = sort_keys[sort_option]
     strategies.sort(key=key_fn, reverse=reverse)
@@ -2032,6 +2147,18 @@ def render_strategy_list():
 
     for strat in strategies:
         sid = strat.get('id', 0)
+        is_legacy = 'entry_trigger_confluence_id' not in strat
+
+        # Pre-fetch trades (used for mini equity curve and KPI backfill)
+        trades = get_strategy_trades(strat) if not is_legacy else pd.DataFrame()
+
+        # Backfill max_r_drawdown if missing from saved KPIs
+        kpis = strat.get('kpis', {})
+        if 'max_r_drawdown' not in kpis and len(trades) >= 2:
+            cumulative_r = trades["r_multiple"].cumsum().values
+            running_max = np.maximum.accumulate(cumulative_r)
+            kpis['max_r_drawdown'] = round(float((cumulative_r - running_max).min()), 2)
+
         with st.container(border=True):
             # Main layout: info on left, mini equity curve on right
             info_col, chart_col = st.columns([3, 2])
@@ -2044,12 +2171,14 @@ def render_strategy_list():
                 st.caption(f"{strat['symbol']} | {strat['direction']} | {entry_display} → {exit_display}")
 
                 # KPI metrics inline
-                kpis = strat.get('kpis', {})
-                kpi_cols = st.columns(3)
+                kpi_cols = st.columns(5)
                 kpi_cols[0].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
                 pf = kpis.get('profit_factor', 0)
-                kpi_cols[1].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-                kpi_cols[2].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
+                kpi_cols[1].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
+                kpi_cols[2].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+                kpi_cols[3].metric("Trades", kpis.get('total_trades', 0))
+                max_rdd = kpis.get('max_r_drawdown', 0)
+                kpi_cols[4].metric("Max R DD", f"{max_rdd:+.1f}R")
 
             with chart_col:
                 # Status badge
@@ -2063,9 +2192,7 @@ def render_strategy_list():
                     st.caption("⚪ Backtest Only")
 
                 # Mini equity curve
-                is_legacy = 'entry_trigger_confluence_id' not in strat
-                if not is_legacy:
-                    trades = get_strategy_trades(strat)
+                if not is_legacy and len(trades) > 0:
                     boundary = None
                     if strat.get('forward_testing') and strat.get('forward_test_start'):
                         boundary = datetime.fromisoformat(strat['forward_test_start'])
@@ -2247,19 +2374,56 @@ def render_strategy_detail(strategy_id: int):
         render_live_backtest(strat)
 
 
+def render_secondary_kpis(trades_df: pd.DataFrame, kpis: dict, key_prefix: str = ""):
+    """Render secondary KPIs in an expander below primary KPIs."""
+    if len(trades_df) == 0:
+        return
+
+    sec = calculate_secondary_kpis(trades_df, kpis)
+
+    with st.expander("Extended KPIs"):
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            st.caption("**Trade Distribution**")
+            st.markdown(f"Wins: **{sec['win_count']}** &nbsp;/&nbsp; Losses: **{sec['loss_count']}**")
+
+        with c2:
+            st.caption("**Best / Worst**")
+            st.markdown(f"Best Trade: **{sec['best_trade_r']:+.2f}R**")
+            st.markdown(f"Worst Trade: **{sec['worst_trade_r']:+.2f}R**")
+            st.markdown(f"Avg Win: **{sec['avg_win_r']:+.2f}R**")
+            st.markdown(f"Avg Loss: **{sec['avg_loss_r']:+.2f}R**")
+
+        with c3:
+            st.caption("**Streaks**")
+            st.markdown(f"Max Consec. Wins: **{sec['max_consec_wins']}**")
+            st.markdown(f"Max Consec. Losses: **{sec['max_consec_losses']}**")
+            st.markdown(f"Longest DD: **{sec['longest_dd_trades']} trades**")
+
+        with c4:
+            st.caption("**Risk / Reward**")
+            pr = sec['payoff_ratio']
+            st.markdown(f"Payoff Ratio: **{'∞' if pr == float('inf') else f'{pr:.2f}'}**")
+            rf = sec['recovery_factor']
+            st.markdown(f"Recovery Factor: **{'∞' if rf == float('inf') else f'{rf:.1f}'}**")
+            st.markdown(f"Max R DD: **{kpis.get('max_r_drawdown', 0):+.1f}R**")
+
+
 def render_saved_kpis(strat: dict):
     """Display saved KPIs for legacy strategies that cannot be re-backtested."""
     kpis = strat.get('kpis', {})
 
-    kpi_cols = st.columns(7)
+    kpi_cols = st.columns(8)
     kpi_cols[0].metric("Trades", kpis.get("total_trades", 0))
     kpi_cols[1].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
     pf = kpis.get('profit_factor', 0)
-    kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+    kpi_cols[2].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
     kpi_cols[3].metric("Avg R", f"{kpis.get('avg_r', 0):+.2f}")
     kpi_cols[4].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
     kpi_cols[5].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
     kpi_cols[6].metric("R²", f"{kpis.get('r_squared', 0):.2f}")
+    kpi_cols[7].metric("Max R DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
 
     st.subheader("Strategy Configuration")
     st.markdown(f"**Stop Loss:** {format_stop_display(strat)}")
@@ -2299,87 +2463,97 @@ def render_live_backtest(strat: dict):
     if len(trades) == 0:
         st.warning("No trades generated. The entry trigger may reference a confluence group that is no longer enabled.")
 
-    # Compute live KPIs
-    kpis = calculate_kpis(
-        trades,
-        starting_balance=strat.get('starting_balance', 10000.0),
-        risk_per_trade=strat.get('risk_per_trade', 100.0),
-        total_trading_days=count_trading_days(df),
-    )
+    confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+    extended_data_days = strat.get('extended_data_days', 365)
 
-    # KPI row (R-based metrics only — dollar sizing deferred to portfolio level)
-    kpi_cols = st.columns(7)
-    kpi_cols[0].metric("Trades", kpis["total_trades"])
-    kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
-    pf = kpis['profit_factor']
-    kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-    kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
-    kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
-    kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
-    kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
+    # 7-tab layout
+    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence, tab_config, tab_alerts = st.tabs([
+        "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
+        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
+    ])
 
-    # Tabbed content
-    tab_backtest, tab_confluence, tab_config, tab_alerts = st.tabs(["Backtest Results", "Confluence Analysis", "Configuration", "Alerts"])
+    # --- Tab 1: Equity & KPIs (standard data_days range) ---
+    with tab_kpi:
+        kpis = calculate_kpis(
+            trades,
+            starting_balance=strat.get('starting_balance', 10000.0),
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+            total_trading_days=count_trading_days(df),
+        )
 
-    with tab_backtest:
-        # Charts side by side
+        kpi_cols = st.columns(8)
+        kpi_cols[0].metric("Trades", kpis["total_trades"])
+        kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+        pf = kpis['profit_factor']
+        kpi_cols[2].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
+        kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
+        kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+        kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
+        kpi_cols[7].metric("Max R DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+        render_secondary_kpis(trades, kpis, key_prefix="detail_bt")
+
         chart_left, chart_right = st.columns(2)
-
         with chart_left:
-            st.subheader("Equity Curve")
-            if len(trades) > 0:
-                equity_df = trades[["exit_time", "r_multiple"]].sort_values("exit_time")
-                equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
-
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=equity_df["exit_time"],
-                    y=equity_df["cumulative_r"],
-                    mode="lines",
-                    name="Equity",
-                    line=dict(color="#2196F3", width=2),
-                    fill="tozeroy",
-                    fillcolor="rgba(33, 150, 243, 0.1)"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=equity_df["exit_time"],
-                    y=equity_df["cumulative_r"].cummax(),
-                    mode="lines",
-                    name="High Water Mark",
-                    line=dict(color="green", width=1, dash="dot")
-                ))
-                fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                fig.update_layout(
-                    height=400,
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    xaxis_title="",
-                    yaxis_title="Cumulative R",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No trades to display.")
-
+            render_backtest_equity_curve(trades)
         with chart_right:
-            st.subheader("R-Multiple Distribution")
-            if len(trades) > 0:
-                fig_hist = px.histogram(
-                    trades, x="r_multiple", nbins=20,
-                    labels={"r_multiple": "R-Multiple"},
-                    color_discrete_sequence=["#2196F3"]
-                )
-                fig_hist.add_vline(x=0, line_dash="dash", line_color="gray")
-                fig_hist.update_layout(
-                    height=400,
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig_hist, use_container_width=True)
-            else:
-                st.info("No trades to display.")
+            render_backtest_r_distribution(trades)
 
-        # Price chart (full width)
-        st.subheader("Price Chart")
+    # --- Tab 2: Equity & KPIs (Extended) ---
+    with tab_kpi_ext:
+        extended_data_days = st.slider(
+            "Extended Lookback (days)", 90, 1825, strat.get('extended_data_days', 365),
+            key="bt_ext_days_slider",
+            help="Adjust how far back to run the extended backtest (up to 5 years)"
+        )
+        with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
+            ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed)
+
+        if len(ext_df) == 0:
+            st.warning("No data available for extended period.")
+        else:
+            ext_trades = generate_trades(
+                ext_df,
+                direction=strat['direction'],
+                entry_trigger=strat['entry_trigger'],
+                exit_trigger=strat.get('exit_trigger'),
+                exit_triggers=strat.get('exit_triggers'),
+                confluence_required=confluence_set,
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                stop_config=strat.get('stop_config'),
+                target_config=strat.get('target_config'),
+            )
+
+            ext_kpis = calculate_kpis(
+                ext_trades,
+                starting_balance=strat.get('starting_balance', 10000.0),
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+                total_trading_days=count_trading_days(ext_df),
+            )
+
+            kpi_cols = st.columns(8)
+            kpi_cols[0].metric("Trades", ext_kpis["total_trades"])
+            kpi_cols[1].metric("Win Rate", f"{ext_kpis['win_rate']:.1f}%")
+            ext_pf = ext_kpis['profit_factor']
+            kpi_cols[2].metric("Profit Factor", "∞" if ext_pf == float('inf') else f"{ext_pf:.2f}")
+            kpi_cols[3].metric("Avg R", f"{ext_kpis['avg_r']:+.2f}")
+            kpi_cols[4].metric("Total R", f"{ext_kpis['total_r']:+.1f}")
+            kpi_cols[5].metric("Daily R", f"{ext_kpis['daily_r']:+.2f}")
+            kpi_cols[6].metric("R²", f"{ext_kpis['r_squared']:.2f}")
+            kpi_cols[7].metric("Max R DD", f"{ext_kpis['max_r_drawdown']:+.1f}R")
+
+            render_secondary_kpis(ext_trades, ext_kpis, key_prefix="detail_bt_ext")
+
+            chart_left, chart_right = st.columns(2)
+            with chart_left:
+                render_backtest_equity_curve(ext_trades, key_suffix="ext")
+            with chart_right:
+                render_backtest_r_distribution(ext_trades, key_suffix="ext")
+
+    # --- Tab 3: Price Chart (with indicators) ---
+    with tab_price:
         enabled_groups = get_enabled_groups()
         overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
         show_indicators = []
@@ -2397,32 +2571,24 @@ def render_live_backtest(strat: dict):
             secondary_panes=osc_panes if osc_panes else None
         )
 
-        # Trade history table
-        st.subheader("Trade History")
-        if len(trades) > 0:
-            display = trades.copy()
-            display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-            display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
-            display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
-            display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
-            st.dataframe(
-                display[['entry', 'exit', 'exit_reason', 'R', 'result']],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'entry': 'Entry Time',
-                    'exit': 'Exit Time',
-                    'exit_reason': 'Exit Reason',
-                    'R': 'R-Multiple',
-                    'result': 'Result',
-                }
-            )
-        else:
-            st.info("No trades to display.")
+        render_backtest_trade_table(trades)
 
+    # --- Tab 4: Trade History (clean chart, no indicators) ---
+    with tab_trades:
+        render_price_chart(
+            df, trades, strat,
+            show_indicators=[],
+            indicator_colors={},
+            chart_key='bt_trade_history_chart'
+        )
+
+        render_backtest_trade_table(trades)
+
+    # --- Tab 5: Confluence Analysis ---
     with tab_confluence:
         render_confluence_analysis_tab(df, strat, trades)
 
+    # --- Tab 6: Configuration ---
     with tab_config:
         col1, col2 = st.columns(2)
         with col1:
@@ -2437,6 +2603,7 @@ def render_live_backtest(strat: dict):
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
             st.markdown(f"- Target: {format_target_display(strat)}")
             st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
             if strat.get('updated_at'):
@@ -2451,6 +2618,7 @@ def render_live_backtest(strat: dict):
         else:
             st.caption("No confluence conditions")
 
+    # --- Tab 7: Alerts ---
     with tab_alerts:
         render_strategy_alerts_tab(strat)
 
@@ -2597,30 +2765,57 @@ def render_forward_test_view(strat: dict):
         st.error("No data available for this symbol.")
         return
 
-    # KPI comparison
+    all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+    extended_data_days = strat.get('extended_data_days', 365)
+
+    # Compute trading days for KPI comparison
     boundary_ts = boundary_dt
     if df.index.tz is not None and boundary_ts.tzinfo is None:
         boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
     bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
     fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
-    render_kpi_comparison(backtest_trades, forward_trades, bt_trading_days, fw_trading_days)
 
-    # Tabs
-    all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+    # 7-tab layout
+    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs([
+        "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
+        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
+    ])
 
-    tab_charts, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs(
-        ["Equity & Charts", "Trade History", "Confluence Analysis", "Configuration", "Alerts"]
-    )
-
-    with tab_charts:
-        # Combined equity curve
+    # --- Tab 1: Equity & KPIs (standard data_days range) ---
+    with tab_kpi:
+        render_kpi_comparison(backtest_trades, forward_trades, bt_trading_days, fw_trading_days)
         render_combined_equity_curve(all_trades, boundary_dt)
-
-        # R-distribution comparison
         render_r_distribution_comparison(backtest_trades, forward_trades)
 
-        # Price chart
-        st.subheader("Price Chart")
+    # --- Tab 2: Equity & KPIs (Extended) ---
+    with tab_kpi_ext:
+        extended_data_days = st.slider(
+            "Extended Lookback (days)", 90, 1825, strat.get('extended_data_days', 365),
+            key="fw_ext_days_slider",
+            help="Adjust how far back to run the extended backtest (up to 5 years)"
+        )
+        with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
+            ext_df, ext_bt, ext_fw, ext_boundary = prepare_forward_test_data(
+                strat, data_days_override=extended_data_days
+            )
+
+        if len(ext_df) == 0:
+            st.warning("No data available for extended period.")
+        else:
+            ext_boundary_ts = ext_boundary
+            if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
+                ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
+            ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
+            ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
+
+            render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
+
+            ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
+            render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
+            render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
+
+    # --- Tab 3: Price Chart (with indicators) ---
+    with tab_price:
         enabled_groups = get_enabled_groups()
         overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
         show_indicators = []
@@ -2638,6 +2833,9 @@ def render_forward_test_view(strat: dict):
             secondary_panes=osc_panes if osc_panes else None
         )
 
+        render_split_trade_history(backtest_trades, forward_trades)
+
+    # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
         render_price_chart(
             df, all_trades, strat,
@@ -2648,9 +2846,11 @@ def render_forward_test_view(strat: dict):
 
         render_split_trade_history(backtest_trades, forward_trades)
 
+    # --- Tab 5: Confluence Analysis ---
     with tab_confluence_ft:
         render_confluence_analysis_tab(df, strat, all_trades)
 
+    # --- Tab 6: Configuration ---
     with tab_config:
         col1, col2 = st.columns(2)
         with col1:
@@ -2665,6 +2865,7 @@ def render_forward_test_view(strat: dict):
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
             st.markdown(f"- Target: {format_target_display(strat)}")
             st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
             st.markdown(f"- Forward Test Start: {forward_start_str[:19]}")
@@ -2680,6 +2881,7 @@ def render_forward_test_view(strat: dict):
         else:
             st.caption("No confluence conditions")
 
+    # --- Tab 7: Alerts ---
     with tab_alerts:
         render_strategy_alerts_tab(strat)
 
@@ -2763,71 +2965,179 @@ def render_strategy_alerts_tab(strat: dict):
                 )
 
 
+def _fmt_pf(val):
+    """Format profit factor, handling infinity."""
+    return "∞" if val == float('inf') else f"{val:.2f}"
+
+
 def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame,
                           bt_trading_days: int = None, fw_trading_days: int = None):
-    """Render side-by-side KPI comparison between backtest and forward test."""
+    """Render KPI comparison between backtest and forward test as tables."""
     bt_kpis = calculate_kpis(backtest_trades, total_trading_days=bt_trading_days)
     fw_kpis = calculate_kpis(forward_trades, total_trading_days=fw_trading_days)
+    has_fw = len(forward_trades) > 0
 
-    col_bt, col_fw = st.columns(2)
+    # --- Primary KPIs Table ---
+    st.subheader("Primary KPIs")
 
-    with col_bt:
-        st.subheader("Backtest")
-        kpi_cols = st.columns(7)
-        kpi_cols[0].metric("Trades", bt_kpis["total_trades"])
-        kpi_cols[1].metric("Win Rate", f"{bt_kpis['win_rate']:.1f}%")
-        pf = bt_kpis['profit_factor']
-        kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
-        kpi_cols[3].metric("Avg R", f"{bt_kpis['avg_r']:+.2f}")
-        kpi_cols[4].metric("Total R", f"{bt_kpis['total_r']:+.1f}")
-        kpi_cols[5].metric("Daily R", f"{bt_kpis['daily_r']:+.2f}")
-        kpi_cols[6].metric("R²", f"{bt_kpis['r_squared']:.2f}")
+    def _delta(fw_val, bt_val):
+        """Compute delta string, handling inf."""
+        if fw_val == float('inf') or bt_val == float('inf'):
+            return "—"
+        d = fw_val - bt_val
+        return f"{d:+.2f}"
 
-    with col_fw:
-        st.subheader("Forward Test")
-        if len(forward_trades) == 0:
-            st.info("No forward test trades yet.")
-        else:
-            kpi_cols = st.columns(7)
+    primary_data = {
+        "": ["Backtest"] + (["Forward Test", "Delta"] if has_fw else []),
+        "Trades": [bt_kpis["total_trades"]] + ([fw_kpis["total_trades"], "—"] if has_fw else []),
+        "Win Rate": [f"{bt_kpis['win_rate']:.1f}%"] + ([f"{fw_kpis['win_rate']:.1f}%", f"{fw_kpis['win_rate'] - bt_kpis['win_rate']:+.1f}%"] if has_fw else []),
+        "Profit Factor": [_fmt_pf(bt_kpis['profit_factor'])] + ([_fmt_pf(fw_kpis['profit_factor']), _delta(fw_kpis['profit_factor'], bt_kpis['profit_factor'])] if has_fw else []),
+        "Avg R": [f"{bt_kpis['avg_r']:+.2f}"] + ([f"{fw_kpis['avg_r']:+.2f}", f"{fw_kpis['avg_r'] - bt_kpis['avg_r']:+.2f}"] if has_fw else []),
+        "Total R": [f"{bt_kpis['total_r']:+.1f}"] + ([f"{fw_kpis['total_r']:+.1f}", "—"] if has_fw else []),
+        "Daily R": [f"{bt_kpis['daily_r']:+.2f}"] + ([f"{fw_kpis['daily_r']:+.2f}", f"{fw_kpis['daily_r'] - bt_kpis['daily_r']:+.2f}"] if has_fw else []),
+        "R²": [f"{bt_kpis['r_squared']:.2f}"] + ([f"{fw_kpis['r_squared']:.2f}", f"{fw_kpis['r_squared'] - bt_kpis['r_squared']:+.2f}"] if has_fw else []),
+        "Max R DD": [f"{bt_kpis['max_r_drawdown']:+.1f}R"] + ([f"{fw_kpis['max_r_drawdown']:+.1f}R", f"{fw_kpis['max_r_drawdown'] - bt_kpis['max_r_drawdown']:+.1f}R"] if has_fw else []),
+    }
 
-            # Trades (no delta — count isn't comparable)
-            kpi_cols[0].metric("Trades", fw_kpis["total_trades"])
+    st.dataframe(
+        pd.DataFrame(primary_data),
+        use_container_width=True,
+        hide_index=True,
+    )
 
-            # Win Rate with delta
-            wr_delta = safe_subtract(fw_kpis['win_rate'], bt_kpis['win_rate'])
-            kpi_cols[1].metric("Win Rate", f"{fw_kpis['win_rate']:.1f}%",
-                               delta=f"{wr_delta:+.1f}%")
+    if not has_fw:
+        st.info("No forward test trades yet.")
 
-            # Profit Factor with delta
-            fw_pf = fw_kpis['profit_factor']
-            bt_pf = bt_kpis['profit_factor']
-            pf_display = "Inf" if fw_pf == float('inf') else f"{fw_pf:.2f}"
-            pf_delta = safe_subtract(fw_pf, bt_pf)
-            if fw_pf == float('inf') or bt_pf == float('inf'):
-                kpi_cols[2].metric("Profit Factor", pf_display)
-            else:
-                kpi_cols[2].metric("Profit Factor", pf_display, delta=f"{pf_delta:+.2f}")
+    # --- Extended KPIs Table ---
+    bt_sec = calculate_secondary_kpis(backtest_trades, bt_kpis)
+    fw_sec = calculate_secondary_kpis(forward_trades, fw_kpis) if has_fw else None
 
-            # Avg R with delta
-            avg_r_delta = fw_kpis['avg_r'] - bt_kpis['avg_r']
-            kpi_cols[3].metric("Avg R", f"{fw_kpis['avg_r']:+.2f}",
-                               delta=f"{avg_r_delta:+.2f}")
+    def _sec_delta(fw_val, bt_val):
+        if isinstance(fw_val, float) and fw_val == float('inf'):
+            return "—"
+        if isinstance(bt_val, float) and bt_val == float('inf'):
+            return "—"
+        d = fw_val - bt_val
+        if isinstance(d, float):
+            return f"{d:+.2f}"
+        return f"{d:+d}"
 
-            # Total R (no delta — different time periods)
-            kpi_cols[4].metric("Total R", f"{fw_kpis['total_r']:+.1f}")
+    def _fmt_sec(val, suffix=""):
+        if isinstance(val, float) and val == float('inf'):
+            return "∞"
+        if isinstance(val, float):
+            return f"{val:+.2f}{suffix}" if suffix else f"{val:.2f}"
+        return str(val)
 
-            # Daily R with delta
-            daily_r_delta = fw_kpis['daily_r'] - bt_kpis['daily_r']
-            kpi_cols[5].metric("Daily R", f"{fw_kpis['daily_r']:+.2f}",
-                               delta=f"{daily_r_delta:+.2f}")
+    with st.expander("Extended KPIs"):
+        ext_data = {
+            "": ["Backtest"] + (["Forward Test", "Delta"] if has_fw else []),
+            "Wins": [bt_sec['win_count']] + ([fw_sec['win_count'], _sec_delta(fw_sec['win_count'], bt_sec['win_count'])] if has_fw else []),
+            "Losses": [bt_sec['loss_count']] + ([fw_sec['loss_count'], _sec_delta(fw_sec['loss_count'], bt_sec['loss_count'])] if has_fw else []),
+            "Best Trade": [f"{bt_sec['best_trade_r']:+.2f}R"] + ([f"{fw_sec['best_trade_r']:+.2f}R", f"{fw_sec['best_trade_r'] - bt_sec['best_trade_r']:+.2f}R"] if has_fw else []),
+            "Worst Trade": [f"{bt_sec['worst_trade_r']:+.2f}R"] + ([f"{fw_sec['worst_trade_r']:+.2f}R", f"{fw_sec['worst_trade_r'] - bt_sec['worst_trade_r']:+.2f}R"] if has_fw else []),
+            "Avg Win": [f"{bt_sec['avg_win_r']:+.2f}R"] + ([f"{fw_sec['avg_win_r']:+.2f}R", f"{fw_sec['avg_win_r'] - bt_sec['avg_win_r']:+.2f}R"] if has_fw else []),
+            "Avg Loss": [f"{bt_sec['avg_loss_r']:+.2f}R"] + ([f"{fw_sec['avg_loss_r']:+.2f}R", f"{fw_sec['avg_loss_r'] - bt_sec['avg_loss_r']:+.2f}R"] if has_fw else []),
+            "Max Consec Wins": [bt_sec['max_consec_wins']] + ([fw_sec['max_consec_wins'], _sec_delta(fw_sec['max_consec_wins'], bt_sec['max_consec_wins'])] if has_fw else []),
+            "Max Consec Losses": [bt_sec['max_consec_losses']] + ([fw_sec['max_consec_losses'], _sec_delta(fw_sec['max_consec_losses'], bt_sec['max_consec_losses'])] if has_fw else []),
+            "Payoff Ratio": [_fmt_sec(bt_sec['payoff_ratio'])] + ([_fmt_sec(fw_sec['payoff_ratio']), _sec_delta(fw_sec['payoff_ratio'], bt_sec['payoff_ratio'])] if has_fw else []),
+            "Recovery Factor": [_fmt_sec(bt_sec['recovery_factor'])] + ([_fmt_sec(fw_sec['recovery_factor']), _sec_delta(fw_sec['recovery_factor'], bt_sec['recovery_factor'])] if has_fw else []),
+            "Longest DD": [f"{bt_sec['longest_dd_trades']} trades"] + ([f"{fw_sec['longest_dd_trades']} trades", _sec_delta(fw_sec['longest_dd_trades'], bt_sec['longest_dd_trades'])] if has_fw else []),
+        }
 
-            # R² with delta
-            r2_delta = fw_kpis['r_squared'] - bt_kpis['r_squared']
-            kpi_cols[6].metric("R²", f"{fw_kpis['r_squared']:.2f}",
-                               delta=f"{r2_delta:+.2f}")
+        st.dataframe(
+            pd.DataFrame(ext_data),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
-def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime):
+def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
+    """Render equity curve for backtest-only view (no forward test boundary)."""
+    st.subheader("Equity Curve")
+    if len(trades) == 0:
+        st.info("No trades to display.")
+        return
+
+    equity_df = trades[["exit_time", "r_multiple"]].sort_values("exit_time")
+    equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=equity_df["exit_time"],
+        y=equity_df["cumulative_r"],
+        mode="lines",
+        name="Equity",
+        line=dict(color="#2196F3", width=2),
+        fill="tozeroy",
+        fillcolor="rgba(33, 150, 243, 0.1)"
+    ))
+    fig.add_trace(go.Scatter(
+        x=equity_df["exit_time"],
+        y=equity_df["cumulative_r"].cummax(),
+        mode="lines",
+        name="High Water Mark",
+        line=dict(color="green", width=1, dash="dot")
+    ))
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.update_layout(
+        height=400,
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="",
+        yaxis_title="Cumulative R",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+    )
+    st.plotly_chart(fig, use_container_width=True, key=f"bt_equity_{key_suffix}" if key_suffix else None)
+
+
+def render_backtest_r_distribution(trades: pd.DataFrame, key_suffix: str = ""):
+    """Render R-distribution histogram for backtest-only view."""
+    st.subheader("R-Multiple Distribution")
+    if len(trades) == 0:
+        st.info("No trades to display.")
+        return
+
+    fig_hist = px.histogram(
+        trades, x="r_multiple", nbins=20,
+        labels={"r_multiple": "R-Multiple"},
+        color_discrete_sequence=["#2196F3"]
+    )
+    fig_hist.add_vline(x=0, line_dash="dash", line_color="gray")
+    fig_hist.update_layout(
+        height=400,
+        margin=dict(l=0, r=0, t=10, b=0),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_hist, use_container_width=True, key=f"bt_r_dist_{key_suffix}" if key_suffix else None)
+
+
+def render_backtest_trade_table(trades: pd.DataFrame):
+    """Render trade history table for backtest-only view."""
+    st.subheader("Trade History")
+    if len(trades) == 0:
+        st.info("No trades to display.")
+        return
+
+    display = trades.copy()
+    display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+    display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+    display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
+    display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+    st.dataframe(
+        display[['entry', 'exit', 'exit_reason', 'R', 'result']],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            'entry': 'Entry Time',
+            'exit': 'Exit Time',
+            'exit_reason': 'Exit Reason',
+            'R': 'R-Multiple',
+            'result': 'Result',
+        }
+    )
+
+
+def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime, key_suffix: str = ""):
     """Render a combined equity curve with vertical line at forward test start."""
     st.subheader("Equity Curve")
 
@@ -2911,10 +3221,10 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime)
         yaxis_title="Cumulative R",
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"combined_eq_{key_suffix}" if key_suffix else None)
 
 
-def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame):
+def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame, key_suffix: str = ""):
     """Render side-by-side R-multiple distribution histograms."""
     col_bt, col_fw = st.columns(2)
 
@@ -2928,7 +3238,7 @@ def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trad
             )
             fig.add_vline(x=0, line_dash="dash", line_color="gray")
             fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"r_dist_bt_{key_suffix}" if key_suffix else None)
         else:
             st.info("No backtest trades.")
 
@@ -2942,7 +3252,7 @@ def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trad
             )
             fig.add_vline(x=0, line_dash="dash", line_color="gray")
             fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"r_dist_fw_{key_suffix}" if key_suffix else None)
         else:
             st.info("No forward test trades yet.")
 
@@ -3037,6 +3347,7 @@ def load_strategy_into_builder(strat: dict):
         'target_config': strat.get('target_config'),
         'starting_balance': strat.get('starting_balance', 10000.0),
         'data_days': strat.get('data_days', 30),
+        'extended_data_days': strat.get('extended_data_days', 365),
         'data_seed': strat.get('data_seed', 42),
         'strategy_origin': strat.get('strategy_origin', 'standard'),
     }
@@ -3089,33 +3400,64 @@ def render_portfolio_list():
 
     for port in portfolios:
         pid = port.get('id', 0)
+        kpis = port.get('cached_kpis', {})
+        n_strats = len(port.get('strategies', []))
+
+        # Pre-fetch portfolio trades once (used for compliance check + mini equity curve)
+        port_data = None
+        if kpis and kpis.get('total_trades', 0) > 0:
+            try:
+                port_data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
+            except Exception:
+                pass
+
         with st.container(border=True):
             info_col, chart_col = st.columns([3, 2])
 
             with info_col:
                 st.markdown(f"### {port['name']}")
-                n_strats = len(port.get('strategies', []))
                 balance = port.get('starting_balance', 10000)
                 compound = port.get('compound_rate', 0) * 100
-                st.caption(
-                    f"{n_strats} strategies | ${balance:,.0f} starting balance"
-                    + (f" | {compound:.0f}% risk scaling" if compound > 0 else "")
-                )
+
+                # Compute avg risk per trade and avg trades per day
+                port_strats = port.get('strategies', [])
+                avg_risk = sum(ps.get('risk_per_trade', 100) for ps in port_strats) / max(len(port_strats), 1)
+                total_days = kpis.get('total_trading_days', 0)
+                total_trades_count = kpis.get('total_trades', 0)
+                avg_trades_day = total_trades_count / max(total_days, 1) if total_days > 0 else 0
+
+                meta_parts = [f"{n_strats} strategies", f"\\${balance:,.0f} starting balance"]
+                if compound > 0:
+                    meta_parts.append(f"{compound:.0f}% risk scaling")
+                meta_parts.append(f"\\${avg_risk:,.0f} avg risk/trade")
+                if avg_trades_day > 0:
+                    meta_parts.append(f"{avg_trades_day:.1f} trades/day")
+                st.caption(" | ".join(meta_parts))
 
                 # KPIs from cache
-                kpis = port.get('cached_kpis', {})
                 if kpis:
-                    kpi_cols = st.columns(3)
+                    kpi_cols = st.columns(4)
                     kpi_cols[0].metric("Total P&L", f"${kpis.get('total_pnl', 0):+,.0f}")
                     max_dd = kpis.get('max_drawdown_pct', 0)
                     kpi_cols[1].metric("Max DD", f"{max_dd:.1f}%")
                     kpi_cols[2].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
+                    kpi_cols[3].metric("Avg Daily P&L", f"${kpis.get('avg_daily_pnl', 0):+,.0f}")
 
-                # Requirement set badge
+                # Requirement set badge with pass/fail summary
                 req_id = port.get('requirement_set_id')
                 if req_id:
                     rs = get_requirement_set_by_id(req_id)
-                    if rs:
+                    if rs and kpis and port_data:
+                        try:
+                            eval_result = evaluate_requirement_set(rs, port, kpis, port_data['daily_pnl'])
+                            rule_parts = [f"Requirements: {rs['name']}"]
+                            for r in eval_result['rules']:
+                                status = "Pass" if r['passed'] else "Fail"
+                                rule_parts.append(f"{r['name']}: {status}")
+                            st.caption(" | ".join(rule_parts))
+                        except Exception:
+                            st.caption(f"Requirements: {rs['name']}")
+                    elif rs:
                         st.caption(f"Requirements: {rs['name']}")
 
             with chart_col:
@@ -3128,30 +3470,28 @@ def render_portfolio_list():
                 if strat_names:
                     st.caption(", ".join(strat_names) + ("..." if n_strats > 4 else ""))
 
-                # Mini equity curve from cached data
-                if kpis and kpis.get('total_trades', 0) > 0:
+                # Mini equity curve from pre-fetched data
+                if port_data and len(port_data['combined_trades']) > 0:
                     try:
-                        data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
-                        if len(data['combined_trades']) > 0:
-                            trades = data['combined_trades']
-                            eq = trades[['exit_time', 'cumulative_pnl']].copy()
-                            fig = go.Figure()
-                            final = eq['cumulative_pnl'].iloc[-1]
-                            color = "#4CAF50" if final >= 0 else "#f44336"
-                            fig.add_trace(go.Scatter(
-                                x=eq['exit_time'], y=eq['cumulative_pnl'],
-                                mode='lines', line=dict(color=color, width=1.5),
-                                fill='tozeroy',
-                                fillcolor=f"rgba({'76,175,80' if final >= 0 else '244,67,54'}, 0.08)",
-                                showlegend=False
-                            ))
-                            fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
-                            fig.update_layout(
-                                height=100, margin=dict(l=0, r=0, t=0, b=0),
-                                xaxis=dict(visible=False), yaxis=dict(visible=False),
-                                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                            )
-                            st.plotly_chart(fig, use_container_width=True, key=f"port_eq_{pid}")
+                        p_trades = port_data['combined_trades']
+                        eq = p_trades[['exit_time', 'cumulative_pnl']].copy()
+                        fig = go.Figure()
+                        final = eq['cumulative_pnl'].iloc[-1]
+                        color = "#4CAF50" if final >= 0 else "#f44336"
+                        fig.add_trace(go.Scatter(
+                            x=eq['exit_time'], y=eq['cumulative_pnl'],
+                            mode='lines', line=dict(color=color, width=1.5),
+                            fill='tozeroy',
+                            fillcolor=f"rgba({'76,175,80' if final >= 0 else '244,67,54'}, 0.08)",
+                            showlegend=False
+                        ))
+                        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+                        fig.update_layout(
+                            height=100, margin=dict(l=0, r=0, t=0, b=0),
+                            xaxis=dict(visible=False), yaxis=dict(visible=False),
+                            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(fig, use_container_width=True, key=f"port_eq_{pid}")
                     except Exception:
                         pass
 
@@ -3285,7 +3625,7 @@ def render_portfolio_builder():
         kpi_cols[0].metric("Trades", kpis['total_trades'])
         kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
         pf = kpis['profit_factor']
-        kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+        kpi_cols[2].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
         kpi_cols[3].metric("Total P&L", f"${kpis['total_pnl']:+,.0f}")
         kpi_cols[4].metric("Final Balance", f"${kpis['final_balance']:,.0f}")
         kpi_cols[5].metric("Max Drawdown", f"{kpis['max_drawdown_pct']:.1f}%")
@@ -3564,7 +3904,7 @@ def render_portfolio_performance(port, kpis, data, drawdown):
     kpi_cols[0].metric("Trades", kpis['total_trades'])
     kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
     pf = kpis['profit_factor']
-    kpi_cols[2].metric("Profit Factor", "Inf" if pf == float('inf') else f"{pf:.2f}")
+    kpi_cols[2].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
     kpi_cols[3].metric("Total P&L", f"${kpis['total_pnl']:+,.0f}")
     kpi_cols[4].metric("Final Balance", f"${kpis['final_balance']:,.0f}")
     kpi_cols[5].metric("Max Drawdown", f"{kpis['max_drawdown_pct']:.1f}%")
@@ -3689,17 +4029,19 @@ def render_portfolio_strategies(port, data):
             col1, col2 = st.columns([3, 2])
             with col1:
                 st.markdown(f"**{strat['name']}**")
-                st.caption(f"{strat['symbol']} | {strat['direction']} | Risk: ${ps['risk_per_trade']:.0f}/trade")
+                st.caption(f"{strat['symbol']} | {strat['direction']} | Risk: \\${ps['risk_per_trade']:.0f}/trade")
 
                 # Per-strategy KPIs
                 strat_trades = data['strategy_trades'].get(sid)
                 if strat_trades is not None and len(strat_trades) > 0:
                     skpis = calculate_kpis(strat_trades)
-                    kpi_cols = st.columns(4)
-                    kpi_cols[0].metric("Trades", skpis['total_trades'])
-                    kpi_cols[1].metric("Win Rate", f"{skpis['win_rate']:.1f}%")
-                    kpi_cols[2].metric("Avg R", f"{skpis['avg_r']:+.2f}")
-                    kpi_cols[3].metric("Total R", f"{skpis['total_r']:+.1f}")
+                    kpi_cols = st.columns(5)
+                    kpi_cols[0].metric("Win Rate", f"{skpis['win_rate']:.1f}%")
+                    spf = skpis['profit_factor']
+                    kpi_cols[1].metric("Profit Factor", "∞" if spf == float('inf') else f"{spf:.2f}")
+                    kpi_cols[2].metric("Daily R", f"{skpis['daily_r']:+.2f}")
+                    kpi_cols[3].metric("Trades", skpis['total_trades'])
+                    kpi_cols[4].metric("Max R DD", f"{skpis['max_r_drawdown']:+.1f}R")
                 else:
                     st.caption("No trades generated.")
 
@@ -3848,7 +4190,7 @@ def render_portfolio_deploy(port):
                 if alert_type == 'compliance_breach':
                     st.markdown(f"Rule: {alert.get('rule_name', '?')}")
                 elif price:
-                    st.markdown(f"{strategy_name} @ ${price:.2f}")
+                    st.markdown(f"{strategy_name} @ \\${price:.2f}")
                 else:
                     st.markdown(strategy_name or "Alert")
 

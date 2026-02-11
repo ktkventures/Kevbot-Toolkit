@@ -471,5 +471,113 @@
     "id": 12,
     "created_at": "2026-02-10T15:39:14.040032",
     "forward_test_start": "2026-02-10T15:39:14.040032"
+  },
+  {
+    "name": "Kevbaby 1",
+    "symbol": "QQQ",
+    "direction": "LONG",
+    "timeframe": "5Min",
+    "entry_trigger": "vwap_cross_above",
+    "entry_trigger_confluence_id": "vwap_default_cross_above",
+    "exit_triggers": [
+      "ema_cross_bull",
+      "macd_zero_cross_down"
+    ],
+    "exit_trigger_confluence_ids": [
+      "ema_stack_default_cross_bull",
+      "macd_line_default_zero_cross_down"
+    ],
+    "exit_trigger_names": [
+      "EMA Stack (Default): Short > Mid Cross",
+      "MACD Line (Default): Zero Line Cross Down"
+    ],
+    "exit_trigger": "ema_cross_bull",
+    "exit_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "entry_trigger_name": "VWAP (Default): Cross Above VWAP",
+    "exit_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "stop_config": {
+      "method": "fixed_dollar",
+      "dollar_amount": 1.0
+    },
+    "target_config": {
+      "method": "risk_reward",
+      "rr_ratio": 2.0
+    },
+    "starting_balance": 10000.0,
+    "data_days": 61,
+    "data_seed": 42,
+    "strategy_origin": "standard",
+    "confluence": [
+      "1M-VWAP->+1\u03c3",
+      "1M-RVOL-LOW"
+    ],
+    "kpis": {
+      "total_trades": 7,
+      "win_rate": 42.857142857142854,
+      "profit_factor": 1.2084640331756225,
+      "avg_r": 0.056014285714289666,
+      "total_r": 0.39210000000002765,
+      "daily_r": 0.007688235294118189,
+      "r_squared": 0.7826,
+      "final_balance": 10039.210000000003,
+      "total_pnl": 39.210000000002765
+    },
+    "forward_testing": true,
+    "alerts": true,
+    "id": 13,
+    "created_at": "2026-02-10T17:56:07.593509",
+    "forward_test_start": "2026-02-10T17:56:07.593509"
+  },
+  {
+    "name": "SPY LONG - EMA Stack (Default): Short > Mid Cross",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_mid_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_mid_cross_bull",
+    "exit_triggers": [
+      "ema_mid_cross_bear"
+    ],
+    "exit_trigger_confluence_ids": [
+      "ema_stack_default_mid_cross_bear"
+    ],
+    "exit_trigger_names": [
+      "EMA Stack (Default): Mid < Long Cross"
+    ],
+    "exit_trigger": "ema_mid_cross_bear",
+    "exit_trigger_confluence_id": "ema_stack_default_mid_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Mid > Long Cross",
+    "exit_trigger_name": "EMA Stack (Default): Mid < Long Cross",
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "stop_config": {
+      "method": "swing",
+      "lookback": 5,
+      "padding": 0.05
+    },
+    "target_config": null,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "data_seed": 42,
+    "strategy_origin": "standard",
+    "confluence": [],
+    "kpis": {
+      "total_trades": 192,
+      "win_rate": 21.875,
+      "profit_factor": 0.98765127731742,
+      "avg_r": -0.007738364776938483,
+      "total_r": -1.4857660371721888,
+      "daily_r": -0.05943064148688755,
+      "r_squared": 0.3983,
+      "final_balance": 9851.42339628278,
+      "total_pnl": -148.5766037172189
+    },
+    "forward_testing": true,
+    "alerts": true,
+    "id": 14,
+    "created_at": "2026-02-10T18:06:45.619377",
+    "forward_test_start": "2026-02-10T18:06:45.619377"
   }
 ]

@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
 **Version:** 0.8
-**Date:** February 10, 2026
+**Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder Complete; QA Sandbox, Drill-Down Enhancements, Backtest Settings, and UX Polish Remaining
+**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
 
 ---
 
@@ -320,10 +320,12 @@ Sidebar: App title, data source indicator, chart presets.
 │       │   ├── Sort: Name / Created / Performance
 │       │   └── Strategy Cards (Name, KPIs, Forward Test Status, Actions)
 │       └── Strategy Detail View
-│           ├── Configuration Summary
-│           ├── Backtest Results Tab (Equity Curve, KPIs, Trade History)
-│           ├── Forward Test Results Tab (Live Equity, Comparison)
+│           ├── Equity & KPIs Tab (primary + extended KPIs, equity curve, R-distribution)
+│           ├── Equity & KPIs (Extended) Tab (adjustable lookback up to 5 years)
+│           ├── Price Chart Tab (full indicators + oscillator panes + trade table)
+│           ├── Trade History Tab (clean chart + trade table)
 │           ├── Confluence Analysis Tab
+│           ├── Configuration Tab
 │           ├── Alerts Tab
 │           └── Actions (Edit, Clone, Delete, Add to Portfolio)
 │
@@ -357,6 +359,13 @@ Sidebar: App title, data source indicator, chart presets.
 ├── 🏪 MARKETPLACE (Future)
 │
 └── ⚙️ SETTINGS (Future)
+    ├── Default Parameters
+    │   ├── Default Visible Candles (chart zoom level)
+    │   ├── Default Extended Lookback (days)
+    │   └── (Extensible for future defaults)
+    ├── Chart Presets (moved from sidebar)
+    │   └── Visible Candles preset selector
+    └── Connections (Alpaca, webhooks, etc.)
 ```
 
 ### 7.2 Core User Journeys
@@ -495,6 +504,8 @@ My Strategies → Strategy Detail → Edit Strategy
 14. [x] Execution model expansion — 4 stop loss methods, 5 take profit methods, up to 3 exit triggers, execution type metadata, `[C]`/`[I]` labels, full backward compatibility
 15. [x] Navigation refactor — top horizontal nav bar with 5 sections and sub-nav radios; sidebar becomes context-aware config panel
 16. [x] Strategy Builder single-page — collapsed 3-step wizard into single page with sidebar config panel; Strategy Origin placeholder for Phase 10
+17. [x] KPI audit and enhancement — Max R Drawdown primary KPI, secondary KPIs expander (11 extended metrics), card-style drill-down/auto-search, unified infinity/format display, strategy cards (5 KPIs), portfolio cards (4 KPIs), sort options (Daily R, Max R DD)
+18. [x] Strategy detail tab restructuring — split "Equity & Charts" / "Backtest Results" into 7-tab layout: Equity & KPIs, Equity & KPIs (Extended), Price Chart, Trade History, Confluence Analysis, Configuration, Alerts; KPIs moved into tabs; Extended tab loads configurable longer lookback (90–1825 days, default 365) with adjustable slider; Price Chart tab has full indicators + trade table; Trade History tab has clean chart + trade table; applies to both backtest-only and forward test views
 
 ---
 
@@ -671,8 +682,8 @@ My Strategies → Strategy Detail → Edit Strategy
 **KPI Accuracy Audit — COMPLETED (Feb 10, 2026):**
 - [x] Fix Daily R calculation — `calculate_kpis()` now accepts `total_trading_days` param; all call sites pass `count_trading_days(df)` which counts unique trading days in the full data period (not just days with exits); makes Daily R a true capital efficiency metric
 - [x] Add equity curve smoothness metric — **R² of equity curve** added to `calculate_kpis()` return dict; displayed on Strategy Builder Step 2, Step 3 summary, live backtest, saved KPIs, forward test comparison (with delta), confluence drill-down (with sort option), and auto-search results
-- [ ] General KPI accuracy audit — ensure all metrics are correct and displayed in the right places across all views
-- [ ] Validate KPI consistency — same strategy should show identical metrics on cards, detail pages, and drill-down
+- [x] General KPI accuracy audit — comprehensive audit of all KPI display locations; added **Max R Drawdown** (peak-to-trough in cumulative R space) as new primary KPI to `calculate_kpis()`; added `calculate_secondary_kpis()` for extended metrics (win/loss counts, best/worst trade, avg win/loss, max consecutive wins/losses, payoff ratio, recovery factor, longest DD trades); added "Extended KPIs" expander to Strategy Builder, strategy detail backtest, and forward test comparison views
+- [x] Validate KPI consistency — standardized all strategy views to 8 primary KPIs (Trades, WR, PF, Avg R, Total R, Daily R, R², Max R DD); strategy cards show 5 KPIs (WR, PF, Daily R, Trades, Max R DD); dashboard mirrors card KPIs; all infinity displays unified to "∞"; all win rate formats unified to `:.1f%`; portfolio cards and dashboard add Avg Daily P&L; confluence drill-down and auto-search restructured as cards with 6 KPIs (Trades, PF, WR, Avg R, Daily R, R²); added sort options for Daily R and Max R DD on My Strategies page
 
 **QA Sandbox Page:**
 - [ ] New "QA Sandbox" navigation page — developer/QA testing ground for validating app subsystems before going live (not visible to end users in production)
@@ -690,10 +701,10 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
 
 **Confluence Drill-Down Enhancements:**
-- [ ] Card-style result layout — replace current single-row display with card format: confluence name/combination at top, multiple KPIs below (Trades, Win Rate, Profit Factor, Avg R, Total R, Daily R, R² smoothness); applies to both Drill-Down and Auto-Search modes
+- [x] Card-style result layout — replaced single-row display with `st.container(border=True)` cards: confluence name on top row (with checkbox for drill-down / depth badge for auto-search), 6 KPIs on bottom row (Trades, PF, WR, Avg R, Daily R, R²); applies to both Drill-Down and Auto-Search modes
 - [ ] Sort by any KPI — expand sort selectbox to include all displayed KPIs (not just PF, WR, Daily R, Trades); default remains Profit Factor
 - [ ] Advanced filtering — min/max inputs for key KPIs (e.g., "Min Win Rate: 30%, Max Drawdown: -5R, Min Trades: 10") to narrow results before display; replaces current fixed `min_trades=3` with user-configurable thresholds
-- [ ] Auto-Search parity — Auto-Search results should display the same KPI card format as Drill-Down, not just PF and depth
+- [x] Auto-Search parity — Auto-Search results now display the same 6-KPI card format as Drill-Down, with depth badge and Apply button
 
 **Backtest Settings Overhaul:**
 - [ ] Replace "Data Settings" sidebar section with "Backtest Settings" — expanded controls for backtest data range
@@ -754,6 +765,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Fix programmatic navigation (Edit Strategy, New Strategy buttons) — `st.radio` `index` parameter is ignored after first user interaction; switched to explicit `key` params (`main_nav`, `sub_nav_*`) with direct `st.session_state[key]` writes for reliable programmatic nav
 
 **UX Improvements — Remaining:**
+- [ ] Per-chart visible candles adjustment — add a small control (selectbox or slider) directly above every price chart instance in the app, allowing the user to override the default visible candles for that specific chart; the sidebar chart preset sets the global default, but users can situationally adjust on any price chart they encounter (Strategy Builder, strategy detail Price Chart tab, Trade History tab, Confluence Analysis preview, etc.)
 - [ ] Strategy name and trigger display improvements — shorter default name format (e.g., `"{symbol} {direction} - {entry_trigger_short_name}"`); display entry trigger(s), exit trigger(s), stop method, and target method as small reference badges/text on strategy cards and strategy detail header; currently only confluence conditions are shown
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 - [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
@@ -767,6 +779,13 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Single-page Strategy Builder with sidebar config** — Eliminates the back-navigation state loss problem entirely. All parameters are visible and editable in the sidebar at all times. "Load Data" is the only gate (needed for symbol/timeframe changes). Trigger/risk changes re-run backtest automatically on cached data via Streamlit's natural re-run behavior. Save form in sidebar removes the need for a separate Step 3.
 - **`builder_data_loaded` boolean over `step` integer** — The 3-step flow is gone; the only meaningful state is "has data been loaded?" This boolean gates the main area content (KPIs, charts) while allowing the sidebar config to always be visible.
 - **Strategy Origin as Phase 10 placeholder** — Adding the selectbox now (with only "Standard" option) establishes the UI pattern and schema field without implementing the full feature. Existing strategies default to `"standard"` via `.get('strategy_origin', 'standard')` — no migration needed.
+
+- **Max R Drawdown as strategy-level risk metric** — Peak-to-trough drawdown in cumulative R space, analogous to portfolio's dollar-based Max Drawdown but expressed in R-multiples. Named "Max R DD" to distinguish from portfolio's "Max DD". Computed from `np.maximum.accumulate(cumulative_r) - cumulative_r`. A strategy with Max R DD of -3.2R had a worst losing streak that erased 3.2 risk units from peak equity. Added to `calculate_kpis()` and saved to strategies.json for card display.
+- **Secondary KPIs as live-computed expander** — Extended metrics (win/loss counts, best/worst trade, avg win/loss, streaks, payoff ratio, recovery factor, longest DD) are always computed live from `trades_df`, never saved to JSON. Displayed in a collapsed `st.expander("Extended KPIs")` below primary KPI rows. This avoids bloating strategies.json with 11+ additional fields while keeping the metrics available in all detail views. Phase 9's advanced statistical metrics (Sharpe, Sortino, etc.) will extend this pattern.
+- **Strategy cards: Daily R over Total R** — Strategy cards prioritize Daily R because it enables apples-to-apples comparison across strategies with different data periods. A 30-day strategy with 10R total and a 90-day strategy with 20R total aren't directly comparable; Daily R normalizes for time.
+- **R-based vs dollar-based drawdown naming** — Strategy "Max R DD" uses R-multiples (risk-normalized). Portfolio "Max DD" uses dollar/percentage (account-level). The naming distinction prevents confusion between the two scopes.
+- **7-tab strategy detail layout** — Separated "Equity & Charts" into distinct tabs for three reasons: (1) KPIs belong with their equity curves, not floating above tabs; (2) the extended backtest needs its own data load and KPI computation at a different date range; (3) price charts with indicators and clean trade history charts serve different purposes (indicator analysis vs. clean entry/exit review) and deserve their own space. The extended tab has an adjustable slider (90–1825 days) so users can explore different historical depths on the fly.
+- **Extended lookback as per-strategy default + per-view override** — The Strategy Builder saves a default `extended_data_days` (used as the slider's initial value on the detail page). The slider on the Extended tab lets users adjust without editing the strategy. This balances convenience (sensible default) with flexibility (situational exploration).
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
@@ -808,6 +827,18 @@ My Strategies → Strategy Detail → Edit Strategy
   - Mirrors TradingView's "once per bar" (intra-bar) vs. "once per bar close" alert modes
   - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
   - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
+
+### Phase 12: Settings Page
+*Dedicated settings page to centralize app-wide configuration — currently scattered across sidebar and hardcoded defaults.*
+
+- [ ] Settings navigation page — new top-level nav item (replace sidebar-only chart presets)
+- [ ] **Default Parameters** subpage — user-configurable defaults that apply across the app:
+  - Default Visible Candles — chart zoom level (Tight 50, Close 100, Default 200, Wide 400, Full); replaces the current sidebar chart preset selector
+  - Default Extended Lookback (days) — default value for the "Equity & KPIs (Extended)" tab slider across all strategies (currently hardcoded to 365 per strategy)
+  - Extensible for future defaults (default timeframe, default ticker, default risk parameters, etc.)
+- [ ] **Chart Presets** subpage — migrate existing "Visible Candles" sidebar selector into Settings; sidebar retains a quick-access link or compact version
+- [ ] **Connections** subpage — Alpaca API configuration, data source status (currently in sidebar)
+- [ ] Persist settings to `settings.json` (or similar) — loaded on app startup, available via `get_setting(key, default)` helper
 
 ---
 
