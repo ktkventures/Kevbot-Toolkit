@@ -1029,25 +1029,6 @@ def get_trigger_display_name(strat: dict, trigger_key: str) -> str:
 # Custom CSS
 CUSTOM_CSS = """
 <style>
-.step-indicator {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 1rem;
-}
-.step {
-    padding: 0.5rem 1rem;
-    margin: 0 0.5rem;
-    border-radius: 20px;
-    background: #f0f0f0;
-}
-.step.active {
-    background: #2196F3;
-    color: white;
-}
-.step.completed {
-    background: #4CAF50;
-    color: white;
-}
 </style>
 """
 
@@ -1062,8 +1043,8 @@ def main():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
     # Initialize session state
-    if 'step' not in st.session_state:
-        st.session_state.step = 1
+    if 'builder_data_loaded' not in st.session_state:
+        st.session_state.builder_data_loaded = False
     if 'selected_confluences' not in st.session_state:
         st.session_state.selected_confluences = set()
     if 'strategy_config' not in st.session_state:
@@ -1101,43 +1082,44 @@ def main():
     if 'chart_visible_candles' not in st.session_state:
         st.session_state.chart_visible_candles = 200
 
-    # Sidebar navigation
+    # --- Top-level navigation ---
+    SECTIONS = ["Dashboard", "Confluence Groups", "Strategies", "Portfolios", "Alerts"]
+    SECTION_SUB_PAGES = {
+        "Strategies": ["Strategy Builder", "My Strategies"],
+        "Portfolios": ["My Portfolios", "Portfolio Requirements"],
+        "Alerts": ["Alerts & Signals", "Webhook Templates"],
+    }
+    NAV_TARGET_MAP = {
+        "Dashboard": ("Dashboard", None),
+        "Strategy Builder": ("Strategies", "Strategy Builder"),
+        "My Strategies": ("Strategies", "My Strategies"),
+        "Portfolios": ("Portfolios", "My Portfolios"),
+        "Portfolio Requirements": ("Portfolios", "Portfolio Requirements"),
+        "Alerts & Signals": ("Alerts", "Alerts & Signals"),
+        "Webhook Templates": ("Alerts", "Webhook Templates"),
+        "Confluence Groups": ("Confluence Groups", None),
+    }
+
+    # Process nav_target — write directly to widget keys for programmatic navigation
+    if st.session_state.nav_target and st.session_state.nav_target in NAV_TARGET_MAP:
+        target_section, target_sub = NAV_TARGET_MAP[st.session_state.nav_target]
+        st.session_state["main_nav"] = target_section
+        if target_sub:
+            st.session_state[f"sub_nav_{target_section.lower()}"] = target_sub
+        st.session_state.nav_target = None
+
+    # Sidebar — minimal base (app title + data source + chart presets)
     with st.sidebar:
-        st.title("📈 RoR Trader")
+        st.title("RoR Trader")
         st.caption("Return on Risk Trader")
 
-        # Data source indicator
         data_source = get_data_source()
         if is_alpaca_configured():
-            st.success(f"📡 {data_source}")
+            st.success(f"{data_source}")
         else:
-            st.warning(f"🎲 {data_source}")
+            st.warning(f"{data_source}")
 
         st.divider()
-
-        nav_options = ["Dashboard", "Strategy Builder", "My Strategies", "Portfolios", "Portfolio Requirements", "Alerts & Signals", "Webhook Templates", "Confluence Groups"]
-        default_idx = 0
-        if st.session_state.nav_target and st.session_state.nav_target in nav_options:
-            default_idx = nav_options.index(st.session_state.nav_target)
-            st.session_state.nav_target = None
-
-        page = st.radio(
-            "Navigation",
-            nav_options,
-            index=default_idx
-        )
-
-        st.divider()
-
-        # Data settings (always visible)
-        st.subheader("Data Settings")
-        saved_data_days = st.session_state.get('strategy_config', {}).get('data_days', 30)
-        data_days = st.slider("Historical Days", 7, 90, saved_data_days)
-        if not is_alpaca_configured():
-            saved_data_seed = st.session_state.get('strategy_config', {}).get('data_seed', 42)
-            data_seed = st.number_input("Data Seed", value=saved_data_seed, help="Change for different random data")
-        else:
-            data_seed = 42  # Not used with real data
 
         # Chart presets
         st.subheader("Chart Presets")
@@ -1156,23 +1138,50 @@ def main():
         )
         st.session_state['chart_visible_candles'] = candle_presets[preset_label]
 
-    # Main content
-    if page == "Dashboard":
+    # Top navigation bar
+    section = st.radio(
+        "Navigation",
+        SECTIONS,
+        key="main_nav",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    # Helper for sub-navigation within a section
+    def render_sub_nav(section_name):
+        sub_pages = SECTION_SUB_PAGES[section_name]
+        sub_key = f"sub_nav_{section_name.lower()}"
+        return st.radio(
+            f"{section_name} pages",
+            sub_pages,
+            key=sub_key,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+    # Main content dispatch
+    if section == "Dashboard":
         render_dashboard()
-    elif page == "Strategy Builder":
-        render_strategy_builder(data_days, data_seed)
-    elif page == "My Strategies":
-        render_my_strategies()
-    elif page == "Portfolios":
-        render_portfolios()
-    elif page == "Portfolio Requirements":
-        render_requirements_page()
-    elif page == "Alerts & Signals":
-        render_alerts_page()
-    elif page == "Webhook Templates":
-        render_webhook_templates_page()
-    else:
+    elif section == "Confluence Groups":
         render_confluence_groups()
+    elif section == "Strategies":
+        sub = render_sub_nav("Strategies")
+        if sub == "Strategy Builder":
+            render_strategy_builder()
+        else:
+            render_my_strategies()
+    elif section == "Portfolios":
+        sub = render_sub_nav("Portfolios")
+        if sub == "My Portfolios":
+            render_portfolios()
+        else:
+            render_requirements_page()
+    elif section == "Alerts":
+        sub = render_sub_nav("Alerts")
+        if sub == "Alerts & Signals":
+            render_alerts_page()
+        else:
+            render_webhook_templates_page()
 
 
 def render_dashboard():
@@ -1320,7 +1329,7 @@ def render_dashboard():
     with action_cols[0]:
         if st.button("New Strategy", use_container_width=True):
             st.session_state.nav_target = "Strategy Builder"
-            st.session_state.step = 1
+            st.session_state.builder_data_loaded = False
             st.rerun()
     with action_cols[1]:
         if st.button("View Strategies", use_container_width=True):
@@ -1341,130 +1350,116 @@ def _is_within_days(timestamp_str: str, days: int) -> bool:
         return False
 
 
-def render_strategy_builder(data_days: int, data_seed: int):
-    """Render the 3-step strategy builder."""
+def render_strategy_builder():
+    """Render the single-page strategy builder with sidebar config panel."""
 
-    # Step indicator
-    step = st.session_state.step
-    steps = ["Setup", "Confluence", "Save"]
-
-    cols = st.columns(5)
-    cols[1].markdown(
-        f"{'●' if step >= 1 else '○'} **Step 1: Setup**" +
-        (" ✓" if step > 1 else ""),
-        unsafe_allow_html=True
-    )
-    cols[2].markdown(
-        f"{'●' if step >= 2 else '○'} **Step 2: Confluence**" +
-        (" ✓" if step > 2 else "")
-    )
-    cols[3].markdown(
-        f"{'●' if step >= 3 else '○'} **Step 3: Save**"
-    )
-
-    st.divider()
-
-    # Editing banner
     editing_id = st.session_state.get('editing_strategy_id')
-    if editing_id:
-        editing_strat = get_strategy_by_id(editing_id)
-        if editing_strat:
-            st.info(f"Editing: {editing_strat['name']}")
-            if st.button("Cancel Edit", key="cancel_edit_builder"):
-                st.session_state.editing_strategy_id = None
-                st.session_state.step = 1
-                st.session_state.strategy_config = {}
-                st.session_state.selected_confluences = set()
-                st.rerun()
+    edit_config = st.session_state.get('strategy_config', {})
 
     # =========================================================================
-    # STEP 1: SETUP
+    # SIDEBAR CONFIG PANEL
     # =========================================================================
-    if step == 1:
-        st.header("Step 1: Define Your Strategy")
-
-        # Pre-populate defaults when editing
-        edit_config = st.session_state.strategy_config if editing_id else {}
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
-            symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx)
-            direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
-            direction = st.radio("Direction", DIRECTIONS, horizontal=True, index=direction_idx)
-
-            # Get entry triggers from enabled confluence groups
-            # Returns dict mapping confluence_trigger_id -> display_name
-            # e.g., "ema_stack_default_cross_bull" -> "EMA Stack (Default): Short > Mid Cross"
-            enabled_groups = get_enabled_groups()
-            entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
-
-            # Also get TriggerDefinition objects for execution type labels
-            all_trigger_defs = get_all_triggers(enabled_groups)
-
-            if len(entry_triggers) == 0:
-                st.warning("No entry triggers available. Enable confluence groups in the Confluence Groups page.")
-                entry_trigger = None
-                entry_trigger_name = None
-            else:
-                entry_trigger_options = list(entry_triggers.keys())
-                # Add [C]/[I] execution type labels to display names
-                entry_trigger_labels = []
-                for tid in entry_trigger_options:
-                    name = entry_triggers[tid]
-                    tdef = all_trigger_defs.get(tid)
-                    exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
-                    exec_label = f"[{exec_tag}]"
-                    entry_trigger_labels.append(f"{name} {exec_label}")
-                # Pre-select saved entry trigger when editing
-                saved_entry = edit_config.get('entry_trigger_confluence_id', '')
-                entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
-                entry_trigger_idx = st.selectbox(
-                    "Entry Trigger",
-                    range(len(entry_trigger_options)),
-                    index=entry_default_idx,
-                    format_func=lambda i: entry_trigger_labels[i],
-                    help="Triggers from your enabled Confluence Groups. [C] = bar close, [I] = intra-bar"
-                )
-                entry_trigger = entry_trigger_options[entry_trigger_idx]
-                entry_trigger_name = entry_triggers[entry_trigger]
-
-        with col2:
-            tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
-            timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=tf_idx)
-            st.write("")  # Spacer
-
-        # --- Exit Triggers (up to 3) ---
+    with st.sidebar:
         st.divider()
-        st.subheader("Exit Triggers")
-        st.caption("Select up to 3 signal-based exit triggers from your Confluence Groups. If any fires, the position exits.")
 
-        # Get ALL triggers (not filtered by direction) - user decides how to use them
+        # Editing banner
+        if editing_id:
+            editing_strat = get_strategy_by_id(editing_id)
+            if editing_strat:
+                st.info(f"Editing: {editing_strat['name']}")
+                if st.button("Cancel Edit", key="cancel_edit_builder", use_container_width=True):
+                    st.session_state.editing_strategy_id = None
+                    st.session_state.builder_data_loaded = False
+                    st.session_state.strategy_config = {}
+                    st.session_state.selected_confluences = set()
+                    st.rerun()
+
+        # --- Strategy Origin ---
+        st.markdown("**Strategy Origin**")
+        strategy_origin = st.selectbox(
+            "Origin",
+            ["Standard"],
+            index=0,
+            label_visibility="collapsed",
+            help="Strategy type (more origins coming in Phase 10)",
+        )
+
+        # --- Data ---
+        st.markdown("**Data**")
+        symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
+        symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx, key="sb_symbol")
+
+        tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
+        timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=tf_idx, key="sb_timeframe")
+
+        saved_data_days = edit_config.get('data_days', 30)
+        data_days = st.slider("Data Days", 7, 90, saved_data_days, key="sb_data_days")
+
+        if not is_alpaca_configured():
+            saved_data_seed = edit_config.get('data_seed', 42)
+            data_seed = st.number_input("Data Seed", value=saved_data_seed, key="sb_data_seed", help="Change for different random data")
+        else:
+            data_seed = 42
+
+        load_clicked = st.button("Load Data", type="primary", use_container_width=True)
+
+        # --- Strategy ---
+        st.markdown("**Strategy**")
+        direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
+        direction = st.radio("Direction", DIRECTIONS, horizontal=True, index=direction_idx, key="sb_direction")
+
+        # Entry triggers
+        enabled_groups = get_enabled_groups()
+        entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
+        all_trigger_defs = get_all_triggers(enabled_groups)
+
+        if len(entry_triggers) == 0:
+            st.warning("No entry triggers. Enable confluence groups first.")
+            entry_trigger = None
+            entry_trigger_name = None
+        else:
+            entry_trigger_options = list(entry_triggers.keys())
+            entry_trigger_labels = []
+            for tid in entry_trigger_options:
+                name = entry_triggers[tid]
+                tdef = all_trigger_defs.get(tid)
+                exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
+                entry_trigger_labels.append(f"{name} [{exec_tag}]")
+            saved_entry = edit_config.get('entry_trigger_confluence_id', '')
+            entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
+            entry_trigger_idx = st.selectbox(
+                "Entry Trigger",
+                range(len(entry_trigger_options)),
+                index=entry_default_idx,
+                format_func=lambda i: entry_trigger_labels[i],
+                key="sb_entry_trigger",
+            )
+            entry_trigger = entry_trigger_options[entry_trigger_idx]
+            entry_trigger_name = entry_triggers[entry_trigger]
+
+        # Exit triggers
         all_triggers = get_all_triggers(enabled_groups)
         all_trigger_map = {tid: tdef for tid, tdef in all_triggers.items()}
         exit_trigger_display = {tid: f"{tdef.name} [{'C' if tdef.execution == 'bar_close' else 'I'}]" for tid, tdef in all_triggers.items()}
 
-        # Load saved exit triggers (new array format or legacy single)
         saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
         if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
             saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
 
-        # Initialize exit trigger count in session state
         if 'exit_trigger_count' not in st.session_state:
             st.session_state.exit_trigger_count = max(1, len(saved_exit_cids)) if saved_exit_cids else 1
 
-        exit_trigger_selections = []  # list of (confluence_id, name) tuples
+        exit_trigger_selections = []
         has_exit_triggers = len(exit_trigger_display) > 0
 
         if not has_exit_triggers:
-            st.warning("No exit triggers available. Enable confluence groups in the Confluence Groups page.")
+            st.warning("No exit triggers available.")
         else:
             exit_options = list(exit_trigger_display.keys())
             exit_labels = list(exit_trigger_display.values())
 
             for et_idx in range(st.session_state.exit_trigger_count):
-                label = f"Exit Trigger {et_idx + 1}" if st.session_state.exit_trigger_count > 1 else "Exit Trigger"
+                label = f"Exit {et_idx + 1}" if st.session_state.exit_trigger_count > 1 else "Exit Trigger"
                 saved_val = saved_exit_cids[et_idx] if et_idx < len(saved_exit_cids) else ''
                 default_idx = exit_options.index(saved_val) if saved_val in exit_options else 0
                 selected_idx = st.selectbox(
@@ -1472,629 +1467,491 @@ def render_strategy_builder(data_days: int, data_seed: int):
                     range(len(exit_options)),
                     index=default_idx,
                     format_func=lambda i, _labels=exit_labels: _labels[i],
-                    help="Triggers from your enabled Confluence Groups",
-                    key=f"exit_trigger_{et_idx}",
+                    key=f"sb_exit_trigger_{et_idx}",
                 )
                 selected_cid = exit_options[selected_idx]
                 selected_name = all_trigger_map[selected_cid].name if selected_cid in all_trigger_map else ""
                 exit_trigger_selections.append((selected_cid, selected_name))
 
-            # Add/remove exit trigger buttons
-            btn_cols = st.columns(4)
+            et_btn_cols = st.columns(2)
             if st.session_state.exit_trigger_count < 3:
-                if btn_cols[0].button("+ Add Exit Trigger", key="add_exit_trig"):
+                if et_btn_cols[0].button("+ Add Exit", key="sb_add_exit"):
                     st.session_state.exit_trigger_count += 1
                     st.rerun()
             if st.session_state.exit_trigger_count > 1:
-                if btn_cols[1].button("- Remove Last", key="remove_exit_trig"):
+                if et_btn_cols[1].button("- Remove", key="sb_rm_exit"):
                     st.session_state.exit_trigger_count -= 1
                     st.rerun()
 
         # --- Risk Management ---
-        st.divider()
-        st.subheader("Risk Management")
+        st.markdown("**Risk Management**")
 
-        rm_col1, rm_col2 = st.columns(2)
+        # Stop Loss
+        stop_methods = ["ATR", "Fixed Dollar", "Percentage", "Swing Low/High"]
+        stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
+        saved_stop = edit_config.get('stop_config') or {}
+        saved_stop_method = saved_stop.get('method', 'atr')
+        default_stop_idx = stop_method_keys.index(saved_stop_method) if saved_stop_method in stop_method_keys else 0
 
-        with rm_col1:
-            st.markdown("**Stop Loss**")
-            stop_methods = ["ATR", "Fixed Dollar", "Percentage", "Swing Low/High"]
-            stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
+        stop_method_idx = st.selectbox(
+            "Stop Loss",
+            range(len(stop_methods)),
+            index=default_stop_idx,
+            format_func=lambda i: stop_methods[i],
+            key="sb_stop_method",
+        )
+        stop_method = stop_method_keys[stop_method_idx]
+        stop_config_dict = {"method": stop_method}
 
-            saved_stop = edit_config.get('stop_config') or {}
-            saved_stop_method = saved_stop.get('method', 'atr')
-            default_stop_idx = stop_method_keys.index(saved_stop_method) if saved_stop_method in stop_method_keys else 0
-
-            stop_method_idx = st.selectbox(
-                "Method",
-                range(len(stop_methods)),
-                index=default_stop_idx,
-                format_func=lambda i: stop_methods[i],
-                key="stop_method",
+        if stop_method == "atr":
+            stop_config_dict["atr_mult"] = st.number_input(
+                "ATR Mult", min_value=0.5, max_value=5.0,
+                value=float(saved_stop.get('atr_mult', edit_config.get('stop_atr_mult', 1.5))),
+                step=0.1, key="sb_stop_atr",
             )
-            stop_method = stop_method_keys[stop_method_idx]
-
-            stop_config_dict = {"method": stop_method}
-
-            if stop_method == "atr":
-                stop_config_dict["atr_mult"] = st.number_input(
-                    "ATR Multiplier",
-                    min_value=0.5, max_value=5.0,
-                    value=float(saved_stop.get('atr_mult', edit_config.get('stop_atr_mult', 1.5))),
-                    step=0.1,
-                    help="Stop loss distance as a multiple of ATR",
-                )
-            elif stop_method == "fixed_dollar":
-                stop_config_dict["dollar_amount"] = st.number_input(
-                    "Dollar Amount ($)",
-                    min_value=0.01, max_value=100.0,
-                    value=float(saved_stop.get('dollar_amount', 1.0)),
-                    step=0.1,
-                    help="Fixed dollar distance from entry price",
-                )
-            elif stop_method == "percentage":
-                stop_config_dict["percentage"] = st.number_input(
-                    "Percentage (%)",
-                    min_value=0.01, max_value=10.0,
-                    value=float(saved_stop.get('percentage', 0.5)),
-                    step=0.05,
-                    help="Stop loss as percentage of entry price",
-                )
-            elif stop_method == "swing":
-                stop_config_dict["lookback"] = st.number_input(
-                    "Lookback Bars",
-                    min_value=2, max_value=50,
-                    value=int(saved_stop.get('lookback', 5)),
-                    step=1,
-                    help="Number of bars to look back for swing low/high",
-                )
-                stop_config_dict["padding"] = st.number_input(
-                    "Padding ($)",
-                    min_value=0.0, max_value=10.0,
-                    value=float(saved_stop.get('padding', 0.05)),
-                    step=0.01,
-                    help="Extra distance beyond the swing level",
-                )
-
-            # Keep backward-compat flat field
-            stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
-
-        with rm_col2:
-            st.markdown("**Take Profit Target** *(optional)*")
-            target_methods = ["None", "Risk:Reward", "ATR", "Fixed Dollar", "Percentage", "Swing High/Low"]
-            target_method_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
-
-            saved_target = edit_config.get('target_config') or {}
-            saved_t_method = saved_target.get('method')
-            default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
-
-            target_method_idx = st.selectbox(
-                "Method",
-                range(len(target_methods)),
-                index=default_target_idx,
-                format_func=lambda i: target_methods[i],
-                key="target_method",
+        elif stop_method == "fixed_dollar":
+            stop_config_dict["dollar_amount"] = st.number_input(
+                "Dollar ($)", min_value=0.01, max_value=100.0,
+                value=float(saved_stop.get('dollar_amount', 1.0)),
+                step=0.1, key="sb_stop_dollar",
             )
-            target_method = target_method_keys[target_method_idx]
+        elif stop_method == "percentage":
+            stop_config_dict["percentage"] = st.number_input(
+                "Pct (%)", min_value=0.01, max_value=10.0,
+                value=float(saved_stop.get('percentage', 0.5)),
+                step=0.05, key="sb_stop_pct",
+            )
+        elif stop_method == "swing":
+            stop_config_dict["lookback"] = st.number_input(
+                "Lookback", min_value=2, max_value=50,
+                value=int(saved_stop.get('lookback', 5)),
+                step=1, key="sb_stop_lookback",
+            )
+            stop_config_dict["padding"] = st.number_input(
+                "Padding ($)", min_value=0.0, max_value=10.0,
+                value=float(saved_stop.get('padding', 0.05)),
+                step=0.01, key="sb_stop_padding",
+            )
 
-            if target_method is None:
-                target_config_dict = None
-            else:
-                target_config_dict = {"method": target_method}
-                if target_method == "risk_reward":
-                    target_config_dict["rr_ratio"] = st.number_input(
-                        "R:R Ratio",
-                        min_value=0.5, max_value=10.0,
-                        value=float(saved_target.get('rr_ratio', 2.0)),
-                        step=0.5,
-                        help="Target distance as multiple of risk (stop distance)",
-                    )
-                elif target_method == "atr":
-                    target_config_dict["atr_mult"] = st.number_input(
-                        "ATR Multiplier",
-                        min_value=0.5, max_value=10.0,
-                        value=float(saved_target.get('atr_mult', 2.0)),
-                        step=0.1,
-                        key="target_atr_mult",
-                        help="Target distance as multiple of ATR",
-                    )
-                elif target_method == "fixed_dollar":
-                    target_config_dict["dollar_amount"] = st.number_input(
-                        "Dollar Amount ($)",
-                        min_value=0.01, max_value=100.0,
-                        value=float(saved_target.get('dollar_amount', 2.0)),
-                        step=0.1,
-                        key="target_dollar",
-                        help="Fixed dollar distance from entry price",
-                    )
-                elif target_method == "percentage":
-                    target_config_dict["percentage"] = st.number_input(
-                        "Percentage (%)",
-                        min_value=0.01, max_value=20.0,
-                        value=float(saved_target.get('percentage', 1.0)),
-                        step=0.05,
-                        key="target_pct",
-                        help="Target as percentage of entry price",
-                    )
-                elif target_method == "swing":
-                    target_config_dict["lookback"] = st.number_input(
-                        "Lookback Bars",
-                        min_value=2, max_value=50,
-                        value=int(saved_target.get('lookback', 5)),
-                        step=1,
-                        key="target_lookback",
-                        help="Number of bars to look back for swing high/low",
-                    )
-                    target_config_dict["padding"] = st.number_input(
-                        "Padding ($)",
-                        min_value=0.0, max_value=10.0,
-                        value=float(saved_target.get('padding', 0.05)),
-                        step=0.01,
-                        key="target_padding",
-                        help="Extra distance beyond the swing level",
-                    )
+        stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
 
-        # Dollar sizing deferred to portfolio level — use fixed defaults for R calculations
+        # Target
+        target_methods = ["None", "Risk:Reward", "ATR", "Fixed Dollar", "Percentage", "Swing High/Low"]
+        target_method_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
+        saved_target = edit_config.get('target_config') or {}
+        saved_t_method = saved_target.get('method')
+        default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
+
+        target_method_idx = st.selectbox(
+            "Target",
+            range(len(target_methods)),
+            index=default_target_idx,
+            format_func=lambda i: target_methods[i],
+            key="sb_target_method",
+        )
+        target_method = target_method_keys[target_method_idx]
+
+        if target_method is None:
+            target_config_dict = None
+        else:
+            target_config_dict = {"method": target_method}
+            if target_method == "risk_reward":
+                target_config_dict["rr_ratio"] = st.number_input(
+                    "R:R Ratio", min_value=0.5, max_value=10.0,
+                    value=float(saved_target.get('rr_ratio', 2.0)),
+                    step=0.5, key="sb_target_rr",
+                )
+            elif target_method == "atr":
+                target_config_dict["atr_mult"] = st.number_input(
+                    "ATR Mult", min_value=0.5, max_value=10.0,
+                    value=float(saved_target.get('atr_mult', 2.0)),
+                    step=0.1, key="sb_target_atr",
+                )
+            elif target_method == "fixed_dollar":
+                target_config_dict["dollar_amount"] = st.number_input(
+                    "Dollar ($)", min_value=0.01, max_value=100.0,
+                    value=float(saved_target.get('dollar_amount', 2.0)),
+                    step=0.1, key="sb_target_dollar",
+                )
+            elif target_method == "percentage":
+                target_config_dict["percentage"] = st.number_input(
+                    "Pct (%)", min_value=0.01, max_value=20.0,
+                    value=float(saved_target.get('percentage', 1.0)),
+                    step=0.05, key="sb_target_pct",
+                )
+            elif target_method == "swing":
+                target_config_dict["lookback"] = st.number_input(
+                    "Lookback", min_value=2, max_value=50,
+                    value=int(saved_target.get('lookback', 5)),
+                    step=1, key="sb_target_lookback",
+                )
+                target_config_dict["padding"] = st.number_input(
+                    "Padding ($)", min_value=0.0, max_value=10.0,
+                    value=float(saved_target.get('padding', 0.05)),
+                    step=0.01, key="sb_target_padding",
+                )
+
         risk_per_trade = float(edit_config.get('risk_per_trade', 100.0))
         starting_balance = float(edit_config.get('starting_balance', 10000.0))
 
-        st.divider()
+        # --- Save ---
+        st.markdown("**Save**")
+        entry_display_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
+        default_name = edit_config.get('name', f"{symbol} {direction} - {entry_display_name}")
+        if editing_id:
+            default_name = get_strategy_by_id(editing_id).get('name', default_name) if get_strategy_by_id(editing_id) else default_name
+        strategy_name = st.text_input("Strategy Name", value=default_name, key="sb_name")
+        enable_forward = st.checkbox("Forward Testing", value=edit_config.get('forward_testing', True), key="sb_forward")
+        enable_alerts = st.checkbox("Alerts", value=edit_config.get('alerts', False), key="sb_alerts")
 
         # Validation
         exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
         has_duplicate_exits = len(exit_cids) != len(set(exit_cids))
         entry_in_exits = entry_trigger is not None and entry_trigger in exit_cids
-        if has_duplicate_exits:
-            st.warning("Exit triggers must be unique — remove duplicates.")
-        if entry_in_exits:
-            st.warning("An exit trigger cannot be the same as the entry trigger.")
-
-        can_proceed = (
+        can_save = (
             entry_trigger is not None
             and has_exit_triggers
             and len(exit_trigger_selections) > 0
             and not has_duplicate_exits
             and not entry_in_exits
-        )
-        if st.button("Next: Add Confluence →", type="primary", use_container_width=True, disabled=not can_proceed):
-            # Save config and move to step 2
-            # Map the confluence trigger IDs to the base trigger IDs for trade generation
-            base_entry_trigger_id = get_base_trigger_id(entry_trigger)
-
-            # Build exit trigger arrays
-            exit_base_ids = [get_base_trigger_id(cid) for cid, _ in exit_trigger_selections]
-            exit_confluence_ids = [cid for cid, _ in exit_trigger_selections]
-            exit_names = [name for _, name in exit_trigger_selections]
-
-            st.session_state.strategy_config = {
-                'symbol': symbol,
-                'direction': direction,
-                'timeframe': timeframe,
-                'entry_trigger': base_entry_trigger_id,  # Base trigger ID for trade generation
-                'entry_trigger_confluence_id': entry_trigger,  # Full confluence ID for display
-                # New multi-exit format
-                'exit_triggers': exit_base_ids,
-                'exit_trigger_confluence_ids': exit_confluence_ids,
-                'exit_trigger_names': exit_names,
-                # Legacy single-exit fields (backward compat)
-                'exit_trigger': exit_base_ids[0] if exit_base_ids else None,
-                'exit_trigger_confluence_id': exit_confluence_ids[0] if exit_confluence_ids else None,
-                'entry_trigger_name': entry_trigger_name,
-                'exit_trigger_name': exit_names[0] if exit_names else None,
-                'risk_per_trade': risk_per_trade,
-                'stop_atr_mult': stop_atr_mult,
-                'stop_config': stop_config_dict,
-                'target_config': target_config_dict,
-                'starting_balance': starting_balance,
-                'data_days': data_days,
-                'data_seed': data_seed,
-            }
-            st.session_state.step = 2
-            st.session_state.selected_confluences = set()
-            st.session_state.pop('exit_trigger_count', None)  # Clean up
-            st.rerun()
-
-    # =========================================================================
-    # STEP 2: CONFLUENCE
-    # =========================================================================
-    elif step == 2:
-        config = st.session_state.strategy_config
-
-        # Load enabled confluence groups for formatting and overlays
-        enabled_groups = get_enabled_groups()
-
-        # Header with strategy summary
-        entry_name = config.get('entry_trigger_name', config['entry_trigger'])
-        exit_names = config.get('exit_trigger_names', [])
-        if not exit_names:
-            exit_names = [config.get('exit_trigger_name', config.get('exit_trigger', ''))]
-        exit_str = " / ".join(exit_names)
-        st.markdown(
-            f"### {config['symbol']} | {config['direction']} | "
-            f"{entry_name} → {exit_str}"
+            and st.session_state.get('builder_data_loaded', False)
         )
 
-        # Load data with indicators, interpreters, and triggers
-        with st.spinner("Loading market data and running analysis..."):
-            df = prepare_data_with_indicators(config['symbol'], data_days, data_seed)
+        if has_duplicate_exits:
+            st.warning("Duplicate exit triggers.")
+        if entry_in_exits:
+            st.warning("Entry trigger in exits.")
 
-            if len(df) == 0:
-                st.error("No data available")
-                return
+        save_label = "Update Strategy" if editing_id else "Save Strategy"
+        save_clicked = st.button(save_label, type="primary", use_container_width=True, disabled=not can_save)
 
-            # Generate trades using real trigger logic
-            trades = generate_trades(
-                df,
-                direction=config['direction'],
-                entry_trigger=config['entry_trigger'],
-                exit_trigger=config.get('exit_trigger'),
-                exit_triggers=config.get('exit_triggers'),
-                confluence_required=None,  # Will filter after generation
-                risk_per_trade=config.get('risk_per_trade', 100.0),
-                stop_atr_mult=config.get('stop_atr_mult', 1.5),
-                stop_config=config.get('stop_config'),
-                target_config=config.get('target_config'),
+    # =========================================================================
+    # BUILD CONFIG FROM SIDEBAR WIDGETS (always, for live updates)
+    # =========================================================================
+    base_entry_trigger_id = get_base_trigger_id(entry_trigger) if entry_trigger else None
+    exit_base_ids = [get_base_trigger_id(cid) for cid, _ in exit_trigger_selections]
+    exit_confluence_ids = [cid for cid, _ in exit_trigger_selections]
+    exit_names_list = [name for _, name in exit_trigger_selections]
+
+    config = {
+        'symbol': symbol,
+        'direction': direction,
+        'timeframe': timeframe,
+        'entry_trigger': base_entry_trigger_id,
+        'entry_trigger_confluence_id': entry_trigger,
+        'exit_triggers': exit_base_ids,
+        'exit_trigger_confluence_ids': exit_confluence_ids,
+        'exit_trigger_names': exit_names_list,
+        'exit_trigger': exit_base_ids[0] if exit_base_ids else None,
+        'exit_trigger_confluence_id': exit_confluence_ids[0] if exit_confluence_ids else None,
+        'entry_trigger_name': entry_trigger_name,
+        'exit_trigger_name': exit_names_list[0] if exit_names_list else None,
+        'risk_per_trade': risk_per_trade,
+        'stop_atr_mult': stop_atr_mult,
+        'stop_config': stop_config_dict,
+        'target_config': target_config_dict,
+        'starting_balance': starting_balance,
+        'data_days': data_days,
+        'data_seed': data_seed,
+        'strategy_origin': strategy_origin.lower(),
+    }
+
+    # Handle Load Data
+    if load_clicked:
+        st.session_state.builder_data_loaded = True
+        st.session_state.strategy_config = config
+        st.rerun()
+
+    # =========================================================================
+    # MAIN AREA
+    # =========================================================================
+    if not st.session_state.get('builder_data_loaded', False):
+        st.header("Strategy Builder")
+        st.info("Configure your strategy in the sidebar, then click **Load Data** to begin analysis.")
+        return
+
+    # Keep strategy_config in sync with sidebar for the edit flow
+    st.session_state.strategy_config = config
+
+    # Header with strategy summary
+    entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
+    exit_display_names = exit_names_list if exit_names_list else [config.get('exit_trigger_name', '')]
+    exit_str = " / ".join(exit_display_names)
+    st.markdown(f"### {symbol} | {direction} | {entry_name} → {exit_str}")
+
+    # Load data and generate trades
+    with st.spinner("Loading market data and running analysis..."):
+        df = prepare_data_with_indicators(symbol, data_days, data_seed)
+
+        if len(df) == 0:
+            st.error("No data available")
+            return
+
+        trades = generate_trades(
+            df,
+            direction=direction,
+            entry_trigger=config['entry_trigger'],
+            exit_trigger=config.get('exit_trigger'),
+            exit_triggers=config.get('exit_triggers'),
+            confluence_required=None,
+            risk_per_trade=risk_per_trade,
+            stop_atr_mult=stop_atr_mult,
+            stop_config=stop_config_dict,
+            target_config=target_config_dict,
+        )
+
+    # Apply confluence filter
+    selected = st.session_state.selected_confluences
+    if len(selected) > 0 and len(trades) > 0:
+        mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+        filtered_trades = trades[mask]
+    else:
+        filtered_trades = trades
+
+    # Active confluence tags
+    if len(selected) > 0:
+        st.caption("Active Confluence Filters:")
+        tag_cols = st.columns(min(len(selected) + 1, 6))
+        for i, conf in enumerate(sorted(selected)):
+            conf_display = format_confluence_record(conf, enabled_groups)
+            with tag_cols[i % 5]:
+                if st.button(f"✕ {conf_display}", key=f"rm_{conf}"):
+                    st.session_state.selected_confluences.discard(conf)
+                    st.rerun()
+
+        with tag_cols[-1]:
+            if st.button("Clear All"):
+                st.session_state.selected_confluences = set()
+                st.rerun()
+    else:
+        st.caption("No confluence filters active. Add conditions below to refine your strategy.")
+
+    # KPIs
+    period_trading_days = count_trading_days(df)
+    kpis = calculate_kpis(
+        filtered_trades,
+        starting_balance=starting_balance,
+        risk_per_trade=risk_per_trade,
+        total_trading_days=period_trading_days,
+    )
+
+    kpi_cols = st.columns(7)
+    kpi_cols[0].metric("Trades", kpis["total_trades"])
+    kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+    kpi_cols[2].metric("Profit Factor", f"{kpis['profit_factor']:.2f}" if kpis['profit_factor'] != float('inf') else "∞")
+    kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
+    kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
+    kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+    kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
+
+    # Main content: Chart/Equity (left) + Confluence panel (right)
+    left_col, right_col = st.columns([1, 1])
+
+    with left_col:
+        chart_tab1, chart_tab2 = st.tabs(["Equity Curve", "Price Chart"])
+
+        with chart_tab1:
+            if len(filtered_trades) > 0:
+                equity_df = filtered_trades[["exit_time", "r_multiple"]].sort_values("exit_time")
+                equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=equity_df["exit_time"],
+                    y=equity_df["cumulative_r"],
+                    mode="lines",
+                    name="Equity",
+                    line=dict(color="#2196F3", width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(33, 150, 243, 0.1)"
+                ))
+                fig.add_trace(go.Scatter(
+                    x=equity_df["exit_time"],
+                    y=equity_df["cumulative_r"].cummax(),
+                    mode="lines",
+                    name="High Water Mark",
+                    line=dict(color="green", width=1, dash="dot")
+                ))
+                fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                fig.update_layout(
+                    height=400,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="",
+                    yaxis_title="Cumulative R",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No trades match current filters")
+
+        with chart_tab2:
+            overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+
+            if len(overlay_groups) > 0:
+                selected_overlay_groups = st.multiselect(
+                    "Show Indicators",
+                    options=[g.id for g in overlay_groups],
+                    default=[overlay_groups[0].id] if len(overlay_groups) > 0 else [],
+                    format_func=lambda gid: next((g.name for g in overlay_groups if g.id == gid), gid),
+                    help="Select confluence groups to overlay on chart"
+                )
+
+                show_indicators = []
+                indicator_colors = {}
+                for gid in selected_overlay_groups:
+                    group = get_group_by_id(gid, enabled_groups)
+                    if group:
+                        cols = get_overlay_indicators_for_group(group)
+                        show_indicators.extend(cols)
+                        indicator_colors.update(get_overlay_colors_for_group(group))
+            else:
+                st.info("No overlay-compatible confluence groups enabled")
+                show_indicators = []
+                indicator_colors = {}
+
+            if len(filtered_trades) > 0:
+                st.caption(f"{len(filtered_trades)} trades on {symbol} ({direction})")
+            else:
+                st.caption(f"{symbol} price data (no trades match filters)")
+
+            osc_panes = build_secondary_panes(df, enabled_groups)
+            render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
+                               secondary_panes=osc_panes if osc_panes else None)
+
+    with right_col:
+        st.subheader("Confluence Drill-Down")
+
+        mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
+
+        if mode == "Drill-Down":
+            sort_by = st.selectbox("Sort by", ["Profit Factor", "Win Rate", "Daily R", "R² Smoothness", "Trades"], index=0, label_visibility="collapsed")
+            sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "R² Smoothness": "r_squared", "Trades": "total_trades"}
+
+            confluence_df = analyze_confluences(
+                trades, selected, min_trades=3,
+                starting_balance=starting_balance,
+                risk_per_trade=risk_per_trade,
+                total_trading_days=period_trading_days,
             )
 
-        # Apply confluence filter
-        selected = st.session_state.selected_confluences
-        if len(selected) > 0 and len(trades) > 0:
-            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
-            filtered_trades = trades[mask]
-        else:
-            filtered_trades = trades
+            if len(confluence_df) > 0:
+                confluence_df = confluence_df.sort_values(sort_map[sort_by], ascending=False, na_position="last").head(15)
 
-        # Active confluence tags
-        if len(selected) > 0:
-            st.caption("Active Confluence Filters:")
-            tag_cols = st.columns(min(len(selected) + 1, 6))
-            for i, conf in enumerate(sorted(selected)):
-                conf_display = format_confluence_record(conf, enabled_groups)
-                with tag_cols[i % 5]:
-                    if st.button(f"✕ {conf_display}", key=f"rm_{conf}"):
-                        st.session_state.selected_confluences.discard(conf)
-                        st.rerun()
+                for _, row in confluence_df.iterrows():
+                    conf = row['confluence']
+                    conf_display = format_confluence_record(conf, enabled_groups)
+                    is_selected = conf in selected
 
-            with tag_cols[-1]:
-                if st.button("Clear All"):
-                    st.session_state.selected_confluences = set()
-                    st.rerun()
-        else:
-            st.caption("No confluence filters active. Add conditions below to refine your strategy.")
+                    col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2.5, 1, 1, 1, 1])
 
-        # KPIs
-        period_trading_days = count_trading_days(df)
-        kpis = calculate_kpis(
-            filtered_trades,
-            starting_balance=config.get('starting_balance', 10000.0),
-            risk_per_trade=config.get('risk_per_trade', 100.0),
-            total_trading_days=period_trading_days,
-        )
-
-        kpi_cols = st.columns(7)
-        kpi_cols[0].metric("Trades", kpis["total_trades"])
-        kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
-        kpi_cols[2].metric("Profit Factor", f"{kpis['profit_factor']:.2f}" if kpis['profit_factor'] != float('inf') else "∞")
-        kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
-        kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
-        kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
-        kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
-
-        # Main content: Chart/Equity (left) + Confluence panel (right)
-        left_col, right_col = st.columns([1, 1])
-
-        # -----------------------------------------------------------------
-        # LEFT COLUMN: Tabbed view for Equity Curve / Price Chart
-        # -----------------------------------------------------------------
-        with left_col:
-            chart_tab1, chart_tab2 = st.tabs(["📈 Equity Curve", "📊 Price Chart"])
-
-            with chart_tab1:
-                if len(filtered_trades) > 0:
-                    equity_df = filtered_trades[["exit_time", "r_multiple"]].sort_values("exit_time")
-                    equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
-
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=equity_df["exit_time"],
-                        y=equity_df["cumulative_r"],
-                        mode="lines",
-                        name="Equity",
-                        line=dict(color="#2196F3", width=2),
-                        fill="tozeroy",
-                        fillcolor="rgba(33, 150, 243, 0.1)"
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=equity_df["exit_time"],
-                        y=equity_df["cumulative_r"].cummax(),
-                        mode="lines",
-                        name="High Water Mark",
-                        line=dict(color="green", width=1, dash="dot")
-                    ))
-                    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                    fig.update_layout(
-                        height=400,
-                        margin=dict(l=0, r=0, t=10, b=0),
-                        xaxis_title="",
-                        yaxis_title="Cumulative R",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No trades match current filters")
-
-            with chart_tab2:
-                # Confluence group selector for indicator overlays
-                # Only show groups that have chart overlays (not MACD which is typically a separate pane)
-                overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
-
-                if len(overlay_groups) > 0:
-                    selected_overlay_groups = st.multiselect(
-                        "Show Indicators",
-                        options=[g.id for g in overlay_groups],
-                        default=[overlay_groups[0].id] if len(overlay_groups) > 0 else [],
-                        format_func=lambda gid: next((g.name for g in overlay_groups if g.id == gid), gid),
-                        help="Select confluence groups to overlay on chart"
-                    )
-
-                    # Collect indicator columns and colors from selected groups
-                    show_indicators = []
-                    indicator_colors = {}
-                    for gid in selected_overlay_groups:
-                        group = get_group_by_id(gid, enabled_groups)
-                        if group:
-                            cols = get_overlay_indicators_for_group(group)
-                            show_indicators.extend(cols)
-                            indicator_colors.update(get_overlay_colors_for_group(group))
-                else:
-                    st.info("No overlay-compatible confluence groups enabled")
-                    show_indicators = []
-                    indicator_colors = {}
-
-                if len(filtered_trades) > 0:
-                    st.caption(f"{len(filtered_trades)} trades on {config['symbol']} ({config['direction']})")
-                else:
-                    st.caption(f"{config['symbol']} price data (no trades match filters)")
-
-                # Render the TradingView-style chart with indicator overlays + oscillator panes
-                osc_panes = build_secondary_panes(df, enabled_groups)
-                render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
-                                   secondary_panes=osc_panes if osc_panes else None)
-
-        # -----------------------------------------------------------------
-        # RIGHT COLUMN: Confluence Drill-Down (always visible)
-        # -----------------------------------------------------------------
-        with right_col:
-            st.subheader("🎯 Confluence Drill-Down")
-
-            mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
-
-            if mode == "Drill-Down":
-                sort_by = st.selectbox("Sort by", ["Profit Factor", "Win Rate", "Daily R", "R² Smoothness", "Trades"], index=0, label_visibility="collapsed")
-
-                sort_map = {"Profit Factor": "profit_factor", "Win Rate": "win_rate", "Daily R": "daily_r", "R² Smoothness": "r_squared", "Trades": "total_trades"}
-
-                confluence_df = analyze_confluences(
-                    trades, selected, min_trades=3,
-                    starting_balance=config.get('starting_balance', 10000.0),
-                    risk_per_trade=config.get('risk_per_trade', 100.0),
-                    total_trading_days=period_trading_days,
-                )
-
-                if len(confluence_df) > 0:
-                    confluence_df = confluence_df.sort_values(sort_map[sort_by], ascending=False, na_position="last").head(15)
-
-                    # Display as interactive table
-                    for _, row in confluence_df.iterrows():
-                        conf = row['confluence']  # Raw record for selection logic
-                        conf_display = format_confluence_record(conf, enabled_groups)  # Formatted for display
-                        is_selected = conf in selected
-
-                        col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2.5, 1, 1, 1, 1])
-
-                        with col1:
-                            if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
-                                if not is_selected:
-                                    st.session_state.selected_confluences.add(conf)
-                                    st.rerun()
-                            elif is_selected:
-                                st.session_state.selected_confluences.discard(conf)
+                    with col1:
+                        if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
+                            if not is_selected:
+                                st.session_state.selected_confluences.add(conf)
                                 st.rerun()
+                        elif is_selected:
+                            st.session_state.selected_confluences.discard(conf)
+                            st.rerun()
 
-                        with col2:
-                            st.markdown(f"**{conf_display}**" if is_selected else conf_display)
-                        with col3:
-                            st.caption(f"{row['total_trades']} trades")
-                        with col4:
-                            pf = row['profit_factor']
-                            st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "PF: ∞")
-                        with col5:
-                            st.caption(f"WR: {row['win_rate']:.0f}%")
-                        with col6:
-                            st.caption(f"R²: {row['r_squared']:.2f}")
-                else:
-                    st.info("Not enough trades for analysis")
-
-            else:  # Auto-Search
-                search_cols = st.columns([1, 1, 2])
-                with search_cols[0]:
-                    max_depth = st.slider("Max factors", 1, 4, 2)
-                with search_cols[1]:
-                    min_trades = st.slider("Min trades", 1, 20, 5)
-
-                if st.button("🔍 Find Best Combinations", type="primary"):
-                    with st.spinner("Searching..."):
-                        best = find_best_combinations(
-                            trades, max_depth, min_trades, top_n=10,
-                            starting_balance=config.get('starting_balance', 10000.0),
-                            risk_per_trade=config.get('risk_per_trade', 100.0),
-                            total_trading_days=period_trading_days,
-                        )
-
-                    if len(best) > 0:
-                        st.session_state.auto_results = best
-
-                if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
-                    for _, row in st.session_state.auto_results.iterrows():
-                        col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1, 1, 1])
-
-                        # Format the combination for display
-                        combo_display = format_confluence_set(row['combination'], enabled_groups)
-
-                        with col1:
-                            st.caption(f"{row['depth']}")
-                        with col2:
-                            st.markdown(f"**{combo_display}**")
-                        with col3:
-                            pf = row['profit_factor']
-                            st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "∞")
-                        with col4:
-                            st.caption(f"R²: {row['r_squared']:.2f}")
-                        with col5:
-                            if st.button("Apply", key=f"apply_{row['combo_str']}"):
-                                st.session_state.selected_confluences = row['combination'].copy()
-                                st.rerun()
-
-        # Trade list (expandable) - full width below columns
-        with st.expander("📋 Trade List"):
-            if len(filtered_trades) > 0:
-                display = filtered_trades.tail(20).copy()
-                display['time'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-                display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
-                display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
-                # Format confluence records with group version names
-                display['confluences'] = display['confluence_records'].apply(
-                    lambda r: ", ".join([format_confluence_record(rec, enabled_groups) for rec in sorted(r)[:3]]) + ("..." if len(r) > 3 else "")
-                )
-
-                st.dataframe(
-                    display[['time', 'entry_trigger', 'exit_reason', 'R', 'result', 'confluences']],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        'time': 'Time',
-                        'entry_trigger': 'Entry',
-                        'exit_reason': 'Exit Reason',
-                        'R': 'R-Multiple',
-                        'result': 'Result',
-                        'confluences': 'Confluences',
-                    }
-                )
-
-        # Navigation
-        st.divider()
-        nav_cols = st.columns([1, 3, 1])
-
-        with nav_cols[0]:
-            if st.button("← Back to Setup"):
-                st.session_state.step = 1
-                st.rerun()
-
-        with nav_cols[2]:
-            if st.button("Save Strategy →", type="primary"):
-                st.session_state.step = 3
-                st.session_state.final_kpis = kpis
-                st.rerun()
-
-    # =========================================================================
-    # STEP 3: SAVE
-    # =========================================================================
-    elif step == 3:
-        config = st.session_state.strategy_config
-        selected = st.session_state.selected_confluences
-        kpis = st.session_state.get('final_kpis', {})
-
-        st.header("Step 3: Save Your Strategy")
-
-        # Use the display name for default strategy name
-        entry_display_name = config.get('entry_trigger_name', config['entry_trigger'])
-        default_name = f"{config['symbol']} {config['direction']} - {entry_display_name}"
-        strategy_name = st.text_input("Strategy Name", value=default_name)
-
-        # Summary
-        st.subheader("Strategy Summary")
-
-        col1, col2 = st.columns(2)
-
-        # Get display names
-        exit_display_names = config.get('exit_trigger_names', [])
-        if not exit_display_names:
-            exit_display_names = [config.get('exit_trigger_name', config.get('exit_trigger', ''))]
-        exit_display_str = ", ".join(exit_display_names)
-
-        with col1:
-            st.markdown(f"""
-            **Configuration:**
-            - Ticker: {config['symbol']}
-            - Direction: {config['direction']}
-            - Timeframe: {config['timeframe']}
-            - Entry: {entry_display_name}
-            - Exit: {exit_display_str}
-            - Stop Loss: {format_stop_display(config)}
-            - Target: {format_target_display(config)}
-            """)
-
-        with col2:
-            st.markdown("**Confluence Conditions:**")
-            if len(selected) > 0:
-                for conf in sorted(selected):
-                    st.markdown(f"- {conf}")
+                    with col2:
+                        st.markdown(f"**{conf_display}**" if is_selected else conf_display)
+                    with col3:
+                        st.caption(f"{row['total_trades']} trades")
+                    with col4:
+                        pf = row['profit_factor']
+                        st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "PF: ∞")
+                    with col5:
+                        st.caption(f"WR: {row['win_rate']:.0f}%")
+                    with col6:
+                        st.caption(f"R²: {row['r_squared']:.2f}")
             else:
-                st.markdown("- *No confluence filters*")
+                st.info("Not enough trades for analysis")
 
-        # KPIs
-        st.subheader("Backtest Results")
-        kpi_cols = st.columns(6)
-        kpi_cols[0].metric("Trades", kpis.get("total_trades", 0))
-        kpi_cols[1].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
-        kpi_cols[2].metric("Profit Factor", f"{kpis.get('profit_factor', 0):.2f}")
-        kpi_cols[3].metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
-        kpi_cols[4].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
-        kpi_cols[5].metric("R²", f"{kpis.get('r_squared', 0):.2f}")
+        else:  # Auto-Search
+            search_cols = st.columns([1, 1, 2])
+            with search_cols[0]:
+                max_depth = st.slider("Max factors", 1, 4, 2)
+            with search_cols[1]:
+                min_trades = st.slider("Min trades", 1, 20, 5)
 
-        # Options
-        st.subheader("Options")
-        enable_forward = st.checkbox("Enable Forward Testing", value=True)
-        enable_alerts = st.checkbox("Enable Alerts", value=False)
+            if st.button("Find Best Combinations", type="primary"):
+                with st.spinner("Searching..."):
+                    best = find_best_combinations(
+                        trades, max_depth, min_trades, top_n=10,
+                        starting_balance=starting_balance,
+                        risk_per_trade=risk_per_trade,
+                        total_trading_days=period_trading_days,
+                    )
+                if len(best) > 0:
+                    st.session_state.auto_results = best
 
-        # Save
-        st.divider()
-        nav_cols = st.columns([1, 3, 1])
+            if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
+                for _, row in st.session_state.auto_results.iterrows():
+                    col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1, 1, 1])
+                    combo_display = format_confluence_set(row['combination'], enabled_groups)
+                    with col1:
+                        st.caption(f"{row['depth']}")
+                    with col2:
+                        st.markdown(f"**{combo_display}**")
+                    with col3:
+                        pf = row['profit_factor']
+                        st.caption(f"PF: {pf:.1f}" if pf != float('inf') else "∞")
+                    with col4:
+                        st.caption(f"R²: {row['r_squared']:.2f}")
+                    with col5:
+                        if st.button("Apply", key=f"apply_{row['combo_str']}"):
+                            st.session_state.selected_confluences = row['combination'].copy()
+                            st.rerun()
 
-        with nav_cols[0]:
-            if st.button("← Back"):
-                st.session_state.step = 2
-                st.rerun()
-
-        with nav_cols[2]:
-            editing_id = st.session_state.get('editing_strategy_id')
-            save_label = "💾 Update Strategy" if editing_id else "💾 Save Strategy"
-
-            if st.button(save_label, type="primary"):
-                strategy = {
-                    'name': strategy_name,
-                    **config,
-                    'confluence': list(selected),
-                    'kpis': kpis,
-                    'forward_testing': enable_forward,
-                    'alerts': enable_alerts,
+    # Trade list (expandable)
+    with st.expander("Trade List"):
+        if len(filtered_trades) > 0:
+            display = filtered_trades.tail(20).copy()
+            display['time'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+            display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
+            display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
+            display['confluences'] = display['confluence_records'].apply(
+                lambda r: ", ".join([format_confluence_record(rec, enabled_groups) for rec in sorted(r)[:3]]) + ("..." if len(r) > 3 else "")
+            )
+            st.dataframe(
+                display[['time', 'entry_trigger', 'exit_reason', 'R', 'result', 'confluences']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'time': 'Time',
+                    'entry_trigger': 'Entry',
+                    'exit_reason': 'Exit Reason',
+                    'R': 'R-Multiple',
+                    'result': 'Result',
+                    'confluences': 'Confluences',
                 }
+            )
 
-                if editing_id:
-                    update_strategy(editing_id, strategy)
-                    saved_id = editing_id
-                else:
-                    save_strategy(strategy)
-                    saved_id = strategy['id']
+    # Handle save
+    if save_clicked:
+        strategy = {
+            'name': strategy_name,
+            **config,
+            'confluence': list(selected),
+            'kpis': kpis,
+            'forward_testing': enable_forward,
+            'alerts': enable_alerts,
+        }
 
-                # Clear builder state and navigate to saved strategy detail
-                st.session_state.step = 1
-                st.session_state.selected_confluences = set()
-                st.session_state.strategy_config = {}
-                st.session_state.editing_strategy_id = None
-                st.session_state.viewing_strategy_id = saved_id
-                st.session_state.nav_target = "My Strategies"
-                st.rerun()
+        if editing_id:
+            update_strategy(editing_id, strategy)
+            saved_id = editing_id
+        else:
+            save_strategy(strategy)
+            saved_id = strategy['id']
+
+        st.session_state.builder_data_loaded = False
+        st.session_state.selected_confluences = set()
+        st.session_state.strategy_config = {}
+        st.session_state.editing_strategy_id = None
+        st.session_state.viewing_strategy_id = saved_id
+        st.session_state.nav_target = "My Strategies"
+        st.rerun()
 
 
 def render_my_strategies():
@@ -2114,7 +1971,7 @@ def render_strategy_list():
         st.write("")  # vertical spacing to align with header
         if st.button("+ New Strategy", type="primary"):
             st.session_state.nav_target = "Strategy Builder"
-            st.session_state.step = 1
+            st.session_state.builder_data_loaded = False
             st.session_state.strategy_config = {}
             st.session_state.selected_confluences = set()
             st.session_state.editing_strategy_id = None
@@ -3181,13 +3038,14 @@ def load_strategy_into_builder(strat: dict):
         'starting_balance': strat.get('starting_balance', 10000.0),
         'data_days': strat.get('data_days', 30),
         'data_seed': strat.get('data_seed', 42),
+        'strategy_origin': strat.get('strategy_origin', 'standard'),
     }
 
     # Set exit trigger count for UI
     st.session_state.exit_trigger_count = max(1, len(exit_cids))
 
     st.session_state.selected_confluences = set(strat.get('confluence', []))
-    st.session_state.step = 2
+    st.session_state.builder_data_loaded = True
     st.session_state.viewing_strategy_id = None
     st.session_state.confirm_edit_id = None
     st.session_state.nav_target = "Strategy Builder"

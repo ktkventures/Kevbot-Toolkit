@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.7
+**Version:** 0.8
 **Date:** February 10, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 8 In Progress — Execution Model Complete; Bug Fixes, KPI Audit, QA Sandbox, Drill-Down Enhancements, UX Polish, and Backtest Settings Remaining
+**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder Complete; QA Sandbox, Drill-Down Enhancements, Backtest Settings, and UX Polish Remaining
 
 ---
 
@@ -118,37 +118,33 @@ This allows us to:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ STEP 1: Define Core Parameters                               │
+│ STRATEGY BUILDER — Single-Page with Sidebar Config Panel     │
 ├──────────────────────────────────────────────────────────────┤
-│  • Select Ticker (e.g., SPY, AAPL, ES)                       │
-│  • Select Direction (Long OR Short)                          │
-│  • Select Entry Trigger                                      │
-│  • Select Exit Trigger                                       │
+│                                                              │
+│  SIDEBAR (Config Panel):                                     │
+│  • Strategy Origin (Standard — Phase 10 placeholder)         │
+│  • Symbol, Timeframe, Data Days, [ Load Data ]               │
+│  • Direction (Long / Short)                                  │
+│  • Entry Trigger, Exit Trigger(s)                            │
+│  • Stop Loss Method, Take Profit Method                      │
+│  • Risk Per Trade, Starting Balance                          │
+│  • Strategy Name, Forward Testing, Alerts, [ Save ]          │
+│                                                              │
+│  MAIN AREA (after Load Data):                                │
+│  • KPI Dashboard (Win Rate, PF, Avg R, Total R, etc.)        │
+│  • Price Chart with entry/exit markers + oscillator panes    │
+│  • Equity Curve                                              │
+│  • R-Distribution Histogram                                  │
+│  • Confluence Drill-Down (add/remove conditions, see impact) │
+│  • Trade History Table                                       │
+│                                                              │
+│  Parameter changes re-run backtest automatically on cached   │
+│  data. "Load Data" only needed for symbol/timeframe changes. │
 └──────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ STEP 2: Refine with Confluence (Drill-Down)                  │
-├──────────────────────────────────────────────────────────────┤
-│  • View base strategy KPIs (win rate, profit factor, etc.)   │
-│  • Browse available interpretations from enabled interpreters │
-│  • Layer in confluence conditions one at a time              │
-│  • See real-time impact on equity curve and KPIs             │
-│  • Use "Find Optimal" to auto-discover best combinations     │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│ STEP 3: Save & Validate                                      │
-├──────────────────────────────────────────────────────────────┤
-│  • Save as named Strategy                                    │
-│  • Enable Forward Testing to validate edge persistence       │
-│  • View forward test results over time                       │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│ STEP 4: Deploy                                               │
+│ DEPLOY                                                       │
 ├──────────────────────────────────────────────────────────────┤
 │  • Add to Portfolio(s)                                       │
 │  • Enable Alerts                                             │
@@ -282,155 +278,94 @@ Users can contribute and monetize:
 ### 7.1 Information Architecture Overview
 
 ```
-RoR Trader
+RoR Trader — Top Navigation Bar
+─────────────────────────────────────────────────────────────────
+  Dashboard | Confluence Groups | Strategies | Portfolios | Alerts
+─────────────────────────────────────────────────────────────────
+
+Sidebar: App title, data source indicator, chart presets.
+         Context-aware config panel on Strategy Builder page.
+
 │
 ├── 🏠 DASHBOARD
 │   ├── Overview Cards (strategies, portfolios, alerts)
 │   ├── Active Forward Tests Summary
 │   ├── Recent Alerts
-│   └── Quick Actions (New Strategy, New Portfolio)
+│   └── Quick Actions (New Strategy, View Strategies, View Portfolios)
 │
-├── 📊 STRATEGY BUILDER (Core Workflow)
-│   │
-│   ├── Step 1: Setup
-│   │   ├── Ticker Selection (search/browse)
-│   │   ├── Timeframe Selection
-│   │   ├── Direction Toggle (Long / Short)
-│   │   ├── Entry Trigger Dropdown
-│   │   └── Exit Trigger Dropdown
-│   │
-│   ├── Step 2: Confluence (Drill-Down)
-│   │   ├── Base Strategy KPIs Panel
-│   │   ├── Equity Curve Chart
-│   │   ├── Available Interpretations List
-│   │   │   └── (grouped by interpreter)
-│   │   ├── Active Confluence Conditions
-│   │   ├── "Add Condition" → See Impact
-│   │   ├── "Find Optimal" Button
-│   │   └── Trade List / Details Table
-│   │
-│   └── Step 3: Save & Configure
-│       ├── Strategy Name
-│       ├── Strategy Summary (triggers, conditions)
-│       ├── Final KPIs Display
-│       ├── Enable Forward Testing Toggle
-│       └── Save Strategy Button
+├── 🔗 CONFLUENCE GROUPS
+│   ├── Group List (template-based, versioned)
+│   └── Group Detail (Code tab, Preview tab)
 │
-├── 📁 MY STRATEGIES
-│   ├── Strategy List View
-│   │   ├── Filter: All / Backtest Only / Forward Testing / Deployed
-│   │   ├── Sort: Name / Created / Performance
-│   │   └── Strategy Cards showing:
-│   │       ├── Name, Ticker, Direction
-│   │       ├── Key KPIs (RoR, Win Rate, Profit Factor)
-│   │       ├── Forward Test Status & Duration
-│   │       └── Actions (Edit, Deploy, Delete)
+├── 📊 STRATEGIES (sub-nav: Strategy Builder | My Strategies)
 │   │
-│   └── Strategy Detail View
-│       ├── Configuration Summary
-│       ├── Backtest Results Tab
-│       │   ├── Equity Curve
-│       │   ├── KPI Dashboard
-│       │   └── Trade History Table
-│       ├── Forward Test Results Tab
-│       │   ├── Live Equity Curve
-│       │   ├── Backtest vs Forward Comparison
-│       │   └── Recent Signals
-│       ├── Alerts Tab
-│       │   └── Alert Configuration
-│       └── Actions
-│           ├── Edit Strategy
-│           ├── Add to Portfolio
-│           ├── Enable/Disable Forward Test
-│           ├── Configure Alerts
-│           └── Export to TradingView
+│   ├── Strategy Builder (single-page with sidebar config)
+│   │   ├── Sidebar Config Panel:
+│   │   │   ├── Strategy Origin (Standard — Phase 10 placeholder)
+│   │   │   ├── Data: Symbol, Timeframe, Data Days, [ Load Data ]
+│   │   │   ├── Strategy: Direction, Entry Trigger, Exit Trigger(s)
+│   │   │   ├── Risk Management: Stop Method, Target Method
+│   │   │   └── Save: Name, Forward Testing, Alerts, [ Save ]
+│   │   └── Main Area (after Load Data):
+│   │       ├── KPI Dashboard
+│   │       ├── Price Chart + Oscillator Panes
+│   │       ├── Equity Curve
+│   │       ├── R-Distribution Histogram
+│   │       ├── Confluence Drill-Down / Auto-Search
+│   │       └── Trade History Table
+│   │
+│   └── My Strategies
+│       ├── Strategy List View
+│       │   ├── Filter: All / Backtest Only / Forward Testing / Deployed
+│       │   ├── Sort: Name / Created / Performance
+│       │   └── Strategy Cards (Name, KPIs, Forward Test Status, Actions)
+│       └── Strategy Detail View
+│           ├── Configuration Summary
+│           ├── Backtest Results Tab (Equity Curve, KPIs, Trade History)
+│           ├── Forward Test Results Tab (Live Equity, Comparison)
+│           ├── Confluence Analysis Tab
+│           ├── Alerts Tab
+│           └── Actions (Edit, Clone, Delete, Add to Portfolio)
 │
-├── 💼 PORTFOLIOS
-│   ├── Portfolio List View
-│   │   └── Portfolio Cards showing:
-│   │       ├── Name, # Strategies
-│   │       ├── Combined KPIs
-│   │       └── Prop Firm Compliance Status
+├── 💼 PORTFOLIOS (sub-nav: My Portfolios | Portfolio Requirements)
 │   │
-│   ├── Portfolio Builder
-│   │   ├── Portfolio Name
-│   │   ├── Account Parameters (starting capital, etc.)
-│   │   ├── Strategy Selector (from My Strategies)
-│   │   ├── Position Sizing per Strategy
-│   │   └── Save Portfolio
+│   ├── My Portfolios
+│   │   ├── Portfolio List View (Cards with KPIs, Compliance Status)
+│   │   ├── Portfolio Builder (Name, Strategies, Position Sizing)
+│   │   └── Portfolio Detail View
+│   │       ├── Combined Analysis Tab (Equity, Correlation, Drawdown, P&L)
+│   │       ├── Prop Firm Compliance Tab (Rule Sets, Checklist)
+│   │       └── Deploy Tab (Alerts, Webhooks)
 │   │
-│   └── Portfolio Detail View
-│       ├── Strategies Included List
-│       ├── Combined Analysis Tab
-│       │   ├── Combined Equity Curve
-│       │   ├── Correlation Matrix
-│       │   ├── Drawdown Analysis
-│       │   └── Daily P&L Distribution
-│       ├── Prop Firm Compliance Tab
-│       │   ├── Rule Set Selector (Trade The Pool, etc.)
-│       │   ├── Compliance Checklist
-│       │   │   ├── ✓/✗ Max Daily Loss
-│       │   │   ├── ✓/✗ Max Drawdown
-│       │   │   ├── ✓/✗ Profit Target
-│       │   │   └── etc.
-│       │   ├── Recommendations (if non-compliant)
-│       │   └── Prop Firm Suggestions
-│       └── Deploy Tab
-│           ├── Enable Portfolio Alerts
-│           └── Connect Trading Bot
+│   └── Portfolio Requirements
+│       ├── Requirement Set List (TTP, FTMO built-in + custom)
+│       └── Requirement Set Editor (Rules, Thresholds)
 │
-├── 🔔 ALERTS & SIGNALS
-│   ├── Active Alerts List
-│   ├── Alert History
-│   ├── Webhook Configuration
-│   └── Trading Bot Connections
+├── 🔔 ALERTS (sub-nav: Alerts & Signals | Webhook Templates)
+│   │
+│   ├── Alerts & Signals
+│   │   ├── Strategy Alerts Tab
+│   │   ├── Portfolio Alerts Tab
+│   │   ├── Outbound Webhooks Tab
+│   │   └── Inbound Webhooks Tab (placeholder)
+│   │
+│   └── Webhook Templates
+│       ├── Template List (by category)
+│       ├── Default Templates (TTP Buy/Sell/Close)
+│       └── Custom Template CRUD
 │
 ├── 🏪 MARKETPLACE (Future)
-│   ├── Browse
-│   │   ├── Indicators
-│   │   ├── Interpreters
-│   │   ├── Triggers
-│   │   └── Strategies (with forward-test records)
-│   ├── My Contributions
-│   └── My Subscriptions
 │
-├── 📈 CHARTS (Future)
-│   ├── Chart View with Strategy Overlay
-│   ├── Indicator Configuration
-│   └── Interpreter Visualization
-│
-└── ⚙️ SETTINGS
-    ├── Account Settings
-    │   ├── Profile
-    │   └── Subscription/Billing
-    ├── Interpreter Library
-    │   ├── Available Interpreters List
-    │   ├── Enable/Disable Toggles
-    │   └── Interpreter Details & Parameters
-    ├── Trigger Library
-    │   ├── Available Triggers List
-    │   └── Enable/Disable Toggles
-    ├── Default Preferences
-    │   ├── Default Ticker
-    │   ├── Default Timeframe
-    │   └── Default Risk Parameters
-    ├── Connections
-    │   ├── Alpaca API Keys
-    │   ├── Webhook URLs
-    │   └── Trading Bot Integrations
-    └── Prop Firm Rule Sets
-        ├── Trade The Pool
-        ├── [Other Firms]
-        └── Custom Rules
+└── ⚙️ SETTINGS (Future)
 ```
 
 ### 7.2 Core User Journeys
 
 **Journey 1: New User Creates First Strategy**
 ```
-Dashboard → "New Strategy" → Strategy Builder Step 1 (Setup)
-→ Step 2 (Drill-Down, add confluence) → Step 3 (Save)
-→ My Strategies (view saved strategy) → Enable Forward Test
+Dashboard → "New Strategy" → Strategy Builder (sidebar: configure, Load Data)
+→ Main area: review KPIs, add confluence → sidebar: Save
+→ My Strategies (auto-navigates to saved strategy detail)
 ```
 
 **Journey 2: Build Portfolio for Prop Firm**
@@ -451,8 +386,8 @@ My Strategies → Strategy Detail → Alerts Tab
 **Journey 4: Optimize Existing Strategy**
 ```
 My Strategies → Strategy Detail → Edit Strategy
-→ Strategy Builder Step 2 → "Find Optimal"
-→ Review suggestions → Apply changes → Save
+→ Strategy Builder (sidebar pre-populated, data auto-loaded)
+→ Adjust triggers/confluence → Save
 ```
 
 ### 7.3 Page Priority for MVP
@@ -558,6 +493,8 @@ My Strategies → Strategy Detail → Edit Strategy
 12. [x] Split MACD into separate templates (macd_line, macd_histogram), upgrade VWAP to 7-zone system
 13. [x] Replace Plotly oscillator charts with synchronized lightweight-charts multi-pane rendering
 14. [x] Execution model expansion — 4 stop loss methods, 5 take profit methods, up to 3 exit triggers, execution type metadata, `[C]`/`[I]` labels, full backward compatibility
+15. [x] Navigation refactor — top horizontal nav bar with 5 sections and sub-nav radios; sidebar becomes context-aware config panel
+16. [x] Strategy Builder single-page — collapsed 3-step wizard into single page with sidebar config panel; Strategy Origin placeholder for Phase 10
 
 ---
 
@@ -807,9 +744,17 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Step 1 state preservation — all widgets now read from `edit_config` (session state); `risk_per_trade` and `starting_balance` were the last two hardcoded defaults, now fixed
 - [x] "Create New Strategy" button on My Strategies page — follows Portfolios page pattern with `st.columns([4, 1])` header layout
 
+**Navigation & Strategy Builder Refactor — COMPLETED (Feb 10, 2026):**
+- [x] Top navigation bar — `st.radio(horizontal=True)` with 5 sections: Dashboard, Confluence Groups, Strategies, Portfolios, Alerts; sub-nav radios for multi-page sections (Strategies: Builder/My Strategies; Portfolios: My Portfolios/Requirements; Alerts: Signals/Templates)
+- [x] Sidebar refactored to context-aware config panel — app title + data source + chart presets as base; Strategy Builder adds its own sidebar config panel
+- [x] Strategy Builder single-page — collapsed 3-step wizard into single page; all configuration in sidebar config panel (origin, data, triggers, risk, save); "Load Data" as only gate; parameter changes re-run backtest on cached data; save form in sidebar
+- [x] Strategy Origin field — selectbox at top of sidebar config panel (`["Standard"]` only for now, Phase 10 placeholder); saved as `strategy_origin: "standard"` in strategy dict; backward-compatible via `.get('strategy_origin', 'standard')`
+- [x] `NAV_TARGET_MAP` — translates old 8-page nav targets to new section + sub-page pairs; preserves all existing programmatic navigation call sites
+- [x] Removed step indicator CSS and `step` session state — replaced with `builder_data_loaded` boolean
+- [x] Fix programmatic navigation (Edit Strategy, New Strategy buttons) — `st.radio` `index` parameter is ignored after first user interaction; switched to explicit `key` params (`main_nav`, `sub_nav_*`) with direct `st.session_state[key]` writes for reliable programmatic nav
+
 **UX Improvements — Remaining:**
 - [ ] Strategy name and trigger display improvements — shorter default name format (e.g., `"{symbol} {direction} - {entry_trigger_short_name}"`); display entry trigger(s), exit trigger(s), stop method, and target method as small reference badges/text on strategy cards and strategy detail header; currently only confluence conditions are shown
-- [ ] Top navigation bar — Dashboard, Confluence Groups, Strategies, Portfolios, Alerts (reflects the user workflow order; supplements existing sidebar, does not replace it)
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 - [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
 
@@ -818,7 +763,10 @@ My Strategies → Strategy Detail → Edit Strategy
 - **R-squared for equity curve smoothness** — Linear regression R² of the cumulative equity curve. R² ≈ 1.0 means steady, predictable growth. R² < 0.7 means choppy or dependent on outlier trades. Chosen over Ulcer Index/Serenity Index for Phase 8 because it's intuitive (0–1 scale), fast to compute, and directly answers "is this strategy consistently profitable or just lucky?" The full suite (Ulcer, Serenity, etc.) deferred to Phase 9.
 - **QA Sandbox as dev-only page** — Not exposed to end users; exists purely for developer QA. Validates that stop/target calculations, trade generation, and signal detection behave as intended. Charts plot stop/target price levels as horizontal lines per trade for visual verification. This replaces ad-hoc testing with a systematic, repeatable QA workflow.
 - **Card-style drill-down over row tables** — Showing multiple KPIs per confluence combination requires more vertical space than a 5-column table row allows. Cards give room for 6+ KPIs while keeping the combination name prominent. The same card format is reused for both Drill-Down (single-factor) and Auto-Search (multi-factor combinations).
-- **Step 1 state preservation approach** — Streamlit widget defaults are set from `st.session_state.strategy_config` when navigating back from Step 2. This preserves the user's selections without requiring a full UI restructure. Future consideration: moving all Step 1 parameters into an editable sidebar on Step 2 would eliminate the back-navigation need entirely.
+- **`st.radio(horizontal=True)` over `st.tabs()`** — `st.tabs()` renders ALL tab contents on every re-run (even hidden tabs), which would run expensive backtests and data loads when viewing other pages. `st.radio(horizontal=True)` only renders the selected page and supports programmatic selection via `index` for the existing `nav_target` pattern.
+- **Single-page Strategy Builder with sidebar config** — Eliminates the back-navigation state loss problem entirely. All parameters are visible and editable in the sidebar at all times. "Load Data" is the only gate (needed for symbol/timeframe changes). Trigger/risk changes re-run backtest automatically on cached data via Streamlit's natural re-run behavior. Save form in sidebar removes the need for a separate Step 3.
+- **`builder_data_loaded` boolean over `step` integer** — The 3-step flow is gone; the only meaningful state is "has data been loaded?" This boolean gates the main area content (KPIs, charts) while allowing the sidebar config to always be visible.
+- **Strategy Origin as Phase 10 placeholder** — Adding the selectbox now (with only "Standard" option) establishes the UI pattern and schema field without implementing the full feature. Existing strategies default to `"standard"` via `.get('strategy_origin', 'standard')` — no migration needed.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
@@ -837,8 +785,8 @@ My Strategies → Strategy Detail → Edit Strategy
 ### Phase 10: Strategy Origins
 *Expand strategy creation beyond the standard trigger-based approach — support webhook-driven and scanner-based strategies.*
 
-- [ ] Step 0: Strategy Origin selection — new first step in Strategy Builder where user selects origin type: Standard (current), Webhook Inbound, or Scanner
-- [ ] Origin-specific fields in Step 1 — after origin selection, show relevant configuration fields (additional fields per origin type; existing strategies default to "standard" with no migration needed)
+- [ ] Expand Strategy Origin selectbox — add "Webhook Inbound" and "Scanner" options to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
+- [ ] Origin-specific sidebar fields — after origin selection, show relevant configuration fields below (additional fields per origin type; existing strategies already have `strategy_origin: "standard"` with no migration needed)
 - [ ] Webhook Inbound origin — entries/exits driven by inbound webhooks (e.g., TradingView alerts, LuxAlgo signals); user can still layer confluence conditions from market data on top of webhook triggers; CSV upload for backtest data from TradingView or spreadsheets
 - [ ] Scanner origin — strategy not tied to a single ticker; runs against a universe of stocks matching screener criteria (Alpaca screener APIs); targets active day trading / scalping use cases (S&B Capital, Warrior Trading style); requires separate planning session for architecture given 1:many ticker relationship
 - [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; origin-specific fields only present when relevant
