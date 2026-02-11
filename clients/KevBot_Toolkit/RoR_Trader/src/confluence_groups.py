@@ -293,6 +293,21 @@ TEMPLATES: Dict[str, Dict] = {
         ],
         "indicator_columns": ["utbot_stop", "utbot_direction"],
     },
+    "bar_count": {
+        "name": "Bar Count Exit",
+        "trigger_prefix": "bar_count",
+        "category": "exit",
+        "parameters_schema": {
+            "candle_count": {"type": "int", "default": 4, "min": 1, "max": 500, "label": "Candle Count"},
+        },
+        "plot_schema": {},
+        "outputs": [],
+        "output_descriptions": {},
+        "triggers": [
+            {"base": "exit", "name": "Exit After N Candles", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
+        ],
+        "indicator_columns": [],
+    },
 }
 
 
@@ -368,6 +383,19 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 plot_settings=plot_settings,
             )
             groups.append(group)
+
+        # Migration: add bar_count_default if no bar_count group exists
+        if not any(g.base_template == "bar_count" for g in groups):
+            groups.append(ConfluenceGroup(
+                id="bar_count_default",
+                base_template="bar_count",
+                version="Default",
+                description="Exit after 4 candles if no other exit triggers fire",
+                enabled=True,
+                is_default=True,
+                parameters={"candle_count": 4},
+                plot_settings=PlotSettings(colors={}, line_width=1, visible=False),
+            ))
 
         return groups
 
@@ -553,6 +581,20 @@ def create_default_groups() -> List[ConfluenceGroup]:
                 },
                 line_width=1,
                 visible=True,
+            ),
+        ),
+        ConfluenceGroup(
+            id="bar_count_default",
+            base_template="bar_count",
+            version="Default",
+            description="Exit after 4 candles if no other exit triggers fire",
+            enabled=True,
+            is_default=True,
+            parameters={"candle_count": 4},
+            plot_settings=PlotSettings(
+                colors={},
+                line_width=1,
+                visible=False,
             ),
         ),
     ]

@@ -199,6 +199,7 @@ def generate_trades(
     stop_atr_mult: float = 1.5,
     stop_config: Optional[dict] = None,
     target_config: Optional[dict] = None,
+    bar_count_exit: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Generate trades based on real trigger logic.
@@ -263,6 +264,7 @@ def generate_trades(
     entry_row = None
     stop_price = None
     target_price = None
+    entry_bar_i = None
 
     for i, (idx, row) in enumerate(df.iterrows()):
         if not in_position:
@@ -281,6 +283,7 @@ def generate_trades(
                 entry_idx = idx
                 entry_price = row['close']
                 entry_row = row
+                entry_bar_i = i
 
                 # Calculate stop price using configured method
                 stop_price = calculate_stop_price(
@@ -323,21 +326,27 @@ def generate_trades(
                     exit_reason = "target"
                     exit_price = target_price
 
-            # 3. Check opposite signal exit (legacy backward compat)
+            # 3. Check bar count exit
+            if not exit_triggered and bar_count_exit is not None:
+                if i - entry_bar_i >= bar_count_exit:
+                    exit_triggered = True
+                    exit_reason = "bar_count_exit"
+
+            # 4. Check opposite signal exit (legacy backward compat)
             if not exit_triggered and use_opposite_signal:
                 opposite_trigger = get_opposite_trigger(entry_trigger)
                 if opposite_trigger and row.get(f"trig_{opposite_trigger}", False):
                     exit_triggered = True
                     exit_reason = "opposite_signal"
 
-            # 4. Check time exit (legacy backward compat)
+            # 5. Check time exit (legacy backward compat)
             if not exit_triggered and use_time_exit:
                 bars_in_trade = i - list(df.index).index(entry_idx)
                 if bars_in_trade >= 50:
                     exit_triggered = True
                     exit_reason = "time_exit"
 
-            # 5. Check signal-based exit triggers (any of up to 3)
+            # 6. Check signal-based exit triggers (any of up to 3)
             if not exit_triggered and len(effective_exit_triggers) > 0:
                 for et in effective_exit_triggers:
                     exit_col = f"trig_{et}"
@@ -389,6 +398,7 @@ def generate_trades(
                 entry_row = None
                 stop_price = None
                 target_price = None
+                entry_bar_i = None
 
     return pd.DataFrame(trades)
 

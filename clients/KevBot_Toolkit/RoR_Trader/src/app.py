@@ -378,6 +378,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         stop_atr_mult=strat.get('stop_atr_mult', 1.5),
         stop_config=strat.get('stop_config'),
         target_config=strat.get('target_config'),
+        bar_count_exit=strat.get('bar_count_exit'),
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -413,6 +414,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             stop_atr_mult=strat.get('stop_atr_mult', 1.5),
             stop_config=strat.get('stop_config'),
             target_config=strat.get('target_config'),
+            bar_count_exit=strat.get('bar_count_exit'),
         )
 
 
@@ -1860,12 +1862,18 @@ def render_strategy_builder():
         exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
         has_duplicate_exits = len(exit_cids) != len(set(exit_cids))
         entry_in_exits = entry_trigger is not None and entry_trigger in exit_cids
+        bar_count_count = sum(
+            1 for cid, _ in exit_trigger_selections
+            if any(g.get_trigger_id("exit") == cid and g.base_template == "bar_count" for g in enabled_groups)
+        )
+        has_multiple_bar_count = bar_count_count > 1
         can_save = (
             entry_trigger is not None
             and has_exit_triggers
             and len(exit_trigger_selections) > 0
             and not has_duplicate_exits
             and not entry_in_exits
+            and not has_multiple_bar_count
             and st.session_state.get('builder_data_loaded', False)
         )
 
@@ -1873,6 +1881,8 @@ def render_strategy_builder():
             st.warning("Duplicate exit triggers.")
         if entry_in_exits:
             st.warning("Entry trigger in exits.")
+        if has_multiple_bar_count:
+            st.warning("Only one bar count exit allowed.")
 
         save_label = "Update Strategy" if editing_id else "Save Strategy"
         save_clicked = st.button(save_label, type="primary", use_container_width=True, disabled=not can_save)
@@ -1881,9 +1891,23 @@ def render_strategy_builder():
     # BUILD CONFIG FROM SIDEBAR WIDGETS (always, for live updates)
     # =========================================================================
     base_entry_trigger_id = get_base_trigger_id(entry_trigger) if entry_trigger else None
-    exit_base_ids = [get_base_trigger_id(cid) for cid, _ in exit_trigger_selections]
-    exit_confluence_ids = [cid for cid, _ in exit_trigger_selections]
-    exit_names_list = [name for _, name in exit_trigger_selections]
+
+    # Separate bar_count exits from signal-based exits
+    bar_count_exit_value = None
+    signal_exit_base_ids = []
+    signal_exit_confluence_ids = []
+    signal_exit_names = []
+    for cid, name in exit_trigger_selections:
+        is_bar_count = False
+        for g in enabled_groups:
+            if g.get_trigger_id("exit") == cid and g.base_template == "bar_count":
+                bar_count_exit_value = g.parameters.get("candle_count", 4)
+                is_bar_count = True
+                break
+        if not is_bar_count:
+            signal_exit_base_ids.append(get_base_trigger_id(cid))
+            signal_exit_confluence_ids.append(cid)
+            signal_exit_names.append(name)
 
     config = {
         'symbol': symbol,
@@ -1891,13 +1915,14 @@ def render_strategy_builder():
         'timeframe': timeframe,
         'entry_trigger': base_entry_trigger_id,
         'entry_trigger_confluence_id': entry_trigger,
-        'exit_triggers': exit_base_ids,
-        'exit_trigger_confluence_ids': exit_confluence_ids,
-        'exit_trigger_names': exit_names_list,
-        'exit_trigger': exit_base_ids[0] if exit_base_ids else None,
-        'exit_trigger_confluence_id': exit_confluence_ids[0] if exit_confluence_ids else None,
+        'exit_triggers': signal_exit_base_ids,
+        'exit_trigger_confluence_ids': signal_exit_confluence_ids,
+        'exit_trigger_names': signal_exit_names,
+        'exit_trigger': signal_exit_base_ids[0] if signal_exit_base_ids else None,
+        'exit_trigger_confluence_id': signal_exit_confluence_ids[0] if signal_exit_confluence_ids else None,
         'entry_trigger_name': entry_trigger_name,
-        'exit_trigger_name': exit_names_list[0] if exit_names_list else None,
+        'exit_trigger_name': signal_exit_names[0] if signal_exit_names else None,
+        'bar_count_exit': bar_count_exit_value,
         'risk_per_trade': risk_per_trade,
         'stop_atr_mult': stop_atr_mult,
         'stop_config': stop_config_dict,
@@ -1928,8 +1953,10 @@ def render_strategy_builder():
 
     # Header with strategy summary
     entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
-    exit_display_names = exit_names_list if exit_names_list else [config.get('exit_trigger_name', '')]
-    exit_str = " / ".join(exit_display_names)
+    exit_parts = list(signal_exit_names)
+    if config.get('bar_count_exit'):
+        exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
+    exit_str = " / ".join(exit_parts) if exit_parts else "?"
     st.markdown(f"### {symbol} | {direction} | {entry_name} → {exit_str}")
 
     # Load data and generate trades
@@ -1951,6 +1978,7 @@ def render_strategy_builder():
             stop_atr_mult=stop_atr_mult,
             stop_config=stop_config_dict,
             target_config=target_config_dict,
+            bar_count_exit=config.get('bar_count_exit'),
         )
 
     # Apply confluence filter
@@ -2629,6 +2657,7 @@ def render_live_backtest(strat: dict):
             stop_atr_mult=strat.get('stop_atr_mult', 1.5),
             stop_config=strat.get('stop_config'),
             target_config=strat.get('target_config'),
+            bar_count_exit=strat.get('bar_count_exit'),
         )
 
     if len(trades) == 0:
@@ -2695,6 +2724,7 @@ def render_live_backtest(strat: dict):
                 stop_atr_mult=strat.get('stop_atr_mult', 1.5),
                 stop_config=strat.get('stop_config'),
                 target_config=strat.get('target_config'),
+                bar_count_exit=strat.get('bar_count_exit'),
             )
 
             ext_kpis = calculate_kpis(

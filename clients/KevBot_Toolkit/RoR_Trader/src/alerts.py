@@ -584,6 +584,7 @@ def detect_signals(strategy: dict) -> list:
         stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
         stop_config=strategy.get('stop_config'),
         target_config=strategy.get('target_config'),
+        bar_count_exit=strategy.get('bar_count_exit'),
     )
 
     signals = []
