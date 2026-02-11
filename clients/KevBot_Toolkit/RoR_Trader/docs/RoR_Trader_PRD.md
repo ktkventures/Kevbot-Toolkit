@@ -3,7 +3,7 @@
 **Version:** 0.8
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring, Per-Chart Candle Selector, 2-Column Card Grid, Confluence Drill-Down Enhancements Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
+**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring, Per-Chart Candle Selector, 2-Column Card Grid, Confluence Drill-Down Enhancements Complete; QA Sandbox, Backtest Settings, and UX Polish deferred until after Phase 9 (Optimization Workflow) due to schema dependencies
 
 ---
 
@@ -122,7 +122,7 @@ This allows us to:
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  SIDEBAR (Config Panel):                                     │
-│  • Strategy Origin (Standard — Phase 10 placeholder)         │
+│  • Strategy Origin (Standard — Phase 11 placeholder)         │
 │  • Symbol, Timeframe, Data Days, [ Load Data ]               │
 │  • Direction (Long / Short)                                  │
 │  • Entry Trigger, Exit Trigger(s)                            │
@@ -293,15 +293,29 @@ Sidebar: App title, data source indicator, chart presets.
 │   ├── Recent Alerts
 │   └── Quick Actions (New Strategy, View Strategies, View Portfolios)
 │
-├── 🔗 CONFLUENCE GROUPS
-│   ├── Group List (template-based, versioned)
-│   └── Group Detail (Code tab, Preview tab)
+├── 🔗 CONFLUENCE GROUPS (sub-nav: Timeframe Groups | General Groups | Stop Loss Packs | Take Profit Packs)
+│   │
+│   ├── Timeframe Groups (existing — indicator-based, tied to chart timeframe)
+│   │   ├── Group List (template-based, versioned)
+│   │   └── Group Detail (Code tab, Preview tab)
+│   │
+│   ├── General Groups (Phase 9 — non-timeframe conditions)
+│   │   ├── Group List (time of day, session windows, day of week, news, etc.)
+│   │   └── Group Detail (Code tab, Preview tab)
+│   │
+│   ├── Stop Loss Packs (Phase 9 — parameterized stop configurations)
+│   │   ├── Pack List (ATR variants, Fixed, Percentage, Swing variants)
+│   │   └── Pack Detail (parameter grid, preview)
+│   │
+│   └── Take Profit Packs (Phase 9 — parameterized target configurations)
+│       ├── Pack List (R:R variants, ATR variants, Fixed, Percentage, Swing variants)
+│       └── Pack Detail (parameter grid, preview)
 │
 ├── 📊 STRATEGIES (sub-nav: Strategy Builder | My Strategies)
 │   │
 │   ├── Strategy Builder (single-page with sidebar config)
 │   │   ├── Sidebar Config Panel:
-│   │   │   ├── Strategy Origin (Standard — Phase 10 placeholder)
+│   │   │   ├── Strategy Origin (Standard — Phase 11 placeholder)
 │   │   │   ├── Data: Symbol, Timeframe, Data Days, [ Load Data ]
 │   │   │   ├── Strategy: Direction, Entry Trigger, Exit Trigger(s)
 │   │   │   ├── Risk Management: Stop Method, Target Method
@@ -311,7 +325,15 @@ Sidebar: App title, data source indicator, chart presets.
 │   │       ├── Price Chart + Oscillator Panes
 │   │       ├── Equity Curve
 │   │       ├── R-Distribution Histogram
-│   │       ├── Confluence Drill-Down / Auto-Search
+│   │       ├── Optimizable Variables (Phase 9 — collapsible box showing active variables by category with ✕ remove)
+│   │       ├── Active Tags (Phase 9 — removable chips above drill-down for selected interpretations)
+│   │       ├── Optimization Drill-Down (Phase 9 — 6 tabs):
+│   │       │   ├── Entry Trigger Tab (drill-down on entry trigger effectiveness)
+│   │       │   ├── Exit Triggers Tab (drill-down on exit trigger effectiveness)
+│   │       │   ├── Timeframe Conditions Tab (existing confluence drill-down)
+│   │       │   ├── General Conditions Tab (drill-down on general confluence interpretations)
+│   │       │   ├── Stop Loss Tab (drill-down across stop loss pack variations)
+│   │       │   └── Take Profit Tab (drill-down across take profit pack variations)
 │   │       └── Trade History Table
 │   │
 │   └── My Strategies
@@ -397,6 +419,19 @@ My Strategies → Strategy Detail → Alerts Tab
 My Strategies → Strategy Detail → Edit Strategy
 → Strategy Builder (sidebar pre-populated, data auto-loaded)
 → Adjust triggers/confluence → Save
+```
+
+**Journey 5: Build Strategy from Scratch via Optimization Workflow** *(Phase 9)*
+```
+Strategy Builder → Load Data → Entry Trigger tab
+→ Drill down on entry triggers (default exit: N-bar close)
+→ Select best entry → Exit Triggers tab
+→ Drill down on exit triggers paired with selected entry
+→ Timeframe Conditions tab → layer in timeframe confluences
+→ General Conditions tab → layer in session/calendar/news filters
+→ Stop Loss tab → compare stop configurations across pack variations
+→ Take Profit tab → compare target configurations across pack variations
+→ Review Optimizable Variables box → Save
 ```
 
 ### 7.3 Page Priority for MVP
@@ -503,7 +538,7 @@ My Strategies → Strategy Detail → Edit Strategy
 13. [x] Replace Plotly oscillator charts with synchronized lightweight-charts multi-pane rendering
 14. [x] Execution model expansion — 4 stop loss methods, 5 take profit methods, up to 3 exit triggers, execution type metadata, `[C]`/`[I]` labels, full backward compatibility
 15. [x] Navigation refactor — top horizontal nav bar with 5 sections and sub-nav radios; sidebar becomes context-aware config panel
-16. [x] Strategy Builder single-page — collapsed 3-step wizard into single page with sidebar config panel; Strategy Origin placeholder for Phase 10
+16. [x] Strategy Builder single-page — collapsed 3-step wizard into single page with sidebar config panel; Strategy Origin placeholder for Phase 11
 17. [x] KPI audit and enhancement — Max R Drawdown primary KPI, secondary KPIs expander (11 extended metrics), card-style drill-down/auto-search, unified infinity/format display, strategy cards (5 KPIs), portfolio cards (4 KPIs), sort options (Daily R, Max R DD)
 18. [x] Strategy detail tab restructuring — split "Equity & Charts" / "Backtest Results" into 7-tab layout: Equity & KPIs, Equity & KPIs (Extended), Price Chart, Trade History, Confluence Analysis, Configuration, Alerts; KPIs moved into tabs; Extended tab loads configurable longer lookback (90–1825 days, default 365) with adjustable slider; Price Chart tab has full indicators + trade table; Trade History tab has clean chart + trade table; applies to both backtest-only and forward test views
 19. [x] Per-chart visible candles selector — compact selectbox above every price chart (7 call sites); `@st.fragment` wrapper prevents full-page rerun on selection change (preserves active tab); options: Default, 50, 100, 200, 400, All
@@ -764,7 +799,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Top navigation bar — `st.radio(horizontal=True)` with 5 sections: Dashboard, Confluence Groups, Strategies, Portfolios, Alerts; sub-nav radios for multi-page sections (Strategies: Builder/My Strategies; Portfolios: My Portfolios/Requirements; Alerts: Signals/Templates)
 - [x] Sidebar refactored to context-aware config panel — app title + data source + chart presets as base; Strategy Builder adds its own sidebar config panel
 - [x] Strategy Builder single-page — collapsed 3-step wizard into single page; all configuration in sidebar config panel (origin, data, triggers, risk, save); "Load Data" as only gate; parameter changes re-run backtest on cached data; save form in sidebar
-- [x] Strategy Origin field — selectbox at top of sidebar config panel (`["Standard"]` only for now, Phase 10 placeholder); saved as `strategy_origin: "standard"` in strategy dict; backward-compatible via `.get('strategy_origin', 'standard')`
+- [x] Strategy Origin field — selectbox at top of sidebar config panel (`["Standard"]` only for now, Phase 11 placeholder); saved as `strategy_origin: "standard"` in strategy dict; backward-compatible via `.get('strategy_origin', 'standard')`
 - [x] `NAV_TARGET_MAP` — translates old 8-page nav targets to new section + sub-page pairs; preserves all existing programmatic navigation call sites
 - [x] Removed step indicator CSS and `step` session state — replaced with `builder_data_loaded` boolean
 - [x] Fix programmatic navigation (Edit Strategy, New Strategy buttons) — `st.radio` `index` parameter is ignored after first user interaction; switched to explicit `key` params (`main_nav`, `sub_nav_*`) with direct `st.session_state[key]` writes for reliable programmatic nav
@@ -779,16 +814,16 @@ My Strategies → Strategy Detail → Edit Strategy
 
 ### Design Decisions (Phase 8 — QA & UX)
 - **Daily R as capital efficiency metric** — `total_r / all_trading_days` (not just days with exits) answers "where should I park my capital for the best risk-adjusted return?" A strategy that trades once per week but earns 5R should show lower Daily R than one earning 3R every day, because capital is idle in the first scenario.
-- **R-squared for equity curve smoothness** — Linear regression R² of the cumulative equity curve. R² ≈ 1.0 means steady, predictable growth. R² < 0.7 means choppy or dependent on outlier trades. Chosen over Ulcer Index/Serenity Index for Phase 8 because it's intuitive (0–1 scale), fast to compute, and directly answers "is this strategy consistently profitable or just lucky?" The full suite (Ulcer, Serenity, etc.) deferred to Phase 9.
+- **R-squared for equity curve smoothness** — Linear regression R² of the cumulative equity curve. R² ≈ 1.0 means steady, predictable growth. R² < 0.7 means choppy or dependent on outlier trades. Chosen over Ulcer Index/Serenity Index for Phase 8 because it's intuitive (0–1 scale), fast to compute, and directly answers "is this strategy consistently profitable or just lucky?" The full suite (Ulcer, Serenity, etc.) deferred to Phase 10.
 - **QA Sandbox as dev-only page** — Not exposed to end users; exists purely for developer QA. Validates that stop/target calculations, trade generation, and signal detection behave as intended. Charts plot stop/target price levels as horizontal lines per trade for visual verification. This replaces ad-hoc testing with a systematic, repeatable QA workflow.
 - **Card-style drill-down over row tables** — Showing multiple KPIs per confluence combination requires more vertical space than a 5-column table row allows. Cards give room for 6+ KPIs while keeping the combination name prominent. The same card format is reused for both Drill-Down (single-factor) and Auto-Search (multi-factor combinations).
 - **`st.radio(horizontal=True)` over `st.tabs()`** — `st.tabs()` renders ALL tab contents on every re-run (even hidden tabs), which would run expensive backtests and data loads when viewing other pages. `st.radio(horizontal=True)` only renders the selected page and supports programmatic selection via `index` for the existing `nav_target` pattern.
 - **Single-page Strategy Builder with sidebar config** — Eliminates the back-navigation state loss problem entirely. All parameters are visible and editable in the sidebar at all times. "Load Data" is the only gate (needed for symbol/timeframe changes). Trigger/risk changes re-run backtest automatically on cached data via Streamlit's natural re-run behavior. Save form in sidebar removes the need for a separate Step 3.
 - **`builder_data_loaded` boolean over `step` integer** — The 3-step flow is gone; the only meaningful state is "has data been loaded?" This boolean gates the main area content (KPIs, charts) while allowing the sidebar config to always be visible.
-- **Strategy Origin as Phase 10 placeholder** — Adding the selectbox now (with only "Standard" option) establishes the UI pattern and schema field without implementing the full feature. Existing strategies default to `"standard"` via `.get('strategy_origin', 'standard')` — no migration needed.
+- **Strategy Origin as Phase 11 placeholder** — Adding the selectbox now (with only "Standard" option) establishes the UI pattern and schema field without implementing the full feature. Existing strategies default to `"standard"` via `.get('strategy_origin', 'standard')` — no migration needed.
 
 - **Max R Drawdown as strategy-level risk metric** — Peak-to-trough drawdown in cumulative R space, analogous to portfolio's dollar-based Max Drawdown but expressed in R-multiples. Named "Max R DD" to distinguish from portfolio's "Max DD". Computed from `np.maximum.accumulate(cumulative_r) - cumulative_r`. A strategy with Max R DD of -3.2R had a worst losing streak that erased 3.2 risk units from peak equity. Added to `calculate_kpis()` and saved to strategies.json for card display.
-- **Secondary KPIs as live-computed expander** — Extended metrics (win/loss counts, best/worst trade, avg win/loss, streaks, payoff ratio, recovery factor, longest DD) are always computed live from `trades_df`, never saved to JSON. Displayed in a collapsed `st.expander("Extended KPIs")` below primary KPI rows. This avoids bloating strategies.json with 11+ additional fields while keeping the metrics available in all detail views. Phase 9's advanced statistical metrics (Sharpe, Sortino, etc.) will extend this pattern.
+- **Secondary KPIs as live-computed expander** — Extended metrics (win/loss counts, best/worst trade, avg win/loss, streaks, payoff ratio, recovery factor, longest DD) are always computed live from `trades_df`, never saved to JSON. Displayed in a collapsed `st.expander("Extended KPIs")` below primary KPI rows. This avoids bloating strategies.json with 11+ additional fields while keeping the metrics available in all detail views. Phase 10's advanced statistical metrics (Sharpe, Sortino, etc.) will extend this pattern.
 - **Strategy cards: Daily R over Total R** — Strategy cards prioritize Daily R because it enables apples-to-apples comparison across strategies with different data periods. A 30-day strategy with 10R total and a 90-day strategy with 20R total aren't directly comparable; Daily R normalizes for time.
 - **R-based vs dollar-based drawdown naming** — Strategy "Max R DD" uses R-multiples (risk-normalized). Portfolio "Max DD" uses dollar/percentage (account-level). The naming distinction prevents confusion between the two scopes.
 - **7-tab strategy detail layout** — Separated "Equity & Charts" into distinct tabs for three reasons: (1) KPIs belong with their equity curves, not floating above tabs; (2) the extended backtest needs its own data load and KPI computation at a different date range; (3) price charts with indicators and clean trade history charts serve different purposes (indicator analysis vs. clean entry/exit review) and deserve their own space. The extended tab has an adjustable slider (90–1825 days) so users can explore different historical depths on the fly.
@@ -798,9 +833,120 @@ My Strategies → Strategy Detail → Edit Strategy
 - **Confluence "None" placeholder** — Cards without confluence conditions show "Confluence: None" to maintain uniform card height across the grid, preventing visual misalignment between adjacent cards.
 - **`@st.dialog` filter lightbox over inline controls** — Confluence drill-down previously used inline sort selectbox (Drill-Down) and inline sliders (Auto-Search), creating inconsistent UIs. Moving all filter/sort controls into a shared `@st.dialog` lightbox keeps the main view clean (just search bar + filter button), unifies the two modes, and provides room for KPI threshold inputs without cluttering the card results area. Filter state persists in `confluence_filters` session state so settings survive mode switches and page reruns.
 
-**After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
+**Phase 8 remaining items (QA Sandbox, Backtest Settings, UX utility buttons) are deferred until after Phase 9.** Phase 9 introduces new data schemas (general confluence groups, stop/target packs, trade tagging) that would require reworking QA Sandbox validations and Backtest Settings caching if built on the current schema first.
 
-### Phase 9: Analytics & Edge Detection
+### Phase 9: Optimization Workflow — "Systematic Strategy Construction"
+*Transform strategy building from manual configuration into a guided, data-driven optimization sequence. Users isolate and evaluate each variable category independently, layering decisions in a logical order.*
+
+**Core Concept:** Every strategy is composed of 6 optimizable variable categories, evaluated in sequence:
+1. **Entry Trigger** — the signal that opens a position
+2. **Exit Triggers** — one or more signals; whichever fires first closes the position
+3. **Timeframe Confluence Conditions** — interpretation states from timeframe-based groups (existing)
+4. **General Confluence Conditions** — interpretation states from non-timeframe groups (time of day, session, calendar, news, etc.)
+5. **Stop Loss** — parameterized stop configurations packaged as optimizable packs
+6. **Take Profit** — parameterized target configurations packaged as optimizable packs
+
+**The fundamental model:** Enter when the entry trigger fires AND all active confluence conditions (timeframe + general) are aligned. Exit when any exit trigger fires, stop is hit, or target is hit — whichever comes first. This model is unchanged from today; Phase 9 adds the tooling to systematically find the best values for each variable.
+
+---
+
+**General Confluence Groups (new sub-page under Confluence Groups):**
+- [ ] New "General Groups" sub-page — same template/version/pack structure as timeframe groups but for non-timeframe variables
+- [ ] General group interpreter framework — interpreters that produce boolean or categorical states from non-chart data sources:
+  - **Time of Day** — morning, midday, afternoon, etc. (configurable buckets)
+  - **Day of Week** — Monday through Friday
+  - **Trading Session** — pre-market, opening hour, regular hours, power hour, after-hours
+  - **Calendar** — month of year, week of month, options expiration days, FOMC days, etc.
+  - **News/Event** — extensible framework for external data feeds (future)
+  - **Market Regime** — broad market conditions from index data (future)
+- [ ] General confluence record format — extends existing `"{TIMEFRAME}-{INTERPRETER}-{STATE}"` format; general records use a category prefix instead of timeframe (e.g., `"GEN-SESSION-OPENING_HOUR"`, `"GEN-DAY_OF_WEEK-MONDAY"`)
+- [ ] Trade tagging — trades tagged with general confluence records at entry time, alongside existing timeframe records in `confluence_records` set
+- [ ] Template structure — same `TEMPLATES` dict pattern with `parameters_schema`, `outputs`, `output_descriptions`, `triggers` (if applicable)
+
+**Stop Loss Packs (new sub-page under Confluence Groups):**
+- [ ] New "Stop Loss Packs" sub-page — collections of parameterized stop loss configurations
+- [ ] Pack structure — each pack defines a set of stop variations to compare (e.g., "ATR Pack" with ATR 0.5x, 1.0x, 1.5x, 2.0x, 2.5x, 3.0x)
+- [ ] Stop variation as interpretation — each stop config produces a tagged "interpretation" on the trade (e.g., `"STOP-ATR-1.5X"`) so the drill-down can evaluate KPIs per variation
+- [ ] Multi-backtest computation — drill-down on Stop Loss tab pre-computes trades across all pack variations (N backtest runs), then displays KPI comparison cards
+- [ ] Built-in packs — default packs for each stop method (ATR range, Fixed Dollar range, Percentage range, Swing lookback range)
+- [ ] Custom packs — users can create custom stop packs with arbitrary parameter combinations
+
+**Take Profit Packs (new sub-page under Confluence Groups):**
+- [ ] New "Take Profit Packs" sub-page — same structure as Stop Loss Packs but for target configurations
+- [ ] Built-in packs — default packs for each target method (R:R range, ATR range, Fixed Dollar range, Percentage range, Swing lookback range)
+- [ ] "None" as a valid variation — compare having no take profit vs. various target levels
+- [ ] Custom packs — users can create custom target packs
+
+**"Exit After N Candles" Default Exit:**
+- [ ] New interpreter/trigger — "Bar Count Exit" that fires after N candles since entry (configurable N)
+- [ ] Default exit trigger for new strategies — when creating a new strategy, start with "Exit after N candles" as the default exit trigger
+- [ ] Purpose — isolates entry trigger quality by removing exit signal noise; if an entry consistently produces positive movement within N bars, the entry has genuine edge
+- [ ] Configurable N — parameter on the trigger (e.g., 1, 2, 3, 4, 5, 10, 20 bars)
+- [ ] Works as a confluence group template — follows existing template/version structure so it appears in exit trigger dropdowns
+
+**Optimizable Variables Box (Strategy Builder):**
+- [ ] Collapsible section on Strategy Builder main area — styled like the Extended KPIs expander
+- [ ] Displays all active variables organized by the 6 categories:
+  1. Entry Trigger (name + key parameters)
+  2. Exit Trigger(s) (name(s) + key parameters)
+  3. Timeframe Conditions (selected interpretation states)
+  4. General Conditions (selected interpretation states)
+  5. Stop Loss (method + key parameters)
+  6. Take Profit (method + key parameters)
+- [ ] Each variable has an "✕" button to remove it from the active strategy configuration
+- [ ] Removing a variable updates the strategy config and triggers re-computation
+- [ ] Trigger parameters are visible and expandable — not just which trigger, but the settings within it (e.g., EMA periods, ATR multiplier)
+
+**Active Tags (above drill-down):**
+- [ ] Tag chip bar positioned above the Drill-Down / Auto-Search mode radio
+- [ ] Shows currently selected interpretations/variables across all categories as removable chips
+- [ ] Clicking "✕" on a tag removes that interpretation from the active set and re-filters results
+- [ ] Tags apply to both Drill-Down and Auto-Search modes (position above the mode toggle ensures this)
+- [ ] Tags sync with the Optimizable Variables box — removing from either location updates both
+
+**6-Tab Optimization Drill-Down:**
+- [ ] Replace current single drill-down panel with 6 tabs matching the optimization sequence
+- [ ] Each tab uses the same search bar + filter dialog pattern (from Phase 8 drill-down enhancements)
+- [ ] **Entry Trigger tab** — shows KPI cards for each available entry trigger; default exit (N-bar) used as baseline; selecting an entry trigger locks it for subsequent tabs
+- [ ] **Exit Triggers tab** — shows KPI cards for each available exit trigger, filtered to trades using the selected entry trigger; selecting exit trigger(s) locks them for subsequent tabs
+- [ ] **Timeframe Conditions tab** — existing confluence drill-down behavior, but scoped to trades matching selected entry + exit triggers
+- [ ] **General Conditions tab** — same drill-down pattern for general confluence interpretations
+- [ ] **Stop Loss tab** — shows KPI comparison cards across all variations in active stop loss packs; requires multi-backtest pre-computation (one run per stop config)
+- [ ] **Take Profit tab** — shows KPI comparison cards across all variations in active take profit packs; same multi-backtest pattern
+- [ ] Cross-tab filtering — selections in earlier tabs narrow the trade set for later tabs ("given this entry + these exits + these conditions, which stop is best?")
+- [ ] Auto-Search available on all tabs — not just timeframe conditions
+
+**Data Model Changes:**
+- [ ] Extend `confluence_records` set on trades — include general confluence records alongside timeframe records (same set, different prefix)
+- [ ] Add stop/target variation tags to trades when running pack comparisons
+- [ ] Strategy schema additions:
+  - `general_confluences: List[str]` — selected general confluence interpretation states
+  - `stop_pack_id: Optional[str]` — reference to the stop loss pack used for optimization (if any)
+  - `target_pack_id: Optional[str]` — reference to the take profit pack used for optimization (if any)
+- [ ] New config files:
+  - `general_confluence_groups.json` — general group definitions (same structure as `confluence_groups.json`)
+  - `stop_loss_packs.json` — stop loss pack definitions
+  - `take_profit_packs.json` — take profit pack definitions
+- [ ] Backward compatibility — existing strategies without general confluences or packs continue to work unchanged; new fields default to empty/None
+
+**Performance Considerations:**
+- [ ] Stop/target drill-down runs multiple backtests — implement progress indicator and caching keyed on (symbol, timeframe, date range, entry trigger, exit triggers, confluences, pack ID)
+- [ ] General confluence records are cheap to compute (clock/calendar lookups) — no performance concern
+- [ ] Consider lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
+
+### Design Decisions (Phase 9 — Optimization Workflow)
+- **Sequential optimization over simultaneous** — Evaluating all 6 variable categories at once creates a combinatorial explosion. Sequential evaluation (entry → exit → conditions → stop → target) is tractable, intuitive, and mirrors how experienced traders build strategies: find an edge first, then refine execution.
+- **"Exit After N Candles" as entry quality isolator** — By fixing the exit to a simple time-based close, entry trigger quality is measured in isolation. If entry + 4-bar-exit is profitable, the entry has genuine predictive power. More sophisticated exits can only improve on that baseline. This prevents the common mistake of attributing edge to the entry when it actually comes from a clever exit.
+- **General Confluence Groups as separate sub-page** — Time-of-day, session windows, and calendar conditions don't derive from chart indicators. They need different interpreter logic (clock/calendar lookups vs. indicator math), different parameter schemas, and a different mental model. A separate sub-page under Confluence Groups preserves the pack/template structure while acknowledging the conceptual difference.
+- **Stop/target packs as confluence-group-like entities** — Packaging stop/target variations into "packs" with the same template/version structure means the drill-down UI can treat them identically to confluence interpretations. A stop variation is just another interpretation state that can be evaluated for KPI impact. This keeps the architecture consistent across all 6 variable categories.
+- **Multi-backtest for stop/target drill-down (Option A)** — Pre-computing trades across all pack variations gives true apples-to-apples KPI comparison. The alternative (showing one config at a time) doesn't let users see "ATR 1.5x: PF 2.3 vs ATR 2.0x: PF 1.8" side by side. The computational cost is bounded by pack size (typically 5-10 variations) and can be cached aggressively.
+- **Active tags above mode toggle** — Tags represent selections that apply to both Drill-Down and Auto-Search. Placing them above the mode radio makes this visually clear and prevents the tags from being associated with only one mode.
+- **Interpretation as the universal unit** — Entry triggers, exit triggers, timeframe conditions, general conditions, stop configs, and target configs are all treated as "interpretations" in the drill-down. This unifying abstraction means one drill-down UI pattern works across all 6 tabs, and the `apply_confluence_filters()` helper extends naturally.
+- **Phase 9 before Phase 8 remainders** — QA Sandbox validates data schemas, and Backtest Settings caches results keyed on strategy config. Both would need reworking if built on the current schema and then Phase 9 changes the schema. Building Phase 9 first means QA and caching are designed for the final data model.
+
+**After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json, general_confluence_groups.json, stop_loss_packs.json, take_profit_packs.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
+
+### Phase 10: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
 *Reference images: `/docs/reference_images/DaviddTech *.png`*
 
@@ -812,7 +958,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Markov Motor Analysis (advanced tab) — win/loss transition probabilities, win/loss streak distribution chart, consistency score, stability index, trend strength, market regime detection (favorable/unfavorable/neutral clustering), edge decay chart (rolling PF with threshold line), and Markov Intelligence Insights summary
 - [ ] KPI placement audit — map out primary vs. secondary KPIs for strategy cards, strategy detail, portfolio cards, portfolio detail; ensure consistent and useful placement across all views
 
-### Phase 10: Strategy Origins
+### Phase 11: Strategy Origins
 *Expand strategy creation beyond the standard trigger-based approach — support webhook-driven and scanner-based strategies.*
 
 - [ ] Expand Strategy Origin selectbox — add "Webhook Inbound" and "Scanner" options to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
@@ -821,7 +967,7 @@ My Strategies → Strategy Detail → Edit Strategy
 - [ ] Scanner origin — strategy not tied to a single ticker; runs against a universe of stocks matching screener criteria (Alpaca screener APIs); targets active day trading / scalping use cases (S&B Capital, Warrior Trading style); requires separate planning session for architecture given 1:many ticker relationship
 - [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; origin-specific fields only present when relevant
 
-### Phase 11: Live Portfolio Management
+### Phase 12: Live Portfolio Management
 *Active trading account management — bridge between backtesting and real-world trading.*
 
 - [ ] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
@@ -839,7 +985,7 @@ My Strategies → Strategy Detail → Edit Strategy
   - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
   - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
 
-### Phase 12: Settings Page
+### Phase 13: Settings Page
 *Dedicated settings page to centralize app-wide configuration — currently scattered across sidebar and hardcoded defaults.*
 
 - [ ] Settings navigation page — new top-level nav item (replace sidebar-only chart presets)
