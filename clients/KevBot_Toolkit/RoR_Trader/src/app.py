@@ -824,6 +824,51 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
 # CHART RENDERING
 # =============================================================================
 
+CANDLE_PRESET_OPTIONS = ["Default", "50", "100", "200", "400", "All"]
+
+def render_candle_selector(chart_key: str) -> int:
+    """Render a compact visible-candles selector and return the selected value.
+
+    Returns the number of visible candles (0 = All).
+    "Default" uses the global sidebar preset (returns None → caller passes None to render_price_chart).
+    """
+    _, right = st.columns([5, 1])
+    with right:
+        choice = st.selectbox(
+            "Candles",
+            CANDLE_PRESET_OPTIONS,
+            index=0,
+            key=f"candle_sel_{chart_key}",
+            label_visibility="collapsed",
+        )
+    if choice == "Default":
+        return None
+    if choice == "All":
+        return 0
+    return int(choice)
+
+
+@st.fragment
+def render_chart_with_candle_selector(
+    df, trades, config, show_indicators=None, indicator_colors=None,
+    chart_key='price_chart', secondary_panes=None
+):
+    """Render a price chart with a per-chart candle count selector.
+
+    Wrapped in @st.fragment so changing the selector only reruns the chart,
+    not the full page (which would reset the active tab).
+    """
+    vc = render_candle_selector(chart_key)
+    render_price_chart(
+        df, trades, config,
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors,
+        chart_key=chart_key,
+        secondary_panes=secondary_panes,
+        visible_candles=vc
+    )
+
+
 def render_price_chart(
     df: pd.DataFrame,
     trades: pd.DataFrame,
@@ -831,7 +876,8 @@ def render_price_chart(
     show_indicators: list = None,
     indicator_colors: dict = None,
     chart_key: str = 'price_chart',
-    secondary_panes: list = None
+    secondary_panes: list = None,
+    visible_candles: int = None
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -846,6 +892,7 @@ def render_price_chart(
         show_indicators: List of indicator column names to overlay (e.g., ['ema_short', 'ema_mid'])
         indicator_colors: Dict mapping column names to colors (from confluence group settings)
         secondary_panes: List of lightweight-charts pane config dicts to render below the price chart
+        visible_candles: Override for number of visible candles (None = use global default from session state)
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -864,7 +911,8 @@ def render_price_chart(
     # The lightweight-charts component always calls fitContent() on render,
     # so barSpacing cannot control the initial zoom. Instead we limit the
     # data to the last N candles so fitContent() fits only those.
-    visible_candles = st.session_state.get('chart_visible_candles', 200)
+    if visible_candles is None:
+        visible_candles = st.session_state.get('chart_visible_candles', 200)
     if visible_candles > 0 and len(candles) > visible_candles:
         candles = candles.tail(visible_candles).reset_index(drop=True)
 
@@ -1919,7 +1967,7 @@ def render_strategy_builder():
                 st.caption(f"{symbol} price data (no trades match filters)")
 
             osc_panes = build_secondary_panes(df, enabled_groups)
-            render_price_chart(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
+            render_chart_with_candle_selector(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
                                secondary_panes=osc_panes if osc_panes else None)
 
     with right_col:
@@ -2563,7 +2611,7 @@ def render_live_backtest(strat: dict):
             indicator_colors.update(get_overlay_colors_for_group(group))
 
         osc_panes = build_secondary_panes(df, enabled_groups)
-        render_price_chart(
+        render_chart_with_candle_selector(
             df, trades, strat,
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
@@ -2575,7 +2623,7 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
-        render_price_chart(
+        render_chart_with_candle_selector(
             df, trades, strat,
             show_indicators=[],
             indicator_colors={},
@@ -2724,7 +2772,7 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
 
             secondary_panes = build_secondary_panes(df, [group])
 
-            render_price_chart(
+            render_chart_with_candle_selector(
                 df,
                 trades,
                 strat,
@@ -2825,7 +2873,7 @@ def render_forward_test_view(strat: dict):
             indicator_colors.update(get_overlay_colors_for_group(group))
 
         osc_panes = build_secondary_panes(df, enabled_groups)
-        render_price_chart(
+        render_chart_with_candle_selector(
             df, all_trades, strat,
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
@@ -2837,7 +2885,7 @@ def render_forward_test_view(strat: dict):
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
-        render_price_chart(
+        render_chart_with_candle_selector(
             df, all_trades, strat,
             show_indicators=[],
             indicator_colors={},
@@ -5462,7 +5510,7 @@ def render_preview_tab(group: ConfluenceGroup):
 
     secondary_panes = build_secondary_panes(df, [group])
 
-    render_price_chart(
+    render_chart_with_candle_selector(
         df,
         pd.DataFrame(),  # no trade markers on preview
         {"direction": "LONG"},
