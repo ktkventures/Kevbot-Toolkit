@@ -1744,8 +1744,9 @@ def render_strategy_builder():
 
         # --- Save ---
         st.markdown("**Save**")
-        entry_display_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
-        default_name = edit_config.get('name', f"{symbol} {direction} - {entry_display_name}")
+        _existing = load_strategies()
+        _next_id = max((s.get('id', 0) for s in _existing), default=0) + 1
+        default_name = edit_config.get('name', f"{symbol} {direction} - {_next_id}")
         if editing_id:
             default_name = get_strategy_by_id(editing_id).get('name', default_name) if get_strategy_by_id(editing_id) else default_name
         strategy_name = st.text_input("Strategy Name", value=default_name, key="sb_name")
@@ -2193,7 +2194,7 @@ def render_strategy_list():
     # --- Strategy Cards ---
     enabled_groups = get_enabled_groups()
 
-    for strat in strategies:
+    for i, strat in enumerate(strategies):
         sid = strat.get('id', 0)
         is_legacy = 'entry_trigger_confluence_id' not in strat
 
@@ -2207,107 +2208,111 @@ def render_strategy_list():
             running_max = np.maximum.accumulate(cumulative_r)
             kpis['max_r_drawdown'] = round(float((cumulative_r - running_max).min()), 2)
 
-        with st.container(border=True):
-            # Main layout: info on left, mini equity curve on right
-            info_col, chart_col = st.columns([3, 2])
+        # 2-column grid: new row every 2 cards
+        if i % 2 == 0:
+            grid_cols = st.columns(2)
 
-            with info_col:
-                # Name + metadata
-                st.markdown(f"### {strat['name']}")
-                entry_display = get_trigger_display_name(strat, 'entry_trigger')
-                exit_display = get_trigger_display_name(strat, 'exit_trigger')
-                st.caption(f"{strat['symbol']} | {strat['direction']} | {entry_display} → {exit_display}")
+        with grid_cols[i % 2]:
+            with st.container(border=True):
+                # Name
+                st.markdown(f"#### {strat['name']}")
 
-                # KPI metrics inline
-                kpi_cols = st.columns(5)
-                kpi_cols[0].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
-                pf = kpis.get('profit_factor', 0)
-                kpi_cols[1].metric("Profit Factor", "∞" if pf == float('inf') else f"{pf:.2f}")
-                kpi_cols[2].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
-                kpi_cols[3].metric("Trades", kpis.get('total_trades', 0))
-                max_rdd = kpis.get('max_r_drawdown', 0)
-                kpi_cols[4].metric("Max R DD", f"{max_rdd:+.1f}R")
-
-            with chart_col:
-                # Status badge
+                # Symbol / Direction / Status
                 if strat.get('forward_testing') and strat.get('forward_test_start'):
                     ft_start = datetime.fromisoformat(strat['forward_test_start'])
                     ft_days = (datetime.now() - ft_start).days
-                    st.caption(f"🟢 Forward Testing ({ft_days}d)")
+                    status_text = f":green[Fwd ({ft_days}d)]"
                 elif strat.get('forward_testing'):
-                    st.caption("🟢 Forward Testing")
+                    status_text = ":green[Fwd]"
                 else:
-                    st.caption("⚪ Backtest Only")
+                    status_text = "Backtest Only"
+                st.caption(f"{strat['symbol']} {strat['direction']} | {status_text}")
 
-                # Mini equity curve
+                # Mini equity curve (full card width)
                 if not is_legacy and len(trades) > 0:
                     boundary = None
                     if strat.get('forward_testing') and strat.get('forward_test_start'):
                         boundary = datetime.fromisoformat(strat['forward_test_start'])
                     render_mini_equity_curve(trades, key=f"mini_eq_{sid}", boundary_dt=boundary)
 
-            # Confluence tags
-            confluence = strat.get('confluence', [])
-            if len(confluence) > 0:
-                formatted = [format_confluence_record(c, enabled_groups) for c in confluence[:3]]
-                st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
+                # KPI metrics
+                kpi_cols = st.columns(5)
+                kpi_cols[0].metric("WR", f"{kpis.get('win_rate', 0):.1f}%")
+                pf = kpis.get('profit_factor', 0)
+                kpi_cols[1].metric("PF", "∞" if pf == float('inf') else f"{pf:.2f}")
+                kpi_cols[2].metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+                kpi_cols[3].metric("Trades", kpis.get('total_trades', 0))
+                max_rdd = kpis.get('max_r_drawdown', 0)
+                kpi_cols[4].metric("Max DD", f"{max_rdd:+.1f}R")
 
-            # Action buttons
-            btn_cols = st.columns([1, 1, 1, 1, 4])
-            with btn_cols[0]:
-                if st.button("View", key=f"view_{sid}"):
-                    st.session_state.viewing_strategy_id = sid
-                    st.rerun()
-            with btn_cols[1]:
-                if st.button("Edit", key=f"edit_{sid}"):
-                    initiate_edit(strat)
-            with btn_cols[2]:
-                if st.button("Clone", key=f"clone_{sid}"):
-                    new = duplicate_strategy(sid)
-                    if new:
-                        st.toast(f"Cloned as '{new['name']}'")
-                        st.rerun()
-            with btn_cols[3]:
-                if st.button("Delete", key=f"del_{sid}", type="secondary"):
-                    st.session_state.confirm_delete_id = sid
-                    st.rerun()
+                # Trigger badges
+                entry_display = get_trigger_display_name(strat, 'entry_trigger')
+                exit_display = format_exit_triggers_display(strat)
+                stop_display = format_stop_display(strat)
+                target_display = format_target_display(strat)
+                st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
+                st.caption(f"Stop: {stop_display} | Target: {target_display}")
 
-            # Inline delete confirmation
-            if st.session_state.confirm_delete_id == sid:
-                st.warning(f"Are you sure you want to delete '{strat['name']}'? This cannot be undone.")
-                confirm_cols = st.columns([1, 1, 6])
-                with confirm_cols[0]:
-                    if st.button("Yes, Delete", key=f"confirm_del_{sid}", type="primary"):
-                        delete_strategy(sid)
-                        st.session_state.confirm_delete_id = None
-                        st.rerun()
-                with confirm_cols[1]:
-                    if st.button("Cancel", key=f"cancel_del_{sid}"):
-                        st.session_state.confirm_delete_id = None
-                        st.rerun()
+                # Confluence tags (always shown for uniform card height)
+                confluence = strat.get('confluence', [])
+                if len(confluence) > 0:
+                    formatted = [format_confluence_record(c, enabled_groups) for c in confluence[:3]]
+                    st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
+                else:
+                    st.caption("Confluence: None")
 
-            # Inline edit confirmation (forward-tested strategies)
-            if st.session_state.confirm_edit_id == sid:
-                st.warning(
-                    "This strategy has forward testing enabled. "
-                    "Editing will reset the forward test start date. "
-                    "You can also duplicate the strategy to preserve the original."
-                )
-                edit_cols = st.columns([1, 1, 1, 5])
-                with edit_cols[0]:
-                    if st.button("Edit Anyway", key=f"confirm_edit_{sid}", type="primary"):
-                        st.session_state.confirm_edit_id = None
-                        load_strategy_into_builder(strat)
-                with edit_cols[1]:
-                    if st.button("Duplicate Instead", key=f"dup_instead_{sid}"):
+                # Action buttons
+                btn_cols = st.columns(4)
+                with btn_cols[0]:
+                    if st.button("View", key=f"view_{sid}"):
+                        st.session_state.viewing_strategy_id = sid
+                        st.rerun()
+                with btn_cols[1]:
+                    if st.button("Edit", key=f"edit_{sid}"):
+                        initiate_edit(strat)
+                with btn_cols[2]:
+                    if st.button("Clone", key=f"clone_{sid}"):
                         new = duplicate_strategy(sid)
                         if new:
-                            st.session_state.confirm_edit_id = None
-                            load_strategy_into_builder(new)
-                with edit_cols[2]:
-                    if st.button("Cancel", key=f"cancel_edit_{sid}"):
-                        st.session_state.confirm_edit_id = None
+                            st.toast(f"Cloned as '{new['name']}'")
+                            st.rerun()
+                with btn_cols[3]:
+                    if st.button("Delete", key=f"del_{sid}", type="secondary"):
+                        st.session_state.confirm_delete_id = sid
                         st.rerun()
+
+                # Inline delete confirmation
+                if st.session_state.confirm_delete_id == sid:
+                    st.warning(f"Delete '{strat['name']}'? This cannot be undone.")
+                    confirm_cols = st.columns(2)
+                    with confirm_cols[0]:
+                        if st.button("Yes, Delete", key=f"confirm_del_{sid}", type="primary"):
+                            delete_strategy(sid)
+                            st.session_state.confirm_delete_id = None
+                            st.rerun()
+                    with confirm_cols[1]:
+                        if st.button("Cancel", key=f"cancel_del_{sid}"):
+                            st.session_state.confirm_delete_id = None
+                            st.rerun()
+
+                # Inline edit confirmation (forward-tested strategies)
+                if st.session_state.confirm_edit_id == sid:
+                    st.warning("Editing resets forward test. Duplicate to preserve the original.")
+                    edit_cols = st.columns(3)
+                    with edit_cols[0]:
+                        if st.button("Edit Anyway", key=f"confirm_edit_{sid}", type="primary"):
+                            st.session_state.confirm_edit_id = None
+                            load_strategy_into_builder(strat)
+                    with edit_cols[1]:
+                        if st.button("Duplicate", key=f"dup_instead_{sid}"):
+                            new = duplicate_strategy(sid)
+                            if new:
+                                st.session_state.confirm_edit_id = None
+                                load_strategy_into_builder(new)
+                    with edit_cols[2]:
+                        if st.button("Cancel", key=f"cancel_edit_{sid}"):
+                            st.session_state.confirm_edit_id = None
+                            st.rerun()
 
 
 # =============================================================================
@@ -2331,12 +2336,16 @@ def render_strategy_detail(strategy_id: int):
     # Header
     st.header(strat['name'])
 
-    meta_cols = st.columns(5)
-    meta_cols[0].markdown(f"**Ticker:** {strat['symbol']}")
-    meta_cols[1].markdown(f"**Direction:** {strat['direction']}")
-    meta_cols[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
-    meta_cols[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-    meta_cols[4].markdown(f"**Exit:** {get_trigger_display_name(strat, 'exit_trigger')}")
+    meta_row1 = st.columns(5)
+    meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
+    meta_row1[1].markdown(f"**Direction:** {strat['direction']}")
+    meta_row1[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
+    meta_row1[3].markdown(f"**Stop:** {format_stop_display(strat)}")
+    meta_row1[4].markdown(f"**Target:** {format_target_display(strat)}")
+
+    meta_row2 = st.columns(5)
+    meta_row2[0].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
+    meta_row2[1].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
 
     # Confluence conditions
     enabled_groups = get_enabled_groups()
@@ -3446,7 +3455,7 @@ def render_portfolio_list():
         st.info("No portfolios yet. Create one to combine your strategies!")
         return
 
-    for port in portfolios:
+    for i, port in enumerate(portfolios):
         pid = port.get('id', 0)
         kpis = port.get('cached_kpis', {})
         n_strats = len(port.get('strategies', []))
@@ -3459,56 +3468,32 @@ def render_portfolio_list():
             except Exception:
                 pass
 
-        with st.container(border=True):
-            info_col, chart_col = st.columns([3, 2])
+        # 2-column grid: new row every 2 cards
+        if i % 2 == 0:
+            grid_cols = st.columns(2)
 
-            with info_col:
-                st.markdown(f"### {port['name']}")
+        with grid_cols[i % 2]:
+            with st.container(border=True):
+                # Name
+                st.markdown(f"#### {port['name']}")
+
+                # Metadata caption (all fields preserved)
                 balance = port.get('starting_balance', 10000)
                 compound = port.get('compound_rate', 0) * 100
-
-                # Compute avg risk per trade and avg trades per day
                 port_strats = port.get('strategies', [])
                 avg_risk = sum(ps.get('risk_per_trade', 100) for ps in port_strats) / max(len(port_strats), 1)
                 total_days = kpis.get('total_trading_days', 0)
                 total_trades_count = kpis.get('total_trades', 0)
                 avg_trades_day = total_trades_count / max(total_days, 1) if total_days > 0 else 0
 
-                meta_parts = [f"{n_strats} strategies", f"\\${balance:,.0f} starting balance"]
+                meta_parts = [f"{n_strats} strategies", f"\\${balance:,.0f} balance"]
                 if compound > 0:
-                    meta_parts.append(f"{compound:.0f}% risk scaling")
+                    meta_parts.append(f"{compound:.0f}% scaling")
                 meta_parts.append(f"\\${avg_risk:,.0f} avg risk/trade")
                 if avg_trades_day > 0:
                     meta_parts.append(f"{avg_trades_day:.1f} trades/day")
                 st.caption(" | ".join(meta_parts))
 
-                # KPIs from cache
-                if kpis:
-                    kpi_cols = st.columns(4)
-                    kpi_cols[0].metric("Total P&L", f"${kpis.get('total_pnl', 0):+,.0f}")
-                    max_dd = kpis.get('max_drawdown_pct', 0)
-                    kpi_cols[1].metric("Max DD", f"{max_dd:.1f}%")
-                    kpi_cols[2].metric("Win Rate", f"{kpis.get('win_rate', 0):.1f}%")
-                    kpi_cols[3].metric("Avg Daily P&L", f"${kpis.get('avg_daily_pnl', 0):+,.0f}")
-
-                # Requirement set badge with pass/fail summary
-                req_id = port.get('requirement_set_id')
-                if req_id:
-                    rs = get_requirement_set_by_id(req_id)
-                    if rs and kpis and port_data:
-                        try:
-                            eval_result = evaluate_requirement_set(rs, port, kpis, port_data['daily_pnl'])
-                            rule_parts = [f"Requirements: {rs['name']}"]
-                            for r in eval_result['rules']:
-                                status = "Pass" if r['passed'] else "Fail"
-                                rule_parts.append(f"{r['name']}: {status}")
-                            st.caption(" | ".join(rule_parts))
-                        except Exception:
-                            st.caption(f"Requirements: {rs['name']}")
-                    elif rs:
-                        st.caption(f"Requirements: {rs['name']}")
-
-            with chart_col:
                 # Strategy names
                 strat_names = []
                 for ps in port.get('strategies', [])[:4]:
@@ -3518,7 +3503,7 @@ def render_portfolio_list():
                 if strat_names:
                     st.caption(", ".join(strat_names) + ("..." if n_strats > 4 else ""))
 
-                # Mini equity curve from pre-fetched data
+                # Mini equity curve (full card width)
                 if port_data and len(port_data['combined_trades']) > 0:
                     try:
                         p_trades = port_data['combined_trades']
@@ -3543,43 +3528,67 @@ def render_portfolio_list():
                     except Exception:
                         pass
 
-            # Action buttons
-            btn_cols = st.columns([1, 1, 1, 1, 4])
-            with btn_cols[0]:
-                if st.button("View", key=f"port_view_{pid}"):
-                    st.session_state.viewing_portfolio_id = pid
-                    st.rerun()
-            with btn_cols[1]:
-                if st.button("Edit", key=f"port_edit_{pid}"):
-                    st.session_state.editing_portfolio_id = pid
-                    st.session_state.portfolio_builder_strategies = []
-                    st.session_state.builder_recommendations = None
-                    st.session_state.pop('_builder_initialized', None)
-                    st.rerun()
-            with btn_cols[2]:
-                if st.button("Clone", key=f"port_clone_{pid}"):
-                    new = duplicate_portfolio(pid)
-                    if new:
-                        st.toast(f"Cloned as '{new['name']}'")
-                        st.rerun()
-            with btn_cols[3]:
-                if st.button("Delete", key=f"port_del_{pid}", type="secondary"):
-                    st.session_state.confirm_delete_portfolio_id = pid
-                    st.rerun()
+                # KPIs from cache
+                if kpis:
+                    kpi_cols = st.columns(4)
+                    kpi_cols[0].metric("P&L", f"\\${kpis.get('total_pnl', 0):+,.0f}")
+                    max_dd = kpis.get('max_drawdown_pct', 0)
+                    kpi_cols[1].metric("Max DD", f"{max_dd:.1f}%")
+                    kpi_cols[2].metric("WR", f"{kpis.get('win_rate', 0):.1f}%")
+                    kpi_cols[3].metric("Avg Daily", f"\\${kpis.get('avg_daily_pnl', 0):+,.0f}")
 
-            # Inline delete confirmation
-            if st.session_state.confirm_delete_portfolio_id == pid:
-                st.warning(f"Delete '{port['name']}'? This cannot be undone.")
-                dc = st.columns([1, 1, 6])
-                with dc[0]:
-                    if st.button("Yes, Delete", key=f"port_cdel_{pid}", type="primary"):
-                        delete_portfolio(pid)
-                        st.session_state.confirm_delete_portfolio_id = None
+                # Requirement set badge (compact summary)
+                req_id = port.get('requirement_set_id')
+                if req_id:
+                    rs = get_requirement_set_by_id(req_id)
+                    if rs and kpis and port_data:
+                        try:
+                            eval_result = evaluate_requirement_set(rs, port, kpis, port_data['daily_pnl'])
+                            passed = sum(1 for r in eval_result['rules'] if r['passed'])
+                            total = len(eval_result['rules'])
+                            st.caption(f"Reqs: {rs['name']} ({passed}/{total} pass)")
+                        except Exception:
+                            st.caption(f"Reqs: {rs['name']}")
+                    elif rs:
+                        st.caption(f"Reqs: {rs['name']}")
+
+                # Action buttons
+                btn_cols = st.columns(4)
+                with btn_cols[0]:
+                    if st.button("View", key=f"port_view_{pid}"):
+                        st.session_state.viewing_portfolio_id = pid
                         st.rerun()
-                with dc[1]:
-                    if st.button("Cancel", key=f"port_cancel_del_{pid}"):
-                        st.session_state.confirm_delete_portfolio_id = None
+                with btn_cols[1]:
+                    if st.button("Edit", key=f"port_edit_{pid}"):
+                        st.session_state.editing_portfolio_id = pid
+                        st.session_state.portfolio_builder_strategies = []
+                        st.session_state.builder_recommendations = None
+                        st.session_state.pop('_builder_initialized', None)
                         st.rerun()
+                with btn_cols[2]:
+                    if st.button("Clone", key=f"port_clone_{pid}"):
+                        new = duplicate_portfolio(pid)
+                        if new:
+                            st.toast(f"Cloned as '{new['name']}'")
+                            st.rerun()
+                with btn_cols[3]:
+                    if st.button("Delete", key=f"port_del_{pid}", type="secondary"):
+                        st.session_state.confirm_delete_portfolio_id = pid
+                        st.rerun()
+
+                # Inline delete confirmation
+                if st.session_state.confirm_delete_portfolio_id == pid:
+                    st.warning(f"Delete '{port['name']}'? This cannot be undone.")
+                    dc = st.columns(2)
+                    with dc[0]:
+                        if st.button("Yes, Delete", key=f"port_cdel_{pid}", type="primary"):
+                            delete_portfolio(pid)
+                            st.session_state.confirm_delete_portfolio_id = None
+                            st.rerun()
+                    with dc[1]:
+                        if st.button("Cancel", key=f"port_cancel_del_{pid}"):
+                            st.session_state.confirm_delete_portfolio_id = None
+                            st.rerun()
 
 
 def get_cached_strategy_trades(strat):
