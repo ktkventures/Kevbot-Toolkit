@@ -3,7 +3,7 @@
 **Version:** 0.8
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
+**Status:** Phase 8 In Progress — Execution Model, Nav Refactor, Single-Page Builder, KPI Audit, Strategy Detail Tab Restructuring, Per-Chart Candle Selector, 2-Column Card Grid Complete; QA Sandbox, Backtest Settings, and UX Polish Remaining
 
 ---
 
@@ -318,7 +318,7 @@ Sidebar: App title, data source indicator, chart presets.
 │       ├── Strategy List View
 │       │   ├── Filter: All / Backtest Only / Forward Testing / Deployed
 │       │   ├── Sort: Name / Created / Performance
-│       │   └── Strategy Cards (Name, KPIs, Forward Test Status, Actions)
+│       │   └── Strategy Cards (2-column grid; Name, Status, Mini Equity, KPIs, Entry/Exit/Stop/Target Badges, Confluence, Actions)
 │       └── Strategy Detail View
 │           ├── Equity & KPIs Tab (primary + extended KPIs, equity curve, R-distribution)
 │           ├── Equity & KPIs (Extended) Tab (adjustable lookback up to 5 years)
@@ -332,7 +332,7 @@ Sidebar: App title, data source indicator, chart presets.
 ├── 💼 PORTFOLIOS (sub-nav: My Portfolios | Portfolio Requirements)
 │   │
 │   ├── My Portfolios
-│   │   ├── Portfolio List View (Cards with KPIs, Compliance Status)
+│   │   ├── Portfolio List View (2-column grid; Cards with KPIs, Metadata, Mini Equity, Compliance Status)
 │   │   ├── Portfolio Builder (Name, Strategies, Position Sizing)
 │   │   └── Portfolio Detail View
 │   │       ├── Combined Analysis Tab (Equity, Correlation, Drawdown, P&L)
@@ -506,6 +506,8 @@ My Strategies → Strategy Detail → Edit Strategy
 16. [x] Strategy Builder single-page — collapsed 3-step wizard into single page with sidebar config panel; Strategy Origin placeholder for Phase 10
 17. [x] KPI audit and enhancement — Max R Drawdown primary KPI, secondary KPIs expander (11 extended metrics), card-style drill-down/auto-search, unified infinity/format display, strategy cards (5 KPIs), portfolio cards (4 KPIs), sort options (Daily R, Max R DD)
 18. [x] Strategy detail tab restructuring — split "Equity & Charts" / "Backtest Results" into 7-tab layout: Equity & KPIs, Equity & KPIs (Extended), Price Chart, Trade History, Confluence Analysis, Configuration, Alerts; KPIs moved into tabs; Extended tab loads configurable longer lookback (90–1825 days, default 365) with adjustable slider; Price Chart tab has full indicators + trade table; Trade History tab has clean chart + trade table; applies to both backtest-only and forward test views
+19. [x] Per-chart visible candles selector — compact selectbox above every price chart (7 call sites); `@st.fragment` wrapper prevents full-page rerun on selection change (preserves active tab); options: Default, 50, 100, 200, 400, All
+20. [x] 2-column card grid and trigger badges — strategy and portfolio lists in 2-column grid with stacked cards; strategy cards show Entry/Exit, Stop/Target, and Confluence badges below KPIs; strategy detail header adds Stop and Target metadata row; default strategy name shortened to `"{symbol} {direction} - {id}"`
 
 ---
 
@@ -764,11 +766,13 @@ My Strategies → Strategy Detail → Edit Strategy
 - [x] Removed step indicator CSS and `step` session state — replaced with `builder_data_loaded` boolean
 - [x] Fix programmatic navigation (Edit Strategy, New Strategy buttons) — `st.radio` `index` parameter is ignored after first user interaction; switched to explicit `key` params (`main_nav`, `sub_nav_*`) with direct `st.session_state[key]` writes for reliable programmatic nav
 
+**UX Improvements — COMPLETED (Feb 11, 2026):**
+- [x] Per-chart visible candles adjustment — compact selectbox ("Default", 50, 100, 200, 400, "All") above every price chart; `render_chart_with_candle_selector()` wrapper uses `@st.fragment` so changing the selector only reruns the chart, not the full page (preserves active tab); 7 call sites (Strategy Builder, backtest Price Chart, backtest Trade History, Confluence Analysis, forward test Price Chart, forward test Trade History, Confluence Group Preview)
+- [x] Strategy name and trigger display improvements — default name shortened to `"{symbol} {direction} - {id}"`; strategy cards and detail header display Entry, Exit, Stop, and Target as caption-style badges; detail header adds second metadata row with Stop and Target
+- [x] 2-column card layout — both strategy and portfolio lists render in 2-column grid with stacked card layout; strategy cards: Name, Status, Mini Equity Curve, 5 KPIs (WR, PF, Daily R, Trades, Max DD), Entry/Exit badges, Stop/Target badges, Confluence tags ("None" placeholder for uniform height), Action buttons; portfolio cards: Name, Metadata (strategies, balance, scaling, avg risk/trade, trades/day), Strategy names, Mini Equity Curve, 4 KPIs (P&L, Max DD, WR, Avg Daily), Requirement summary badge, Action buttons
+
 **UX Improvements — Remaining:**
-- [ ] Per-chart visible candles adjustment — add a small control (selectbox or slider) directly above every price chart instance in the app, allowing the user to override the default visible candles for that specific chart; the sidebar chart preset sets the global default, but users can situationally adjust on any price chart they encounter (Strategy Builder, strategy detail Price Chart tab, Trade History tab, Confluence Analysis preview, etc.)
-- [ ] Strategy name and trigger display improvements — shorter default name format (e.g., `"{symbol} {direction} - {entry_trigger_short_name}"`); display entry trigger(s), exit trigger(s), stop method, and target method as small reference badges/text on strategy cards and strategy detail header; currently only confluence conditions are shown
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
-- [ ] 2-column card layout for strategy and portfolio list views (cards with embedded mini chart instead of full-width rows)
 
 ### Design Decisions (Phase 8 — QA & UX)
 - **Daily R as capital efficiency metric** — `total_r / all_trading_days` (not just days with exits) answers "where should I park my capital for the best risk-adjusted return?" A strategy that trades once per week but earns 5R should show lower Daily R than one earning 3R every day, because capital is idle in the first scenario.
@@ -786,6 +790,9 @@ My Strategies → Strategy Detail → Edit Strategy
 - **R-based vs dollar-based drawdown naming** — Strategy "Max R DD" uses R-multiples (risk-normalized). Portfolio "Max DD" uses dollar/percentage (account-level). The naming distinction prevents confusion between the two scopes.
 - **7-tab strategy detail layout** — Separated "Equity & Charts" into distinct tabs for three reasons: (1) KPIs belong with their equity curves, not floating above tabs; (2) the extended backtest needs its own data load and KPI computation at a different date range; (3) price charts with indicators and clean trade history charts serve different purposes (indicator analysis vs. clean entry/exit review) and deserve their own space. The extended tab has an adjustable slider (90–1825 days) so users can explore different historical depths on the fly.
 - **Extended lookback as per-strategy default + per-view override** — The Strategy Builder saves a default `extended_data_days` (used as the slider's initial value on the detail page). The slider on the Extended tab lets users adjust without editing the strategy. This balances convenience (sensible default) with flexibility (situational exploration).
+- **`@st.fragment` for per-chart candle selector** — Without `@st.fragment`, changing a selectbox inside `st.tabs()` triggers a full page rerun which resets the active tab to the first one. Wrapping the candle selector + chart in `@st.fragment` isolates the rerun to just the chart fragment, preserving tab state. Each `render_chart_with_candle_selector()` call creates its own fragment instance.
+- **2-column stacked cards over side-by-side split** — At full width, strategy cards used a `[3, 2]` info/chart split. At half width in a 2-column grid, that split wastes horizontal space. Stacking vertically (name → status → equity curve → KPIs → badges → buttons) uses the narrower column more efficiently. Entry/Exit, Stop/Target, and Confluence badges placed below KPIs so the most scannable info (name, status, equity curve, KPIs) is at top.
+- **Confluence "None" placeholder** — Cards without confluence conditions show "Confluence: None" to maintain uniform card height across the grid, preventing visual misalignment between adjacent cards.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
