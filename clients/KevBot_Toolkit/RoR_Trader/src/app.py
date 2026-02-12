@@ -1898,15 +1898,23 @@ def render_strategy_builder():
         if 'exit_trigger_count' not in st.session_state:
             st.session_state.exit_trigger_count = max(1, len(saved_exit_cids)) if saved_exit_cids else 1
 
-        # Apply pending exit trigger changes from drill-down Add / Auto-Search Replace
+        # Apply pending exit trigger changes from drill-down Add / Auto-Search Replace / Variables box Remove
         pending_exit_overrides = {}
         if 'pending_add_exit' in st.session_state:
             add_cid = st.session_state.pop('pending_add_exit')
-            # Will be applied after exit_options is built
             st.session_state._pending_add_exit_cid = add_cid
         if 'pending_replace_exits' in st.session_state:
             replace_cids = st.session_state.pop('pending_replace_exits')
             st.session_state._pending_replace_exit_cids = replace_cids
+        if 'pending_remove_exit_idx' in st.session_state:
+            rm_idx = st.session_state.pop('pending_remove_exit_idx')
+            if st.session_state.exit_trigger_count > 1 and rm_idx < st.session_state.exit_trigger_count:
+                # Shift exits after the removed index down by one
+                for i in range(rm_idx, st.session_state.exit_trigger_count - 1):
+                    next_key = f"sb_exit_trigger_{i + 1}"
+                    if next_key in st.session_state:
+                        st.session_state[f"sb_exit_trigger_{i}"] = st.session_state[next_key]
+                st.session_state.exit_trigger_count -= 1
 
         exit_trigger_selections = []
         has_exit_triggers = len(exit_trigger_display) > 0
@@ -2020,6 +2028,10 @@ def render_strategy_builder():
         saved_target = edit_config.get('target_config') or {}
         saved_t_method = saved_target.get('method')
         default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
+        # Apply pending target removal from Variables box
+        if 'pending_remove_target' in st.session_state:
+            st.session_state.pop('pending_remove_target')
+            default_target_idx = 0
 
         target_method_idx = st.selectbox(
             "Target",
@@ -2218,23 +2230,86 @@ def render_strategy_builder():
     else:
         filtered_trades = trades
 
-    # Active confluence tags
-    if len(selected) > 0:
-        st.caption("Active Confluence Filters:")
-        tag_cols = st.columns(min(len(selected) + 1, 6))
-        for i, conf in enumerate(sorted(selected)):
-            conf_display = format_confluence_record(conf, enabled_groups)
-            with tag_cols[i % 5]:
-                if st.button(f"✕ {conf_display}", key=f"rm_{conf}"):
-                    st.session_state.selected_confluences.discard(conf)
-                    st.rerun()
+    # Optimizable Variables
+    with st.expander("Optimizable Variables"):
+        var_cols = st.columns(6)
 
-        with tag_cols[-1]:
-            if st.button("Clear All"):
-                st.session_state.selected_confluences = set()
-                st.rerun()
-    else:
-        st.caption("No confluence filters active. Add conditions below to refine your strategy.")
+        # 1. Entry Trigger
+        with var_cols[0]:
+            st.caption("**Entry**")
+            e_name = config.get('entry_trigger_name') or '?'
+            st.markdown(f"_{e_name}_")
+
+        # 2. Exit Trigger(s)
+        with var_cols[1]:
+            st.caption("**Exit(s)**")
+            ov_exit_names = list(config.get('exit_trigger_names', []))
+            ov_exit_cids = list(config.get('exit_trigger_confluence_ids', []))
+            if config.get('bar_count_exit'):
+                ov_exit_names.append(f"{config['bar_count_exit']}-bar exit")
+                for g in enabled_groups:
+                    if g.base_template == "bar_count":
+                        ov_exit_cids.append(g.get_trigger_id("exit"))
+                        break
+                else:
+                    ov_exit_cids.append(None)
+            for idx_e, (ename, ecid) in enumerate(zip(ov_exit_names, ov_exit_cids)):
+                e_col1, e_col2 = st.columns([4, 1])
+                with e_col1:
+                    st.markdown(f"_{ename}_")
+                with e_col2:
+                    if len(ov_exit_names) > 1:
+                        if st.button("✕", key=f"var_rm_exit_{idx_e}"):
+                            actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
+                            if actual_idx is not None:
+                                st.session_state.pending_remove_exit_idx = actual_idx
+                            else:
+                                remaining_cids = [c for c in config.get('exit_trigger_confluence_ids', [])]
+                                if remaining_cids:
+                                    st.session_state.pending_replace_exits = remaining_cids
+                            st.rerun()
+            if not ov_exit_names:
+                st.markdown("_None_")
+
+        # 3. TF Conditions
+        with var_cols[2]:
+            st.caption("**TF Conditions**")
+            if len(selected) > 0:
+                for conf in sorted(selected):
+                    c_col1, c_col2 = st.columns([4, 1])
+                    with c_col1:
+                        st.markdown(f"_{format_confluence_record(conf, enabled_groups)}_")
+                    with c_col2:
+                        if st.button("✕", key=f"var_rm_conf_{conf}"):
+                            st.session_state.selected_confluences.discard(conf)
+                            st.rerun()
+            else:
+                st.markdown("_None_")
+
+        # 4. General Conditions (placeholder)
+        with var_cols[3]:
+            st.caption("**General**")
+            st.markdown("_None_")
+
+        # 5. Stop Loss
+        with var_cols[4]:
+            st.caption("**Stop Loss**")
+            st.markdown(f"_{format_stop_display(config)}_")
+
+        # 6. Take Profit
+        with var_cols[5]:
+            st.caption("**Take Profit**")
+            tp_display = format_target_display(config)
+            if tp_display and tp_display != "None (signal exit only)":
+                tp_col1, tp_col2 = st.columns([4, 1])
+                with tp_col1:
+                    st.markdown(f"_{tp_display}_")
+                with tp_col2:
+                    if st.button("✕", key="var_rm_target"):
+                        st.session_state.pending_remove_target = True
+                        st.rerun()
+            else:
+                st.markdown("_None_")
 
     # KPIs
     period_trading_days = count_trading_days(df)
@@ -2355,13 +2430,9 @@ def render_strategy_builder():
                 if st.button("⚙", use_container_width=True, key="entry_filter_btn"):
                     confluence_filter_dialog(show_auto_search_options=False)
 
-            # Build caption showing held-constant variables
-            exit_parts = list(config.get('exit_trigger_names', []))
-            if config.get('bar_count_exit'):
-                exit_parts.append(f"{config['bar_count_exit']}-bar exit")
-            exit_summary = " / ".join(exit_parts) if exit_parts else "4-bar exit (default)"
-            stop_method = (config.get('stop_config') or {}).get('method', 'atr').upper()
-            st.caption(f"Exit: {exit_summary} | Stop: {stop_method}")
+            # Active entry tag
+            entry_tag_name = config.get('entry_trigger_name') or '?'
+            st.caption(f"Current: **{entry_tag_name}**")
 
             # Build confluence set for filtering
             confluence_set = selected if len(selected) > 0 else None
@@ -2447,8 +2518,24 @@ def render_strategy_builder():
                 if st.button("⚙", use_container_width=True, key="exit_filter_btn"):
                     confluence_filter_dialog(show_auto_search_options=(exit_mode == "Auto-Search"))
 
-            entry_name = config.get('entry_trigger_name') or config.get('entry_trigger', '?')
-            st.caption(f"Entry: **{entry_name}** | Stop: **{config.get('stop_method', '?')}**")
+            # Active exit tags
+            exit_tag_names = list(config.get('exit_trigger_names', []))
+            exit_tag_cids = list(config.get('exit_trigger_confluence_ids', []))
+            if config.get('bar_count_exit'):
+                exit_tag_names.append(f"{config['bar_count_exit']}-bar exit")
+                exit_tag_cids.append(None)
+            if exit_tag_names:
+                tag_count = len(exit_tag_names)
+                exit_tag_cols = st.columns(min(tag_count, 4))
+                for i_et, (et_name, et_cid) in enumerate(zip(exit_tag_names, exit_tag_cids)):
+                    with exit_tag_cols[i_et % 4]:
+                        if tag_count > 1 and et_cid is not None:
+                            actual_idx = i_et if i_et < len(config.get('exit_trigger_confluence_ids', [])) else None
+                            if actual_idx is not None and st.button(f"✕ {et_name}", key=f"ext_rm_{et_cid}"):
+                                st.session_state.pending_remove_exit_idx = actual_idx
+                                st.rerun()
+                        else:
+                            st.caption(et_name)
 
             if not config.get('entry_trigger_confluence_id'):
                 st.warning("Select an entry trigger first.")
@@ -2588,6 +2675,19 @@ def render_strategy_builder():
                 if st.button("⚙" if mode == "Auto-Search" else "⚙ Filter",
                              use_container_width=True, key="tf_filter_btn"):
                     confluence_filter_dialog(show_auto_search_options=(mode == "Auto-Search"))
+
+            # Active TF condition tags
+            if len(selected) > 0:
+                tf_tag_cols = st.columns(min(len(selected) + 1, 5))
+                for i_tf, conf in enumerate(sorted(selected)):
+                    with tf_tag_cols[i_tf % (len(tf_tag_cols) - 1)]:
+                        if st.button(f"✕ {format_confluence_record(conf, enabled_groups)}", key=f"tftag_rm_{conf}"):
+                            st.session_state.selected_confluences.discard(conf)
+                            st.rerun()
+                with tf_tag_cols[-1]:
+                    if st.button("Clear All", key="tf_clear_all"):
+                        st.session_state.selected_confluences = set()
+                        st.rerun()
 
             if mode == "Drill-Down":
                 confluence_df = analyze_confluences(

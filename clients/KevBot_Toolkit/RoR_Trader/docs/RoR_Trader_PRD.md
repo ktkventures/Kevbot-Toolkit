@@ -546,6 +546,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 21. [x] Confluence drill-down enhancements — unified search bar + filter dialog (`@st.dialog`) across Drill-Down and Auto-Search modes; text search filters by indicator/combination name; filter lightbox with sort (6 KPIs + direction), min thresholds (Trades, Win Rate, Profit Factor, Daily R, R²), and Auto-Search max depth; all settings persisted in `confluence_filters` session state; replaces hardcoded `min_trades=3` and inline sort dropdown
 22. [x] "Exit After N Candles" bar count exit trigger — new `bar_count` EXIT-only template in TEMPLATES (no indicators/outputs); hybrid approach with `bar_count_exit` parameter in `generate_trades()` trade loop (can't pre-compute as DataFrame column); default 4 candles; priority 3 in exit chain (stop > target > bar_count > signal); migration auto-appends `bar_count_default` group for existing users; validation prevents multiple bar count exits per strategy
 23. [x] 6-tab optimization drill-down with actionable cards — replaced single "Confluence Drill-Down" panel with 6-tab layout (Entry, Exit, TF Conditions, General, Stop Loss, Take Profit); Entry tab: per-trigger KPI cards with "Replace" button (swaps sidebar entry trigger via pending state pattern); Exit tab: Drill-Down mode with per-trigger KPI cards and "Add" button (appends to exits, up to 3) + Auto-Search mode with `find_best_exit_combinations()` testing combos of 1-3 exits and "Replace" button (swaps all exits); TF Conditions tab: existing drill-down with checkbox→"Add" button conversion + Auto-Search "Apply"→"Replace" rename; tabs 4-6 placeholder; `analyze_entry_triggers()` and `analyze_exit_triggers()` helpers use full current strategy config (not isolated baselines); compact toolbar with `[Search][Action][⚙]` layout; Streamlit widget key conflict resolved via pending session state pattern (`pending_entry_trigger`, `pending_add_exit`, `pending_replace_exits` consumed before sidebar selectbox instantiation)
+24. [x] Optimizable Variables box and per-tab active tags — collapsible `st.expander("Optimizable Variables")` positioned below strategy title showing all 6 variable categories (Entry, Exits, TF Conditions, General placeholder, Stop Loss, Take Profit) with ✕ remove buttons; replaces old "Active Confluence Filters" tag bar; exit removal via `pending_remove_exit_idx` with shift-down logic; target removal via `pending_remove_target`; per-tab active tags: Entry tab shows current trigger caption, Exit tab shows removable exit trigger chips, TF Conditions tab shows removable confluence chips with "Clear All"; all tag removals sync with Optimizable Variables box via shared `selected_confluences` set and pending state patterns
 
 ---
 
@@ -861,25 +862,22 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Configurable N — parameter on the trigger (e.g., 1, 2, 3, 4, 5, 10, 20 bars)
 - [x] Works as a confluence group template — follows existing template/version structure so it appears in exit trigger dropdowns
 
-**Optimizable Variables Box (Strategy Builder):**
-- [ ] Collapsible section on Strategy Builder main area — styled like the Extended KPIs expander
-- [ ] Displays all active variables organized by the 6 categories:
-  1. Entry Trigger (name + key parameters)
-  2. Exit Trigger(s) (name(s) + key parameters)
-  3. Timeframe Conditions (selected interpretation states)
-  4. General Conditions (selected interpretation states)
-  5. Stop Loss (method + key parameters)
-  6. Take Profit (method + key parameters)
-- [ ] Each variable has an "✕" button to remove it from the active strategy configuration
-- [ ] Removing a variable updates the strategy config and triggers re-computation
-- [ ] Trigger parameters are visible and expandable — not just which trigger, but the settings within it (e.g., EMA periods, ATR multiplier)
+**Optimizable Variables Box (Strategy Builder):** ✓
+- [x] Collapsible `st.expander("Optimizable Variables")` positioned below strategy title, above KPI dashboard
+- [x] Displays all active variables organized by 6 columns: Entry, Exit(s), TF Conditions, General (placeholder), Stop Loss, Take Profit
+- [x] Exit triggers have "✕" remove buttons (hidden when only 1 exit); removal uses `pending_remove_exit_idx` with shift-down logic for specific index removal
+- [x] TF Conditions have "✕" remove buttons per confluence, synced with `selected_confluences` set
+- [x] Take Profit has "✕" remove button (sets target to None via `pending_remove_target`)
+- [x] Entry and Stop Loss display-only (always required)
+- [x] Replaces old "Active Confluence Filters" tag bar
+- [ ] Trigger parameters are visible and expandable — not just which trigger, but the settings within it (e.g., EMA periods, ATR multiplier) — deferred
 
-**Active Tags (above drill-down):**
-- [ ] Tag chip bar positioned above the Drill-Down / Auto-Search mode radio
-- [ ] Shows currently selected interpretations/variables across all categories as removable chips
-- [ ] Clicking "✕" on a tag removes that interpretation from the active set and re-filters results
-- [ ] Tags apply to both Drill-Down and Auto-Search modes (position above the mode toggle ensures this)
-- [ ] Tags sync with the Optimizable Variables box — removing from either location updates both
+**Active Tags (per-tab):** ✓
+- [x] Per-tab tag chips positioned between toolbar and drill-down/auto-search content in each tab
+- [x] Entry tab: shows current entry trigger name as caption
+- [x] Exit tab: shows current exit triggers as removable chips (✕ with pending removal pattern); non-removable caption for single exit or bar_count
+- [x] TF Conditions tab: shows selected confluence conditions as removable chips with "Clear All" button
+- [x] Tags sync with Optimizable Variables box — both operate on shared `selected_confluences` set and pending state patterns
 
 **6-Tab Optimization Drill-Down:**
 - [x] Replace current single drill-down panel with 6 tabs matching the optimization sequence
