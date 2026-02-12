@@ -3,7 +3,7 @@
 **Version:** 0.10
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓, 6-Tab Drill-Down ✓, Optimizable Variables ✓, Confluence Packs rename ✓, General Packs ✓, Risk Management Packs ✓, Trade Tagging ✓, General Drill-Down ✓, SL/TP Replace Buttons ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
+**Status:** Phase 9 Complete — Optimization Workflow; Phase 10 next (QA Sandbox, Backtest Settings, caching, polish); Phases 1–9 complete
 
 ---
 
@@ -554,6 +554,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 25. [x] Confluence Packs rename, General Packs, and Risk Management Packs — renamed "Confluence Groups" to "Confluence Packs" across all user-facing labels for marketability; added sub-navigation (TF Confluence, General, Risk Management); new `general_packs.py` module with 4 templates (Time of Day, Trading Session, Day of Week, Calendar Filter), condition evaluation functions (`evaluate_condition()` dispatcher), and full CRUD with `config/general_packs.json`; new `risk_management_packs.py` module with 5 templates (ATR-Based, Fixed Dollar, Percentage, Swing, Risk:Reward), dual-output architecture (`get_stop_config()` + `get_target_config()` from shared parameters), builder functions, and full CRUD with `config/risk_management_packs.json`; both management pages have 5-tab detail panels (Parameters, Outputs, Preview, Code, Danger Zone); General Pack previews: extended hours mock data toggle, condition state change markers on price chart, state transition table, distribution metrics; Risk Management Pack previews: configurable entry/exit trigger selectors from TF Confluence Packs, trade chart with stop/target levels, KPI summary, trade details; Code tabs show `inspect.getsource()` for evaluation/builder functions; wired drill-down tabs 4-6 (General shows enabled packs with outputs, Stop Loss and Take Profit run `analyze_risk_management()` multi-backtest with KPI comparison cards); extended hours support in `mock_data.py` (`extended_hours` parameter for 4:00 AM - 8:00 PM bar generation); `extra_markers` parameter on `render_chart_with_candle_selector()` and `render_price_chart()` for condition state annotations
 
+26. [x] Phase 9 completion — trade tagging, general drill-down, SL/TP replace buttons, strategy schema. General pack conditions tagged on trades as `GEN-{PACK_ID}-{STATE}` records via `general_columns` param threaded through `get_confluence_records()` → `generate_trades()` → all 11 call sites. General Conditions tab transformed into full drill-down with KPI cards and "Add" buttons; GEN- records filtered out of TF Conditions tab. SL/TP drill-down cards gain "Replace" buttons using `pending_stop_config`/`pending_target_config` with widget key deletion pattern; `(current)` label on active config. Strategy save splits `confluence` and `general_confluences`; load merges both (backward compatible). Optimizable Variables box partitions TF and General columns by GEN- prefix. 4 remaining polish items (trigger params, variation tags, caching, lazy loading) deferred to Phase 10.
+
 ---
 
 ## 14. Development Roadmap
@@ -881,7 +883,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Take Profit has "✕" remove button (sets target to None via `pending_remove_target`)
 - [x] Entry and Stop Loss display-only (always required)
 - [x] Replaces old "Active Confluence Filters" tag bar
-- [ ] Trigger parameters are visible and expandable — not just which trigger, but the settings within it (e.g., EMA periods, ATR multiplier) — deferred
+- [x] ~~Trigger parameters visible and expandable~~ — deferred to Phase 10
 
 **Active Tags (per-tab):** ✓
 - [x] Per-tab tag chips positioned between toolbar and drill-down/auto-search content in each tab
@@ -905,7 +907,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 **Data Model Changes:**
 - [x] Extend `confluence_records` set on trades — GEN- prefixed general confluence records included alongside timeframe records via `general_columns` param threading
-- [ ] Add stop/target variation tags to trades when running pack comparisons
+- [x] ~~Stop/target variation tags on trades~~ — deferred to Phase 10
 - [x] Strategy schema additions:
   - `general_confluences: List[str]` — selected general confluence records (GEN- prefixed); saved separately from TF confluences, merged on load
   - `stop_pack_id: Optional[str]` — reference to the stop loss pack used for optimization (if any) — deferred
@@ -916,9 +918,9 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Backward compatibility — existing strategies without `general_confluences` load correctly (defaults to empty set); `confluence_set` construction merges both fields
 
 **Performance Considerations:**
-- [ ] Stop/target drill-down runs multiple backtests — implement progress indicator and caching keyed on (symbol, timeframe, date range, entry trigger, exit triggers, confluences, pack ID)
 - [x] General confluence records are cheap to compute (clock/calendar lookups) — no performance concern; evaluated in `prepare_data_with_indicators()`
-- [ ] Consider lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
+- [x] ~~Multi-backtest progress indicator + caching~~ — deferred to Phase 10
+- [x] ~~Lazy tab loading~~ — deferred to Phase 10
 
 ### Design Decisions (Phase 9 — Optimization Workflow)
 - **Sequential optimization over simultaneous** — Evaluating all 6 variable categories at once creates a combinatorial explosion. Sequential evaluation (entry → exit → conditions → stop → target) is tractable, intuitive, and mirrors how experienced traders build strategies: find an edge first, then refine execution.
@@ -970,6 +972,12 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Fix mock data timeframe — mock data generator currently always produces 1Min bars regardless of selected timeframe
 - [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
 - [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
+
+**Deferred from Phase 9:**
+- [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
+- [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
+- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
+- [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
