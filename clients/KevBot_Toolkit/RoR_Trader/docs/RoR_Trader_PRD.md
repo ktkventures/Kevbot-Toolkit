@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.9
+**Version:** 0.10
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓, 6-Tab Drill-Down ✓, Optimizable Variables ✓, Confluence Packs rename ✓, General Packs ✓, Risk Management Packs ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
+**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓, 6-Tab Drill-Down ✓, Optimizable Variables ✓, Confluence Packs rename ✓, General Packs ✓, Risk Management Packs ✓, Trade Tagging ✓, General Drill-Down ✓, SL/TP Replace Buttons ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
 
 ---
 
@@ -849,8 +849,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Code tab — `inspect.getsource()` for evaluation functions
 - [x] Extended hours mock data — `generate_mock_bars(extended_hours=True)` generates 4:00 AM – 8:00 PM bars for session-based preview validation
 - [x] Template structure — same `TEMPLATES` dict pattern with `parameters_schema`, `outputs`, `output_descriptions`, `condition_logic`, `triggers`
-- [ ] General confluence record format — extends existing `"{TIMEFRAME}-{INTERPRETER}-{STATE}"` format; general records use a category prefix instead of timeframe (e.g., `"GEN-SESSION-OPENING_HOUR"`, `"GEN-DAY_OF_WEEK-MONDAY"`)
-- [ ] Trade tagging — trades tagged with general confluence records at entry time, alongside existing timeframe records in `confluence_records` set
+- [x] General confluence record format — `"GEN-{PACK_ID}-{STATE}"` prefix distinguishes general records from timeframe records (e.g., `"GEN-TOD_NY_OPEN-IN_WINDOW"`); `format_confluence_record()` resolves GEN- records to pack display names
+- [x] Trade tagging — `get_confluence_records()` extended with `general_columns` param; trades tagged with general confluence records at entry time alongside timeframe records in same `confluence_records` set
 
 **Risk Management Packs (sub-page under Confluence Packs — replaces separate Stop Loss / Take Profit Packs):** ✓
 - [x] New "Risk Management" sub-page — each pack bundles both stop-loss AND take-profit configurations from shared parameters
@@ -875,7 +875,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 **Optimizable Variables Box (Strategy Builder):** ✓
 - [x] Collapsible `st.expander("Optimizable Variables")` positioned below strategy title, above KPI dashboard
-- [x] Displays all active variables organized by 6 columns: Entry, Exit(s), TF Conditions, General (placeholder), Stop Loss, Take Profit
+- [x] Displays all active variables organized by 6 columns: Entry, Exit(s), TF Conditions, General, Stop Loss, Take Profit
 - [x] Exit triggers have "✕" remove buttons (hidden when only 1 exit); removal uses `pending_remove_exit_idx` with shift-down logic for specific index removal
 - [x] TF Conditions have "✕" remove buttons per confluence, synced with `selected_confluences` set
 - [x] Take Profit has "✕" remove button (sets target to None via `pending_remove_target`)
@@ -887,8 +887,9 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Per-tab tag chips positioned between toolbar and drill-down/auto-search content in each tab
 - [x] Entry tab: shows current entry trigger name as caption
 - [x] Exit tab: shows current exit triggers as removable chips (✕ with pending removal pattern); non-removable caption for single exit or bar_count
-- [x] TF Conditions tab: shows selected confluence conditions as removable chips with "Clear All" button
-- [x] Tags sync with Optimizable Variables box — both operate on shared `selected_confluences` set and pending state patterns
+- [x] TF Conditions tab: shows selected TF conditions (non-GEN-) as removable chips with "Clear TF" button (preserves GEN- selections)
+- [x] General Conditions tab: shows selected GEN- conditions as removable chips with "Clear Gen" button (preserves TF selections)
+- [x] Tags sync with Optimizable Variables box — both operate on shared `selected_confluences` set and pending state patterns; UI partitions by GEN- prefix
 
 **6-Tab Optimization Drill-Down:**
 - [x] Replace current single drill-down panel with 6 tabs matching the optimization sequence
@@ -896,27 +897,27 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] **Entry Trigger tab** — shows KPI cards for each available entry trigger using current strategy config; "Replace" button swaps sidebar entry trigger; compact `[Search][Analyze][⚙]` toolbar
 - [x] **Exit Triggers tab** — Drill-Down mode with per-trigger KPI cards and "Add" button (appends up to 3); Auto-Search mode with `find_best_exit_combinations()` and "Replace" button; compact toolbar with mode-aware action button
 - [x] **Timeframe Conditions tab** — existing confluence drill-down with "Add" button (replaces checkbox) + Auto-Search with "Replace" button (replaces "Apply"); Auto-Search gets compact toolbar with "Search" action button
-- [x] **General Conditions tab** — shows enabled general packs with condition outputs; future: full drill-down pattern when trade tagging is implemented
-- [x] **Stop Loss tab** — search/analyze/filter toolbar; `analyze_risk_management()` multi-backtest across enabled RM pack stop configs (holding current target fixed); KPI comparison cards with pack name
-- [x] **Take Profit tab** — same pattern as Stop Loss; varies target config across enabled RM packs (holding current stop fixed); KPI comparison cards
-- [ ] Cross-tab filtering — selections in earlier tabs narrow the trade set for later tabs ("given this entry + these exits + these conditions, which stop is best?")
+- [x] **General Conditions tab** — full drill-down with KPI cards for each GEN- condition state; "Add" button adds condition to `selected_confluences`; active tags with "Clear Gen" button; search + filter toolbar; GEN- records filtered out of TF Conditions tab
+- [x] **Stop Loss tab** — search/analyze/filter toolbar; `analyze_risk_management()` multi-backtest across enabled RM pack stop configs (holding current target fixed); KPI comparison cards with pack name; "Replace" button swaps sidebar stop config via `pending_stop_config` pattern; `(current)` label on matching config
+- [x] **Take Profit tab** — same pattern as Stop Loss; varies target config across enabled RM packs (holding current stop fixed); KPI comparison cards; "Replace" button swaps sidebar target config via `pending_target_config` pattern; `(current)` label on matching config
+- [x] Per-tab drill-down with full-config KPIs — each drill-down card shows KPIs based on the full current strategy config where the only change is the one thing that card represents; all 6 tabs follow this pattern
 - [x] Auto-Search available on Entry (N/A — single trigger), Exit, and TF Conditions tabs
 
 **Data Model Changes:**
-- [ ] Extend `confluence_records` set on trades — include general confluence records alongside timeframe records (same set, different prefix)
+- [x] Extend `confluence_records` set on trades — GEN- prefixed general confluence records included alongside timeframe records via `general_columns` param threading
 - [ ] Add stop/target variation tags to trades when running pack comparisons
-- [ ] Strategy schema additions:
-  - `general_confluences: List[str]` — selected general confluence interpretation states
-  - `stop_pack_id: Optional[str]` — reference to the stop loss pack used for optimization (if any)
-  - `target_pack_id: Optional[str]` — reference to the take profit pack used for optimization (if any)
+- [x] Strategy schema additions:
+  - `general_confluences: List[str]` — selected general confluence records (GEN- prefixed); saved separately from TF confluences, merged on load
+  - `stop_pack_id: Optional[str]` — reference to the stop loss pack used for optimization (if any) — deferred
+  - `target_pack_id: Optional[str]` — reference to the take profit pack used for optimization (if any) — deferred
 - [x] New config files:
   - `config/general_packs.json` — general pack definitions (template/version/parameters structure)
   - `config/risk_management_packs.json` — risk management pack definitions (dual stop+target configs)
-- [ ] Backward compatibility — existing strategies without general confluences or packs continue to work unchanged; new fields default to empty/None
+- [x] Backward compatibility — existing strategies without `general_confluences` load correctly (defaults to empty set); `confluence_set` construction merges both fields
 
 **Performance Considerations:**
 - [ ] Stop/target drill-down runs multiple backtests — implement progress indicator and caching keyed on (symbol, timeframe, date range, entry trigger, exit triggers, confluences, pack ID)
-- [ ] General confluence records are cheap to compute (clock/calendar lookups) — no performance concern
+- [x] General confluence records are cheap to compute (clock/calendar lookups) — no performance concern; evaluated in `prepare_data_with_indicators()`
 - [ ] Consider lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
 
 ### Design Decisions (Phase 9 — Optimization Workflow)

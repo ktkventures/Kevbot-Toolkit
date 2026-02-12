@@ -567,11 +567,13 @@ def detect_all_triggers(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[str]) -> Set[str]:
+def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[str],
+                           general_columns: Optional[List[str]] = None) -> Set[str]:
     """
     Get all confluence records for a single bar.
 
     Returns a set of strings like {"1M-EMA_STACK-SML", "1M-MACD_LINE-M>S+"}
+    General pack columns produce records like {"GEN-TOD_NY_OPEN-IN_WINDOW"}
     """
     records = set()
 
@@ -579,6 +581,12 @@ def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[st
         if interp in row.index and pd.notna(row[interp]):
             record = f"{timeframe}-{interp}-{row[interp]}"
             records.add(record)
+
+    if general_columns:
+        for col in general_columns:
+            if col in row.index and pd.notna(row[col]):
+                pack_id = col[3:]  # Strip "GP_" prefix
+                records.add(f"GEN-{pack_id}-{row[col]}")
 
     return records
 

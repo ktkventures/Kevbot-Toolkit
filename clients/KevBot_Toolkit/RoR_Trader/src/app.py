@@ -202,9 +202,24 @@ def format_confluence_record(record: str, groups: list = None) -> str:
 
     Confluence records are formatted as: "{timeframe}-{INTERPRETER}-{state}"
     e.g., "1M-EMA_STACK-SML"
+    General records are formatted as: "GEN-{PACK_ID}-{state}"
+    e.g., "GEN-TOD_NY_OPEN-IN_WINDOW"
 
     Returns formatted string like: "EMA Stack (Default): SML"
     """
+    # Handle GEN- prefixed records (General Pack conditions)
+    if record.startswith("GEN-"):
+        parts = record.split("-", 2)  # ["GEN", "PACK_ID", "STATE"]
+        if len(parts) >= 3:
+            pack_id_upper = parts[1]
+            state = parts[2]
+            gen_packs = gp_module.load_general_packs()
+            for gpack in gen_packs:
+                if gpack.id.upper() == pack_id_upper:
+                    return f"{gpack.name}: {state}"
+            return f"General ({pack_id_upper}): {state}"
+        return record
+
     if groups is None:
         groups = get_enabled_groups()
 
@@ -334,6 +349,13 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
     # Detect triggers
     df = detect_all_triggers(df)
 
+    # Evaluate enabled general packs (condition columns for trade tagging)
+    gen_packs = gp_module.load_general_packs()
+    enabled_gen = gp_module.get_enabled_general_packs(gen_packs)
+    for gpack in enabled_gen:
+        col_name = gpack.get_condition_column()
+        df[col_name] = gp_module.evaluate_condition(df, gpack)
+
     return df
 
 
@@ -367,7 +389,9 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         empty = pd.DataFrame()
         return df, empty, empty, forward_test_start_dt
 
-    confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+    confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+    confluence_set = confluence_set if confluence_set else None
+    general_cols = [c for c in df.columns if c.startswith("GP_")]
 
     trades = generate_trades(
         df,
@@ -381,6 +405,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         stop_config=strat.get('stop_config'),
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
+        general_columns=general_cols,
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -404,7 +429,9 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
         df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed)
         if len(df) == 0:
             return pd.DataFrame()
-        confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+        confluence_set = confluence_set if confluence_set else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
         return generate_trades(
             df,
             direction=strat['direction'],
@@ -417,6 +444,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             stop_config=strat.get('stop_config'),
             target_config=strat.get('target_config'),
             bar_count_exit=strat.get('bar_count_exit'),
+            general_columns=general_cols,
         )
 
 
@@ -782,7 +810,7 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
 
 def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10,
                            starting_balance: float = 10000, risk_per_trade: float = 100,
-                           total_trading_days: int = None) -> pd.DataFrame:
+                           total_trading_days: int = None, exclude_prefix: str = None) -> pd.DataFrame:
     """Find the best confluence combinations automatically."""
     if len(trades_df) == 0:
         return pd.DataFrame()
@@ -791,6 +819,8 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
     all_records = set()
     for records in trades_df["confluence_records"]:
         all_records.update(records)
+    if exclude_prefix:
+        all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
     all_records = list(all_records)
 
     results = []
@@ -830,6 +860,7 @@ def analyze_entry_triggers(
     risk_per_trade: float = 100.0, stop_config: dict = None,
     target_config: dict = None, confluence_required: set = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
+    general_columns: list = None,
 ) -> pd.DataFrame:
     """For each available entry trigger, generate trades with current strategy config and compute KPIs."""
     entry_triggers = get_confluence_entry_triggers(direction, groups)
@@ -852,6 +883,7 @@ def analyze_entry_triggers(
             confluence_required=confluence_required,
             risk_per_trade=risk_per_trade, stop_config=stop_config,
             target_config=target_config,
+            general_columns=general_columns,
         )
         if len(trades) == 0:
             continue
@@ -880,6 +912,7 @@ def analyze_exit_triggers(
     groups: list, risk_per_trade: float = 100.0,
     stop_config: dict = None, target_config: dict = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
+    general_columns: list = None,
 ) -> pd.DataFrame:
     """For each available exit trigger, generate trades with current entry and compute KPIs."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -905,6 +938,7 @@ def analyze_exit_triggers(
                 exit_triggers=[], bar_count_exit=bar_count_val,
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config,
+                general_columns=general_columns,
             )
         else:
             base_exit = get_base_trigger_id(trig_cid)
@@ -913,6 +947,7 @@ def analyze_exit_triggers(
                 exit_triggers=[base_exit], bar_count_exit=None,
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config,
+                general_columns=general_columns,
             )
 
         if len(trades) == 0:
@@ -942,7 +977,7 @@ def find_best_exit_combinations(
     groups: list, max_depth: int = 3, min_trades: int = 5, top_n: int = 50,
     risk_per_trade: float = 100.0, stop_config: dict = None,
     target_config: dict = None, starting_balance: float = 10000.0,
-    total_trading_days: int = None,
+    total_trading_days: int = None, general_columns: list = None,
 ) -> pd.DataFrame:
     """Find the best exit trigger combinations (1-3 triggers) automatically."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -982,7 +1017,7 @@ def find_best_exit_combinations(
                 df, direction=direction, entry_trigger=base_entry,
                 exit_triggers=signal_base_ids, bar_count_exit=bar_count_exit_val,
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config,
+                target_config=target_config, general_columns=general_columns,
             )
 
             if len(trades) < min_trades:
@@ -1015,6 +1050,7 @@ def analyze_risk_management(
     starting_balance: float = 10000.0, total_trading_days: int = None,
     mode: str = "stop",
     base_stop_config: dict = None, base_target_config: dict = None,
+    general_columns: list = None,
 ) -> pd.DataFrame:
     """
     For each enabled Risk Management Pack, generate trades varying either
@@ -1061,6 +1097,7 @@ def analyze_risk_management(
             bar_count_exit=bar_count_val,
             risk_per_trade=risk_per_trade, stop_config=sc,
             target_config=tc, confluence_required=confluence_required,
+            general_columns=general_columns,
         )
         if len(trades) == 0:
             continue
@@ -1075,6 +1112,8 @@ def analyze_risk_management(
             'pack_name': pack.name,
             'stop_summary': stop_summary,
             'target_summary': target_summary,
+            'stop_config': sc,
+            'target_config': tc,
             'total_trades': kpis['total_trades'],
             'win_rate': kpis['win_rate'],
             'profit_factor': kpis['profit_factor'],
@@ -2079,6 +2118,15 @@ def render_strategy_builder():
         # --- Risk Management ---
         st.markdown("**Risk Management**")
 
+        # Apply pending stop config from SL drill-down Replace button
+        if 'pending_stop_config' in st.session_state:
+            pending_sc = st.session_state.pop('pending_stop_config')
+            edit_config['stop_config'] = pending_sc
+            st.session_state.strategy_config = dict(edit_config)
+            for k in ['sb_stop_method', 'sb_stop_atr', 'sb_stop_dollar',
+                      'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding']:
+                st.session_state.pop(k, None)
+
         # Stop Loss
         stop_methods = ["ATR", "Fixed Dollar", "Percentage", "Swing Low/High"]
         stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
@@ -2127,6 +2175,16 @@ def render_strategy_builder():
             )
 
         stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
+
+        # Apply pending target config from TP drill-down Replace button
+        if 'pending_target_config' in st.session_state:
+            pending_tc = st.session_state.pop('pending_target_config')
+            edit_config['target_config'] = pending_tc
+            st.session_state.strategy_config = dict(edit_config)
+            for k in ['sb_target_method', 'sb_target_rr', 'sb_target_atr',
+                      'sb_target_dollar', 'sb_target_pct', 'sb_target_lookback',
+                      'sb_target_padding']:
+                st.session_state.pop(k, None)
 
         # Target
         target_methods = ["None", "Risk:Reward", "ATR", "Fixed Dollar", "Percentage", "Swing High/Low"]
@@ -2316,6 +2374,7 @@ def render_strategy_builder():
             st.error("No data available")
             return
 
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
         trades = generate_trades(
             df,
             direction=direction,
@@ -2328,6 +2387,7 @@ def render_strategy_builder():
             stop_config=stop_config_dict,
             target_config=target_config_dict,
             bar_count_exit=config.get('bar_count_exit'),
+            general_columns=general_cols,
         )
 
     # Apply confluence filter
@@ -2379,11 +2439,12 @@ def render_strategy_builder():
             if not ov_exit_names:
                 st.markdown("_None_")
 
-        # 3. TF Conditions
+        # 3. TF Conditions (exclude GEN- records)
         with var_cols[2]:
             st.caption("**TF Conditions**")
-            if len(selected) > 0:
-                for conf in sorted(selected):
+            tf_confs = sorted(c for c in selected if not c.startswith("GEN-"))
+            if len(tf_confs) > 0:
+                for conf in tf_confs:
                     c_col1, c_col2 = st.columns([4, 1])
                     with c_col1:
                         st.markdown(f"_{format_confluence_record(conf, enabled_groups)}_")
@@ -2394,10 +2455,21 @@ def render_strategy_builder():
             else:
                 st.markdown("_None_")
 
-        # 4. General Conditions (placeholder)
+        # 4. General Conditions
         with var_cols[3]:
             st.caption("**General**")
-            st.markdown("_None_")
+            gen_confs = sorted(c for c in selected if c.startswith("GEN-"))
+            if len(gen_confs) > 0:
+                for conf in gen_confs:
+                    c_col1, c_col2 = st.columns([4, 1])
+                    with c_col1:
+                        st.markdown(f"_{format_confluence_record(conf, enabled_groups)}_")
+                    with c_col2:
+                        if st.button("✕", key=f"var_rm_gen_{conf}"):
+                            st.session_state.selected_confluences.discard(conf)
+                            st.rerun()
+            else:
+                st.markdown("_None_")
 
         # 5. Stop Loss
         with var_cols[4]:
@@ -2557,6 +2629,7 @@ def render_strategy_builder():
                         confluence_required=confluence_set,
                         starting_balance=starting_balance,
                         total_trading_days=period_trading_days,
+                        general_columns=general_cols,
                     )
                 st.session_state.entry_trigger_results = entry_results
 
@@ -2659,6 +2732,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
+                            general_columns=general_cols,
                         )
                     st.session_state.exit_trigger_results = exit_results
 
@@ -2719,6 +2793,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
+                            general_columns=general_cols,
                         )
                     if len(best_exits) > 0:
                         st.session_state.auto_exit_results = best_exits
@@ -2784,17 +2859,19 @@ def render_strategy_builder():
                              use_container_width=True, key="tf_filter_btn"):
                     confluence_filter_dialog(show_auto_search_options=(mode == "Auto-Search"))
 
-            # Active TF condition tags
-            if len(selected) > 0:
-                tf_tag_cols = st.columns(min(len(selected) + 1, 5))
-                for i_tf, conf in enumerate(sorted(selected)):
+            # Active TF condition tags (exclude GEN- records)
+            tf_selected = sorted(c for c in selected if not c.startswith("GEN-"))
+            if len(tf_selected) > 0:
+                tf_tag_cols = st.columns(min(len(tf_selected) + 1, 5))
+                for i_tf, conf in enumerate(tf_selected):
                     with tf_tag_cols[i_tf % (len(tf_tag_cols) - 1)]:
                         if st.button(f"✕ {format_confluence_record(conf, enabled_groups)}", key=f"tftag_rm_{conf}"):
                             st.session_state.selected_confluences.discard(conf)
                             st.rerun()
                 with tf_tag_cols[-1]:
-                    if st.button("Clear All", key="tf_clear_all"):
-                        st.session_state.selected_confluences = set()
+                    if st.button("Clear TF", key="tf_clear_all"):
+                        gen_keep = {c for c in st.session_state.selected_confluences if c.startswith("GEN-")}
+                        st.session_state.selected_confluences = gen_keep
                         st.rerun()
 
             if mode == "Drill-Down":
@@ -2804,6 +2881,10 @@ def render_strategy_builder():
                     risk_per_trade=risk_per_trade,
                     total_trading_days=period_trading_days,
                 )
+
+                # Filter out GEN- records (those belong in the General tab)
+                if len(confluence_df) > 0:
+                    confluence_df = confluence_df[~confluence_df['confluence'].str.startswith('GEN-')]
 
                 if len(confluence_df) > 0:
                     confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
@@ -2846,6 +2927,7 @@ def render_strategy_builder():
                             starting_balance=starting_balance,
                             risk_per_trade=risk_per_trade,
                             total_trading_days=period_trading_days,
+                            exclude_prefix="GEN-",
                         )
                     if len(best) > 0:
                         st.session_state.auto_results = best
@@ -2880,32 +2962,82 @@ def render_strategy_builder():
                             k6.caption(f"R²: {row['r_squared']:.2f}")
 
         # =================================================================
-        # Tab 4: General Conditions
+        # Tab 4: General Conditions Drill-Down
         # =================================================================
         with tab_gen:
             gen_packs = gp_module.load_general_packs()
             enabled_gen = gp_module.get_enabled_general_packs(gen_packs)
 
-            if len(enabled_gen) > 0:
-                st.caption(f"{len(enabled_gen)} general pack(s) enabled")
-                for gpack in enabled_gen:
-                    with st.container(border=True):
-                        t1, t2 = st.columns([4, 1])
-                        with t1:
-                            st.markdown(f"**{gpack.name}**")
-                        with t2:
-                            template = gp_module.get_template(gpack.base_template)
-                            category = template["category"] if template else "?"
-                            st.caption(category)
-                        st.caption(gpack.description)
-                        if template:
-                            outputs = template.get("outputs", [])
-                            out_descs = template.get("output_descriptions", {})
-                            cols = st.columns(len(outputs))
-                            for i, out in enumerate(outputs):
-                                cols[i].caption(f"**{out}**: {out_descs.get(out, '')}")
-            else:
+            if len(enabled_gen) == 0:
                 st.info("No general packs enabled. Configure them on the **General** sub-page under Confluence Packs.")
+            else:
+                gen_search_col, gen_filter_col = st.columns([4, 1])
+                with gen_search_col:
+                    gen_search = st.text_input("Search", placeholder="Search general conditions...",
+                                               key="gen_search", label_visibility="collapsed")
+                with gen_filter_col:
+                    if st.button("⚙ Filter", use_container_width=True, key="gen_filter_btn"):
+                        confluence_filter_dialog(show_auto_search_options=False)
+
+                # Active General condition tags
+                gen_selected = sorted(c for c in selected if c.startswith("GEN-"))
+                if len(gen_selected) > 0:
+                    gen_tag_cols = st.columns(min(len(gen_selected) + 1, 5))
+                    for i_gen, conf in enumerate(gen_selected):
+                        with gen_tag_cols[i_gen % (len(gen_tag_cols) - 1)]:
+                            if st.button(f"✕ {format_confluence_record(conf, enabled_groups)}", key=f"gentag_rm_{conf}"):
+                                st.session_state.selected_confluences.discard(conf)
+                                st.rerun()
+                    with gen_tag_cols[-1]:
+                        if st.button("Clear Gen", key="gen_clear_all"):
+                            tf_keep = {c for c in st.session_state.selected_confluences if not c.startswith("GEN-")}
+                            st.session_state.selected_confluences = tf_keep
+                            st.rerun()
+
+                # Analyze — reuse the same analyze_confluences, then filter to GEN- only
+                gen_filters = st.session_state.confluence_filters
+                gen_confluence_df = analyze_confluences(
+                    trades, selected, min_trades=gen_filters.get('min_trades', 3),
+                    starting_balance=starting_balance,
+                    risk_per_trade=risk_per_trade,
+                    total_trading_days=period_trading_days,
+                )
+
+                if len(gen_confluence_df) > 0:
+                    gen_confluence_df = gen_confluence_df[gen_confluence_df['confluence'].str.startswith('GEN-')]
+
+                if len(gen_confluence_df) > 0:
+                    gen_confluence_df = apply_confluence_filters(gen_confluence_df, gen_filters, gen_search, enabled_groups)
+                    gen_confluence_df = gen_confluence_df.head(20)
+
+                    for _, row in gen_confluence_df.iterrows():
+                        conf = row['confluence']
+                        conf_display = format_confluence_record(conf, enabled_groups)
+                        is_selected = conf in selected
+
+                        with st.container(border=True):
+                            top1, top2 = st.columns([4, 0.7])
+                            with top1:
+                                label = f"**{conf_display}**" if is_selected else conf_display
+                                if is_selected:
+                                    label += " _(active)_"
+                                st.markdown(label)
+                            with top2:
+                                if not is_selected:
+                                    if st.button("Add", key=f"gen_add_{conf}"):
+                                        st.session_state.selected_confluences.add(conf)
+                                        st.rerun()
+
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
+                else:
+                    st.info("No general condition data available. Make sure general packs are enabled and trades have been generated.")
 
         # =================================================================
         # Tab 5: Stop Loss Optimization
@@ -2943,6 +3075,7 @@ def render_strategy_builder():
                         mode="stop",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
+                        general_columns=general_cols,
                     )
                 st.session_state.sl_results = sl_results
 
@@ -2953,12 +3086,22 @@ def render_strategy_builder():
                 sl_display_df = sl_display_df.head(20)
 
                 for _, row in sl_display_df.iterrows():
+                    is_current = str(row.get('stop_config')) == str(stop_config_dict)
                     with st.container(border=True):
-                        t1, t2 = st.columns([4, 1])
+                        t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
                         with t1:
-                            st.markdown(f"**{row['pack_name']}**")
+                            label = f"**{row['pack_name']}**"
+                            if is_current:
+                                label += " _(current)_"
+                            st.markdown(label)
                         with t2:
                             st.caption(f"Stop: {row['stop_summary']}")
+                        with t3:
+                            if not is_current:
+                                if st.button("Replace", key=f"rep_sl_{row['pack_id']}"):
+                                    st.session_state.pending_stop_config = row['stop_config']
+                                    st.session_state.sl_results = None
+                                    st.rerun()
 
                         k1, k2, k3, k4, k5, k6 = st.columns(6)
                         k1.caption(f"Trades: {row['total_trades']}")
@@ -3006,6 +3149,7 @@ def render_strategy_builder():
                         mode="target",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
+                        general_columns=general_cols,
                     )
                 st.session_state.tp_results = tp_results
 
@@ -3016,12 +3160,22 @@ def render_strategy_builder():
                 tp_display_df = tp_display_df.head(20)
 
                 for _, row in tp_display_df.iterrows():
+                    is_current = str(row.get('target_config')) == str(target_config_dict)
                     with st.container(border=True):
-                        t1, t2 = st.columns([4, 1])
+                        t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
                         with t1:
-                            st.markdown(f"**{row['pack_name']}**")
+                            label = f"**{row['pack_name']}**"
+                            if is_current:
+                                label += " _(current)_"
+                            st.markdown(label)
                         with t2:
                             st.caption(f"Target: {row['target_summary']}")
+                        with t3:
+                            if not is_current:
+                                if st.button("Replace", key=f"rep_tp_{row['pack_id']}"):
+                                    st.session_state.pending_target_config = row['target_config']
+                                    st.session_state.tp_results = None
+                                    st.rerun()
 
                         k1, k2, k3, k4, k5, k6 = st.columns(6)
                         k1.caption(f"Trades: {row['total_trades']}")
@@ -3063,7 +3217,8 @@ def render_strategy_builder():
         strategy = {
             'name': strategy_name,
             **config,
-            'confluence': list(selected),
+            'confluence': [c for c in selected if not c.startswith("GEN-")],
+            'general_confluences': [c for c in selected if c.startswith("GEN-")],
             'kpis': kpis,
             'forward_testing': enable_forward,
             'alerts': enable_alerts,
@@ -3471,7 +3626,9 @@ def render_live_backtest(strat: dict):
             st.error("No data available for this symbol.")
             return
 
-        confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+        confluence_set = confluence_set if confluence_set else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
 
         trades = generate_trades(
             df,
@@ -3485,12 +3642,14 @@ def render_live_backtest(strat: dict):
             stop_config=strat.get('stop_config'),
             target_config=strat.get('target_config'),
             bar_count_exit=strat.get('bar_count_exit'),
+            general_columns=general_cols,
         )
 
     if len(trades) == 0:
         st.warning("No trades generated. The entry trigger may reference a confluence pack that is no longer enabled.")
 
-    confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+    confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+    confluence_set = confluence_set if confluence_set else None
     extended_data_days = strat.get('extended_data_days', 365)
 
     # 7-tab layout
@@ -3540,6 +3699,7 @@ def render_live_backtest(strat: dict):
         if len(ext_df) == 0:
             st.warning("No data available for extended period.")
         else:
+            ext_general_cols = [c for c in ext_df.columns if c.startswith("GP_")]
             ext_trades = generate_trades(
                 ext_df,
                 direction=strat['direction'],
@@ -3552,6 +3712,7 @@ def render_live_backtest(strat: dict):
                 stop_config=strat.get('stop_config'),
                 target_config=strat.get('target_config'),
                 bar_count_exit=strat.get('bar_count_exit'),
+                general_columns=ext_general_cols,
             )
 
             ext_kpis = calculate_kpis(
@@ -4383,7 +4544,9 @@ def load_strategy_into_builder(strat: dict):
     # Set exit trigger count for UI
     st.session_state.exit_trigger_count = max(1, len(exit_cids))
 
-    st.session_state.selected_confluences = set(strat.get('confluence', []))
+    tf_confs = set(strat.get('confluence', []))
+    gen_confs = set(strat.get('general_confluences', []))
+    st.session_state.selected_confluences = tf_confs | gen_confs
     st.session_state.builder_data_loaded = True
     st.session_state.viewing_strategy_id = None
     st.session_state.confirm_edit_id = None
@@ -7780,11 +7943,12 @@ def _render_rmp_preview(pack):
         stop_config = pack.get_stop_config()
         target_config = pack.get_target_config()
 
+        rm_general_cols = [c for c in df.columns if c.startswith("GP_")]
         trades = generate_trades(
             df, direction=direction, entry_trigger=base_entry,
             exit_triggers=exit_list, bar_count_exit=bar_count,
             risk_per_trade=100.0, stop_config=stop_config,
-            target_config=target_config,
+            target_config=target_config, general_columns=rm_general_cols,
         )
 
     # --- Chart with trade markers ---

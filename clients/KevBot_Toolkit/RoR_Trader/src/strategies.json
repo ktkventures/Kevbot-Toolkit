@@ -579,5 +579,60 @@
     "id": 14,
     "created_at": "2026-02-10T18:06:45.619377",
     "forward_test_start": "2026-02-10T18:06:45.619377"
+  },
+  {
+    "name": "SPY LONG - 15",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "timeframe": "1Min",
+    "entry_trigger": "ema_cross_bull",
+    "entry_trigger_confluence_id": "ema_stack_default_cross_bull",
+    "exit_triggers": [
+      "macd_cross_bear"
+    ],
+    "exit_trigger_confluence_ids": [
+      "macd_line_default_cross_bear"
+    ],
+    "exit_trigger_names": [
+      "MACD Line (Default): Bearish Cross"
+    ],
+    "exit_trigger": "macd_cross_bear",
+    "exit_trigger_confluence_id": "macd_line_default_cross_bear",
+    "entry_trigger_name": "EMA Stack (Default): Short > Mid Cross",
+    "exit_trigger_name": "MACD Line (Default): Bearish Cross",
+    "bar_count_exit": null,
+    "risk_per_trade": 100.0,
+    "stop_atr_mult": 1.5,
+    "stop_config": {
+      "method": "atr",
+      "atr_mult": 1.5
+    },
+    "target_config": null,
+    "starting_balance": 10000.0,
+    "data_days": 30,
+    "extended_data_days": 365,
+    "data_seed": 42,
+    "strategy_origin": "standard",
+    "confluence": [],
+    "general_confluences": [
+      "GEN-TOD_NY_OPEN-IN_WINDOW"
+    ],
+    "kpis": {
+      "total_trades": 57,
+      "win_rate": 33.33333333333333,
+      "profit_factor": 1.9559001855994735,
+      "avg_r": 0.49772696426742724,
+      "total_r": 28.370436963243353,
+      "daily_r": 1.0911706524324367,
+      "r_squared": 0.8962,
+      "max_r_drawdown": -6.46,
+      "final_balance": 12837.043696324336,
+      "total_pnl": 2837.0436963243355
+    },
+    "forward_testing": true,
+    "alerts": false,
+    "id": 15,
+    "created_at": "2026-02-12T12:33:17.567260",
+    "forward_test_start": "2026-02-12T12:33:17.567260"
   }
 ]
