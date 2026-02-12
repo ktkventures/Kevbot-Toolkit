@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.11
+**Version:** 0.12
 **Date:** February 12, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — QA Sandbox covered by pack previews ✓; Backtest Settings, caching, and polish remaining; Phases 1–9 complete
+**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓; caching and QA remaining; Phases 1–9 complete
 
 ---
 
@@ -118,25 +118,33 @@ This allows us to:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ STRATEGY BUILDER — Single-Page with Sidebar Config Panel     │
+│ STRATEGY BUILDER — Single-Page with Inline Config Bar        │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│  SIDEBAR (Config Panel):                                     │
-│  • Strategy Origin (Standard — Phase 12 placeholder)         │
-│  • Symbol, Timeframe, Data Days, [ Load Data ]               │
-│  • Direction (Long / Short)                                  │
-│  • Entry Trigger, Exit Trigger(s)                            │
-│  • Stop Loss Method, Take Profit Method                      │
-│  • Risk Per Trade, Starting Balance                          │
-│  • Strategy Name, Forward Testing, Alerts, [ Save ]          │
+│  ROW 1 (inline data bar):                                    │
+│  [Method] [Ticker] [TF] [Dir] [Lookback] [Params]            │
+│  [Strategy Name] [FT][AL] [Load Data]                        │
+│                                                              │
+│  ROW 2 (collapsible Strategy Config expander):               │
+│  [Entry Trigger] [Exit Trigger] [Stop Loss] [Target]         │
+│                                                              │
+│  STATUS LINE: ~7,800 bars · 390 bars/day · :red[errors]      │
+│  ─────────────────────────────────────────────────────────── │
 │                                                              │
 │  MAIN AREA (after Load Data):                                │
+│  • Strategy Name as title, caption with ticker/direction     │
 │  • KPI Dashboard (Win Rate, PF, Avg R, Total R, etc.)        │
 │  • Price Chart with entry/exit markers + oscillator panes    │
 │  • Equity Curve                                              │
 │  • R-Distribution Histogram                                  │
-│  • Confluence Drill-Down (add/remove conditions, see impact) │
+│  • Extended KPIs (secondary metrics expander)                │
+│  • Optimizable Variables (collapsible, all 6 categories)     │
+│  • Confluence Drill-Down (6-tab: Entry, Exit, TF, Gen,       │
+│    Stop Loss, Take Profit)                                   │
 │  • Trade History Table                                       │
+│  • [ Save Strategy ] button (centered, bottom of page)       │
+│                                                              │
+│  SIDEBAR: App title + data source only (no config widgets)   │
 │                                                              │
 │  Parameter changes re-run backtest automatically on cached   │
 │  data. "Load Data" only needed for symbol/timeframe changes. │
@@ -205,11 +213,15 @@ Strategies and portfolios should display:
 
 ### 4.3 User Settings
 
+- **Chart Defaults** - Default visible candles (chart zoom level) ✓
+- **Default Triggers** - Default entry/exit triggers for new strategies ✓
+- **Default Risk Management** - Default stop loss and target for new strategies ✓
+- **Development** - Data seed for mock data mode ✓
 - **Enabled Interpreters** - Select which interpreters to use for confluence options
-- **Default Ticker/Timeframe**
-- **Risk Parameters** - Default position sizing, max risk per trade
-- **Alert Preferences**
-- **Connected Accounts** - Trading bots, brokers
+- **Default Ticker/Timeframe** - Future
+- **Risk Parameters** - Default position sizing, max risk per trade - Future
+- **Alert Preferences** - Future
+- **Connected Accounts** - Trading bots, brokers - Future
 
 ---
 
@@ -279,12 +291,12 @@ Users can contribute and monetize:
 
 ```
 RoR Trader — Top Navigation Bar
-─────────────────────────────────────────────────────────────────
-  Dashboard | Confluence Packs | Strategies | Portfolios | Alerts
-─────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
+  Dashboard | Confluence Packs | Strategies | Portfolios | Alerts | Settings
+──────────────────────────────────────────────────────────────────────
 
-Sidebar: App title, data source indicator, chart presets.
-         Context-aware config panel on Strategy Builder page.
+Sidebar: App title, data source indicator only.
+         No config widgets — all inputs are inline.
 
 │
 ├── 🏠 DASHBOARD
@@ -317,18 +329,19 @@ Sidebar: App title, data source indicator, chart presets.
 │
 ├── 📊 STRATEGIES (sub-nav: Strategy Builder | My Strategies)
 │   │
-│   ├── Strategy Builder (single-page with sidebar config)
-│   │   ├── Sidebar Config Panel:
-│   │   │   ├── Strategy Origin (Standard — Phase 12 placeholder)
-│   │   │   ├── Data: Symbol, Timeframe, Data Days, [ Load Data ]
-│   │   │   ├── Strategy: Direction, Entry Trigger, Exit Trigger(s)
-│   │   │   ├── Risk Management: Stop Method, Target Method
-│   │   │   └── Save: Name, Forward Testing, Alerts, [ Save ]
+│   ├── Strategy Builder (single-page with inline config bar)
+│   │   ├── Inline Config (main content area):
+│   │   │   ├── Row 1: Method, Ticker, Timeframe, Direction, Lookback Mode,
+│   │   │   │         Lookback Params, Strategy Name, FT/AL toggles, Load Data
+│   │   │   ├── Row 2 (expander): Entry Trigger, Exit Trigger, Stop Loss, Target
+│   │   │   └── Status Line: bar estimate + timeframe guidance + validation errors
 │   │   └── Main Area (after Load Data):
+│   │       ├── Strategy Name as header with ticker/direction caption
 │   │       ├── KPI Dashboard
 │   │       ├── Price Chart + Oscillator Panes
 │   │       ├── Equity Curve
 │   │       ├── R-Distribution Histogram
+│   │       ├── Extended KPIs (secondary metrics expander)
 │   │       ├── Optimizable Variables (collapsible box showing active variables by category with ✕ remove)
 │   │       ├── Active Tags (removable chips above drill-down for selected interpretations)
 │   │       ├── Optimization Drill-Down (6 tabs):
@@ -338,7 +351,8 @@ Sidebar: App title, data source indicator, chart presets.
 │   │       │   ├── General Conditions Tab (enabled general packs with outputs)
 │   │       │   ├── Stop Loss Tab (multi-backtest KPI cards across RM pack stop configs)
 │   │       │   └── Take Profit Tab (multi-backtest KPI cards across RM pack target configs)
-│   │       └── Trade History Table
+│   │       ├── Trade History Table
+│   │       └── Save Strategy button (centered, bottom of page)
 │   │
 │   └── My Strategies
 │       ├── Strategy List View
@@ -346,12 +360,13 @@ Sidebar: App title, data source indicator, chart presets.
 │       │   ├── Sort: Name / Created / Performance
 │       │   └── Strategy Cards (2-column grid; Name, Status, Mini Equity, KPIs, Entry/Exit/Stop/Target Badges, Confluence, Actions)
 │       └── Strategy Detail View
+│           ├── Header: Ticker, Direction, TF, Entry, Exit, Stop·Target, TF+General Confluences
 │           ├── Equity & KPIs Tab (primary + extended KPIs, equity curve, R-distribution)
-│           ├── Equity & KPIs (Extended) Tab (adjustable lookback up to 5 years)
+│           ├── Equity & KPIs (Extended) Tab (lookback mode: Days/Bars/Date Range, up to 5 years)
 │           ├── Price Chart Tab (full indicators + oscillator panes + trade table)
 │           ├── Trade History Tab (clean chart + trade table)
 │           ├── Confluence Analysis Tab
-│           ├── Configuration Tab
+│           ├── Configuration Tab (TF Conditions + General Conditions)
 │           ├── Alerts Tab
 │           └── Actions (Edit, Clone, Delete, Add to Portfolio)
 │
@@ -384,22 +399,26 @@ Sidebar: App title, data source indicator, chart presets.
 │
 ├── 🏪 MARKETPLACE (Future)
 │
-└── ⚙️ SETTINGS (Future)
-    ├── Default Parameters
-    │   ├── Default Visible Candles (chart zoom level)
-    │   ├── Default Extended Lookback (days)
-    │   └── (Extensible for future defaults)
-    ├── Chart Presets (moved from sidebar)
-    │   └── Visible Candles preset selector
-    └── Connections (Alpaca, webhooks, etc.)
+└── ⚙️ SETTINGS
+    ├── Chart Defaults
+    │   └── Default Visible Candles (Tight 50, Close 100, Default 200, Wide 400, Full)
+    ├── Default Triggers
+    │   ├── Default Entry Trigger (user's preferred starting entry for new strategies)
+    │   └── Default Exit Trigger (user's preferred starting exit for new strategies)
+    ├── Default Risk Management
+    │   ├── Default Stop Loss (method + parameters; applied to new strategies)
+    │   └── Default Target (method + parameters; applied to new strategies)
+    ├── Development (mock data mode only)
+    │   └── Data Seed (random seed for mock data generation)
+    └── Connections (Alpaca, webhooks, etc.) — future
 ```
 
 ### 7.2 Core User Journeys
 
 **Journey 1: New User Creates First Strategy**
 ```
-Dashboard → "New Strategy" → Strategy Builder (sidebar: configure, Load Data)
-→ Main area: review KPIs, add confluence → sidebar: Save
+Dashboard → "New Strategy" → Strategy Builder (inline bar: configure, Load Data)
+→ Main area: review KPIs, drill-down to optimize → Save Strategy (bottom)
 → My Strategies (auto-navigates to saved strategy detail)
 ```
 
@@ -421,8 +440,8 @@ My Strategies → Strategy Detail → Alerts Tab
 **Journey 4: Optimize Existing Strategy**
 ```
 My Strategies → Strategy Detail → Edit Strategy
-→ Strategy Builder (sidebar pre-populated, data auto-loaded)
-→ Adjust triggers/confluence → Save
+→ Strategy Builder (inline bar pre-populated, data auto-loaded)
+→ Adjust triggers/confluence → Save Strategy (bottom)
 ```
 
 **Journey 5: Build Strategy from Scratch via Optimization Workflow** *(Phase 9)*
@@ -555,6 +574,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 25. [x] Confluence Packs rename, General Packs, and Risk Management Packs — renamed "Confluence Groups" to "Confluence Packs" across all user-facing labels for marketability; added sub-navigation (TF Confluence, General, Risk Management); new `general_packs.py` module with 4 templates (Time of Day, Trading Session, Day of Week, Calendar Filter), condition evaluation functions (`evaluate_condition()` dispatcher), and full CRUD with `config/general_packs.json`; new `risk_management_packs.py` module with 5 templates (ATR-Based, Fixed Dollar, Percentage, Swing, Risk:Reward), dual-output architecture (`get_stop_config()` + `get_target_config()` from shared parameters), builder functions, and full CRUD with `config/risk_management_packs.json`; both management pages have 5-tab detail panels (Parameters, Outputs, Preview, Code, Danger Zone); General Pack previews: extended hours mock data toggle, condition state change markers on price chart, state transition table, distribution metrics; Risk Management Pack previews: configurable entry/exit trigger selectors from TF Confluence Packs, trade chart with stop/target levels, KPI summary, trade details; Code tabs show `inspect.getsource()` for evaluation/builder functions; wired drill-down tabs 4-6 (General shows enabled packs with outputs, Stop Loss and Take Profit run `analyze_risk_management()` multi-backtest with KPI comparison cards); extended hours support in `mock_data.py` (`extended_hours` parameter for 4:00 AM - 8:00 PM bar generation); `extra_markers` parameter on `render_chart_with_candle_selector()` and `render_price_chart()` for condition state annotations
 
 26. [x] Phase 9 completion — trade tagging, general drill-down, SL/TP replace buttons, strategy schema. General pack conditions tagged on trades as `GEN-{PACK_ID}-{STATE}` records via `general_columns` param threaded through `get_confluence_records()` → `generate_trades()` → all 11 call sites. General Conditions tab transformed into full drill-down with KPI cards and "Add" buttons; GEN- records filtered out of TF Conditions tab. SL/TP drill-down cards gain "Replace" buttons using `pending_stop_config`/`pending_target_config` with widget key deletion pattern; `(current)` label on active config. Strategy save splits `confluence` and `general_confluences`; load merges both (backward compatible). Optimizable Variables box partitions TF and General columns by GEN- prefix. 4 remaining polish items (trigger params, variation tags, caching, lazy loading) deferred to Phase 10.
+27. [x] Settings page and sidebar-to-inline refactor — Settings nav page with Chart Defaults, Default Triggers, Default Risk Management, and Development (data seed) sections; all Strategy Builder inputs moved from sidebar to inline config bar (Row 1: Method/Ticker/TF/Dir/Lookback/Name/FT/AL/Load, Row 2 expander: Entry/Exit/Stop/Target); status line with bar estimate + validation errors; Save button moved to bottom of page; sidebar stripped to app title + data source only; strategy detail header expanded with general confluences; Extended KPIs tabs gain full lookback mode selector (Days/Bars/Date Range)
 
 ---
 
@@ -804,8 +824,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **QA Sandbox as dev-only page** — Not exposed to end users; exists purely for developer QA. Validates that stop/target calculations, trade generation, and signal detection behave as intended. Charts plot stop/target price levels as horizontal lines per trade for visual verification. This replaces ad-hoc testing with a systematic, repeatable QA workflow.
 - **Card-style drill-down over row tables** — Showing multiple KPIs per confluence combination requires more vertical space than a 5-column table row allows. Cards give room for 6+ KPIs while keeping the combination name prominent. The same card format is reused for both Drill-Down (single-factor) and Auto-Search (multi-factor combinations).
 - **`st.radio(horizontal=True)` over `st.tabs()`** — `st.tabs()` renders ALL tab contents on every re-run (even hidden tabs), which would run expensive backtests and data loads when viewing other pages. `st.radio(horizontal=True)` only renders the selected page and supports programmatic selection via `index` for the existing `nav_target` pattern.
-- **Single-page Strategy Builder with sidebar config** — Eliminates the back-navigation state loss problem entirely. All parameters are visible and editable in the sidebar at all times. "Load Data" is the only gate (needed for symbol/timeframe changes). Trigger/risk changes re-run backtest automatically on cached data via Streamlit's natural re-run behavior. Save form in sidebar removes the need for a separate Step 3.
-- **`builder_data_loaded` boolean over `step` integer** — The 3-step flow is gone; the only meaningful state is "has data been loaded?" This boolean gates the main area content (KPIs, charts) while allowing the sidebar config to always be visible.
+- **Single-page Strategy Builder** — Eliminates the back-navigation state loss problem entirely. All parameters are visible and editable at all times via inline config bar. "Load Data" is the only gate (needed for symbol/timeframe changes). Trigger/risk changes re-run backtest automatically on cached data via Streamlit's natural re-run behavior. Save button at bottom of page after analysis.
+- **`builder_data_loaded` boolean over `step` integer** — The 3-step flow is gone; the only meaningful state is "has data been loaded?" This boolean gates the main area content (KPIs, charts) while allowing the config bar to always be visible.
 - **Strategy Origin as Phase 12 placeholder** — Adding the selectbox now (with only "Standard" option) establishes the UI pattern and schema field without implementing the full feature. Existing strategies default to `"standard"` via `.get('strategy_origin', 'standard')` — no migration needed.
 
 - **Max R Drawdown as strategy-level risk metric** — Peak-to-trough drawdown in cumulative R space, analogous to portfolio's dollar-based Max Drawdown but expressed in R-multiples. Named "Max R DD" to distinguish from portfolio's "Max DD". Computed from `np.maximum.accumulate(cumulative_r) - cumulative_r`. A strategy with Max R DD of -3.2R had a worst losing streak that erased 3.2 risk units from peak equity. Added to `calculate_kpis()` and saved to strategies.json for card display.
@@ -954,20 +974,45 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
 - [ ] Performance — identify and address any slow-loading pages or redundant data fetches
 
-**Backtest Settings Overhaul:**
-- [ ] Replace "Data Settings" sidebar section with "Backtest Settings" — expanded controls for backtest data range
-- [ ] Three look-back modes via selectbox:
+**Backtest Settings Overhaul — COMPLETED (Feb 11, 2026):**
+- [x] Replace sidebar data settings with inline config bar — all data-loading inputs moved from sidebar to compact inline rows at top of Strategy Builder main area
+- [x] Three look-back modes via selectbox:
   - **Days** (default) — slider from 7 to 1,825 (5 years); recommended for apples-to-apples comparison across strategies on different timeframes
-  - **Bars/Candles** — number input (e.g., 500, 1000, 2000 candles); app calculates equivalent days based on selected timeframe
+  - **Bars/Candles** — number input (e.g., 500, 1000, 2000 candles); app calculates equivalent days based on selected timeframe via `days_from_bar_count()`
   - **Date Range** — two date pickers (start/end) for precise control
-- [ ] Estimated bar count display — show "~98,000 bars" next to the setting so users understand data volume before running
-- [ ] Performance warning — yellow banner when estimated bars exceed ~50K: "Large dataset — backtest may take longer"
+- [x] Estimated bar count display — status line shows "~7,800 bars · 390 bars/day" below Row 1; computed via `estimate_bar_count()`
+- [x] Performance warning — `:orange[Large dataset]` inline when estimated bars exceed 50K
+- [x] Timeframe-aware max range guidance — status line shows recommended max (e.g., "1Min: ≤1yr recommended")
+- [x] Lookback modes also available on strategy detail Extended KPIs tab — Days/Bars/Date Range selector replaces simple days slider for both backtest and forward test views
 - [ ] Result caching — cache trades/KPIs keyed on (symbol, timeframe, date range, strategy config, pack variations) so repeated views load instantly after first computation; must account for Phase 9 multi-backtest patterns (stop/target pack comparisons)
 - [ ] Expand supported Alpaca timeframes — currently 7 presets; Alpaca supports any minute increment (1–59Min), 1–23Hour, and Day/Week/Month
-- [ ] Timeframe-aware max range guidance — show recommended max alongside the slider (e.g., "1Min: up to 1 year recommended, Daily: up to 5 years")
 - [ ] Fix mock data timeframe — mock data generator currently always produces 1Min bars regardless of selected timeframe
 - [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
 - [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
+
+**Settings Page — COMPLETED (Feb 11, 2026):**
+- [x] Settings navigation page — new top-level nav item (6th section in top bar)
+- [x] Chart Defaults — Visible Candles selectbox (Tight 50, Close 100, Default 200, Wide 400, Full); writes to `chart_visible_candles` session state; replaces sidebar chart preset selector
+- [x] Default Triggers — Default Entry Trigger and Default Exit Trigger selectboxes; applied to new strategies when no saved config exists
+- [x] Default Risk Management — Default Stop Loss (method + parameters) and Default Target (method + parameters) with full config UI; applied to new strategies via `default_stop_config` / `default_target_config` session state
+- [x] Development section (mock data mode only) — Data Seed number input; writes to `global_data_seed` session state; replaces per-strategy sidebar Data Seed widget
+
+**Sidebar-to-Inline Refactor — COMPLETED (Feb 11, 2026):**
+- [x] Move data-loading inputs from sidebar to inline bar — Strategy Origin, Ticker, Timeframe, Direction, Lookback Mode, Lookback params, Load Data button moved to Row 1 columns at top of Strategy Builder main area
+- [x] Move Strategy Name, Forward Testing, Alerts to Row 1 — Name as text_input, FT/AL as compact checkboxes with tooltip help text
+- [x] Move Entry/Exit/Stop/Target to collapsible expander — Row 2 as `st.expander("Strategy Config")` with 4 equal columns
+- [x] Add inline status line — bar estimate, bars/day, timeframe guidance, and validation errors (`:red[text]` colored) displayed via `st.empty()` placeholder pattern
+- [x] Move Save button to bottom of page — centered with `st.columns([3,1,3])`, disabled when validation fails
+- [x] Remove Add/Remove Exit buttons from sidebar — users manage exits via drill-down "Add" button on Exit tab instead; `sb_additional_exits` session state list tracks additional exit CIDs
+- [x] Strip global sidebar — reduced from ~8 widgets to just app title + data source status; eliminates ghost sidebar widgets when navigating between pages
+- [x] Move editing banner inline — `st.columns([5,1])` with info message + Cancel Edit button above Row 1
+
+**Strategy Detail Page Enhancements — COMPLETED (Feb 11, 2026):**
+- [x] Updated header to 6 columns — Ticker, Direction, Timeframe, Entry, Exit, Stop·Target; plus general confluences display below
+- [x] Strategy name as Strategy Builder title — `### {strategy_name}` with `{symbol} | {direction} | {entry → exit}` as caption
+- [x] Extended KPIs lookback mode selector — Days/Bars/Date Range options replace simple days slider on both backtest and forward test Extended tabs
+- [x] Configuration tabs show general confluences — TF Conditions and General Conditions displayed separately
+- [x] Optimizable Variables moved below Extended KPIs — better visual flow in Strategy Builder
 
 **Deferred from Phase 9:**
 - [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
@@ -977,6 +1022,15 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
+
+### Design Decisions (Phase 10 — Settings & Inline Refactor)
+- **Inline config bar over sidebar** — Sidebar config panels create "ghost widgets" in Streamlit when navigating away — stale sidebar DOM elements from previous pages cause visual artifacts and key conflicts. Moving all data-loading inputs to inline columns in the main content area eliminates this class of bugs entirely. The global sidebar shrinks to just app title + data source status.
+- **`st.empty()` placeholder for status line** — The bar estimate and validation errors depend on widget values defined earlier in the render flow. Using `st.empty()` reserves visual space at the right position, then fills it after all widget values are resolved. This avoids the Streamlit issue of text appearing before its dependent widgets.
+- **FT/AL as compact checkboxes with tooltips** — Forward Testing and Alerts are boolean toggles that don't need full labels consuming column width. Single-character labels ("FT", "AL") with `help=` tooltip text explain the feature on hover while keeping Row 1 compact.
+- **`sb_additional_exits` session state list over sidebar selectboxes** — The old approach used N sidebar selectboxes with Add/Remove buttons, requiring complex index management. The new approach stores exit CIDs in a flat list managed entirely via the drill-down "Add" button and Optimizable Variables "✕" removal. Simpler state, fewer widgets, no sidebar needed.
+- **Settings page defaults via session state** — Settings page writes to session state keys (`default_stop_config`, `default_target_config`, `global_data_seed`, `chart_visible_candles`). Strategy Builder reads from these when no saved config exists (new strategy). When editing a saved strategy, the saved config takes precedence via `'key' in edit_config` existence check. This avoids a separate `settings.json` file while still providing app-wide defaults.
+- **`'key' in edit_config` over `.get()` for None-valued fields** — `edit_config.get('target_config')` returns `None` both when the key is missing (new strategy) and when the value is explicitly `None` (strategy saved with no target). Using `'key' in edit_config` distinguishes these cases: missing means "use Settings default", present-but-None means "user chose no target."
+- **Lookback mode on Extended KPIs tab** — Strategy detail's Extended tab previously had only a days slider. Adding the full Days/Bars/Date Range selector gives users the same flexibility as the Strategy Builder, enabling precise historical analysis on saved strategies without re-editing them.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json, general_packs.json, risk_management_packs.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
@@ -1019,19 +1073,16 @@ Strategy Builder → Load Data → Entry Trigger tab
   - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
   - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
 
-### Phase 14: Settings Page
-*Dedicated settings page to centralize app-wide configuration — currently scattered across sidebar and hardcoded defaults.*
+### Phase 14: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026)
+*Implemented as part of the sidebar-to-inline refactor in Phase 10. See Phase 10 "Settings Page" section for details.*
 
-- [ ] Settings navigation page — new top-level nav item (replace sidebar-only chart presets)
-- [ ] **Default Parameters** subpage — user-configurable defaults that apply across the app:
-  - Default Visible Candles — chart zoom level (Tight 50, Close 100, Default 200, Wide 400, Full); replaces the current sidebar chart preset selector
-  - Default Extended Lookback (days) — default value for the "Equity & KPIs (Extended)" tab slider across all strategies (currently hardcoded to 365 per strategy)
-  - Default Entry Trigger — user's preferred starting entry trigger for new strategies (Phase 9)
-  - Default Exit Trigger — user's preferred starting exit trigger for new strategies (default: "Exit after N candles")
-  - Extensible for future defaults (default timeframe, default ticker, default risk parameters, etc.)
-- [ ] **Chart Presets** subpage — migrate existing "Visible Candles" sidebar selector into Settings; sidebar retains a quick-access link or compact version
-- [ ] **Connections** subpage — Alpaca API configuration, data source status (currently in sidebar)
-- [ ] Persist settings to `settings.json` (or similar) — loaded on app startup, available via `get_setting(key, default)` helper
+- [x] Settings navigation page — 6th top-level nav item
+- [x] Chart Defaults — Visible Candles selectbox (replaces sidebar chart preset selector)
+- [x] Default Triggers — Default Entry and Exit Trigger selectboxes for new strategies
+- [x] Default Risk Management — Default Stop Loss and Target with full method+parameter config
+- [x] Development — Data Seed (mock mode only)
+- [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
+- [ ] Persist settings to `settings.json` — loaded on app startup, available via `get_setting(key, default)` helper (future; currently uses session state)
 
 ---
 

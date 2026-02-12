@@ -23,7 +23,7 @@ import subprocess
 import signal as signal_module
 import inspect
 
-from data_loader import load_market_data, get_data_source, is_alpaca_configured
+from data_loader import load_market_data, get_data_source, is_alpaca_configured, estimate_bar_count, days_from_bar_count
 from indicators import (
     INDICATORS,
     run_all_indicators,
@@ -138,8 +138,20 @@ import risk_management_packs as rmp_module
 # =============================================================================
 
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
-TIMEFRAMES = ["1Min", "5Min", "15Min", "1Hour"]
+TIMEFRAMES = ["1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"]
 DIRECTIONS = ["LONG", "SHORT"]
+
+TIMEFRAME_GUIDANCE = {
+    "1Min": "~390 bars/day \u00b7 recommended up to 90 days",
+    "5Min": "~78 bars/day \u00b7 recommended up to 1 year",
+    "15Min": "~26 bars/day \u00b7 recommended up to 2 years",
+    "30Min": "~13 bars/day \u00b7 recommended up to 3 years",
+    "1Hour": "~7 bars/day \u00b7 recommended up to 5 years",
+    "4Hour": "~2 bars/day \u00b7 recommended up to 5 years",
+    "1Day": "1 bar/day \u00b7 recommended up to 5 years",
+}
+
+LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
 OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
 
 # Strategies storage path (resolve relative to this script, not cwd)
@@ -313,7 +325,8 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 
 @st.cache_data(ttl=3600)
 def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
-                                  start_date=None, end_date=None):
+                                  start_date=None, end_date=None,
+                                  timeframe: str = "1Min"):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -325,12 +338,14 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         seed: Random seed for mock data
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
+        timeframe: Bar timeframe (e.g., "1Min", "5Min", "1Hour")
 
     Returns DataFrame ready for trade generation and analysis.
     """
     # Load raw bars (Alpaca if configured, mock otherwise)
     df = load_market_data(symbol, days=days, seed=seed,
-                          start_date=start_date, end_date=end_date)
+                          start_date=start_date, end_date=end_date,
+                          timeframe=timeframe)
 
     if len(df) == 0:
         return df
@@ -380,9 +395,11 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     # Round end_date to market close today for cache-friendly behavior
     end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
 
+    strat_timeframe = strat.get('timeframe', '1Min')
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
-        start_date=start_date, end_date=end_date
+        start_date=start_date, end_date=end_date,
+        timeframe=strat_timeframe
     )
 
     if len(df) == 0:
@@ -426,7 +443,14 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
     else:
         data_days = strat.get('data_days', 30)
         data_seed = strat.get('data_seed', 42)
-        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed)
+        gst_start = None
+        gst_end = None
+        if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
+            gst_start = datetime.fromisoformat(strat['lookback_start_date'])
+            gst_end = datetime.fromisoformat(strat['lookback_end_date'])
+        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
+                                          start_date=gst_start, end_date=gst_end,
+                                          timeframe=strat.get('timeframe', '1Min'))
         if len(df) == 0:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
@@ -1632,6 +1656,18 @@ def main():
         st.session_state.nav_target = None
     if 'chart_visible_candles' not in st.session_state:
         st.session_state.chart_visible_candles = 200
+    if 'global_data_seed' not in st.session_state:
+        st.session_state.global_data_seed = 42
+    if 'default_extended_data_days' not in st.session_state:
+        st.session_state.default_extended_data_days = 365
+    if 'default_entry_trigger' not in st.session_state:
+        st.session_state.default_entry_trigger = ''
+    if 'default_exit_trigger' not in st.session_state:
+        st.session_state.default_exit_trigger = ''
+    if 'default_stop_config' not in st.session_state:
+        st.session_state.default_stop_config = {"method": "atr", "atr_mult": 1.5}
+    if 'default_target_config' not in st.session_state:
+        st.session_state.default_target_config = None
     if 'confluence_filters' not in st.session_state:
         st.session_state.confluence_filters = {
             'sort_by': 'profit_factor',
@@ -1656,7 +1692,7 @@ def main():
         st.session_state.tp_results = None
 
     # --- Top-level navigation ---
-    SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts"]
+    SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
         "Confluence Packs": ["TF Confluence", "General", "Risk Management"],
         "Strategies": ["Strategy Builder", "My Strategies"],
@@ -1672,6 +1708,7 @@ def main():
         "Alerts & Signals": ("Alerts", "Alerts & Signals"),
         "Webhook Templates": ("Alerts", "Webhook Templates"),
         "Confluence Packs": ("Confluence Packs", "TF Confluence"),
+        "Settings": ("Settings", None),
     }
 
     # Process nav_target — write directly to widget keys for programmatic navigation
@@ -1682,7 +1719,7 @@ def main():
             st.session_state[f"sub_nav_{target_section.lower()}"] = target_sub
         st.session_state.nav_target = None
 
-    # Sidebar — minimal base (app title + data source + chart presets)
+    # Sidebar — minimal base (app title + data source)
     with st.sidebar:
         st.title("RoR Trader")
         st.caption("Return on Risk Trader")
@@ -1692,25 +1729,6 @@ def main():
             st.success(f"{data_source}")
         else:
             st.warning(f"{data_source}")
-
-        st.divider()
-
-        # Chart presets
-        st.subheader("Chart Presets")
-        candle_presets = {
-            "Tight (50)": 50,
-            "Close (100)": 100,
-            "Default (200)": 200,
-            "Wide (400)": 400,
-            "Full (All)": 0,
-        }
-        preset_label = st.selectbox(
-            "Visible Candles",
-            list(candle_presets.keys()),
-            index=2,  # Default (200)
-            help="Number of candles visible when a chart first loads. You can still zoom/scroll manually."
-        )
-        st.session_state['chart_visible_candles'] = candle_presets[preset_label]
 
     # Top navigation bar
     section = st.radio(
@@ -1762,6 +1780,8 @@ def main():
             render_alerts_page()
         else:
             render_webhook_templates_page()
+    elif section == "Settings":
+        render_settings()
 
 
 def render_dashboard():
@@ -1941,357 +1961,415 @@ def render_strategy_builder():
     edit_config = st.session_state.get('strategy_config', {})
 
     # =========================================================================
-    # SIDEBAR CONFIG PANEL
+    # SHARED DATA: triggers & groups (needed by both rows and sidebar)
     # =========================================================================
-    with st.sidebar:
-        st.divider()
+    enabled_groups = get_enabled_groups()
+    all_trigger_defs = get_all_triggers(enabled_groups)
+    entry_triggers = get_confluence_entry_triggers(
+        edit_config.get('direction', 'LONG'), enabled_groups)
+    all_trigger_map = {tid: tdef for tid, tdef in all_trigger_defs.items()}
+    exit_trigger_display = {
+        tid: f"{tdef.name} [{'C' if tdef.execution == 'bar_close' else 'I'}]"
+        for tid, tdef in all_trigger_defs.items()
+    }
 
-        # Editing banner
-        if editing_id:
-            editing_strat = get_strategy_by_id(editing_id)
-            if editing_strat:
-                st.info(f"Editing: {editing_strat['name']}")
-                if st.button("Cancel Edit", key="cancel_edit_builder", use_container_width=True):
-                    st.session_state.editing_strategy_id = None
-                    st.session_state.builder_data_loaded = False
-                    st.session_state.strategy_config = {}
-                    st.session_state.selected_confluences = set()
-                    st.rerun()
+    # =========================================================================
+    # EDITING BANNER
+    # =========================================================================
+    if editing_id:
+        editing_strat = get_strategy_by_id(editing_id)
+        if editing_strat:
+            _eb1, _eb2 = st.columns([5, 1])
+            _eb1.info(f"Editing: **{editing_strat['name']}**")
+            if _eb2.button("Cancel Edit", key="cancel_edit_builder"):
+                st.session_state.editing_strategy_id = None
+                st.session_state.builder_data_loaded = False
+                st.session_state.strategy_config = {}
+                st.session_state.selected_confluences = set()
+                st.session_state.pop('sb_additional_exits', None)
+                st.rerun()
 
-        # --- Strategy Origin ---
-        st.markdown("**Strategy Origin**")
+    # =========================================================================
+    # ROW 1: Method | Ticker | TF | Dir | Lookback | Params | Name | FT/AL | Load
+    # =========================================================================
+    r1c0, r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(
+        [0.6, 0.8, 0.8, 0.55, 0.7, 1.2, 1.4, 0.45, 0.5])
+
+    with r1c0:
         strategy_origin = st.selectbox(
-            "Origin",
-            ["Standard"],
-            index=0,
-            label_visibility="collapsed",
-            help="Strategy type (more origins coming in Phase 10)",
+            "Method", ["Standard"], index=0,
+            help="Strategy methodology (more methods coming soon)",
         )
 
-        # --- Data ---
-        st.markdown("**Data**")
+    with r1c1:
         symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
         symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx, key="sb_symbol")
 
+    with r1c2:
         tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
         timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=tf_idx, key="sb_timeframe")
 
-        saved_data_days = edit_config.get('data_days', 30)
-        data_days = st.slider("Data Days", 7, 90, saved_data_days, key="sb_data_days")
-
-        saved_ext_days = edit_config.get('extended_data_days', 365)
-        extended_data_days = st.slider("Extended Data Days", 90, 1825, saved_ext_days,
-            key="sb_extended_data_days",
-            help="Default lookback for the Extended Equity & KPIs tab (up to 5 years)")
-
-        if not is_alpaca_configured():
-            saved_data_seed = edit_config.get('data_seed', 42)
-            data_seed = st.number_input("Data Seed", value=saved_data_seed, key="sb_data_seed", help="Change for different random data")
-        else:
-            data_seed = 42
-
-        load_clicked = st.button("Load Data", type="primary", use_container_width=True)
-
-        # --- Strategy ---
-        st.markdown("**Strategy**")
+    with r1c3:
         direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
-        direction = st.radio("Direction", DIRECTIONS, horizontal=True, index=direction_idx, key="sb_direction")
+        direction = st.selectbox("Direction", DIRECTIONS, index=direction_idx, key="sb_direction")
 
-        # Entry triggers
-        enabled_groups = get_enabled_groups()
-        entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
-        all_trigger_defs = get_all_triggers(enabled_groups)
+    # Re-fetch entry triggers with actual selected direction
+    entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
 
-        if len(entry_triggers) == 0:
-            st.warning("No entry triggers. Enable confluence packs first.")
-            entry_trigger = None
-            entry_trigger_name = None
-        else:
-            entry_trigger_options = list(entry_triggers.keys())
-            entry_trigger_labels = []
-            for tid in entry_trigger_options:
-                name = entry_triggers[tid]
-                tdef = all_trigger_defs.get(tid)
-                exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
-                entry_trigger_labels.append(f"{name} [{exec_tag}]")
-            saved_entry = edit_config.get('entry_trigger_confluence_id', '')
-            entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
-            # Apply pending entry trigger from drill-down Replace button
-            if 'pending_entry_trigger' in st.session_state:
-                pending_idx = st.session_state.pop('pending_entry_trigger')
-                if 0 <= pending_idx < len(entry_trigger_options):
-                    entry_default_idx = pending_idx
-            entry_trigger_idx = st.selectbox(
-                "Entry Trigger",
-                range(len(entry_trigger_options)),
-                index=entry_default_idx,
-                format_func=lambda i: entry_trigger_labels[i],
-                key="sb_entry_trigger",
-            )
-            entry_trigger = entry_trigger_options[entry_trigger_idx]
-            entry_trigger_name = entry_triggers[entry_trigger]
+    with r1c4:
+        saved_lookback_mode = edit_config.get('lookback_mode', 'Days')
+        lb_idx = LOOKBACK_MODES.index(saved_lookback_mode) if saved_lookback_mode in LOOKBACK_MODES else 0
+        lookback_mode = st.selectbox("Lookback", LOOKBACK_MODES, index=lb_idx, key="sb_lookback_mode")
 
-        # Exit triggers
-        all_triggers = get_all_triggers(enabled_groups)
-        all_trigger_map = {tid: tdef for tid, tdef in all_triggers.items()}
-        exit_trigger_display = {tid: f"{tdef.name} [{'C' if tdef.execution == 'bar_close' else 'I'}]" for tid, tdef in all_triggers.items()}
+    start_date = None
+    end_date = None
+    bar_count = None
 
-        saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
-        if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
-            saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+    with r1c5:
+        if lookback_mode == "Days":
+            saved_data_days = edit_config.get('data_days', 30)
+            data_days = st.slider("Days", 7, 1825, saved_data_days, key="sb_data_days")
+        elif lookback_mode == "Bars/Candles":
+            saved_bar_count = edit_config.get('bar_count', 1000)
+            bar_count = st.number_input("Bars", min_value=100, max_value=500000,
+                                         value=saved_bar_count, step=100, key="sb_bar_count")
+            data_days = days_from_bar_count(bar_count, timeframe)
+        elif lookback_mode == "Date Range":
+            from datetime import date, time as dtime
+            saved_start = edit_config.get('lookback_start_date')
+            saved_end = edit_config.get('lookback_end_date')
+            default_start = datetime.fromisoformat(saved_start).date() if saved_start else date(2025, 1, 1)
+            default_end = datetime.fromisoformat(saved_end).date() if saved_end else date.today()
+            dr_c1, dr_c2 = st.columns(2)
+            with dr_c1:
+                start_date_input = st.date_input("Start", value=default_start,
+                                                  min_value=date(2016, 1, 1), key="sb_start_date")
+            with dr_c2:
+                end_date_input = st.date_input("End", value=default_end,
+                                                min_value=date(2016, 1, 1), key="sb_end_date")
+            if start_date_input >= end_date_input:
+                st.error("Start must be before end.")
+            start_date = datetime.combine(start_date_input, dtime(9, 30))
+            end_date = datetime.combine(end_date_input, dtime(16, 0))
+            data_days = (end_date_input - start_date_input).days
 
-        if 'exit_trigger_count' not in st.session_state:
-            st.session_state.exit_trigger_count = max(1, len(saved_exit_cids)) if saved_exit_cids else 1
-
-        # Apply pending exit trigger changes from drill-down Add / Auto-Search Replace / Variables box Remove
-        pending_exit_overrides = {}
-        if 'pending_add_exit' in st.session_state:
-            add_cid = st.session_state.pop('pending_add_exit')
-            st.session_state._pending_add_exit_cid = add_cid
-        if 'pending_replace_exits' in st.session_state:
-            replace_cids = st.session_state.pop('pending_replace_exits')
-            st.session_state._pending_replace_exit_cids = replace_cids
-        if 'pending_remove_exit_idx' in st.session_state:
-            rm_idx = st.session_state.pop('pending_remove_exit_idx')
-            if st.session_state.exit_trigger_count > 1 and rm_idx < st.session_state.exit_trigger_count:
-                # Shift exits after the removed index down by one
-                for i in range(rm_idx, st.session_state.exit_trigger_count - 1):
-                    next_key = f"sb_exit_trigger_{i + 1}"
-                    if next_key in st.session_state:
-                        st.session_state[f"sb_exit_trigger_{i}"] = st.session_state[next_key]
-                st.session_state.exit_trigger_count -= 1
-
-        exit_trigger_selections = []
-        has_exit_triggers = len(exit_trigger_display) > 0
-
-        if not has_exit_triggers:
-            st.warning("No exit triggers available.")
-        else:
-            exit_options = list(exit_trigger_display.keys())
-            exit_labels = list(exit_trigger_display.values())
-
-            # Handle pending Add (append one exit)
-            if '_pending_add_exit_cid' in st.session_state:
-                add_cid = st.session_state.pop('_pending_add_exit_cid')
-                if add_cid in exit_options and st.session_state.exit_trigger_count < 3:
-                    new_count = st.session_state.exit_trigger_count + 1
-                    st.session_state.exit_trigger_count = new_count
-                    pending_exit_overrides[new_count - 1] = exit_options.index(add_cid)
-
-            # Handle pending Replace (swap all exits)
-            if '_pending_replace_exit_cids' in st.session_state:
-                replace_cids = st.session_state.pop('_pending_replace_exit_cids')
-                valid_cids = [c for c in replace_cids if c in exit_options]
-                if valid_cids:
-                    st.session_state.exit_trigger_count = len(valid_cids)
-                    for i, cid in enumerate(valid_cids):
-                        pending_exit_overrides[i] = exit_options.index(cid)
-
-            for et_idx in range(st.session_state.exit_trigger_count):
-                label = f"Exit {et_idx + 1}" if st.session_state.exit_trigger_count > 1 else "Exit Trigger"
-                saved_val = saved_exit_cids[et_idx] if et_idx < len(saved_exit_cids) else ''
-                default_idx = exit_options.index(saved_val) if saved_val in exit_options else 0
-                # Apply pending override for this slot
-                if et_idx in pending_exit_overrides:
-                    default_idx = pending_exit_overrides[et_idx]
-                selected_idx = st.selectbox(
-                    label,
-                    range(len(exit_options)),
-                    index=default_idx,
-                    format_func=lambda i, _labels=exit_labels: _labels[i],
-                    key=f"sb_exit_trigger_{et_idx}",
-                )
-                selected_cid = exit_options[selected_idx]
-                selected_name = all_trigger_map[selected_cid].name if selected_cid in all_trigger_map else ""
-                exit_trigger_selections.append((selected_cid, selected_name))
-
-            et_btn_cols = st.columns(2)
-            if st.session_state.exit_trigger_count < 3:
-                if et_btn_cols[0].button("+ Add Exit", key="sb_add_exit"):
-                    st.session_state.exit_trigger_count += 1
-                    st.rerun()
-            if st.session_state.exit_trigger_count > 1:
-                if et_btn_cols[1].button("- Remove", key="sb_rm_exit"):
-                    st.session_state.exit_trigger_count -= 1
-                    st.rerun()
-
-        # --- Risk Management ---
-        st.markdown("**Risk Management**")
-
-        # Apply pending stop config from SL drill-down Replace button
-        if 'pending_stop_config' in st.session_state:
-            pending_sc = st.session_state.pop('pending_stop_config')
-            edit_config['stop_config'] = pending_sc
-            st.session_state.strategy_config = dict(edit_config)
-            for k in ['sb_stop_method', 'sb_stop_atr', 'sb_stop_dollar',
-                      'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding']:
-                st.session_state.pop(k, None)
-
-        # Stop Loss
-        stop_methods = ["ATR", "Fixed Dollar", "Percentage", "Swing Low/High"]
-        stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
-        saved_stop = edit_config.get('stop_config') or {}
-        saved_stop_method = saved_stop.get('method', 'atr')
-        default_stop_idx = stop_method_keys.index(saved_stop_method) if saved_stop_method in stop_method_keys else 0
-
-        stop_method_idx = st.selectbox(
-            "Stop Loss",
-            range(len(stop_methods)),
-            index=default_stop_idx,
-            format_func=lambda i: stop_methods[i],
-            key="sb_stop_method",
-        )
-        stop_method = stop_method_keys[stop_method_idx]
-        stop_config_dict = {"method": stop_method}
-
-        if stop_method == "atr":
-            stop_config_dict["atr_mult"] = st.number_input(
-                "ATR Mult", min_value=0.5, max_value=5.0,
-                value=float(saved_stop.get('atr_mult', edit_config.get('stop_atr_mult', 1.5))),
-                step=0.1, key="sb_stop_atr",
-            )
-        elif stop_method == "fixed_dollar":
-            stop_config_dict["dollar_amount"] = st.number_input(
-                "Dollar ($)", min_value=0.01, max_value=100.0,
-                value=float(saved_stop.get('dollar_amount', 1.0)),
-                step=0.1, key="sb_stop_dollar",
-            )
-        elif stop_method == "percentage":
-            stop_config_dict["percentage"] = st.number_input(
-                "Pct (%)", min_value=0.01, max_value=10.0,
-                value=float(saved_stop.get('percentage', 0.5)),
-                step=0.05, key="sb_stop_pct",
-            )
-        elif stop_method == "swing":
-            stop_config_dict["lookback"] = st.number_input(
-                "Lookback", min_value=2, max_value=50,
-                value=int(saved_stop.get('lookback', 5)),
-                step=1, key="sb_stop_lookback",
-            )
-            stop_config_dict["padding"] = st.number_input(
-                "Padding ($)", min_value=0.0, max_value=10.0,
-                value=float(saved_stop.get('padding', 0.05)),
-                step=0.01, key="sb_stop_padding",
-            )
-
-        stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
-
-        # Apply pending target config from TP drill-down Replace button
-        if 'pending_target_config' in st.session_state:
-            pending_tc = st.session_state.pop('pending_target_config')
-            edit_config['target_config'] = pending_tc
-            st.session_state.strategy_config = dict(edit_config)
-            for k in ['sb_target_method', 'sb_target_rr', 'sb_target_atr',
-                      'sb_target_dollar', 'sb_target_pct', 'sb_target_lookback',
-                      'sb_target_padding']:
-                st.session_state.pop(k, None)
-
-        # Target
-        target_methods = ["None", "Risk:Reward", "ATR", "Fixed Dollar", "Percentage", "Swing High/Low"]
-        target_method_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
-        saved_target = edit_config.get('target_config') or {}
-        saved_t_method = saved_target.get('method')
-        default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
-        # Apply pending target removal from Variables box
-        if 'pending_remove_target' in st.session_state:
-            st.session_state.pop('pending_remove_target')
-            default_target_idx = 0
-
-        target_method_idx = st.selectbox(
-            "Target",
-            range(len(target_methods)),
-            index=default_target_idx,
-            format_func=lambda i: target_methods[i],
-            key="sb_target_method",
-        )
-        target_method = target_method_keys[target_method_idx]
-
-        if target_method is None:
-            target_config_dict = None
-        else:
-            target_config_dict = {"method": target_method}
-            if target_method == "risk_reward":
-                target_config_dict["rr_ratio"] = st.number_input(
-                    "R:R Ratio", min_value=0.5, max_value=10.0,
-                    value=float(saved_target.get('rr_ratio', 2.0)),
-                    step=0.5, key="sb_target_rr",
-                )
-            elif target_method == "atr":
-                target_config_dict["atr_mult"] = st.number_input(
-                    "ATR Mult", min_value=0.5, max_value=10.0,
-                    value=float(saved_target.get('atr_mult', 2.0)),
-                    step=0.1, key="sb_target_atr",
-                )
-            elif target_method == "fixed_dollar":
-                target_config_dict["dollar_amount"] = st.number_input(
-                    "Dollar ($)", min_value=0.01, max_value=100.0,
-                    value=float(saved_target.get('dollar_amount', 2.0)),
-                    step=0.1, key="sb_target_dollar",
-                )
-            elif target_method == "percentage":
-                target_config_dict["percentage"] = st.number_input(
-                    "Pct (%)", min_value=0.01, max_value=20.0,
-                    value=float(saved_target.get('percentage', 1.0)),
-                    step=0.05, key="sb_target_pct",
-                )
-            elif target_method == "swing":
-                target_config_dict["lookback"] = st.number_input(
-                    "Lookback", min_value=2, max_value=50,
-                    value=int(saved_target.get('lookback', 5)),
-                    step=1, key="sb_target_lookback",
-                )
-                target_config_dict["padding"] = st.number_input(
-                    "Padding ($)", min_value=0.0, max_value=10.0,
-                    value=float(saved_target.get('padding', 0.05)),
-                    step=0.01, key="sb_target_padding",
-                )
-
-        risk_per_trade = float(edit_config.get('risk_per_trade', 100.0))
-        starting_balance = float(edit_config.get('starting_balance', 10000.0))
-
-        # --- Save ---
-        st.markdown("**Save**")
+    with r1c6:
         _existing = load_strategies()
         _next_id = max((s.get('id', 0) for s in _existing), default=0) + 1
         default_name = edit_config.get('name', f"{symbol} {direction} - {_next_id}")
         if editing_id:
-            default_name = get_strategy_by_id(editing_id).get('name', default_name) if get_strategy_by_id(editing_id) else default_name
-        strategy_name = st.text_input("Strategy Name", value=default_name, key="sb_name")
-        enable_forward = st.checkbox("Forward Testing", value=edit_config.get('forward_testing', True), key="sb_forward")
-        enable_alerts = st.checkbox("Alerts", value=edit_config.get('alerts', False), key="sb_alerts")
+            editing_s = get_strategy_by_id(editing_id)
+            default_name = editing_s.get('name', default_name) if editing_s else default_name
+        strategy_name = st.text_input("Name", value=default_name, key="sb_name")
 
-        # Validation
-        exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
-        has_duplicate_exits = len(exit_cids) != len(set(exit_cids))
-        entry_in_exits = entry_trigger is not None and entry_trigger in exit_cids
-        bar_count_count = sum(
-            1 for cid, _ in exit_trigger_selections
-            if any(g.get_trigger_id("exit") == cid and g.base_template == "bar_count" for g in enabled_groups)
-        )
-        has_multiple_bar_count = bar_count_count > 1
-        can_save = (
-            entry_trigger is not None
-            and has_exit_triggers
-            and len(exit_trigger_selections) > 0
-            and not has_duplicate_exits
-            and not entry_in_exits
-            and not has_multiple_bar_count
-            and st.session_state.get('builder_data_loaded', False)
-        )
+    with r1c7:
+        enable_forward = st.checkbox("FT", value=edit_config.get('forward_testing', True),
+                                      key="sb_forward", help="Forward Testing: track live performance")
+        enable_alerts = st.checkbox("AL", value=edit_config.get('alerts', False),
+                                     key="sb_alerts", help="Alerts: notify on trade signals")
 
-        if has_duplicate_exits:
-            st.warning("Duplicate exit triggers.")
-        if entry_in_exits:
-            st.warning("Entry trigger in exits.")
-        if has_multiple_bar_count:
-            st.warning("Only one bar count exit allowed.")
+    with r1c8:
+        st.write("")  # vertical spacer to align button
+        load_clicked = st.button("Load Data", type="primary", use_container_width=True)
 
-        save_label = "Update Strategy" if editing_id else "Save Strategy"
-        save_clicked = st.button(save_label, type="primary", use_container_width=True, disabled=not can_save)
+    # Bar estimate (computed now, rendered after validation via placeholder)
+    est_bars = estimate_bar_count(data_days, timeframe)
+    _status_placeholder = st.empty()
 
     # =========================================================================
-    # BUILD CONFIG FROM SIDEBAR WIDGETS (always, for live updates)
+    # ROW 2 (collapsible): Entry Trigger | Exit Trigger | Stop Loss | Target
     # =========================================================================
+
+    # --- Pending overrides (process before rendering widgets) ---
+    if 'pending_stop_config' in st.session_state:
+        pending_sc = st.session_state.pop('pending_stop_config')
+        edit_config['stop_config'] = pending_sc
+        st.session_state.strategy_config = dict(edit_config)
+        for k in ['sb_stop_method', 'sb_stop_atr', 'sb_stop_dollar',
+                  'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding']:
+            st.session_state.pop(k, None)
+    if 'pending_target_config' in st.session_state:
+        pending_tc = st.session_state.pop('pending_target_config')
+        edit_config['target_config'] = pending_tc
+        st.session_state.strategy_config = dict(edit_config)
+        for k in ['sb_target_method', 'sb_target_rr', 'sb_target_atr',
+                  'sb_target_dollar', 'sb_target_pct', 'sb_target_lookback',
+                  'sb_target_padding']:
+            st.session_state.pop(k, None)
+    if 'pending_entry_trigger' in st.session_state:
+        _pending_entry_idx = st.session_state.pop('pending_entry_trigger')
+    else:
+        _pending_entry_idx = None
+    if 'pending_remove_target' in st.session_state:
+        st.session_state.pop('pending_remove_target')
+        _force_no_target = True
+    else:
+        _force_no_target = False
+
+    with st.expander("Strategy Config", expanded=False):
+        r2c1, r2c2, r2c3, r2c4 = st.columns([1.3, 1.3, 1.3, 1.3])
+
+        # --- Entry Trigger ---
+        with r2c1:
+            if len(entry_triggers) == 0:
+                st.warning("No entry triggers")
+                entry_trigger = None
+                entry_trigger_name = None
+            else:
+                entry_trigger_options = list(entry_triggers.keys())
+                entry_trigger_labels = []
+                for tid in entry_trigger_options:
+                    name = entry_triggers[tid]
+                    tdef = all_trigger_defs.get(tid)
+                    exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
+                    entry_trigger_labels.append(f"{name} [{exec_tag}]")
+                saved_entry = edit_config.get('entry_trigger_confluence_id', '')
+                if saved_entry in entry_trigger_options:
+                    entry_default_idx = entry_trigger_options.index(saved_entry)
+                else:
+                    settings_default = st.session_state.get('default_entry_trigger', '')
+                    if settings_default in entry_trigger_options:
+                        entry_default_idx = entry_trigger_options.index(settings_default)
+                    else:
+                        entry_default_idx = 0
+                if _pending_entry_idx is not None and 0 <= _pending_entry_idx < len(entry_trigger_options):
+                    entry_default_idx = _pending_entry_idx
+                entry_trigger_idx = st.selectbox(
+                    "Entry Trigger",
+                    range(len(entry_trigger_options)),
+                    index=entry_default_idx,
+                    format_func=lambda i: entry_trigger_labels[i],
+                    key="sb_entry_trigger",
+                )
+                entry_trigger = entry_trigger_options[entry_trigger_idx]
+                entry_trigger_name = entry_triggers[entry_trigger]
+
+        # --- Exit Trigger (primary) ---
+        with r2c2:
+            exit_options = list(exit_trigger_display.keys())
+            exit_labels = list(exit_trigger_display.values())
+            has_exit_triggers = len(exit_options) > 0
+
+            if not has_exit_triggers:
+                st.warning("No exit triggers")
+            else:
+                saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+                if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+                    saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+                saved_primary = saved_exit_cids[0] if saved_exit_cids else ''
+                if saved_primary in exit_options:
+                    exit_default_idx = exit_options.index(saved_primary)
+                else:
+                    settings_exit_default = st.session_state.get('default_exit_trigger', '')
+                    if settings_exit_default in exit_options:
+                        exit_default_idx = exit_options.index(settings_exit_default)
+                    else:
+                        exit_default_idx = 0
+                primary_exit_idx = st.selectbox(
+                    "Exit Trigger",
+                    range(len(exit_options)),
+                    index=exit_default_idx,
+                    format_func=lambda i, _labels=exit_labels: _labels[i],
+                    key="sb_exit_trigger_0",
+                )
+                primary_exit_cid = exit_options[primary_exit_idx]
+                primary_exit_name = all_trigger_map[primary_exit_cid].name if primary_exit_cid in all_trigger_map else ""
+
+        # --- Stop Loss ---
+        with r2c3:
+            stop_methods = ["ATR", "Fixed $", "Pct %", "Swing"]
+            stop_method_keys = ["atr", "fixed_dollar", "percentage", "swing"]
+            if 'stop_config' in edit_config:
+                saved_stop = edit_config['stop_config'] or {}
+            else:
+                saved_stop = st.session_state.get('default_stop_config') or {}
+            saved_stop_method = saved_stop.get('method', 'atr')
+            default_stop_idx = stop_method_keys.index(saved_stop_method) if saved_stop_method in stop_method_keys else 0
+
+            stop_method_idx = st.selectbox(
+                "Stop Loss",
+                range(len(stop_methods)),
+                index=default_stop_idx,
+                format_func=lambda i: stop_methods[i],
+                key="sb_stop_method",
+            )
+            stop_method = stop_method_keys[stop_method_idx]
+            stop_config_dict = {"method": stop_method}
+
+            if stop_method == "atr":
+                stop_config_dict["atr_mult"] = st.number_input(
+                    "ATR×", min_value=0.5, max_value=5.0,
+                    value=float(saved_stop.get('atr_mult', edit_config.get('stop_atr_mult', 1.5))),
+                    step=0.1, key="sb_stop_atr",
+                )
+            elif stop_method == "fixed_dollar":
+                stop_config_dict["dollar_amount"] = st.number_input(
+                    "$", min_value=0.01, max_value=100.0,
+                    value=float(saved_stop.get('dollar_amount', 1.0)),
+                    step=0.1, key="sb_stop_dollar",
+                )
+            elif stop_method == "percentage":
+                stop_config_dict["percentage"] = st.number_input(
+                    "%", min_value=0.01, max_value=10.0,
+                    value=float(saved_stop.get('percentage', 0.5)),
+                    step=0.05, key="sb_stop_pct",
+                )
+            elif stop_method == "swing":
+                stop_config_dict["lookback"] = st.number_input(
+                    "Lookback", min_value=2, max_value=50,
+                    value=int(saved_stop.get('lookback', 5)),
+                    step=1, key="sb_stop_lookback",
+                )
+                stop_config_dict["padding"] = st.number_input(
+                    "Pad $", min_value=0.0, max_value=10.0,
+                    value=float(saved_stop.get('padding', 0.05)),
+                    step=0.01, key="sb_stop_padding",
+                )
+
+        stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
+
+        # --- Target ---
+        with r2c4:
+            target_methods = ["None", "R:R", "ATR", "Fixed $", "Pct %", "Swing"]
+            target_method_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
+            if 'target_config' in edit_config:
+                saved_target = edit_config['target_config'] or {}
+            else:
+                saved_target = st.session_state.get('default_target_config') or {}
+            saved_t_method = saved_target.get('method') if saved_target else None
+            default_target_idx = target_method_keys.index(saved_t_method) if saved_t_method in target_method_keys else 0
+            if _force_no_target:
+                default_target_idx = 0
+
+            target_method_idx = st.selectbox(
+                "Target",
+                range(len(target_methods)),
+                index=default_target_idx,
+                format_func=lambda i: target_methods[i],
+                key="sb_target_method",
+            )
+            target_method = target_method_keys[target_method_idx]
+
+            if target_method is None:
+                target_config_dict = None
+            else:
+                target_config_dict = {"method": target_method}
+                if target_method == "risk_reward":
+                    target_config_dict["rr_ratio"] = st.number_input(
+                        "R:R", min_value=0.5, max_value=10.0,
+                        value=float(saved_target.get('rr_ratio', 2.0)),
+                        step=0.5, key="sb_target_rr",
+                    )
+                elif target_method == "atr":
+                    target_config_dict["atr_mult"] = st.number_input(
+                        "ATR×", min_value=0.5, max_value=10.0,
+                        value=float(saved_target.get('atr_mult', 2.0)),
+                        step=0.1, key="sb_target_atr",
+                    )
+                elif target_method == "fixed_dollar":
+                    target_config_dict["dollar_amount"] = st.number_input(
+                        "$", min_value=0.01, max_value=100.0,
+                        value=float(saved_target.get('dollar_amount', 2.0)),
+                        step=0.1, key="sb_target_dollar",
+                    )
+                elif target_method == "percentage":
+                    target_config_dict["percentage"] = st.number_input(
+                        "%", min_value=0.01, max_value=20.0,
+                        value=float(saved_target.get('percentage', 1.0)),
+                        step=0.05, key="sb_target_pct",
+                    )
+                elif target_method == "swing":
+                    target_config_dict["lookback"] = st.number_input(
+                        "Lookback", min_value=2, max_value=50,
+                        value=int(saved_target.get('lookback', 5)),
+                        step=1, key="sb_target_lookback",
+                    )
+                    target_config_dict["padding"] = st.number_input(
+                        "Pad $", min_value=0.0, max_value=10.0,
+                        value=float(saved_target.get('padding', 0.05)),
+                        step=0.01, key="sb_target_padding",
+                    )
+
+    risk_per_trade = float(edit_config.get('risk_per_trade', 100.0))
+    starting_balance = float(edit_config.get('starting_balance', 10000.0))
+
+    # =========================================================================
+    # ADDITIONAL EXITS (from drill-down, stored in session state)
+    # =========================================================================
+    exit_trigger_selections = []
+    if has_exit_triggers:
+        exit_trigger_selections.append((primary_exit_cid, primary_exit_name))
+
+    # Initialize additional exits from saved strategy
+    if 'sb_additional_exits' not in st.session_state:
+        saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+        if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+            saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+        st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
+
+    # Process pending exit operations from drill-down
+    if 'pending_add_exit' in st.session_state:
+        add_cid = st.session_state.pop('pending_add_exit')
+        if add_cid in exit_options and len(st.session_state.sb_additional_exits) < 2:
+            st.session_state.sb_additional_exits.append(add_cid)
+    if 'pending_replace_exits' in st.session_state:
+        replace_cids = st.session_state.pop('pending_replace_exits')
+        valid_cids = [c for c in replace_cids if c in exit_options]
+        if valid_cids:
+            st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
+    if 'pending_remove_exit_idx' in st.session_state:
+        rm_idx = st.session_state.pop('pending_remove_exit_idx')
+        addl = st.session_state.sb_additional_exits
+        adj_idx = rm_idx - 1  # index 0 is primary
+        if 0 <= adj_idx < len(addl):
+            addl.pop(adj_idx)
+
+    # Add additional exits to selections
+    for cid in st.session_state.get('sb_additional_exits', []):
+        if cid in exit_options:
+            name = all_trigger_map[cid].name if cid in all_trigger_map else ""
+            exit_trigger_selections.append((cid, name))
+
+    # =========================================================================
+    # VALIDATION + STATUS LINE
+    # =========================================================================
+    exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
+    has_duplicate_exits = len(exit_cids) != len(set(exit_cids))
+    entry_in_exits = entry_trigger is not None and entry_trigger in exit_cids
+    bar_count_count = sum(
+        1 for cid, _ in exit_trigger_selections
+        if any(g.get_trigger_id("exit") == cid and g.base_template == "bar_count" for g in enabled_groups)
+    )
+    has_multiple_bar_count = bar_count_count > 1
+    can_save = (
+        entry_trigger is not None
+        and has_exit_triggers
+        and len(exit_trigger_selections) > 0
+        and not has_duplicate_exits
+        and not entry_in_exits
+        and not has_multiple_bar_count
+        and st.session_state.get('builder_data_loaded', False)
+    )
+
+    # Fill status line (bar estimate + validation errors)
+    est_parts = [f"~{est_bars:,} bars", TIMEFRAME_GUIDANCE.get(timeframe, "")]
+    if est_bars > 200_000:
+        est_parts.append("**Very large dataset**")
+    elif est_bars > 50_000:
+        est_parts.append("Large dataset")
+    if has_duplicate_exits:
+        est_parts.append(":red[Duplicate exit triggers]")
+    if entry_in_exits:
+        est_parts.append(":red[Entry trigger in exits]")
+    if has_multiple_bar_count:
+        est_parts.append(":red[Only one bar count exit]")
+    _status_placeholder.caption(" · ".join(p for p in est_parts if p))
+
+    # =========================================================================
+    # BUILD CONFIG FROM WIDGETS (always, for live updates)
+    # =========================================================================
+    data_seed = st.session_state.get('global_data_seed', 42)
+    extended_data_days = st.session_state.get('default_extended_data_days', 365)
     base_entry_trigger_id = get_base_trigger_id(entry_trigger) if entry_trigger else None
 
     # Separate bar_count exits from signal-based exits
@@ -2333,6 +2411,10 @@ def render_strategy_builder():
         'data_days': data_days,
         'extended_data_days': extended_data_days,
         'data_seed': data_seed,
+        'lookback_mode': lookback_mode,
+        'bar_count': bar_count if lookback_mode == "Bars/Candles" else None,
+        'lookback_start_date': start_date.isoformat() if start_date else None,
+        'lookback_end_date': end_date.isoformat() if end_date else None,
         'strategy_origin': strategy_origin.lower(),
     }
 
@@ -2351,24 +2433,26 @@ def render_strategy_builder():
     # MAIN AREA
     # =========================================================================
     if not st.session_state.get('builder_data_loaded', False):
-        st.header("Strategy Builder")
-        st.info("Configure your strategy in the sidebar, then click **Load Data** to begin analysis.")
+        st.info("Select your settings above, then click **Load Data** to begin analysis.")
         return
 
     # Keep strategy_config in sync with sidebar for the edit flow
     st.session_state.strategy_config = config
 
-    # Header with strategy summary
+    # Header with strategy name
     entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
     exit_parts = list(signal_exit_names)
     if config.get('bar_count_exit'):
         exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
     exit_str = " / ".join(exit_parts) if exit_parts else "?"
-    st.markdown(f"### {symbol} | {direction} | {entry_name} → {exit_str}")
+    st.markdown(f"### {strategy_name}")
+    st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
 
     # Load data and generate trades
     with st.spinner("Loading market data and running analysis..."):
-        df = prepare_data_with_indicators(symbol, data_days, data_seed)
+        df = prepare_data_with_indicators(symbol, data_days, data_seed,
+                                          start_date=start_date, end_date=end_date,
+                                          timeframe=timeframe)
 
         if len(df) == 0:
             st.error("No data available")
@@ -2397,6 +2481,27 @@ def render_strategy_builder():
         filtered_trades = trades[mask]
     else:
         filtered_trades = trades
+
+    # KPIs
+    period_trading_days = count_trading_days(df)
+    kpis = calculate_kpis(
+        filtered_trades,
+        starting_balance=starting_balance,
+        risk_per_trade=risk_per_trade,
+        total_trading_days=period_trading_days,
+    )
+
+    kpi_cols = st.columns(8)
+    kpi_cols[0].metric("Trades", kpis["total_trades"])
+    kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+    kpi_cols[2].metric("Profit Factor", "∞" if kpis['profit_factor'] == float('inf') else f"{kpis['profit_factor']:.2f}")
+    kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
+    kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
+    kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
+    kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
+    kpi_cols[7].metric("Max R DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+    render_secondary_kpis(filtered_trades, kpis, key_prefix="builder")
 
     # Optimizable Variables
     with st.expander("Optimizable Variables"):
@@ -2490,27 +2595,6 @@ def render_strategy_builder():
                         st.rerun()
             else:
                 st.markdown("_None_")
-
-    # KPIs
-    period_trading_days = count_trading_days(df)
-    kpis = calculate_kpis(
-        filtered_trades,
-        starting_balance=starting_balance,
-        risk_per_trade=risk_per_trade,
-        total_trading_days=period_trading_days,
-    )
-
-    kpi_cols = st.columns(8)
-    kpi_cols[0].metric("Trades", kpis["total_trades"])
-    kpi_cols[1].metric("Win Rate", f"{kpis['win_rate']:.1f}%")
-    kpi_cols[2].metric("Profit Factor", "∞" if kpis['profit_factor'] == float('inf') else f"{kpis['profit_factor']:.2f}")
-    kpi_cols[3].metric("Avg R", f"{kpis['avg_r']:+.2f}")
-    kpi_cols[4].metric("Total R", f"{kpis['total_r']:+.1f}")
-    kpi_cols[5].metric("Daily R", f"{kpis['daily_r']:+.2f}")
-    kpi_cols[6].metric("R²", f"{kpis['r_squared']:.2f}")
-    kpi_cols[7].metric("Max R DD", f"{kpis['max_r_drawdown']:+.1f}R")
-
-    render_secondary_kpis(filtered_trades, kpis, key_prefix="builder")
 
     # Main content: Chart/Equity (left) + Confluence panel (right)
     left_col, right_col = st.columns([1, 1])
@@ -2760,7 +2844,7 @@ def render_strategy_builder():
                                 exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
                                 st.caption(exec_tag)
                             with t3:
-                                if not is_current and has_exit_triggers and st.session_state.exit_trigger_count < 3:
+                                if not is_current and has_exit_triggers and len(st.session_state.get('sb_additional_exits', [])) < 2:
                                     if row['trigger_id'] in exit_options:
                                         if st.button("Add", key=f"add_exit_{row['trigger_id']}"):
                                             st.session_state.pending_add_exit = row['trigger_id']
@@ -3212,7 +3296,15 @@ def render_strategy_builder():
                 }
             )
 
-    # Handle save
+    # =========================================================================
+    # SAVE BUTTON (bottom of page)
+    # =========================================================================
+    st.divider()
+    save_label = "Update Strategy" if editing_id else "Save Strategy"
+    _save_col1, _save_col2, _save_col3 = st.columns([3, 1, 3])
+    with _save_col2:
+        save_clicked = st.button(save_label, type="primary", use_container_width=True, disabled=not can_save)
+
     if save_clicked:
         strategy = {
             'name': strategy_name,
@@ -3235,6 +3327,7 @@ def render_strategy_builder():
         st.session_state.selected_confluences = set()
         st.session_state.strategy_config = {}
         st.session_state.editing_strategy_id = None
+        st.session_state.pop('sb_additional_exits', None)
         st.session_state.viewing_strategy_id = saved_id
         st.session_state.nav_target = "My Strategies"
         st.rerun()
@@ -3261,6 +3354,7 @@ def render_strategy_list():
             st.session_state.strategy_config = {}
             st.session_state.selected_confluences = set()
             st.session_state.editing_strategy_id = None
+            st.session_state.pop('sb_additional_exits', None)
             st.rerun()
 
     strategies = load_strategies()
@@ -3460,23 +3554,30 @@ def render_strategy_detail(strategy_id: int):
     # Header
     st.header(strat['name'])
 
-    meta_row1 = st.columns(5)
+    enabled_groups = get_enabled_groups()
+
+    meta_row1 = st.columns(6)
     meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
     meta_row1[1].markdown(f"**Direction:** {strat['direction']}")
     meta_row1[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
-    meta_row1[3].markdown(f"**Stop:** {format_stop_display(strat)}")
-    meta_row1[4].markdown(f"**Target:** {format_target_display(strat)}")
+    meta_row1[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
+    meta_row1[4].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
+    meta_row1[5].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
 
-    meta_row2 = st.columns(5)
-    meta_row2[0].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-    meta_row2[1].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
-
-    # Confluence conditions
-    enabled_groups = get_enabled_groups()
+    # Confluence conditions (TF + General)
     confluence = strat.get('confluence', [])
+    general_confluence = strat.get('general_confluences', [])
+    conf_parts = []
     if confluence:
-        formatted = [format_confluence_record(c, enabled_groups) for c in confluence]
-        st.caption("Confluence: " + " + ".join(formatted))
+        formatted_tf = [format_confluence_record(c, enabled_groups) for c in confluence]
+        conf_parts.append("TF: " + " + ".join(formatted_tf))
+    if general_confluence:
+        formatted_gen = [format_confluence_record(c, enabled_groups) for c in general_confluence]
+        conf_parts.append("General: " + " + ".join(formatted_gen))
+    if conf_parts:
+        st.caption(" · ".join(conf_parts))
+    elif not confluence and not general_confluence:
+        st.caption("No confluence conditions")
 
     # Action bar
     action_cols = st.columns([1, 1, 1, 1, 4])
@@ -3618,9 +3719,17 @@ def render_live_backtest(strat: dict):
     """Re-run backtest with current data and display full results."""
     data_days = strat.get('data_days', 30)
     data_seed = strat.get('data_seed', 42)
+    strat_timeframe = strat.get('timeframe', '1Min')
+    strat_start = None
+    strat_end = None
+    if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
+        strat_start = datetime.fromisoformat(strat['lookback_start_date'])
+        strat_end = datetime.fromisoformat(strat['lookback_end_date'])
 
     with st.spinner("Running backtest with current data..."):
-        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed)
+        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
+                                          start_date=strat_start, end_date=strat_end,
+                                          timeframe=strat_timeframe)
 
         if len(df) == 0:
             st.error("No data available for this symbol.")
@@ -3688,13 +3797,46 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 2: Equity & KPIs (Extended) ---
     with tab_kpi_ext:
-        extended_data_days = st.slider(
-            "Extended Lookback (days)", 90, 1825, strat.get('extended_data_days', 365),
-            key="bt_ext_days_slider",
-            help="Adjust how far back to run the extended backtest (up to 5 years)"
-        )
+        ext_lc1, ext_lc2, ext_lc3 = st.columns([1, 2, 4])
+        with ext_lc1:
+            ext_lookback_mode = st.selectbox(
+                "Lookback", LOOKBACK_MODES, key="bt_ext_lookback_mode")
+        ext_start_date = None
+        ext_end_date = None
+        with ext_lc2:
+            if ext_lookback_mode == "Days":
+                extended_data_days = st.slider(
+                    "Days", 90, 1825, strat.get('extended_data_days', 365),
+                    key="bt_ext_days_slider")
+            elif ext_lookback_mode == "Bars/Candles":
+                ext_bar_count = st.number_input(
+                    "Bars", min_value=100, max_value=500000, value=5000,
+                    step=500, key="bt_ext_bar_count")
+                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe)
+            elif ext_lookback_mode == "Date Range":
+                from datetime import date, time as dtime
+                dr1, dr2 = st.columns(2)
+                with dr1:
+                    ext_start_input = st.date_input(
+                        "Start", value=date(2024, 1, 1),
+                        min_value=date(2016, 1, 1), key="bt_ext_start")
+                with dr2:
+                    ext_end_input = st.date_input(
+                        "End", value=date.today(),
+                        min_value=date(2016, 1, 1), key="bt_ext_end")
+                if ext_start_input >= ext_end_input:
+                    st.error("Start must be before end.")
+                ext_start_date = datetime.combine(ext_start_input, dtime(9, 30))
+                ext_end_date = datetime.combine(ext_end_input, dtime(16, 0))
+                extended_data_days = (ext_end_input - ext_start_input).days
+        with ext_lc3:
+            ext_est = estimate_bar_count(extended_data_days, strat_timeframe)
+            st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
+
         with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
-            ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed)
+            ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
+                                                  start_date=ext_start_date, end_date=ext_end_date,
+                                                  timeframe=strat_timeframe)
 
         if len(ext_df) == 0:
             st.warning("No data available for extended period.")
@@ -3791,7 +3933,13 @@ def render_live_backtest(strat: dict):
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
             st.markdown(f"- Target: {format_target_display(strat)}")
-            st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            lb_mode = strat.get('lookback_mode', 'Days')
+            if lb_mode == "Bars/Candles" and strat.get('bar_count'):
+                st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
+            elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
+                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+            else:
+                st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
@@ -3800,10 +3948,17 @@ def render_live_backtest(strat: dict):
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
-        if confluence:
+        general_confs = strat.get('general_confluences', [])
+        if confluence or general_confs:
             enabled_groups = get_enabled_groups()
-            for c in confluence:
-                st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+            if confluence:
+                st.markdown("_TF Conditions:_")
+                for c in confluence:
+                    st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+            if general_confs:
+                st.markdown("_General Conditions:_")
+                for c in general_confs:
+                    st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
         else:
             st.caption("No confluence conditions")
 
@@ -3978,11 +4133,39 @@ def render_forward_test_view(strat: dict):
 
     # --- Tab 2: Equity & KPIs (Extended) ---
     with tab_kpi_ext:
-        extended_data_days = st.slider(
-            "Extended Lookback (days)", 90, 1825, strat.get('extended_data_days', 365),
-            key="fw_ext_days_slider",
-            help="Adjust how far back to run the extended backtest (up to 5 years)"
-        )
+        fw_ext_lc1, fw_ext_lc2, fw_ext_lc3 = st.columns([1, 2, 4])
+        strat_timeframe_fw = strat.get('timeframe', '1Min')
+        with fw_ext_lc1:
+            fw_ext_mode = st.selectbox(
+                "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
+        with fw_ext_lc2:
+            if fw_ext_mode == "Days":
+                extended_data_days = st.slider(
+                    "Days", 90, 1825, strat.get('extended_data_days', 365),
+                    key="fw_ext_days_slider")
+            elif fw_ext_mode == "Bars/Candles":
+                fw_ext_bars = st.number_input(
+                    "Bars", min_value=100, max_value=500000, value=5000,
+                    step=500, key="fw_ext_bar_count")
+                extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
+            elif fw_ext_mode == "Date Range":
+                from datetime import date, time as dtime
+                fw_dr1, fw_dr2 = st.columns(2)
+                with fw_dr1:
+                    fw_ext_start = st.date_input(
+                        "Start", value=date(2024, 1, 1),
+                        min_value=date(2016, 1, 1), key="fw_ext_start")
+                with fw_dr2:
+                    fw_ext_end = st.date_input(
+                        "End", value=date.today(),
+                        min_value=date(2016, 1, 1), key="fw_ext_end")
+                if fw_ext_start >= fw_ext_end:
+                    st.error("Start must be before end.")
+                extended_data_days = (fw_ext_end - fw_ext_start).days
+        with fw_ext_lc3:
+            fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
+            st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
+
         with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
             ext_df, ext_bt, ext_fw, ext_boundary = prepare_forward_test_data(
                 strat, data_days_override=extended_data_days
@@ -4053,7 +4236,13 @@ def render_forward_test_view(strat: dict):
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
             st.markdown(f"- Target: {format_target_display(strat)}")
-            st.markdown(f"- Data Days: {strat.get('data_days', 30)}")
+            lb_mode = strat.get('lookback_mode', 'Days')
+            if lb_mode == "Bars/Candles" and strat.get('bar_count'):
+                st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
+            elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
+                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+            else:
+                st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
             st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
@@ -4063,10 +4252,17 @@ def render_forward_test_view(strat: dict):
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
-        if confluence:
+        general_confs = strat.get('general_confluences', [])
+        if confluence or general_confs:
             enabled_groups = get_enabled_groups()
-            for c in confluence:
-                st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+            if confluence:
+                st.markdown("_TF Conditions:_")
+                for c in confluence:
+                    st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
+            if general_confs:
+                st.markdown("_General Conditions:_")
+                for c in general_confs:
+                    st.markdown(f"- {format_confluence_record(c, enabled_groups)}")
         else:
             st.caption("No confluence conditions")
 
@@ -4538,11 +4734,15 @@ def load_strategy_into_builder(strat: dict):
         'data_days': strat.get('data_days', 30),
         'extended_data_days': strat.get('extended_data_days', 365),
         'data_seed': strat.get('data_seed', 42),
+        'lookback_mode': strat.get('lookback_mode', 'Days'),
+        'bar_count': strat.get('bar_count'),
+        'lookback_start_date': strat.get('lookback_start_date'),
+        'lookback_end_date': strat.get('lookback_end_date'),
         'strategy_origin': strat.get('strategy_origin', 'standard'),
     }
 
-    # Set exit trigger count for UI
-    st.session_state.exit_trigger_count = max(1, len(exit_cids))
+    # Set additional exits for UI (skip the primary)
+    st.session_state.sb_additional_exits = exit_cids[1:] if len(exit_cids) > 1 else []
 
     tf_confs = set(strat.get('confluence', []))
     gen_confs = set(strat.get('general_confluences', []))
@@ -6321,6 +6521,214 @@ def render_webhook_templates_page():
         })
         st.toast("Template created")
         st.rerun()
+
+
+# =============================================================================
+# SETTINGS PAGE
+# =============================================================================
+
+def render_settings():
+    """Render the Settings page — global app preferences."""
+    st.header("Settings")
+
+    # --- Chart Defaults ---
+    st.subheader("Chart Defaults")
+    candle_presets = {
+        "Tight (50)": 50,
+        "Close (100)": 100,
+        "Default (200)": 200,
+        "Wide (400)": 400,
+        "Full (All)": 0,
+    }
+    current_val = st.session_state.get('chart_visible_candles', 200)
+    preset_values = list(candle_presets.values())
+    current_idx = preset_values.index(current_val) if current_val in preset_values else 2
+    preset_label = st.selectbox(
+        "Default Visible Candles",
+        list(candle_presets.keys()),
+        index=current_idx,
+        key="settings_visible_candles",
+        help="Number of candles visible when a chart first loads. You can still zoom/scroll manually.",
+    )
+    st.session_state['chart_visible_candles'] = candle_presets[preset_label]
+    st.caption("Individual charts have a per-chart override dropdown.")
+
+    # --- Backtest Defaults ---
+    st.divider()
+    st.subheader("Backtest Defaults")
+
+    ext_days = st.slider(
+        "Extended Data Days", 90, 1825,
+        value=st.session_state.get('default_extended_data_days', 365),
+        key="settings_extended_data_days",
+        help="Default lookback for the Extended Equity & KPIs tab (up to 5 years)",
+    )
+    st.session_state['default_extended_data_days'] = ext_days
+
+    # --- Default Triggers ---
+    st.divider()
+    st.subheader("Default Triggers")
+    st.caption("Pre-select entry and exit triggers for new strategies. "
+               "You can always change them in the Strategy Builder.")
+
+    enabled_groups = get_enabled_groups()
+    all_triggers = get_all_triggers(enabled_groups)
+    trigger_ids = list(all_triggers.keys())
+    trigger_labels = [f"{tdef.name} [{'C' if tdef.execution == 'bar_close' else 'I'}]"
+                      for tdef in all_triggers.values()]
+
+    if trigger_ids:
+        saved_entry_default = st.session_state.get('default_entry_trigger', '')
+        entry_idx = trigger_ids.index(saved_entry_default) if saved_entry_default in trigger_ids else 0
+        sel_entry = st.selectbox(
+            "Default Entry Trigger",
+            range(len(trigger_ids)),
+            index=entry_idx,
+            format_func=lambda i: trigger_labels[i],
+            key="settings_default_entry",
+        )
+        st.session_state['default_entry_trigger'] = trigger_ids[sel_entry]
+
+        saved_exit_default = st.session_state.get('default_exit_trigger', '')
+        exit_idx = trigger_ids.index(saved_exit_default) if saved_exit_default in trigger_ids else 0
+        sel_exit = st.selectbox(
+            "Default Exit Trigger",
+            range(len(trigger_ids)),
+            index=exit_idx,
+            format_func=lambda i: trigger_labels[i],
+            key="settings_default_exit",
+        )
+        st.session_state['default_exit_trigger'] = trigger_ids[sel_exit]
+    else:
+        st.info("Enable confluence packs first to configure default triggers.")
+
+    # --- Default Risk Management ---
+    st.divider()
+    st.subheader("Default Risk Management")
+    st.caption("Pre-select stop loss and target methods for new strategies.")
+
+    rm_col1, rm_col2 = st.columns(2)
+
+    # Stop Loss defaults
+    with rm_col1:
+        stop_methods_settings = ["ATR", "Fixed $", "Pct %", "Swing"]
+        stop_keys_settings = ["atr", "fixed_dollar", "percentage", "swing"]
+        saved_def_stop = st.session_state.get('default_stop_config') or {"method": "atr"}
+        saved_def_stop_method = saved_def_stop.get('method', 'atr')
+        def_stop_idx = stop_keys_settings.index(saved_def_stop_method) if saved_def_stop_method in stop_keys_settings else 0
+
+        def_stop_method_idx = st.selectbox(
+            "Default Stop Loss",
+            range(len(stop_methods_settings)),
+            index=def_stop_idx,
+            format_func=lambda i: stop_methods_settings[i],
+            key="settings_default_stop_method",
+        )
+        def_stop_method = stop_keys_settings[def_stop_method_idx]
+        def_stop_config = {"method": def_stop_method}
+
+        if def_stop_method == "atr":
+            def_stop_config["atr_mult"] = st.number_input(
+                "ATR Multiplier", min_value=0.5, max_value=5.0,
+                value=float(saved_def_stop.get('atr_mult', 1.5)),
+                step=0.1, key="settings_stop_atr",
+            )
+        elif def_stop_method == "fixed_dollar":
+            def_stop_config["dollar_amount"] = st.number_input(
+                "Dollar Amount", min_value=0.01, max_value=100.0,
+                value=float(saved_def_stop.get('dollar_amount', 1.0)),
+                step=0.1, key="settings_stop_dollar",
+            )
+        elif def_stop_method == "percentage":
+            def_stop_config["percentage"] = st.number_input(
+                "Percentage", min_value=0.01, max_value=10.0,
+                value=float(saved_def_stop.get('percentage', 0.5)),
+                step=0.05, key="settings_stop_pct",
+            )
+        elif def_stop_method == "swing":
+            def_stop_config["lookback"] = st.number_input(
+                "Lookback Bars", min_value=2, max_value=50,
+                value=int(saved_def_stop.get('lookback', 5)),
+                step=1, key="settings_stop_lookback",
+            )
+            def_stop_config["padding"] = st.number_input(
+                "Padding $", min_value=0.0, max_value=10.0,
+                value=float(saved_def_stop.get('padding', 0.05)),
+                step=0.01, key="settings_stop_padding",
+            )
+
+        st.session_state['default_stop_config'] = def_stop_config
+
+    # Target defaults
+    with rm_col2:
+        target_methods_settings = ["None", "R:R", "ATR", "Fixed $", "Pct %", "Swing"]
+        target_keys_settings = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
+        saved_def_target = st.session_state.get('default_target_config') or {}
+        saved_def_t_method = saved_def_target.get('method') if saved_def_target else None
+        def_target_idx = target_keys_settings.index(saved_def_t_method) if saved_def_t_method in target_keys_settings else 0
+
+        def_target_method_idx = st.selectbox(
+            "Default Target",
+            range(len(target_methods_settings)),
+            index=def_target_idx,
+            format_func=lambda i: target_methods_settings[i],
+            key="settings_default_target_method",
+        )
+        def_target_method = target_keys_settings[def_target_method_idx]
+
+        if def_target_method is None:
+            def_target_config = None
+        else:
+            def_target_config = {"method": def_target_method}
+            if def_target_method == "risk_reward":
+                def_target_config["rr_ratio"] = st.number_input(
+                    "R:R Ratio", min_value=0.5, max_value=10.0,
+                    value=float(saved_def_target.get('rr_ratio', 2.0)),
+                    step=0.5, key="settings_target_rr",
+                )
+            elif def_target_method == "atr":
+                def_target_config["atr_mult"] = st.number_input(
+                    "ATR Multiplier", min_value=0.5, max_value=10.0,
+                    value=float(saved_def_target.get('atr_mult', 2.0)),
+                    step=0.1, key="settings_target_atr",
+                )
+            elif def_target_method == "fixed_dollar":
+                def_target_config["dollar_amount"] = st.number_input(
+                    "Dollar Amount", min_value=0.01, max_value=100.0,
+                    value=float(saved_def_target.get('dollar_amount', 2.0)),
+                    step=0.1, key="settings_target_dollar",
+                )
+            elif def_target_method == "percentage":
+                def_target_config["percentage"] = st.number_input(
+                    "Percentage", min_value=0.01, max_value=20.0,
+                    value=float(saved_def_target.get('percentage', 1.0)),
+                    step=0.05, key="settings_target_pct",
+                )
+            elif def_target_method == "swing":
+                def_target_config["lookback"] = st.number_input(
+                    "Lookback Bars", min_value=2, max_value=50,
+                    value=int(saved_def_target.get('lookback', 5)),
+                    step=1, key="settings_target_lookback",
+                )
+                def_target_config["padding"] = st.number_input(
+                    "Padding $", min_value=0.0, max_value=10.0,
+                    value=float(saved_def_target.get('padding', 0.05)),
+                    step=0.01, key="settings_target_padding",
+                )
+
+        st.session_state['default_target_config'] = def_target_config
+
+    # --- Development (mock data only) ---
+    if not is_alpaca_configured():
+        st.divider()
+        st.subheader("Development")
+        data_seed = st.number_input(
+            "Default Data Seed",
+            value=st.session_state.get('global_data_seed', 42),
+            key="settings_data_seed",
+            help="Default random seed for mock data generation. Change for different random price patterns.",
+        )
+        st.session_state['global_data_seed'] = data_seed
 
 
 # =============================================================================

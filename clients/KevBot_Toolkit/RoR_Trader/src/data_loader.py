@@ -111,6 +111,7 @@ def load_from_mock(
     seed: int = 42,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    timeframe: str = "1Min",
 ) -> pd.DataFrame:
     """
     Load mock/simulated bar data.
@@ -137,7 +138,7 @@ def load_from_mock(
     # Vary seed by symbol for different price patterns
     symbol_seed = seed + hash(symbol) % 1000
 
-    bars = generate_mock_bars([symbol], start, end, "1Min", seed=symbol_seed)
+    bars = generate_mock_bars([symbol], start, end, timeframe, seed=symbol_seed)
 
     if symbol in bars.index.get_level_values(0):
         return bars.loc[symbol]
@@ -176,7 +177,7 @@ def load_market_data(
             return df
 
     # Fall back to mock data
-    return load_from_mock(symbol, days, seed, start_date=start_date, end_date=end_date)
+    return load_from_mock(symbol, days, seed, start_date=start_date, end_date=end_date, timeframe=timeframe)
 
 
 def get_data_source() -> str:
@@ -184,6 +185,38 @@ def get_data_source() -> str:
     if is_alpaca_configured():
         return "Alpaca API"
     return "Mock Data"
+
+
+# =============================================================================
+# BAR ESTIMATION HELPERS
+# =============================================================================
+
+# Approximate trading bars per day by timeframe (6.5 market hours)
+BARS_PER_DAY = {
+    "1Min": 390, "5Min": 78, "15Min": 26, "30Min": 13,
+    "1Hour": 7, "4Hour": 2, "1Day": 1,
+}
+
+
+def _bars_per_day(timeframe: str) -> int:
+    """Return approximate trading bars per day for a timeframe."""
+    return BARS_PER_DAY.get(timeframe, 390)
+
+
+def estimate_bar_count(days: int, timeframe: str) -> int:
+    """Estimate total bar count for a given number of calendar days and timeframe.
+    Assumes ~252 trading days per 365 calendar days (~69%).
+    """
+    trading_days = int(days * 252 / 365)
+    return trading_days * _bars_per_day(timeframe)
+
+
+def days_from_bar_count(bars: int, timeframe: str) -> int:
+    """Convert a desired bar count to approximate calendar days."""
+    import math
+    bpd = _bars_per_day(timeframe)
+    trading_days = math.ceil(bars / bpd)
+    return max(1, int(math.ceil(trading_days * 365 / 252)))
 
 
 # =============================================================================
@@ -200,20 +233,11 @@ def load_latest_bars(
     Load the most recent N bars for a symbol.
 
     Calculates the minimum number of days needed to cover `bars` rows
-    of 1-minute data (~390 bars per trading day).
-
-    Args:
-        symbol: Stock symbol
-        bars: Minimum number of bars to fetch
-        timeframe: Bar timeframe
-        seed: Random seed for mock data
-
-    Returns:
-        DataFrame with OHLCV data
+    based on the timeframe's bars-per-day rate.
     """
     import math
-    bars_per_day = 390  # ~6.5 hours of 1-min bars per trading day
-    days = max(1, math.ceil(bars / bars_per_day) + 1)  # +1 for safety margin
+    bpd = _bars_per_day(timeframe)
+    days = max(1, math.ceil(bars / bpd) + 1)  # +1 for safety margin
     return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed)
 
 
