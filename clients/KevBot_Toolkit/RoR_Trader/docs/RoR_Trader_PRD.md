@@ -545,6 +545,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 20. [x] 2-column card grid and trigger badges — strategy and portfolio lists in 2-column grid with stacked cards; strategy cards show Entry/Exit, Stop/Target, and Confluence badges below KPIs; strategy detail header adds Stop and Target metadata row; default strategy name shortened to `"{symbol} {direction} - {id}"`
 21. [x] Confluence drill-down enhancements — unified search bar + filter dialog (`@st.dialog`) across Drill-Down and Auto-Search modes; text search filters by indicator/combination name; filter lightbox with sort (6 KPIs + direction), min thresholds (Trades, Win Rate, Profit Factor, Daily R, R²), and Auto-Search max depth; all settings persisted in `confluence_filters` session state; replaces hardcoded `min_trades=3` and inline sort dropdown
 22. [x] "Exit After N Candles" bar count exit trigger — new `bar_count` EXIT-only template in TEMPLATES (no indicators/outputs); hybrid approach with `bar_count_exit` parameter in `generate_trades()` trade loop (can't pre-compute as DataFrame column); default 4 candles; priority 3 in exit chain (stop > target > bar_count > signal); migration auto-appends `bar_count_default` group for existing users; validation prevents multiple bar count exits per strategy
+23. [x] 6-tab optimization drill-down with actionable cards — replaced single "Confluence Drill-Down" panel with 6-tab layout (Entry, Exit, TF Conditions, General, Stop Loss, Take Profit); Entry tab: per-trigger KPI cards with "Replace" button (swaps sidebar entry trigger via pending state pattern); Exit tab: Drill-Down mode with per-trigger KPI cards and "Add" button (appends to exits, up to 3) + Auto-Search mode with `find_best_exit_combinations()` testing combos of 1-3 exits and "Replace" button (swaps all exits); TF Conditions tab: existing drill-down with checkbox→"Add" button conversion + Auto-Search "Apply"→"Replace" rename; tabs 4-6 placeholder; `analyze_entry_triggers()` and `analyze_exit_triggers()` helpers use full current strategy config (not isolated baselines); compact toolbar with `[Search][Action][⚙]` layout; Streamlit widget key conflict resolved via pending session state pattern (`pending_entry_trigger`, `pending_add_exit`, `pending_replace_exits` consumed before sidebar selectbox instantiation)
 
 ---
 
@@ -881,16 +882,16 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Tags sync with the Optimizable Variables box — removing from either location updates both
 
 **6-Tab Optimization Drill-Down:**
-- [ ] Replace current single drill-down panel with 6 tabs matching the optimization sequence
-- [ ] Each tab uses the same search bar + filter dialog pattern (from Phase 8 drill-down enhancements)
-- [ ] **Entry Trigger tab** — shows KPI cards for each available entry trigger; default exit (N-bar) used as baseline; selecting an entry trigger locks it for subsequent tabs
-- [ ] **Exit Triggers tab** — shows KPI cards for each available exit trigger, filtered to trades using the selected entry trigger; selecting exit trigger(s) locks them for subsequent tabs
-- [ ] **Timeframe Conditions tab** — existing confluence drill-down behavior, but scoped to trades matching selected entry + exit triggers
-- [ ] **General Conditions tab** — same drill-down pattern for general confluence interpretations
-- [ ] **Stop Loss tab** — shows KPI comparison cards across all variations in active stop loss packs; requires multi-backtest pre-computation (one run per stop config)
-- [ ] **Take Profit tab** — shows KPI comparison cards across all variations in active take profit packs; same multi-backtest pattern
+- [x] Replace current single drill-down panel with 6 tabs matching the optimization sequence
+- [x] Each tab uses the same search bar + filter dialog pattern (from Phase 8 drill-down enhancements)
+- [x] **Entry Trigger tab** — shows KPI cards for each available entry trigger using current strategy config; "Replace" button swaps sidebar entry trigger; compact `[Search][Analyze][⚙]` toolbar
+- [x] **Exit Triggers tab** — Drill-Down mode with per-trigger KPI cards and "Add" button (appends up to 3); Auto-Search mode with `find_best_exit_combinations()` and "Replace" button; compact toolbar with mode-aware action button
+- [x] **Timeframe Conditions tab** — existing confluence drill-down with "Add" button (replaces checkbox) + Auto-Search with "Replace" button (replaces "Apply"); Auto-Search gets compact toolbar with "Search" action button
+- [ ] **General Conditions tab** — same drill-down pattern for general confluence interpretations (placeholder — depends on General Confluence Groups)
+- [ ] **Stop Loss tab** — shows KPI comparison cards across all variations in active stop loss packs; requires multi-backtest pre-computation (placeholder — depends on Stop Loss Packs)
+- [ ] **Take Profit tab** — shows KPI comparison cards across all variations in active take profit packs; same multi-backtest pattern (placeholder — depends on Take Profit Packs)
 - [ ] Cross-tab filtering — selections in earlier tabs narrow the trade set for later tabs ("given this entry + these exits + these conditions, which stop is best?")
-- [ ] Auto-Search available on all tabs — not just timeframe conditions
+- [x] Auto-Search available on Entry (N/A — single trigger), Exit, and TF Conditions tabs
 
 **Data Model Changes:**
 - [ ] Extend `confluence_records` set on trades — include general confluence records alongside timeframe records (same set, different prefix)

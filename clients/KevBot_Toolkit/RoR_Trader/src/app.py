@@ -822,6 +822,189 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
     return results_df
 
 
+def analyze_entry_triggers(
+    df: pd.DataFrame, direction: str, groups: list,
+    exit_triggers: list = None, bar_count_exit: int = None,
+    risk_per_trade: float = 100.0, stop_config: dict = None,
+    target_config: dict = None, confluence_required: set = None,
+    starting_balance: float = 10000.0, total_trading_days: int = None,
+) -> pd.DataFrame:
+    """For each available entry trigger, generate trades with current strategy config and compute KPIs."""
+    entry_triggers = get_confluence_entry_triggers(direction, groups)
+    all_trigger_defs = get_all_triggers(groups)
+
+    # Ensure at least one exit mechanism exists
+    effective_exit_triggers = exit_triggers or []
+    effective_bar_count = bar_count_exit
+    if not effective_exit_triggers and effective_bar_count is None:
+        effective_bar_count = 4  # fallback default
+
+    results = []
+    for trig_cid, trig_name in entry_triggers.items():
+        base_id = get_base_trigger_id(trig_cid)
+        tdef = all_trigger_defs.get(trig_cid)
+        trades = generate_trades(
+            df, direction=direction, entry_trigger=base_id,
+            exit_triggers=effective_exit_triggers,
+            bar_count_exit=effective_bar_count,
+            confluence_required=confluence_required,
+            risk_per_trade=risk_per_trade, stop_config=stop_config,
+            target_config=target_config,
+        )
+        if len(trades) == 0:
+            continue
+        kpis = calculate_kpis(trades, starting_balance=starting_balance,
+                              risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+        results.append({
+            'trigger_id': trig_cid,
+            'trigger_name': trig_name,
+            'execution': tdef.execution if tdef else 'bar_close',
+            'total_trades': kpis['total_trades'],
+            'win_rate': kpis['win_rate'],
+            'profit_factor': kpis['profit_factor'],
+            'avg_r': kpis['avg_r'],
+            'daily_r': kpis['daily_r'],
+            'r_squared': kpis['r_squared'],
+        })
+
+    results_df = pd.DataFrame(results)
+    if len(results_df) > 0:
+        results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
+    return results_df
+
+
+def analyze_exit_triggers(
+    df: pd.DataFrame, direction: str, entry_trigger_confluence_id: str,
+    groups: list, risk_per_trade: float = 100.0,
+    stop_config: dict = None, target_config: dict = None,
+    starting_balance: float = 10000.0, total_trading_days: int = None,
+) -> pd.DataFrame:
+    """For each available exit trigger, generate trades with current entry and compute KPIs."""
+    exit_triggers = get_confluence_exit_triggers(groups)
+    all_trigger_defs = get_all_triggers(groups)
+    base_entry = get_base_trigger_id(entry_trigger_confluence_id)
+    results = []
+
+    for trig_cid, trig_name in exit_triggers.items():
+        tdef = all_trigger_defs.get(trig_cid)
+
+        # Detect bar_count exits
+        is_bar_count = False
+        bar_count_val = None
+        for g in groups:
+            if g.get_trigger_id("exit") == trig_cid and g.base_template == "bar_count":
+                bar_count_val = g.parameters.get("candle_count", 4)
+                is_bar_count = True
+                break
+
+        if is_bar_count:
+            trades = generate_trades(
+                df, direction=direction, entry_trigger=base_entry,
+                exit_triggers=[], bar_count_exit=bar_count_val,
+                risk_per_trade=risk_per_trade, stop_config=stop_config,
+                target_config=target_config,
+            )
+        else:
+            base_exit = get_base_trigger_id(trig_cid)
+            trades = generate_trades(
+                df, direction=direction, entry_trigger=base_entry,
+                exit_triggers=[base_exit], bar_count_exit=None,
+                risk_per_trade=risk_per_trade, stop_config=stop_config,
+                target_config=target_config,
+            )
+
+        if len(trades) == 0:
+            continue
+        kpis = calculate_kpis(trades, starting_balance=starting_balance,
+                              risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+        results.append({
+            'trigger_id': trig_cid,
+            'trigger_name': trig_name,
+            'execution': tdef.execution if tdef else 'bar_close',
+            'total_trades': kpis['total_trades'],
+            'win_rate': kpis['win_rate'],
+            'profit_factor': kpis['profit_factor'],
+            'avg_r': kpis['avg_r'],
+            'daily_r': kpis['daily_r'],
+            'r_squared': kpis['r_squared'],
+        })
+
+    results_df = pd.DataFrame(results)
+    if len(results_df) > 0:
+        results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
+    return results_df
+
+
+def find_best_exit_combinations(
+    df: pd.DataFrame, direction: str, entry_trigger_confluence_id: str,
+    groups: list, max_depth: int = 3, min_trades: int = 5, top_n: int = 50,
+    risk_per_trade: float = 100.0, stop_config: dict = None,
+    target_config: dict = None, starting_balance: float = 10000.0,
+    total_trading_days: int = None,
+) -> pd.DataFrame:
+    """Find the best exit trigger combinations (1-3 triggers) automatically."""
+    exit_triggers = get_confluence_exit_triggers(groups)
+    base_entry = get_base_trigger_id(entry_trigger_confluence_id)
+    all_cids = list(exit_triggers.keys())
+
+    if len(all_cids) == 0:
+        return pd.DataFrame()
+
+    # Pre-classify each exit trigger as bar_count or signal
+    exit_info = {}
+    for cid in all_cids:
+        is_bar_count = False
+        bar_count_val = None
+        for g in groups:
+            if g.get_trigger_id("exit") == cid and g.base_template == "bar_count":
+                bar_count_val = g.parameters.get("candle_count", 4)
+                is_bar_count = True
+                break
+        exit_info[cid] = {'is_bar_count': is_bar_count, 'bar_count_val': bar_count_val,
+                          'name': exit_triggers[cid]}
+
+    results = []
+    for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
+        for combo in combinations(all_cids, depth):
+            # Separate bar_count from signal exits; allow at most one bar_count per combo
+            bar_count_exits = [c for c in combo if exit_info[c]['is_bar_count']]
+            signal_exits = [c for c in combo if not exit_info[c]['is_bar_count']]
+
+            if len(bar_count_exits) > 1:
+                continue  # skip combos with multiple bar_count exits
+
+            bar_count_exit_val = exit_info[bar_count_exits[0]]['bar_count_val'] if bar_count_exits else None
+            signal_base_ids = [get_base_trigger_id(c) for c in signal_exits]
+
+            trades = generate_trades(
+                df, direction=direction, entry_trigger=base_entry,
+                exit_triggers=signal_base_ids, bar_count_exit=bar_count_exit_val,
+                risk_per_trade=risk_per_trade, stop_config=stop_config,
+                target_config=target_config,
+            )
+
+            if len(trades) < min_trades:
+                continue
+
+            kpis = calculate_kpis(trades, starting_balance=starting_balance,
+                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+
+            combo_names = [exit_info[c]['name'] for c in combo]
+            results.append({
+                'combination': set(combo),
+                'combo_str': " + ".join(sorted(combo_names)),
+                'depth': depth,
+                **kpis,
+            })
+
+    results_df = pd.DataFrame(results)
+    if len(results_df) > 0:
+        results_df = results_df.sort_values(
+            ['profit_factor', 'total_trades'], ascending=[False, False], na_position='last'
+        ).head(top_n)
+    return results_df
+
+
 # =============================================================================
 # CONFLUENCE FILTER DIALOG & HELPERS
 # =============================================================================
@@ -893,6 +1076,8 @@ def apply_confluence_filters(df: pd.DataFrame, filters: dict, search_query: str,
             df = df[df['combination'].apply(
                 lambda combo: any(query_lower in format_confluence_record(c, groups).lower() for c in combo)
             )]
+        elif 'trigger_name' in df.columns:
+            df = df[df['trigger_name'].str.lower().str.contains(query_lower, na=False)]
 
     # KPI filters
     if filters.get('min_win_rate') is not None:
@@ -1325,6 +1510,12 @@ def main():
             'max_depth': 2,
             'search_query': '',
         }
+    if 'entry_trigger_results' not in st.session_state:
+        st.session_state.entry_trigger_results = None
+    if 'exit_trigger_results' not in st.session_state:
+        st.session_state.exit_trigger_results = None
+    if 'auto_exit_results' not in st.session_state:
+        st.session_state.auto_exit_results = None
 
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Groups", "Strategies", "Portfolios", "Alerts"]
@@ -1680,6 +1871,11 @@ def render_strategy_builder():
                 entry_trigger_labels.append(f"{name} [{exec_tag}]")
             saved_entry = edit_config.get('entry_trigger_confluence_id', '')
             entry_default_idx = entry_trigger_options.index(saved_entry) if saved_entry in entry_trigger_options else 0
+            # Apply pending entry trigger from drill-down Replace button
+            if 'pending_entry_trigger' in st.session_state:
+                pending_idx = st.session_state.pop('pending_entry_trigger')
+                if 0 <= pending_idx < len(entry_trigger_options):
+                    entry_default_idx = pending_idx
             entry_trigger_idx = st.selectbox(
                 "Entry Trigger",
                 range(len(entry_trigger_options)),
@@ -1702,6 +1898,16 @@ def render_strategy_builder():
         if 'exit_trigger_count' not in st.session_state:
             st.session_state.exit_trigger_count = max(1, len(saved_exit_cids)) if saved_exit_cids else 1
 
+        # Apply pending exit trigger changes from drill-down Add / Auto-Search Replace
+        pending_exit_overrides = {}
+        if 'pending_add_exit' in st.session_state:
+            add_cid = st.session_state.pop('pending_add_exit')
+            # Will be applied after exit_options is built
+            st.session_state._pending_add_exit_cid = add_cid
+        if 'pending_replace_exits' in st.session_state:
+            replace_cids = st.session_state.pop('pending_replace_exits')
+            st.session_state._pending_replace_exit_cids = replace_cids
+
         exit_trigger_selections = []
         has_exit_triggers = len(exit_trigger_display) > 0
 
@@ -1711,10 +1917,30 @@ def render_strategy_builder():
             exit_options = list(exit_trigger_display.keys())
             exit_labels = list(exit_trigger_display.values())
 
+            # Handle pending Add (append one exit)
+            if '_pending_add_exit_cid' in st.session_state:
+                add_cid = st.session_state.pop('_pending_add_exit_cid')
+                if add_cid in exit_options and st.session_state.exit_trigger_count < 3:
+                    new_count = st.session_state.exit_trigger_count + 1
+                    st.session_state.exit_trigger_count = new_count
+                    pending_exit_overrides[new_count - 1] = exit_options.index(add_cid)
+
+            # Handle pending Replace (swap all exits)
+            if '_pending_replace_exit_cids' in st.session_state:
+                replace_cids = st.session_state.pop('_pending_replace_exit_cids')
+                valid_cids = [c for c in replace_cids if c in exit_options]
+                if valid_cids:
+                    st.session_state.exit_trigger_count = len(valid_cids)
+                    for i, cid in enumerate(valid_cids):
+                        pending_exit_overrides[i] = exit_options.index(cid)
+
             for et_idx in range(st.session_state.exit_trigger_count):
                 label = f"Exit {et_idx + 1}" if st.session_state.exit_trigger_count > 1 else "Exit Trigger"
                 saved_val = saved_exit_cids[et_idx] if et_idx < len(saved_exit_cids) else ''
                 default_idx = exit_options.index(saved_val) if saved_val in exit_options else 0
+                # Apply pending override for this slot
+                if et_idx in pending_exit_overrides:
+                    default_idx = pending_exit_overrides[et_idx]
                 selected_idx = st.selectbox(
                     label,
                     range(len(exit_options)),
@@ -1938,6 +2164,9 @@ def render_strategy_builder():
     if load_clicked:
         st.session_state.builder_data_loaded = True
         st.session_state.strategy_config = config
+        st.session_state.entry_trigger_results = None
+        st.session_state.exit_trigger_results = None
+        st.session_state.auto_exit_results = None
         st.rerun()
 
     # =========================================================================
@@ -2103,56 +2332,81 @@ def render_strategy_builder():
                                secondary_panes=osc_panes if osc_panes else None)
 
     with right_col:
-        st.subheader("Confluence Drill-Down")
+        tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
+            "Entry", "Exit", "TF Conditions",
+            "General", "Stop Loss", "Take Profit"
+        ])
 
-        mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
+        # =================================================================
+        # Tab 1: Entry Trigger
+        # =================================================================
+        with tab_entry:
+            entry_filters = st.session_state.confluence_filters
+            e_search_col, e_action_col, e_filter_col = st.columns([3, 1.5, 0.5])
+            with e_search_col:
+                entry_search = st.text_input(
+                    "Search", placeholder="Search entry triggers...",
+                    key="entry_trig_search", label_visibility="collapsed"
+                )
+            with e_action_col:
+                entry_analyze_clicked = st.button("Analyze", type="primary",
+                                                  use_container_width=True, key="analyze_entry_btn")
+            with e_filter_col:
+                if st.button("⚙", use_container_width=True, key="entry_filter_btn"):
+                    confluence_filter_dialog(show_auto_search_options=False)
 
-        # Shared search bar + filter button toolbar
-        filters = st.session_state.confluence_filters
-        search_col, filter_col = st.columns([4, 1])
-        with search_col:
-            search_key = "dd_search" if mode == "Drill-Down" else "as_search"
-            search_placeholder = "Search indicators..." if mode == "Drill-Down" else "Search combinations..."
-            search_query = st.text_input("Search", placeholder=search_placeholder,
-                                          value=filters.get('search_query', ''),
-                                          key=search_key, label_visibility="collapsed")
-            st.session_state.confluence_filters['search_query'] = search_query
-        with filter_col:
-            if st.button("⚙ Filter", use_container_width=True):
-                confluence_filter_dialog(show_auto_search_options=(mode == "Auto-Search"))
+            # Build caption showing held-constant variables
+            exit_parts = list(config.get('exit_trigger_names', []))
+            if config.get('bar_count_exit'):
+                exit_parts.append(f"{config['bar_count_exit']}-bar exit")
+            exit_summary = " / ".join(exit_parts) if exit_parts else "4-bar exit (default)"
+            stop_method = (config.get('stop_config') or {}).get('method', 'atr').upper()
+            st.caption(f"Exit: {exit_summary} | Stop: {stop_method}")
 
-        if mode == "Drill-Down":
-            confluence_df = analyze_confluences(
-                trades, selected, min_trades=filters.get('min_trades', 3),
-                starting_balance=starting_balance,
-                risk_per_trade=risk_per_trade,
-                total_trading_days=period_trading_days,
-            )
+            # Build confluence set for filtering
+            confluence_set = selected if len(selected) > 0 else None
 
-            if len(confluence_df) > 0:
-                confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
-                confluence_df = confluence_df.head(20)
+            if entry_analyze_clicked:
+                with st.spinner("Generating trades for each entry trigger..."):
+                    entry_results = analyze_entry_triggers(
+                        df, direction, enabled_groups,
+                        exit_triggers=config.get('exit_triggers'),
+                        bar_count_exit=config.get('bar_count_exit'),
+                        risk_per_trade=risk_per_trade,
+                        stop_config=stop_config_dict,
+                        target_config=target_config_dict,
+                        confluence_required=confluence_set,
+                        starting_balance=starting_balance,
+                        total_trading_days=period_trading_days,
+                    )
+                st.session_state.entry_trigger_results = entry_results
 
-                for _, row in confluence_df.iterrows():
-                    conf = row['confluence']
-                    conf_display = format_confluence_record(conf, enabled_groups)
-                    is_selected = conf in selected
+            if st.session_state.entry_trigger_results is not None and len(st.session_state.entry_trigger_results) > 0:
+                display_df = apply_confluence_filters(
+                    st.session_state.entry_trigger_results, entry_filters, entry_search, enabled_groups
+                )
+                display_df = display_df.head(20)
+                current_entry_cid = config.get('entry_trigger_confluence_id', '')
 
+                for _, row in display_df.iterrows():
+                    is_current = (row['trigger_id'] == current_entry_cid)
                     with st.container(border=True):
-                        # Top row: checkbox + name
-                        top1, top2 = st.columns([0.3, 4])
-                        with top1:
-                            if st.checkbox("", value=is_selected, key=f"sel_{conf}", label_visibility="collapsed"):
-                                if not is_selected:
-                                    st.session_state.selected_confluences.add(conf)
+                        t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                        with t1:
+                            label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                            if is_current:
+                                label += " _(current)_"
+                            st.markdown(label)
+                        with t2:
+                            exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
+                            st.caption(exec_tag)
+                        with t3:
+                            if not is_current and row['trigger_id'] in entry_trigger_options:
+                                if st.button("Replace", key=f"rep_entry_{row['trigger_id']}"):
+                                    st.session_state.pending_entry_trigger = entry_trigger_options.index(row['trigger_id'])
+                                    st.session_state.entry_trigger_results = None
                                     st.rerun()
-                            elif is_selected:
-                                st.session_state.selected_confluences.discard(conf)
-                                st.rerun()
-                        with top2:
-                            st.markdown(f"**{conf_display}**" if is_selected else conf_display)
 
-                        # Bottom row: KPIs
                         k1, k2, k3, k4, k5, k6 = st.columns(6)
                         k1.caption(f"Trades: {row['total_trades']}")
                         pf = row['profit_factor']
@@ -2162,50 +2416,278 @@ def render_strategy_builder():
                         k5.caption(f"Daily R: {row['daily_r']:+.2f}")
                         k6.caption(f"R²: {row['r_squared']:.2f}")
             else:
-                st.info("Not enough trades for analysis")
+                st.info("Click **Analyze** to compare all available entry triggers using the current strategy config.")
 
-        else:  # Auto-Search
-            if st.button("Find Best Combinations", type="primary"):
-                with st.spinner("Searching..."):
-                    best = find_best_combinations(
-                        trades, filters.get('max_depth', 2), filters.get('min_trades', 5), top_n=50,
-                        starting_balance=starting_balance,
-                        risk_per_trade=risk_per_trade,
-                        total_trading_days=period_trading_days,
-                    )
-                if len(best) > 0:
-                    st.session_state.auto_results = best
+        # =================================================================
+        # Tab 2: Exit Triggers
+        # =================================================================
+        with tab_exit:
+            exit_mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True,
+                                 label_visibility="collapsed", key="exit_mode_radio")
 
-            if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
-                results = apply_confluence_filters(
-                    st.session_state.auto_results, filters, search_query, enabled_groups
+            exit_filters = st.session_state.confluence_filters
+            x_search_col, x_action_col, x_filter_col = st.columns([3, 1.5, 0.5])
+            with x_search_col:
+                exit_search_key = "exit_dd_search" if exit_mode == "Drill-Down" else "exit_as_search"
+                exit_search_ph = "Search exit triggers..." if exit_mode == "Drill-Down" else "Search combinations..."
+                exit_search = st.text_input(
+                    "Search", placeholder=exit_search_ph,
+                    key=exit_search_key, label_visibility="collapsed"
                 )
-                results = results.head(20)
+            with x_action_col:
+                if exit_mode == "Drill-Down":
+                    exit_action_label = "Analyze"
+                    exit_action_key = "analyze_exit_btn"
+                else:
+                    exit_action_label = "Search"
+                    exit_action_key = "find_exit_combos_btn"
+                exit_action_clicked = st.button(exit_action_label, type="primary",
+                                                use_container_width=True, key=exit_action_key)
+            with x_filter_col:
+                if st.button("⚙", use_container_width=True, key="exit_filter_btn"):
+                    confluence_filter_dialog(show_auto_search_options=(exit_mode == "Auto-Search"))
 
-                for _, row in results.iterrows():
-                    combo_display = format_confluence_set(row['combination'], enabled_groups)
+            entry_name = config.get('entry_trigger_name') or config.get('entry_trigger', '?')
+            st.caption(f"Entry: **{entry_name}** | Stop: **{config.get('stop_method', '?')}**")
 
-                    with st.container(border=True):
-                        # Top row: depth badge + name + apply button
-                        t1, t2, t3 = st.columns([0.3, 3.5, 0.8])
-                        with t1:
-                            st.caption(f"D{row['depth']}")
-                        with t2:
-                            st.markdown(f"**{combo_display}**")
-                        with t3:
-                            if st.button("Apply", key=f"apply_{row['combo_str']}"):
-                                st.session_state.selected_confluences = row['combination'].copy()
-                                st.rerun()
+            if not config.get('entry_trigger_confluence_id'):
+                st.warning("Select an entry trigger first.")
+            elif exit_mode == "Drill-Down":
+                if exit_action_clicked:
+                    with st.spinner("Generating trades for each exit trigger..."):
+                        exit_results = analyze_exit_triggers(
+                            df, direction,
+                            entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
+                            groups=enabled_groups,
+                            risk_per_trade=risk_per_trade,
+                            stop_config=stop_config_dict,
+                            target_config=target_config_dict,
+                            starting_balance=starting_balance,
+                            total_trading_days=period_trading_days,
+                        )
+                    st.session_state.exit_trigger_results = exit_results
 
-                        # Bottom row: KPIs
-                        k1, k2, k3, k4, k5, k6 = st.columns(6)
-                        k1.caption(f"Trades: {row['total_trades']}")
-                        pf = row['profit_factor']
-                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
-                        k3.caption(f"WR: {row['win_rate']:.1f}%")
-                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
-                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
-                        k6.caption(f"R²: {row['r_squared']:.2f}")
+                if st.session_state.exit_trigger_results is not None and len(st.session_state.exit_trigger_results) > 0:
+                    display_df = apply_confluence_filters(
+                        st.session_state.exit_trigger_results, exit_filters, exit_search, enabled_groups
+                    )
+                    display_df = display_df.head(20)
+                    current_exit_cids = set(config.get('exit_trigger_confluence_ids', []))
+                    if config.get('bar_count_exit'):
+                        for g in enabled_groups:
+                            if g.base_template == "bar_count":
+                                current_exit_cids.add(g.get_trigger_id("exit"))
+
+                    for _, row in display_df.iterrows():
+                        is_current = (row['trigger_id'] in current_exit_cids)
+                        with st.container(border=True):
+                            t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                            with t1:
+                                label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                                if is_current:
+                                    label += " _(current)_"
+                                st.markdown(label)
+                            with t2:
+                                exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
+                                st.caption(exec_tag)
+                            with t3:
+                                if not is_current and has_exit_triggers and st.session_state.exit_trigger_count < 3:
+                                    if row['trigger_id'] in exit_options:
+                                        if st.button("Add", key=f"add_exit_{row['trigger_id']}"):
+                                            st.session_state.pending_add_exit = row['trigger_id']
+                                            st.session_state.exit_trigger_results = None
+                                            st.rerun()
+
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
+                else:
+                    st.info("Click **Analyze** to compare individual exit triggers against the current entry.")
+
+            else:  # Auto-Search
+                if exit_action_clicked:
+                    with st.spinner("Searching exit combinations..."):
+                        best_exits = find_best_exit_combinations(
+                            df, direction,
+                            entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
+                            groups=enabled_groups,
+                            max_depth=exit_filters.get('max_depth', 3),
+                            min_trades=exit_filters.get('min_trades', 5),
+                            top_n=50,
+                            risk_per_trade=risk_per_trade,
+                            stop_config=stop_config_dict,
+                            target_config=target_config_dict,
+                            starting_balance=starting_balance,
+                            total_trading_days=period_trading_days,
+                        )
+                    if len(best_exits) > 0:
+                        st.session_state.auto_exit_results = best_exits
+
+                if st.session_state.auto_exit_results is not None and len(st.session_state.auto_exit_results) > 0:
+                    exit_results = apply_confluence_filters(
+                        st.session_state.auto_exit_results, exit_filters, exit_search, enabled_groups
+                    )
+                    exit_results = exit_results.head(20)
+
+                    for _, row in exit_results.iterrows():
+                        with st.container(border=True):
+                            t1, t2, t3 = st.columns([0.3, 3.7, 0.8])
+                            with t1:
+                                st.caption(f"D{row['depth']}")
+                            with t2:
+                                st.markdown(f"**{row['combo_str']}**")
+                            with t3:
+                                if has_exit_triggers:
+                                    combo_cids = sorted(row['combination'])
+                                    all_in_options = all(c in exit_options for c in combo_cids)
+                                    if all_in_options:
+                                        if st.button("Replace", key=f"rep_exit_{row['combo_str']}"):
+                                            st.session_state.pending_replace_exits = combo_cids
+                                            st.session_state.auto_exit_results = None
+                                            st.rerun()
+
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
+                else:
+                    st.info("Click **Search** to find optimal exit trigger combos (up to 3).")
+
+        # =================================================================
+        # Tab 3: TF Conditions (existing Drill-Down / Auto-Search)
+        # =================================================================
+        with tab_tf:
+            mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True, label_visibility="collapsed")
+
+            filters = st.session_state.confluence_filters
+            if mode == "Auto-Search":
+                search_col, action_col, filter_col = st.columns([3, 1.5, 0.5])
+            else:
+                search_col, filter_col = st.columns([4, 1])
+            with search_col:
+                search_key = "dd_search" if mode == "Drill-Down" else "as_search"
+                search_placeholder = "Search indicators..." if mode == "Drill-Down" else "Search combinations..."
+                search_query = st.text_input("Search", placeholder=search_placeholder,
+                                              value=filters.get('search_query', ''),
+                                              key=search_key, label_visibility="collapsed")
+                st.session_state.confluence_filters['search_query'] = search_query
+            if mode == "Auto-Search":
+                with action_col:
+                    tf_search_clicked = st.button("Search", type="primary",
+                                                  use_container_width=True, key="tf_auto_search_btn")
+            with filter_col:
+                if st.button("⚙" if mode == "Auto-Search" else "⚙ Filter",
+                             use_container_width=True, key="tf_filter_btn"):
+                    confluence_filter_dialog(show_auto_search_options=(mode == "Auto-Search"))
+
+            if mode == "Drill-Down":
+                confluence_df = analyze_confluences(
+                    trades, selected, min_trades=filters.get('min_trades', 3),
+                    starting_balance=starting_balance,
+                    risk_per_trade=risk_per_trade,
+                    total_trading_days=period_trading_days,
+                )
+
+                if len(confluence_df) > 0:
+                    confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
+                    confluence_df = confluence_df.head(20)
+
+                    for _, row in confluence_df.iterrows():
+                        conf = row['confluence']
+                        conf_display = format_confluence_record(conf, enabled_groups)
+                        is_selected = conf in selected
+
+                        with st.container(border=True):
+                            top1, top2 = st.columns([4, 0.7])
+                            with top1:
+                                label = f"**{conf_display}**" if is_selected else conf_display
+                                if is_selected:
+                                    label += " _(active)_"
+                                st.markdown(label)
+                            with top2:
+                                if not is_selected:
+                                    if st.button("Add", key=f"add_{conf}"):
+                                        st.session_state.selected_confluences.add(conf)
+                                        st.rerun()
+
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
+                else:
+                    st.info("Not enough trades for analysis")
+
+            else:  # Auto-Search
+                if tf_search_clicked:
+                    with st.spinner("Searching..."):
+                        best = find_best_combinations(
+                            trades, filters.get('max_depth', 2), filters.get('min_trades', 5), top_n=50,
+                            starting_balance=starting_balance,
+                            risk_per_trade=risk_per_trade,
+                            total_trading_days=period_trading_days,
+                        )
+                    if len(best) > 0:
+                        st.session_state.auto_results = best
+
+                if 'auto_results' in st.session_state and len(st.session_state.auto_results) > 0:
+                    results = apply_confluence_filters(
+                        st.session_state.auto_results, filters, search_query, enabled_groups
+                    )
+                    results = results.head(20)
+
+                    for _, row in results.iterrows():
+                        combo_display = format_confluence_set(row['combination'], enabled_groups)
+
+                        with st.container(border=True):
+                            t1, t2, t3 = st.columns([0.3, 3.5, 0.8])
+                            with t1:
+                                st.caption(f"D{row['depth']}")
+                            with t2:
+                                st.markdown(f"**{combo_display}**")
+                            with t3:
+                                if st.button("Replace", key=f"rep_tf_{row['combo_str']}"):
+                                    st.session_state.selected_confluences = row['combination'].copy()
+                                    st.rerun()
+
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
+
+        # =================================================================
+        # Tabs 4-6: Placeholders
+        # =================================================================
+        with tab_gen:
+            st.info("**General Confluence Conditions** — coming in Phase 9")
+            st.caption("Browse and select general-purpose confluence conditions "
+                       "(time of day, session, calendar, news) that apply across all timeframes.")
+
+        with tab_sl:
+            st.info("**Stop Loss Optimization** — coming in Phase 9")
+            st.caption("Compare stop-loss configurations (ATR multipliers, fixed dollar, "
+                       "swing-based) and see how each affects strategy KPIs.")
+
+        with tab_tp:
+            st.info("**Take Profit Optimization** — coming in Phase 9")
+            st.caption("Compare take-profit targets (R:R ratios, ATR multiples, "
+                       "percentage targets) and see how each affects strategy KPIs.")
 
     # Trade list (expandable)
     with st.expander("Trade List"):
