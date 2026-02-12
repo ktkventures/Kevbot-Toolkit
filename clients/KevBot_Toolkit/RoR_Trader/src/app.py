@@ -129,6 +129,8 @@ from confluence_groups import (
     ConfluenceGroup,
     PlotSettings,
 )
+import general_packs as gp_module
+import risk_management_packs as rmp_module
 
 
 # =============================================================================
@@ -1005,6 +1007,88 @@ def find_best_exit_combinations(
     return results_df
 
 
+def analyze_risk_management(
+    df: pd.DataFrame, direction: str, entry_trigger: str,
+    exit_triggers: list, bar_count_exit: int,
+    groups: list, risk_per_trade: float = 100.0,
+    confluence_required: set = None,
+    starting_balance: float = 10000.0, total_trading_days: int = None,
+    mode: str = "stop",
+    base_stop_config: dict = None, base_target_config: dict = None,
+) -> pd.DataFrame:
+    """
+    For each enabled Risk Management Pack, generate trades varying either
+    stop_config or target_config and compute KPIs.
+
+    mode="stop"  → vary stop_config across packs, hold target_config fixed
+    mode="target" → vary target_config across packs, hold stop_config fixed
+    """
+    rm_packs = rmp_module.load_risk_management_packs()
+    enabled_packs = rmp_module.get_enabled_risk_management_packs(rm_packs)
+    base_entry = get_base_trigger_id(entry_trigger) if entry_trigger else None
+    if base_entry is None:
+        return pd.DataFrame()
+
+    # Build exit trigger list
+    base_exits = []
+    bar_count_val = None
+    if exit_triggers:
+        for ecid in exit_triggers:
+            is_bc = False
+            for g in groups:
+                if g.get_trigger_id("exit") == ecid and g.base_template == "bar_count":
+                    bar_count_val = g.parameters.get("candle_count", 4)
+                    is_bc = True
+                    break
+            if not is_bc:
+                base_exits.append(get_base_trigger_id(ecid))
+    if bar_count_exit and bar_count_val is None:
+        bar_count_val = bar_count_exit
+
+    results = []
+
+    for pack in enabled_packs:
+        if mode == "stop":
+            sc = pack.get_stop_config()
+            tc = base_target_config
+        else:
+            sc = base_stop_config
+            tc = pack.get_target_config()
+
+        trades = generate_trades(
+            df, direction=direction, entry_trigger=base_entry,
+            exit_triggers=base_exits if base_exits else None,
+            bar_count_exit=bar_count_val,
+            risk_per_trade=risk_per_trade, stop_config=sc,
+            target_config=tc, confluence_required=confluence_required,
+        )
+        if len(trades) == 0:
+            continue
+        kpis = calculate_kpis(trades, starting_balance=starting_balance,
+                              risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+
+        stop_summary = rmp_module.format_stop_summary(pack)
+        target_summary = rmp_module.format_target_summary(pack)
+
+        results.append({
+            'pack_id': pack.id,
+            'pack_name': pack.name,
+            'stop_summary': stop_summary,
+            'target_summary': target_summary,
+            'total_trades': kpis['total_trades'],
+            'win_rate': kpis['win_rate'],
+            'profit_factor': kpis['profit_factor'],
+            'avg_r': kpis['avg_r'],
+            'daily_r': kpis['daily_r'],
+            'r_squared': kpis['r_squared'],
+        })
+
+    results_df = pd.DataFrame(results)
+    if len(results_df) > 0:
+        results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
+    return results_df
+
+
 # =============================================================================
 # CONFLUENCE FILTER DIALOG & HELPERS
 # =============================================================================
@@ -1078,6 +1162,8 @@ def apply_confluence_filters(df: pd.DataFrame, filters: dict, search_query: str,
             )]
         elif 'trigger_name' in df.columns:
             df = df[df['trigger_name'].str.lower().str.contains(query_lower, na=False)]
+        elif 'pack_name' in df.columns:
+            df = df[df['pack_name'].str.lower().str.contains(query_lower, na=False)]
 
     # KPI filters
     if filters.get('min_win_rate') is not None:
@@ -1129,7 +1215,7 @@ def render_candle_selector(chart_key: str) -> int:
 @st.fragment
 def render_chart_with_candle_selector(
     df, trades, config, show_indicators=None, indicator_colors=None,
-    chart_key='price_chart', secondary_panes=None
+    chart_key='price_chart', secondary_panes=None, extra_markers=None
 ):
     """Render a price chart with a per-chart candle count selector.
 
@@ -1143,7 +1229,8 @@ def render_chart_with_candle_selector(
         indicator_colors=indicator_colors,
         chart_key=chart_key,
         secondary_panes=secondary_panes,
-        visible_candles=vc
+        visible_candles=vc,
+        extra_markers=extra_markers,
     )
 
 
@@ -1155,7 +1242,8 @@ def render_price_chart(
     indicator_colors: dict = None,
     chart_key: str = 'price_chart',
     secondary_panes: list = None,
-    visible_candles: int = None
+    visible_candles: int = None,
+    extra_markers: list = None,
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -1231,6 +1319,13 @@ def render_price_chart(
                 'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
                 'text': f"{trade['r_multiple']:+.1f}R"
             })
+
+    # Append any extra markers (e.g., condition state changes)
+    if extra_markers:
+        for em in extra_markers:
+            em_time = em.get('time', 0)
+            if em_time >= min_time:
+                markers.append(em)
 
     time_scale_opts = {
         "borderColor": "#2B2B2B",
@@ -1516,10 +1611,15 @@ def main():
         st.session_state.exit_trigger_results = None
     if 'auto_exit_results' not in st.session_state:
         st.session_state.auto_exit_results = None
+    if 'sl_results' not in st.session_state:
+        st.session_state.sl_results = None
+    if 'tp_results' not in st.session_state:
+        st.session_state.tp_results = None
 
     # --- Top-level navigation ---
-    SECTIONS = ["Dashboard", "Confluence Groups", "Strategies", "Portfolios", "Alerts"]
+    SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts"]
     SECTION_SUB_PAGES = {
+        "Confluence Packs": ["TF Confluence", "General", "Risk Management"],
         "Strategies": ["Strategy Builder", "My Strategies"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
@@ -1532,7 +1632,7 @@ def main():
         "Portfolio Requirements": ("Portfolios", "Portfolio Requirements"),
         "Alerts & Signals": ("Alerts", "Alerts & Signals"),
         "Webhook Templates": ("Alerts", "Webhook Templates"),
-        "Confluence Groups": ("Confluence Groups", None),
+        "Confluence Packs": ("Confluence Packs", "TF Confluence"),
     }
 
     # Process nav_target — write directly to widget keys for programmatic navigation
@@ -1597,8 +1697,14 @@ def main():
     # Main content dispatch
     if section == "Dashboard":
         render_dashboard()
-    elif section == "Confluence Groups":
-        render_confluence_groups()
+    elif section == "Confluence Packs":
+        sub = render_sub_nav("Confluence Packs")
+        if sub == "TF Confluence":
+            render_confluence_groups()
+        elif sub == "General":
+            render_general_packs()
+        elif sub == "Risk Management":
+            render_risk_management_packs()
     elif section == "Strategies":
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
@@ -1858,7 +1964,7 @@ def render_strategy_builder():
         all_trigger_defs = get_all_triggers(enabled_groups)
 
         if len(entry_triggers) == 0:
-            st.warning("No entry triggers. Enable confluence groups first.")
+            st.warning("No entry triggers. Enable confluence packs first.")
             entry_trigger = None
             entry_trigger_name = None
         else:
@@ -2179,6 +2285,8 @@ def render_strategy_builder():
         st.session_state.entry_trigger_results = None
         st.session_state.exit_trigger_results = None
         st.session_state.auto_exit_results = None
+        st.session_state.sl_results = None
+        st.session_state.tp_results = None
         st.rerun()
 
     # =========================================================================
@@ -2381,7 +2489,7 @@ def render_strategy_builder():
                     options=[g.id for g in overlay_groups],
                     default=[overlay_groups[0].id] if len(overlay_groups) > 0 else [],
                     format_func=lambda gid: next((g.name for g in overlay_groups if g.id == gid), gid),
-                    help="Select confluence groups to overlay on chart"
+                    help="Select confluence packs to overlay on chart"
                 )
 
                 show_indicators = []
@@ -2393,7 +2501,7 @@ def render_strategy_builder():
                         show_indicators.extend(cols)
                         indicator_colors.update(get_overlay_colors_for_group(group))
             else:
-                st.info("No overlay-compatible confluence groups enabled")
+                st.info("No overlay-compatible confluence packs enabled")
                 show_indicators = []
                 indicator_colors = {}
 
@@ -2772,22 +2880,159 @@ def render_strategy_builder():
                             k6.caption(f"R²: {row['r_squared']:.2f}")
 
         # =================================================================
-        # Tabs 4-6: Placeholders
+        # Tab 4: General Conditions
         # =================================================================
         with tab_gen:
-            st.info("**General Confluence Conditions** — coming in Phase 9")
-            st.caption("Browse and select general-purpose confluence conditions "
-                       "(time of day, session, calendar, news) that apply across all timeframes.")
+            gen_packs = gp_module.load_general_packs()
+            enabled_gen = gp_module.get_enabled_general_packs(gen_packs)
 
+            if len(enabled_gen) > 0:
+                st.caption(f"{len(enabled_gen)} general pack(s) enabled")
+                for gpack in enabled_gen:
+                    with st.container(border=True):
+                        t1, t2 = st.columns([4, 1])
+                        with t1:
+                            st.markdown(f"**{gpack.name}**")
+                        with t2:
+                            template = gp_module.get_template(gpack.base_template)
+                            category = template["category"] if template else "?"
+                            st.caption(category)
+                        st.caption(gpack.description)
+                        if template:
+                            outputs = template.get("outputs", [])
+                            out_descs = template.get("output_descriptions", {})
+                            cols = st.columns(len(outputs))
+                            for i, out in enumerate(outputs):
+                                cols[i].caption(f"**{out}**: {out_descs.get(out, '')}")
+            else:
+                st.info("No general packs enabled. Configure them on the **General** sub-page under Confluence Packs.")
+
+        # =================================================================
+        # Tab 5: Stop Loss Optimization
+        # =================================================================
         with tab_sl:
-            st.info("**Stop Loss Optimization** — coming in Phase 9")
-            st.caption("Compare stop-loss configurations (ATR multipliers, fixed dollar, "
-                       "swing-based) and see how each affects strategy KPIs.")
+            sl_filters = st.session_state.confluence_filters
+            sl_search_col, sl_action_col, sl_filter_col = st.columns([3, 1.5, 0.5])
+            with sl_search_col:
+                sl_search = st.text_input("Search", placeholder="Search stop configs...",
+                                          key="sl_search", label_visibility="collapsed")
+            with sl_action_col:
+                sl_analyze_clicked = st.button("Analyze", type="primary",
+                                               use_container_width=True, key="analyze_sl_btn")
+            with sl_filter_col:
+                if st.button("⚙", use_container_width=True, key="sl_filter_btn"):
+                    confluence_filter_dialog(show_auto_search_options=False)
 
+            # Current stop tag
+            stop_display = format_stop_display(config)
+            st.caption(f"Current: **{stop_display}**")
+
+            # Build exit CIDs list for the helper
+            exit_cids = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
+            confluence_set = selected if len(selected) > 0 else None
+
+            if sl_analyze_clicked:
+                with st.spinner("Comparing stop-loss configurations..."):
+                    sl_results = analyze_risk_management(
+                        df, direction, entry_trigger, exit_cids,
+                        config.get('bar_count_exit'), enabled_groups,
+                        risk_per_trade=risk_per_trade,
+                        confluence_required=confluence_set,
+                        starting_balance=starting_balance,
+                        total_trading_days=period_trading_days,
+                        mode="stop",
+                        base_stop_config=stop_config_dict,
+                        base_target_config=target_config_dict,
+                    )
+                st.session_state.sl_results = sl_results
+
+            if st.session_state.sl_results is not None and len(st.session_state.sl_results) > 0:
+                sl_display_df = apply_confluence_filters(
+                    st.session_state.sl_results, sl_filters, sl_search, enabled_groups
+                )
+                sl_display_df = sl_display_df.head(20)
+
+                for _, row in sl_display_df.iterrows():
+                    with st.container(border=True):
+                        t1, t2 = st.columns([4, 1])
+                        with t1:
+                            st.markdown(f"**{row['pack_name']}**")
+                        with t2:
+                            st.caption(f"Stop: {row['stop_summary']}")
+
+                        k1, k2, k3, k4, k5, k6 = st.columns(6)
+                        k1.caption(f"Trades: {row['total_trades']}")
+                        pf = row['profit_factor']
+                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                        k3.caption(f"WR: {row['win_rate']:.1f}%")
+                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                        k6.caption(f"R²: {row['r_squared']:.2f}")
+            else:
+                st.info("Click **Analyze** to compare stop-loss configurations from your enabled Risk Management Packs.")
+
+        # =================================================================
+        # Tab 6: Take Profit Optimization
+        # =================================================================
         with tab_tp:
-            st.info("**Take Profit Optimization** — coming in Phase 9")
-            st.caption("Compare take-profit targets (R:R ratios, ATR multiples, "
-                       "percentage targets) and see how each affects strategy KPIs.")
+            tp_filters = st.session_state.confluence_filters
+            tp_search_col, tp_action_col, tp_filter_col = st.columns([3, 1.5, 0.5])
+            with tp_search_col:
+                tp_search = st.text_input("Search", placeholder="Search target configs...",
+                                          key="tp_search", label_visibility="collapsed")
+            with tp_action_col:
+                tp_analyze_clicked = st.button("Analyze", type="primary",
+                                               use_container_width=True, key="analyze_tp_btn")
+            with tp_filter_col:
+                if st.button("⚙", use_container_width=True, key="tp_filter_btn"):
+                    confluence_filter_dialog(show_auto_search_options=False)
+
+            # Current target tag
+            tp_display = format_target_display(config)
+            st.caption(f"Current: **{tp_display}**")
+
+            exit_cids_tp = [cid for cid, _ in exit_trigger_selections] if exit_trigger_selections else []
+            confluence_set_tp = selected if len(selected) > 0 else None
+
+            if tp_analyze_clicked:
+                with st.spinner("Comparing take-profit configurations..."):
+                    tp_results = analyze_risk_management(
+                        df, direction, entry_trigger, exit_cids_tp,
+                        config.get('bar_count_exit'), enabled_groups,
+                        risk_per_trade=risk_per_trade,
+                        confluence_required=confluence_set_tp,
+                        starting_balance=starting_balance,
+                        total_trading_days=period_trading_days,
+                        mode="target",
+                        base_stop_config=stop_config_dict,
+                        base_target_config=target_config_dict,
+                    )
+                st.session_state.tp_results = tp_results
+
+            if st.session_state.tp_results is not None and len(st.session_state.tp_results) > 0:
+                tp_display_df = apply_confluence_filters(
+                    st.session_state.tp_results, tp_filters, tp_search, enabled_groups
+                )
+                tp_display_df = tp_display_df.head(20)
+
+                for _, row in tp_display_df.iterrows():
+                    with st.container(border=True):
+                        t1, t2 = st.columns([4, 1])
+                        with t1:
+                            st.markdown(f"**{row['pack_name']}**")
+                        with t2:
+                            st.caption(f"Target: {row['target_summary']}")
+
+                        k1, k2, k3, k4, k5, k6 = st.columns(6)
+                        k1.caption(f"Trades: {row['total_trades']}")
+                        pf = row['profit_factor']
+                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                        k3.caption(f"WR: {row['win_rate']:.1f}%")
+                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                        k6.caption(f"R²: {row['r_squared']:.2f}")
+            else:
+                st.info("Click **Analyze** to compare take-profit targets from your enabled Risk Management Packs.")
 
     # Trade list (expandable)
     with st.expander("Trade List"):
@@ -3243,7 +3488,7 @@ def render_live_backtest(strat: dict):
         )
 
     if len(trades) == 0:
-        st.warning("No trades generated. The entry trigger may reference a confluence group that is no longer enabled.")
+        st.warning("No trades generated. The entry trigger may reference a confluence pack that is no longer enabled.")
 
     confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
     extended_data_days = strat.get('extended_data_days', 365)
@@ -3469,7 +3714,7 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
     relevant_groups = _get_strategy_relevant_groups(strat)
 
     if not relevant_groups:
-        st.info("No confluence groups are used by this strategy.")
+        st.info("No confluence packs are used by this strategy.")
         return
 
     if trades is None:
@@ -4654,7 +4899,7 @@ def render_portfolio_detail(portfolio_id: int):
         kpis = calculate_portfolio_kpis(port, data['combined_trades'], data['daily_pnl'])
 
     if len(data['combined_trades']) == 0:
-        st.warning("No trades generated. Some strategies may reference disabled confluence groups.")
+        st.warning("No trades generated. Some strategies may reference disabled confluence packs.")
         return
 
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
@@ -5921,8 +6166,8 @@ def render_webhook_templates_page():
 
 def render_confluence_groups():
     """Render the Confluence Groups management page."""
-    st.header("Confluence Groups")
-    st.caption("Configure indicators, interpreters, and triggers for your analysis.")
+    st.header("TF Confluence Packs")
+    st.caption("Configure timeframe-specific indicators, interpreters, and triggers for your analysis.")
 
     # Initialize session state for editing
     if 'editing_group' not in st.session_state:
@@ -5936,9 +6181,9 @@ def render_confluence_groups():
     # Top action bar
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        st.markdown(f"**{len(groups)} confluence groups** ({len(get_enabled_groups(groups))} enabled)")
+        st.markdown(f"**{len(groups)} packs** ({len(get_enabled_groups(groups))} enabled)")
     with col3:
-        if st.button("+ New Group", use_container_width=True):
+        if st.button("+ New Pack", use_container_width=True):
             st.session_state.show_new_group = True
             st.session_state.editing_group = None
 
@@ -6027,7 +6272,7 @@ def render_group_card(group: ConfluenceGroup, all_groups: list):
 
 def render_new_group_dialog(all_groups: list):
     """Render the new group creation dialog."""
-    st.subheader("Create New Confluence Group")
+    st.subheader("Create New Pack")
 
     col1, col2 = st.columns(2)
 
@@ -6052,7 +6297,7 @@ def render_new_group_dialog(all_groups: list):
 
         # ID input (auto-generated but editable)
         suggested_id = generate_unique_id(selected_template, all_groups)
-        new_id = st.text_input("Group ID", value=suggested_id, help="Unique identifier (lowercase, no spaces)")
+        new_id = st.text_input("Pack ID", value=suggested_id, help="Unique identifier (lowercase, no spaces)")
 
     # Validation
     id_valid = validate_group_id(new_id, all_groups)
@@ -6158,7 +6403,7 @@ def render_code_tab(group: ConfluenceGroup):
         st.caption("No parameters")
 
     st.divider()
-    st.caption("Source code for this confluence group's indicator, interpreter, and trigger logic.")
+    st.caption("Source code for this confluence pack's indicator, interpreter, and trigger logic.")
 
     for section_name, func_list in funcs.items():
         if not func_list:
@@ -6522,7 +6767,7 @@ def render_group_details(group_id: str, all_groups: list):
     """Render the detailed view/edit panel for a confluence group."""
     group = get_group_by_id(group_id, all_groups)
     if not group:
-        st.error(f"Group not found: {group_id}")
+        st.error(f"Pack not found: {group_id}")
         return
 
     template = get_template(group.base_template)
@@ -6721,6 +6966,925 @@ def format_parameters(params: dict, template_id: str) -> str:
 
     return " | ".join(parts)
 
+
+# =============================================================================
+# GENERAL PACKS PAGE
+# =============================================================================
+
+def render_general_packs():
+    """Render the General Packs management page."""
+    st.header("General Packs")
+    st.caption("Configure strategy-wide conditions and optional triggers (time of day, sessions, calendar).")
+
+    if 'gp_editing' not in st.session_state:
+        st.session_state.gp_editing = None
+    if 'gp_show_new' not in st.session_state:
+        st.session_state.gp_show_new = False
+
+    packs = gp_module.load_general_packs()
+
+    # Top action bar
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        enabled_count = len(gp_module.get_enabled_general_packs(packs))
+        st.markdown(f"**{len(packs)} packs** ({enabled_count} enabled)")
+    with col3:
+        if st.button("+ New Pack", use_container_width=True, key="gp_new_btn"):
+            st.session_state.gp_show_new = True
+            st.session_state.gp_editing = None
+
+    st.divider()
+
+    # New pack dialog
+    if st.session_state.gp_show_new:
+        _render_gp_new_dialog(packs)
+        st.divider()
+
+    # Details panel
+    if st.session_state.gp_editing:
+        _render_gp_details(st.session_state.gp_editing, packs)
+        st.divider()
+
+    # Pack list by category
+    categories = {}
+    for pack in packs:
+        template = gp_module.get_template(pack.base_template)
+        category = template["category"] if template else "Other"
+        categories.setdefault(category, []).append(pack)
+
+    for category, cat_packs in categories.items():
+        st.subheader(category)
+        for pack in cat_packs:
+            _render_gp_card(pack, packs)
+        st.markdown("")
+
+
+def _render_gp_card(pack, all_packs):
+    """Render a single general pack card."""
+    template = gp_module.get_template(pack.base_template)
+
+    with st.container(border=True):
+        col1, col2, col3, col4 = st.columns([0.08, 0.52, 0.25, 0.15])
+
+        with col1:
+            enabled = st.checkbox("", value=pack.enabled, key=f"gp_enable_{pack.id}",
+                                  label_visibility="collapsed")
+            if enabled != pack.enabled:
+                pack.enabled = enabled
+                gp_module.save_general_packs(all_packs)
+                st.rerun()
+
+        with col2:
+            default_badge = " (default)" if pack.is_default else ""
+            st.markdown(f"**{pack.name}**{default_badge}")
+            param_str = gp_module.format_parameters(pack.parameters, pack.base_template)
+            st.caption(param_str)
+
+        with col3:
+            if template:
+                outputs = template.get("outputs", [])
+                st.caption(f"Outputs: {', '.join(outputs)}")
+
+        with col4:
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                if st.button("Details", key=f"gp_details_{pack.id}", use_container_width=True):
+                    st.session_state.gp_editing = pack.id
+                    st.session_state.gp_show_new = False
+                    st.rerun()
+            with action_cols[1]:
+                if st.button("Copy", key=f"gp_copy_{pack.id}", use_container_width=True):
+                    new_id = gp_module.generate_unique_id(pack.base_template, all_packs)
+                    new_pack = gp_module.duplicate_pack(pack, new_id, f"{pack.version} Copy")
+                    all_packs.append(new_pack)
+                    gp_module.save_general_packs(all_packs)
+                    st.session_state.gp_editing = new_id
+                    st.rerun()
+
+
+def _render_gp_new_dialog(all_packs):
+    """Render the new general pack creation dialog."""
+    st.subheader("Create New Pack")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        template_options = list(gp_module.TEMPLATES.keys())
+        template_labels = [gp_module.TEMPLATES[t]["name"] for t in template_options]
+        template_idx = st.selectbox("Base Template", range(len(template_options)),
+                                    format_func=lambda i: template_labels[i], key="gp_new_template")
+        selected_template = template_options[template_idx]
+        template = gp_module.TEMPLATES[selected_template]
+        st.caption(template["description"])
+
+    with col2:
+        new_version = st.text_input("Version Name", value="Custom", key="gp_new_version",
+                                    help="e.g., 'NY Open', 'Power Hour'")
+        st.caption(f"Full name will be: **{template['name']} ({new_version})**")
+        suggested_id = gp_module.generate_unique_id(selected_template, all_packs)
+        new_id = st.text_input("Pack ID", value=suggested_id, key="gp_new_id",
+                               help="Unique identifier (lowercase, no spaces)")
+
+    id_valid = gp_module.validate_pack_id(new_id, all_packs)
+    version_valid = len(new_version.strip()) > 0
+    if not id_valid:
+        st.warning("ID must be unique and contain only letters, numbers, and underscores.")
+    if not version_valid:
+        st.warning("Version name cannot be empty.")
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        if st.button("Create", disabled=not (id_valid and version_valid),
+                     use_container_width=True, key="gp_create_btn"):
+            param_schema = gp_module.get_parameter_schema(selected_template)
+            default_params = {k: v["default"] for k, v in param_schema.items()}
+
+            new_pack = gp_module.GeneralPack(
+                id=new_id, base_template=selected_template, version=new_version,
+                description=f"Custom {template['name']} configuration",
+                enabled=True, is_default=False, parameters=default_params,
+            )
+            all_packs.append(new_pack)
+            gp_module.save_general_packs(all_packs)
+            st.session_state.gp_show_new = False
+            st.session_state.gp_editing = new_id
+            st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True, key="gp_cancel_btn"):
+            st.session_state.gp_show_new = False
+            st.rerun()
+
+
+def _render_gp_details(pack_id, all_packs):
+    """Render the detail panel for a general pack."""
+    pack = gp_module.get_pack_by_id(pack_id, all_packs)
+    if not pack:
+        st.error(f"Pack not found: {pack_id}")
+        return
+
+    template = gp_module.get_template(pack.base_template)
+    if not template:
+        st.error(f"Template not found: {pack.base_template}")
+        return
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.subheader(f"Edit: {pack.name}")
+        st.caption(f"Based on: {template['name']} | ID: {pack.id}")
+    with col2:
+        if st.button("Close", use_container_width=True, key="gp_close_details"):
+            st.session_state.gp_editing = None
+            st.rerun()
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Parameters", "Outputs", "Preview", "Code", "Danger Zone"])
+
+    # TAB 1: Parameters
+    with tab1:
+        st.markdown("**Pack Parameters**")
+        param_schema = gp_module.get_parameter_schema(pack.base_template)
+        updated_params = {}
+        changed = False
+
+        for param_key, schema in param_schema.items():
+            current_value = pack.parameters.get(param_key, schema["default"])
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.caption(schema["label"])
+            with col2:
+                if schema["type"] == "int":
+                    new_value = st.number_input(
+                        schema["label"], min_value=schema.get("min", 0),
+                        max_value=schema.get("max", 500), value=int(current_value),
+                        key=f"gp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                elif schema["type"] == "float":
+                    new_value = st.number_input(
+                        schema["label"], min_value=float(schema.get("min", 0.0)),
+                        max_value=float(schema.get("max", 100.0)), value=float(current_value),
+                        step=0.1, key=f"gp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                elif schema["type"] == "bool":
+                    new_value = st.checkbox(
+                        schema["label"], value=bool(current_value),
+                        key=f"gp_param_{pack.id}_{param_key}")
+                elif schema["type"] == "select":
+                    options = schema.get("options", [])
+                    idx = options.index(current_value) if current_value in options else 0
+                    new_value = st.selectbox(
+                        schema["label"], options, index=idx,
+                        key=f"gp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                else:
+                    new_value = current_value
+
+                updated_params[param_key] = new_value
+                if new_value != current_value:
+                    changed = True
+
+        if changed:
+            if st.button("Save Parameters", key="gp_save_params"):
+                pack.parameters = updated_params
+                gp_module.save_general_packs(all_packs)
+                st.success("Parameters saved!")
+                st.rerun()
+
+    # TAB 2: Outputs
+    with tab2:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Conditions**")
+            output_descs = gp_module.get_output_descriptions(pack.base_template)
+            for output, desc in output_descs.items():
+                st.markdown(f"- **{output}**: {desc}")
+        with col2:
+            st.markdown("**Triggers**")
+            triggers = template.get("triggers", [])
+            if triggers:
+                for t in triggers:
+                    st.markdown(f"- **{t['name']}**")
+                    st.caption(f"  {t['direction']} {t['type']} | {t.get('execution', 'bar_close')}")
+            else:
+                st.caption("No triggers (conditions only)")
+
+    # TAB 3: Preview
+    with tab3:
+        _render_gp_preview(pack)
+
+    # TAB 4: Code
+    with tab4:
+        _render_gp_code(pack)
+
+    # TAB 5: Danger Zone
+    with tab5:
+        st.markdown("**Rename Version**")
+        st.caption(f"Template: {pack.template_name}")
+        new_version = st.text_input("Version Name", value=pack.version, key=f"gp_rename_{pack.id}")
+        st.caption(f"Full name will be: **{pack.template_name} ({new_version})**")
+        if new_version != pack.version:
+            if st.button("Rename", key="gp_rename_btn"):
+                pack.version = new_version
+                gp_module.save_general_packs(all_packs)
+                st.success("Renamed!")
+                st.rerun()
+
+        st.markdown("---")
+
+        if pack.is_default:
+            st.info("Default packs cannot be deleted. You can disable them instead.")
+        else:
+            st.markdown("**Delete Pack**")
+            st.warning("This action cannot be undone.")
+            if st.button("Delete Pack", type="primary", key="gp_delete_btn"):
+                all_packs.remove(pack)
+                gp_module.save_general_packs(all_packs)
+                st.session_state.gp_editing = None
+                st.rerun()
+
+
+def _render_gp_preview(pack):
+    """Render Preview tab for a General Pack — condition evaluation on sample data."""
+    from mock_data import generate_mock_bars
+
+    st.caption("Live preview using sample data to verify condition behavior.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        preview_symbol = st.selectbox(
+            "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
+            key=f"gp_preview_symbol_{pack.id}"
+        )
+    with c2:
+        extended = st.checkbox(
+            "Extended Hours (4 AM - 8 PM)",
+            value=pack.base_template in ("trading_session",),
+            key=f"gp_preview_ext_{pack.id}",
+            help="Include pre-market and after-hours bars. Useful for session-based packs."
+        )
+
+    with st.spinner("Generating preview data..."):
+        end = datetime.now().replace(hour=20 if extended else 16, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=3)
+
+        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42,
+                                  extended_hours=extended)
+        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
+            df = bars.loc[preview_symbol]
+        elif len(bars) > 0:
+            df = bars
+        else:
+            st.error("Could not generate sample data.")
+            return
+
+        if len(df) == 0:
+            st.error("No sample data generated.")
+            return
+
+        # Evaluate condition
+        condition_col = gp_module.evaluate_condition(df, pack)
+        df[pack.get_condition_column()] = condition_col
+
+    # --- Build condition state change markers ---
+    col_name = pack.get_condition_column()
+    states = df[col_name]
+    changes = states[states != states.shift(1)]
+
+    # Color map for outputs
+    template = gp_module.get_template(pack.base_template)
+    outputs = template.get("outputs", []) if template else []
+    # First output gets green (positive), second gets amber/red
+    state_colors = {}
+    palette = ["#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"]
+    for i, out in enumerate(outputs):
+        state_colors[out] = palette[i % len(palette)]
+
+    condition_markers = []
+    for idx, state in changes.items():
+        ts = int(pd.to_datetime(idx).timestamp())
+        condition_markers.append({
+            'time': ts,
+            'position': 'aboveBar',
+            'color': state_colors.get(state, '#94a3b8'),
+            'shape': 'circle',
+            'text': state,
+        })
+
+    # --- Price Chart with condition markers ---
+    st.markdown("**Price Chart**")
+    markers_df = pd.DataFrame()
+    render_chart_with_candle_selector(
+        df, markers_df, {"direction": "LONG"},
+        chart_key=f"gp_preview_chart_{pack.id}",
+        extra_markers=condition_markers,
+    )
+
+    # --- Condition State Timeline ---
+    st.markdown("**Condition States**")
+
+    if len(changes) > 0:
+        change_records = []
+        for idx, state in changes.tail(30).items():
+            change_records.append({
+                "Time": str(idx),
+                "State": state,
+                "Price": f"${df.loc[idx, 'close']:.2f}" if 'close' in df.columns else "N/A",
+            })
+
+        st.caption(f"Last {len(change_records)} state changes (of {len(changes)} total):")
+        st.dataframe(pd.DataFrame(change_records), use_container_width=True, hide_index=True)
+
+        # Distribution
+        st.markdown("**Distribution**")
+        dist = states.value_counts()
+        dist_pct = (dist / len(states) * 100).round(1)
+        dist_cols = st.columns(len(dist))
+        for i, (state, count) in enumerate(dist.items()):
+            dist_cols[i].metric(state, f"{dist_pct[state]}%", help=f"{count:,} bars")
+    else:
+        st.caption("No state changes detected in sample data.")
+
+
+def _render_gp_code(pack):
+    """Render Code tab for a General Pack — show source of condition evaluation logic."""
+    import inspect
+
+    st.caption("Source code for this pack's condition evaluation logic.")
+
+    # Show effective parameters
+    st.markdown("**Active Parameters**")
+    template = gp_module.get_template(pack.base_template)
+    param_schema = template.get("parameters_schema", {}) if template else {}
+    param_items = []
+    for key, schema in param_schema.items():
+        value = pack.parameters.get(key, schema.get("default", "?"))
+        param_items.append(f"`{schema.get('label', key)}` = **{value}**")
+    if param_items:
+        st.markdown(" | ".join(param_items))
+
+    st.divider()
+
+    # Show the evaluation function source
+    logic = template.get("condition_logic", "") if template else ""
+    eval_func_map = {
+        "time_window": gp_module._eval_time_of_day,
+        "session_filter": gp_module._eval_trading_session,
+        "day_filter": gp_module._eval_day_of_week,
+        "calendar_filter": gp_module._eval_calendar_filter,
+    }
+
+    func = eval_func_map.get(logic)
+    if func:
+        with st.expander("Condition Evaluation Function", expanded=True):
+            try:
+                source = inspect.getsource(func)
+                st.code(source, language="python")
+            except (OSError, TypeError):
+                st.warning(f"Could not retrieve source for {func.__name__}")
+    else:
+        st.info("No evaluation function available for this template.")
+
+    # Also show the dispatcher
+    with st.expander("Dispatcher"):
+        try:
+            source = inspect.getsource(gp_module.evaluate_condition)
+            st.code(source, language="python")
+        except (OSError, TypeError):
+            st.warning("Could not retrieve dispatcher source.")
+
+
+# =============================================================================
+# RISK MANAGEMENT PACKS PAGE
+# =============================================================================
+
+def render_risk_management_packs():
+    """Render the Risk Management Packs management page."""
+    st.header("Risk Management Packs")
+    st.caption("Configure stop-loss and take-profit configurations from shared parameters.")
+
+    if 'rmp_editing' not in st.session_state:
+        st.session_state.rmp_editing = None
+    if 'rmp_show_new' not in st.session_state:
+        st.session_state.rmp_show_new = False
+
+    packs = rmp_module.load_risk_management_packs()
+
+    # Top action bar
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        enabled_count = len(rmp_module.get_enabled_risk_management_packs(packs))
+        st.markdown(f"**{len(packs)} packs** ({enabled_count} enabled)")
+    with col3:
+        if st.button("+ New Pack", use_container_width=True, key="rmp_new_btn"):
+            st.session_state.rmp_show_new = True
+            st.session_state.rmp_editing = None
+
+    st.divider()
+
+    # New pack dialog
+    if st.session_state.rmp_show_new:
+        _render_rmp_new_dialog(packs)
+        st.divider()
+
+    # Details panel
+    if st.session_state.rmp_editing:
+        _render_rmp_details(st.session_state.rmp_editing, packs)
+        st.divider()
+
+    # Pack list by category
+    categories = {}
+    for pack in packs:
+        template = rmp_module.get_template(pack.base_template)
+        category = template["category"] if template else "Other"
+        categories.setdefault(category, []).append(pack)
+
+    for category, cat_packs in categories.items():
+        st.subheader(category)
+        for pack in cat_packs:
+            _render_rmp_card(pack, packs)
+        st.markdown("")
+
+
+def _render_rmp_card(pack, all_packs):
+    """Render a single risk management pack card."""
+    with st.container(border=True):
+        col1, col2, col3, col4 = st.columns([0.08, 0.42, 0.35, 0.15])
+
+        with col1:
+            enabled = st.checkbox("", value=pack.enabled, key=f"rmp_enable_{pack.id}",
+                                  label_visibility="collapsed")
+            if enabled != pack.enabled:
+                pack.enabled = enabled
+                rmp_module.save_risk_management_packs(all_packs)
+                st.rerun()
+
+        with col2:
+            default_badge = " (default)" if pack.is_default else ""
+            st.markdown(f"**{pack.name}**{default_badge}")
+            param_str = rmp_module.format_parameters(pack.parameters, pack.base_template)
+            st.caption(param_str)
+
+        with col3:
+            stop_str = rmp_module.format_stop_summary(pack)
+            target_str = rmp_module.format_target_summary(pack)
+            st.caption(f"Stop: {stop_str} | Target: {target_str}")
+
+        with col4:
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                if st.button("Details", key=f"rmp_details_{pack.id}", use_container_width=True):
+                    st.session_state.rmp_editing = pack.id
+                    st.session_state.rmp_show_new = False
+                    st.rerun()
+            with action_cols[1]:
+                if st.button("Copy", key=f"rmp_copy_{pack.id}", use_container_width=True):
+                    new_id = rmp_module.generate_unique_id(pack.base_template, all_packs)
+                    new_pack = rmp_module.duplicate_pack(pack, new_id, f"{pack.version} Copy")
+                    all_packs.append(new_pack)
+                    rmp_module.save_risk_management_packs(all_packs)
+                    st.session_state.rmp_editing = new_id
+                    st.rerun()
+
+
+def _render_rmp_new_dialog(all_packs):
+    """Render the new risk management pack creation dialog."""
+    st.subheader("Create New Pack")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        template_options = list(rmp_module.TEMPLATES.keys())
+        template_labels = [rmp_module.TEMPLATES[t]["name"] for t in template_options]
+        template_idx = st.selectbox("Base Template", range(len(template_options)),
+                                    format_func=lambda i: template_labels[i], key="rmp_new_template")
+        selected_template = template_options[template_idx]
+        template = rmp_module.TEMPLATES[selected_template]
+        st.caption(template["description"])
+
+    with col2:
+        new_version = st.text_input("Version Name", value="Custom", key="rmp_new_version",
+                                    help="e.g., 'Tight', 'Aggressive', 'Conservative'")
+        st.caption(f"Full name will be: **{template['name']} ({new_version})**")
+        suggested_id = rmp_module.generate_unique_id(selected_template, all_packs)
+        new_id = st.text_input("Pack ID", value=suggested_id, key="rmp_new_id",
+                               help="Unique identifier (lowercase, no spaces)")
+
+    id_valid = rmp_module.validate_pack_id(new_id, all_packs)
+    version_valid = len(new_version.strip()) > 0
+    if not id_valid:
+        st.warning("ID must be unique and contain only letters, numbers, and underscores.")
+    if not version_valid:
+        st.warning("Version name cannot be empty.")
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        if st.button("Create", disabled=not (id_valid and version_valid),
+                     use_container_width=True, key="rmp_create_btn"):
+            param_schema = rmp_module.get_parameter_schema(selected_template)
+            default_params = {k: v["default"] for k, v in param_schema.items()}
+
+            new_pack = rmp_module.RiskManagementPack(
+                id=new_id, base_template=selected_template, version=new_version,
+                description=f"Custom {template['name']} configuration",
+                enabled=True, is_default=False, parameters=default_params,
+            )
+            all_packs.append(new_pack)
+            rmp_module.save_risk_management_packs(all_packs)
+            st.session_state.rmp_show_new = False
+            st.session_state.rmp_editing = new_id
+            st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True, key="rmp_cancel_btn"):
+            st.session_state.rmp_show_new = False
+            st.rerun()
+
+
+def _render_rmp_details(pack_id, all_packs):
+    """Render the detail panel for a risk management pack."""
+    pack = rmp_module.get_pack_by_id(pack_id, all_packs)
+    if not pack:
+        st.error(f"Pack not found: {pack_id}")
+        return
+
+    template = rmp_module.get_template(pack.base_template)
+    if not template:
+        st.error(f"Template not found: {pack.base_template}")
+        return
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.subheader(f"Edit: {pack.name}")
+        st.caption(f"Based on: {template['name']} | ID: {pack.id}")
+    with col2:
+        if st.button("Close", use_container_width=True, key="rmp_close_details"):
+            st.session_state.rmp_editing = None
+            st.rerun()
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Parameters", "Outputs", "Preview", "Code", "Danger Zone"])
+
+    # TAB 1: Parameters
+    with tab1:
+        st.markdown("**Pack Parameters**")
+        param_schema = rmp_module.get_parameter_schema(pack.base_template)
+        updated_params = {}
+        changed = False
+
+        # For composite (rr_ratio) template, handle conditional visibility
+        current_stop_method = pack.parameters.get("stop_method", "atr")
+
+        for param_key, schema in param_schema.items():
+            current_value = pack.parameters.get(param_key, schema["default"])
+
+            # Conditional visibility for rr_ratio template
+            if pack.base_template == "rr_ratio":
+                if param_key == "stop_atr_mult" and current_stop_method != "atr":
+                    updated_params[param_key] = current_value
+                    continue
+                if param_key == "stop_amount" and current_stop_method != "fixed_dollar":
+                    updated_params[param_key] = current_value
+                    continue
+                if param_key == "stop_pct" and current_stop_method != "percentage":
+                    updated_params[param_key] = current_value
+                    continue
+                if param_key in ("lookback", "padding") and current_stop_method != "swing":
+                    updated_params[param_key] = current_value
+                    continue
+
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.caption(schema["label"])
+            with col2:
+                if schema["type"] == "int":
+                    new_value = st.number_input(
+                        schema["label"], min_value=schema.get("min", 0),
+                        max_value=schema.get("max", 500), value=int(current_value),
+                        key=f"rmp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                elif schema["type"] == "float":
+                    new_value = st.number_input(
+                        schema["label"], min_value=float(schema.get("min", 0.0)),
+                        max_value=float(schema.get("max", 100.0)), value=float(current_value),
+                        step=0.1, key=f"rmp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                elif schema["type"] == "select":
+                    options = schema.get("options", [])
+                    idx = options.index(current_value) if current_value in options else 0
+                    new_value = st.selectbox(
+                        schema["label"], options, index=idx,
+                        key=f"rmp_param_{pack.id}_{param_key}", label_visibility="collapsed")
+                    # If stop method changes, update the conditional visibility
+                    if param_key == "stop_method":
+                        current_stop_method = new_value
+                else:
+                    new_value = current_value
+
+                updated_params[param_key] = new_value
+                if new_value != current_value:
+                    changed = True
+
+        if changed:
+            if st.button("Save Parameters", key="rmp_save_params"):
+                pack.parameters = updated_params
+                rmp_module.save_risk_management_packs(all_packs)
+                st.success("Parameters saved!")
+                st.rerun()
+
+    # TAB 2: Outputs
+    with tab2:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Stop Loss**")
+            stop_config = pack.get_stop_config()
+            for k, v in stop_config.items():
+                st.markdown(f"- **{k}**: {v}")
+            st.caption(f"Summary: {rmp_module.format_stop_summary(pack)}")
+
+        with col2:
+            st.markdown("**Take Profit**")
+            target_config = pack.get_target_config()
+            if target_config:
+                for k, v in target_config.items():
+                    st.markdown(f"- **{k}**: {v}")
+                st.caption(f"Summary: {rmp_module.format_target_summary(pack)}")
+            else:
+                st.caption("No target configured (stop only)")
+
+    # TAB 3: Preview
+    with tab3:
+        _render_rmp_preview(pack)
+
+    # TAB 4: Code
+    with tab4:
+        _render_rmp_code(pack)
+
+    # TAB 5: Danger Zone
+    with tab5:
+        st.markdown("**Rename Version**")
+        st.caption(f"Template: {pack.template_name}")
+        new_version = st.text_input("Version Name", value=pack.version, key=f"rmp_rename_{pack.id}")
+        st.caption(f"Full name will be: **{pack.template_name} ({new_version})**")
+        if new_version != pack.version:
+            if st.button("Rename", key="rmp_rename_btn"):
+                pack.version = new_version
+                rmp_module.save_risk_management_packs(all_packs)
+                st.success("Renamed!")
+                st.rerun()
+
+        st.markdown("---")
+
+        if pack.is_default:
+            st.info("Default packs cannot be deleted. You can disable them instead.")
+        else:
+            st.markdown("**Delete Pack**")
+            st.warning("This action cannot be undone.")
+            if st.button("Delete Pack", type="primary", key="rmp_delete_btn"):
+                all_packs.remove(pack)
+                rmp_module.save_risk_management_packs(all_packs)
+                st.session_state.rmp_editing = None
+                st.rerun()
+
+
+def _render_rmp_preview(pack):
+    """Render Preview tab for a Risk Management Pack — sample trades with stop/target visualization."""
+    from mock_data import generate_mock_bars
+
+    st.caption("Live preview using sample trades to verify stop-loss and take-profit behavior.")
+
+    # Controls: symbol + entry/exit trigger selection
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        preview_symbol = st.selectbox(
+            "Symbol", AVAILABLE_SYMBOLS, index=0,
+            key=f"rmp_preview_symbol_{pack.id}"
+        )
+
+    # Build entry/exit trigger lists from enabled TF Confluence Packs
+    groups = load_confluence_groups()
+    enabled_groups = get_enabled_groups(groups)
+
+    entry_triggers = {}
+    exit_triggers = {}
+    for g in enabled_groups:
+        template = get_template(g.base_template)
+        if not template:
+            continue
+        for trig_def in template.get("triggers", []):
+            cid = g.get_trigger_id(trig_def["base"])
+            trig_name = g.get_trigger_name(trig_def["base"], trig_def["name"])
+            if trig_def["type"] == "ENTRY":
+                entry_triggers[cid] = trig_name
+            elif trig_def["type"] == "EXIT":
+                exit_triggers[cid] = trig_name
+
+    if not entry_triggers:
+        st.warning("No entry triggers available. Enable TF Confluence Packs first.")
+        return
+
+    entry_options = list(entry_triggers.keys())
+    entry_labels = list(entry_triggers.values())
+    exit_options = list(exit_triggers.keys())
+    exit_labels = list(exit_triggers.values())
+
+    with c2:
+        entry_idx = st.selectbox(
+            "Entry Trigger", range(len(entry_options)),
+            format_func=lambda i: entry_labels[i],
+            key=f"rmp_preview_entry_{pack.id}"
+        )
+        selected_entry_cid = entry_options[entry_idx]
+
+    with c3:
+        if exit_options:
+            exit_idx = st.selectbox(
+                "Exit Trigger", range(len(exit_options)),
+                format_func=lambda i: exit_labels[i],
+                key=f"rmp_preview_exit_{pack.id}"
+            )
+            selected_exit_cid = exit_options[exit_idx]
+        else:
+            st.caption("No exit triggers — using 4-bar count exit")
+            selected_exit_cid = None
+
+    direction = st.radio("Direction", ["LONG", "SHORT"], horizontal=True,
+                         key=f"rmp_preview_dir_{pack.id}")
+
+    # Generate data and run trades
+    with st.spinner("Generating preview trades..."):
+        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=5)
+
+        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
+        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
+            df = bars.loc[preview_symbol]
+        elif len(bars) > 0:
+            df = bars
+        else:
+            st.error("Could not generate sample data.")
+            return
+
+        if len(df) == 0:
+            st.error("No sample data generated.")
+            return
+
+        df = run_all_indicators(df)
+        for g in enabled_groups:
+            df = run_indicators_for_group(df, g)
+        df = run_all_interpreters(df)
+        df = detect_all_triggers(df)
+
+        # Generate trades with this pack's stop/target config
+        base_entry = get_base_trigger_id(selected_entry_cid)
+        if selected_exit_cid:
+            base_exit = get_base_trigger_id(selected_exit_cid)
+            exit_list = [base_exit]
+            bar_count = None
+        else:
+            exit_list = None
+            bar_count = 4
+
+        stop_config = pack.get_stop_config()
+        target_config = pack.get_target_config()
+
+        trades = generate_trades(
+            df, direction=direction, entry_trigger=base_entry,
+            exit_triggers=exit_list, bar_count_exit=bar_count,
+            risk_per_trade=100.0, stop_config=stop_config,
+            target_config=target_config,
+        )
+
+    # --- Chart with trade markers ---
+    st.markdown("**Price Chart with Trades**")
+    st.caption(f"Stop: {rmp_module.format_stop_summary(pack)} | "
+               f"Target: {rmp_module.format_target_summary(pack)}")
+
+    render_chart_with_candle_selector(
+        df, trades, {"direction": direction},
+        chart_key=f"rmp_preview_chart_{pack.id}",
+    )
+
+    # --- Trade Summary ---
+    if len(trades) > 0:
+        kpis = calculate_kpis(trades, starting_balance=10000, risk_per_trade=100.0)
+
+        st.markdown("**Trade Summary**")
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        k1.metric("Trades", kpis["total_trades"])
+        k2.metric("Win Rate", f"{kpis['win_rate']:.1f}%")
+        pf = kpis['profit_factor']
+        k3.metric("PF", "∞" if pf == float('inf') else f"{pf:.2f}")
+        k4.metric("Avg R", f"{kpis['avg_r']:+.2f}")
+        k5.metric("Total R", f"{kpis['total_r']:+.1f}")
+        k6.metric("Max DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+        # Trade details table
+        st.markdown("**Trade Details**")
+        trade_records = []
+        for _, t in trades.tail(15).iterrows():
+            record = {
+                "Entry": str(t['entry_time']),
+                "Exit": str(t['exit_time']),
+                "Entry $": f"${t['entry_price']:.2f}",
+                "Exit $": f"${t['exit_price']:.2f}",
+                "R": f"{t['r_multiple']:+.2f}",
+                "Result": "Win" if t['win'] else "Loss",
+            }
+            if 'stop_price' in t and pd.notna(t.get('stop_price')):
+                record["Stop $"] = f"${t['stop_price']:.2f}"
+            if 'target_price' in t and pd.notna(t.get('target_price')):
+                record["Target $"] = f"${t['target_price']:.2f}"
+            trade_records.append(record)
+
+        st.dataframe(pd.DataFrame(trade_records), use_container_width=True, hide_index=True)
+    else:
+        st.info("No trades generated with the selected entry/exit triggers and direction.")
+
+
+def _render_rmp_code(pack):
+    """Render Code tab for a Risk Management Pack — show builder function source."""
+    import inspect
+
+    st.caption("Source code for this pack's stop-loss and take-profit configuration builders.")
+
+    # Show effective outputs
+    st.markdown("**Active Configuration**")
+    stop_config = pack.get_stop_config()
+    target_config = pack.get_target_config()
+    st.code(
+        f"stop_config  = {stop_config}\ntarget_config = {target_config}",
+        language="python"
+    )
+
+    st.divider()
+
+    # Show builder function sources
+    template = rmp_module.get_template(pack.base_template)
+    if template:
+        build_stop = template.get("build_stop")
+        build_target = template.get("build_target")
+
+        if build_stop:
+            with st.expander("Stop Loss Builder", expanded=True):
+                try:
+                    source = inspect.getsource(build_stop)
+                    st.code(source, language="python")
+                except (OSError, TypeError):
+                    st.warning(f"Could not retrieve source for {build_stop.__name__}")
+
+        if build_target:
+            with st.expander("Take Profit Builder", expanded=True):
+                try:
+                    source = inspect.getsource(build_target)
+                    st.code(source, language="python")
+                except (OSError, TypeError):
+                    st.warning(f"Could not retrieve source for {build_target.__name__}")
+
+    # Show the dataclass methods
+    with st.expander("Pack Methods (get_stop_config / get_target_config)"):
+        try:
+            source = inspect.getsource(rmp_module.RiskManagementPack.get_stop_config)
+            st.code(source, language="python")
+        except (OSError, TypeError):
+            pass
+        try:
+            source = inspect.getsource(rmp_module.RiskManagementPack.get_target_config)
+            st.code(source, language="python")
+        except (OSError, TypeError):
+            pass
 
 
 if __name__ == "__main__":

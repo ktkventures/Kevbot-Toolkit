@@ -19,13 +19,18 @@ def generate_mock_bars(
     start: datetime,
     end: datetime,
     timeframe: str = "1Min",
-    seed: int = 42
+    seed: int = 42,
+    extended_hours: bool = False,
 ) -> pd.DataFrame:
     """
     Generate mock OHLCV data matching Alpaca's response structure.
 
     Returns a multi-index DataFrame (symbol, timestamp) with columns:
     - open, high, low, close, volume, trade_count, vwap
+
+    Args:
+        extended_hours: If True, generate bars for 4:00 AM - 8:00 PM
+                       (pre-market through after-hours) instead of just 9:30 - 16:00.
 
     This matches the structure returned by:
     alpaca.data.historical.StockHistoricalDataClient.get_stock_bars()
@@ -35,8 +40,8 @@ def generate_mock_bars(
     # Parse timeframe to minutes
     tf_minutes = _parse_timeframe(timeframe)
 
-    # Generate timestamps based on market hours (9:30 AM - 4:00 PM ET)
-    timestamps = _generate_market_timestamps(start, end, tf_minutes)
+    # Generate timestamps based on market hours
+    timestamps = _generate_market_timestamps(start, end, tf_minutes, extended_hours=extended_hours)
 
     if len(timestamps) == 0:
         return pd.DataFrame()
@@ -92,7 +97,11 @@ def generate_mock_bars(
 
             # Volume varies throughout the day (higher at open/close)
             hour = ts.hour
-            if hour == 9 or hour == 15:  # Open and close hours
+            minute = ts.minute
+            bar_minutes = hour * 60 + minute
+            if bar_minutes < 570 or bar_minutes >= 960:  # Pre-market or after-hours
+                vol_mult = np.random.uniform(0.1, 0.3)
+            elif hour == 9 or hour == 15:  # Open and close hours
                 vol_mult = np.random.uniform(1.5, 2.5)
             elif hour == 12:  # Lunch
                 vol_mult = np.random.uniform(0.5, 0.8)
@@ -143,19 +152,31 @@ def _parse_timeframe(timeframe: str) -> int:
 def _generate_market_timestamps(
     start: datetime,
     end: datetime,
-    tf_minutes: int
+    tf_minutes: int,
+    extended_hours: bool = False,
 ) -> List[datetime]:
-    """Generate timestamps during market hours only."""
+    """Generate timestamps during market hours.
+
+    Args:
+        extended_hours: If True, generate 4:00 AM - 8:00 PM (pre-market through after-hours).
+                       If False, generate 9:30 AM - 4:00 PM (regular hours only).
+    """
     timestamps = []
 
-    current = start.replace(hour=9, minute=30, second=0, microsecond=0)
+    if extended_hours:
+        day_open_h, day_open_m = 4, 0
+        day_close_h, day_close_m = 20, 0
+    else:
+        day_open_h, day_open_m = 9, 30
+        day_close_h, day_close_m = 16, 0
+
+    current = start.replace(hour=day_open_h, minute=day_open_m, second=0, microsecond=0)
 
     while current <= end:
         # Skip weekends
         if current.weekday() < 5:  # Monday = 0, Friday = 4
-            # Market hours: 9:30 AM - 4:00 PM
-            market_open = current.replace(hour=9, minute=30)
-            market_close = current.replace(hour=16, minute=0)
+            market_open = current.replace(hour=day_open_h, minute=day_open_m)
+            market_close = current.replace(hour=day_close_h, minute=day_close_m)
 
             bar_time = market_open
             while bar_time < market_close:
@@ -165,7 +186,7 @@ def _generate_market_timestamps(
 
         # Move to next day
         current += timedelta(days=1)
-        current = current.replace(hour=9, minute=30)
+        current = current.replace(hour=day_open_h, minute=day_open_m)
 
     return timestamps
 

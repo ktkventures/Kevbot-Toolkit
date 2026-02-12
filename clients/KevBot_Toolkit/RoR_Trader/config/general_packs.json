@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "packs": [
+    {
+      "id": "tod_ny_open",
+      "base_template": "time_of_day",
+      "version": "NY Open",
+      "description": "First 2.5 hours of regular trading (9:30 - 12:00 ET)",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "start_hour": 9,
+        "start_minute": 30,
+        "end_hour": 12,
+        "end_minute": 0
+      }
+    },
+    {
+      "id": "session_regular",
+      "base_template": "trading_session",
+      "version": "Regular Hours",
+      "description": "Regular trading session only (9:30 - 16:00 ET)",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "session": "regular"
+      }
+    },
+    {
+      "id": "dow_weekdays",
+      "base_template": "day_of_week",
+      "version": "All Weekdays",
+      "description": "Trade all weekdays (default)",
+      "enabled": false,
+      "is_default": true,
+      "parameters": {
+        "monday": true,
+        "tuesday": true,
+        "wednesday": true,
+        "thursday": true,
+        "friday": true
+      }
+    },
+    {
+      "id": "cal_avoid_fomc_nfp",
+      "base_template": "calendar_filter",
+      "version": "Avoid FOMC & NFP",
+      "description": "Skip trading on FOMC and NFP days",
+      "enabled": false,
+      "is_default": true,
+      "parameters": {
+        "avoid_fomc": true,
+        "avoid_opex": false,
+        "avoid_nfp": true,
+        "buffer_minutes": 30
+      }
+    }
+  ]
+}

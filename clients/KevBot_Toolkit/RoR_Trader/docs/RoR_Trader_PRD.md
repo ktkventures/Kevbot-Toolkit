@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.8
+**Version:** 0.9
 **Date:** February 11, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
+**Status:** Phase 9 In Progress — Optimization Workflow (Exit After N Candles ✓, 6-Tab Drill-Down ✓, Optimizable Variables ✓, Confluence Packs rename ✓, General Packs ✓, Risk Management Packs ✓); Phases 1–8 complete except QA Sandbox, Backtest Settings, and UX utility buttons (deferred to Phase 10 — depends on Phase 9 schema)
 
 ---
 
@@ -280,7 +280,7 @@ Users can contribute and monetize:
 ```
 RoR Trader — Top Navigation Bar
 ─────────────────────────────────────────────────────────────────
-  Dashboard | Confluence Groups | Strategies | Portfolios | Alerts
+  Dashboard | Confluence Packs | Strategies | Portfolios | Alerts
 ─────────────────────────────────────────────────────────────────
 
 Sidebar: App title, data source indicator, chart presets.
@@ -293,23 +293,27 @@ Sidebar: App title, data source indicator, chart presets.
 │   ├── Recent Alerts
 │   └── Quick Actions (New Strategy, View Strategies, View Portfolios)
 │
-├── 🔗 CONFLUENCE GROUPS (sub-nav: Timeframe Groups | General Groups | Stop Loss Packs | Take Profit Packs)
+├── 🔗 CONFLUENCE PACKS (sub-nav: TF Confluence | General | Risk Management)
 │   │
-│   ├── Timeframe Groups (existing — indicator-based, tied to chart timeframe)
-│   │   ├── Group List (template-based, versioned)
-│   │   └── Group Detail (Code tab, Preview tab)
+│   ├── TF Confluence (existing — indicator-based, tied to chart timeframe)
+│   │   ├── Pack List (template-based, versioned)
+│   │   └── Pack Detail (Parameters, Outputs, Preview, Code, Danger Zone tabs)
 │   │
-│   ├── General Groups (Phase 9 — non-timeframe conditions)
-│   │   ├── Group List (time of day, session windows, day of week, news, etc.)
-│   │   └── Group Detail (Code tab, Preview tab)
+│   ├── General (non-timeframe conditions)
+│   │   ├── Pack List by category (Time, Calendar)
+│   │   │   ├── Time of Day, Trading Session
+│   │   │   └── Day of Week, Calendar Filter
+│   │   └── Pack Detail (Parameters, Outputs, Preview, Code, Danger Zone tabs)
+│   │       ├── Preview: price chart with condition state markers, state transition table, distribution metrics
+│   │       └── Extended hours toggle for session-based packs
 │   │
-│   ├── Stop Loss Packs (Phase 9 — parameterized stop configurations)
-│   │   ├── Pack List (ATR variants, Fixed, Percentage, Swing variants)
-│   │   └── Pack Detail (parameter grid, preview)
-│   │
-│   └── Take Profit Packs (Phase 9 — parameterized target configurations)
-│       ├── Pack List (R:R variants, ATR variants, Fixed, Percentage, Swing variants)
-│       └── Pack Detail (parameter grid, preview)
+│   └── Risk Management (combined stop + target from shared parameters)
+│       ├── Pack List by category (Volatility, Fixed, Structure, Composite)
+│       │   ├── ATR-Based, Fixed Dollar, Percentage
+│       │   └── Swing, Risk:Reward
+│       └── Pack Detail (Parameters, Outputs, Preview, Code, Danger Zone tabs)
+│           ├── Preview: configurable entry/exit triggers, trade chart with stop/target levels, KPI summary
+│           └── Code: active config display, builder function source
 │
 ├── 📊 STRATEGIES (sub-nav: Strategy Builder | My Strategies)
 │   │
@@ -325,15 +329,15 @@ Sidebar: App title, data source indicator, chart presets.
 │   │       ├── Price Chart + Oscillator Panes
 │   │       ├── Equity Curve
 │   │       ├── R-Distribution Histogram
-│   │       ├── Optimizable Variables (Phase 9 — collapsible box showing active variables by category with ✕ remove)
-│   │       ├── Active Tags (Phase 9 — removable chips above drill-down for selected interpretations)
-│   │       ├── Optimization Drill-Down (Phase 9 — 6 tabs):
-│   │       │   ├── Entry Trigger Tab (drill-down on entry trigger effectiveness)
-│   │       │   ├── Exit Triggers Tab (drill-down on exit trigger effectiveness)
+│   │       ├── Optimizable Variables (collapsible box showing active variables by category with ✕ remove)
+│   │       ├── Active Tags (removable chips above drill-down for selected interpretations)
+│   │       ├── Optimization Drill-Down (6 tabs):
+│   │       │   ├── Entry Trigger Tab (per-trigger KPI cards with "Replace" button)
+│   │       │   ├── Exit Triggers Tab (Drill-Down + Auto-Search modes)
 │   │       │   ├── Timeframe Conditions Tab (existing confluence drill-down)
-│   │       │   ├── General Conditions Tab (drill-down on general confluence interpretations)
-│   │       │   ├── Stop Loss Tab (drill-down across stop loss pack variations)
-│   │       │   └── Take Profit Tab (drill-down across take profit pack variations)
+│   │       │   ├── General Conditions Tab (enabled general packs with outputs)
+│   │       │   ├── Stop Loss Tab (multi-backtest KPI cards across RM pack stop configs)
+│   │       │   └── Take Profit Tab (multi-backtest KPI cards across RM pack target configs)
 │   │       └── Trade History Table
 │   │
 │   └── My Strategies
@@ -547,6 +551,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 22. [x] "Exit After N Candles" bar count exit trigger — new `bar_count` EXIT-only template in TEMPLATES (no indicators/outputs); hybrid approach with `bar_count_exit` parameter in `generate_trades()` trade loop (can't pre-compute as DataFrame column); default 4 candles; priority 3 in exit chain (stop > target > bar_count > signal); migration auto-appends `bar_count_default` group for existing users; validation prevents multiple bar count exits per strategy
 23. [x] 6-tab optimization drill-down with actionable cards — replaced single "Confluence Drill-Down" panel with 6-tab layout (Entry, Exit, TF Conditions, General, Stop Loss, Take Profit); Entry tab: per-trigger KPI cards with "Replace" button (swaps sidebar entry trigger via pending state pattern); Exit tab: Drill-Down mode with per-trigger KPI cards and "Add" button (appends to exits, up to 3) + Auto-Search mode with `find_best_exit_combinations()` testing combos of 1-3 exits and "Replace" button (swaps all exits); TF Conditions tab: existing drill-down with checkbox→"Add" button conversion + Auto-Search "Apply"→"Replace" rename; tabs 4-6 placeholder; `analyze_entry_triggers()` and `analyze_exit_triggers()` helpers use full current strategy config (not isolated baselines); compact toolbar with `[Search][Action][⚙]` layout; Streamlit widget key conflict resolved via pending session state pattern (`pending_entry_trigger`, `pending_add_exit`, `pending_replace_exits` consumed before sidebar selectbox instantiation)
 24. [x] Optimizable Variables box and per-tab active tags — collapsible `st.expander("Optimizable Variables")` positioned below strategy title showing all 6 variable categories (Entry, Exits, TF Conditions, General placeholder, Stop Loss, Take Profit) with ✕ remove buttons; replaces old "Active Confluence Filters" tag bar; exit removal via `pending_remove_exit_idx` with shift-down logic; target removal via `pending_remove_target`; per-tab active tags: Entry tab shows current trigger caption, Exit tab shows removable exit trigger chips, TF Conditions tab shows removable confluence chips with "Clear All"; all tag removals sync with Optimizable Variables box via shared `selected_confluences` set and pending state patterns
+
+25. [x] Confluence Packs rename, General Packs, and Risk Management Packs — renamed "Confluence Groups" to "Confluence Packs" across all user-facing labels for marketability; added sub-navigation (TF Confluence, General, Risk Management); new `general_packs.py` module with 4 templates (Time of Day, Trading Session, Day of Week, Calendar Filter), condition evaluation functions (`evaluate_condition()` dispatcher), and full CRUD with `config/general_packs.json`; new `risk_management_packs.py` module with 5 templates (ATR-Based, Fixed Dollar, Percentage, Swing, Risk:Reward), dual-output architecture (`get_stop_config()` + `get_target_config()` from shared parameters), builder functions, and full CRUD with `config/risk_management_packs.json`; both management pages have 5-tab detail panels (Parameters, Outputs, Preview, Code, Danger Zone); General Pack previews: extended hours mock data toggle, condition state change markers on price chart, state transition table, distribution metrics; Risk Management Pack previews: configurable entry/exit trigger selectors from TF Confluence Packs, trade chart with stop/target levels, KPI summary, trade details; Code tabs show `inspect.getsource()` for evaluation/builder functions; wired drill-down tabs 4-6 (General shows enabled packs with outputs, Stop Loss and Take Profit run `analyze_risk_management()` multi-backtest with KPI comparison cards); extended hours support in `mock_data.py` (`extended_hours` parameter for 4:00 AM - 8:00 PM bar generation); `extra_markers` parameter on `render_chart_with_candle_selector()` and `render_price_chart()` for condition state annotations
 
 ---
 
@@ -828,32 +834,37 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 ---
 
-**General Confluence Groups (new sub-page under Confluence Groups):**
-- [ ] New "General Groups" sub-page — same template/version/pack structure as timeframe groups but for non-timeframe variables
-- [ ] General group interpreter framework — interpreters that produce boolean or categorical states from non-chart data sources:
-  - **Time of Day** — morning, midday, afternoon, etc. (configurable buckets)
-  - **Day of Week** — Monday through Friday
-  - **Trading Session** — pre-market, opening hour, regular hours, power hour, after-hours
-  - **Calendar** — month of year, week of month, options expiration days, FOMC days, etc.
-  - **News/Event** — extensible framework for external data feeds (future)
+**General Confluence Packs (sub-page under Confluence Packs):** ✓
+- [x] New "General" sub-page — same template/version/pack structure as TF Confluence but for non-timeframe variables
+- [x] General pack template framework — 4 templates that produce categorical condition states from non-chart data:
+  - **Time of Day** — configurable time window (start/end hour:minute)
+  - **Trading Session** — pre-market, regular, after-hours, extended session filter
+  - **Day of Week** — per-day allow/block toggles (Mon–Fri)
+  - **Calendar Filter** — block FOMC/NFP/OpEx days with configurable buffer
+  - **News/Event** — extensible framework for external data feeds (architecture ready, future implementation)
   - **Market Regime** — broad market conditions from index data (future)
+- [x] Condition evaluation system — `evaluate_condition()` dispatcher with per-template evaluators (`_eval_time_of_day`, `_eval_trading_session`, `_eval_day_of_week`, `_eval_calendar_filter`) that return condition state Series
+- [x] Management page — pack list by category, + New Pack dialog, detail panel with 5 tabs (Parameters, Outputs, Preview, Code, Danger Zone)
+- [x] Preview tab — extended hours toggle, price chart with condition state change markers (colored circles), state transition table, distribution metrics
+- [x] Code tab — `inspect.getsource()` for evaluation functions
+- [x] Extended hours mock data — `generate_mock_bars(extended_hours=True)` generates 4:00 AM – 8:00 PM bars for session-based preview validation
+- [x] Template structure — same `TEMPLATES` dict pattern with `parameters_schema`, `outputs`, `output_descriptions`, `condition_logic`, `triggers`
 - [ ] General confluence record format — extends existing `"{TIMEFRAME}-{INTERPRETER}-{STATE}"` format; general records use a category prefix instead of timeframe (e.g., `"GEN-SESSION-OPENING_HOUR"`, `"GEN-DAY_OF_WEEK-MONDAY"`)
 - [ ] Trade tagging — trades tagged with general confluence records at entry time, alongside existing timeframe records in `confluence_records` set
-- [ ] Template structure — same `TEMPLATES` dict pattern with `parameters_schema`, `outputs`, `output_descriptions`, `triggers` (if applicable)
 
-**Stop Loss Packs (new sub-page under Confluence Groups):**
-- [ ] New "Stop Loss Packs" sub-page — collections of parameterized stop loss configurations
-- [ ] Pack structure — each pack defines a set of stop variations to compare (e.g., "ATR Pack" with ATR 0.5x, 1.0x, 1.5x, 2.0x, 2.5x, 3.0x)
-- [ ] Stop variation as interpretation — each stop config produces a tagged "interpretation" on the trade (e.g., `"STOP-ATR-1.5X"`) so the drill-down can evaluate KPIs per variation
-- [ ] Multi-backtest computation — drill-down on Stop Loss tab pre-computes trades across all pack variations (N backtest runs), then displays KPI comparison cards
-- [ ] Built-in packs — default packs for each stop method (ATR range, Fixed Dollar range, Percentage range, Swing lookback range)
-- [ ] Custom packs — users can create custom stop packs with arbitrary parameter combinations
-
-**Take Profit Packs (new sub-page under Confluence Groups):**
-- [ ] New "Take Profit Packs" sub-page — same structure as Stop Loss Packs but for target configurations
-- [ ] Built-in packs — default packs for each target method (R:R range, ATR range, Fixed Dollar range, Percentage range, Swing lookback range)
-- [ ] "None" as a valid variation — compare having no take profit vs. various target levels
-- [ ] Custom packs — users can create custom target packs
+**Risk Management Packs (sub-page under Confluence Packs — replaces separate Stop Loss / Take Profit Packs):** ✓
+- [x] New "Risk Management" sub-page — each pack bundles both stop-loss AND take-profit configurations from shared parameters
+- [x] Dual-output architecture — `get_stop_config()` and `get_target_config()` methods generate both configs from one parameter set, analogous to how TF Confluence Packs output both triggers AND conditions
+- [x] 5 templates: ATR-Based (volatility), Fixed Dollar (fixed), Percentage (fixed), Swing (structure), Risk:Reward (composite — any stop method paired with R:R target)
+- [x] Builder function pattern — `build_stop` and `build_target` function references stored in TEMPLATES dict, called by dataclass methods
+- [x] Management page — pack list by category, + New Pack dialog, detail panel with 5 tabs (Parameters, Outputs, Preview, Code, Danger Zone)
+- [x] Preview tab — configurable entry/exit trigger selectors from TF Confluence Packs, generates trades with pack's stop/target config, chart with trade markers, KPI summary, trade details table
+- [x] Code tab — active config display, builder function source via `inspect.getsource()`, dataclass method source
+- [x] Multi-backtest computation — `analyze_risk_management()` helper varies either stop or target config across enabled RM packs while holding the other fixed; Stop Loss and Take Profit drill-down tabs display KPI comparison cards
+- [x] Built-in packs — ATR Default (1.5x/3x), ATR Tight (1x/2x), Fixed $1/$2, Percentage 0.5%/1%, Swing 2R
+- [x] Custom packs — users can create custom packs with arbitrary parameter combinations
+- [x] Conditional parameter visibility — `rr_ratio` composite template only shows params relevant to selected stop method
+- [x] Format helpers — `format_stop_summary()`, `format_target_summary()`, `format_parameters()` for display across UI
 
 **"Exit After N Candles" Default Exit:** ✓
 - [x] New interpreter/trigger — "Bar Count Exit" that fires after N candles since entry (configurable N)
@@ -885,9 +896,9 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] **Entry Trigger tab** — shows KPI cards for each available entry trigger using current strategy config; "Replace" button swaps sidebar entry trigger; compact `[Search][Analyze][⚙]` toolbar
 - [x] **Exit Triggers tab** — Drill-Down mode with per-trigger KPI cards and "Add" button (appends up to 3); Auto-Search mode with `find_best_exit_combinations()` and "Replace" button; compact toolbar with mode-aware action button
 - [x] **Timeframe Conditions tab** — existing confluence drill-down with "Add" button (replaces checkbox) + Auto-Search with "Replace" button (replaces "Apply"); Auto-Search gets compact toolbar with "Search" action button
-- [ ] **General Conditions tab** — same drill-down pattern for general confluence interpretations (placeholder — depends on General Confluence Groups)
-- [ ] **Stop Loss tab** — shows KPI comparison cards across all variations in active stop loss packs; requires multi-backtest pre-computation (placeholder — depends on Stop Loss Packs)
-- [ ] **Take Profit tab** — shows KPI comparison cards across all variations in active take profit packs; same multi-backtest pattern (placeholder — depends on Take Profit Packs)
+- [x] **General Conditions tab** — shows enabled general packs with condition outputs; future: full drill-down pattern when trade tagging is implemented
+- [x] **Stop Loss tab** — search/analyze/filter toolbar; `analyze_risk_management()` multi-backtest across enabled RM pack stop configs (holding current target fixed); KPI comparison cards with pack name
+- [x] **Take Profit tab** — same pattern as Stop Loss; varies target config across enabled RM packs (holding current stop fixed); KPI comparison cards
 - [ ] Cross-tab filtering — selections in earlier tabs narrow the trade set for later tabs ("given this entry + these exits + these conditions, which stop is best?")
 - [x] Auto-Search available on Entry (N/A — single trigger), Exit, and TF Conditions tabs
 
@@ -898,10 +909,9 @@ Strategy Builder → Load Data → Entry Trigger tab
   - `general_confluences: List[str]` — selected general confluence interpretation states
   - `stop_pack_id: Optional[str]` — reference to the stop loss pack used for optimization (if any)
   - `target_pack_id: Optional[str]` — reference to the take profit pack used for optimization (if any)
-- [ ] New config files:
-  - `general_confluence_groups.json` — general group definitions (same structure as `confluence_groups.json`)
-  - `stop_loss_packs.json` — stop loss pack definitions
-  - `take_profit_packs.json` — take profit pack definitions
+- [x] New config files:
+  - `config/general_packs.json` — general pack definitions (template/version/parameters structure)
+  - `config/risk_management_packs.json` — risk management pack definitions (dual stop+target configs)
 - [ ] Backward compatibility — existing strategies without general confluences or packs continue to work unchanged; new fields default to empty/None
 
 **Performance Considerations:**
@@ -918,6 +928,12 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Active tags above mode toggle** — Tags represent selections that apply to both Drill-Down and Auto-Search. Placing them above the mode radio makes this visually clear and prevents the tags from being associated with only one mode.
 - **Interpretation as the universal unit** — Entry triggers, exit triggers, timeframe conditions, general conditions, stop configs, and target configs are all treated as "interpretations" in the drill-down. This unifying abstraction means one drill-down UI pattern works across all 6 tabs, and the `apply_confluence_filters()` helper extends naturally.
 - **Phase 9 before Phase 8 remainders (now Phase 10)** — QA Sandbox validates data schemas, and Backtest Settings caches results keyed on strategy config. Both would need reworking if built on the pre-Phase-9 schema. Building the optimization workflow first means QA and caching are designed for the final data model.
+- **"Confluence Packs" over "Confluence Groups"** — "Packs" is more marketable and conveys a bundled, configurable product. Internal code retains `groups` naming where appropriate to avoid unnecessary refactoring, but all user-facing labels use "Packs."
+- **"General" over "Miscellaneous"** — "Miscellaneous" has a junk-drawer connotation, while "General" conveys broadly applicable conditions. General Packs are strategy-wide filters that aren't tied to chart indicators — they operate on time, calendar, and external event data.
+- **Risk Management Packs as dual-output entities** — Each pack produces both a `stop_config` and a `target_config` from shared parameters, analogous to how TF Confluence Packs output both triggers AND conditions from the same indicator. This keeps stop and target conceptually linked (e.g., "ATR-Based" applies ATR to both) while allowing independent drill-down in separate tabs. Replaces the original design of separate Stop Loss Packs and Take Profit Packs.
+- **Condition evaluation dispatcher pattern** — `evaluate_condition(df, pack)` dispatches to per-template evaluators based on `condition_logic` field in TEMPLATES. This is extensible (add a new template = add one evaluator function and one TEMPLATES entry) and keeps evaluation logic co-located with template definitions.
+- **Extended hours for preview validation** — General Pack previews need bars outside regular hours to demonstrate session/time conditions meaningfully. `mock_data.py` gains an `extended_hours` parameter (4:00 AM – 8:00 PM) with realistic lower volume in pre/after-market periods. The preview defaults to extended hours for `trading_session` template so IN/OUT states are both visible.
+- **Chart condition markers via `extra_markers`** — Rather than building a separate chart component for condition state annotations, the existing `render_price_chart()` gains an `extra_markers` parameter. Markers are colored circles with state labels at each condition transition point, overlaid on the candlestick chart. This reuses the proven chart infrastructure without modification.
 
 ### Phase 10: QA, Polish & Backtest Settings — "Get Live-Tradeable"
 *Deferred Phase 8 items — completing QA validation and backtest configuration after Phase 9 schemas are stable.*
@@ -927,13 +943,13 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Stop/Target Validation tab — configure any stop method + target method, run on sample data, render price chart with stop/target price levels plotted per trade (horizontal lines from entry to exit), entry/exit markers, and trade outcome annotations; visually confirms stop/target calculations match expectations
 - [ ] Backtesting Verification tab — controlled input scenarios with known expected outputs (e.g., synthetic price series where exact trade outcomes are predictable); displays actual vs. expected results
 - [ ] Signal Detection tab — verify triggers fire on correct bars; display trigger column values alongside interpreter states for a selected confluence group and date range
-- [ ] General Confluence Verification tab — validate general group interpreters (time of day, session, day of week) produce correct states for known timestamps
-- [ ] Stop/Target Pack Verification tab — validate multi-backtest runs produce consistent results across pack variations
+- [ ] General Pack Verification tab — validate general pack condition evaluators (time of day, session, day of week, calendar) produce correct states for known timestamps
+- [ ] Risk Management Pack Verification tab — validate multi-backtest runs produce consistent results across pack stop/target variations
 - [ ] Extensible design — easy to add new validation tabs as new subsystems are built (e.g., alert delivery, forward test pipeline)
 
 **QA & Verification:**
 - [ ] Indicator verification — confirm all indicators calculate correctly against known values
-- [ ] Interpreter verification — validate all interpreter states produce expected outputs (timeframe + general)
+- [ ] Interpreter verification — validate all interpreter states produce expected outputs (TF Confluence + General Packs)
 - [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
 - [ ] Forward testing validation — confirm live data pipeline produces accurate results
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
@@ -957,7 +973,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
-**After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json, general_confluence_groups.json, stop_loss_packs.json, take_profit_packs.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
+**After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json, general_packs.json, risk_management_packs.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
