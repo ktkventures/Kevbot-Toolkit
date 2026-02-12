@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.10
-**Date:** February 11, 2026
+**Version:** 0.11
+**Date:** February 12, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 9 Complete — Optimization Workflow; Phase 10 next (QA Sandbox, Backtest Settings, caching, polish); Phases 1–9 complete
+**Status:** Phase 10 In Progress — QA Sandbox covered by pack previews ✓; Backtest Settings, caching, and polish remaining; Phases 1–9 complete
 
 ---
 
@@ -941,18 +941,14 @@ Strategy Builder → Load Data → Entry Trigger tab
 ### Phase 10: QA, Polish & Backtest Settings — "Get Live-Tradeable"
 *Deferred Phase 8 items — completing QA validation and backtest configuration after Phase 9 schemas are stable.*
 
-**QA Sandbox Page:**
-- [ ] New "QA Sandbox" navigation page — developer/QA testing ground for validating app subsystems before going live (not visible to end users in production)
-- [ ] Stop/Target Validation tab — configure any stop method + target method, run on sample data, render price chart with stop/target price levels plotted per trade (horizontal lines from entry to exit), entry/exit markers, and trade outcome annotations; visually confirms stop/target calculations match expectations
-- [ ] Backtesting Verification tab — controlled input scenarios with known expected outputs (e.g., synthetic price series where exact trade outcomes are predictable); displays actual vs. expected results
-- [ ] Signal Detection tab — verify triggers fire on correct bars; display trigger column values alongside interpreter states for a selected confluence group and date range
-- [ ] General Pack Verification tab — validate general pack condition evaluators (time of day, session, day of week, calendar) produce correct states for known timestamps
-- [ ] Risk Management Pack Verification tab — validate multi-backtest runs produce consistent results across pack stop/target variations
-- [ ] Extensible design — easy to add new validation tabs as new subsystems are built (e.g., alert delivery, forward test pipeline)
+**QA Sandbox Page:** ✓ *(covered by existing pack preview tabs)*
+- [x] ~~Stop/Target Validation~~ — covered by Risk Management Pack Preview tab (trades on price chart with stop/target levels, entry/exit markers, KPI summary, trade details with Stop $, Target $, R multiple)
+- [x] ~~Signal Detection~~ — covered by TF Confluence Pack Preview tab (interpreter state timeline with last 25 changes, trigger events table with time/name/direction/type/price)
+- [x] ~~General Pack Verification~~ — covered by General Pack Preview tab (condition state markers on chart, state transition table, distribution metrics)
+- [x] ~~Risk Management Pack Verification~~ — covered by RM Pack Preview (individual) + Strategy Builder SL/TP drill-down tabs (multi-backtest comparison across packs)
+- [ ] Backtesting Verification — controlled synthetic scenarios with known expected outputs; developer-only concern, deferred indefinitely
 
 **QA & Verification:**
-- [ ] Indicator verification — confirm all indicators calculate correctly against known values
-- [ ] Interpreter verification — validate all interpreter states produce expected outputs (TF Confluence + General Packs)
 - [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
 - [ ] Forward testing validation — confirm live data pipeline produces accurate results
 - [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
