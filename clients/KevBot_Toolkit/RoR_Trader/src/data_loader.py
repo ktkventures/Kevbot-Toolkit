@@ -66,12 +66,18 @@ def load_from_alpaca(
         # Parse timeframe
         tf_map = {
             "1Min": TimeFrame.Minute,
+            "2Min": TimeFrame(2, TimeFrameUnit.Minute),
+            "3Min": TimeFrame(3, TimeFrameUnit.Minute),
             "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+            "10Min": TimeFrame(10, TimeFrameUnit.Minute),
             "15Min": TimeFrame(15, TimeFrameUnit.Minute),
             "30Min": TimeFrame(30, TimeFrameUnit.Minute),
             "1Hour": TimeFrame.Hour,
+            "2Hour": TimeFrame(2, TimeFrameUnit.Hour),
             "4Hour": TimeFrame(4, TimeFrameUnit.Hour),
             "1Day": TimeFrame.Day,
+            "1Week": TimeFrame.Week,
+            "1Month": TimeFrame.Month,
         }
         tf = tf_map.get(timeframe, TimeFrame.Minute)
 
@@ -193,12 +199,14 @@ def get_data_source() -> str:
 
 # Approximate trading bars per day by timeframe (6.5 market hours)
 BARS_PER_DAY = {
-    "1Min": 390, "5Min": 78, "15Min": 26, "30Min": 13,
-    "1Hour": 7, "4Hour": 2, "1Day": 1,
+    "1Min": 390, "2Min": 195, "3Min": 130, "5Min": 78,
+    "10Min": 39, "15Min": 26, "30Min": 13,
+    "1Hour": 7, "2Hour": 4, "4Hour": 2,
+    "1Day": 1, "1Week": 0.2, "1Month": 1 / 21,
 }
 
 
-def _bars_per_day(timeframe: str) -> int:
+def _bars_per_day(timeframe: str) -> float:
     """Return approximate trading bars per day for a timeframe."""
     return BARS_PER_DAY.get(timeframe, 390)
 
@@ -208,7 +216,7 @@ def estimate_bar_count(days: int, timeframe: str) -> int:
     Assumes ~252 trading days per 365 calendar days (~69%).
     """
     trading_days = int(days * 252 / 365)
-    return trading_days * _bars_per_day(timeframe)
+    return max(1, int(trading_days * _bars_per_day(timeframe)))
 
 
 def days_from_bar_count(bars: int, timeframe: str) -> int:

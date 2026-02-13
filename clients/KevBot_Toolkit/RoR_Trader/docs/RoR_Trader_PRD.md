@@ -3,7 +3,7 @@
 **Version:** 0.12
 **Date:** February 12, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓; QA remaining; Phases 1–9 complete
+**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; QA remaining; Phases 1–9 complete
 
 ---
 
@@ -985,10 +985,10 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Timeframe-aware max range guidance — status line shows recommended max (e.g., "1Min: ≤1yr recommended")
 - [x] Lookback modes also available on strategy detail Extended KPIs tab — Days/Bars/Date Range selector replaces simple days slider for both backtest and forward test views
 - [x] Result caching — three-tier caching system (see "Result Caching" section below)
-- [ ] Expand supported Alpaca timeframes — currently 7 presets; Alpaca supports any minute increment (1–59Min), 1–23Hour, and Day/Week/Month
-- [ ] Fix mock data timeframe — mock data generator currently always produces 1Min bars regardless of selected timeframe
-- [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
-- [ ] Alpaca data source note — inform free-plan users that historical data comes from IEX (single exchange) vs. SIP (all exchanges) on the paid plan
+- [x] Expand supported Alpaca timeframes — 13 presets (see "Timeframe Expansion" section below)
+- [x] Fix mock data timeframe — volatility/drift now scale by `sqrt(tf_minutes)` for realistic higher-timeframe bars
+- [x] Date range validation — warns when Days/Bars lookback extends before 2016 (Alpaca data floor); strengthened large-dataset warnings
+- [x] Alpaca data source note — sidebar caption: "Free plan: IEX data · Paid plan: SIP (all exchanges)"
 
 **Settings Page — COMPLETED (Feb 11, 2026):**
 - [x] Settings navigation page — new top-level nav item (6th section in top bar)
@@ -1028,6 +1028,16 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Helper functions — `extract_equity_curve_data()`, `extract_portfolio_equity_curve_data()`, `render_mini_equity_curve_from_data()` for persistent data extraction and rendering
 - [x] Cache invalidation — session caches cleared on strategy save/update/delete and portfolio save/update/delete; portfolio caches invalidated when constituent strategies change
 - [x] Lazy migration — existing strategies/portfolios without `equity_curve_data` auto-backfilled on first list load (one-time cost), then persisted for future instant loads; also backfills missing `max_r_drawdown` and `r_squared` KPIs
+
+**Timeframe Expansion & Data Validation — COMPLETED (Feb 11, 2026):**
+- [x] Expanded from 7 to 13 supported timeframes: 1Min, 2Min, 3Min, 5Min, 10Min, 15Min, 30Min, 1Hour, 2Hour, 4Hour, 1Day, 1Week, 1Month
+- [x] All timeframe maps updated across 3 files: `TIMEFRAMES`/`TIMEFRAME_GUIDANCE` (app.py), `tf_map`/`BARS_PER_DAY` (data_loader.py), `_parse_timeframe`/`resample_bars` (mock_data.py)
+- [x] Weekly/monthly mock data: generates daily bars then resamples via `resample_bars()` for realistic OHLCV aggregation
+- [x] Mock data volatility scaling: `volatility = base × sqrt(tf_minutes)`, `drift = base × tf_minutes`, `intrabar_range` scaled by `sqrt(tf_minutes)` — higher timeframes now show proportionally larger price movements
+- [x] Date range validation: Days and Bars/Candles modes compute `implied_start = today - data_days` and warn (`:orange[]`) if it falls before 2016-01-01 (`ALPACA_DATA_FLOOR`)
+- [x] Strengthened large-dataset warnings: 200K+ bars = `:red[**Very large dataset — may be slow**]`, 50K+ = `:orange[Large dataset]`
+- [x] IEX/SIP data source note: `st.caption()` in sidebar below Alpaca status indicator — "Free plan: IEX data · Paid plan: SIP (all exchanges)"
+- [x] `estimate_bar_count()` returns `int` via `max(1, int(...))` to handle fractional `BARS_PER_DAY` values for 1Week (0.2) and 1Month (1/21)
 
 **Deferred from Phase 9:**
 - [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)

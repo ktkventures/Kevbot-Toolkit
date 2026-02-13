@@ -11,7 +11,7 @@ Run with: streamlit run src/app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from itertools import combinations
 import plotly.graph_objects as go
 import plotly.express as px
@@ -138,18 +138,30 @@ import risk_management_packs as rmp_module
 # =============================================================================
 
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
-TIMEFRAMES = ["1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"]
+TIMEFRAMES = [
+    "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
+    "1Hour", "2Hour", "4Hour",
+    "1Day", "1Week", "1Month",
+]
 DIRECTIONS = ["LONG", "SHORT"]
 
 TIMEFRAME_GUIDANCE = {
-    "1Min": "~390 bars/day \u00b7 recommended up to 90 days",
-    "5Min": "~78 bars/day \u00b7 recommended up to 1 year",
-    "15Min": "~26 bars/day \u00b7 recommended up to 2 years",
-    "30Min": "~13 bars/day \u00b7 recommended up to 3 years",
-    "1Hour": "~7 bars/day \u00b7 recommended up to 5 years",
-    "4Hour": "~2 bars/day \u00b7 recommended up to 5 years",
-    "1Day": "1 bar/day \u00b7 recommended up to 5 years",
+    "1Min":   "~390 bars/day \u00b7 recommended \u226490 days",
+    "2Min":   "~195 bars/day \u00b7 recommended \u22646 months",
+    "3Min":   "~130 bars/day \u00b7 recommended \u22646 months",
+    "5Min":   "~78 bars/day \u00b7 recommended \u22641 year",
+    "10Min":  "~39 bars/day \u00b7 recommended \u22642 years",
+    "15Min":  "~26 bars/day \u00b7 recommended \u22642 years",
+    "30Min":  "~13 bars/day \u00b7 recommended \u22643 years",
+    "1Hour":  "~7 bars/day \u00b7 recommended \u22645 years",
+    "2Hour":  "~4 bars/day \u00b7 recommended \u22645 years",
+    "4Hour":  "~2 bars/day \u00b7 recommended \u22645 years",
+    "1Day":   "1 bar/day \u00b7 recommended \u22645 years",
+    "1Week":  "1 bar/week \u00b7 recommended \u226410 years",
+    "1Month": "~1 bar/month \u00b7 recommended \u226410 years",
 }
+
+ALPACA_DATA_FLOOR = date(2016, 1, 1)
 
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
 OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
@@ -1827,6 +1839,7 @@ def main():
         data_source = get_data_source()
         if is_alpaca_configured():
             st.success(f"{data_source}")
+            st.caption("Free plan: IEX data \u00b7 Paid plan: SIP (all exchanges)")
         else:
             st.warning(f"{data_source}")
 
@@ -2458,9 +2471,14 @@ def render_strategy_builder():
     # Fill status line (bar estimate + validation errors)
     est_parts = [f"~{est_bars:,} bars", TIMEFRAME_GUIDANCE.get(timeframe, "")]
     if est_bars > 200_000:
-        est_parts.append("**Very large dataset**")
+        est_parts.append(":red[**Very large dataset — may be slow**]")
     elif est_bars > 50_000:
-        est_parts.append("Large dataset")
+        est_parts.append(":orange[Large dataset]")
+    # Warn if lookback extends before Alpaca's data floor (Days/Bars modes only)
+    if lookback_mode != "Date Range":
+        implied_start = date.today() - timedelta(days=data_days)
+        if implied_start < ALPACA_DATA_FLOOR:
+            est_parts.append(":orange[Lookback extends before 2016 — Alpaca data may be unavailable]")
     if has_duplicate_exits:
         est_parts.append(":red[Duplicate exit triggers]")
     if entry_in_exits:

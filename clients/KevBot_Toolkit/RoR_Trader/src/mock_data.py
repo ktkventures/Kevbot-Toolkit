@@ -8,6 +8,8 @@ This allows development and testing without an API connection.
 When Alpaca is connected, this module can be swapped out for real data.
 """
 
+import math
+
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -37,8 +39,12 @@ def generate_mock_bars(
     """
     np.random.seed(seed)
 
+    # Weekly/Monthly: generate daily bars then resample
+    needs_resample = timeframe in ("1Week", "1Month")
+    gen_timeframe = "1Day" if needs_resample else timeframe
+
     # Parse timeframe to minutes
-    tf_minutes = _parse_timeframe(timeframe)
+    tf_minutes = _parse_timeframe(gen_timeframe)
 
     # Generate timestamps based on market hours
     timestamps = _generate_market_timestamps(start, end, tf_minutes, extended_hours=extended_hours)
@@ -69,9 +75,11 @@ def generate_mock_bars(
         # Generate price series with realistic movement
         n_bars = len(timestamps)
 
-        # Random walk with drift and volatility
-        volatility = 0.0008  # Per-bar volatility
-        drift = 0.00002  # Slight upward drift
+        # Random walk with drift and volatility (scaled by timeframe)
+        base_volatility = 0.0008   # 1-minute baseline
+        base_drift = 0.00002       # 1-minute baseline
+        volatility = base_volatility * math.sqrt(tf_minutes)
+        drift = base_drift * tf_minutes
 
         returns = np.random.normal(drift, volatility, n_bars)
         prices = base_price * np.cumprod(1 + returns)
@@ -79,8 +87,9 @@ def generate_mock_bars(
         # Generate OHLC from close prices
         data = []
         for i, (ts, close) in enumerate(zip(timestamps, prices)):
-            # Intrabar volatility
-            intrabar_range = close * np.random.uniform(0.0005, 0.002)
+            # Intrabar volatility (scaled by timeframe)
+            range_scale = math.sqrt(tf_minutes)
+            intrabar_range = close * np.random.uniform(0.0005, 0.002) * range_scale
 
             high = close + np.random.uniform(0, intrabar_range)
             low = close - np.random.uniform(0, intrabar_range)
@@ -136,15 +145,20 @@ def generate_mock_bars(
     df = df.set_index(['symbol', 'timestamp'])
     df = df.sort_index()
 
+    # Resample to weekly/monthly if needed
+    if needs_resample:
+        df = resample_bars(df, timeframe)
+
     return df
 
 
 def _parse_timeframe(timeframe: str) -> int:
     """Convert timeframe string to minutes."""
     tf_map = {
-        "1Min": 1, "5Min": 5, "15Min": 15, "30Min": 30,
-        "1Hour": 60, "4Hour": 240,
-        "1Day": 390,  # Full trading day
+        "1Min": 1, "2Min": 2, "3Min": 3, "5Min": 5,
+        "10Min": 10, "15Min": 15, "30Min": 30,
+        "1Hour": 60, "2Hour": 120, "4Hour": 240,
+        "1Day": 390,
     }
     return tf_map.get(timeframe, 1)
 
@@ -198,8 +212,10 @@ def resample_bars(df: pd.DataFrame, target_timeframe: str) -> pd.DataFrame:
     E.g., convert 1-minute bars to 5-minute bars.
     """
     tf_map = {
-        "1Min": "1min", "5Min": "5min", "15Min": "15min", "30Min": "30min",
-        "1Hour": "1h", "4Hour": "4h", "1Day": "1D",
+        "1Min": "1min", "2Min": "2min", "3Min": "3min",
+        "5Min": "5min", "10Min": "10min", "15Min": "15min",
+        "30Min": "30min", "1Hour": "1h", "2Hour": "2h",
+        "4Hour": "4h", "1Day": "1D", "1Week": "W", "1Month": "ME",
     }
 
     resample_rule = tf_map.get(target_timeframe, "1min")
