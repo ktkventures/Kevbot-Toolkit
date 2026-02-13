@@ -534,6 +534,103 @@ def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
     st.plotly_chart(fig, use_container_width=True, key=key)
 
 
+def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
+    """Extract minimal equity curve data for persistent storage.
+
+    Returns a JSON-serializable dict with exit_times, cumulative_r,
+    and boundary_index (for forward-testing strategies).
+    """
+    if len(trades) == 0:
+        return {"exit_times": [], "cumulative_r": [], "boundary_index": None}
+
+    equity = trades[["exit_time", "r_multiple"]].sort_values("exit_time").reset_index(drop=True)
+    equity["cumulative_r"] = equity["r_multiple"].cumsum()
+
+    exit_times = [t.isoformat() if hasattr(t, 'isoformat') else str(t) for t in equity["exit_time"]]
+    cumulative_r = [round(float(v), 4) for v in equity["cumulative_r"].values]
+
+    boundary_index = None
+    if boundary_dt is not None:
+        boundary_ts = pd.Timestamp(boundary_dt)
+        if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
+            boundary_ts = boundary_ts.tz_localize(equity["exit_time"].dtype.tz)
+        fw_mask = equity["exit_time"] >= boundary_ts
+        if fw_mask.any():
+            boundary_index = int(fw_mask.idxmax())
+
+    return {
+        "exit_times": exit_times,
+        "cumulative_r": cumulative_r,
+        "boundary_index": boundary_index,
+    }
+
+
+def extract_portfolio_equity_curve_data(combined_trades: pd.DataFrame) -> dict:
+    """Extract minimal equity curve data for portfolio list page persistence."""
+    if len(combined_trades) == 0:
+        return {"exit_times": [], "cumulative_pnl": []}
+
+    eq = combined_trades[['exit_time', 'cumulative_pnl']].copy()
+    exit_times = [t.isoformat() if hasattr(t, 'isoformat') else str(t) for t in eq["exit_time"]]
+    cumulative_pnl = [round(float(v), 2) for v in eq["cumulative_pnl"].values]
+
+    return {
+        "exit_times": exit_times,
+        "cumulative_pnl": cumulative_pnl,
+    }
+
+
+def render_mini_equity_curve_from_data(eq_data: dict, key: str):
+    """Render mini equity curve from persisted equity curve data dict."""
+    exit_times = eq_data.get('exit_times', [])
+    cumulative_r = eq_data.get('cumulative_r', [])
+    boundary_index = eq_data.get('boundary_index')
+
+    if not exit_times:
+        st.caption("No trades")
+        return
+
+    times = pd.to_datetime(exit_times)
+
+    fig = go.Figure()
+
+    if boundary_index is not None and boundary_index < len(times):
+        # Backtest portion
+        if boundary_index > 0:
+            fig.add_trace(go.Scatter(
+                x=times[:boundary_index], y=cumulative_r[:boundary_index],
+                mode="lines", line=dict(color="#2196F3", width=1.5),
+                fill="tozeroy", fillcolor="rgba(33, 150, 243, 0.08)",
+                showlegend=False
+            ))
+        # Forward portion (with bridge point from backtest)
+        fw_start = max(0, boundary_index - 1)
+        fig.add_trace(go.Scatter(
+            x=times[fw_start:], y=cumulative_r[fw_start:],
+            mode="lines", line=dict(color="#4CAF50", width=1.5),
+            fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+            showlegend=False
+        ))
+    else:
+        final_r = cumulative_r[-1]
+        color = "#4CAF50" if final_r >= 0 else "#f44336"
+        fill = f"rgba({'76, 175, 80' if final_r >= 0 else '244, 67, 54'}, 0.08)"
+        fig.add_trace(go.Scatter(
+            x=times, y=cumulative_r,
+            mode="lines", line=dict(color=color, width=1.5),
+            fill="tozeroy", fillcolor=fill,
+            showlegend=False
+        ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+    fig.update_layout(
+        height=100, margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
 def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     """Split trades into backtest (before boundary) and forward (at/after boundary)."""
     if len(trades_df) == 0:
@@ -1582,6 +1679,9 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
     new_strategy['forward_testing'] = False
     new_strategy.pop('forward_test_start', None)
     new_strategy.pop('updated_at', None)
+    # Clear forward test boundary from cloned equity curve
+    if 'equity_curve_data' in new_strategy and new_strategy['equity_curve_data']:
+        new_strategy['equity_curve_data']['boundary_index'] = None
 
     strategies.append(new_strategy)
 
@@ -1847,16 +1947,20 @@ def render_dashboard():
         max_rdd = best_kpis.get('max_r_drawdown', 0)
         kpi_cols[4].metric("Max R DD", f"{max_rdd:+.1f}R")
 
-        # Mini equity curve for best strategy
-        try:
-            trades = get_strategy_trades(best_strat)
-            if len(trades) > 0:
-                boundary = None
-                if best_strat.get('forward_testing') and best_strat.get('forward_test_start'):
-                    boundary = datetime.fromisoformat(best_strat['forward_test_start'])
-                render_mini_equity_curve(trades, key="dash_best_strat_eq", boundary_dt=boundary)
-        except Exception:
-            st.caption("Could not load equity curve")
+        # Mini equity curve for best strategy (prefer persisted data)
+        eq_data = best_strat.get('equity_curve_data')
+        if eq_data and len(eq_data.get('exit_times', [])) > 0:
+            render_mini_equity_curve_from_data(eq_data, key="dash_best_strat_eq")
+        elif 'entry_trigger_confluence_id' in best_strat:
+            try:
+                trades = get_strategy_trades(best_strat)
+                if len(trades) > 0:
+                    boundary = None
+                    if best_strat.get('forward_testing') and best_strat.get('forward_test_start'):
+                        boundary = datetime.fromisoformat(best_strat['forward_test_start'])
+                    render_mini_equity_curve(trades, key="dash_best_strat_eq", boundary_dt=boundary)
+            except Exception:
+                st.caption("Could not load equity curve")
 
         if st.button("View Strategy", key="dash_view_best_strat"):
             st.session_state.viewing_strategy_id = best_strat['id']
@@ -3306,12 +3410,17 @@ def render_strategy_builder():
         save_clicked = st.button(save_label, type="primary", use_container_width=True, disabled=not can_save)
 
     if save_clicked:
+        # Extract equity curve data for list-page rendering (no backtest needed on list)
+        ec_boundary = datetime.now() if enable_forward else None
+        eq_data = extract_equity_curve_data(filtered_trades, boundary_dt=ec_boundary)
+
         strategy = {
             'name': strategy_name,
             **config,
             'confluence': [c for c in selected if not c.startswith("GEN-")],
             'general_confluences': [c for c in selected if c.startswith("GEN-")],
             'kpis': kpis,
+            'equity_curve_data': eq_data,
             'forward_testing': enable_forward,
             'alerts': enable_alerts,
         }
@@ -3322,6 +3431,14 @@ def render_strategy_builder():
         else:
             save_strategy(strategy)
             saved_id = strategy['id']
+
+        # Invalidate session caches for this strategy
+        st.session_state.strategy_trades_cache.pop(saved_id, None)
+        st.session_state.pop(f"bt_trades_{saved_id}", None)
+        st.session_state.pop(f"ft_data_{saved_id}", None)
+        for _port in load_portfolios():
+            if any(ps['strategy_id'] == saved_id for ps in _port.get('strategies', [])):
+                st.session_state.pop(f"port_data_{_port['id']}", None)
 
         st.session_state.builder_data_loaded = False
         st.session_state.selected_confluences = set()
@@ -3416,15 +3533,35 @@ def render_strategy_list():
         sid = strat.get('id', 0)
         is_legacy = 'entry_trigger_confluence_id' not in strat
 
-        # Pre-fetch trades (used for mini equity curve and KPI backfill)
-        trades = get_strategy_trades(strat) if not is_legacy else pd.DataFrame()
+        # Prefer persisted equity curve data (no backtest needed)
+        eq_data = strat.get('equity_curve_data') if not is_legacy else None
 
-        # Backfill max_r_drawdown if missing from saved KPIs
+        if eq_data is None and not is_legacy:
+            # Migration fallback: compute + persist for next load
+            trades = get_strategy_trades(strat)
+            if len(trades) > 0:
+                boundary = None
+                if strat.get('forward_testing') and strat.get('forward_test_start'):
+                    boundary = datetime.fromisoformat(strat['forward_test_start'])
+                eq_data = extract_equity_curve_data(trades, boundary_dt=boundary)
+                strat['equity_curve_data'] = eq_data
+                # Backfill missing KPIs
+                sk = strat.setdefault('kpis', {})
+                if 'max_r_drawdown' not in sk:
+                    cr = trades["r_multiple"].cumsum().values
+                    sk['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
+                if 'r_squared' not in sk and len(trades) >= 2:
+                    cr = trades["r_multiple"].cumsum().values
+                    x_vals = np.arange(len(cr))
+                    corr = np.corrcoef(x_vals, cr)[0, 1]
+                    sk['r_squared'] = round(corr ** 2, 4) if not np.isnan(corr) else 0.0
+                update_strategy(sid, strat)
+
+        # Backfill max_r_drawdown from persisted curve if still missing
         kpis = strat.get('kpis', {})
-        if 'max_r_drawdown' not in kpis and len(trades) >= 2:
-            cumulative_r = trades["r_multiple"].cumsum().values
-            running_max = np.maximum.accumulate(cumulative_r)
-            kpis['max_r_drawdown'] = round(float((cumulative_r - running_max).min()), 2)
+        if 'max_r_drawdown' not in kpis and eq_data and len(eq_data.get('cumulative_r', [])) >= 2:
+            cr = np.array(eq_data['cumulative_r'])
+            kpis['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
 
         # 2-column grid: new row every 2 cards
         if i % 2 == 0:
@@ -3447,11 +3584,8 @@ def render_strategy_list():
                 st.caption(f"{strat['symbol']} {strat['direction']} | {status_text}")
 
                 # Mini equity curve (full card width)
-                if not is_legacy and len(trades) > 0:
-                    boundary = None
-                    if strat.get('forward_testing') and strat.get('forward_test_start'):
-                        boundary = datetime.fromisoformat(strat['forward_test_start'])
-                    render_mini_equity_curve(trades, key=f"mini_eq_{sid}", boundary_dt=boundary)
+                if not is_legacy and eq_data and len(eq_data.get('exit_times', [])) > 0:
+                    render_mini_equity_curve_from_data(eq_data, key=f"mini_eq_{sid}")
 
                 # KPI metrics
                 kpi_cols = st.columns(5)
@@ -3506,6 +3640,9 @@ def render_strategy_list():
                     with confirm_cols[0]:
                         if st.button("Yes, Delete", key=f"confirm_del_{sid}", type="primary"):
                             delete_strategy(sid)
+                            st.session_state.strategy_trades_cache.pop(sid, None)
+                            st.session_state.pop(f"bt_trades_{sid}", None)
+                            st.session_state.pop(f"ft_data_{sid}", None)
                             st.session_state.confirm_delete_id = None
                             st.rerun()
                     with confirm_cols[1]:
@@ -3612,6 +3749,9 @@ def render_strategy_detail(strategy_id: int):
         with confirm_cols[0]:
             if st.button("Yes, Delete", key="detail_confirm_del", type="primary"):
                 delete_strategy(strategy_id)
+                st.session_state.strategy_trades_cache.pop(strategy_id, None)
+                st.session_state.pop(f"bt_trades_{strategy_id}", None)
+                st.session_state.pop(f"ft_data_{strategy_id}", None)
                 st.session_state.confirm_delete_id = None
                 st.session_state.viewing_strategy_id = None
                 st.rerun()
@@ -3726,33 +3866,38 @@ def render_live_backtest(strat: dict):
         strat_start = datetime.fromisoformat(strat['lookback_start_date'])
         strat_end = datetime.fromisoformat(strat['lookback_end_date'])
 
-    with st.spinner("Running backtest with current data..."):
-        df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
-                                          start_date=strat_start, end_date=strat_end,
-                                          timeframe=strat_timeframe)
+    # Data loading (cached via @st.cache_data, 1hr TTL)
+    df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
+                                      start_date=strat_start, end_date=strat_end,
+                                      timeframe=strat_timeframe)
 
-        if len(df) == 0:
-            st.error("No data available for this symbol.")
-            return
+    if len(df) == 0:
+        st.error("No data available for this symbol.")
+        return
 
-        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-        confluence_set = confluence_set if confluence_set else None
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
+    # Trade generation (cached in session state per strategy)
+    bt_cache_key = f"bt_trades_{strat['id']}"
+    if bt_cache_key not in st.session_state:
+        with st.spinner("Running backtest with current data..."):
+            confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+            confluence_set = confluence_set if confluence_set else None
+            general_cols = [c for c in df.columns if c.startswith("GP_")]
 
-        trades = generate_trades(
-            df,
-            direction=strat['direction'],
-            entry_trigger=strat['entry_trigger'],
-            exit_trigger=strat.get('exit_trigger'),
-            exit_triggers=strat.get('exit_triggers'),
-            confluence_required=confluence_set,
-            risk_per_trade=strat.get('risk_per_trade', 100.0),
-            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-            stop_config=strat.get('stop_config'),
-            target_config=strat.get('target_config'),
-            bar_count_exit=strat.get('bar_count_exit'),
-            general_columns=general_cols,
-        )
+            st.session_state[bt_cache_key] = generate_trades(
+                df,
+                direction=strat['direction'],
+                entry_trigger=strat['entry_trigger'],
+                exit_trigger=strat.get('exit_trigger'),
+                exit_triggers=strat.get('exit_triggers'),
+                confluence_required=confluence_set,
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                stop_config=strat.get('stop_config'),
+                target_config=strat.get('target_config'),
+                bar_count_exit=strat.get('bar_count_exit'),
+                general_columns=general_cols,
+            )
+    trades = st.session_state[bt_cache_key]
 
     if len(trades) == 0:
         st.warning("No trades generated. The entry trigger may reference a confluence pack that is no longer enabled.")
@@ -4102,8 +4247,12 @@ def render_forward_test_view(strat: dict):
         f"({duration_days}d)"
     )
 
-    with st.spinner("Loading forward test data..."):
-        df, backtest_trades, forward_trades, boundary_dt = prepare_forward_test_data(strat)
+    # Cache forward test data in session state (compute once per session)
+    ft_cache_key = f"ft_data_{strat['id']}"
+    if ft_cache_key not in st.session_state:
+        with st.spinner("Loading forward test data..."):
+            st.session_state[ft_cache_key] = prepare_forward_test_data(strat)
+    df, backtest_trades, forward_trades, boundary_dt = st.session_state[ft_cache_key]
 
     if len(df) == 0:
         st.error("No data available for this symbol.")
@@ -4794,11 +4943,17 @@ def render_portfolio_list():
         kpis = port.get('cached_kpis', {})
         n_strats = len(port.get('strategies', []))
 
-        # Pre-fetch portfolio trades once (used for compliance check + mini equity curve)
-        port_data = None
-        if kpis and kpis.get('total_trades', 0) > 0:
+        # Prefer persisted equity curve data (no backtest needed)
+        eq_data = port.get('equity_curve_data')
+        port_data = None  # only computed if needed for compliance check
+
+        if eq_data is None and kpis and kpis.get('total_trades', 0) > 0:
+            # Migration fallback: compute + persist for next load
             try:
                 port_data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
+                eq_data = extract_portfolio_equity_curve_data(port_data['combined_trades'])
+                port['equity_curve_data'] = eq_data
+                update_portfolio(pid, port)
             except Exception:
                 pass
 
@@ -4837,16 +4992,16 @@ def render_portfolio_list():
                 if strat_names:
                     st.caption(", ".join(strat_names) + ("..." if n_strats > 4 else ""))
 
-                # Mini equity curve (full card width)
-                if port_data and len(port_data['combined_trades']) > 0:
+                # Mini equity curve (full card width) — from persisted data
+                if eq_data and len(eq_data.get('exit_times', [])) > 0:
                     try:
-                        p_trades = port_data['combined_trades']
-                        eq = p_trades[['exit_time', 'cumulative_pnl']].copy()
+                        times = pd.to_datetime(eq_data['exit_times'])
+                        cum_pnl = eq_data['cumulative_pnl']
                         fig = go.Figure()
-                        final = eq['cumulative_pnl'].iloc[-1]
+                        final = cum_pnl[-1]
                         color = "#4CAF50" if final >= 0 else "#f44336"
                         fig.add_trace(go.Scatter(
-                            x=eq['exit_time'], y=eq['cumulative_pnl'],
+                            x=times, y=cum_pnl,
                             mode='lines', line=dict(color=color, width=1.5),
                             fill='tozeroy',
                             fillcolor=f"rgba({'76,175,80' if final >= 0 else '244,67,54'}, 0.08)",
@@ -4875,8 +5030,11 @@ def render_portfolio_list():
                 req_id = port.get('requirement_set_id')
                 if req_id:
                     rs = get_requirement_set_by_id(req_id)
-                    if rs and kpis and port_data:
+                    if rs and kpis:
                         try:
+                            # Lazy-load portfolio trades only for compliance check
+                            if port_data is None:
+                                port_data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
                             eval_result = evaluate_requirement_set(rs, port, kpis, port_data['daily_pnl'])
                             passed = sum(1 for r in eval_result['rules'] if r['passed'])
                             total = len(eval_result['rules'])
@@ -4917,6 +5075,7 @@ def render_portfolio_list():
                     with dc[0]:
                         if st.button("Yes, Delete", key=f"port_cdel_{pid}", type="primary"):
                             delete_portfolio(pid)
+                            st.session_state.pop(f"port_data_{pid}", None)
                             st.session_state.confirm_delete_portfolio_id = None
                             st.rerun()
                     with dc[1]:
@@ -4931,6 +5090,24 @@ def get_cached_strategy_trades(strat):
     if sid not in st.session_state.strategy_trades_cache:
         st.session_state.strategy_trades_cache[sid] = get_strategy_trades(strat)
     return st.session_state.strategy_trades_cache[sid]
+
+
+def get_cached_forward_test_data(strat):
+    """Cache forward test data in session state (compute once per session)."""
+    cache_key = f"ft_data_{strat['id']}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = prepare_forward_test_data(strat)
+    return st.session_state[cache_key]
+
+
+def get_cached_portfolio_data(port):
+    """Cache portfolio trade data in session state (compute once per session)."""
+    cache_key = f"port_data_{port['id']}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = get_portfolio_trades(
+            port, get_strategy_by_id, get_cached_strategy_trades
+        )
+    return st.session_state[cache_key]
 
 
 def render_portfolio_builder():
@@ -5178,12 +5355,14 @@ def render_portfolio_builder():
             'requirement_set_id': req_set_id if req_set_id else None,
         }
 
-        # Compute and cache KPIs
+        # Compute and cache KPIs + equity curve
         save_data = get_portfolio_trades(portfolio, get_strategy_by_id, get_strategy_trades)
         portfolio['cached_kpis'] = calculate_portfolio_kpis(portfolio, save_data['combined_trades'], save_data['daily_pnl'])
+        portfolio['equity_curve_data'] = extract_portfolio_equity_curve_data(save_data['combined_trades'])
 
         if is_edit:
             update_portfolio(editing_id, portfolio)
+            st.session_state.pop(f"port_data_{editing_id}", None)
             st.toast("Portfolio updated!")
         else:
             save_portfolio(portfolio)
@@ -5246,6 +5425,7 @@ def render_portfolio_detail(portfolio_id: int):
         with dc[0]:
             if st.button("Yes, Delete", key="pdetail_cdel", type="primary"):
                 delete_portfolio(portfolio_id)
+                st.session_state.pop(f"port_data_{portfolio_id}", None)
                 st.session_state.confirm_delete_portfolio_id = None
                 st.session_state.viewing_portfolio_id = None
                 st.rerun()
@@ -5256,10 +5436,15 @@ def render_portfolio_detail(portfolio_id: int):
 
     st.divider()
 
-    # Compute portfolio data
-    with st.spinner("Computing portfolio analytics..."):
-        data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
-        kpis = calculate_portfolio_kpis(port, data['combined_trades'], data['daily_pnl'])
+    # Compute portfolio data (cached in session state per portfolio)
+    pd_cache_key = f"port_data_{port['id']}"
+    if pd_cache_key not in st.session_state:
+        with st.spinner("Computing portfolio analytics..."):
+            st.session_state[pd_cache_key] = get_portfolio_trades(
+                port, get_strategy_by_id, get_cached_strategy_trades
+            )
+    data = st.session_state[pd_cache_key]
+    kpis = calculate_portfolio_kpis(port, data['combined_trades'], data['daily_pnl'])
 
     if len(data['combined_trades']) == 0:
         st.warning("No trades generated. Some strategies may reference disabled confluence packs.")
