@@ -3,7 +3,14 @@ Alert Monitor for RoR Trader
 ==============================
 
 Standalone background script that polls for trading signals on
-forward-tested strategies and delivers alerts via webhook + in-app log.
+strategies in webhook-enabled portfolios and delivers alerts via
+webhook + in-app log.
+
+Features:
+- Smart candle-close-aligned polling (polls each timeframe group
+  ~3 seconds after its candle close instead of fixed-interval)
+- In-memory data cache with incremental bar fetching
+- Symbol deduplication (multiple strategies on same symbol share data)
 
 Usage:
     python alert_monitor.py
@@ -18,6 +25,7 @@ import json
 import time
 import signal
 import traceback
+from collections import defaultdict
 from datetime import datetime
 
 # Ensure src/ is on the path for imports
@@ -29,11 +37,15 @@ if _SCRIPT_DIR not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_SCRIPT_DIR, ".env"))
 
+import pandas as pd
+from data_loader import load_market_data, load_latest_bars
+
 from alerts import (
     load_alert_config,
     save_alert,
     send_webhook,
     detect_signals,
+    compute_signal_detection_bars,
     enrich_signal_with_portfolio_context,
     load_monitor_status,
     save_monitor_status,
@@ -71,6 +83,80 @@ signal.signal(signal.SIGINT, _signal_handler)
 
 
 # =============================================================================
+# CANDLE-CLOSE TIMING
+# =============================================================================
+
+TIMEFRAME_SECONDS = {
+    "1Min": 60, "2Min": 120, "3Min": 180, "5Min": 300,
+    "10Min": 600, "15Min": 900, "30Min": 1800,
+    "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,
+    "1Day": 86400, "1Week": 604800, "1Month": 2592000,
+}
+
+# Buffer after candle close before polling (seconds)
+_CANDLE_CLOSE_BUFFER = 3
+
+
+def seconds_until_next_close(timeframe: str) -> float:
+    """Seconds until the next candle close + buffer for the given timeframe."""
+    now = time.time()
+    tf_secs = TIMEFRAME_SECONDS.get(timeframe, 60)
+    elapsed = now % tf_secs
+    remaining = tf_secs - elapsed + _CANDLE_CLOSE_BUFFER
+    # If we're within the buffer window after a close, return 0 (poll now)
+    if remaining > tf_secs:
+        return 0.0
+    return remaining
+
+
+# =============================================================================
+# IN-MEMORY DATA CACHE
+# =============================================================================
+
+# {(symbol, timeframe): {"df": pd.DataFrame, "last_bar_time": <index value>}}
+_data_cache: dict = {}
+
+
+def load_cached_bars(
+    symbol: str,
+    timeframe: str,
+    bars_needed: int,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Load bars with in-memory caching. Fetches only new bars incrementally."""
+    cache_key = (symbol, timeframe)
+
+    if cache_key in _data_cache:
+        cached = _data_cache[cache_key]
+        cached_df = cached["df"]
+        last_time = cached_df.index[-1]
+        # Fetch only bars since last cached bar
+        try:
+            new_bars = load_market_data(
+                symbol, start_date=last_time, end_date=datetime.now(),
+                timeframe=timeframe, seed=seed,
+            )
+            if len(new_bars) > 0:
+                combined = pd.concat([cached_df, new_bars])
+                combined = combined[~combined.index.duplicated(keep='last')]
+                combined = combined.tail(bars_needed)
+                _data_cache[cache_key] = {
+                    "df": combined,
+                    "last_bar_time": combined.index[-1],
+                }
+                return combined.copy()
+        except Exception:
+            pass
+        return cached_df.tail(bars_needed).copy()
+
+    # Cold start: full load
+    df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed)
+    if len(df) > 0:
+        _data_cache[cache_key] = {"df": df, "last_bar_time": df.index[-1]}
+    return df
+
+
+# =============================================================================
 # HELPERS
 # =============================================================================
 
@@ -79,8 +165,11 @@ def load_strategies() -> list:
     strat_file = os.path.join(_SCRIPT_DIR, "strategies.json")
     if not os.path.exists(strat_file):
         return []
-    with open(strat_file, 'r') as f:
-        return json.load(f)
+    try:
+        with open(strat_file, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, Exception):
+        return []
 
 
 def get_strategy_by_id(strategy_id: int) -> dict | None:
@@ -94,40 +183,32 @@ def get_strategy_by_id(strategy_id: int) -> dict | None:
 def get_monitored_strategies(config: dict) -> list:
     """
     Get all strategies that should be monitored.
-    A strategy is monitored if it has forward_testing enabled AND either:
-    - It has alerts_enabled in its own strategy alert config, OR
-    - It belongs to any portfolio that has alerts_enabled
 
-    This ensures portfolio webhooks fire even if strategy-level alerts
-    are toggled off (those toggles only control Strategy Alerts tab visibility).
+    A strategy is monitored if it belongs to ANY portfolio that has at
+    least one enabled webhook.  This replaces the old logic that required
+    separate alerts_enabled toggles.
     """
     strategies = load_strategies()
+    portfolios = load_portfolios()
+
+    # Build set of strategy IDs in portfolios with active webhooks
+    webhook_strategy_ids = set()
+    for port in portfolios:
+        pid = str(port['id'])
+        pcfg = config.get('portfolios', {}).get(pid, {})
+        webhooks = pcfg.get('webhooks', [])
+        has_active_webhook = any(wh.get('enabled', True) for wh in webhooks)
+        if has_active_webhook:
+            for alloc in port.get('strategies', []):
+                webhook_strategy_ids.add(alloc.get('strategy_id'))
+
     monitored = []
-
-    # Build set of strategy IDs that belong to alert-enabled portfolios
-    from portfolios import load_portfolios
-    portfolio_strategy_ids = set()
-    for pid, pcfg in config.get('portfolios', {}).items():
-        if pcfg.get('alerts_enabled', False):
-            portfolios = load_portfolios()
-            for port in portfolios:
-                if str(port['id']) == pid:
-                    for alloc in port.get('strategies', []):
-                        portfolio_strategy_ids.add(alloc.get('strategy_id'))
-                    break
-
     for strat in strategies:
-        if not strat.get('forward_testing'):
+        if strat['id'] not in webhook_strategy_ids:
             continue
         if 'entry_trigger_confluence_id' not in strat:
             continue  # skip legacy strategies
-
-        strat_config = config.get('strategies', {}).get(str(strat['id']), {})
-        strategy_alerts_on = strat_config.get('alerts_enabled', False)
-        in_active_portfolio = strat['id'] in portfolio_strategy_ids
-
-        if strategy_alerts_on or in_active_portfolio:
-            monitored.append(strat)
+        monitored.append(strat)
 
     return monitored
 
@@ -139,7 +220,6 @@ def should_poll(config: dict) -> bool:
 
     now = datetime.now()
     # Market hours: 9:30 AM - 4:00 PM ET (simplified, no timezone conversion)
-    # For a more robust implementation, use pytz for proper ET handling
     hour = now.hour
     minute = now.minute
 
@@ -170,7 +250,7 @@ def log_monitor_error(strategy_id: int, error: str):
         "error": error,
         "timestamp": datetime.now().isoformat(),
     })
-    status['errors'] = errors[-50:]  # keep last 50
+    status['errors'] = errors[-50:]
     save_monitor_status(status)
 
 
@@ -185,10 +265,21 @@ def _get_event_key(alert_type: str, direction: str) -> str:
     return ""
 
 
+def _portfolio_has_active_webhooks(port_config: dict) -> bool:
+    """Check if a portfolio config has at least one enabled webhook."""
+    for wh in port_config.get("webhooks", []):
+        if wh.get("enabled", True):
+            return True
+    return False
+
+
 def deliver_alert(alert: dict, config: dict):
     """
     Deliver an alert to all matching portfolio webhooks.
     Populates alert['webhook_deliveries'] with per-webhook results.
+
+    Delivers to any portfolio that has enabled webhooks (no separate
+    alerts_enabled toggle required).
     """
     deliveries = []
     alert_type = alert.get("type", "")
@@ -209,7 +300,7 @@ def deliver_alert(alert: dict, config: dict):
 
     for pid in portfolio_ids:
         port_config = config.get("portfolios", {}).get(str(pid), {})
-        if not port_config.get("alerts_enabled", False):
+        if not _portfolio_has_active_webhooks(port_config):
             continue
 
         # Get portfolio context for this specific portfolio
@@ -286,9 +377,6 @@ def check_portfolio_compliance(portfolio_id: int, config: dict):
     if not kpis:
         return
 
-    # We need daily_pnl for evaluation — use cached KPIs for a lightweight check
-    # For compliance breaches, we check against cached KPIs which are updated
-    # when the portfolio is recomputed
     result = evaluate_requirement_set(req_set, portfolio, kpis, pd.DataFrame())
 
     if not result.get('overall_pass', True):
@@ -312,8 +400,63 @@ def check_portfolio_compliance(portfolio_id: int, config: dict):
                 deliver_alert(saved, config)
 
 
-# Need pandas for compliance check
-import pandas as pd
+# =============================================================================
+# POLLING LOGIC
+# =============================================================================
+
+def poll_strategies(strats: list, config: dict, timeframe: str):
+    """
+    Poll a group of strategies that share the same timeframe.
+
+    Pre-loads data per unique symbol (deduplication), then runs
+    detect_signals with the pre-loaded DataFrame.
+    """
+    bars_needed = compute_signal_detection_bars(timeframe)
+
+    # Deduplicate by symbol — load data once per symbol
+    symbol_seeds = {}
+    for strat in strats:
+        sym = strat.get('symbol', 'SPY')
+        if sym not in symbol_seeds:
+            symbol_seeds[sym] = strat.get('data_seed', 42)
+
+    # Pre-load data for each unique symbol
+    symbol_data = {}
+    for sym, seed in symbol_seeds.items():
+        df = load_cached_bars(sym, timeframe, bars_needed, seed=seed)
+        symbol_data[sym] = df
+
+    # Process each strategy
+    for strat in strats:
+        sym = strat.get('symbol', 'SPY')
+        df = symbol_data.get(sym, pd.DataFrame())
+
+        try:
+            signals = detect_signals(strat, df=df.copy() if len(df) > 0 else None)
+
+            for sig in signals:
+                # Enrich with strategy info
+                sig['level'] = 'strategy'
+                sig['strategy_id'] = strat['id']
+                sig['strategy_name'] = strat.get('name', f"Strategy {strat['id']}")
+                sig['symbol'] = strat.get('symbol', '?')
+                sig['direction'] = strat.get('direction', '?')
+                sig['risk_per_trade'] = strat.get('risk_per_trade', 100.0)
+                sig['timeframe'] = strat.get('timeframe', '1Min')
+                sig['strategy_alerts_visible'] = True
+
+                # Add portfolio context
+                sig = enrich_signal_with_portfolio_context(sig, strat['id'])
+
+                # Save and deliver
+                alert = save_alert(sig)
+                deliver_alert(alert, config)
+                print(f"  Alert: {sig['type']} for {strat['name']} ({strat['symbol']})")
+
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {e}"
+            print(f"  Error processing {strat.get('name', strat['id'])}: {error_msg}")
+            log_monitor_error(strat['id'], error_msg)
 
 
 # =============================================================================
@@ -321,7 +464,7 @@ import pandas as pd
 # =============================================================================
 
 def main():
-    """Main monitor loop."""
+    """Main monitor loop with candle-close-aligned polling."""
     global _running
 
     print(f"Alert Monitor starting (PID: {os.getpid()})...")
@@ -340,6 +483,9 @@ def main():
     config = load_alert_config()
     poll_interval = config.get('global', {}).get('poll_interval_seconds', 60)
 
+    # Track which timeframes were polled this cycle to avoid double-polling
+    _last_poll_cycle: dict = {}  # {timeframe: last_poll_epoch}
+
     while _running:
         try:
             config = load_alert_config()
@@ -354,71 +500,79 @@ def main():
                 time.sleep(poll_interval)
                 continue
 
-            poll_start = time.time()
             strategies = get_monitored_strategies(config)
-            print(f"\nPolling {len(strategies)} strategies at {datetime.now().strftime('%H:%M:%S')}...")
 
+            if not strategies:
+                time.sleep(poll_interval)
+                continue
+
+            # Group by timeframe
+            by_timeframe: dict = defaultdict(list)
             for strat in strategies:
-                strat_config = config.get('strategies', {}).get(str(strat['id']), {})
-                strategy_alerts_on = strat_config.get('alerts_enabled', False)
+                tf = strat.get('timeframe', '1Min')
+                by_timeframe[tf].append(strat)
 
-                try:
-                    signals = detect_signals(strat)
+            # Determine which timeframes need polling now
+            poll_start = time.time()
+            polled_count = 0
+            next_poll_in = float('inf')
 
-                    for sig in signals:
-                        # Determine strategy-level visibility
-                        # (controls whether alert shows in Strategy Alerts tab)
-                        strat_visible = strategy_alerts_on
-                        if sig['type'] == 'entry_signal' and not strat_config.get('alert_on_entry', True):
-                            strat_visible = False
-                        if sig['type'] == 'exit_signal' and not strat_config.get('alert_on_exit', True):
-                            strat_visible = False
+            for tf, tf_strats in by_timeframe.items():
+                secs = seconds_until_next_close(tf)
 
-                        # Enrich with strategy info
-                        sig['level'] = 'strategy'
-                        sig['strategy_id'] = strat['id']
-                        sig['strategy_name'] = strat.get('name', f"Strategy {strat['id']}")
-                        sig['symbol'] = strat.get('symbol', '?')
-                        sig['direction'] = strat.get('direction', '?')
-                        sig['risk_per_trade'] = strat.get('risk_per_trade', 100.0)
-                        sig['timeframe'] = strat.get('timeframe', '1Min')
-                        sig['strategy_alerts_visible'] = strat_visible
+                if secs <= 0:
+                    # Check if we already polled this candle
+                    tf_secs = TIMEFRAME_SECONDS.get(tf, 60)
+                    last_poll = _last_poll_cycle.get(tf, 0)
+                    candle_epoch = int(time.time() / tf_secs) * tf_secs
+                    if last_poll >= candle_epoch:
+                        # Already polled for this candle, skip
+                        next_close = seconds_until_next_close(tf)
+                        next_poll_in = min(next_poll_in, max(next_close, tf_secs - _CANDLE_CLOSE_BUFFER))
+                        continue
 
-                        # Add portfolio context
-                        sig = enrich_signal_with_portfolio_context(sig, strat['id'])
+                    print(f"  [{tf}] Candle closed — polling {len(tf_strats)} strategies...")
+                    poll_strategies(tf_strats, config, tf)
+                    _last_poll_cycle[tf] = time.time()
+                    polled_count += len(tf_strats)
 
-                        # Save and deliver (webhooks always fire regardless of strategy toggle)
-                        alert = save_alert(sig)
-                        deliver_alert(alert, config)
-                        print(f"  Alert: {sig['type']} for {strat['name']} ({strat['symbol']})")
+                    # Next poll is one full candle away
+                    next_poll_in = min(next_poll_in, tf_secs)
+                else:
+                    next_poll_in = min(next_poll_in, secs)
 
-                except Exception as e:
-                    error_msg = f"{type(e).__name__}: {e}"
-                    print(f"  Error processing {strat.get('name', strat['id'])}: {error_msg}")
-                    log_monitor_error(strat['id'], error_msg)
-
-            # Portfolio compliance checks
+            # Portfolio compliance checks (on portfolios with active webhooks)
             for pid_str, pconfig in config.get('portfolios', {}).items():
-                if pconfig.get('alerts_enabled') and pconfig.get('alert_on_compliance_breach'):
+                if _portfolio_has_active_webhooks(pconfig) and pconfig.get('alert_on_compliance_breach'):
                     try:
                         check_portfolio_compliance(int(pid_str), config)
                     except Exception as e:
                         print(f"  Compliance check error for portfolio {pid_str}: {e}")
 
             poll_duration = int((time.time() - poll_start) * 1000)
-            update_monitor_status(
-                running=True,
-                last_poll=datetime.now().isoformat(),
-                last_poll_duration_ms=poll_duration,
-                strategies_monitored=len(strategies),
-            )
-            print(f"Poll complete in {poll_duration}ms")
+            if polled_count > 0:
+                update_monitor_status(
+                    running=True,
+                    last_poll=datetime.now().isoformat(),
+                    last_poll_duration_ms=poll_duration,
+                    strategies_monitored=len(strategies),
+                )
+                print(f"Poll complete: {polled_count} strategies in {poll_duration}ms")
+            else:
+                update_monitor_status(
+                    running=True,
+                    strategies_monitored=len(strategies),
+                )
 
         except Exception as e:
             print(f"Monitor loop error: {e}")
             traceback.print_exc()
+            next_poll_in = poll_interval
 
-        time.sleep(poll_interval)
+        # Sleep until next candle close (capped, with 1s minimum)
+        sleep_time = min(next_poll_in, poll_interval)
+        sleep_time = max(1, sleep_time)
+        time.sleep(sleep_time)
 
     # Clean shutdown
     print("Monitor shutting down...")

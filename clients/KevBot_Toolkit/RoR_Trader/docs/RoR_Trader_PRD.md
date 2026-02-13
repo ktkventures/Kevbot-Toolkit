@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.14
+**Version:** 0.15
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — Settings page ✓, settings persistence ✓, QA & verification ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; deferred items remaining; Phases 1–9 complete
+**Status:** Phase 10B Complete — Alert & forward testing UX overhaul ✓, smart polling ✓, data cache ✓, dynamic bar count ✓; Phases 1–10 complete (deferred items remain)
 
 ---
 
@@ -1060,6 +1060,60 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Lookback mode on Extended KPIs tab** — Strategy detail's Extended tab previously had only a days slider. Adding the full Days/Bars/Date Range selector gives users the same flexibility as the Strategy Builder, enabling precise historical analysis on saved strategies without re-editing them.
 
 **After this phase: start live trading. All stored schemas (strategies.json, portfolios.json, alert_config.json, general_packs.json, risk_management_packs.json) are stable. All subsequent phases are additive — no restructuring or data loss risk.**
+
+### Phase 10B: Alert & Forward Testing UX Overhaul ✓
+*Smart polling, forward testing always-on, alert simplification, webhook editor UX fixes.*
+
+**Webhook Editor UX:**
+- [x] Fix template insert dropdown — write directly to `st.session_state[widget_key]` + `st.rerun()` to update text area (Streamlit only reads `value=` on first render)
+- [x] Placeholder auto-append — selecting a placeholder from dropdown appends `{{key}}` to the text area and reruns
+- [x] Show resolved payload on webhook test — displays rendered JSON below success/error message for verification
+- [x] Tooltips on portfolio alert toggles — `help=` parameter on compliance breach toggle
+
+**Forward Testing Always-On:**
+- [x] Remove FT checkbox from Strategy Builder — `enable_forward = True` as constant
+- [x] `save_strategy()` and `update_strategy()` always set `forward_testing: True` and `forward_test_start`
+- [x] Remove "Forward Testing" / "Backtest Only" filter from strategy list (all strategies are forward-testing)
+- [x] Remove forward test guard from strategy alerts tab
+
+**Alert Simplification:**
+- [x] Monitoring scope: strategy is monitored if it belongs to ANY portfolio with at least one enabled webhook (replaces per-strategy `alerts_enabled` + per-portfolio `alerts_enabled` toggles)
+- [x] Remove `alerts_enabled` toggle from portfolio webhooks page — webhooks are the control point
+- [x] Simplify strategy alerts tab — show which portfolios link this strategy and their webhook status
+- [x] Simplify "Manage Active Alerts" section — show monitored strategies and webhook-enabled portfolios (read-only overview)
+- [x] `deliver_alert()` checks for active webhooks instead of `alerts_enabled` flag
+
+**Smart Candle-Close-Aligned Polling (`alert_monitor.py`):**
+- [x] Group monitored strategies by timeframe
+- [x] `seconds_until_next_close()` — compute time until next candle close + 3s buffer
+- [x] Main loop sleeps until next candle close instead of fixed-interval polling
+- [x] Double-poll prevention — track last poll epoch per timeframe to avoid re-polling same candle
+
+**In-Memory Data Cache (`alert_monitor.py`):**
+- [x] Module-level `_data_cache` dict keyed by `(symbol, timeframe)`
+- [x] `load_cached_bars()` — incremental fetch (only new bars since last cached bar)
+- [x] Symbol deduplication — pre-load data once per unique symbol before polling timeframe group
+- [x] `detect_signals()` accepts optional `df` parameter for pre-loaded data
+
+**Dynamic Bar Count (`alerts.py`):**
+- [x] `compute_signal_detection_bars(timeframe)` — `max(full_trading_day, indicator_warmup=50, floor=200)`
+- [x] 1Min = 390 bars (full day for VWAP accuracy), 5Min = 200, 1Day = 200
+- [x] Replaces hardcoded `SIGNAL_DETECTION_BARS = 200`
+
+**Card Indicators:**
+- [x] Strategy cards show `:orange[Monitored]` badge when strategy is in a webhook-enabled portfolio
+- [x] Portfolio cards show webhook count in metadata caption line
+
+### Design Decisions (Phase 10B — Alert UX Overhaul)
+- **Forward testing always-on** — Forward testing is just a timestamp boundary; computation only happens on view. Making it always-on removes a checkbox that confused users ("should I enable this?") while ensuring every strategy accumulates forward test data from day one. Cost: zero (no background computation).
+- **Webhooks as the control point** — Instead of three separate toggles (strategy alerts_enabled, portfolio alerts_enabled, webhook enabled), the webhook's `enabled` flag is the single control point. If a portfolio has active webhooks and contains a strategy, that strategy is monitored. This eliminates the "I configured everything but alerts don't fire" failure mode.
+- **Candle-close-aligned polling** — Fixed-interval polling (every 60s) wastes cycles checking for signals mid-candle and misses the critical moment right after candle close. Aligning polls to candle boundaries + 3s buffer ensures we check for signals when new data is available. For 1-min strategies this means checking every 63s aligned to clock minutes. For 5-min strategies, every 303s aligned to :00/:05/:10 etc.
+- **In-memory data cache** — The monitor process is long-running, so caching DataFrames in memory between polls avoids redundant full data loads. Incremental fetching (only new bars since last cached bar) reduces API calls to ~1 bar per poll per symbol. Symbol deduplication means 3 strategies on SPY 1Min share one data load.
+- **Dynamic bar count** — VWAP requires a full trading day of data (390 bars on 1-min). The old hardcoded 200 bars produced inaccurate VWAP values for intraday strategies. `compute_signal_detection_bars()` ensures enough data for both indicator warmup and VWAP accuracy.
+
+**Future Phases (from this discussion):**
+- Phase 13+ (future): WebSocket streaming for [I] (interpretation) triggers — real-time price feeds for sub-candle signal detection
+- Phase 14+ (future): Sub-minute candles — 10-second and 30-second bars for faster signal response
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*

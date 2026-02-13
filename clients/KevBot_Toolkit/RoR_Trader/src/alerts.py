@@ -36,8 +36,23 @@ ALERTS_FILE = os.path.join(_SCRIPT_DIR, "alerts.json")
 MONITOR_STATUS_FILE = os.path.join(_SCRIPT_DIR, "monitor_status.json")
 WEBHOOK_TEMPLATES_FILE = os.path.join(_SCRIPT_DIR, "webhook_templates.json")
 
-# How many bars to load for signal detection (enough for indicator warmup)
-SIGNAL_DETECTION_BARS = 200
+# Minimum floor for signal detection bars
+_SIGNAL_DETECTION_BARS_FLOOR = 200
+# Longest indicator warmup period (EMA 50)
+_INDICATOR_WARMUP = 50
+
+
+def compute_signal_detection_bars(timeframe: str) -> int:
+    """Compute minimum bars needed for accurate signal detection.
+
+    Ensures we load at least:
+    - One full trading day of bars (for VWAP accuracy on intraday)
+    - Enough bars for the longest indicator warmup (EMA 50)
+    - Minimum 200 bars floor
+    """
+    from data_loader import BARS_PER_DAY
+    full_day = int(BARS_PER_DAY.get(timeframe, 390))
+    return max(full_day, _INDICATOR_WARMUP, _SIGNAL_DETECTION_BARS_FLOOR)
 
 DEFAULT_GLOBAL_CONFIG = {
     "poll_interval_seconds": 60,
@@ -574,17 +589,25 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
     return confluence_trigger_id
 
 
-def detect_signals(strategy: dict) -> list:
+def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
     """
     Run the full pipeline on recent data and check for entry/exit signals.
+
+    Args:
+        strategy: Strategy dict with symbol, triggers, confluence, etc.
+        df: Pre-loaded DataFrame of bars. If None, bars are loaded automatically
+            using compute_signal_detection_bars() for the strategy's timeframe.
 
     Returns list of signal dicts (usually 0 or 1 items).
     """
     symbol = strategy.get('symbol', 'SPY')
     seed = strategy.get('data_seed', 42)
+    timeframe = strategy.get('timeframe', '1Min')
 
-    # Load recent bars
-    df = load_latest_bars(symbol, bars=SIGNAL_DETECTION_BARS, seed=seed)
+    # Load recent bars if not provided
+    if df is None:
+        bars_needed = compute_signal_detection_bars(timeframe)
+        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed)
     if len(df) == 0:
         return []
 
