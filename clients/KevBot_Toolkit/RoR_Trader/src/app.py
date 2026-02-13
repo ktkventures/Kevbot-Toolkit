@@ -497,6 +497,73 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
         )
 
 
+def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
+    """Load a small data window and generate trades for the recent period only.
+
+    Args:
+        strat: Strategy config dict
+        since_dt: Only return trades with entry_time after this timestamp
+
+    Returns:
+        DataFrame of new trades (may be empty)
+    """
+    import math
+    from data_loader import BARS_PER_DAY
+
+    timeframe = strat.get('timeframe', '1Min')
+    data_seed = strat.get('data_seed', 42)
+    bpd = BARS_PER_DAY.get(timeframe, 390)
+
+    # Warmup: enough bars for longest indicator (EMA-50) + safety margin
+    warmup_bars = 100
+    warmup_days = max(1, math.ceil(warmup_bars / bpd * 365 / 252))
+
+    since_as_dt = pd.Timestamp(since_dt).to_pydatetime()
+    if since_as_dt.tzinfo is not None:
+        since_as_dt = since_as_dt.replace(tzinfo=None)
+
+    start_date = since_as_dt - timedelta(days=warmup_days)
+    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+
+    df = prepare_data_with_indicators(
+        strat['symbol'], seed=data_seed,
+        start_date=start_date, end_date=end_date,
+        timeframe=timeframe,
+    )
+
+    if len(df) == 0:
+        return pd.DataFrame()
+
+    confluence_set = set(strat.get('confluence', []))
+    confluence_set |= set(strat.get('general_confluences', []))
+    confluence_set = confluence_set if confluence_set else None
+    general_cols = [c for c in df.columns if c.startswith("GP_")]
+
+    trades = generate_trades(
+        df,
+        direction=strat['direction'],
+        entry_trigger=strat['entry_trigger'],
+        exit_trigger=strat.get('exit_trigger'),
+        exit_triggers=strat.get('exit_triggers'),
+        confluence_required=confluence_set,
+        risk_per_trade=strat.get('risk_per_trade', 100.0),
+        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+        stop_config=strat.get('stop_config'),
+        target_config=strat.get('target_config'),
+        bar_count_exit=strat.get('bar_count_exit'),
+        general_columns=general_cols,
+    )
+
+    if len(trades) == 0:
+        return pd.DataFrame()
+
+    # Filter to only truly new trades (entered after the cutoff)
+    since_ts = pd.Timestamp(since_dt)
+    if trades['entry_time'].dt.tz is not None and since_ts.tz is None:
+        since_ts = since_ts.tz_localize('UTC')
+    return trades[trades['entry_time'] > since_ts]
+
+
 def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
     """Render a small sparkline-style equity curve for a strategy card."""
     if len(trades) == 0:
@@ -588,6 +655,37 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
         "cumulative_r": cumulative_r,
         "boundary_index": boundary_index,
     }
+
+
+def _extract_minimal_trades(trades: pd.DataFrame) -> list:
+    """Extract minimal trade records for persistent storage.
+
+    Only stores the 4 fields needed for KPI and equity curve computation:
+    entry_time, exit_time, r_multiple, win.
+    """
+    if len(trades) == 0:
+        return []
+    records = []
+    for _, row in trades.iterrows():
+        et = row["entry_time"]
+        xt = row["exit_time"]
+        records.append({
+            "entry_time": et.isoformat() if hasattr(et, 'isoformat') else str(et),
+            "exit_time": xt.isoformat() if hasattr(xt, 'isoformat') else str(xt),
+            "r_multiple": round(float(row["r_multiple"]), 4),
+            "win": bool(row["win"]),
+        })
+    return records
+
+
+def _trades_df_from_stored(stored_trades: list) -> pd.DataFrame:
+    """Reconstruct a trades DataFrame from stored minimal records."""
+    if not stored_trades:
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win"])
+    df = pd.DataFrame(stored_trades)
+    df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
+    df["exit_time"] = pd.to_datetime(df["exit_time"], utc=True)
+    return df
 
 
 def extract_portfolio_equity_curve_data(combined_trades: pd.DataFrame) -> dict:
@@ -1698,6 +1796,132 @@ def update_strategy(strategy_id: int, updated_strategy: dict) -> bool:
             return True
 
     return False
+
+
+def refresh_strategy_data(strategy_id: int) -> bool:
+    """Incrementally refresh strategy data.
+
+    If stored_trades exist: only processes new forward test data
+    (small data window) and appends new trades.
+    If not (migration): does a full refresh and populates stored_trades.
+
+    Does NOT modify forward_test_start or any configuration fields.
+    """
+    strategies = load_strategies()
+
+    for i, strat in enumerate(strategies):
+        if strat.get('id') != strategy_id:
+            continue
+        if 'entry_trigger_confluence_id' not in strat:
+            return False  # legacy strategy
+
+        existing_stored = strat.get('stored_trades')
+
+        if existing_stored:
+            # --- INCREMENTAL PATH ---
+            # Find the last known trade entry time
+            last_entry_dt = max(
+                pd.Timestamp(t['entry_time']) for t in existing_stored
+            )
+
+            # Generate only new trades since last known entry
+            new_trades = _generate_incremental_trades(strat, last_entry_dt)
+
+            if len(new_trades) > 0:
+                new_records = _extract_minimal_trades(new_trades)
+                existing_stored.extend(new_records)
+
+            # Recompute KPIs + equity curve from all stored trades
+            all_trades_df = _trades_df_from_stored(existing_stored)
+
+            boundary_dt = None
+            if strat.get('forward_test_start'):
+                boundary_dt = datetime.fromisoformat(
+                    strat['forward_test_start'])
+
+            kpis = calculate_kpis(
+                all_trades_df,
+                starting_balance=strat.get('starting_balance', 10000.0),
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+            )
+            eq_data = extract_equity_curve_data(
+                all_trades_df, boundary_dt=boundary_dt)
+
+            strat['stored_trades'] = existing_stored
+            strat['kpis'] = kpis
+            strat['equity_curve_data'] = eq_data
+        else:
+            # --- COLD START (migration) ---
+            trades = get_strategy_trades(strat)
+
+            boundary_dt = None
+            if strat.get('forward_test_start'):
+                boundary_dt = datetime.fromisoformat(
+                    strat['forward_test_start'])
+
+            total_days = None
+            if strat.get('forward_testing') and strat.get('forward_test_start'):
+                df, _, _, _ = prepare_forward_test_data(strat)
+                if len(df) > 0:
+                    total_days = count_trading_days(df)
+
+            kpis = calculate_kpis(
+                trades,
+                starting_balance=strat.get('starting_balance', 10000.0),
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+                total_trading_days=total_days,
+            )
+            eq_data = extract_equity_curve_data(
+                trades, boundary_dt=boundary_dt)
+
+            strat['stored_trades'] = _extract_minimal_trades(trades)
+            strat['kpis'] = kpis
+            strat['equity_curve_data'] = eq_data
+
+        strat['data_refreshed_at'] = datetime.now().isoformat()
+        strategies[i] = strat
+
+        with open(STRATEGIES_FILE, 'w') as f:
+            json.dump(strategies, f, indent=2)
+        return True
+
+    return False
+
+
+def bulk_refresh_all_strategies(progress_callback=None) -> dict:
+    """Refresh data for all non-legacy strategies.
+
+    Args:
+        progress_callback: Optional function(current, total, strategy_name)
+
+    Returns dict with 'success_count', 'skipped_count', 'failed_ids',
+    'total_processed'.
+    """
+    strategies = load_strategies()
+    processable = [s for s in strategies if 'entry_trigger_confluence_id' in s]
+    skipped = len(strategies) - len(processable)
+    success = 0
+    failed = []
+
+    for idx, strat in enumerate(processable):
+        sid = strat.get('id')
+        if progress_callback:
+            progress_callback(idx + 1, len(processable),
+                              strat.get('name', f'Strategy {sid}'))
+        try:
+            if refresh_strategy_data(sid):
+                success += 1
+            else:
+                failed.append(sid)
+        except Exception:
+            failed.append(sid)
+
+    return {
+        'success_count': success,
+        'skipped_count': skipped,
+        'failed_ids': failed,
+        'total_processed': len(processable),
+    }
 
 
 def delete_strategy(strategy_id: int) -> bool:
@@ -3467,6 +3691,7 @@ def render_strategy_builder():
         # Extract equity curve data for list-page rendering (no backtest needed on list)
         ec_boundary = datetime.now() if enable_forward else None
         eq_data = extract_equity_curve_data(filtered_trades, boundary_dt=ec_boundary)
+        stored_trades = _extract_minimal_trades(filtered_trades)
 
         strategy = {
             'name': strategy_name,
@@ -3475,6 +3700,7 @@ def render_strategy_builder():
             'general_confluences': [c for c in selected if c.startswith("GEN-")],
             'kpis': kpis,
             'equity_curve_data': eq_data,
+            'stored_trades': stored_trades,
             'forward_testing': enable_forward,
             'alerts': enable_alerts,
         }
@@ -3516,10 +3742,16 @@ def render_my_strategies():
 
 def render_strategy_list():
     """Render the strategy list view with sorting and filtering."""
-    col_header, col_btn = st.columns([4, 1])
+    col_header, col_update, col_new = st.columns([3, 1, 1])
     with col_header:
         st.header("My Strategies")
-    with col_btn:
+    with col_update:
+        st.write("")  # vertical spacing to align with header
+        if st.button("Update Data",
+                      help="Refresh KPIs and equity curves for all strategies"):
+            st.session_state._trigger_bulk_update = True
+            st.rerun()
+    with col_new:
         st.write("")  # vertical spacing to align with header
         if st.button("+ New Strategy", type="primary"):
             st.session_state.nav_target = "Strategy Builder"
@@ -3528,6 +3760,51 @@ def render_strategy_list():
             st.session_state.selected_confluences = set()
             st.session_state.editing_strategy_id = None
             st.session_state.pop('sb_additional_exits', None)
+            st.rerun()
+
+    # --- Bulk data refresh handler ---
+    if st.session_state.get('_trigger_bulk_update', False):
+        st.session_state._trigger_bulk_update = False
+        _upd_strategies = load_strategies()
+        _processable = [s for s in _upd_strategies
+                        if 'entry_trigger_confluence_id' in s]
+
+        if not _processable:
+            st.warning("No strategies to update.")
+        else:
+            _progress = st.progress(0.0, text="Initializing...")
+
+            def _on_progress(current, total, name):
+                _progress.progress(current / total,
+                                   text=f"Updating {current}/{total}: {name}")
+
+            _result = bulk_refresh_all_strategies(
+                progress_callback=_on_progress)
+            _progress.progress(1.0, text="Complete!")
+
+            # Clear session caches so detail pages use fresh data
+            for _s in _processable:
+                _sid = _s['id']
+                st.session_state.strategy_trades_cache.pop(_sid, None)
+                st.session_state.pop(f"bt_trades_{_sid}", None)
+                st.session_state.pop(f"ft_data_{_sid}", None)
+                for _k in [k for k in st.session_state
+                           if k.startswith(f"bt_ext_{_sid}_")
+                           or k.startswith(f"ft_ext_{_sid}_")]:
+                    st.session_state.pop(_k, None)
+            # Invalidate portfolio caches that depend on strategy data
+            for _port in load_portfolios():
+                st.session_state.pop(f"port_data_{_port['id']}", None)
+
+            _msg = f"Updated {_result['success_count']} strategies"
+            if _result['skipped_count']:
+                _msg += f" ({_result['skipped_count']} legacy skipped)"
+            if _result['failed_ids']:
+                st.error(
+                    f"Failed: strategy IDs {_result['failed_ids']}")
+            st.success(_msg)
+            import time as _time_mod
+            _time_mod.sleep(1.5)
             st.rerun()
 
     strategies = load_strategies()

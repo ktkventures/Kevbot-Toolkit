@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.15
+**Version:** 0.16
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10B Complete — Alert & forward testing UX overhaul ✓, smart polling ✓, data cache ✓, dynamic bar count ✓; Phases 1–10 complete (deferred items remain)
+**Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
 
 ---
 
@@ -1114,6 +1114,25 @@ Strategy Builder → Load Data → Entry Trigger tab
 **Future Phases (from this discussion):**
 - Phase 13+ (future): WebSocket streaming for [I] (interpretation) triggers — real-time price feeds for sub-candle signal detection
 - Phase 14+ (future): Sub-minute candles — 10-second and 30-second bars for faster signal response
+
+### Phase 10C: Incremental Data Refresh ✓
+*"Update Data" button with incremental refresh — only processes new forward test data, not historical trades.*
+
+- [x] `stored_trades` — minimal trade records (entry_time, exit_time, r_multiple, win) persisted per strategy for incremental refresh without full pipeline re-runs
+- [x] `_extract_minimal_trades()` / `_trades_df_from_stored()` — helpers to convert between full trades DataFrame and minimal JSON-serializable records
+- [x] `_generate_incremental_trades()` — loads only a small data window (indicator warmup + new bars since last trade) and generates trades for that window only
+- [x] `refresh_strategy_data()` — incremental path (appends new trades to stored, recomputes KPIs from stored) with cold-start migration fallback (full pipeline for strategies without stored_trades)
+- [x] `bulk_refresh_all_strategies()` — iterates all non-legacy strategies with progress callback
+- [x] "Update Data" button on My Strategies page — triggers bulk refresh with progress bar, session cache clearing, and status messages
+- [x] Save flow persists `stored_trades` alongside `equity_curve_data` and `kpis`
+- [x] `data_refreshed_at` timestamp persisted per strategy to track last refresh
+
+### Design Decisions (Phase 10C — Incremental Data Refresh)
+- **Incremental over full rebuild** — Trade history is append-only. Backtest trades never change; forward test trades accumulate. Re-running the full pipeline from strategy creation is wasteful. Instead, we store minimal trade records and only load/process the recent data window (warmup + new bars). For 1-min strategies, the incremental window is ~1 day vs. 30-60+ days for a full rebuild.
+- **Stored trades as source of truth** — `stored_trades` contains the 4 fields needed to recompute any KPI or equity curve: entry_time, exit_time, r_multiple, win. On each refresh, new trades are appended and KPIs/equity curves are recomputed from the full stored list using existing `calculate_kpis()` and `extract_equity_curve_data()` functions (no duplicated math).
+- **Cold-start migration** — Strategies created before this feature (without `stored_trades`) get a one-time full pipeline run that populates the field. All subsequent refreshes are incremental.
+- **Warmup buffer** — The incremental data window starts `warmup_bars / bars_per_day` calendar days before the last known trade. 100 bars covers 2× the longest indicator (EMA-50) for safety. For 1-min timeframes this is ~1 calendar day; for 1-day timeframes it's ~145 days (necessary for daily indicator accuracy).
+- **Future: custom backtest date range on list page** — A future phase will add a date range picker to the My Strategies page for ad-hoc backtesting across all strategies.
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
