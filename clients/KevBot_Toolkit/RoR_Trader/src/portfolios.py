@@ -62,8 +62,11 @@ def load_portfolios() -> list:
     """Load saved portfolios from file. Migrates legacy prop_firm fields."""
     if not os.path.exists(PORTFOLIOS_FILE):
         return []
-    with open(PORTFOLIOS_FILE, 'r') as f:
-        portfolios = json.load(f)
+    try:
+        with open(PORTFOLIOS_FILE, 'r') as f:
+            portfolios = json.load(f)
+    except (json.JSONDecodeError, Exception):
+        return []
 
     # Migrate legacy prop_firm/custom_rules → requirement_set_id
     migrated = False

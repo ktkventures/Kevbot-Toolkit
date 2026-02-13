@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.13
+**Version:** 0.14
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — Settings page ✓, settings persistence ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; QA remaining; Phases 1–9 complete
+**Status:** Phase 10 In Progress — Settings page ✓, settings persistence ✓, QA & verification ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; deferred items remaining; Phases 1–9 complete
 
 ---
 
@@ -968,16 +968,18 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] ~~Risk Management Pack Verification~~ — covered by RM Pack Preview (individual) + Strategy Builder SL/TP drill-down tabs (multi-backtest comparison across packs)
 - [ ] Backtesting Verification — controlled synthetic scenarios with known expected outputs; developer-only concern, deferred indefinitely
 
-**QA & Verification:**
-- [ ] Alert monitor end-to-end test — verify signals detect, webhooks fire, payloads resolve
-- [ ] Forward testing validation — confirm live data pipeline produces accurate results
-- [ ] Edge cases — empty states, single-trade strategies, zero-trade portfolios, missing data
-- [ ] Performance — identify and address any slow-loading pages or redundant data fetches
+**QA & Verification — COMPLETED (Feb 13, 2026):**
+- [x] Alert monitor end-to-end test — "Send Test Alert" button on Alerts page fires synthetic alert through full pipeline (save → deliver to all active webhooks → report results); placed in collapsible "E2E Test" expander
+- [x] Forward testing validation — diagnostic caption on forward test view showing `BT: N trades (Xd) · FW: M trades (Yd) · Boundary: YYYY-MM-DD` for boundary split verification
+- [x] Edge cases — JSON corruption guards on `load_strategies()`, `load_portfolios()`, `load_alerts()`, `load_alert_config()` with graceful fallback to empty defaults
+- [x] Performance — eliminated duplicate `load_alerts()` on Dashboard (single load, slice for display); cached extended data views in session state (`bt_ext_`, `ft_ext_` keys) with invalidation on strategy save/delete; batched portfolio strategy lookups via `strat_by_id` dict instead of per-card file reads
+- [x] Webhook payload template fix — `render_payload()` now auto-quotes string placeholder values and leaves numbers bare, producing valid JSON regardless of whether user quotes `{{placeholders}}` in templates; two-pass substitution handles both `"{{key}}"` (explicit) and `{{key}}` (auto) patterns
+- [x] Days slider → number input — replaced `st.slider` with `st.number_input` (step=7) for all Days inputs (Strategy Builder, Extended backtest/forward test tabs, Settings page) for precise value entry
 
 **Backtest Settings Overhaul — COMPLETED (Feb 11, 2026):**
 - [x] Replace sidebar data settings with inline config bar — all data-loading inputs moved from sidebar to compact inline rows at top of Strategy Builder main area
 - [x] Three look-back modes via selectbox:
-  - **Days** (default) — slider from 7 to 1,825 (5 years); recommended for apples-to-apples comparison across strategies on different timeframes
+  - **Days** (default) — number input from 7 to 1,825 (5 years) with step=7; recommended for apples-to-apples comparison across strategies on different timeframes
   - **Bars/Candles** — number input (e.g., 500, 1000, 2000 candles); app calculates equivalent days based on selected timeframe via `days_from_bar_count()`
   - **Date Range** — two date pickers (start/end) for precise control
 - [x] Estimated bar count display — status line shows "~7,800 bars · 390 bars/day" below Row 1; computed via `estimate_bar_count()`

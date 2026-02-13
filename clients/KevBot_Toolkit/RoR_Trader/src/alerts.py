@@ -163,11 +163,38 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
     return ctx
 
 
+def _is_json_numeric(value: str) -> bool:
+    """Check if a string value should be treated as a bare JSON number."""
+    try:
+        float(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def render_payload(template: str, context: dict) -> str:
-    """Substitute {{placeholder}} tokens in a payload template string."""
+    """Substitute {{placeholder}} tokens in a payload template string.
+
+    Handles both quoted ("{{key}}") and unquoted ({{key}}) placeholders:
+    - Already-quoted placeholders are replaced directly (user controls quoting).
+    - Bare placeholders auto-quote string values and leave numbers bare,
+      producing valid JSON regardless of how the user wrote the template.
+    """
     result = template
     for key, value in context.items():
-        result = result.replace("{{" + key + "}}", value)
+        quoted_token = '"{{' + key + '}}"'
+        bare_token = '{{' + key + '}}'
+        # Pass 1: replace "{{key}}" with "value" (user already quoted)
+        if quoted_token in result:
+            escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+            result = result.replace(quoted_token, f'"{escaped}"')
+        # Pass 2: replace bare {{key}} — auto-quote strings, leave numbers bare
+        if bare_token in result:
+            if _is_json_numeric(value):
+                result = result.replace(bare_token, value)
+            else:
+                escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+                result = result.replace(bare_token, f'"{escaped}"')
     return result
 
 
@@ -183,8 +210,15 @@ def generate_webhook_id() -> str:
 def load_alert_config() -> dict:
     """Load alert configuration. Migrates legacy schema if detected."""
     if os.path.exists(ALERT_CONFIG_FILE):
-        with open(ALERT_CONFIG_FILE, 'r') as f:
-            config = json.load(f)
+        try:
+            with open(ALERT_CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, Exception):
+            return {
+                "global": dict(DEFAULT_GLOBAL_CONFIG),
+                "strategies": {},
+                "portfolios": {},
+            }
 
         # Detect and migrate legacy schema
         migrated = False
@@ -357,8 +391,11 @@ def load_alerts(limit: int = 100) -> list:
     """Load alert history, most recent first. Returns up to `limit` alerts."""
     if not os.path.exists(ALERTS_FILE):
         return []
-    with open(ALERTS_FILE, 'r') as f:
-        alerts = json.load(f)
+    try:
+        with open(ALERTS_FILE, 'r') as f:
+            alerts = json.load(f)
+    except (json.JSONDecodeError, Exception):
+        return []
     # Sort most recent first
     alerts.sort(key=lambda a: a.get('timestamp', ''), reverse=True)
     return alerts[:limit]

@@ -1632,8 +1632,11 @@ def save_settings(settings: dict) -> bool:
 def load_strategies() -> list:
     """Load saved strategies from file."""
     if os.path.exists(STRATEGIES_FILE):
-        with open(STRATEGIES_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(STRATEGIES_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception):
+            return []
     return []
 
 
@@ -2035,7 +2038,7 @@ def render_dashboard():
     with right_col:
         # Recent Alerts
         st.subheader("Recent Alerts")
-        last_alerts = load_alerts(limit=5)
+        last_alerts = alerts[:5]
         if last_alerts:
             for alert in last_alerts:
                 _render_alert_row(alert, prefix="dash_")
@@ -2176,7 +2179,8 @@ def render_strategy_builder():
     with r1c5:
         if lookback_mode == "Days":
             saved_data_days = edit_config.get('data_days', 30)
-            data_days = st.slider("Days", 7, 1825, saved_data_days, key="sb_data_days")
+            data_days = st.number_input("Days", min_value=7, max_value=1825,
+                                         value=saved_data_days, step=7, key="sb_data_days")
         elif lookback_mode == "Bars/Candles":
             saved_bar_count = edit_config.get('bar_count', 1000)
             bar_count = st.number_input("Bars", min_value=100, max_value=500000,
@@ -3485,6 +3489,8 @@ def render_strategy_builder():
         st.session_state.strategy_trades_cache.pop(saved_id, None)
         st.session_state.pop(f"bt_trades_{saved_id}", None)
         st.session_state.pop(f"ft_data_{saved_id}", None)
+        for _k in [k for k in st.session_state if k.startswith(f"bt_ext_{saved_id}_") or k.startswith(f"ft_ext_{saved_id}_")]:
+            st.session_state.pop(_k, None)
         for _port in load_portfolios():
             if any(ps['strategy_id'] == saved_id for ps in _port.get('strategies', [])):
                 st.session_state.pop(f"port_data_{_port['id']}", None)
@@ -3692,6 +3698,8 @@ def render_strategy_list():
                             st.session_state.strategy_trades_cache.pop(sid, None)
                             st.session_state.pop(f"bt_trades_{sid}", None)
                             st.session_state.pop(f"ft_data_{sid}", None)
+                            for _k in [k for k in st.session_state if k.startswith(f"bt_ext_{sid}_") or k.startswith(f"ft_ext_{sid}_")]:
+                                st.session_state.pop(_k, None)
                             st.session_state.confirm_delete_id = None
                             st.rerun()
                     with confirm_cols[1]:
@@ -3801,6 +3809,8 @@ def render_strategy_detail(strategy_id: int):
                 st.session_state.strategy_trades_cache.pop(strategy_id, None)
                 st.session_state.pop(f"bt_trades_{strategy_id}", None)
                 st.session_state.pop(f"ft_data_{strategy_id}", None)
+                for _k in [k for k in st.session_state if k.startswith(f"bt_ext_{strategy_id}_") or k.startswith(f"ft_ext_{strategy_id}_")]:
+                    st.session_state.pop(_k, None)
                 st.session_state.confirm_delete_id = None
                 st.session_state.viewing_strategy_id = None
                 st.rerun()
@@ -3999,9 +4009,10 @@ def render_live_backtest(strat: dict):
         ext_end_date = None
         with ext_lc2:
             if ext_lookback_mode == "Days":
-                extended_data_days = st.slider(
-                    "Days", 90, 1825, strat.get('extended_data_days', 365),
-                    key="bt_ext_days_slider")
+                extended_data_days = st.number_input(
+                    "Days", min_value=7, max_value=1825,
+                    value=strat.get('extended_data_days', 365),
+                    step=7, key="bt_ext_days_slider")
             elif ext_lookback_mode == "Bars/Candles":
                 ext_bar_count = st.number_input(
                     "Bars", min_value=100, max_value=500000, value=5000,
@@ -4027,36 +4038,43 @@ def render_live_backtest(strat: dict):
             ext_est = estimate_bar_count(extended_data_days, strat_timeframe)
             st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
 
-        with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
-            ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
-                                                  start_date=ext_start_date, end_date=ext_end_date,
-                                                  timeframe=strat_timeframe)
+        bt_ext_key = f"bt_ext_{strat['id']}_{extended_data_days}_{ext_start_date}_{ext_end_date}"
+        if bt_ext_key not in st.session_state:
+            with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
+                _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
+                                                      start_date=ext_start_date, end_date=ext_end_date,
+                                                      timeframe=strat_timeframe)
+                if len(_ext_df) == 0:
+                    st.session_state[bt_ext_key] = (None, None)
+                else:
+                    _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
+                    _ext_trades = generate_trades(
+                        _ext_df,
+                        direction=strat['direction'],
+                        entry_trigger=strat['entry_trigger'],
+                        exit_trigger=strat.get('exit_trigger'),
+                        exit_triggers=strat.get('exit_triggers'),
+                        confluence_required=confluence_set,
+                        risk_per_trade=strat.get('risk_per_trade', 100.0),
+                        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                        stop_config=strat.get('stop_config'),
+                        target_config=strat.get('target_config'),
+                        bar_count_exit=strat.get('bar_count_exit'),
+                        general_columns=_ext_gc,
+                    )
+                    _ext_kpis = calculate_kpis(
+                        _ext_trades,
+                        starting_balance=strat.get('starting_balance', 10000.0),
+                        risk_per_trade=strat.get('risk_per_trade', 100.0),
+                        total_trading_days=count_trading_days(_ext_df),
+                    )
+                    st.session_state[bt_ext_key] = (_ext_trades, _ext_kpis)
 
-        if len(ext_df) == 0:
+        ext_trades, ext_kpis = st.session_state[bt_ext_key]
+
+        if ext_trades is None:
             st.warning("No data available for extended period.")
         else:
-            ext_general_cols = [c for c in ext_df.columns if c.startswith("GP_")]
-            ext_trades = generate_trades(
-                ext_df,
-                direction=strat['direction'],
-                entry_trigger=strat['entry_trigger'],
-                exit_trigger=strat.get('exit_trigger'),
-                exit_triggers=strat.get('exit_triggers'),
-                confluence_required=confluence_set,
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                stop_config=strat.get('stop_config'),
-                target_config=strat.get('target_config'),
-                bar_count_exit=strat.get('bar_count_exit'),
-                general_columns=ext_general_cols,
-            )
-
-            ext_kpis = calculate_kpis(
-                ext_trades,
-                starting_balance=strat.get('starting_balance', 10000.0),
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-                total_trading_days=count_trading_days(ext_df),
-            )
 
             kpi_cols = st.columns(8)
             kpi_cols[0].metric("Trades", ext_kpis["total_trades"])
@@ -4317,6 +4335,12 @@ def render_forward_test_view(strat: dict):
     bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
     fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
 
+    st.caption(
+        f"BT: {len(backtest_trades)} trades ({bt_trading_days}d) · "
+        f"FW: {len(forward_trades)} trades ({fw_trading_days}d) · "
+        f"Boundary: {boundary_dt.strftime('%Y-%m-%d')}"
+    )
+
     # 7-tab layout
     tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs([
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
@@ -4338,9 +4362,10 @@ def render_forward_test_view(strat: dict):
                 "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
         with fw_ext_lc2:
             if fw_ext_mode == "Days":
-                extended_data_days = st.slider(
-                    "Days", 90, 1825, strat.get('extended_data_days', 365),
-                    key="fw_ext_days_slider")
+                extended_data_days = st.number_input(
+                    "Days", min_value=7, max_value=1825,
+                    value=strat.get('extended_data_days', 365),
+                    step=7, key="fw_ext_days_slider")
             elif fw_ext_mode == "Bars/Candles":
                 fw_ext_bars = st.number_input(
                     "Bars", min_value=100, max_value=500000, value=5000,
@@ -4364,10 +4389,13 @@ def render_forward_test_view(strat: dict):
             fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
             st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
-        with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
-            ext_df, ext_bt, ext_fw, ext_boundary = prepare_forward_test_data(
-                strat, data_days_override=extended_data_days
-            )
+        ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
+        if ft_ext_key not in st.session_state:
+            with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
+                st.session_state[ft_ext_key] = prepare_forward_test_data(
+                    strat, data_days_override=extended_data_days
+                )
+        ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
 
         if len(ext_df) == 0:
             st.warning("No data available for extended period.")
@@ -4987,6 +5015,10 @@ def render_portfolio_list():
         st.info("No portfolios yet. Create one to combine your strategies!")
         return
 
+    # Build lookup dict for strategy name resolution (avoids per-card file reads)
+    _all_strats = load_strategies()
+    _strat_by_id = {s['id']: s for s in _all_strats}
+
     for i, port in enumerate(portfolios):
         pid = port.get('id', 0)
         kpis = port.get('cached_kpis', {})
@@ -4999,7 +5031,7 @@ def render_portfolio_list():
         if eq_data is None and kpis and kpis.get('total_trades', 0) > 0:
             # Migration fallback: compute + persist for next load
             try:
-                port_data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
+                port_data = get_portfolio_trades(port, _strat_by_id.get, get_strategy_trades)
                 eq_data = extract_portfolio_equity_curve_data(port_data['combined_trades'])
                 port['equity_curve_data'] = eq_data
                 update_portfolio(pid, port)
@@ -5035,7 +5067,7 @@ def render_portfolio_list():
                 # Strategy names
                 strat_names = []
                 for ps in port.get('strategies', [])[:4]:
-                    s = get_strategy_by_id(ps['strategy_id'])
+                    s = _strat_by_id.get(ps['strategy_id'])
                     if s:
                         strat_names.append(f"{s['symbol']} {s['direction']}")
                 if strat_names:
@@ -6026,6 +6058,10 @@ def render_alerts_page():
     # Monitor Status Bar (kept)
     _render_monitor_status_bar(status, config)
 
+    # Send Test Alert
+    with st.expander("E2E Test", expanded=False):
+        _render_send_test_alert(config)
+
     st.divider()
 
     # Active Alerts Management (collapsible)
@@ -6122,6 +6158,71 @@ def _render_monitor_status_bar(status: dict, config: dict):
                 import time
                 time.sleep(1)  # brief delay for status file to be written
                 st.rerun()
+
+
+def _render_send_test_alert(config: dict):
+    """Render a Send Test Alert button that fires through all active webhooks."""
+    active_webhooks = get_all_active_webhooks()
+    if not active_webhooks:
+        st.caption("No active webhooks configured. Add webhooks to a portfolio to test.")
+        return
+
+    if st.button("Send Test Alert", use_container_width=True):
+        test_alert = {
+            "type": "entry_signal",
+            "level": "strategy",
+            "symbol": "TEST",
+            "direction": "LONG",
+            "strategy_name": "Test Alert (E2E Verification)",
+            "strategy_id": 0,
+            "price": 100.00,
+            "stop_price": 98.50,
+            "atr": 1.50,
+            "trigger": "test_trigger",
+            "confluence_met": ["TEST-CONDITION"],
+            "risk_per_trade": 100.0,
+            "timeframe": "1Min",
+            "timestamp": datetime.now().isoformat(),
+            "acknowledged": False,
+            "webhook_sent": False,
+            "portfolio_context": [],
+            "webhook_deliveries": [],
+        }
+
+        # Save the test alert to history
+        save_alert(test_alert)
+
+        # Deliver to all active webhooks
+        successes = 0
+        failures = []
+        deliveries = []
+        for wh in active_webhooks:
+            port_ctx = {"portfolio_id": wh["portfolio_id"], "portfolio_name": "", "position_risk": 100.0}
+            placeholder_ctx = build_placeholder_context(test_alert, port_ctx)
+            template = wh.get("payload_template", "")
+            custom_payload = render_payload(template, placeholder_ctx) if template else None
+            result = send_webhook(wh.get("url", ""), test_alert, custom_payload)
+            deliveries.append({
+                "webhook_id": wh.get("id", ""),
+                "webhook_name": wh.get("name", ""),
+                "portfolio_id": wh["portfolio_id"],
+                "sent_at": datetime.now().isoformat(),
+                "success": result["success"],
+                "status_code": result.get("status_code"),
+                "payload_sent": result.get("payload_sent", ""),
+                "error": result.get("error", ""),
+            })
+            if result["success"]:
+                successes += 1
+            else:
+                failures.append(f"{wh.get('name', '?')}: {result.get('error', 'Unknown')}")
+
+        if successes == len(active_webhooks):
+            st.toast(f"Test alert sent to {successes} webhook(s)")
+        elif successes > 0:
+            st.warning(f"{successes}/{len(active_webhooks)} succeeded. Failures: {'; '.join(failures)}")
+        else:
+            st.error(f"All {len(active_webhooks)} webhook(s) failed: {'; '.join(failures)}")
 
 
 def _render_active_alerts_management(config: dict):
@@ -6791,10 +6892,10 @@ def render_settings():
     st.divider()
     st.subheader("Backtest Defaults")
 
-    ext_days = st.slider(
-        "Extended Data Days", 90, 1825,
+    ext_days = st.number_input(
+        "Extended Data Days", min_value=7, max_value=1825,
         value=st.session_state.get('default_extended_data_days', 365),
-        key="settings_extended_data_days",
+        step=7, key="settings_extended_data_days",
         help="Default lookback for the Extended Equity & KPIs tab (up to 5 years)",
     )
     st.session_state['default_extended_data_days'] = ext_days
