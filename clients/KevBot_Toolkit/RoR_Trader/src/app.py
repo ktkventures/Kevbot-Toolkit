@@ -3814,13 +3814,21 @@ def render_strategy_list():
         return
 
     # --- Filter & Sort Bar ---
-    filter_cols = st.columns([1, 1, 2])
+    filter_cols = st.columns([1, 1, 1, 2])
 
     with filter_cols[0]:
         ticker_filter = st.selectbox("Ticker", ["All"] + AVAILABLE_SYMBOLS, key="strat_filter_ticker")
     with filter_cols[1]:
         direction_filter = st.selectbox("Direction", ["All", "LONG", "SHORT"], key="strat_filter_dir")
     with filter_cols[2]:
+        data_view = st.selectbox(
+            "Data View",
+            ["All Data", "Last 7 Days", "Last 30 Days", "Last 90 Days",
+             "Backtest Only", "Forward Test Only"],
+            key="strat_data_view",
+            help="Filter which trades are used for KPIs and equity curves",
+        )
+    with filter_cols[3]:
         sort_option = st.selectbox(
             "Sort By",
             ["Newest First", "Oldest First", "Name A-Z", "Win Rate (High)", "Profit Factor (High)", "Total R (High)", "Daily R (High)", "Max R DD (Best)"],
@@ -3833,16 +3841,72 @@ def render_strategy_list():
     if direction_filter != "All":
         strategies = [s for s in strategies if s.get('direction') == direction_filter]
 
-    # Apply sorting
+    # --- Data View filtering (computed before sort so KPI-based sorts reflect filter) ---
+    _data_view_active = data_view != "All Data"
+    _filtered_card_data = {}  # sid -> (eq_data, kpis) for filtered views
+
+    if _data_view_active:
+        _now = pd.Timestamp.now(tz='UTC')
+        for strat in strategies:
+            sid = strat.get('id', 0)
+            stored = strat.get('stored_trades')
+            if not stored:
+                continue
+
+            trades_df = _trades_df_from_stored(stored)
+            if len(trades_df) == 0:
+                continue
+
+            # Apply data view filter
+            if data_view == "Last 7 Days":
+                trades_df = trades_df[trades_df['exit_time'] > _now - pd.Timedelta(days=7)]
+            elif data_view == "Last 30 Days":
+                trades_df = trades_df[trades_df['exit_time'] > _now - pd.Timedelta(days=30)]
+            elif data_view == "Last 90 Days":
+                trades_df = trades_df[trades_df['exit_time'] > _now - pd.Timedelta(days=90)]
+            elif data_view == "Backtest Only":
+                if strat.get('forward_test_start'):
+                    _bnd = pd.Timestamp(strat['forward_test_start'])
+                    if _bnd.tz is None:
+                        _bnd = _bnd.tz_localize('UTC')
+                    trades_df = trades_df[trades_df['entry_time'] < _bnd]
+            elif data_view == "Forward Test Only":
+                if strat.get('forward_test_start'):
+                    _bnd = pd.Timestamp(strat['forward_test_start'])
+                    if _bnd.tz is None:
+                        _bnd = _bnd.tz_localize('UTC')
+                    trades_df = trades_df[trades_df['entry_time'] >= _bnd]
+
+            boundary_dt = None
+            if strat.get('forward_test_start'):
+                boundary_dt = datetime.fromisoformat(strat['forward_test_start'])
+
+            _filt_kpis = calculate_kpis(
+                trades_df,
+                starting_balance=strat.get('starting_balance', 10000.0),
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+            )
+            _filt_eq = extract_equity_curve_data(
+                trades_df, boundary_dt=boundary_dt)
+            _filtered_card_data[sid] = (_filt_eq, _filt_kpis)
+
+    # Apply sorting (use filtered KPIs when data view is active)
+    def _sort_kpis(s):
+        if _data_view_active:
+            sid = s.get('id', 0)
+            if sid in _filtered_card_data:
+                return _filtered_card_data[sid][1]
+        return s.get('kpis', {})
+
     sort_keys = {
         "Newest First": (lambda s: s.get('created_at', ''), True),
         "Oldest First": (lambda s: s.get('created_at', ''), False),
         "Name A-Z": (lambda s: s.get('name', '').lower(), False),
-        "Win Rate (High)": (lambda s: s.get('kpis', {}).get('win_rate', 0), True),
-        "Profit Factor (High)": (lambda s: s.get('kpis', {}).get('profit_factor', 0), True),
-        "Total R (High)": (lambda s: s.get('kpis', {}).get('total_r', 0), True),
-        "Daily R (High)": (lambda s: s.get('kpis', {}).get('daily_r', 0), True),
-        "Max R DD (Best)": (lambda s: s.get('kpis', {}).get('max_r_drawdown', 0), True),
+        "Win Rate (High)": (lambda s: _sort_kpis(s).get('win_rate', 0), True),
+        "Profit Factor (High)": (lambda s: _sort_kpis(s).get('profit_factor', 0), True),
+        "Total R (High)": (lambda s: _sort_kpis(s).get('total_r', 0), True),
+        "Daily R (High)": (lambda s: _sort_kpis(s).get('daily_r', 0), True),
+        "Max R DD (Best)": (lambda s: _sort_kpis(s).get('max_r_drawdown', 0), True),
     }
     key_fn, reverse = sort_keys[sort_option]
     strategies.sort(key=key_fn, reverse=reverse)
@@ -3871,35 +3935,39 @@ def render_strategy_list():
         sid = strat.get('id', 0)
         is_legacy = 'entry_trigger_confluence_id' not in strat
 
-        # Prefer persisted equity curve data (no backtest needed)
-        eq_data = strat.get('equity_curve_data') if not is_legacy else None
+        # Use filtered data if active, else persisted data
+        if _data_view_active and sid in _filtered_card_data:
+            eq_data, kpis = _filtered_card_data[sid]
+        else:
+            # Prefer persisted equity curve data (no backtest needed)
+            eq_data = strat.get('equity_curve_data') if not is_legacy else None
 
-        if eq_data is None and not is_legacy:
-            # Migration fallback: compute + persist for next load
-            trades = get_strategy_trades(strat)
-            if len(trades) > 0:
-                boundary = None
-                if strat.get('forward_testing') and strat.get('forward_test_start'):
-                    boundary = datetime.fromisoformat(strat['forward_test_start'])
-                eq_data = extract_equity_curve_data(trades, boundary_dt=boundary)
-                strat['equity_curve_data'] = eq_data
-                # Backfill missing KPIs
-                sk = strat.setdefault('kpis', {})
-                if 'max_r_drawdown' not in sk:
-                    cr = trades["r_multiple"].cumsum().values
-                    sk['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
-                if 'r_squared' not in sk and len(trades) >= 2:
-                    cr = trades["r_multiple"].cumsum().values
-                    x_vals = np.arange(len(cr))
-                    corr = np.corrcoef(x_vals, cr)[0, 1]
-                    sk['r_squared'] = round(corr ** 2, 4) if not np.isnan(corr) else 0.0
-                update_strategy(sid, strat)
+            if eq_data is None and not is_legacy:
+                # Migration fallback: compute + persist for next load
+                trades = get_strategy_trades(strat)
+                if len(trades) > 0:
+                    boundary = None
+                    if strat.get('forward_testing') and strat.get('forward_test_start'):
+                        boundary = datetime.fromisoformat(strat['forward_test_start'])
+                    eq_data = extract_equity_curve_data(trades, boundary_dt=boundary)
+                    strat['equity_curve_data'] = eq_data
+                    # Backfill missing KPIs
+                    sk = strat.setdefault('kpis', {})
+                    if 'max_r_drawdown' not in sk:
+                        cr = trades["r_multiple"].cumsum().values
+                        sk['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
+                    if 'r_squared' not in sk and len(trades) >= 2:
+                        cr = trades["r_multiple"].cumsum().values
+                        x_vals = np.arange(len(cr))
+                        corr = np.corrcoef(x_vals, cr)[0, 1]
+                        sk['r_squared'] = round(corr ** 2, 4) if not np.isnan(corr) else 0.0
+                    update_strategy(sid, strat)
 
-        # Backfill max_r_drawdown from persisted curve if still missing
-        kpis = strat.get('kpis', {})
-        if 'max_r_drawdown' not in kpis and eq_data and len(eq_data.get('cumulative_r', [])) >= 2:
-            cr = np.array(eq_data['cumulative_r'])
-            kpis['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
+            # Backfill max_r_drawdown from persisted curve if still missing
+            kpis = strat.get('kpis', {})
+            if 'max_r_drawdown' not in kpis and eq_data and len(eq_data.get('cumulative_r', [])) >= 2:
+                cr = np.array(eq_data['cumulative_r'])
+                kpis['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
 
         # 2-column grid: new row every 2 cards
         if i % 2 == 0:

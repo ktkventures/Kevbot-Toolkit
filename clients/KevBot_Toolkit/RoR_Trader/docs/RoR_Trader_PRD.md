@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.16
+**Version:** 0.17
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
@@ -1127,6 +1127,9 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Save flow persists `stored_trades` alongside `equity_curve_data` and `kpis`
 - [x] `data_refreshed_at` timestamp persisted per strategy to track last refresh
 - [x] Lazy-load Extended tabs — "Equity & KPIs (Extended)" tab on strategy detail pages deferred behind a "Load Extended Data" button instead of auto-loading on every page render; eliminates 10-20s blocking that previously stalled all tabs
+- [x] Data View filter dropdown on My Strategies page — filters `stored_trades` by time window (Last 7/30/90 Days, Backtest Only, Forward Test Only) and recomputes KPIs + equity curves from filtered subset; instant, no pipeline re-runs; KPI-based sorting reflects filtered values
+- [ ] **Phase B: Expanded Backtest Range** — allow users to extend the backtest date range beyond the original creation settings directly from My Strategies page; runs the full pipeline for the expanded window and merges new backtest trades into `stored_trades`; enables ad-hoc "what if I had started earlier?" analysis without editing the strategy
+- [ ] **Phase C: Non-Optimizable Edits** — allow minor strategy edits (name, notes, risk sizing, cosmetic settings) without resetting the forward test; distinguish between "optimizable" parameters (entry/exit triggers, confluence, indicator periods) that invalidate forward test data and "non-optimizable" parameters that don't affect trade generation
 
 ### Design Decisions (Phase 10C — Incremental Data Refresh)
 - **Incremental over full rebuild** — Trade history is append-only. Backtest trades never change; forward test trades accumulate. Re-running the full pipeline from strategy creation is wasteful. Instead, we store minimal trade records and only load/process the recent data window (warmup + new bars). For 1-min strategies, the incremental window is ~1 day vs. 30-60+ days for a full rebuild.
@@ -1134,7 +1137,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Cold-start migration** — Strategies created before this feature (without `stored_trades`) get a one-time full pipeline run that populates the field. All subsequent refreshes are incremental.
 - **Warmup buffer** — The incremental data window starts `warmup_bars / bars_per_day` calendar days before the last known trade. 100 bars covers 2× the longest indicator (EMA-50) for safety. For 1-min timeframes this is ~1 calendar day; for 1-day timeframes it's ~145 days (necessary for daily indicator accuracy).
 - **Lazy-load Extended tabs** — Streamlit's `st.tabs()` executes ALL tab content on every render, even invisible tabs. The Extended tab's 365-day data load blocked all 7 tabs from rendering (~10-20s). Gating it behind a button means the page renders in ~2-5s and users only pay the cost when they actually want extended data.
-- **Future: custom backtest date range on list page** — A future phase will add a date range picker to the My Strategies page for ad-hoc backtesting across all strategies.
+- **Data View filter vs. expanded backtest** — Phase A (Data View filter, completed) filters existing `stored_trades` by date — instant, no data loading. Phase B (future) extends the backtest beyond original settings by running the pipeline for an expanded window — slower but additive. These are distinct use cases: "show me only recent performance" vs. "what if the backtest started earlier?"
+- **Non-optimizable edits (Phase C)** — Currently, any strategy edit resets the forward test. Phase C will categorize parameters into optimizable (triggers, confluence, indicators — changes invalidate forward test data) and non-optimizable (name, notes, risk sizing — changes don't affect trade generation). Non-optimizable edits will skip the forward test reset, preserving accumulated forward test data.
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
