@@ -3,7 +3,7 @@
 **Version:** 0.12
 **Date:** February 12, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓; caching and QA remaining; Phases 1–9 complete
+**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓; QA remaining; Phases 1–9 complete
 
 ---
 
@@ -984,7 +984,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Performance warning — `:orange[Large dataset]` inline when estimated bars exceed 50K
 - [x] Timeframe-aware max range guidance — status line shows recommended max (e.g., "1Min: ≤1yr recommended")
 - [x] Lookback modes also available on strategy detail Extended KPIs tab — Days/Bars/Date Range selector replaces simple days slider for both backtest and forward test views
-- [ ] Result caching — cache trades/KPIs keyed on (symbol, timeframe, date range, strategy config, pack variations) so repeated views load instantly after first computation; must account for Phase 9 multi-backtest patterns (stop/target pack comparisons)
+- [x] Result caching — three-tier caching system (see "Result Caching" section below)
 - [ ] Expand supported Alpaca timeframes — currently 7 presets; Alpaca supports any minute increment (1–59Min), 1–23Hour, and Day/Week/Month
 - [ ] Fix mock data timeframe — mock data generator currently always produces 1Min bars regardless of selected timeframe
 - [ ] Date range validation — prevent requests before 2016 (Alpaca data floor); warn on very large ranges
@@ -1013,6 +1013,21 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Extended KPIs lookback mode selector — Days/Bars/Date Range options replace simple days slider on both backtest and forward test Extended tabs
 - [x] Configuration tabs show general confluences — TF Conditions and General Conditions displayed separately
 - [x] Optimizable Variables moved below Extended KPIs — better visual flow in Strategy Builder
+
+**Result Caching — COMPLETED (Feb 11, 2026):**
+- [x] Three-tier caching architecture:
+  - **Tier 1 — Persistent (JSON):** `equity_curve_data` (exit_times + cumulative_r/pnl + boundary_index) saved to strategies.json and portfolios.json on save; list pages render mini equity curves from stored data with zero computation
+  - **Tier 2 — Session State:** trade DataFrames cached per strategy/portfolio ID (`bt_trades_{id}`, `ft_data_{id}`, `port_data_{id}`); detail pages compute once per session, then instant on subsequent views
+  - **Tier 3 — Existing `@st.cache_data`:** 1hr TTL on `prepare_data_with_indicators()` unchanged
+- [x] Strategy list page — reads persisted `equity_curve_data` and saved KPIs; zero backtests needed for rendering cards and mini equity curves
+- [x] Dashboard — best strategy mini equity curve from persisted data; no backtest
+- [x] Portfolio list page — reads persisted `equity_curve_data` and `cached_kpis`; `get_portfolio_trades()` only called lazily for portfolios with `requirement_set_id` needing compliance evaluation
+- [x] Strategy detail page — backtest trades cached in session state (`bt_trades_{id}`); first visit computes, subsequent visits instant
+- [x] Forward test view — forward test data cached in session state (`ft_data_{id}`); first visit computes, subsequent visits instant
+- [x] Portfolio detail page — portfolio data cached in session state (`port_data_{id}`) using `get_cached_strategy_trades` for constituent strategies; first visit computes, subsequent visits instant
+- [x] Helper functions — `extract_equity_curve_data()`, `extract_portfolio_equity_curve_data()`, `render_mini_equity_curve_from_data()` for persistent data extraction and rendering
+- [x] Cache invalidation — session caches cleared on strategy save/update/delete and portfolio save/update/delete; portfolio caches invalidated when constituent strategies change
+- [x] Lazy migration — existing strategies/portfolios without `equity_curve_data` auto-backfilled on first list load (one-time cost), then persisted for future instant loads; also backfills missing `max_r_drawdown` and `r_squared` KPIs
 
 **Deferred from Phase 9:**
 - [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
