@@ -170,6 +170,19 @@ OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_FILE = os.path.join(_SCRIPT_DIR, "strategies.json")
 
+# Settings storage path (in config/ dir, like confluence_groups and general_packs)
+SETTINGS_FILE = os.path.join(_SCRIPT_DIR, "..", "config", "settings.json")
+
+SETTINGS_DEFAULTS = {
+    "chart_visible_candles": 200,
+    "default_extended_data_days": 365,
+    "default_entry_trigger": "",
+    "default_exit_trigger": "",
+    "default_stop_config": {"method": "atr", "atr_mult": 1.5},
+    "default_target_config": None,
+    "global_data_seed": 42,
+}
+
 
 # =============================================================================
 # TRIGGER MAPPING
@@ -1586,6 +1599,33 @@ def render_price_chart(
 
 
 # =============================================================================
+# SETTINGS STORAGE
+# =============================================================================
+
+def load_settings() -> dict:
+    """Load user settings from config/settings.json, falling back to defaults."""
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                saved = json.load(f)
+            return {**SETTINGS_DEFAULTS, **saved}
+        except (json.JSONDecodeError, Exception):
+            pass
+    return dict(SETTINGS_DEFAULTS)
+
+
+def save_settings(settings: dict) -> bool:
+    """Save user settings to config/settings.json."""
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+# =============================================================================
 # STRATEGY STORAGE
 # =============================================================================
 
@@ -1766,20 +1806,11 @@ def main():
         st.session_state.confirm_delete_requirement_id = None
     if 'nav_target' not in st.session_state:
         st.session_state.nav_target = None
+    # Load persistent settings (falls back to SETTINGS_DEFAULTS for any missing keys)
     if 'chart_visible_candles' not in st.session_state:
-        st.session_state.chart_visible_candles = 200
-    if 'global_data_seed' not in st.session_state:
-        st.session_state.global_data_seed = 42
-    if 'default_extended_data_days' not in st.session_state:
-        st.session_state.default_extended_data_days = 365
-    if 'default_entry_trigger' not in st.session_state:
-        st.session_state.default_entry_trigger = ''
-    if 'default_exit_trigger' not in st.session_state:
-        st.session_state.default_exit_trigger = ''
-    if 'default_stop_config' not in st.session_state:
-        st.session_state.default_stop_config = {"method": "atr", "atr_mult": 1.5}
-    if 'default_target_config' not in st.session_state:
-        st.session_state.default_target_config = None
+        for key, value in load_settings().items():
+            if key not in st.session_state:
+                st.session_state[key] = value
     if 'confluence_filters' not in st.session_state:
         st.session_state.confluence_filters = {
             'sort_by': 'profit_factor',
@@ -2152,7 +2183,7 @@ def render_strategy_builder():
                                          value=saved_bar_count, step=100, key="sb_bar_count")
             data_days = days_from_bar_count(bar_count, timeframe)
         elif lookback_mode == "Date Range":
-            from datetime import date, time as dtime
+            from datetime import time as dtime
             saved_start = edit_config.get('lookback_start_date')
             saved_end = edit_config.get('lookback_end_date')
             default_start = datetime.fromisoformat(saved_start).date() if saved_start else date(2025, 1, 1)
@@ -3977,7 +4008,7 @@ def render_live_backtest(strat: dict):
                     step=500, key="bt_ext_bar_count")
                 extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe)
             elif ext_lookback_mode == "Date Range":
-                from datetime import date, time as dtime
+                from datetime import time as dtime
                 dr1, dr2 = st.columns(2)
                 with dr1:
                     ext_start_input = st.date_input(
@@ -4316,7 +4347,7 @@ def render_forward_test_view(strat: dict):
                     step=500, key="fw_ext_bar_count")
                 extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
             elif fw_ext_mode == "Date Range":
-                from datetime import date, time as dtime
+                from datetime import time as dtime
                 fw_dr1, fw_dr2 = st.columns(2)
                 with fw_dr1:
                     fw_ext_start = st.date_input(
@@ -6932,6 +6963,15 @@ def render_settings():
             help="Default random seed for mock data generation. Change for different random price patterns.",
         )
         st.session_state['global_data_seed'] = data_seed
+
+    # --- Save Settings ---
+    st.divider()
+    if st.button("Save Settings", type="primary", use_container_width=True):
+        current = {k: st.session_state.get(k, v) for k, v in SETTINGS_DEFAULTS.items()}
+        if save_settings(current):
+            st.toast("Settings saved")
+        else:
+            st.error("Failed to save settings.")
 
 
 # =============================================================================

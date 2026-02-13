@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.12
-**Date:** February 12, 2026
+**Version:** 0.13
+**Date:** February 13, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10 In Progress — Settings page ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; QA remaining; Phases 1–9 complete
+**Status:** Phase 10 In Progress — Settings page ✓, settings persistence ✓, sidebar-to-inline refactor ✓, backtest settings ✓, result caching ✓, timeframe expansion ✓; QA remaining; Phases 1–9 complete
 
 ---
 
@@ -1053,7 +1053,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **`st.empty()` placeholder for status line** — The bar estimate and validation errors depend on widget values defined earlier in the render flow. Using `st.empty()` reserves visual space at the right position, then fills it after all widget values are resolved. This avoids the Streamlit issue of text appearing before its dependent widgets.
 - **FT/AL as compact checkboxes with tooltips** — Forward Testing and Alerts are boolean toggles that don't need full labels consuming column width. Single-character labels ("FT", "AL") with `help=` tooltip text explain the feature on hover while keeping Row 1 compact.
 - **`sb_additional_exits` session state list over sidebar selectboxes** — The old approach used N sidebar selectboxes with Add/Remove buttons, requiring complex index management. The new approach stores exit CIDs in a flat list managed entirely via the drill-down "Add" button and Optimizable Variables "✕" removal. Simpler state, fewer widgets, no sidebar needed.
-- **Settings page defaults via session state** — Settings page writes to session state keys (`default_stop_config`, `default_target_config`, `global_data_seed`, `chart_visible_candles`). Strategy Builder reads from these when no saved config exists (new strategy). When editing a saved strategy, the saved config takes precedence via `'key' in edit_config` existence check. This avoids a separate `settings.json` file while still providing app-wide defaults.
+- **Settings page defaults via session state + disk persistence** — Settings page writes to session state keys (`default_stop_config`, `default_target_config`, `global_data_seed`, `chart_visible_candles`, etc.). Strategy Builder reads from these when no saved config exists (new strategy). When editing a saved strategy, the saved config takes precedence via `'key' in edit_config` existence check. A "Save Settings" button persists all settings to `config/settings.json`; on startup, `load_settings()` merges saved values over `SETTINGS_DEFAULTS` so new keys auto-get defaults without migration.
 - **`'key' in edit_config` over `.get()` for None-valued fields** — `edit_config.get('target_config')` returns `None` both when the key is missing (new strategy) and when the value is explicitly `None` (strategy saved with no target). Using `'key' in edit_config` distinguishes these cases: missing means "use Settings default", present-but-None means "user chose no target."
 - **Lookback mode on Extended KPIs tab** — Strategy detail's Extended tab previously had only a days slider. Adding the full Days/Bars/Date Range selector gives users the same flexibility as the Strategy Builder, enabling precise historical analysis on saved strategies without re-editing them.
 
@@ -1107,7 +1107,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Default Risk Management — Default Stop Loss and Target with full method+parameter config
 - [x] Development — Data Seed (mock mode only)
 - [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
-- [ ] Persist settings to `settings.json` — loaded on app startup, available via `get_setting(key, default)` helper (future; currently uses session state)
+- [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
 
 ---
 
