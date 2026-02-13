@@ -4321,61 +4321,68 @@ def render_live_backtest(strat: dict):
             st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
 
         bt_ext_key = f"bt_ext_{strat['id']}_{extended_data_days}_{ext_start_date}_{ext_end_date}"
+
+        # Lazy load: only compute when user clicks the button
         if bt_ext_key not in st.session_state:
-            with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
-                _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
-                                                      start_date=ext_start_date, end_date=ext_end_date,
-                                                      timeframe=strat_timeframe)
-                if len(_ext_df) == 0:
-                    st.session_state[bt_ext_key] = (None, None)
-                else:
-                    _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
-                    _ext_trades = generate_trades(
-                        _ext_df,
-                        direction=strat['direction'],
-                        entry_trigger=strat['entry_trigger'],
-                        exit_trigger=strat.get('exit_trigger'),
-                        exit_triggers=strat.get('exit_triggers'),
-                        confluence_required=confluence_set,
-                        risk_per_trade=strat.get('risk_per_trade', 100.0),
-                        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                        stop_config=strat.get('stop_config'),
-                        target_config=strat.get('target_config'),
-                        bar_count_exit=strat.get('bar_count_exit'),
-                        general_columns=_ext_gc,
-                    )
-                    _ext_kpis = calculate_kpis(
-                        _ext_trades,
-                        starting_balance=strat.get('starting_balance', 10000.0),
-                        risk_per_trade=strat.get('risk_per_trade', 100.0),
-                        total_trading_days=count_trading_days(_ext_df),
-                    )
-                    st.session_state[bt_ext_key] = (_ext_trades, _ext_kpis)
+            if st.button("Load Extended Data", key="bt_ext_load_btn",
+                         type="primary"):
+                with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
+                    _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
+                                                          start_date=ext_start_date, end_date=ext_end_date,
+                                                          timeframe=strat_timeframe)
+                    if len(_ext_df) == 0:
+                        st.session_state[bt_ext_key] = (None, None)
+                    else:
+                        _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
+                        _ext_trades = generate_trades(
+                            _ext_df,
+                            direction=strat['direction'],
+                            entry_trigger=strat['entry_trigger'],
+                            exit_trigger=strat.get('exit_trigger'),
+                            exit_triggers=strat.get('exit_triggers'),
+                            confluence_required=confluence_set,
+                            risk_per_trade=strat.get('risk_per_trade', 100.0),
+                            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                            stop_config=strat.get('stop_config'),
+                            target_config=strat.get('target_config'),
+                            bar_count_exit=strat.get('bar_count_exit'),
+                            general_columns=_ext_gc,
+                        )
+                        _ext_kpis = calculate_kpis(
+                            _ext_trades,
+                            starting_balance=strat.get('starting_balance', 10000.0),
+                            risk_per_trade=strat.get('risk_per_trade', 100.0),
+                            total_trading_days=count_trading_days(_ext_df),
+                        )
+                        st.session_state[bt_ext_key] = (_ext_trades, _ext_kpis)
+                st.rerun()
+            else:
+                st.info("Click **Load Extended Data** to run the extended backtest.")
 
-        ext_trades, ext_kpis = st.session_state[bt_ext_key]
+        if bt_ext_key in st.session_state:
+            ext_trades, ext_kpis = st.session_state[bt_ext_key]
 
-        if ext_trades is None:
-            st.warning("No data available for extended period.")
-        else:
+            if ext_trades is None:
+                st.warning("No data available for extended period.")
+            else:
+                kpi_cols = st.columns(8)
+                kpi_cols[0].metric("Trades", ext_kpis["total_trades"])
+                kpi_cols[1].metric("Win Rate", f"{ext_kpis['win_rate']:.1f}%")
+                ext_pf = ext_kpis['profit_factor']
+                kpi_cols[2].metric("Profit Factor", "∞" if ext_pf == float('inf') else f"{ext_pf:.2f}")
+                kpi_cols[3].metric("Avg R", f"{ext_kpis['avg_r']:+.2f}")
+                kpi_cols[4].metric("Total R", f"{ext_kpis['total_r']:+.1f}")
+                kpi_cols[5].metric("Daily R", f"{ext_kpis['daily_r']:+.2f}")
+                kpi_cols[6].metric("R²", f"{ext_kpis['r_squared']:.2f}")
+                kpi_cols[7].metric("Max R DD", f"{ext_kpis['max_r_drawdown']:+.1f}R")
 
-            kpi_cols = st.columns(8)
-            kpi_cols[0].metric("Trades", ext_kpis["total_trades"])
-            kpi_cols[1].metric("Win Rate", f"{ext_kpis['win_rate']:.1f}%")
-            ext_pf = ext_kpis['profit_factor']
-            kpi_cols[2].metric("Profit Factor", "∞" if ext_pf == float('inf') else f"{ext_pf:.2f}")
-            kpi_cols[3].metric("Avg R", f"{ext_kpis['avg_r']:+.2f}")
-            kpi_cols[4].metric("Total R", f"{ext_kpis['total_r']:+.1f}")
-            kpi_cols[5].metric("Daily R", f"{ext_kpis['daily_r']:+.2f}")
-            kpi_cols[6].metric("R²", f"{ext_kpis['r_squared']:.2f}")
-            kpi_cols[7].metric("Max R DD", f"{ext_kpis['max_r_drawdown']:+.1f}R")
+                render_secondary_kpis(ext_trades, ext_kpis, key_prefix="detail_bt_ext")
 
-            render_secondary_kpis(ext_trades, ext_kpis, key_prefix="detail_bt_ext")
-
-            chart_left, chart_right = st.columns(2)
-            with chart_left:
-                render_backtest_equity_curve(ext_trades, key_suffix="ext")
-            with chart_right:
-                render_backtest_r_distribution(ext_trades, key_suffix="ext")
+                chart_left, chart_right = st.columns(2)
+                with chart_left:
+                    render_backtest_equity_curve(ext_trades, key_suffix="ext")
+                with chart_right:
+                    render_backtest_r_distribution(ext_trades, key_suffix="ext")
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
@@ -4672,27 +4679,36 @@ def render_forward_test_view(strat: dict):
             st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
         ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
+
+        # Lazy load: only compute when user clicks the button
         if ft_ext_key not in st.session_state:
-            with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
-                st.session_state[ft_ext_key] = prepare_forward_test_data(
-                    strat, data_days_override=extended_data_days
-                )
-        ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
+            if st.button("Load Extended Data", key="ft_ext_load_btn",
+                         type="primary"):
+                with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
+                    st.session_state[ft_ext_key] = prepare_forward_test_data(
+                        strat, data_days_override=extended_data_days
+                    )
+                st.rerun()
+            else:
+                st.info("Click **Load Extended Data** to run the extended backtest.")
 
-        if len(ext_df) == 0:
-            st.warning("No data available for extended period.")
-        else:
-            ext_boundary_ts = ext_boundary
-            if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
-                ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
-            ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
-            ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
+        if ft_ext_key in st.session_state:
+            ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
 
-            render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
+            if len(ext_df) == 0:
+                st.warning("No data available for extended period.")
+            else:
+                ext_boundary_ts = ext_boundary
+                if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
+                    ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
+                ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
+                ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
 
-            ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
-            render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
-            render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
+                render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
+
+                ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
+                render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
+                render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
