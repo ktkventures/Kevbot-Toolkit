@@ -3761,6 +3761,24 @@ def render_strategy_builder():
     # SAVE BUTTON (bottom of page)
     # =========================================================================
     st.divider()
+
+    # Show forward test reset warning when editing with optimizable changes
+    if editing_id:
+        _original_strat = get_strategy_by_id(editing_id)
+        if _original_strat and _original_strat.get('forward_test_start'):
+            _pending_config = {
+                **config,
+                'confluence': [c for c in selected if not c.startswith("GEN-")],
+                'general_confluences': [c for c in selected if c.startswith("GEN-")],
+            }
+            if _has_optimizable_changes(_original_strat, _pending_config):
+                _ft_days = (datetime.now() - datetime.fromisoformat(
+                    _original_strat['forward_test_start'])).days
+                st.warning(
+                    f"Trade-affecting parameters have changed. Saving will "
+                    f"reset your forward test ({_ft_days}d of data)."
+                )
+
     save_label = "Update Strategy" if editing_id else "Save Strategy"
     _save_col1, _save_col2, _save_col3 = st.columns([3, 1, 3])
     with _save_col2:
