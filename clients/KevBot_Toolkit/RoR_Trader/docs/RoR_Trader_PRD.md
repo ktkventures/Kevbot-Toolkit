@@ -1041,14 +1041,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] IEX/SIP data source note: `st.caption()` in sidebar below Alpaca status indicator — "Free plan: IEX data · Paid plan: SIP (all exchanges)"
 - [x] `estimate_bar_count()` returns `int` via `max(1, int(...))` to handle fractional `BARS_PER_DAY` values for 1Week (0.2) and 1Month (1/21)
 
-**Deferred from Phase 9:**
-- [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
-- [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
-- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
-- [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
-
-**UX Polish:**
-- [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
+*Deferred items moved to Phase 16 (low-priority cleanup).*
 
 ### Design Decisions (Phase 10 — Settings & Inline Refactor)
 - **Inline config bar over sidebar** — Sidebar config panels create "ghost widgets" in Streamlit when navigating away — stale sidebar DOM elements from previous pages cause visual artifacts and key conflicts. Moving all data-loading inputs to inline columns in the main content area eliminates this class of bugs entirely. The global sidebar shrinks to just app title + data source status.
@@ -1224,12 +1217,22 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
 - [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
 
-### Phase 16: Expanded Backtest Range *(low priority)*
-*Allow users to extend the backtest date range beyond the original creation settings — ad-hoc "what if I had started earlier?" analysis.*
+### Phase 16: Low-Priority Cleanup & Enhancements
+*Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
+**Expanded Backtest Range:**
 - [ ] Date range picker on My Strategies page or strategy detail — select a custom backtest start date earlier than the original
 - [ ] Run full pipeline for the expanded window and merge new backtest trades into `stored_trades` (additive, does not affect existing forward test data)
 - [ ] Distinct from Data View filter (Phase 10C) — filter shows subsets of existing data instantly; expanded backtest generates new data by running the pipeline
+
+**Optimization Workflow Polish (deferred from Phase 9/10):**
+- [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
+- [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
+- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
+- [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
+
+**UX Polish:**
+- [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
 ---
 
