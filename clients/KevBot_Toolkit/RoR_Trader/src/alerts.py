@@ -957,3 +957,185 @@ def get_webhook_template_by_id(template_id: str) -> dict | None:
         if t.get("id") == template_id:
             return t
     return None
+
+
+# =============================================================================
+# LIVE ALERTS VALIDATION (Phase 13)
+# =============================================================================
+
+def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
+    """Match fired alerts to forward test trades for a strategy.
+
+    Compares alerts from alerts.json against forward test trades to identify:
+    - Successfully matched alert→trade pairs (live_executions)
+    - Missed alerts (forward test trade exists, no matching alert)
+    - Phantom alerts (alert fired but no matching forward test trade)
+
+    Args:
+        strategy: Strategy dict with stored_trades and forward_test_start
+        alerts: Optional list of alert records. If None, loads from file.
+
+    Returns:
+        dict with 'live_executions' and 'discrepancies' lists.
+    """
+    if alerts is None:
+        alerts = load_alerts(limit=10000)
+
+    stored_trades = strategy.get('stored_trades', [])
+    ft_start = strategy.get('forward_test_start')
+    strategy_id = strategy.get('id')
+
+    if not ft_start or not strategy_id:
+        return {'live_executions': [], 'discrepancies': []}
+
+    ft_start_dt = datetime.fromisoformat(ft_start)
+
+    # Get only forward test trades (after ft_start)
+    ft_trades = []
+    for idx, t in enumerate(stored_trades):
+        try:
+            entry_dt = datetime.fromisoformat(t['entry_time'])
+            if entry_dt.tzinfo:
+                entry_dt = entry_dt.replace(tzinfo=None)
+            if entry_dt >= ft_start_dt:
+                ft_trades.append((idx, t, entry_dt))
+        except (ValueError, KeyError):
+            continue
+
+    # Get alerts for this strategy (entry and exit signals only)
+    strategy_alerts = [
+        a for a in alerts
+        if a.get('strategy_id') == strategy_id
+        and a.get('type') in ('entry_signal', 'exit_signal')
+    ]
+
+    MATCH_WINDOW_SECONDS = 300  # ±5 minutes
+
+    executions = []
+    matched_alert_ids = set()
+    matched_trade_indices = set()
+
+    for trade_idx, trade, trade_entry_dt in ft_trades:
+        trade_exit_dt = None
+        try:
+            trade_exit_dt = datetime.fromisoformat(trade['exit_time'])
+            if trade_exit_dt.tzinfo:
+                trade_exit_dt = trade_exit_dt.replace(tzinfo=None)
+        except (ValueError, KeyError):
+            pass
+
+        # Find closest entry alert match
+        entry_match = None
+        best_entry_delta = float('inf')
+        for alert in strategy_alerts:
+            if alert['id'] in matched_alert_ids:
+                continue
+            if alert.get('type') != 'entry_signal':
+                continue
+            try:
+                alert_time = datetime.fromisoformat(alert['timestamp'])
+                if alert_time.tzinfo:
+                    alert_time = alert_time.replace(tzinfo=None)
+                delta = abs((alert_time - trade_entry_dt).total_seconds())
+                if delta < MATCH_WINDOW_SECONDS and delta < best_entry_delta:
+                    entry_match = alert
+                    best_entry_delta = delta
+            except (ValueError, KeyError):
+                continue
+
+        # Find closest exit alert match
+        exit_match = None
+        if trade_exit_dt:
+            best_exit_delta = float('inf')
+            for alert in strategy_alerts:
+                if alert['id'] in matched_alert_ids:
+                    continue
+                if alert.get('type') != 'exit_signal':
+                    continue
+                try:
+                    alert_time = datetime.fromisoformat(alert['timestamp'])
+                    if alert_time.tzinfo:
+                        alert_time = alert_time.replace(tzinfo=None)
+                    delta = abs((alert_time - trade_exit_dt).total_seconds())
+                    if delta < MATCH_WINDOW_SECONDS and delta < best_exit_delta:
+                        exit_match = alert
+                        best_exit_delta = delta
+                except (ValueError, KeyError):
+                    continue
+
+        if entry_match:
+            matched_alert_ids.add(entry_match['id'])
+            matched_trade_indices.add(trade_idx)
+
+            alert_price = entry_match.get('price', 0)
+            theoretical_price = trade.get('entry_price', alert_price)
+            risk = abs(theoretical_price - trade.get('stop_price', theoretical_price)) or 1.0
+
+            # Check webhook delivery status
+            deliveries = entry_match.get('webhook_deliveries', [])
+            webhook_delivered = any(d.get('success') for d in deliveries)
+
+            execution = {
+                'alert_id': entry_match['id'],
+                'type': 'entry',
+                'alert_timestamp': entry_match.get('timestamp'),
+                'alert_price': alert_price,
+                'theoretical_price': theoretical_price,
+                'slippage_r': round((alert_price - theoretical_price) / risk, 4) if risk > 0 else 0,
+                'matched_trade_index': trade_idx,
+                'webhook_delivered': webhook_delivered,
+                'webhook_delivery_count': len(deliveries),
+            }
+            executions.append(execution)
+
+            if exit_match:
+                matched_alert_ids.add(exit_match['id'])
+                exit_alert_price = exit_match.get('price', 0)
+                exit_theoretical = trade.get('exit_price', exit_alert_price)
+
+                exit_execution = {
+                    'alert_id': exit_match['id'],
+                    'type': 'exit',
+                    'alert_timestamp': exit_match.get('timestamp'),
+                    'alert_price': exit_alert_price,
+                    'theoretical_price': exit_theoretical,
+                    'slippage_r': round((exit_alert_price - exit_theoretical) / risk, 4) if risk > 0 else 0,
+                    'matched_trade_index': trade_idx,
+                    'webhook_delivered': any(d.get('success') for d in exit_match.get('webhook_deliveries', [])),
+                    'webhook_delivery_count': len(exit_match.get('webhook_deliveries', [])),
+                }
+                executions.append(exit_execution)
+
+    # Build discrepancies
+    discrepancies = []
+    now_iso = datetime.now().isoformat()
+
+    # Missed alerts: forward test trades with no matching alert
+    for trade_idx, trade, _ in ft_trades:
+        if trade_idx not in matched_trade_indices:
+            discrepancies.append({
+                'type': 'missed_alert',
+                'trade_index': trade_idx,
+                'trade_entry_time': trade.get('entry_time'),
+                'detected_at': now_iso,
+            })
+
+    # Phantom alerts: alerts that fired but no matching forward test trade
+    for alert in strategy_alerts:
+        if alert['id'] not in matched_alert_ids:
+            # Only flag alerts after forward test start
+            try:
+                alert_time = datetime.fromisoformat(alert['timestamp'])
+                if alert_time.tzinfo:
+                    alert_time = alert_time.replace(tzinfo=None)
+                if alert_time >= ft_start_dt:
+                    discrepancies.append({
+                        'type': 'phantom_alert',
+                        'alert_id': alert['id'],
+                        'alert_timestamp': alert.get('timestamp'),
+                        'detected_at': now_iso,
+                    })
+            except (ValueError, KeyError):
+                continue
+
+    return {'live_executions': executions, 'discrepancies': discrepancies}

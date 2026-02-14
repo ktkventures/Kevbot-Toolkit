@@ -989,8 +989,8 @@ def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
                 fw_plot = fw_data
             fig.add_trace(go.Scatter(
                 x=fw_plot["exit_time"], y=fw_plot["cumulative_r"],
-                mode="lines", line=dict(color="#4CAF50", width=1.5),
-                fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+                mode="lines", line=dict(color="#FF9800", width=1.5),
+                fill="tozeroy", fillcolor="rgba(255, 152, 0, 0.08)",
                 showlegend=False
             ))
     else:
@@ -1116,8 +1116,8 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
         fw_start = max(0, boundary_index - 1)
         fig.add_trace(go.Scatter(
             x=times[fw_start:], y=cumulative_r[fw_start:],
-            mode="lines", line=dict(color="#4CAF50", width=1.5),
-            fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+            mode="lines", line=dict(color="#FF9800", width=1.5),
+            fill="tozeroy", fillcolor="rgba(255, 152, 0, 0.08)",
             showlegend=False
         ))
     else:
@@ -2537,6 +2537,13 @@ def refresh_strategy_data(strategy_id: int) -> bool:
             strat['kpis'] = kpis
             strat['equity_curve_data'] = eq_data
 
+        # Run alert matching if alert tracking is enabled
+        if strat.get('alert_tracking_enabled', False):
+            from alerts import match_alerts_to_trades
+            match_result = match_alerts_to_trades(strat)
+            strat['live_executions'] = match_result.get('live_executions', [])
+            strat['discrepancies'] = match_result.get('discrepancies', [])
+
         strat['data_refreshed_at'] = datetime.now().isoformat()
         strategies[i] = strat
 
@@ -3730,7 +3737,12 @@ def render_strategy_builder():
     left_col, right_col = st.columns([1, 1])
 
     with left_col:
-        chart_tab1, chart_tab2 = st.tabs(["Equity Curve", "Price Chart"])
+        _has_live_data = strat.get('alert_tracking_enabled') and len(strat.get('live_executions', [])) > 0
+        _chart_tab_names = ["Equity Curve", "Price Chart"]
+        if _has_live_data:
+            _chart_tab_names.append("Live vs. Forward")
+        _chart_tabs = st.tabs(_chart_tab_names)
+        chart_tab1, chart_tab2 = _chart_tabs[0], _chart_tabs[1]
 
         with chart_tab1:
             if len(filtered_trades) > 0:
@@ -3799,6 +3811,102 @@ def render_strategy_builder():
             osc_panes = build_secondary_panes(df, enabled_groups)
             render_chart_with_candle_selector(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
                                secondary_panes=osc_panes if osc_panes else None)
+
+        # Live vs. Forward comparison tab
+        if _has_live_data:
+            with _chart_tabs[2]:
+                _live_execs = strat.get('live_executions', [])
+                _ft_start_dt = datetime.fromisoformat(strat['forward_test_start']) if strat.get('forward_test_start') else None
+                _stored = strat.get('stored_trades', [])
+                # Get forward test trades
+                _ft_trades = [t for t in _stored
+                              if _ft_start_dt and datetime.fromisoformat(t['entry_time']) >= _ft_start_dt]
+                _matched_indices = set(e.get('matched_trade_index') for e in _live_execs if e.get('matched_trade_index') is not None)
+
+                # Forward test KPIs
+                _ft_r = [t.get('r_multiple', 0) for t in _ft_trades]
+                _ft_wins = [r for r in _ft_r if r > 0]
+                _ft_losses = [r for r in _ft_r if r < 0]
+                _ft_total = len(_ft_r)
+                _ft_wr = (len(_ft_wins) / _ft_total * 100) if _ft_total > 0 else 0
+                _ft_pf = (sum(_ft_wins) / abs(sum(_ft_losses))) if _ft_losses else float('inf')
+                _ft_avg_r = (sum(_ft_r) / _ft_total) if _ft_total > 0 else 0
+                _ft_total_r = sum(_ft_r)
+
+                # Live KPIs (adjust R-multiples by slippage)
+                _live_r = []
+                for e in _live_execs:
+                    idx = e.get('matched_trade_index')
+                    if idx is not None and idx < len(_ft_trades):
+                        _live_r.append(_ft_trades[idx].get('r_multiple', 0) - e.get('slippage_r', 0))
+                _live_wins = [r for r in _live_r if r > 0]
+                _live_losses = [r for r in _live_r if r < 0]
+                _live_total = len(_live_r)
+                _live_wr = (len(_live_wins) / _live_total * 100) if _live_total > 0 else 0
+                _live_pf = (sum(_live_wins) / abs(sum(_live_losses))) if _live_losses else float('inf')
+                _live_avg_r = (sum(_live_r) / _live_total) if _live_total > 0 else 0
+                _live_total_r = sum(_live_r)
+
+                # Avg slippage
+                _slippages = [e.get('slippage_r', 0) for e in _live_execs]
+                _avg_slippage = (sum(_slippages) / len(_slippages)) if _slippages else 0
+
+                # Discrepancy counts
+                _discs = strat.get('discrepancies', [])
+                _missed = sum(1 for d in _discs if d.get('type') == 'missed_alert')
+                _phantom = sum(1 for d in _discs if d.get('type') == 'phantom_alert')
+
+                st.markdown("**Live vs. Forward Test Comparison**")
+                _cmp_cols = st.columns(3)
+                _cmp_cols[0].markdown("**Metric**")
+                _cmp_cols[1].markdown(f'<span style="color:#FF9800">**Forward Test**</span>', unsafe_allow_html=True)
+                _cmp_cols[2].markdown(f'<span style="color:#4CAF50">**Live**</span>', unsafe_allow_html=True)
+
+                def _delta_str(fwd_val, live_val, fmt=".1f", pct=False):
+                    diff = live_val - fwd_val
+                    sym = "\u25b2" if diff > 0 else "\u25bc" if diff < 0 else "="
+                    color = "#4CAF50" if diff >= 0 else "#f44336"
+                    suffix = "%" if pct else ""
+                    return f'<span style="color:{color}">{sym} {diff:+{fmt}}{suffix}</span>'
+
+                _rows = [
+                    ("Total Trades", f"{_ft_total}", f"{_live_total}", ""),
+                    ("Win Rate", f"{_ft_wr:.1f}%", f"{_live_wr:.1f}%", _delta_str(_ft_wr, _live_wr, ".1f", True)),
+                    ("Profit Factor", f"{_ft_pf:.2f}" if _ft_pf != float('inf') else "\u221e", f"{_live_pf:.2f}" if _live_pf != float('inf') else "\u221e", _delta_str(_ft_pf, _live_pf, ".2f") if _ft_pf != float('inf') and _live_pf != float('inf') else ""),
+                    ("Avg R", f"{_ft_avg_r:+.3f}", f"{_live_avg_r:+.3f}", _delta_str(_ft_avg_r, _live_avg_r, ".3f")),
+                    ("Total R", f"{_ft_total_r:+.2f}", f"{_live_total_r:+.2f}", _delta_str(_ft_total_r, _live_total_r, ".2f")),
+                    ("Avg Slippage", "\u2014", f"{_avg_slippage:+.3f}R", ""),
+                    ("Missed Alerts", "\u2014", f"{_missed}", ""),
+                    ("Phantom Alerts", "\u2014", f"{_phantom}", ""),
+                ]
+                for label, fwd_v, live_v, delta in _rows:
+                    _r = st.columns([1.2, 1, 1, 0.8])
+                    _r[0].markdown(f"**{label}**")
+                    _r[1].markdown(fwd_v)
+                    _r[2].markdown(live_v)
+                    if delta:
+                        _r[3].markdown(delta, unsafe_allow_html=True)
+
+                # Discrepancy table
+                if _discs:
+                    st.markdown("---")
+                    st.markdown(f"**Discrepancies** ({len(_discs)})")
+                    _disc_data = []
+                    for d in _discs:
+                        if d.get('type') == 'missed_alert':
+                            _disc_data.append({
+                                "Type": "Missed Alert",
+                                "Time": d.get('trade_entry_time', ''),
+                                "Detail": f"Trade #{d.get('trade_index', '?')} — no matching alert fired",
+                            })
+                        elif d.get('type') == 'phantom_alert':
+                            _disc_data.append({
+                                "Type": "Phantom Alert",
+                                "Time": d.get('alert_timestamp', ''),
+                                "Detail": f"Alert #{d.get('alert_id', '?')} — no matching forward test trade",
+                            })
+                    if _disc_data:
+                        st.dataframe(pd.DataFrame(_disc_data), use_container_width=True, hide_index=True)
 
     with right_col:
         if _is_webhook_origin:
@@ -4778,15 +4886,38 @@ def render_strategy_list():
                 # Name
                 st.markdown(f"#### {strat['name']}")
 
-                # Symbol / Direction / Status / Monitoring
-                if strat.get('forward_test_start'):
-                    ft_start = datetime.fromisoformat(strat['forward_test_start'])
-                    ft_days = (datetime.now() - ft_start).days
-                    status_text = f":green[Fwd ({ft_days}d)]"
+                # Symbol / Direction / Duration segments / Monitoring
+                _caption_parts = [f"{strat['symbol']} {strat['direction']}"]
+                # BT days
+                if strat.get('lookback_start_date') and strat.get('forward_test_start'):
+                    _bt_days = (datetime.fromisoformat(strat['forward_test_start']) - datetime.fromisoformat(strat['lookback_start_date'])).days
+                elif strat.get('lookback_start_date') and strat.get('lookback_end_date'):
+                    _bt_days = (datetime.fromisoformat(strat['lookback_end_date']) - datetime.fromisoformat(strat['lookback_start_date'])).days
                 else:
-                    status_text = ":green[Fwd]"
-                monitor_badge = " | :orange[Monitored]" if sid in _monitored_ids else ""
-                st.caption(f"{strat['symbol']} {strat['direction']} | {status_text}{monitor_badge}")
+                    _bt_days = None
+                if _bt_days is not None:
+                    _caption_parts.append(f'<span style="color:#2196F3">BT {_bt_days}d</span>')
+                # Fwd days
+                if strat.get('forward_test_start'):
+                    _ft_start = datetime.fromisoformat(strat['forward_test_start'])
+                    _ft_days = (datetime.now() - _ft_start).days
+                    _caption_parts.append(f'<span style="color:#FF9800">Fwd {_ft_days}d</span>')
+                # Live days
+                _live_execs = strat.get('live_executions', [])
+                if strat.get('alert_tracking_enabled') and _live_execs:
+                    _live_timestamps = [e.get('alert_timestamp', '') for e in _live_execs if e.get('alert_timestamp')]
+                    if _live_timestamps:
+                        _live_start = datetime.fromisoformat(min(_live_timestamps))
+                        _live_days = (datetime.now() - _live_start).days
+                        _caption_parts.append(f'<span style="color:#4CAF50">Live {_live_days}d</span>')
+                # Monitor badge
+                if sid in _monitored_ids:
+                    _caption_parts.append('<span style="color:#FF9800">Monitored</span>')
+                # Discrepancy badge
+                _discrepancies = strat.get('discrepancies', [])
+                if _discrepancies:
+                    _caption_parts.append(f'<span style="color:#f44336">\u26a0 {len(_discrepancies)}</span>')
+                st.markdown(f"<small>{' | '.join(_caption_parts)}</small>", unsafe_allow_html=True)
 
                 # Mini equity curve (full card width)
                 if not is_legacy and eq_data and len(eq_data.get('exit_times', [])) > 0:
@@ -4944,7 +5075,7 @@ def render_strategy_detail(strategy_id: int):
         st.caption("No confluence conditions")
 
     # Action bar
-    action_cols = st.columns([1, 1, 1, 1, 4])
+    action_cols = st.columns([1, 1, 1, 1, 1.5, 2.5])
     with action_cols[0]:
         if st.button("Edit Strategy", key="detail_edit"):
             initiate_edit(strat)
@@ -4968,6 +5099,16 @@ def render_strategy_detail(strategy_id: int):
         else:
             status = "⚪ Backtest Only"
         st.markdown(f"**{status}**")
+    with action_cols[4]:
+        _at_enabled = strat.get('alert_tracking_enabled', False)
+        _at_new = st.toggle("Track Alerts", value=_at_enabled, key=f"alert_tracking_{strategy_id}")
+        if _at_new != _at_enabled:
+            strat['alert_tracking_enabled'] = _at_new
+            if not _at_new:
+                strat['live_executions'] = []
+                strat['discrepancies'] = []
+            update_strategy(strategy_id, strat)
+            st.rerun()
 
     # Inline delete confirmation
     if st.session_state.confirm_delete_id == strategy_id:
@@ -5867,7 +6008,7 @@ def render_forward_test_view(strat: dict):
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
         render_kpi_comparison(backtest_trades, forward_trades, bt_trading_days, fw_trading_days)
-        render_combined_equity_curve(all_trades, boundary_dt)
+        render_combined_equity_curve(all_trades, boundary_dt, strat=strat)
         render_r_distribution_comparison(backtest_trades, forward_trades)
 
     # --- Tab 2: Equity & KPIs (Extended) ---
@@ -6295,8 +6436,15 @@ def render_backtest_trade_table(trades: pd.DataFrame):
     )
 
 
-def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime, key_suffix: str = ""):
-    """Render a combined equity curve with vertical line at forward test start."""
+def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
+                                 key_suffix: str = "", strat: dict = None):
+    """Render a combined equity curve with vertical line at forward test start.
+
+    Shows three color segments when live data available:
+    - Blue: Backtest
+    - Orange: Forward Test
+    - Green: Live (overlaid on forward test where alert data exists)
+    """
     st.subheader("Equity Curve")
 
     if len(trades_df) == 0:
@@ -6333,7 +6481,7 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
             fillcolor="rgba(33, 150, 243, 0.1)"
         ))
 
-    # Forward portion (green) — connect to last backtest point
+    # Forward portion (orange) — connect to last backtest point
     fw_data = equity_df[fw_mask]
     if len(fw_data) > 0:
         # Include last backtest point for continuity
@@ -6348,10 +6496,55 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
             y=fw_plot["cumulative_r"],
             mode="lines",
             name="Forward Test",
-            line=dict(color="#4CAF50", width=2),
+            line=dict(color="#FF9800", width=2),
             fill="tozeroy",
-            fillcolor="rgba(76, 175, 80, 0.1)"
+            fillcolor="rgba(255, 152, 0, 0.1)"
         ))
+
+    # Live portion (green) — overlaid on forward test where live data exists
+    if strat and strat.get('alert_tracking_enabled') and strat.get('live_executions'):
+        live_execs = strat['live_executions']
+        # Build live equity curve from matched trades with actual alert prices
+        stored = strat.get('stored_trades', [])
+        live_trade_indices = set()
+        slippage_map = {}  # trade_index -> total_slippage_r
+        for ex in live_execs:
+            tidx = ex.get('matched_trade_index')
+            if tidx is not None:
+                live_trade_indices.add(tidx)
+                if tidx not in slippage_map:
+                    slippage_map[tidx] = 0
+                slippage_map[tidx] += ex.get('slippage_r', 0)
+
+        if live_trade_indices and len(stored) > 0:
+            live_records = []
+            cumulative = 0
+            # Start from the backtest cumulative R at boundary
+            if len(bt_data) > 0:
+                cumulative = float(bt_data["cumulative_r"].iloc[-1])
+            for idx in sorted(live_trade_indices):
+                if idx < len(stored):
+                    t = stored[idx]
+                    # Adjust R by slippage
+                    adj_r = t.get('r_multiple', 0) - slippage_map.get(idx, 0)
+                    cumulative += adj_r
+                    try:
+                        live_records.append({
+                            'exit_time': pd.Timestamp(t['exit_time']),
+                            'cumulative_r': cumulative,
+                        })
+                    except (ValueError, KeyError):
+                        pass
+
+            if live_records:
+                live_df = pd.DataFrame(live_records)
+                fig.add_trace(go.Scatter(
+                    x=live_df["exit_time"],
+                    y=live_df["cumulative_r"],
+                    mode="lines",
+                    name="Live",
+                    line=dict(color="#4CAF50", width=2.5),
+                ))
 
     # High water mark
     fig.add_trace(go.Scatter(
