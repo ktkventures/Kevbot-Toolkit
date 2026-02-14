@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.18
+**Version:** 0.19
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
@@ -1137,15 +1137,21 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Lazy-load Extended tabs** — Streamlit's `st.tabs()` executes ALL tab content on every render, even invisible tabs. The Extended tab's 365-day data load blocked all 7 tabs from rendering (~10-20s). Gating it behind a button means the page renders in ~2-5s and users only pay the cost when they actually want extended data.
 - **Data View filter vs. expanded backtest** — The Data View filter (completed) filters existing `stored_trades` by date — instant, no data loading. Expanded backtest (Phase 16, low priority) extends the backtest beyond original settings by running the pipeline for an expanded window — slower but additive. These are distinct use cases: "show me only recent performance" vs. "what if the backtest started earlier?"
 
-### Phase 10D: Non-Optimizable Edits
+### Phase 10D: Non-Optimizable Edits ✓
 *Allow minor strategy edits without resetting the forward test — preserve accumulated forward test data for non-trade-affecting changes.*
 
-- [ ] Classify strategy parameters as optimizable vs. non-optimizable:
-  - **Optimizable** (reset forward test): entry trigger, exit triggers, confluence groups, indicator periods, stop/target methods — changes invalidate forward test data because they alter trade generation
-  - **Non-optimizable** (preserve forward test): strategy name, notes, risk per trade amount, starting balance, cosmetic settings — changes don't affect when/where trades are generated
-- [ ] Edit flow checks parameter category — if only non-optimizable fields changed, skip the forward test reset and preserve `stored_trades`, `forward_test_start`, `kpis`, and `equity_curve_data`
-- [ ] Risk sizing changes trigger KPI/equity curve recomputation from `stored_trades` (same trades, different dollar amounts) without resetting forward test start
-- [ ] UI indication — edit confirmation dialog distinguishes "This edit will reset your forward test" vs. "This edit preserves your forward test data"
+- [x] `OPTIMIZABLE_PARAMS` frozenset — classifies 20 strategy parameters that affect trade generation (triggers, confluence, stops, targets, timeframe, symbol, data window, data_seed); all others are non-optimizable
+- [x] `_has_optimizable_changes()` — compares old vs. new strategy on optimizable params with normalization (sorted string lists, None vs. missing, dict deep compare)
+- [x] `update_strategy()` conditional preservation — if only non-optimizable fields changed, preserves `stored_trades`, `forward_test_start`, `equity_curve_data`, `kpis`, and `data_refreshed_at` from the old strategy
+- [x] KPI-only recomputation — when `risk_per_trade` or `starting_balance` changes without optimizable changes, recomputes KPIs from `stored_trades` with new dollar values (equity curve is R-based, unaffected)
+- [x] Save feedback toasts — `update_strategy()` returns `'preserved'` or `'reset'`; strategy detail page shows appropriate toast message after save
+- [x] Edit confirmation dialogs updated — both strategy list card and detail page dialogs changed from `st.warning` to `st.info` explaining which edits are safe vs. reset-triggering; "Edit Anyway" renamed to "Edit"
+- [x] Editing banner enhancement — shows forward test age (e.g., "forward test: 14d") to remind user of accumulated data
+
+### Design Decisions (Phase 10D — Non-Optimizable Edits)
+- **Parameter classification via constant** — `OPTIMIZABLE_PARAMS` is a frozenset of the 20 parameters that feed into `generate_trades()` or control the data window. This is checked by `_has_optimizable_changes()` at save time. `risk_per_trade` is excluded despite appearing in `generate_trades()` signature because it's never referenced in the function body (confirmed via code analysis) — it only affects `calculate_kpis()` dollar values.
+- **Preservation in update_strategy, not save flow** — The save flow always rebuilds `stored_trades` from the current backtest (which only contains backtest trades, not forward test trades). For non-optimizable edits, `update_strategy()` overwrites the incoming `stored_trades`, `kpis`, and `equity_curve_data` with the old strategy's preserved versions. This keeps the save flow unchanged and centralizes preservation logic.
+- **Return type as feedback channel** — `update_strategy()` returns `'preserved'`, `'reset'`, or `False` instead of just `bool`. Both string values are truthy, so existing `if update_strategy(...)` checks still work. The save flow captures the specific return value to display the appropriate toast.
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*

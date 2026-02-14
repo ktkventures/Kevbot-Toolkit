@@ -166,6 +166,20 @@ ALPACA_DATA_FLOOR = date(2016, 1, 1)
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
 OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
 
+# Strategy parameters that affect trade generation — changing any of these
+# invalidates forward test data and requires a forward test reset.
+# Note: risk_per_trade is in generate_trades() signature but unused in the body;
+# it only affects calculate_kpis() dollar values, so it's excluded here.
+OPTIMIZABLE_PARAMS = frozenset({
+    'symbol', 'direction', 'timeframe',
+    'entry_trigger', 'entry_trigger_confluence_id',
+    'exit_trigger', 'exit_triggers', 'exit_trigger_confluence_ids',
+    'stop_config', 'stop_atr_mult', 'target_config', 'bar_count_exit',
+    'confluence', 'general_confluences',
+    'data_days', 'data_seed',
+    'lookback_mode', 'bar_count', 'lookback_start_date', 'lookback_end_date',
+})
+
 # Strategies storage path (resolve relative to this script, not cwd)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_FILE = os.path.join(_SCRIPT_DIR, "strategies.json")
@@ -1768,32 +1782,92 @@ def get_strategy_by_id(strategy_id: int) -> dict | None:
     return None
 
 
-def update_strategy(strategy_id: int, updated_strategy: dict) -> bool:
+def _normalize_param_value(value):
+    """Normalize a strategy parameter value for comparison."""
+    if value is None:
+        return None
+    if isinstance(value, set):
+        return sorted(value)
+    if isinstance(value, list):
+        if all(isinstance(v, str) for v in value):
+            return sorted(value)
+        return value
+    return value
+
+
+def _has_optimizable_changes(old_strategy: dict, new_strategy: dict) -> bool:
+    """Check if any optimizable parameters differ between old and new strategy."""
+    for param in OPTIMIZABLE_PARAMS:
+        old_val = _normalize_param_value(old_strategy.get(param))
+        new_val = _normalize_param_value(new_strategy.get(param))
+        if old_val != new_val:
+            return True
+    return False
+
+
+def update_strategy(strategy_id: int, updated_strategy: dict):
     """
     Update an existing strategy in strategies.json.
     Preserves original id and created_at. Sets updated_at.
-    Resets forward_test_start if forward testing is enabled.
+
+    If only non-optimizable parameters changed, preserves forward test data
+    (stored_trades, forward_test_start, equity_curve_data, kpis).
+    If optimizable parameters changed, resets forward_test_start to now.
+
+    Returns: 'preserved', 'reset', or False (strategy not found).
     """
     strategies = load_strategies()
 
     for i, strat in enumerate(strategies):
-        if strat.get('id') == strategy_id:
-            updated_strategy['id'] = strategy_id
-            updated_strategy['created_at'] = strat['created_at']
-            updated_strategy['updated_at'] = datetime.now().isoformat()
+        if strat.get('id') != strategy_id:
+            continue
 
-            # Forward testing is always on; reset boundary on edit
-            updated_strategy['forward_testing'] = True
+        updated_strategy['id'] = strategy_id
+        updated_strategy['created_at'] = strat['created_at']
+        updated_strategy['updated_at'] = datetime.now().isoformat()
+        updated_strategy['forward_testing'] = True
+
+        if 'confluence' in updated_strategy and isinstance(updated_strategy['confluence'], set):
+            updated_strategy['confluence'] = list(updated_strategy['confluence'])
+
+        optimizable_changed = _has_optimizable_changes(strat, updated_strategy)
+
+        if optimizable_changed:
+            # Trade-affecting change: reset forward test
             updated_strategy['forward_test_start'] = datetime.now().isoformat()
+            result = 'reset'
+        else:
+            # Non-trade-affecting: preserve forward test data from old strategy
+            updated_strategy['forward_test_start'] = strat.get(
+                'forward_test_start', datetime.now().isoformat())
+            updated_strategy['stored_trades'] = strat.get('stored_trades', [])
+            updated_strategy['equity_curve_data'] = strat.get('equity_curve_data')
+            updated_strategy['data_refreshed_at'] = strat.get('data_refreshed_at')
 
-            if 'confluence' in updated_strategy and isinstance(updated_strategy['confluence'], set):
-                updated_strategy['confluence'] = list(updated_strategy['confluence'])
+            # Check if KPI-only params changed (risk_per_trade, starting_balance)
+            risk_changed = strat.get('risk_per_trade') != updated_strategy.get('risk_per_trade')
+            balance_changed = strat.get('starting_balance') != updated_strategy.get('starting_balance')
 
-            strategies[i] = updated_strategy
+            if (risk_changed or balance_changed) and updated_strategy.get('stored_trades'):
+                # Recompute KPIs with new dollar values, same trades
+                trades_df = _trades_df_from_stored(updated_strategy['stored_trades'])
+                updated_strategy['kpis'] = calculate_kpis(
+                    trades_df,
+                    starting_balance=updated_strategy.get('starting_balance', 10000.0),
+                    risk_per_trade=updated_strategy.get('risk_per_trade', 100.0),
+                )
+                # equity_curve_data is R-based, unchanged by dollar values
+            else:
+                # Pure metadata change: preserve KPIs as-is
+                updated_strategy['kpis'] = strat.get('kpis', {})
 
-            with open(STRATEGIES_FILE, 'w') as f:
-                json.dump(strategies, f, indent=2)
-            return True
+            result = 'preserved'
+
+        strategies[i] = updated_strategy
+
+        with open(STRATEGIES_FILE, 'w') as f:
+            json.dump(strategies, f, indent=2)
+        return result
 
     return False
 
@@ -2356,7 +2430,12 @@ def render_strategy_builder():
         editing_strat = get_strategy_by_id(editing_id)
         if editing_strat:
             _eb1, _eb2 = st.columns([5, 1])
-            _eb1.info(f"Editing: **{editing_strat['name']}**")
+            _ft_start = editing_strat.get('forward_test_start')
+            if _ft_start:
+                _ft_days = (datetime.now() - datetime.fromisoformat(_ft_start)).days
+                _eb1.info(f"Editing: **{editing_strat['name']}** (forward test: {_ft_days}d)")
+            else:
+                _eb1.info(f"Editing: **{editing_strat['name']}**")
             if _eb2.button("Cancel Edit", key="cancel_edit_builder"):
                 st.session_state.editing_strategy_id = None
                 st.session_state.builder_data_loaded = False
@@ -3706,11 +3785,13 @@ def render_strategy_builder():
         }
 
         if editing_id:
-            update_strategy(editing_id, strategy)
+            _update_result = update_strategy(editing_id, strategy)
             saved_id = editing_id
+            st.session_state._save_feedback = _update_result  # 'preserved' or 'reset'
         else:
             save_strategy(strategy)
             saved_id = strategy['id']
+            st.session_state._save_feedback = 'new'
 
         # Invalidate session caches for this strategy
         st.session_state.strategy_trades_cache.pop(saved_id, None)
@@ -4059,10 +4140,14 @@ def render_strategy_list():
 
                 # Inline edit confirmation (forward-tested strategies)
                 if st.session_state.confirm_edit_id == sid:
-                    st.warning("Editing resets forward test. Duplicate to preserve the original.")
+                    st.info(
+                        "Non-trade settings (name, risk sizing, starting balance) "
+                        "can be edited without losing forward test data. Changes to "
+                        "triggers, confluence, stops, or targets will reset the forward test."
+                    )
                     edit_cols = st.columns(3)
                     with edit_cols[0]:
-                        if st.button("Edit Anyway", key=f"confirm_edit_{sid}", type="primary"):
+                        if st.button("Edit", key=f"confirm_edit_{sid}", type="primary"):
                             st.session_state.confirm_edit_id = None
                             load_strategy_into_builder(strat)
                     with edit_cols[1]:
@@ -4083,6 +4168,15 @@ def render_strategy_list():
 
 def render_strategy_detail(strategy_id: int):
     """Render the full detail view for a single strategy."""
+    # One-shot save feedback toast
+    _feedback = st.session_state.pop('_save_feedback', None)
+    if _feedback == 'preserved':
+        st.toast("Strategy updated. Forward test data preserved.")
+    elif _feedback == 'reset':
+        st.toast("Strategy updated. Forward test reset.")
+    elif _feedback == 'new':
+        st.toast("Strategy saved.")
+
     strat = get_strategy_by_id(strategy_id)
     if strat is None:
         st.error("Strategy not found.")
@@ -4171,14 +4265,14 @@ def render_strategy_detail(strategy_id: int):
 
     # Inline edit confirmation (forward-tested strategies)
     if st.session_state.confirm_edit_id == strategy_id:
-        st.warning(
-            "This strategy has forward testing enabled. "
-            "Editing will reset the forward test start date. "
-            "You can also duplicate the strategy to preserve the original."
+        st.info(
+            "Non-trade settings (name, risk sizing, starting balance) "
+            "can be edited without losing forward test data. Changes to "
+            "triggers, confluence, stops, or targets will reset the forward test."
         )
         edit_cols = st.columns([1, 1, 1, 5])
         with edit_cols[0]:
-            if st.button("Edit Anyway", key="detail_confirm_edit", type="primary"):
+            if st.button("Edit", key="detail_confirm_edit", type="primary"):
                 st.session_state.confirm_edit_id = None
                 load_strategy_into_builder(strat)
         with edit_cols[1]:
