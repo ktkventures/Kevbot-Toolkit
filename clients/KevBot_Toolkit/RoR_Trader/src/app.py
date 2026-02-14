@@ -109,6 +109,14 @@ from alerts import (
     update_webhook_template,
     delete_webhook_template,
 )
+from analytics import (
+    compute_rolling_metrics,
+    compute_markov_transitions,
+    compute_streaks,
+    compute_edge_scores,
+    detect_market_regimes,
+    generate_markov_insights,
+)
 from confluence_groups import (
     load_confluence_groups,
     save_confluence_groups,
@@ -919,27 +927,46 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
         "max_r_drawdown": max_r_drawdown,
         "final_balance": final_balance,
         "total_pnl": total_pnl,
+        # Context for secondary KPI calculations (underscore = not displayed)
+        "_risk_per_trade": risk_per_trade,
+        "_starting_balance": starting_balance,
     }
 
 
 def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
-    """Calculate secondary/extended KPIs from trade data (always computed live, not saved)."""
+    """Calculate secondary/extended KPIs from trade data (always computed live, not saved).
+
+    Includes basic trade stats, risk-adjusted ratios, distribution metrics,
+    and drawdown analytics.  Minimum-trade guards return None for metrics
+    that are statistically meaningless with too few trades.
+    """
+    _EMPTY = {
+        "win_count": 0, "loss_count": 0,
+        "best_trade_r": 0, "worst_trade_r": 0,
+        "avg_win_r": 0, "avg_loss_r": 0,
+        "max_consec_wins": 0, "max_consec_losses": 0,
+        "payoff_ratio": 0, "recovery_factor": 0,
+        "longest_dd_trades": 0,
+        # Phase 11 — advanced metrics (None = insufficient data)
+        "sharpe_ratio": None, "sortino_ratio": None, "calmar_ratio": None,
+        "kelly_criterion": None, "daily_var_95": None, "cvar_95": None,
+        "gain_pain_ratio": None, "common_sense_ratio": None,
+        "tail_ratio": None, "outlier_win_ratio": None, "outlier_loss_ratio": None,
+        "ulcer_index": None, "serenity_index": None,
+        "skewness": None, "kurtosis": None,
+        "expected_daily": None, "expected_monthly": None, "expected_yearly": None,
+        "volatility": None, "longest_dd_days": None,
+    }
     if len(trades_df) == 0:
-        return {
-            "win_count": 0, "loss_count": 0,
-            "best_trade_r": 0, "worst_trade_r": 0,
-            "avg_win_r": 0, "avg_loss_r": 0,
-            "max_consec_wins": 0, "max_consec_losses": 0,
-            "payoff_ratio": 0, "recovery_factor": 0,
-            "longest_dd_trades": 0,
-        }
+        return _EMPTY
 
     wins_mask = trades_df["win"].values
     r_mult = trades_df["r_multiple"].values
+    n = len(r_mult)
 
     # Win/loss counts
     win_count = int(wins_mask.sum())
-    loss_count = len(wins_mask) - win_count
+    loss_count = n - win_count
 
     # Best/worst trade
     best_trade_r = float(r_mult.max())
@@ -968,11 +995,12 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
 
     # Recovery factor (Total R / abs(Max R DD))
     max_r_dd_abs = abs(kpis.get("max_r_drawdown", 0))
-    recovery_factor = kpis["total_r"] / max_r_dd_abs if max_r_dd_abs > 0 else float('inf')
+    total_r = kpis.get("total_r", 0)
+    recovery_factor = total_r / max_r_dd_abs if max_r_dd_abs > 0 else float('inf')
 
     # Longest drawdown in trades (consecutive trades from peak to recovery)
-    if len(r_mult) >= 2:
-        cumulative = np.cumsum(r_mult)
+    cumulative = np.cumsum(r_mult) if n >= 2 else np.array([0.0])
+    if n >= 2:
         running_max = np.maximum.accumulate(cumulative)
         in_dd = cumulative < running_max
         longest_dd = 0
@@ -986,6 +1014,173 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
     else:
         longest_dd = 0
 
+    # =========================================================================
+    # PHASE 11 — ADVANCED METRICS
+    # =========================================================================
+    risk_per_trade = kpis.get("_risk_per_trade", 100.0)
+    starting_balance = kpis.get("_starting_balance", 10000.0)
+
+    # --- Daily R series (group by exit date) ---
+    daily_r = None
+    if "exit_time" in trades_df.columns and n >= 5:
+        try:
+            daily_r = trades_df.groupby(trades_df["exit_time"].dt.date)["r_multiple"].sum().values
+        except Exception:
+            daily_r = None
+
+    # --- Sharpe Ratio (≥5 trades) ---
+    sharpe_ratio = None
+    if daily_r is not None and len(daily_r) >= 5:
+        dr_mean = np.mean(daily_r)
+        dr_std = np.std(daily_r, ddof=1)
+        if dr_std > 0:
+            sharpe_ratio = round(float(dr_mean / dr_std * np.sqrt(252)), 2)
+
+    # --- Sortino Ratio (≥5 trades) ---
+    sortino_ratio = None
+    if daily_r is not None and len(daily_r) >= 5:
+        dr_mean = np.mean(daily_r)
+        downside = daily_r[daily_r < 0]
+        if len(downside) > 0:
+            downside_std = np.std(downside, ddof=1)
+            if downside_std > 0:
+                sortino_ratio = round(float(dr_mean / downside_std * np.sqrt(252)), 2)
+
+    # --- Calmar Ratio (≥10 trades) ---
+    calmar_ratio = None
+    if n >= 10 and max_r_dd_abs > 0 and daily_r is not None and len(daily_r) >= 5:
+        trading_years = len(daily_r) / 252
+        if trading_years > 0:
+            annualized_return = (total_r * risk_per_trade / starting_balance) / trading_years
+            max_dd_pct = max_r_dd_abs * risk_per_trade / starting_balance
+            if max_dd_pct > 0:
+                calmar_ratio = round(float(annualized_return / max_dd_pct), 2)
+
+    # --- Kelly Criterion (≥5 trades) ---
+    kelly_criterion = None
+    if n >= 5 and win_count > 0 and loss_count > 0:
+        win_rate_frac = win_count / n
+        pr = avg_win_r / abs_avg_loss if abs_avg_loss > 0 else 0
+        if pr > 0:
+            kelly = win_rate_frac - (1 - win_rate_frac) / pr
+            kelly_criterion = round(float(max(0.0, min(1.0, kelly))), 3)
+
+    # --- Daily VaR 95% (≥10 trades) ---
+    daily_var_95 = None
+    if daily_r is not None and len(daily_r) >= 10:
+        var_r = float(np.percentile(daily_r, 5))
+        daily_var_95 = round(var_r * risk_per_trade, 2)
+
+    # --- CVaR / Expected Shortfall 95% (≥10 trades) ---
+    cvar_95 = None
+    if daily_r is not None and len(daily_r) >= 10:
+        var_threshold = np.percentile(daily_r, 5)
+        tail = daily_r[daily_r <= var_threshold]
+        if len(tail) > 0:
+            cvar_95 = round(float(np.mean(tail) * risk_per_trade), 2)
+
+    # --- Gain/Pain Ratio ---
+    gross_profit = float(r_mult[r_mult > 0].sum()) if np.any(r_mult > 0) else 0
+    gross_loss_abs = float(abs(r_mult[r_mult < 0].sum())) if np.any(r_mult < 0) else 0
+    gain_pain_ratio = round(gross_profit / gross_loss_abs, 2) if gross_loss_abs > 0 else None
+
+    # --- Common Sense Ratio (≥5 trades) ---
+    common_sense_ratio = None
+    if n >= 5:
+        pf = kpis.get("profit_factor", 0)
+        if pf != float('inf') and pf > 0:
+            common_sense_ratio = round(float(pf * (1 - 1 / n)), 2)
+
+    # --- Tail Ratio (≥10 trades) ---
+    tail_ratio = None
+    if n >= 10:
+        p95 = abs(float(np.percentile(r_mult, 95)))
+        p5 = abs(float(np.percentile(r_mult, 5)))
+        if p5 > 0:
+            tail_ratio = round(p95 / p5, 2)
+
+    # --- Outlier Win Ratio (≥5 trades) ---
+    outlier_win_ratio = None
+    if win_count >= 2 and avg_win_r > 0:
+        max_win = float(r_mult[wins_mask].max())
+        outlier_win_ratio = round(max_win / avg_win_r, 2)
+
+    # --- Outlier Loss Ratio (≥5 trades) ---
+    outlier_loss_ratio = None
+    if loss_count >= 2 and abs_avg_loss > 0:
+        max_loss_abs = float(abs(r_mult[~wins_mask].min()))
+        outlier_loss_ratio = round(max_loss_abs / abs_avg_loss, 2)
+
+    # --- Ulcer Index (≥5 trades) ---
+    ulcer_index = None
+    if n >= 5:
+        dd_series = cumulative - np.maximum.accumulate(cumulative)
+        ulcer_index = round(float(np.sqrt(np.mean(dd_series ** 2))), 3)
+
+    # --- Serenity Index (≥5 trades) ---
+    serenity_index = None
+    if ulcer_index is not None and ulcer_index > 0:
+        serenity_index = round(float(total_r / ulcer_index), 2)
+
+    # --- Skewness (manual, ≥5 trades) ---
+    skewness = None
+    if n >= 5:
+        m = np.mean(r_mult)
+        s = np.std(r_mult, ddof=1)
+        if s > 0:
+            skewness = round(float(np.mean(((r_mult - m) / s) ** 3) * n / max((n - 1) * (n - 2), 1) * n), 2)
+
+    # --- Kurtosis (excess, manual, ≥5 trades) ---
+    kurtosis = None
+    if n >= 5:
+        m = np.mean(r_mult)
+        s = np.std(r_mult, ddof=1)
+        if s > 0:
+            kurt_raw = float(np.mean(((r_mult - m) / s) ** 4))
+            kurtosis = round(kurt_raw - 3.0, 2)  # excess kurtosis
+
+    # --- Expected Daily / Monthly / Yearly (≥5 trades) ---
+    expected_daily = None
+    expected_monthly = None
+    expected_yearly = None
+    if daily_r is not None and len(daily_r) >= 5:
+        ed = float(np.mean(daily_r) * risk_per_trade)
+        expected_daily = round(ed, 2)
+        expected_monthly = round(ed * 21, 2)
+        expected_yearly = round(ed * 252, 2)
+
+    # --- Volatility (annualized %, ≥5 trades) ---
+    volatility = None
+    if daily_r is not None and len(daily_r) >= 5:
+        vol = float(np.std(daily_r, ddof=1) * np.sqrt(252) * 100)
+        volatility = round(vol, 1)
+
+    # --- Longest Drawdown Days (≥5 trades) ---
+    longest_dd_days = None
+    if n >= 5 and "exit_time" in trades_df.columns:
+        try:
+            _exit_times = pd.to_datetime(trades_df["exit_time"])
+            _cum = trades_df["r_multiple"].cumsum().values
+            _rm = np.maximum.accumulate(_cum)
+            _in_dd = _cum < _rm
+            _max_dd_dur = 0
+            _dd_start = None
+            for idx_i in range(len(_in_dd)):
+                if _in_dd[idx_i]:
+                    if _dd_start is None:
+                        _dd_start = _exit_times.iloc[idx_i]
+                else:
+                    if _dd_start is not None:
+                        dur = (_exit_times.iloc[idx_i] - _dd_start).days
+                        _max_dd_dur = max(_max_dd_dur, dur)
+                        _dd_start = None
+            if _dd_start is not None:
+                dur = (_exit_times.iloc[-1] - _dd_start).days
+                _max_dd_dur = max(_max_dd_dur, dur)
+            longest_dd_days = _max_dd_dur
+        except Exception:
+            longest_dd_days = None
+
     return {
         "win_count": win_count,
         "loss_count": loss_count,
@@ -998,6 +1193,27 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
         "payoff_ratio": round(payoff_ratio, 2) if payoff_ratio != float('inf') else float('inf'),
         "recovery_factor": round(recovery_factor, 1) if recovery_factor != float('inf') else float('inf'),
         "longest_dd_trades": longest_dd,
+        # Phase 11 — advanced metrics
+        "sharpe_ratio": sharpe_ratio,
+        "sortino_ratio": sortino_ratio,
+        "calmar_ratio": calmar_ratio,
+        "kelly_criterion": kelly_criterion,
+        "daily_var_95": daily_var_95,
+        "cvar_95": cvar_95,
+        "gain_pain_ratio": gain_pain_ratio,
+        "common_sense_ratio": common_sense_ratio,
+        "tail_ratio": tail_ratio,
+        "outlier_win_ratio": outlier_win_ratio,
+        "outlier_loss_ratio": outlier_loss_ratio,
+        "ulcer_index": ulcer_index,
+        "serenity_index": serenity_index,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
+        "expected_daily": expected_daily,
+        "expected_monthly": expected_monthly,
+        "expected_yearly": expected_yearly,
+        "volatility": volatility,
+        "longest_dd_days": longest_dd_days,
     }
 
 
@@ -4319,41 +4535,381 @@ def render_strategy_detail(strategy_id: int):
     else:
         render_live_backtest(strat)
 
+    # --- Advanced Analysis (Phase 11) ---
+    _stored = strat.get('stored_trades', [])
+    if _stored and len(_stored) >= 20:
+        render_advanced_analysis(strat, strategy_id)
+
+
+def _fmt_kpi(value, fmt=".2f", prefix="", suffix="", inf_str="∞"):
+    """Format a KPI value, handling None and inf."""
+    if value is None:
+        return "—"
+    if value == float('inf'):
+        return inf_str
+    return f"{prefix}{value:{fmt}}{suffix}"
+
 
 def render_secondary_kpis(trades_df: pd.DataFrame, kpis: dict, key_prefix: str = ""):
-    """Render secondary KPIs in an expander below primary KPIs."""
+    """Render extended KPIs in a tabbed panel below primary KPIs."""
     if len(trades_df) == 0:
         return
 
     sec = calculate_secondary_kpis(trades_df, kpis)
 
-    with st.expander("Extended KPIs"):
-        c1, c2, c3, c4 = st.columns(4)
+    with st.expander("Extended KPIs", expanded=False):
+        ktab_perf, ktab_risk, ktab_dist, ktab_dd, ktab_streak = st.tabs([
+            "Performance", "Risk-Adjusted", "Distribution", "Drawdown", "Streaks"
+        ])
 
-        with c1:
-            st.caption("**Trade Distribution**")
-            st.markdown(f"Wins: **{sec['win_count']}** &nbsp;/&nbsp; Losses: **{sec['loss_count']}**")
+        # --- Performance ---
+        with ktab_perf:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Wins", sec['win_count'])
+            c2.metric("Losses", sec['loss_count'])
+            c3.metric("Best Trade", f"{sec['best_trade_r']:+.2f}R")
+            c4.metric("Worst Trade", f"{sec['worst_trade_r']:+.2f}R")
 
-        with c2:
-            st.caption("**Best / Worst**")
-            st.markdown(f"Best Trade: **{sec['best_trade_r']:+.2f}R**")
-            st.markdown(f"Worst Trade: **{sec['worst_trade_r']:+.2f}R**")
-            st.markdown(f"Avg Win: **{sec['avg_win_r']:+.2f}R**")
-            st.markdown(f"Avg Loss: **{sec['avg_loss_r']:+.2f}R**")
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Avg Win", f"{sec['avg_win_r']:+.2f}R")
+            c6.metric("Avg Loss", f"{sec['avg_loss_r']:+.2f}R")
+            c7.metric("Payoff Ratio", _fmt_kpi(sec['payoff_ratio']))
+            c8.metric("Gain/Pain", _fmt_kpi(sec.get('gain_pain_ratio')))
 
-        with c3:
-            st.caption("**Streaks**")
-            st.markdown(f"Max Consec. Wins: **{sec['max_consec_wins']}**")
-            st.markdown(f"Max Consec. Losses: **{sec['max_consec_losses']}**")
-            st.markdown(f"Longest DD: **{sec['longest_dd_trades']} trades**")
+            c9, c10, c11, c12 = st.columns(4)
+            c9.metric("Expected Daily", _fmt_kpi(sec.get('expected_daily'), prefix="$"))
+            c10.metric("Expected Monthly", _fmt_kpi(sec.get('expected_monthly'), prefix="$"))
+            c11.metric("Expected Yearly", _fmt_kpi(sec.get('expected_yearly'), prefix="$"))
+            c12.metric("Common Sense", _fmt_kpi(sec.get('common_sense_ratio')))
 
-        with c4:
-            st.caption("**Risk / Reward**")
-            pr = sec['payoff_ratio']
-            st.markdown(f"Payoff Ratio: **{'∞' if pr == float('inf') else f'{pr:.2f}'}**")
-            rf = sec['recovery_factor']
-            st.markdown(f"Recovery Factor: **{'∞' if rf == float('inf') else f'{rf:.1f}'}**")
-            st.markdown(f"Max R DD: **{kpis.get('max_r_drawdown', 0):+.1f}R**")
+        # --- Risk-Adjusted ---
+        with ktab_risk:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Sharpe Ratio", _fmt_kpi(sec.get('sharpe_ratio')))
+            c2.metric("Sortino Ratio", _fmt_kpi(sec.get('sortino_ratio')))
+            c3.metric("Calmar Ratio", _fmt_kpi(sec.get('calmar_ratio')))
+            kelly = sec.get('kelly_criterion')
+            c4.metric("Kelly Criterion", f"{kelly * 100:.1f}%" if kelly is not None else "—")
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Daily VaR (95%)", _fmt_kpi(sec.get('daily_var_95'), prefix="$"))
+            c6.metric("CVaR (95%)", _fmt_kpi(sec.get('cvar_95'), prefix="$"))
+            c7.metric("Volatility", _fmt_kpi(sec.get('volatility'), suffix="%", fmt=".1f"))
+            c8.metric("R²", f"{kpis.get('r_squared', 0):.2f}")
+
+        # --- Distribution ---
+        with ktab_dist:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Skewness", _fmt_kpi(sec.get('skewness')))
+            c2.metric("Kurtosis", _fmt_kpi(sec.get('kurtosis')))
+            c3.metric("Tail Ratio", _fmt_kpi(sec.get('tail_ratio')))
+            c4.metric("Outlier Win", _fmt_kpi(sec.get('outlier_win_ratio'), suffix="x", fmt=".1f"))
+
+            c5, c6, _, _ = st.columns(4)
+            c5.metric("Outlier Loss", _fmt_kpi(sec.get('outlier_loss_ratio'), suffix="x", fmt=".1f"))
+
+        # --- Drawdown ---
+        with ktab_dd:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Max R DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
+            c2.metric("Recovery Factor", _fmt_kpi(sec['recovery_factor'], fmt=".1f"))
+            c3.metric("Ulcer Index", _fmt_kpi(sec.get('ulcer_index'), fmt=".3f"))
+            c4.metric("Serenity Index", _fmt_kpi(sec.get('serenity_index')))
+
+            c5, c6, _, _ = st.columns(4)
+            c5.metric("Longest DD (trades)", sec['longest_dd_trades'])
+            dd_days = sec.get('longest_dd_days')
+            c6.metric("Longest DD (days)", dd_days if dd_days is not None else "—")
+
+        # --- Streaks ---
+        with ktab_streak:
+            c1, c2, c3, _ = st.columns(4)
+            c1.metric("Max Consec. Wins", sec['max_consec_wins'])
+            c2.metric("Max Consec. Losses", sec['max_consec_losses'])
+            c3.metric("Total Trades", kpis.get('total_trades', 0))
+
+
+def render_advanced_analysis(strat: dict, strategy_id: int):
+    """Render Advanced Analysis section: rolling metrics, return distribution, and Markov Motor."""
+    stored = strat.get('stored_trades', [])
+    if not stored or len(stored) < 20:
+        return
+
+    trades_df = _trades_df_from_stored(stored)
+    if len(trades_df) == 0:
+        return
+
+    st.divider()
+    st.subheader("Advanced Analysis")
+
+    aa_tab_rolling, aa_tab_dist, aa_tab_markov = st.tabs([
+        "Rolling Metrics", "Return Distribution", "Markov Motor Analysis"
+    ])
+
+    # =========================================================================
+    # TAB 1: ROLLING PERFORMANCE METRICS
+    # =========================================================================
+    with aa_tab_rolling:
+        _aa_c1, _aa_c2 = st.columns([1, 4])
+        with _aa_c1:
+            aa_window = st.slider("Rolling window", 10, 100, 20,
+                                  key=f"aa_window_{strategy_id}")
+            aa_metric = st.radio("Metric", ["Win Rate", "Profit Factor", "Sharpe"],
+                                 key=f"aa_metric_{strategy_id}", horizontal=True)
+
+        with _aa_c2:
+            if len(trades_df) >= aa_window:
+                rm = compute_rolling_metrics(trades_df, window=aa_window)
+                trade_nums = np.arange(len(trades_df))
+
+                if aa_metric == "Win Rate":
+                    y_vals = rm["rolling_wr"]
+                    y_label = "Win Rate (%)"
+                elif aa_metric == "Profit Factor":
+                    y_vals = rm["rolling_pf"]
+                    y_label = "Profit Factor"
+                else:
+                    y_vals = rm["rolling_sharpe"]
+                    y_label = "Sharpe"
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=trade_nums, y=y_vals, mode="lines",
+                    name=aa_metric, line=dict(color="#4CAF50", width=2),
+                ))
+                fig.update_layout(
+                    height=350,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="Trade Number",
+                    yaxis_title=y_label,
+                )
+                st.plotly_chart(fig, use_container_width=True,
+                                key=f"aa_rolling_{strategy_id}")
+            else:
+                st.info(f"Need at least {aa_window} trades for rolling metrics.")
+
+    # =========================================================================
+    # TAB 2: RETURN DISTRIBUTION
+    # =========================================================================
+    with aa_tab_dist:
+        dist_view = st.radio("View", ["Histogram", "Box Plot", "Violin"],
+                             key=f"aa_dist_view_{strategy_id}", horizontal=True)
+
+        r_mult = trades_df["r_multiple"].values
+
+        if dist_view == "Histogram":
+            colors = ["#4CAF50" if v >= 0 else "#F44336" for v in r_mult]
+            fig = go.Figure(go.Histogram(
+                x=r_mult, nbinsx=30,
+                marker_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title="R-Multiple", yaxis_title="Frequency",
+            )
+        elif dist_view == "Box Plot":
+            fig = go.Figure(go.Box(
+                y=r_mult, name="R-Multiple",
+                marker_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                yaxis_title="R-Multiple",
+            )
+        else:  # Violin
+            fig = go.Figure(go.Violin(
+                y=r_mult, name="R-Multiple",
+                box_visible=True, meanline_visible=True,
+                fillcolor="rgba(33, 150, 243, 0.3)",
+                line_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                yaxis_title="R-Multiple",
+            )
+
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f"aa_dist_{strategy_id}")
+
+        # Stat callouts
+        kpis = strat.get('kpis', {})
+        sec = calculate_secondary_kpis(trades_df, kpis)
+        dc1, dc2, dc3 = st.columns(3)
+        dc1.metric("Skewness", _fmt_kpi(sec.get('skewness')))
+        dc2.metric("Kurtosis", _fmt_kpi(sec.get('kurtosis')))
+        tail_risk = float(np.percentile(r_mult, 5)) if len(r_mult) >= 10 else None
+        dc3.metric("Tail Risk (5th %ile)", _fmt_kpi(tail_risk, fmt=".2f", suffix="R"))
+
+    # =========================================================================
+    # TAB 3: MARKOV MOTOR ANALYSIS
+    # =========================================================================
+    with aa_tab_markov:
+        render_markov_motor_analysis(trades_df, strategy_id)
+
+
+def render_markov_motor_analysis(trades_df: pd.DataFrame, strategy_id: int):
+    """Render the full Markov Motor Analysis section."""
+    n = len(trades_df)
+
+    # --- Analysis Controls ---
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    with ctrl1:
+        mm_window = st.slider("Rolling Window Size", 10, 100, 20,
+                               key=f"mm_window_{strategy_id}")
+    with ctrl2:
+        mm_threshold = st.slider("Edge Decay Threshold (PF)", 0.8, 2.5, 1.2, 0.1,
+                                  key=f"mm_threshold_{strategy_id}")
+    with ctrl3:
+        mm_confidence = st.selectbox("Confidence Level", ["90%", "95%", "99%"],
+                                      index=1, key=f"mm_confidence_{strategy_id}")
+
+    if n < mm_window:
+        st.info(f"Need at least {mm_window} trades for Markov analysis (currently {n}).")
+        return
+
+    # --- Compute all Markov metrics ---
+    probs, counts = compute_markov_transitions(trades_df)
+    streaks = compute_streaks(trades_df)
+    edge_scores = compute_edge_scores(trades_df, window=mm_window, edge_threshold=mm_threshold)
+    regime_info = detect_market_regimes(trades_df, window=mm_window)
+    insights = generate_markov_insights(probs, edge_scores, regime_info)
+    rm = compute_rolling_metrics(trades_df, window=mm_window)
+
+    # --- Rolling PF + Transition Probabilities side by side ---
+    mm_left, mm_right = st.columns(2)
+
+    with mm_left:
+        st.markdown("**Rolling Performance**")
+        trade_nums = np.arange(n)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=trade_nums, y=rm["rolling_wr"], mode="lines",
+            name="Win Rate", line=dict(color="#4CAF50", width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=trade_nums, y=rm["rolling_pf"], mode="lines",
+            name="Profit Factor", line=dict(color="#2196F3", width=2),
+            yaxis="y2",
+        ))
+        fig.update_layout(
+            height=300,
+            margin=dict(l=0, r=40, t=10, b=0),
+            xaxis_title="Trade Number",
+            yaxis=dict(title="Win Rate (%)", side="left"),
+            yaxis2=dict(title="Profit Factor", side="right", overlaying="y"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"mm_rolling_{strategy_id}")
+
+    with mm_right:
+        st.markdown("**Markov State Transitions**")
+        # Transition probability table
+        st.markdown(
+            f"| From \\ To | **Win** | **Loss** |\n"
+            f"|-----------|---------|----------|\n"
+            f"| **Win**   | {probs['W_to_W']*100:.1f}% | {probs['W_to_L']*100:.1f}% |\n"
+            f"| **Loss**  | {probs['L_to_W']*100:.1f}% | {probs['L_to_L']*100:.1f}% |"
+        )
+
+        # Streak chart
+        if streaks:
+            fig_streak = go.Figure()
+            streak_colors = ["#4CAF50" if s > 0 else "#F44336" for s in streaks]
+            fig_streak.add_trace(go.Bar(
+                x=list(range(len(streaks))), y=streaks,
+                marker_color=streak_colors, name="Streaks",
+            ))
+            fig_streak.update_layout(
+                height=180, margin=dict(l=0, r=0, t=5, b=0),
+                xaxis_title="Streak #", yaxis_title="Length",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_streak, use_container_width=True,
+                            key=f"mm_streaks_{strategy_id}")
+
+    # --- Current Trend & Edge Strength ---
+    trend_c1, trend_c2 = st.columns(2)
+    with trend_c1:
+        trend = edge_scores.get("trend_strength")
+        if trend is not None:
+            if trend > 60:
+                st.success(f"**Current Trend:** Improving ({trend:.0f}/100)")
+            elif trend > 40:
+                st.info(f"**Current Trend:** Stable ({trend:.0f}/100)")
+            else:
+                st.warning(f"**Current Trend:** Declining ({trend:.0f}/100)")
+
+    with trend_c2:
+        status = edge_scores.get("edge_status")
+        cpf = edge_scores.get("current_pf")
+        if status and cpf is not None:
+            status_map = {
+                "strong": ("success", "Strong"),
+                "moderate": ("info", "Moderate"),
+                "critical": ("warning", "Critical"),
+                "lost": ("error", "Lost"),
+            }
+            method, label = status_map.get(status, ("info", status))
+            getattr(st, method)(f"**Edge Strength:** {label} (PF {cpf:.2f})")
+
+    # --- Edge Decay Chart ---
+    st.markdown("**Edge Decay Analysis**")
+    rolling_pf = rm["rolling_pf"]
+    fig_decay = go.Figure()
+    fig_decay.add_trace(go.Scatter(
+        x=np.arange(n), y=rolling_pf, mode="lines",
+        name="Rolling PF", line=dict(color="#2196F3", width=2),
+    ))
+    fig_decay.add_hline(y=mm_threshold, line_dash="dash", line_color="red",
+                        annotation_text=f"Threshold ({mm_threshold})")
+    fig_decay.update_layout(
+        height=250, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="Trade Number", yaxis_title="Profit Factor",
+    )
+    st.plotly_chart(fig_decay, use_container_width=True, key=f"mm_decay_{strategy_id}")
+
+    # Scores
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("Consistency Score", f"{edge_scores.get('consistency', 0):.0f}/100")
+    sc2.metric("Stability Index", f"{edge_scores.get('stability', 0):.0f}/100")
+    sc3.metric("Trend Strength", f"{edge_scores.get('trend_strength', 0):.0f}/100")
+
+    # --- Market Regime Detection ---
+    st.markdown("**Market Regime Detection**")
+    regimes = regime_info["regimes"]
+    r_mult = trades_df["r_multiple"].values
+    regime_colors = {"favorable": "#4CAF50", "unfavorable": "#F44336", "neutral": "#9E9E9E"}
+
+    fig_regime = go.Figure()
+    for regime_type in ["favorable", "unfavorable", "neutral"]:
+        mask = [r == regime_type for r in regimes]
+        if any(mask):
+            idx = [i for i, m in enumerate(mask) if m]
+            fig_regime.add_trace(go.Scatter(
+                x=idx, y=r_mult[mask],
+                mode="markers", name=regime_type.capitalize(),
+                marker=dict(color=regime_colors[regime_type], size=5),
+            ))
+    fig_regime.update_layout(
+        height=250, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="Trade Number", yaxis_title="R-Multiple",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_regime, use_container_width=True, key=f"mm_regime_{strategy_id}")
+
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric("Favorable Regime %", f"{regime_info.get('favorable_pct', 0):.0f}%")
+    rc2.metric("Avg Regime Duration", f"~{regime_info.get('avg_regime_duration', 0):.0f} trades")
+    rc3.metric("Current Regime Age", f"{regime_info.get('current_regime_age', 0)} trades")
+
+    # --- Markov Intelligence Insights ---
+    if insights:
+        st.markdown("**Markov Intelligence Insights**")
+        for insight in insights:
+            st.info(insight)
 
 
 def render_saved_kpis(strat: dict):
@@ -5129,12 +5685,40 @@ def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.Data
         )
 
 
+def _add_edge_check_traces(fig, x_values, cumulative_r):
+    """Add Edge Check overlay (21-MA + Bollinger Bands) to an equity curve figure."""
+    cum_series = pd.Series(cumulative_r)
+    ma_21 = cum_series.rolling(window=21, min_periods=1).mean()
+    std_21 = cum_series.rolling(window=21, min_periods=1).std().fillna(0)
+    bb_upper = ma_21 + 2 * std_21
+    bb_lower = ma_21 - 2 * std_21
+
+    fig.add_trace(go.Scatter(
+        x=x_values, y=bb_upper, mode="lines", name="BB Upper",
+        line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash="dot"),
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_values, y=bb_lower, mode="lines", name="BB Lower",
+        line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash="dot"),
+        fill="tonexty", fillcolor="rgba(255, 215, 0, 0.08)",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_values, y=ma_21, mode="lines", name="21-MA",
+        line=dict(color="#808000", width=2),
+    ))
+
+
 def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
     """Render equity curve for backtest-only view (no forward test boundary)."""
     st.subheader("Equity Curve")
     if len(trades) == 0:
         st.info("No trades to display.")
         return
+
+    edge_check = st.checkbox("Edge Check", key=f"edge_bt_{key_suffix}", value=False,
+                             help="Overlay 21-MA & Bollinger Bands on equity curve")
 
     equity_df = trades[["exit_time", "r_multiple"]].sort_values("exit_time")
     equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
@@ -5156,6 +5740,10 @@ def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
         name="High Water Mark",
         line=dict(color="green", width=1, dash="dot")
     ))
+
+    if edge_check and len(equity_df) >= 5:
+        _add_edge_check_traces(fig, equity_df["exit_time"], equity_df["cumulative_r"].values)
+
     fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
     fig.update_layout(
         height=400,
@@ -5165,6 +5753,10 @@ def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     st.plotly_chart(fig, use_container_width=True, key=f"bt_equity_{key_suffix}" if key_suffix else None)
+
+    if edge_check:
+        st.caption("When the equity curve drops below the lower Bollinger Band, "
+                   "performance is statistically unusual — the strategy's edge may be degrading.")
 
 
 def render_backtest_r_distribution(trades: pd.DataFrame, key_suffix: str = ""):
@@ -5222,6 +5814,9 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
         st.info("No trades to display.")
         return
 
+    edge_check = st.checkbox("Edge Check", key=f"edge_combined_{key_suffix}", value=False,
+                             help="Overlay 21-MA & Bollinger Bands on equity curve")
+
     equity_df = trades_df[["exit_time", "r_multiple"]].sort_values("exit_time").reset_index(drop=True)
     equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
 
@@ -5278,6 +5873,10 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
         line=dict(color="green", width=1, dash="dot")
     ))
 
+    # Edge Check overlay
+    if edge_check and len(equity_df) >= 5:
+        _add_edge_check_traces(fig, equity_df["exit_time"], equity_df["cumulative_r"].values)
+
     # Vertical line at forward test start
     # Use shape + annotation instead of add_vline to avoid Plotly datetime arithmetic bug
     fig.add_shape(
@@ -5299,6 +5898,10 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     st.plotly_chart(fig, use_container_width=True, key=f"combined_eq_{key_suffix}" if key_suffix else None)
+
+    if edge_check:
+        st.caption("When the equity curve drops below the lower Bollinger Band, "
+                   "performance is statistically unusual — the strategy's edge may be degrading.")
 
 
 def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame, key_suffix: str = ""):
