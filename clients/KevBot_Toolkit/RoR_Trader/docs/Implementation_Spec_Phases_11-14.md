@@ -1,6 +1,6 @@
 # RoR Trader — Implementation Spec: Phases 11–14
 
-**Version:** 0.1 (First Draft)
+**Version:** 0.2
 **Date:** February 13, 2026
 **Purpose:** Detailed, autonomous-implementation-ready spec for Phases 11–14. Designed for a "Ralph Wiggum" loop — each phase can be implemented without user validation between steps.
 
@@ -100,7 +100,7 @@
 ### Style Rules
 - **No new files** unless structurally necessary (new module > 200 lines).
 - **Streamlit patterns:** Use `st.tabs()` for sub-views, `st.columns()` for layouts, `st.metric()` for KPI cards, `st.plotly_chart()` for charts.
-- **Chart library:** Plotly (`go.Figure`, `go.Scatter`, `go.Bar`, `go.Histogram`). Mini equity curves use `render_mini_equity_curve()`.
+- **Chart library:** Two libraries in use. **Plotly** (`go.Figure`, `go.Scatter`, `go.Bar`, `go.Histogram`) for equity curves, KPI charts, analytics, and distribution plots. **TradingView Lightweight Charts** (via `streamlit-lightweight-charts`) for candlestick price charts with indicator overlays and synced oscillator panes. For Phases 11–14, all new charts are Plotly (no new candlestick/price charts). Mini equity curves use `render_mini_equity_curve()`.
 - **Persistence:** JSON files in `config/`. Use existing `load_strategies()`/`save_strategies()` pattern.
 - **KPI display:** `_display_kpi_card(label, value, fmt)` helper for consistent formatting.
 - **Testing:** Run `cd src && python -c "import app"` as syntax check after major changes.
@@ -612,6 +612,8 @@ timestamp,signal,price
 
 **Goal:** Add a third confidence tier — live/triggered — that captures actual alert executions and compares them to forward test trades. Visualize all three tiers (backtest, forward test, live) on the equity curve with distinct colors.
 
+**Critical design principle:** Enabling live alert tracking does **NOT** turn off or replace the forward test. Both run in parallel on the same trades and time period. The difference between backtest and forward test is the date range (historical vs. real-time). The difference between forward test and live is **apples-to-apples comparison on the exact same trades** — same days, same signals — but live captures actual alert execution prices, timing, and missed signals. Live data is still a form of testing with additional analysis layered on top (slippage measurement, delivery reliability, etc.). The forward test curve always shows theoretical bar-close prices; the live curve shows what actually happened when alerts fired.
+
 **Prerequisite:** Phase 11 (expanded KPIs) is helpful but not blocking. Phase 12 is not required.
 
 ### 13.1 Alert Execution Records
@@ -745,35 +747,40 @@ def match_alerts_to_trades(strategy: dict, alerts: list) -> dict:
 | Live/Triggered | `#4CAF50` (green) | Alert-matched executions |
 
 **Implementation approach:**
+
+The equity curve shows three segments sequentially (backtest → forward test), but in the forward test period where live data exists, **both** the forward test and live lines are rendered so the user can see divergence:
+
 ```python
 # Split equity curve data into segments
 boundary_idx = equity_data.get('boundary_index')  # BT→FT boundary (exists)
 live_start_idx = None  # First trade with a matched live execution
 
-# For live segment: use alert trigger prices instead of theoretical bar prices
-# This means the live equity curve may diverge from the forward test curve
-
-# Build three traces:
+# Backtest segment: blue, up to forward test boundary
 fig.add_trace(go.Scatter(  # Backtest segment
     x=trade_numbers[:boundary_idx],
     y=cumulative_r[:boundary_idx],
     line=dict(color="#2196F3"), fill="tozeroy", name="Backtest"
 ))
+
+# Forward test segment: orange, runs for the FULL forward test period
+# (does NOT stop when live starts — both lines coexist)
 fig.add_trace(go.Scatter(  # Forward test segment
-    x=trade_numbers[boundary_idx:live_start_idx],
-    y=cumulative_r[boundary_idx:live_start_idx],
+    x=trade_numbers[boundary_idx:],
+    y=cumulative_r[boundary_idx:],
     line=dict(color="#FF9800"), fill="tozeroy", name="Forward Test"
 ))
-fig.add_trace(go.Scatter(  # Live segment
-    x=trade_numbers[live_start_idx:],
-    y=live_cumulative_r[live_start_idx:],
-    line=dict(color="#4CAF50"), fill="tozeroy", name="Live"
-))
+
+# Live segment: green, overlaid on top of forward test where live data exists
+# Uses actual alert execution prices — may diverge from forward test
+if live_start_idx is not None:
+    fig.add_trace(go.Scatter(  # Live segment (overlaid)
+        x=trade_numbers[live_start_idx:],
+        y=live_cumulative_r[live_start_idx:],
+        line=dict(color="#4CAF50", width=2), name="Live"
+    ))
 ```
 
-**Live equity curve divergence:** The live segment uses `alert_price` instead of theoretical `close` price. This means:
-- The R-multiples may differ (slippage).
-- The live cumulative R starts from the forward test cumulative R at the transition point, then diverges based on actual execution prices.
+**Forward test + live coexistence:** Both lines render for the same trades in the live period. The forward test line shows theoretical bar-close R-multiples; the live line shows actual alert-execution R-multiples. The gap between them is the slippage/divergence the user wants to monitor. This is an apples-to-apples comparison on the exact same trades.
 
 ### 13.4 Strategy Card Caption Enhancement
 
@@ -871,7 +878,15 @@ Delta column with ▲/▼ indicators showing where live outperforms or underperf
 
 **Goal:** Bridge the gap between backtesting and real-world trading with account management, balance tracking, and real-time intra-bar alert capabilities.
 
-**Prerequisite:** Phase 13 (alert tracking) should be complete for full value, but Phase 14 can be partially implemented independently.
+**Prerequisite:** Phase 13 (alert tracking) should be complete for full value, but Phase 14A can be implemented independently.
+
+**Split rationale:** Phase 14 is divided into **14A** (account management — no external dependencies) and **14B** (real-time intra-bar engine — requires paid Alpaca SIP subscription at $99/mo). 14A can be completed immediately. 14B should pause at the "ready to connect" point and prompt the user to upgrade their Alpaca account before proceeding with WebSocket integration.
+
+### Phase 14A: Account Management (no Alpaca upgrade needed)
+Sections: 14.1–14.6
+
+### Phase 14B: Real-Time Intra-Bar Engine (requires Alpaca SIP subscription)
+Sections: 14.7–14.8. **Stop point:** After scaffolding the engine and Connections UI, prompt the user to confirm Alpaca SIP access before wiring live WebSocket streams.
 
 ### 14.1 Account Management Tab
 
@@ -1137,15 +1152,20 @@ class RealtimeAlertEngine:
 
 ### 14.9 Implementation Order
 
+**Phase 14A (no Alpaca upgrade needed):**
 1. **Add `account` schema to portfolio dict** — ledger, notes, balance helpers.
 2. **Build Account Management tab** — balance display, ledger table, deposit/withdrawal forms.
 3. **Add Trading Notes** — text area with save/render.
 4. **Add Balance History Chart** — Plotly area chart from ledger.
 5. **Wire trading P&L integration** — auto-generate ledger entries from live executions (depends on Phase 13).
-6. **Create `src/realtime_engine.py`** — WebSocket streamer, partial bar builder, intra-bar trigger checker.
-7. **Add Connections subsection to Settings** — Alpaca config, data feed selection, engine toggle.
-8. **Integrate real-time engine with alert monitor** — start/stop engine based on active [I]-trigger strategies.
-9. **Syntax check.**
+6. **Syntax check + commit.**
+
+**Phase 14B (requires Alpaca SIP subscription — $99/mo):**
+7. **Add Connections subsection to Settings** — Alpaca config, data feed selection, real-time engine toggle. This can be scaffolded without a live SIP connection.
+8. **Create `src/realtime_engine.py`** — WebSocket streamer, partial bar builder, intra-bar trigger checker.
+9. **STOP POINT:** Prompt user to confirm Alpaca SIP subscription is active before testing live WebSocket streams.
+10. **Integrate real-time engine with alert monitor** — start/stop engine based on active [I]-trigger strategies.
+11. **Syntax check.**
 
 ---
 
@@ -1170,12 +1190,12 @@ Phase 12 (Webhook Inbound)
     (no hard downstream dependency)
 ```
 
-**Recommended execution order:** 11 → 12 → 13 → 14
+**Recommended execution order:** 11 → 12 → 13 → 14A → 14B
 
 **Parallel opportunities:**
 - Phase 11 and Phase 12 are independent — can be done in either order.
-- Phase 14.1-14.5 (Account Management) is independent of Phase 13.
-- Phase 14.6-14.8 (Real-Time Engine) depends on alert infrastructure but not specifically on Phase 13.
+- Phase 14A (Account Management) is independent of Phase 13.
+- Phase 14B (Real-Time Engine) depends on alert infrastructure and requires user to upgrade Alpaca subscription before live testing.
 
 ---
 
@@ -1214,12 +1234,17 @@ Phase 12 (Webhook Inbound)
 - [ ] "Live vs. Forward" comparison tab shows side-by-side KPIs
 - [ ] Matching runs on each data refresh when tracking enabled
 
-### Phase 14
+### Phase 14A
 - [ ] Account Management tab appears on portfolio detail
 - [ ] Deposit and withdrawal forms work, append to ledger
 - [ ] Balance computed correctly from ledger sum
 - [ ] Balance history chart renders
 - [ ] Trading notes save and render markdown
+- [ ] Trading P&L auto-generates ledger entries from live executions
+
+### Phase 14B (requires Alpaca SIP subscription)
+- [ ] Connections section in Settings shows Alpaca status and data feed selection
+- [ ] Real-time engine scaffolded (`src/realtime_engine.py` created)
+- [ ] User prompted to confirm Alpaca SIP access at stop point
 - [ ] Real-time engine connects to Alpaca WebSocket (when configured)
 - [ ] Intra-bar triggers fire on tick data
-- [ ] Connections section in Settings shows Alpaca status
