@@ -212,6 +212,8 @@ SETTINGS_DEFAULTS = {
     "default_stop_config": {"method": "atr", "atr_mult": 1.5},
     "default_target_config": None,
     "global_data_seed": 42,
+    "data_feed": "iex",
+    "realtime_engine_enabled": False,
 }
 
 
@@ -8979,6 +8981,45 @@ def render_settings():
             help="Default random seed for mock data generation. Change for different random price patterns.",
         )
         st.session_state['global_data_seed'] = data_seed
+
+    # --- Connections ---
+    st.divider()
+    st.subheader("Connections")
+
+    conn_col1, conn_col2 = st.columns(2)
+    with conn_col1:
+        st.markdown("**Alpaca API**")
+        _alpaca_status = "Connected" if is_alpaca_configured() else "Not Configured"
+        _status_color = "#4CAF50" if is_alpaca_configured() else "#9E9E9E"
+        st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_status}</span>', unsafe_allow_html=True)
+
+        if is_alpaca_configured():
+            from data_loader import ALPACA_API_KEY
+            _masked = ALPACA_API_KEY[:4] + "..." + ALPACA_API_KEY[-4:] if ALPACA_API_KEY and len(ALPACA_API_KEY) > 8 else "****"
+            st.text_input("API Key", value=_masked, disabled=True, key="conn_api_key")
+        else:
+            st.caption("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables to connect.")
+
+    with conn_col2:
+        st.markdown("**Data Feed**")
+        _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
+        _feed_keys = ["iex", "sip"]
+        _saved_feed = st.session_state.get('data_feed', 'iex')
+        _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
+        _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
+                             help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
+        st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
+
+        if st.session_state['data_feed'] == 'sip':
+            _rt_enabled = st.toggle("Real-Time Engine", value=st.session_state.get('realtime_engine_enabled', False),
+                                    key="settings_rt_engine",
+                                    help="Enable WebSocket streaming for intra-bar [I] triggers")
+            st.session_state['realtime_engine_enabled'] = _rt_enabled
+            if _rt_enabled:
+                st.caption("Real-time engine will stream live data for active [I]-trigger strategies.")
+        else:
+            st.session_state['realtime_engine_enabled'] = False
+            st.caption("Real-time engine requires SIP data feed.")
 
     # --- Save Settings ---
     st.divider()
