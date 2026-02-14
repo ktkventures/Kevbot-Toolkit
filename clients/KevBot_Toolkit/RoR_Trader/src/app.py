@@ -185,6 +185,7 @@ OPTIMIZABLE_PARAMS = frozenset({
     'stop_config', 'stop_atr_mult', 'target_config', 'bar_count_exit',
     'confluence', 'general_confluences',
     'data_seed',
+    'webhook_config',  # webhook signal mapping affects trade generation
     # Note: date range params (data_days, lookback_mode, bar_count,
     # lookback_start_date, lookback_end_date) are excluded — they only affect
     # the backtest window, not forward test behavior. Changing them preserves
@@ -437,6 +438,16 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
     """
     forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+
+    # Webhook origin: use stored trades directly (no trigger re-generation)
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        trades = _trades_df_from_stored(strat.get('stored_trades', []))
+        if len(trades) == 0:
+            empty = pd.DataFrame()
+            return pd.DataFrame(), empty, empty, forward_test_start_dt
+        backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+        return pd.DataFrame(), backtest_trades, forward_trades, forward_test_start_dt
+
     data_days = data_days_override if data_days_override is not None else strat.get('data_days', 30)
     data_seed = strat.get('data_seed', 42)
 
@@ -484,6 +495,10 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
     Get trades for any modern strategy (backtest-only or forward-testing).
     Returns all trades as a single DataFrame. For legacy strategies, returns empty.
     """
+    # Webhook origin strategies use stored trades only (no trigger-based generation)
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        return _trades_df_from_stored(strat.get('stored_trades', []))
+
     if 'entry_trigger_confluence_id' not in strat:
         return pd.DataFrame()
 
@@ -587,6 +602,352 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     if trades['entry_time'].dt.tz is not None and since_ts.tz is None:
         since_ts = since_ts.tz_localize('UTC')
     return trades[trades['entry_time'] > since_ts]
+
+
+def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
+    """Process queued inbound webhook signals for a webhook-origin strategy.
+
+    Pairs new inbound signals into trades, applies stop/target logic,
+    and appends resulting trades to existing_stored (mutates in place).
+    """
+    from webhook_server import get_unprocessed_signals, mark_signals_processed
+
+    strategy_id = strat.get('id')
+    wh_config = strat.get('webhook_config', {})
+    unprocessed = get_unprocessed_signals(strategy_id)
+    if not unprocessed:
+        return
+
+    entry_long = wh_config.get('entry_long_value', 'buy').lower()
+    entry_short = wh_config.get('entry_short_value', 'sell').lower()
+    exit_val = wh_config.get('exit_value', 'close').lower()
+    json_path = wh_config.get('signal_json_path', 'action')
+    direction = strat.get('direction', 'LONG').lower()
+
+    # Extract signal values from payloads
+    parsed = []
+    for sig in unprocessed:
+        payload = sig.get('payload', {})
+        # Navigate JSON path (supports simple dot notation)
+        value = payload
+        for key in json_path.split('.'):
+            if isinstance(value, dict):
+                value = value.get(key)
+            else:
+                value = None
+                break
+        if value is None:
+            continue
+
+        value_lower = str(value).strip().lower()
+        ts = sig.get('received_at', datetime.now().isoformat())
+
+        if value_lower == entry_long:
+            parsed.append({'timestamp': ts, 'signal': 'entry_long',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+        elif value_lower == entry_short:
+            parsed.append({'timestamp': ts, 'signal': 'entry_short',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+        elif value_lower == exit_val:
+            parsed.append({'timestamp': ts, 'signal': 'exit',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+
+    if not parsed:
+        mark_signals_processed([s.get('id') for s in unprocessed])
+        return
+
+    # Generate trades from the parsed signals
+    trades_df = _generate_webhook_backtest_trades(
+        parsed, strat['symbol'], strat.get('direction', 'LONG'),
+        strat.get('data_days', 30), strat.get('data_seed', 42),
+        None, None, strat.get('timeframe', '1Min'),
+        strat.get('risk_per_trade', 100.0),
+        strat.get('stop_atr_mult', 1.5),
+        strat.get('stop_config', {'method': 'atr', 'atr_mult': 1.5}),
+        strat.get('target_config'),
+    )
+
+    if len(trades_df) > 0:
+        new_records = _extract_minimal_trades(trades_df)
+        existing_stored.extend(new_records)
+
+    # Mark all signals as processed
+    mark_signals_processed([s.get('id') for s in unprocessed])
+
+
+def _process_webhook_builder_data(
+    config, symbol, direction, data_days, data_seed,
+    start_date, end_date, timeframe,
+    risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+):
+    """Process webhook inbound builder: CSV upload → signal parsing → backtest.
+
+    Returns (df, trades, filtered_trades) or (None, None, None) if no data.
+    """
+    wh_config = config.get('webhook_config', {})
+    signals = wh_config.get('backtest_signals', [])
+
+    # CSV upload section
+    st.subheader("Backtest Signal Data")
+    uploaded = st.file_uploader(
+        "Upload CSV with historical signals",
+        type=["csv"],
+        key="sb_wh_csv_upload",
+        help="CSV with columns: timestamp, signal (or action), and optionally price",
+    )
+
+    if uploaded is not None:
+        try:
+            import io
+            csv_df = pd.read_csv(io.StringIO(uploaded.getvalue().decode('utf-8')))
+            csv_df.columns = [c.strip().lower() for c in csv_df.columns]
+
+            # Auto-detect timestamp column
+            ts_col = None
+            for candidate in ['timestamp', 'time', 'datetime', 'date']:
+                if candidate in csv_df.columns:
+                    ts_col = candidate
+                    break
+            if ts_col is None:
+                st.error("CSV must have a 'timestamp' column.")
+                return None, None, None
+
+            # Auto-detect signal column
+            sig_col = None
+            for candidate in ['signal', 'action', 'side', 'order_action']:
+                if candidate in csv_df.columns:
+                    sig_col = candidate
+                    break
+            if sig_col is None:
+                st.error("CSV must have a 'signal' or 'action' column.")
+                return None, None, None
+
+            # Auto-detect price column
+            price_col = None
+            for candidate in ['price', 'close', 'fill_price']:
+                if candidate in csv_df.columns:
+                    price_col = candidate
+                    break
+
+            csv_df[ts_col] = pd.to_datetime(csv_df[ts_col], utc=True)
+            csv_df = csv_df.sort_values(ts_col).reset_index(drop=True)
+
+            # Map signals
+            entry_long = wh_config.get('entry_long_value', 'buy').lower()
+            entry_short = wh_config.get('entry_short_value', 'sell').lower()
+            exit_val = wh_config.get('exit_value', 'close').lower()
+
+            parsed_signals = []
+            for _, row in csv_df.iterrows():
+                sig = str(row[sig_col]).strip().lower()
+                ts = row[ts_col].isoformat()
+                price = float(row[price_col]) if price_col and pd.notna(row.get(price_col)) else None
+
+                if sig == entry_long:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'entry_long', 'price': price})
+                elif sig == entry_short:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'entry_short', 'price': price})
+                elif sig == exit_val:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'exit', 'price': price})
+
+            # Store parsed signals in config
+            wh_config['backtest_signals'] = parsed_signals
+            st.success(f"Parsed {len(parsed_signals)} signals from CSV ({len(csv_df)} rows)")
+
+            # Preview
+            preview_df = pd.DataFrame(parsed_signals[:20])
+            if len(preview_df) > 0:
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                if len(parsed_signals) > 20:
+                    st.caption(f"Showing 20 of {len(parsed_signals)} signals")
+            signals = parsed_signals
+        except Exception as e:
+            st.error(f"CSV parse error: {e}")
+            return None, None, None
+
+    if not signals:
+        st.info("Upload a CSV file with historical entry/exit signals to backtest, or paste signal data.")
+        # Return an empty but valid result so the builder shows a blank state
+        empty_df = pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
+                                          "entry_price", "exit_price", "stop_price",
+                                          "pnl", "confluence_records"])
+        return pd.DataFrame(), empty_df, empty_df
+
+    # Process signals into trades
+    with st.spinner("Processing webhook signals..."):
+        trades = _generate_webhook_backtest_trades(
+            signals, symbol, direction, data_days, data_seed,
+            start_date, end_date, timeframe,
+            risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+        )
+
+    return pd.DataFrame(), trades, trades
+
+
+def _generate_webhook_backtest_trades(
+    signals, symbol, direction, data_days, data_seed,
+    start_date, end_date, timeframe,
+    risk_per_trade, stop_atr_mult, stop_config, target_config,
+):
+    """Generate trades from webhook backtest signals.
+
+    Pairs entry/exit signals chronologically and applies stop/target logic.
+    Returns a DataFrame matching generate_trades() output format.
+    """
+    # Pair entries with exits
+    pairs = []
+    pending_entry = None
+    dir_lower = direction.lower()
+
+    for sig in signals:
+        sig_type = sig['signal']
+        if pending_entry is None:
+            # Looking for an entry that matches direction
+            if (dir_lower == 'long' and sig_type == 'entry_long') or \
+               (dir_lower == 'short' and sig_type == 'entry_short'):
+                pending_entry = sig
+        else:
+            # Looking for an exit or opposite entry (acts as exit)
+            if sig_type == 'exit':
+                pairs.append((pending_entry, sig))
+                pending_entry = None
+            elif sig_type in ('entry_long', 'entry_short') and sig_type != pending_entry['signal']:
+                # Opposite entry acts as exit
+                pairs.append((pending_entry, sig))
+                pending_entry = None
+
+    if not pairs:
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
+                                      "entry_price", "exit_price", "stop_price",
+                                      "pnl", "confluence_records"])
+
+    # Try to load market data for stop/target evaluation
+    df_market = None
+    try:
+        if pairs:
+            earliest = pd.Timestamp(pairs[0][0]['timestamp'])
+            latest = pd.Timestamp(pairs[-1][1]['timestamp'])
+            _sd = earliest.to_pydatetime() - timedelta(days=5)
+            _ed = latest.to_pydatetime() + timedelta(days=5)
+            df_market = prepare_data_with_indicators(
+                symbol, seed=data_seed,
+                start_date=_sd, end_date=_ed,
+                timeframe=timeframe,
+            )
+            if len(df_market) == 0:
+                df_market = None
+    except Exception:
+        df_market = None
+
+    # Build trade records
+    records = []
+    for entry_sig, exit_sig in pairs:
+        entry_time = pd.Timestamp(entry_sig['timestamp'])
+        exit_time = pd.Timestamp(exit_sig['timestamp'])
+        entry_price = entry_sig.get('price')
+        exit_price = exit_sig.get('price')
+
+        # If prices not in signals, look up from market data
+        if entry_price is None and df_market is not None and len(df_market) > 0:
+            closest = df_market.iloc[(df_market.index - entry_time).abs().argsort()[:1]]
+            if len(closest) > 0:
+                entry_price = float(closest['close'].iloc[0])
+        if exit_price is None and df_market is not None and len(df_market) > 0:
+            closest = df_market.iloc[(df_market.index - exit_time).abs().argsort()[:1]]
+            if len(closest) > 0:
+                exit_price = float(closest['close'].iloc[0])
+
+        if entry_price is None or exit_price is None:
+            continue
+
+        # Compute ATR-based stop if market data available
+        atr_value = None
+        if df_market is not None and len(df_market) > 0:
+            bars_before = df_market[df_market.index <= entry_time]
+            if len(bars_before) >= 14:
+                atr_value = float(bars_before['atr'].iloc[-1]) if 'atr' in bars_before.columns else None
+
+        # Compute stop price
+        stop_method = stop_config.get('method', 'atr') if stop_config else 'atr'
+        if stop_method == 'atr' and atr_value:
+            mult = stop_config.get('atr_mult', stop_atr_mult) if stop_config else stop_atr_mult
+            if dir_lower == 'long':
+                stop_price = entry_price - atr_value * mult
+            else:
+                stop_price = entry_price + atr_value * mult
+        elif stop_method == 'fixed_dollar' and stop_config:
+            dollar = stop_config.get('dollar_amount', 1.0)
+            stop_price = entry_price - dollar if dir_lower == 'long' else entry_price + dollar
+        elif stop_method == 'percentage' and stop_config:
+            pct = stop_config.get('percentage', 0.5) / 100.0
+            stop_price = entry_price * (1 - pct) if dir_lower == 'long' else entry_price * (1 + pct)
+        else:
+            # Fallback: use 1.5 ATR if available, else 1% of price
+            if atr_value:
+                stop_price = entry_price - atr_value * 1.5 if dir_lower == 'long' else entry_price + atr_value * 1.5
+            else:
+                stop_price = entry_price * 0.99 if dir_lower == 'long' else entry_price * 1.01
+
+        risk = abs(entry_price - stop_price)
+        if risk <= 0:
+            risk = entry_price * 0.01
+
+        # Check if stop/target would have been hit using market data bars
+        actual_exit_price = exit_price
+        actual_exit_time = exit_time
+        if df_market is not None and len(df_market) > 0:
+            bars_between = df_market[(df_market.index > entry_time) & (df_market.index <= exit_time)]
+            for idx, bar in bars_between.iterrows():
+                # Check stop hit
+                if dir_lower == 'long' and bar['low'] <= stop_price:
+                    actual_exit_price = stop_price
+                    actual_exit_time = idx
+                    break
+                elif dir_lower == 'short' and bar['high'] >= stop_price:
+                    actual_exit_price = stop_price
+                    actual_exit_time = idx
+                    break
+                # Check target hit
+                if target_config and target_config.get('method') == 'risk_reward':
+                    rr = target_config.get('rr_ratio', 2.0)
+                    if dir_lower == 'long':
+                        target_price = entry_price + risk * rr
+                        if bar['high'] >= target_price:
+                            actual_exit_price = target_price
+                            actual_exit_time = idx
+                            break
+                    else:
+                        target_price = entry_price - risk * rr
+                        if bar['low'] <= target_price:
+                            actual_exit_price = target_price
+                            actual_exit_time = idx
+                            break
+
+        # Compute R-multiple
+        if dir_lower == 'long':
+            pnl = actual_exit_price - entry_price
+        else:
+            pnl = entry_price - actual_exit_price
+        r_multiple = pnl / risk if risk > 0 else 0.0
+
+        records.append({
+            'entry_time': entry_time,
+            'exit_time': actual_exit_time,
+            'entry_price': entry_price,
+            'exit_price': actual_exit_price,
+            'stop_price': stop_price,
+            'r_multiple': round(r_multiple, 4),
+            'win': r_multiple > 0,
+            'pnl': round(pnl * (risk_per_trade / risk) if risk > 0 else 0, 2),
+            'confluence_records': set(),
+        })
+
+    if not records:
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
+                                      "entry_price", "exit_price", "stop_price",
+                                      "pnl", "confluence_records"])
+
+    return pd.DataFrame(records)
 
 
 def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
@@ -2105,24 +2466,29 @@ def refresh_strategy_data(strategy_id: int) -> bool:
     for i, strat in enumerate(strategies):
         if strat.get('id') != strategy_id:
             continue
-        if 'entry_trigger_confluence_id' not in strat:
+        if strat.get('strategy_origin') != 'webhook_inbound' and 'entry_trigger_confluence_id' not in strat:
             return False  # legacy strategy
 
         existing_stored = strat.get('stored_trades')
 
         if existing_stored:
             # --- INCREMENTAL PATH ---
-            # Find the last known trade entry time
-            last_entry_dt = max(
-                pd.Timestamp(t['entry_time']) for t in existing_stored
-            )
+            if strat.get('strategy_origin') == 'webhook_inbound':
+                # Webhook origin: process queued inbound signals
+                _process_inbound_webhook_signals(strat, existing_stored)
+            else:
+                # Standard origin: generate new trades from market data
+                # Find the last known trade entry time
+                last_entry_dt = max(
+                    pd.Timestamp(t['entry_time']) for t in existing_stored
+                )
 
-            # Generate only new trades since last known entry
-            new_trades = _generate_incremental_trades(strat, last_entry_dt)
+                # Generate only new trades since last known entry
+                new_trades = _generate_incremental_trades(strat, last_entry_dt)
 
-            if len(new_trades) > 0:
-                new_records = _extract_minimal_trades(new_trades)
-                existing_stored.extend(new_records)
+                if len(new_trades) > 0:
+                    new_records = _extract_minimal_trades(new_trades)
+                    existing_stored.extend(new_records)
 
             # Recompute KPIs + equity curve from all stored trades
             all_trades_df = _trades_df_from_stored(existing_stored)
@@ -2191,7 +2557,8 @@ def bulk_refresh_all_strategies(progress_callback=None) -> dict:
     'total_processed'.
     """
     strategies = load_strategies()
-    processable = [s for s in strategies if 'entry_trigger_confluence_id' in s]
+    processable = [s for s in strategies
+                    if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
     skipped = len(strategies) - len(processable)
     success = 0
     failed = []
@@ -2670,9 +3037,12 @@ def render_strategy_builder():
         [0.6, 0.8, 0.8, 0.55, 0.7, 1.2, 1.4, 0.45, 0.5])
 
     with r1c0:
+        _origin_options = ["Standard", "Webhook Inbound"]
+        _saved_origin = edit_config.get('strategy_origin', 'standard')
+        _origin_idx = 1 if _saved_origin == 'webhook_inbound' else 0
         strategy_origin = st.selectbox(
-            "Method", ["Standard"], index=0,
-            help="Strategy methodology (more methods coming soon)",
+            "Method", _origin_options, index=_origin_idx,
+            help="Standard: trigger-based entry/exit. Webhook Inbound: signals from external sources (TradingView, LuxAlgo, etc.)",
         )
 
     with r1c1:
@@ -2781,74 +3151,124 @@ def render_strategy_builder():
     else:
         _force_no_target = False
 
+    _is_webhook_origin = strategy_origin.lower().replace(' ', '_') == 'webhook_inbound'
+
     with st.expander("Strategy Config", expanded=False):
         r2c1, r2c2, r2c3, r2c4 = st.columns([1.3, 1.3, 1.3, 1.3])
 
-        # --- Entry Trigger ---
-        with r2c1:
-            if len(entry_triggers) == 0:
-                st.warning("No entry triggers")
-                entry_trigger = None
-                entry_trigger_name = None
-            else:
-                entry_trigger_options = list(entry_triggers.keys())
-                entry_trigger_labels = []
-                for tid in entry_trigger_options:
-                    name = entry_triggers[tid]
-                    tdef = all_trigger_defs.get(tid)
-                    exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
-                    entry_trigger_labels.append(f"{name} [{exec_tag}]")
-                saved_entry = edit_config.get('entry_trigger_confluence_id', '')
-                if saved_entry in entry_trigger_options:
-                    entry_default_idx = entry_trigger_options.index(saved_entry)
-                else:
-                    settings_default = st.session_state.get('default_entry_trigger', '')
-                    if settings_default in entry_trigger_options:
-                        entry_default_idx = entry_trigger_options.index(settings_default)
-                    else:
-                        entry_default_idx = 0
-                if _pending_entry_idx is not None and 0 <= _pending_entry_idx < len(entry_trigger_options):
-                    entry_default_idx = _pending_entry_idx
-                entry_trigger_idx = st.selectbox(
-                    "Entry Trigger",
-                    range(len(entry_trigger_options)),
-                    index=entry_default_idx,
-                    format_func=lambda i: entry_trigger_labels[i],
-                    key="sb_entry_trigger",
-                )
-                entry_trigger = entry_trigger_options[entry_trigger_idx]
-                entry_trigger_name = entry_triggers[entry_trigger]
+        if _is_webhook_origin:
+            # --- Webhook Inbound Config (replaces entry/exit triggers) ---
+            _saved_wh = edit_config.get('webhook_config', {})
 
-        # --- Exit Trigger (primary) ---
-        with r2c2:
-            exit_options = list(exit_trigger_display.keys())
-            exit_labels = list(exit_trigger_display.values())
-            has_exit_triggers = len(exit_options) > 0
+            with r2c1:
+                import uuid as _uuid_mod
+                _wh_secret = _saved_wh.get('secret', f"whsec_{_uuid_mod.uuid4().hex[:12]}")
+                st.text_input("Webhook Secret", value=_wh_secret,
+                              key="sb_wh_secret", disabled=True,
+                              help="Auto-generated secret. Include as X-Webhook-Secret header.")
+                _wh_port = st.session_state.get('webhook_server_port', 8501)
+                st.caption(f"Endpoint: `POST http://localhost:{_wh_port}/webhook/inbound/{{id}}`")
 
-            if not has_exit_triggers:
-                st.warning("No exit triggers")
-            else:
-                saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
-                if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
-                    saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
-                saved_primary = saved_exit_cids[0] if saved_exit_cids else ''
-                if saved_primary in exit_options:
-                    exit_default_idx = exit_options.index(saved_primary)
-                else:
-                    settings_exit_default = st.session_state.get('default_exit_trigger', '')
-                    if settings_exit_default in exit_options:
-                        exit_default_idx = exit_options.index(settings_exit_default)
-                    else:
-                        exit_default_idx = 0
-                primary_exit_idx = st.selectbox(
-                    "Exit Trigger",
-                    range(len(exit_options)),
-                    index=exit_default_idx,
-                    format_func=lambda i, _labels=exit_labels: _labels[i],
-                    key="sb_exit_trigger_0",
+                _wh_json_path = st.text_input(
+                    "Signal JSON Path", value=_saved_wh.get('signal_json_path', 'action'),
+                    key="sb_wh_json_path",
+                    help="JSON key in payload that contains the signal value (e.g., 'action', 'signal', 'order.side')",
                 )
-                primary_exit_cid = exit_options[primary_exit_idx]
-                primary_exit_name = all_trigger_map[primary_exit_cid].name if primary_exit_cid in all_trigger_map else ""
+
+            with r2c2:
+                _wh_entry_long = st.text_input(
+                    "Long Entry Value", value=_saved_wh.get('entry_long_value', 'buy'),
+                    key="sb_wh_entry_long",
+                    help="Payload value that triggers a long entry",
+                )
+                _wh_entry_short = st.text_input(
+                    "Short Entry Value", value=_saved_wh.get('entry_short_value', 'sell'),
+                    key="sb_wh_entry_short",
+                    help="Payload value that triggers a short entry",
+                )
+                _wh_exit_val = st.text_input(
+                    "Exit Value", value=_saved_wh.get('exit_value', 'close'),
+                    key="sb_wh_exit_val",
+                    help="Payload value that triggers an exit",
+                )
+                _wh_layer_conf = st.checkbox(
+                    "Layer confluence on signals",
+                    value=_saved_wh.get('layer_confluence', False),
+                    key="sb_wh_layer_conf",
+                    help="Require confluence conditions to be met at signal time for entry to count",
+                )
+
+            # Set placeholder values for trigger variables (not used for webhook origin)
+            entry_trigger = None
+            entry_trigger_name = None
+            has_exit_triggers = False
+
+        else:
+            # --- Standard: Entry Trigger ---
+            with r2c1:
+                if len(entry_triggers) == 0:
+                    st.warning("No entry triggers")
+                    entry_trigger = None
+                    entry_trigger_name = None
+                else:
+                    entry_trigger_options = list(entry_triggers.keys())
+                    entry_trigger_labels = []
+                    for tid in entry_trigger_options:
+                        name = entry_triggers[tid]
+                        tdef = all_trigger_defs.get(tid)
+                        exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
+                        entry_trigger_labels.append(f"{name} [{exec_tag}]")
+                    saved_entry = edit_config.get('entry_trigger_confluence_id', '')
+                    if saved_entry in entry_trigger_options:
+                        entry_default_idx = entry_trigger_options.index(saved_entry)
+                    else:
+                        settings_default = st.session_state.get('default_entry_trigger', '')
+                        if settings_default in entry_trigger_options:
+                            entry_default_idx = entry_trigger_options.index(settings_default)
+                        else:
+                            entry_default_idx = 0
+                    if _pending_entry_idx is not None and 0 <= _pending_entry_idx < len(entry_trigger_options):
+                        entry_default_idx = _pending_entry_idx
+                    entry_trigger_idx = st.selectbox(
+                        "Entry Trigger",
+                        range(len(entry_trigger_options)),
+                        index=entry_default_idx,
+                        format_func=lambda i: entry_trigger_labels[i],
+                        key="sb_entry_trigger",
+                    )
+                    entry_trigger = entry_trigger_options[entry_trigger_idx]
+                    entry_trigger_name = entry_triggers[entry_trigger]
+
+            # --- Standard: Exit Trigger (primary) ---
+            with r2c2:
+                exit_options = list(exit_trigger_display.keys())
+                exit_labels = list(exit_trigger_display.values())
+                has_exit_triggers = len(exit_options) > 0
+
+                if not has_exit_triggers:
+                    st.warning("No exit triggers")
+                else:
+                    saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+                    if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+                        saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+                    saved_primary = saved_exit_cids[0] if saved_exit_cids else ''
+                    if saved_primary in exit_options:
+                        exit_default_idx = exit_options.index(saved_primary)
+                    else:
+                        settings_exit_default = st.session_state.get('default_exit_trigger', '')
+                        if settings_exit_default in exit_options:
+                            exit_default_idx = exit_options.index(settings_exit_default)
+                        else:
+                            exit_default_idx = 0
+                    primary_exit_idx = st.selectbox(
+                        "Exit Trigger",
+                        range(len(exit_options)),
+                        index=exit_default_idx,
+                        format_func=lambda i, _labels=exit_labels: _labels[i],
+                        key="sb_exit_trigger_0",
+                    )
+                    primary_exit_cid = exit_options[primary_exit_idx]
+                    primary_exit_name = all_trigger_map[primary_exit_cid].name if primary_exit_cid in all_trigger_map else ""
 
         # --- Stop Loss ---
         with r2c3:
@@ -2975,35 +3395,36 @@ def render_strategy_builder():
     if has_exit_triggers:
         exit_trigger_selections.append((primary_exit_cid, primary_exit_name))
 
-    # Initialize additional exits from saved strategy
-    if 'sb_additional_exits' not in st.session_state:
-        saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
-        if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
-            saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
-        st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
+    if not _is_webhook_origin:
+        # Initialize additional exits from saved strategy
+        if 'sb_additional_exits' not in st.session_state:
+            saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+            if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+                saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+            st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
 
-    # Process pending exit operations from drill-down
-    if 'pending_add_exit' in st.session_state:
-        add_cid = st.session_state.pop('pending_add_exit')
-        if add_cid in exit_options and len(st.session_state.sb_additional_exits) < 2:
-            st.session_state.sb_additional_exits.append(add_cid)
-    if 'pending_replace_exits' in st.session_state:
-        replace_cids = st.session_state.pop('pending_replace_exits')
-        valid_cids = [c for c in replace_cids if c in exit_options]
-        if valid_cids:
-            st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
-    if 'pending_remove_exit_idx' in st.session_state:
-        rm_idx = st.session_state.pop('pending_remove_exit_idx')
-        addl = st.session_state.sb_additional_exits
-        adj_idx = rm_idx - 1  # index 0 is primary
-        if 0 <= adj_idx < len(addl):
-            addl.pop(adj_idx)
+        # Process pending exit operations from drill-down
+        if 'pending_add_exit' in st.session_state:
+            add_cid = st.session_state.pop('pending_add_exit')
+            if add_cid in exit_options and len(st.session_state.sb_additional_exits) < 2:
+                st.session_state.sb_additional_exits.append(add_cid)
+        if 'pending_replace_exits' in st.session_state:
+            replace_cids = st.session_state.pop('pending_replace_exits')
+            valid_cids = [c for c in replace_cids if c in exit_options]
+            if valid_cids:
+                st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
+        if 'pending_remove_exit_idx' in st.session_state:
+            rm_idx = st.session_state.pop('pending_remove_exit_idx')
+            addl = st.session_state.sb_additional_exits
+            adj_idx = rm_idx - 1  # index 0 is primary
+            if 0 <= adj_idx < len(addl):
+                addl.pop(adj_idx)
 
-    # Add additional exits to selections
-    for cid in st.session_state.get('sb_additional_exits', []):
-        if cid in exit_options:
-            name = all_trigger_map[cid].name if cid in all_trigger_map else ""
-            exit_trigger_selections.append((cid, name))
+        # Add additional exits to selections
+        for cid in st.session_state.get('sb_additional_exits', []):
+            if cid in exit_options:
+                name = all_trigger_map[cid].name if cid in all_trigger_map else ""
+                exit_trigger_selections.append((cid, name))
 
     # =========================================================================
     # VALIDATION + STATUS LINE
@@ -3016,15 +3437,18 @@ def render_strategy_builder():
         if any(g.get_trigger_id("exit") == cid and g.base_template == "bar_count" for g in enabled_groups)
     )
     has_multiple_bar_count = bar_count_count > 1
-    can_save = (
-        entry_trigger is not None
-        and has_exit_triggers
-        and len(exit_trigger_selections) > 0
-        and not has_duplicate_exits
-        and not entry_in_exits
-        and not has_multiple_bar_count
-        and st.session_state.get('builder_data_loaded', False)
-    )
+    if _is_webhook_origin:
+        can_save = st.session_state.get('builder_data_loaded', False)
+    else:
+        can_save = (
+            entry_trigger is not None
+            and has_exit_triggers
+            and len(exit_trigger_selections) > 0
+            and not has_duplicate_exits
+            and not entry_in_exits
+            and not has_multiple_bar_count
+            and st.session_state.get('builder_data_loaded', False)
+        )
 
     # Fill status line (bar estimate + validation errors)
     est_parts = [f"~{est_bars:,} bars", TIMEFRAME_GUIDANCE.get(timeframe, "")]
@@ -3095,8 +3519,20 @@ def render_strategy_builder():
         'bar_count': bar_count if lookback_mode == "Bars/Candles" else None,
         'lookback_start_date': start_date.isoformat() if start_date else None,
         'lookback_end_date': end_date.isoformat() if end_date else None,
-        'strategy_origin': strategy_origin.lower(),
+        'strategy_origin': strategy_origin.lower().replace(' ', '_'),
     }
+
+    # Add webhook config for webhook inbound origin
+    if _is_webhook_origin:
+        config['webhook_config'] = {
+            'secret': st.session_state.get('sb_wh_secret', _saved_wh.get('secret', '')),
+            'signal_json_path': st.session_state.get('sb_wh_json_path', 'action'),
+            'entry_long_value': st.session_state.get('sb_wh_entry_long', 'buy'),
+            'entry_short_value': st.session_state.get('sb_wh_entry_short', 'sell'),
+            'exit_value': st.session_state.get('sb_wh_exit_val', 'close'),
+            'layer_confluence': st.session_state.get('sb_wh_layer_conf', False),
+            'backtest_signals': edit_config.get('webhook_config', {}).get('backtest_signals', []),
+        }
 
     # Handle Load Data
     if load_clicked:
@@ -3120,47 +3556,61 @@ def render_strategy_builder():
     st.session_state.strategy_config = config
 
     # Header with strategy name
-    entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
-    exit_parts = list(signal_exit_names)
-    if config.get('bar_count_exit'):
-        exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
-    exit_str = " / ".join(exit_parts) if exit_parts else "?"
-    st.markdown(f"### {strategy_name}")
-    st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
+    if _is_webhook_origin:
+        st.markdown(f"### {strategy_name}")
+        st.caption(f"{symbol} | {direction} | Webhook Inbound")
+    else:
+        entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
+        exit_parts = list(signal_exit_names)
+        if config.get('bar_count_exit'):
+            exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
+        exit_str = " / ".join(exit_parts) if exit_parts else "?"
+        st.markdown(f"### {strategy_name}")
+        st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
 
     # Load data and generate trades
-    with st.spinner("Loading market data and running analysis..."):
-        df = prepare_data_with_indicators(symbol, data_days, data_seed,
-                                          start_date=start_date, end_date=end_date,
-                                          timeframe=timeframe)
-
-        if len(df) == 0:
-            st.error("No data available")
-            return
-
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
-        trades = generate_trades(
-            df,
-            direction=direction,
-            entry_trigger=config['entry_trigger'],
-            exit_trigger=config.get('exit_trigger'),
-            exit_triggers=config.get('exit_triggers'),
-            confluence_required=None,
-            risk_per_trade=risk_per_trade,
-            stop_atr_mult=stop_atr_mult,
-            stop_config=stop_config_dict,
-            target_config=target_config_dict,
-            bar_count_exit=config.get('bar_count_exit'),
-            general_columns=general_cols,
+    if _is_webhook_origin:
+        # Webhook origin: process uploaded backtest signals
+        df, trades, filtered_trades = _process_webhook_builder_data(
+            config, symbol, direction, data_days, data_seed,
+            start_date, end_date, timeframe,
+            risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
         )
-
-    # Apply confluence filter
-    selected = st.session_state.selected_confluences
-    if len(selected) > 0 and len(trades) > 0:
-        mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
-        filtered_trades = trades[mask]
+        if df is None:
+            return
     else:
-        filtered_trades = trades
+        with st.spinner("Loading market data and running analysis..."):
+            df = prepare_data_with_indicators(symbol, data_days, data_seed,
+                                              start_date=start_date, end_date=end_date,
+                                              timeframe=timeframe)
+
+            if len(df) == 0:
+                st.error("No data available")
+                return
+
+            general_cols = [c for c in df.columns if c.startswith("GP_")]
+            trades = generate_trades(
+                df,
+                direction=direction,
+                entry_trigger=config['entry_trigger'],
+                exit_trigger=config.get('exit_trigger'),
+                exit_triggers=config.get('exit_triggers'),
+                confluence_required=None,
+                risk_per_trade=risk_per_trade,
+                stop_atr_mult=stop_atr_mult,
+                stop_config=stop_config_dict,
+                target_config=target_config_dict,
+                bar_count_exit=config.get('bar_count_exit'),
+                general_columns=general_cols,
+            )
+
+        # Apply confluence filter
+        selected = st.session_state.selected_confluences
+        if len(selected) > 0 and len(trades) > 0:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
+        else:
+            filtered_trades = trades
 
     # KPIs
     period_trading_days = count_trading_days(df)
@@ -3351,15 +3801,35 @@ def render_strategy_builder():
                                secondary_panes=osc_panes if osc_panes else None)
 
     with right_col:
-        tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
-            "Entry", "Exit", "TF Conditions",
-            "General", "Stop Loss", "Take Profit"
-        ])
+        if _is_webhook_origin:
+            tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
+                "Webhook Config", "Signals",
+                "TF Conditions", "General", "Stop Loss", "Take Profit"
+            ])
+        else:
+            tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
+                "Entry", "Exit", "TF Conditions",
+                "General", "Stop Loss", "Take Profit"
+            ])
 
         # =================================================================
-        # Tab 1: Entry Trigger
+        # Tab 1: Entry Trigger / Webhook Config
         # =================================================================
         with tab_entry:
+          if _is_webhook_origin:
+            _wh_cfg = config.get('webhook_config', {})
+            st.markdown("**Webhook Inbound Configuration**")
+            wh_c1, wh_c2 = st.columns(2)
+            with wh_c1:
+                st.text_input("Secret", value=_wh_cfg.get('secret', ''), disabled=True, key="wh_tab_secret")
+                st.text_input("Signal JSON Path", value=_wh_cfg.get('signal_json_path', 'action'), disabled=True, key="wh_tab_path")
+            with wh_c2:
+                st.text_input("Long Entry", value=_wh_cfg.get('entry_long_value', 'buy'), disabled=True, key="wh_tab_long")
+                st.text_input("Short Entry", value=_wh_cfg.get('entry_short_value', 'sell'), disabled=True, key="wh_tab_short")
+                st.text_input("Exit", value=_wh_cfg.get('exit_value', 'close'), disabled=True, key="wh_tab_exit")
+            _n_signals = len(_wh_cfg.get('backtest_signals', []))
+            st.caption(f"Layer Confluence: {'Yes' if _wh_cfg.get('layer_confluence') else 'No'} | {_n_signals} backtest signals loaded")
+          else:
             entry_filters = st.session_state.confluence_filters
             e_search_col, e_action_col, e_filter_col = st.columns([3, 1.5, 0.5])
             with e_search_col:
@@ -3435,9 +3905,21 @@ def render_strategy_builder():
                 st.info("Click **Analyze** to compare all available entry triggers using the current strategy config.")
 
         # =================================================================
-        # Tab 2: Exit Triggers
+        # Tab 2: Exit Triggers / Signals Preview
         # =================================================================
         with tab_exit:
+          if _is_webhook_origin:
+            _wh_cfg = config.get('webhook_config', {})
+            _bt_sigs = _wh_cfg.get('backtest_signals', [])
+            if _bt_sigs:
+                st.markdown(f"**{len(_bt_sigs)} Signals Loaded**")
+                _sig_df = pd.DataFrame(_bt_sigs)
+                if 'timestamp' in _sig_df.columns:
+                    _sig_df['timestamp'] = pd.to_datetime(_sig_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+                st.dataframe(_sig_df, use_container_width=True, hide_index=True, height=400)
+            else:
+                st.info("No backtest signals loaded. Upload a CSV in the builder to see signals here.")
+          else:
             exit_mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True,
                                  label_visibility="collapsed", key="exit_mode_radio")
 
@@ -4085,7 +4567,7 @@ def render_strategy_list():
         st.session_state._trigger_bulk_update = False
         _upd_strategies = load_strategies()
         _processable = [s for s in _upd_strategies
-                        if 'entry_trigger_confluence_id' in s]
+                        if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
 
         if not _processable:
             st.warning("No strategies to update.")
@@ -4251,7 +4733,7 @@ def render_strategy_list():
 
     for i, strat in enumerate(strategies):
         sid = strat.get('id', 0)
-        is_legacy = 'entry_trigger_confluence_id' not in strat
+        is_legacy = 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound'
 
         # Use filtered data if active, else persisted data
         if _data_view_active and sid in _filtered_card_data:
@@ -4321,11 +4803,14 @@ def render_strategy_list():
                 kpi_cols[4].metric("Max DD", f"{max_rdd:+.1f}R")
 
                 # Trigger badges
-                entry_display = get_trigger_display_name(strat, 'entry_trigger')
-                exit_display = format_exit_triggers_display(strat)
                 stop_display = format_stop_display(strat)
                 target_display = format_target_display(strat)
-                st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
+                if strat.get('strategy_origin') == 'webhook_inbound':
+                    st.caption(f"Origin: Webhook Inbound")
+                else:
+                    entry_display = get_trigger_display_name(strat, 'entry_trigger')
+                    exit_display = format_exit_triggers_display(strat)
+                    st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
                 st.caption(f"Stop: {stop_display} | Target: {target_display}")
 
                 # Confluence tags (always shown for uniform card height)
@@ -4435,8 +4920,12 @@ def render_strategy_detail(strategy_id: int):
     meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
     meta_row1[1].markdown(f"**Direction:** {strat['direction']}")
     meta_row1[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
-    meta_row1[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-    meta_row1[4].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        meta_row1[3].markdown("**Origin:** Webhook Inbound")
+        meta_row1[4].markdown(f"**Signals:** {len(strat.get('webhook_config', {}).get('backtest_signals', []))}")
+    else:
+        meta_row1[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
+        meta_row1[4].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
     meta_row1[5].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
 
     # Confluence conditions (TF + General)
@@ -4526,7 +5015,7 @@ def render_strategy_detail(strategy_id: int):
     st.divider()
 
     # Route to appropriate view based on strategy type
-    is_legacy = 'entry_trigger_confluence_id' not in strat
+    is_legacy = 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound'
     if is_legacy:
         st.info("This is a legacy strategy. Live re-backtest is not available. Showing saved KPIs.")
         render_saved_kpis(strat)
@@ -5987,7 +6476,7 @@ def initiate_edit(strat: dict):
 
 def load_strategy_into_builder(strat: dict):
     """Load a saved strategy into the Strategy Builder for editing."""
-    if 'entry_trigger_confluence_id' not in strat:
+    if 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound':
         st.error("Legacy strategies cannot be edited. Please create a new strategy in the Strategy Builder.")
         return
 
@@ -6010,7 +6499,7 @@ def load_strategy_into_builder(strat: dict):
         'symbol': strat['symbol'],
         'direction': strat['direction'],
         'timeframe': strat.get('timeframe', '1Min'),
-        'entry_trigger': strat['entry_trigger'],
+        'entry_trigger': strat.get('entry_trigger'),
         'entry_trigger_confluence_id': strat.get('entry_trigger_confluence_id', ''),
         # New multi-exit format
         'exit_triggers': exit_triggers_list,
@@ -6019,7 +6508,7 @@ def load_strategy_into_builder(strat: dict):
         # Legacy single-exit fields
         'exit_trigger': strat.get('exit_trigger', ''),
         'exit_trigger_confluence_id': strat.get('exit_trigger_confluence_id', ''),
-        'entry_trigger_name': strat.get('entry_trigger_name', strat['entry_trigger']),
+        'entry_trigger_name': strat.get('entry_trigger_name', strat.get('entry_trigger', '')),
         'exit_trigger_name': strat.get('exit_trigger_name', strat.get('exit_trigger', '')),
         'risk_per_trade': strat.get('risk_per_trade', 100.0),
         'stop_atr_mult': strat.get('stop_atr_mult', 1.5),
@@ -6034,6 +6523,7 @@ def load_strategy_into_builder(strat: dict):
         'lookback_start_date': strat.get('lookback_start_date'),
         'lookback_end_date': strat.get('lookback_end_date'),
         'strategy_origin': strat.get('strategy_origin', 'standard'),
+        'webhook_config': strat.get('webhook_config', {}),
     }
 
     # Set additional exits for UI (skip the primary)
@@ -6419,7 +6909,8 @@ def render_portfolio_builder():
         # --- Add Strategy ---
         st.markdown("**Add Strategy**")
         all_strategies = load_strategies()
-        modern_strategies = [s for s in all_strategies if 'entry_trigger_confluence_id' in s]
+        modern_strategies = [s for s in all_strategies
+                             if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
         current_ids = {ps['strategy_id'] for ps in builder_strategies}
         available = [s for s in modern_strategies if s['id'] not in current_ids]
 
