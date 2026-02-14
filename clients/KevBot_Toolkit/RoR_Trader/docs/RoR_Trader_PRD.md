@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.19
+**Version:** 0.20
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
@@ -1146,6 +1146,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Preservation in update_strategy, not save flow** — The save flow always rebuilds `stored_trades` from the current backtest (which only contains backtest trades, not forward test trades). For non-optimizable edits, `update_strategy()` overwrites the incoming `stored_trades`, `kpis`, and `equity_curve_data` with the old strategy's preserved versions. This keeps the save flow unchanged and centralizes preservation logic.
 - **Return type as feedback channel** — `update_strategy()` returns `'preserved'`, `'reset'`, or `False` instead of just `bool`. Both string values are truthy, so existing `if update_strategy(...)` checks still work. The save flow captures the specific return value to display the appropriate toast.
 
+> **Detailed implementation spec for Phases 11–14:** See [`docs/Implementation_Spec_Phases_11-14.md`](Implementation_Spec_Phases_11-14.md) — contains file locations, data structures, function signatures, UI layouts, and implementation order for autonomous execution.
+
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
 *Reference images: `/docs/reference_images/DaviddTech *.png`*
@@ -1158,14 +1160,16 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Markov Motor Analysis (advanced tab) — win/loss transition probabilities, win/loss streak distribution chart, consistency score, stability index, trend strength, market regime detection (favorable/unfavorable/neutral clustering), edge decay chart (rolling PF with threshold line), and Markov Intelligence Insights summary
 - [ ] KPI placement audit — map out primary vs. secondary KPIs for strategy cards, strategy detail, portfolio cards, portfolio detail; ensure consistent and useful placement across all views
 
-### Phase 12: Strategy Origins
-*Expand strategy creation beyond the standard trigger-based approach — support webhook-driven and scanner-based strategies.*
+### Phase 12: Webhook Inbound Strategy Origin
+*Allow strategies driven by inbound webhooks — entries/exits from external sources (TradingView, LuxAlgo, custom scripts) with RoR Trader confluence, stops, and backtesting layered on top.*
 
-- [ ] Expand Strategy Origin selectbox — add "Webhook Inbound" and "Scanner" options to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
-- [ ] Origin-specific sidebar fields — after origin selection, show relevant configuration fields below (additional fields per origin type; existing strategies already have `strategy_origin: "standard"` with no migration needed)
-- [ ] Webhook Inbound origin — entries/exits driven by inbound webhooks (e.g., TradingView alerts, LuxAlgo signals); user can still layer confluence conditions from market data on top of webhook triggers; CSV upload for backtest data from TradingView or spreadsheets
-- [ ] Scanner origin — strategy not tied to a single ticker; runs against a universe of stocks matching screener criteria (Alpaca screener APIs); targets active day trading / scalping use cases (S&B Capital, Warrior Trading style); requires separate planning session for architecture given 1:many ticker relationship
-- [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; origin-specific fields only present when relevant
+- [ ] Expand Strategy Origin selectbox — add "Webhook Inbound" option to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
+- [ ] Origin-specific sidebar fields — after origin selection, show webhook configuration fields (secret, endpoint URL, signal JSON path, direction mapping); hide standard entry/exit trigger sections
+- [ ] Webhook Inbound origin — entries/exits driven by inbound webhooks; user can still layer confluence conditions from market data on top of webhook triggers
+- [ ] Inbound webhook receiver — lightweight HTTP server (Flask/FastAPI background thread) to receive POST requests from external alert sources; validates webhook secret; stores signals for processing
+- [ ] CSV upload for backtest data — import historical signals from TradingView strategy tester exports or spreadsheets; apply stop/target logic to signal pairs; generate R-multiples and KPIs
+- [ ] Forward test for webhook origin — process real-time inbound signals same as backtest signals; append trades to `stored_trades`; standard forward test boundary mechanics apply
+- [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; `webhook_config` dict only present when origin is `"webhook_inbound"`
 
 ### Phase 13: Live Alerts Validation
 *Three-tier confidence visualization — validate that alert executions match theoretical forward test trades before trusting them with real money.*
@@ -1233,6 +1237,16 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
+
+### Phase 17: Scanner Strategy Origin
+*Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
+
+- [ ] Add "Scanner" option to Strategy Origin selectbox
+- [ ] Scanner configuration fields — screener criteria (price range, volume, gap %, sector, float), universe source (Alpaca screener APIs), scan frequency
+- [ ] 1:many ticker architecture — a single scanner strategy evaluates triggers across all matching symbols; trades attributed to individual symbols but KPIs aggregated at strategy level
+- [ ] Scanner backtest — run trigger/confluence evaluation across historical screener results; requires architecture planning for data volume and performance
+- [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
+- [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
 ---
 
