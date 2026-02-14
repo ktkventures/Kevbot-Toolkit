@@ -703,6 +703,84 @@ def compute_strategy_recommendations(
 # ALERT CONTEXT
 # =============================================================================
 
+# =============================================================================
+# ACCOUNT MANAGEMENT
+# =============================================================================
+
+def get_account(portfolio: dict) -> dict:
+    """Get or initialize the account sub-dict for a portfolio."""
+    if 'account' not in portfolio:
+        portfolio['account'] = {
+            'starting_balance': portfolio.get('starting_balance', 10000.0),
+            'ledger': [],
+            'notes': '',
+            'notes_updated_at': None,
+        }
+    return portfolio['account']
+
+
+def compute_account_balance(account: dict) -> float:
+    """Compute current balance from ledger entries."""
+    return sum(entry.get('amount', 0) for entry in account.get('ledger', []))
+
+
+def add_ledger_entry(portfolio: dict, entry_type: str, amount: float,
+                     note: str = '', date: str = None, auto: bool = False) -> dict:
+    """Add a ledger entry to the portfolio's account.
+
+    Args:
+        portfolio: Portfolio dict (modified in place).
+        entry_type: 'deposit', 'withdrawal', or 'trading_pnl'.
+        amount: Dollar amount (positive for deposit/profit, negative for withdrawal/loss).
+        note: Optional note.
+        date: ISO date string. Defaults to today.
+        auto: True for auto-generated trading P&L entries.
+
+    Returns:
+        The new ledger entry.
+    """
+    account = get_account(portfolio)
+    ledger = account.setdefault('ledger', [])
+    entry_id = max((e.get('id', 0) for e in ledger), default=0) + 1
+    entry = {
+        'id': entry_id,
+        'date': date or datetime.now().strftime('%Y-%m-%d'),
+        'type': entry_type,
+        'amount': amount,
+        'note': note,
+        'auto': auto,
+    }
+    ledger.append(entry)
+    return entry
+
+
+def remove_ledger_entry(portfolio: dict, entry_id: int) -> bool:
+    """Remove a ledger entry by ID."""
+    account = get_account(portfolio)
+    ledger = account.get('ledger', [])
+    original_len = len(ledger)
+    account['ledger'] = [e for e in ledger if e.get('id') != entry_id]
+    return len(account['ledger']) < original_len
+
+
+def get_balance_history(account: dict) -> list:
+    """Compute running balance from ledger, sorted by date.
+
+    Returns list of {'date': str, 'balance': float, 'type': str}.
+    """
+    ledger = sorted(account.get('ledger', []), key=lambda e: e.get('date', ''))
+    running = 0.0
+    history = []
+    for entry in ledger:
+        running += entry.get('amount', 0)
+        history.append({
+            'date': entry.get('date', ''),
+            'balance': running,
+            'type': entry.get('type', ''),
+        })
+    return history
+
+
 def get_portfolio_alert_context(strategy_id: int) -> list:
     """
     Find all portfolios containing a strategy and return context for alerts.

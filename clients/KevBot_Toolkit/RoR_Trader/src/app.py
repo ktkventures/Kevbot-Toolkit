@@ -77,6 +77,11 @@ from portfolios import (
     delete_requirement_set,
     duplicate_requirement_set,
     compute_strategy_recommendations,
+    get_account,
+    compute_account_balance,
+    add_ledger_entry,
+    remove_ledger_entry,
+    get_balance_history,
 )
 from alerts import (
     load_alert_config,
@@ -2540,9 +2545,36 @@ def refresh_strategy_data(strategy_id: int) -> bool:
         # Run alert matching if alert tracking is enabled
         if strat.get('alert_tracking_enabled', False):
             from alerts import match_alerts_to_trades
+            old_exec_count = len(strat.get('live_executions', []))
             match_result = match_alerts_to_trades(strat)
-            strat['live_executions'] = match_result.get('live_executions', [])
+            new_execs = match_result.get('live_executions', [])
+            strat['live_executions'] = new_execs
             strat['discrepancies'] = match_result.get('discrepancies', [])
+
+            # Auto-generate trading P&L ledger entries for new exit executions
+            if len(new_execs) > old_exec_count:
+                _new_exit_execs = [e for e in new_execs[old_exec_count:]
+                                   if e.get('type') == 'exit' and e.get('matched_trade_index') is not None]
+                if _new_exit_execs:
+                    from portfolios import get_portfolio_alert_context, add_ledger_entry as _add_ledger
+                    _port_contexts = get_portfolio_alert_context(sid)
+                    for _pctx in _port_contexts:
+                        _pid = _pctx['portfolio_id']
+                        _risk = _pctx.get('risk_per_trade', 100.0)
+                        _prt = get_portfolio_by_id(_pid)
+                        if _prt is None:
+                            continue
+                        for _ex in _new_exit_execs:
+                            _ti = _ex['matched_trade_index']
+                            _stored = strat.get('stored_trades', [])
+                            if _ti < len(_stored):
+                                _r_mult = _stored[_ti].get('r_multiple', 0) - _ex.get('slippage_r', 0)
+                                _dollar_pnl = _r_mult * _risk
+                                _add_ledger(_prt, 'trading_pnl', round(_dollar_pnl, 2),
+                                            note=f"{strat.get('name', '')} trade #{_ti}",
+                                            date=_ex.get('alert_timestamp', '')[:10],
+                                            auto=True)
+                        update_portfolio(_pid, _prt)
 
         strat['data_refreshed_at'] = datetime.now().isoformat()
         strategies[i] = strat
@@ -7296,8 +7328,8 @@ def render_portfolio_detail(portfolio_id: int):
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
 
     # Tabs
-    tab_perf, tab_strats, tab_prop, tab_webhooks, tab_deploy = st.tabs(
-        ["Performance", "Strategies", "Prop Firm Check", "Webhooks", "Deploy"]
+    tab_perf, tab_strats, tab_prop, tab_account, tab_webhooks, tab_deploy = st.tabs(
+        ["Performance", "Strategies", "Prop Firm Check", "Account", "Webhooks", "Deploy"]
     )
 
     with tab_perf:
@@ -7308,6 +7340,9 @@ def render_portfolio_detail(portfolio_id: int):
 
     with tab_prop:
         render_portfolio_prop_firm(port, kpis, data['daily_pnl'])
+
+    with tab_account:
+        render_portfolio_account(port, portfolio_id)
 
     with tab_webhooks:
         render_portfolio_webhooks(port)
@@ -8323,6 +8358,116 @@ def _render_outbound_webhooks_tab():
 def _render_inbound_webhooks_tab():
     """Placeholder for future inbound webhooks feature."""
     st.info("Inbound Webhooks — Coming Soon. This will allow external systems to send signals into RoR Trader.")
+
+
+# =============================================================================
+# PORTFOLIO ACCOUNT MANAGEMENT
+# =============================================================================
+
+def render_portfolio_account(port: dict, portfolio_id: int):
+    """Render the Account Management tab for a portfolio."""
+    account = get_account(port)
+    ledger = account.get('ledger', [])
+    current_balance = compute_account_balance(account)
+    starting_balance = account.get('starting_balance', port.get('starting_balance', 10000.0))
+
+    # Compute net deposits/withdrawals and trading P&L
+    net_deposits = sum(e['amount'] for e in ledger if e.get('type') in ('deposit', 'withdrawal'))
+    trading_pnl = sum(e['amount'] for e in ledger if e.get('type') == 'trading_pnl')
+
+    # Balance summary
+    st.subheader("Live Account")
+    bal_cols = st.columns(4)
+    bal_cols[0].metric("Current Balance", f"${current_balance:,.2f}")
+    bal_cols[1].metric("Starting Balance", f"${starting_balance:,.2f}")
+    bal_cols[2].metric("Net Deposits", f"${net_deposits:+,.2f}")
+    bal_cols[3].metric("Trading P&L", f"${trading_pnl:+,.2f}")
+
+    # Balance History Chart
+    history = get_balance_history(account)
+    if len(history) >= 2:
+        hist_df = pd.DataFrame(history)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=hist_df['date'], y=hist_df['balance'],
+            mode='lines', fill='tozeroy',
+            line=dict(color='#2196F3', width=2),
+            fillcolor='rgba(33, 150, 243, 0.1)',
+            name='Balance',
+        ))
+        fig.update_layout(
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title='', yaxis_title='Balance ($)',
+            yaxis=dict(tickformat='$,.0f'),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    elif len(ledger) == 0:
+        st.info("No ledger entries yet. Add a deposit to get started.")
+
+    # Deposit / Withdrawal forms
+    form_cols = st.columns(2)
+    with form_cols[0]:
+        with st.form("add_deposit", clear_on_submit=True):
+            st.markdown("**Add Deposit**")
+            dep_amount = st.number_input("Amount ($)", min_value=0.01, value=1000.0, key="dep_amt")
+            dep_date = st.date_input("Date", value=datetime.now().date(), key="dep_date")
+            dep_note = st.text_input("Note (optional)", key="dep_note")
+            if st.form_submit_button("Add Deposit"):
+                add_ledger_entry(port, 'deposit', dep_amount,
+                                 note=dep_note, date=dep_date.isoformat())
+                update_portfolio(portfolio_id, port)
+                st.toast(f"Deposit of ${dep_amount:,.2f} added")
+                st.rerun()
+
+    with form_cols[1]:
+        with st.form("add_withdrawal", clear_on_submit=True):
+            st.markdown("**Add Withdrawal**")
+            wd_amount = st.number_input("Amount ($)", min_value=0.01, value=500.0, key="wd_amt")
+            wd_date = st.date_input("Date", value=datetime.now().date(), key="wd_date")
+            wd_note = st.text_input("Note (optional)", key="wd_note")
+            if st.form_submit_button("Add Withdrawal"):
+                add_ledger_entry(port, 'withdrawal', -wd_amount,
+                                 note=wd_note, date=wd_date.isoformat())
+                update_portfolio(portfolio_id, port)
+                st.toast(f"Withdrawal of ${wd_amount:,.2f} recorded")
+                st.rerun()
+
+    # Ledger table
+    if ledger:
+        st.markdown("**Ledger**")
+        ledger_sorted = sorted(ledger, key=lambda e: e.get('date', ''), reverse=True)
+        ledger_display = []
+        for entry in ledger_sorted:
+            amount = entry.get('amount', 0)
+            entry_type = entry.get('type', '')
+            type_label = entry_type.replace('_', ' ').title()
+            if entry.get('auto'):
+                type_label += " (auto)"
+            ledger_display.append({
+                'Date': entry.get('date', ''),
+                'Type': type_label,
+                'Amount': f"${amount:+,.2f}",
+                'Note': entry.get('note', ''),
+            })
+        st.dataframe(pd.DataFrame(ledger_display), use_container_width=True, hide_index=True)
+
+    # Trading Notes
+    st.markdown("---")
+    st.markdown("**Trading Notes**")
+    notes = account.get('notes', '')
+    notes_key = f"acct_notes_{portfolio_id}"
+    new_notes = st.text_area("Notes (markdown supported)", value=notes, height=200, key=notes_key)
+    note_cols = st.columns([1, 5])
+    with note_cols[0]:
+        if st.button("Save Notes", key=f"save_notes_{portfolio_id}"):
+            account['notes'] = new_notes
+            account['notes_updated_at'] = datetime.now().isoformat()
+            update_portfolio(portfolio_id, port)
+            st.toast("Notes saved")
+            st.rerun()
+    if notes:
+        with st.expander("Preview", expanded=True):
+            st.markdown(notes)
 
 
 # =============================================================================
