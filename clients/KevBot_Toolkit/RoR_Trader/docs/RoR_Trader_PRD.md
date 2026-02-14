@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.17
+**Version:** 0.18
 **Date:** February 13, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
@@ -1112,8 +1112,8 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Dynamic bar count** — VWAP requires a full trading day of data (390 bars on 1-min). The old hardcoded 200 bars produced inaccurate VWAP values for intraday strategies. `compute_signal_detection_bars()` ensures enough data for both indicator warmup and VWAP accuracy.
 
 **Future Phases (from this discussion):**
-- Phase 13+ (future): WebSocket streaming for [I] (interpretation) triggers — real-time price feeds for sub-candle signal detection
-- Phase 14+ (future): Sub-minute candles — 10-second and 30-second bars for faster signal response
+- Phase 14 (future): WebSocket streaming for [I] (interpretation) triggers — real-time price feeds for sub-candle signal detection
+- Future: Sub-minute candles — 10-second and 30-second bars for faster signal response
 
 ### Phase 10C: Incremental Data Refresh ✓
 *"Update Data" button with incremental refresh — only processes new forward test data, not historical trades.*
@@ -1128,8 +1128,6 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] `data_refreshed_at` timestamp persisted per strategy to track last refresh
 - [x] Lazy-load Extended tabs — "Equity & KPIs (Extended)" tab on strategy detail pages deferred behind a "Load Extended Data" button instead of auto-loading on every page render; eliminates 10-20s blocking that previously stalled all tabs
 - [x] Data View filter dropdown on My Strategies page — filters `stored_trades` by time window (Last 7/30/90 Days, Backtest Only, Forward Test Only) and recomputes KPIs + equity curves from filtered subset; instant, no pipeline re-runs; KPI-based sorting reflects filtered values
-- [ ] **Phase B: Expanded Backtest Range** — allow users to extend the backtest date range beyond the original creation settings directly from My Strategies page; runs the full pipeline for the expanded window and merges new backtest trades into `stored_trades`; enables ad-hoc "what if I had started earlier?" analysis without editing the strategy
-- [ ] **Phase C: Non-Optimizable Edits** — allow minor strategy edits (name, notes, risk sizing, cosmetic settings) without resetting the forward test; distinguish between "optimizable" parameters (entry/exit triggers, confluence, indicator periods) that invalidate forward test data and "non-optimizable" parameters that don't affect trade generation
 
 ### Design Decisions (Phase 10C — Incremental Data Refresh)
 - **Incremental over full rebuild** — Trade history is append-only. Backtest trades never change; forward test trades accumulate. Re-running the full pipeline from strategy creation is wasteful. Instead, we store minimal trade records and only load/process the recent data window (warmup + new bars). For 1-min strategies, the incremental window is ~1 day vs. 30-60+ days for a full rebuild.
@@ -1137,8 +1135,17 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Cold-start migration** — Strategies created before this feature (without `stored_trades`) get a one-time full pipeline run that populates the field. All subsequent refreshes are incremental.
 - **Warmup buffer** — The incremental data window starts `warmup_bars / bars_per_day` calendar days before the last known trade. 100 bars covers 2× the longest indicator (EMA-50) for safety. For 1-min timeframes this is ~1 calendar day; for 1-day timeframes it's ~145 days (necessary for daily indicator accuracy).
 - **Lazy-load Extended tabs** — Streamlit's `st.tabs()` executes ALL tab content on every render, even invisible tabs. The Extended tab's 365-day data load blocked all 7 tabs from rendering (~10-20s). Gating it behind a button means the page renders in ~2-5s and users only pay the cost when they actually want extended data.
-- **Data View filter vs. expanded backtest** — Phase A (Data View filter, completed) filters existing `stored_trades` by date — instant, no data loading. Phase B (future) extends the backtest beyond original settings by running the pipeline for an expanded window — slower but additive. These are distinct use cases: "show me only recent performance" vs. "what if the backtest started earlier?"
-- **Non-optimizable edits (Phase C)** — Currently, any strategy edit resets the forward test. Phase C will categorize parameters into optimizable (triggers, confluence, indicators — changes invalidate forward test data) and non-optimizable (name, notes, risk sizing — changes don't affect trade generation). Non-optimizable edits will skip the forward test reset, preserving accumulated forward test data.
+- **Data View filter vs. expanded backtest** — The Data View filter (completed) filters existing `stored_trades` by date — instant, no data loading. Expanded backtest (Phase 16, low priority) extends the backtest beyond original settings by running the pipeline for an expanded window — slower but additive. These are distinct use cases: "show me only recent performance" vs. "what if the backtest started earlier?"
+
+### Phase 10D: Non-Optimizable Edits
+*Allow minor strategy edits without resetting the forward test — preserve accumulated forward test data for non-trade-affecting changes.*
+
+- [ ] Classify strategy parameters as optimizable vs. non-optimizable:
+  - **Optimizable** (reset forward test): entry trigger, exit triggers, confluence groups, indicator periods, stop/target methods — changes invalidate forward test data because they alter trade generation
+  - **Non-optimizable** (preserve forward test): strategy name, notes, risk per trade amount, starting balance, cosmetic settings — changes don't affect when/where trades are generated
+- [ ] Edit flow checks parameter category — if only non-optimizable fields changed, skip the forward test reset and preserve `stored_trades`, `forward_test_start`, `kpis`, and `equity_curve_data`
+- [ ] Risk sizing changes trigger KPI/equity curve recomputation from `stored_trades` (same trades, different dollar amounts) without resetting forward test start
+- [ ] UI indication — edit confirmation dialog distinguishes "This edit will reset your forward test" vs. "This edit preserves your forward test data"
 
 ### Phase 11: Analytics & Edge Detection
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
@@ -1161,12 +1168,33 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [ ] Scanner origin — strategy not tied to a single ticker; runs against a universe of stocks matching screener criteria (Alpaca screener APIs); targets active day trading / scalping use cases (S&B Capital, Warrior Trading style); requires separate planning session for architecture given 1:many ticker relationship
 - [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; origin-specific fields only present when relevant
 
-### Phase 13: Live Portfolio Management
+### Phase 13: Live Alerts Validation
+*Three-tier confidence visualization — validate that alert executions match theoretical forward test trades before trusting them with real money.*
+
+The strategy lifecycle has three confidence tiers, each progressively closer to reality:
+1. **Backtest** — theoretical, computed from historical data (lowest confidence)
+2. **Forward test** — theoretical but real-time, parameters locked before data appeared (medium confidence)
+3. **Live/triggered** — actual alert executions, reflects real-world timing, slippage, and missed signals (highest confidence)
+
+- [ ] Alert execution correlation — match fired alerts (from `alerts.json`) to forward test trades by symbol, signal type, and timestamp proximity; store matched execution data (alert trigger price, alert fire time) alongside theoretical trade data
+- [ ] Three-color equity curve — backtest segment, forward test segment, and live/triggered segment each rendered in distinct colors on strategy detail and strategy card mini equity curves; transition points visible at a glance
+- [ ] Strategy card caption enhancement — pipe-delimited status line shows backtest duration, forward test duration, and monitored duration with color-coded text matching equity curve segment colors (e.g., `SPY LONG | BT 45d | Fwd 14d | Live 5d`)
+- [ ] Discrepancy detection — identify cases where forward test shows a trade but no corresponding alert fired (potential alert/webhook issue), and cases where an alert fired but no forward test trade exists; surface discrepancies as annotations on equity curve and as a count on strategy cards
+- [ ] Alert tracking mode — enable alert execution tracking per strategy independent of portfolio webhook allocation; allows users to validate alert behavior and build confidence before committing to a live portfolio
+- [ ] Live segment uses actual alert trigger prices rather than theoretical bar prices — captures real-world slippage between theoretical entry/exit and actual alert fire time
+- [ ] Strategy detail page — dedicated "Live vs. Forward" comparison tab showing side-by-side metrics: theoretical forward test KPIs vs. actual live execution KPIs, with delta highlighting
+
+### Design Decisions (Phase 13 — Live Alerts Validation)
+- **Three-tier confidence model** — Backtest is retrospective curve-fitting. Forward test proves the strategy works on unseen data but still uses theoretical bar prices. Live alert data is the closest proxy to actual trading — it captures webhook delivery timing, missed signals, and price differences between bar close and alert fire time. Visualizing all three tiers on one equity curve lets users see exactly where theory diverges from reality.
+- **Discrepancy as signal, not noise** — A forward test trade with no matching alert is not just a data gap — it's actionable information. It could indicate webhook misconfiguration, alert monitor downtime, or a timing edge case. Surfacing these discrepancies helps users debug their alert pipeline before going live with real money.
+- **Alert tracking separate from portfolio webhooks** — Users should be able to track alert executions for confidence-building without routing them to a broker. This is essentially paper trading validation — "would my alerts have fired correctly?" — without the commitment of a live portfolio.
+- **Override vs. additive** — When live data exists for a period, it replaces the forward test data for that period on the equity curve (since live is higher fidelity). Periods without live data fall back to forward test. Periods before forward test start show backtest data.
+
+### Phase 14: Live Portfolio Management
 *Active trading account management — bridge between backtesting and real-world trading.*
 
 - [ ] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
 - [ ] Deposit/withdrawal ledger — track additions to and deductions from the trading account balance
-- [ ] Webhook trigger audit log — plot actual fired webhook alerts on the price chart for visual verification that signals are firing correctly in production
 - [ ] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
 - [ ] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
 - [ ] Intra-bar real-time alert engine — WebSocket streaming via Alpaca for `[I]` triggers:
@@ -1179,7 +1207,7 @@ Strategy Builder → Load Data → Entry Trigger tab
   - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
   - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
 
-### Phase 14: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026)
+### Phase 15: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026)
 *Implemented as part of the sidebar-to-inline refactor in Phase 10. See Phase 10 "Settings Page" section for details.*
 
 - [x] Settings navigation page — 6th top-level nav item
@@ -1189,6 +1217,13 @@ Strategy Builder → Load Data → Entry Trigger tab
 - [x] Development — Data Seed (mock mode only)
 - [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
 - [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
+
+### Phase 16: Expanded Backtest Range *(low priority)*
+*Allow users to extend the backtest date range beyond the original creation settings — ad-hoc "what if I had started earlier?" analysis.*
+
+- [ ] Date range picker on My Strategies page or strategy detail — select a custom backtest start date earlier than the original
+- [ ] Run full pipeline for the expanded window and merge new backtest trades into `stored_trades` (additive, does not affect existing forward test data)
+- [ ] Distinct from Data View filter (Phase 10C) — filter shows subsets of existing data instantly; expanded backtest generates new data by running the pipeline
 
 ---
 
