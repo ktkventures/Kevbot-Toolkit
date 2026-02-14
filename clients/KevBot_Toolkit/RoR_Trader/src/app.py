@@ -176,12 +176,11 @@ OPTIMIZABLE_PARAMS = frozenset({
     'exit_trigger', 'exit_triggers', 'exit_trigger_confluence_ids',
     'stop_config', 'stop_atr_mult', 'target_config', 'bar_count_exit',
     'confluence', 'general_confluences',
-    'data_days', 'data_seed',
-    'lookback_mode', 'bar_count',
-    # Note: lookback_start_date / lookback_end_date are excluded here because
-    # in "Days" and "Bars/Candles" modes they're derived from today's date and
-    # shift daily. They're compared separately in _has_optimizable_changes()
-    # only when lookback_mode is "Date Range" (user-explicit dates).
+    'data_seed',
+    # Note: date range params (data_days, lookback_mode, bar_count,
+    # lookback_start_date, lookback_end_date) are excluded — they only affect
+    # the backtest window, not forward test behavior. Changing them preserves
+    # forward test data.
 })
 
 # Strategies storage path (resolve relative to this script, not cwd)
@@ -1806,13 +1805,6 @@ def _has_optimizable_changes(old_strategy: dict, new_strategy: dict) -> bool:
         new_val = _normalize_param_value(new_strategy.get(param))
         if old_val != new_val:
             return True
-    # Compare lookback dates only in "Date Range" mode (user-explicit dates).
-    # In "Days" and "Bars/Candles" modes, dates are derived from today and
-    # shift daily — comparing them would produce false positives.
-    if new_strategy.get('lookback_mode') == 'Date Range':
-        for param in ('lookback_start_date', 'lookback_end_date'):
-            if old_strategy.get(param) != new_strategy.get(param):
-                return True
     return False
 
 
