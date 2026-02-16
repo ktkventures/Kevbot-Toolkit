@@ -613,6 +613,26 @@ def get_enabled_groups(groups: Optional[List[ConfluenceGroup]] = None) -> List[C
     return [g for g in groups if g.enabled]
 
 
+def get_enabled_interpreter_keys(groups: Optional[List[ConfluenceGroup]] = None) -> List[str]:
+    """Derive interpreter keys that correspond to enabled confluence groups.
+
+    Maps each enabled group's base_template to TEMPLATES[base_template]["interpreters"].
+    Returns a deduplicated list of interpreter keys (e.g., ["EMA_STACK", "MACD_LINE"]).
+    """
+    if groups is None:
+        groups = get_enabled_groups()
+    keys = []
+    seen = set()
+    for group in groups:
+        template = TEMPLATES.get(group.base_template)
+        if template:
+            for interp_key in template.get("interpreters", []):
+                if interp_key not in seen:
+                    keys.append(interp_key)
+                    seen.add(interp_key)
+    return keys
+
+
 def get_group_by_id(group_id: str, groups: Optional[List[ConfluenceGroup]] = None) -> Optional[ConfluenceGroup]:
     """Get a specific confluence group by ID."""
     if groups is None:

@@ -252,7 +252,7 @@ def create_default_packs() -> List[GeneralPack]:
             base_template="day_of_week",
             version="All Weekdays",
             description="Trade all weekdays (default)",
-            enabled=False,
+            enabled=True,
             is_default=True,
             parameters={
                 "monday": True, "tuesday": True, "wednesday": True,
@@ -264,7 +264,7 @@ def create_default_packs() -> List[GeneralPack]:
             base_template="calendar_filter",
             version="Avoid FOMC & NFP",
             description="Skip trading on FOMC and NFP days",
-            enabled=False,
+            enabled=True,
             is_default=True,
             parameters={
                 "avoid_fomc": True, "avoid_opex": False,

@@ -1201,50 +1201,60 @@ Phase 12 (Webhook Inbound)
 
 ## Verification Checklist Per Phase
 
-### Phase 11
-- [ ] `calculate_kpis()` returns all new KPI fields
-- [ ] Strategy detail shows tabbed KPI panel with all categories
-- [ ] Edge Check toggle shows 21-MA + Bollinger Bands on equity curve
-- [ ] Rolling metrics chart renders with Win Rate / PF / Sharpe toggles
-- [ ] Return distribution shows Histogram / Box Plot / Violin views
-- [ ] Markov section shows transition probabilities, streak chart, edge decay
-- [ ] Market regime detection scatter plot renders
-- [ ] Markov insights generate 2-4 text summaries
-- [ ] Guards work: metrics show "—" when trade count is below threshold
-- [ ] Existing KPIs on strategy cards unchanged
+### Phase 11 — COMPLETE
+- [x] `calculate_kpis()` returns all new KPI fields
+- [x] Strategy detail shows tabbed KPI panel with all categories
+- [x] Edge Check toggle shows 21-MA + Bollinger Bands on equity curve
+- [x] Rolling metrics chart renders with Win Rate / PF / Sharpe toggles
+- [x] Return distribution shows Histogram / Box Plot / Violin views
+- [x] Markov section shows transition probabilities, streak chart, edge decay
+- [x] Market regime detection scatter plot renders
+- [x] Markov insights generate 2-4 text summaries
+- [x] Guards work: metrics show "—" when trade count is below threshold
+- [x] Existing KPIs on strategy cards unchanged
 
-### Phase 12
-- [ ] Strategy origin selectbox shows "Standard" and "Webhook Inbound"
-- [ ] Webhook Inbound hides entry/exit trigger sections
-- [ ] Webhook config fields render (secret, JSON path, signal mapping)
-- [ ] CSV upload parses signals and pairs entries/exits
-- [ ] Backtest runs with stop/target logic on uploaded signals
-- [ ] KPIs and equity curve generate from webhook backtest
-- [ ] Webhook server starts and receives POST requests
-- [ ] Inbound signals are processed and added to stored_trades
-- [ ] `OPTIMIZABLE_PARAMS` updated for webhook fields
+### Phase 12 — COMPLETE
+- [x] Strategy origin selectbox shows "Standard" and "Webhook Inbound"
+- [x] Webhook Inbound hides entry/exit trigger sections
+- [x] Webhook config fields render (secret, JSON path, signal mapping)
+- [x] CSV upload parses signals and pairs entries/exits
+- [x] Backtest runs with stop/target logic on uploaded signals
+- [x] KPIs and equity curve generate from webhook backtest
+- [x] Webhook server starts and receives POST requests
+- [x] Inbound signals are processed and added to stored_trades
+- [x] `OPTIMIZABLE_PARAMS` updated for webhook fields
 
-### Phase 13
-- [ ] Alert matching correlates fired alerts with forward test trades
-- [ ] Three-color equity curve renders (blue/orange/green segments)
-- [ ] Strategy card captions show colored BT/Fwd/Live durations
-- [ ] Mini equity curves show three-color segments
-- [ ] Discrepancies displayed on cards (badge) and detail (table)
-- [ ] Alert tracking toggle persists to strategy dict
-- [ ] "Live vs. Forward" comparison tab shows side-by-side KPIs
-- [ ] Matching runs on each data refresh when tracking enabled
+### Phase 13 — COMPLETE (pending live data validation)
+- [x] Alert matching correlates fired alerts with forward test trades
+- [x] Three-color equity curve renders (blue/orange/green segments)
+- [x] Strategy card captions show colored BT/Fwd/Live durations
+- [x] Mini equity curves show three-color segments
+- [x] Discrepancies displayed on cards (badge) and detail (table)
+- [x] Alert tracking toggle persists to strategy dict
+- [x] "Live vs. Forward" comparison tab shows side-by-side KPIs
+- [x] Matching runs on each data refresh when tracking enabled
+- **Note:** Needs spoofed live execution data to validate visually — no real alerts have been fired yet.
 
-### Phase 14A
-- [ ] Account Management tab appears on portfolio detail
-- [ ] Deposit and withdrawal forms work, append to ledger
-- [ ] Balance computed correctly from ledger sum
-- [ ] Balance history chart renders
-- [ ] Trading notes save and render markdown
-- [ ] Trading P&L auto-generates ledger entries from live executions
+### Phase 14A — COMPLETE
+- [x] Account Management tab appears on portfolio detail
+- [x] Deposit and withdrawal forms work, append to ledger
+- [x] Balance computed correctly from ledger sum
+- [x] Balance history chart renders
+- [x] Trading notes save and render markdown
+- [ ] Trading P&L auto-generates ledger entries from live executions — *depends on Phase 13 live data*
+- **Note:** Ledger currently lacks delete/remove action for correcting accidental entries — to be added.
 
-### Phase 14B (requires Alpaca SIP subscription)
-- [ ] Connections section in Settings shows Alpaca status and data feed selection
-- [ ] Real-time engine scaffolded (`src/realtime_engine.py` created)
+### Phase 14B — SCAFFOLD COMPLETE (Alpaca SIP subscription pending)
+- [x] Connections section in Settings shows Alpaca status and data feed selection
+- [x] Real-time engine scaffolded (`src/realtime_engine.py` created)
 - [ ] User prompted to confirm Alpaca SIP access at stop point
 - [ ] Real-time engine connects to Alpaca WebSocket (when configured)
 - [ ] Intra-bar triggers fire on tick data
+
+### QA Fixes Applied (Feb 16, 2026)
+- [x] Extended KPIs (Phase 11) now visible in Forward Test view — rewrote `render_kpi_comparison()` with tabbed layout
+- [x] Webhook strategy builder — fixed 6 runtime errors (RangeIndex, unbound `selected`, undefined `strat`, missing columns, empty confluence records, missing market data)
+- [x] Webhook drill-down tabs — TF Conditions and General tabs now populate with confluence records from market data indicators
+- [x] General packs defaults — `dow_weekdays` and `cal_avoid_fomc_nfp` now default to `enabled=True`
+- [x] Confluence pack enabled/disabled checkboxes now control drill-down tab visibility — added `get_enabled_interpreter_keys()` for TF packs and `get_enabled_gp_columns()` for General packs, threaded through all `generate_trades()` call sites
+- [x] Fixed early-return tuple bug in `_generate_webhook_backtest_trades()` when no signal pairs found

@@ -4644,6 +4644,37 @@
         12506.26
       ]
     },
-    "updated_at": "2026-02-12T17:29:44.060791"
+    "updated_at": "2026-02-16T14:06:29.976911",
+    "account": {
+      "starting_balance": 40000.0,
+      "ledger": [
+        {
+          "id": 1,
+          "date": "2026-02-16",
+          "type": "deposit",
+          "amount": 1000.0,
+          "note": "",
+          "auto": false
+        },
+        {
+          "id": 2,
+          "date": "2026-02-16",
+          "type": "withdrawal",
+          "amount": -500.0,
+          "note": "",
+          "auto": false
+        },
+        {
+          "id": 3,
+          "date": "2026-02-02",
+          "type": "deposit",
+          "amount": 40000.0,
+          "note": "Initial Deposit",
+          "auto": false
+        }
+      ],
+      "notes": "hi there\n",
+      "notes_updated_at": "2026-02-16T14:06:29.973040"
+    }
   }
 ]

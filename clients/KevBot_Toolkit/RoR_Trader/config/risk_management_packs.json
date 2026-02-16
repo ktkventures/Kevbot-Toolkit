@@ -1,0 +1,66 @@
+{
+  "version": "1.0",
+  "packs": [
+    {
+      "id": "atr_default",
+      "base_template": "atr_based",
+      "version": "Default",
+      "description": "1.5x ATR stop, 3x ATR target",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "stop_atr_mult": 1.5,
+        "target_atr_mult": 3.0
+      }
+    },
+    {
+      "id": "atr_tight",
+      "base_template": "atr_based",
+      "version": "Tight",
+      "description": "1x ATR stop, 2x ATR target",
+      "enabled": false,
+      "is_default": true,
+      "parameters": {
+        "stop_atr_mult": 1.0,
+        "target_atr_mult": 2.0
+      }
+    },
+    {
+      "id": "fixed_1_2",
+      "base_template": "fixed_dollar",
+      "version": "$1 / $2",
+      "description": "$1 stop, $2 target",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "stop_amount": 1.0,
+        "target_amount": 2.0
+      }
+    },
+    {
+      "id": "pct_half_one",
+      "base_template": "percentage",
+      "version": "0.5% / 1%",
+      "description": "0.5% stop, 1% target",
+      "enabled": false,
+      "is_default": true,
+      "parameters": {
+        "stop_pct": 0.5,
+        "target_pct": 1.0
+      }
+    },
+    {
+      "id": "swing_2r",
+      "base_template": "swing",
+      "version": "Swing 2R",
+      "description": "Swing-based stop with 2:1 reward",
+      "enabled": false,
+      "is_default": true,
+      "parameters": {
+        "lookback": 5,
+        "padding": 0.05,
+        "rr_ratio": 2.0
+      }
+    }
+  ]
+}

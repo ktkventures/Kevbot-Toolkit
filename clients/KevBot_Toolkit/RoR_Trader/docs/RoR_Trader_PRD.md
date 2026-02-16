@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.20
-**Date:** February 13, 2026
+**Version:** 0.21
+**Date:** February 16, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 10C Complete — Bulk data refresh ✓, data-only persistence path ✓; Phases 1–10 complete (deferred items remain)
+**Status:** Phase 14A Complete — Phases 11, 12, 13, 14A implemented; Phase 14B scaffold in place (Alpaca SIP upgrade pending); QA fixes applied
 
 ---
 
@@ -1148,30 +1148,30 @@ Strategy Builder → Load Data → Entry Trigger tab
 
 > **Detailed implementation spec for Phases 11–14:** See [`docs/Implementation_Spec_Phases_11-14.md`](Implementation_Spec_Phases_11-14.md) — contains file locations, data structures, function signatures, UI layouts, and implementation order for autonomous execution.
 
-### Phase 11: Analytics & Edge Detection
+### Phase 11: Analytics & Edge Detection — COMPLETE (Feb 14, 2026)
 *Advanced performance metrics and strategy health monitoring — inspired by Davidd Tech.*
 *Reference images: `/docs/reference_images/DaviddTech *.png`*
 
-- [ ] Edge Check overlay on equity curves — toggleable 21-period MA + Bollinger Bands on equity curve chart (visual indicator of strategy health; equity below lower BB = statistically unusual underperformance)
-- [ ] Expanded KPI panel — add: Sharpe Ratio, Sortino Ratio, Calmar Ratio, Kelly Criterion, Daily Value-at-Risk, Expected Shortfall (CVaR), Max Consecutive Wins/Losses, Gain/Pain Ratio, Payoff Ratio, Common Sense Ratio, Tail Ratio, Outlier Win/Loss Ratio, Recovery Factor, Ulcer Index, Serenity Index (builds on R² from Phase 8), Skewness, Kurtosis, Expected Daily/Monthly/Yearly returns
-- [ ] Rolling performance metrics chart — interactive chart with toggle buttons for rolling Win Rate, Profit Factor, and Sharpe over a configurable trade window
-- [ ] Return distribution analysis — histogram, box plot, and violin plot views with skewness/kurtosis/tail risk callouts
-- [ ] Cumulative vs. Simple P&L views — compounded equity curve (reinvested gains) alongside simple/sum-based P&L
-- [ ] Markov Motor Analysis (advanced tab) — win/loss transition probabilities, win/loss streak distribution chart, consistency score, stability index, trend strength, market regime detection (favorable/unfavorable/neutral clustering), edge decay chart (rolling PF with threshold line), and Markov Intelligence Insights summary
-- [ ] KPI placement audit — map out primary vs. secondary KPIs for strategy cards, strategy detail, portfolio cards, portfolio detail; ensure consistent and useful placement across all views
+- [x] Edge Check overlay on equity curves — toggleable 21-period MA + Bollinger Bands on equity curve chart (visual indicator of strategy health; equity below lower BB = statistically unusual underperformance)
+- [x] Expanded KPI panel — add: Sharpe Ratio, Sortino Ratio, Calmar Ratio, Kelly Criterion, Daily Value-at-Risk, Expected Shortfall (CVaR), Max Consecutive Wins/Losses, Gain/Pain Ratio, Payoff Ratio, Common Sense Ratio, Tail Ratio, Outlier Win/Loss Ratio, Recovery Factor, Ulcer Index, Serenity Index (builds on R² from Phase 8), Skewness, Kurtosis, Expected Daily/Monthly/Yearly returns
+- [x] Rolling performance metrics chart — interactive chart with toggle buttons for rolling Win Rate, Profit Factor, and Sharpe over a configurable trade window
+- [x] Return distribution analysis — histogram, box plot, and violin plot views with skewness/kurtosis/tail risk callouts
+- [x] Cumulative vs. Simple P&L views — compounded equity curve (reinvested gains) alongside simple/sum-based P&L
+- [x] Markov Motor Analysis (advanced tab) — win/loss transition probabilities, win/loss streak distribution chart, consistency score, stability index, trend strength, market regime detection (favorable/unfavorable/neutral clustering), edge decay chart (rolling PF with threshold line), and Markov Intelligence Insights summary
+- [x] KPI placement audit — map out primary vs. secondary KPIs for strategy cards, strategy detail, portfolio cards, portfolio detail; ensure consistent and useful placement across all views
 
-### Phase 12: Webhook Inbound Strategy Origin
+### Phase 12: Webhook Inbound Strategy Origin — COMPLETE (Feb 14, 2026)
 *Allow strategies driven by inbound webhooks — entries/exits from external sources (TradingView, LuxAlgo, custom scripts) with RoR Trader confluence, stops, and backtesting layered on top.*
 
-- [ ] Expand Strategy Origin selectbox — add "Webhook Inbound" option to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
-- [ ] Origin-specific sidebar fields — after origin selection, show webhook configuration fields (secret, endpoint URL, signal JSON path, direction mapping); hide standard entry/exit trigger sections
-- [ ] Webhook Inbound origin — entries/exits driven by inbound webhooks; user can still layer confluence conditions from market data on top of webhook triggers
-- [ ] Inbound webhook receiver — lightweight HTTP server (Flask/FastAPI background thread) to receive POST requests from external alert sources; validates webhook secret; stores signals for processing
-- [ ] CSV upload for backtest data — import historical signals from TradingView strategy tester exports or spreadsheets; apply stop/target logic to signal pairs; generate R-multiples and KPIs
-- [ ] Forward test for webhook origin — process real-time inbound signals same as backtest signals; append trades to `stored_trades`; standard forward test boundary mechanics apply
-- [ ] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; `webhook_config` dict only present when origin is `"webhook_inbound"`
+- [x] Expand Strategy Origin selectbox — add "Webhook Inbound" option to existing sidebar selectbox (currently shows "Standard" only, added in Phase 8 as placeholder)
+- [x] Origin-specific sidebar fields — after origin selection, show webhook configuration fields (secret, endpoint URL, signal JSON path, direction mapping); hide standard entry/exit trigger sections
+- [x] Webhook Inbound origin — entries/exits driven by inbound webhooks; user can still layer confluence conditions from market data on top of webhook triggers
+- [x] Inbound webhook receiver — lightweight HTTP server (Flask/FastAPI background thread) to receive POST requests from external alert sources; validates webhook secret; stores signals for processing
+- [x] CSV upload for backtest data — import historical signals from TradingView strategy tester exports or spreadsheets; apply stop/target logic to signal pairs; generate R-multiples and KPIs
+- [x] Forward test for webhook origin — process real-time inbound signals same as backtest signals; append trades to `stored_trades`; standard forward test boundary mechanics apply
+- [x] Backward-compatible schema — `strategy_origin: "standard"` defaulted for all existing strategies; `webhook_config` dict only present when origin is `"webhook_inbound"`
 
-### Phase 13: Live Alerts Validation
+### Phase 13: Live Alerts Validation — COMPLETE (Feb 14, 2026)
 *Three-tier confidence visualization — validate that alert executions match theoretical forward test trades before trusting them with real money.*
 
 The strategy lifecycle has three confidence tiers, each progressively closer to reality:
@@ -1179,13 +1179,13 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 2. **Forward test** — theoretical but real-time, parameters locked before data appeared (medium confidence)
 3. **Live/triggered** — actual alert executions, reflects real-world timing, slippage, and missed signals (highest confidence)
 
-- [ ] Alert execution correlation — match fired alerts (from `alerts.json`) to forward test trades by symbol, signal type, and timestamp proximity; store matched execution data (alert trigger price, alert fire time) alongside theoretical trade data
-- [ ] Three-color equity curve — backtest segment, forward test segment, and live/triggered segment each rendered in distinct colors on strategy detail and strategy card mini equity curves; transition points visible at a glance
-- [ ] Strategy card caption enhancement — pipe-delimited status line shows backtest duration, forward test duration, and monitored duration with color-coded text matching equity curve segment colors (e.g., `SPY LONG | BT 45d | Fwd 14d | Live 5d`)
-- [ ] Discrepancy detection — identify cases where forward test shows a trade but no corresponding alert fired (potential alert/webhook issue), and cases where an alert fired but no forward test trade exists; surface discrepancies as annotations on equity curve and as a count on strategy cards
-- [ ] Alert tracking mode — enable alert execution tracking per strategy independent of portfolio webhook allocation; allows users to validate alert behavior and build confidence before committing to a live portfolio
-- [ ] Live segment uses actual alert trigger prices rather than theoretical bar prices — captures real-world slippage between theoretical entry/exit and actual alert fire time
-- [ ] Strategy detail page — dedicated "Live vs. Forward" comparison tab showing side-by-side metrics: theoretical forward test KPIs vs. actual live execution KPIs, with delta highlighting
+- [x] Alert execution correlation — match fired alerts (from `alerts.json`) to forward test trades by symbol, signal type, and timestamp proximity; store matched execution data (alert trigger price, alert fire time) alongside theoretical trade data
+- [x] Three-color equity curve — backtest segment, forward test segment, and live/triggered segment each rendered in distinct colors on strategy detail and strategy card mini equity curves; transition points visible at a glance
+- [x] Strategy card caption enhancement — pipe-delimited status line shows backtest duration, forward test duration, and monitored duration with color-coded text matching equity curve segment colors (e.g., `SPY LONG | BT 45d | Fwd 14d | Live 5d`)
+- [x] Discrepancy detection — identify cases where forward test shows a trade but no corresponding alert fired (potential alert/webhook issue), and cases where an alert fired but no forward test trade exists; surface discrepancies as annotations on equity curve and as a count on strategy cards
+- [x] Alert tracking mode — enable alert execution tracking per strategy independent of portfolio webhook allocation; allows users to validate alert behavior and build confidence before committing to a live portfolio
+- [x] Live segment uses actual alert trigger prices rather than theoretical bar prices — captures real-world slippage between theoretical entry/exit and actual alert fire time
+- [x] Strategy detail page — dedicated "Live vs. Forward" comparison tab showing side-by-side metrics: theoretical forward test KPIs vs. actual live execution KPIs, with delta highlighting
 
 ### Design Decisions (Phase 13 — Live Alerts Validation)
 - **Three-tier confidence model** — Backtest is retrospective curve-fitting. Forward test proves the strategy works on unseen data but still uses theoretical bar prices. Live alert data is the closest proxy to actual trading — it captures webhook delivery timing, missed signals, and price differences between bar close and alert fire time. Visualizing all three tiers on one equity curve lets users see exactly where theory diverges from reality.
@@ -1193,13 +1193,13 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - **Alert tracking separate from portfolio webhooks** — Users should be able to track alert executions for confidence-building without routing them to a broker. This is essentially paper trading validation — "would my alerts have fired correctly?" — without the commitment of a live portfolio.
 - **Override vs. additive** — When live data exists for a period, it replaces the forward test data for that period on the equity curve (since live is higher fidelity). Periods without live data fall back to forward test. Periods before forward test start show backtest data.
 
-### Phase 14: Live Portfolio Management
+### Phase 14: Live Portfolio Management — 14A COMPLETE (Feb 14, 2026); 14B scaffold in place
 *Active trading account management — bridge between backtesting and real-world trading.*
 
-- [ ] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
-- [ ] Deposit/withdrawal ledger — track additions to and deductions from the trading account balance
-- [ ] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
-- [ ] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
+- [x] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
+- [x] Deposit/withdrawal ledger — track additions to and deductions from the trading account balance
+- [x] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
+- [x] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
 - [ ] Intra-bar real-time alert engine — WebSocket streaming via Alpaca for `[I]` triggers:
   - Subscribe to real-time trades/quotes for active strategy symbols
   - Build partial OHLCV bars from tick data
@@ -1220,6 +1220,13 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] Development — Data Seed (mock mode only)
 - [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
 - [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
+
+### QA Notes — Phases 11–14 (Feb 16, 2026)
+*Issues identified during QA session. To be addressed before final sign-off.*
+
+- [ ] **Webhook strategy detail page — "No data available"** — When a saved webhook inbound strategy is opened on the strategy detail page (My Strategies → click strategy), it shows "No data available for this symbol" instead of loading the CSV-backtested data from `stored_trades`. The detail page should render stored trades the same as a standard strategy.
+- [ ] **Phase 13 test data needed** — To validate live alert tracking (three-color equity curve, Live vs. Forward comparison, discrepancy detection), a strategy with spoofed live execution data (`live_executions`, `alert_tracking_enabled`) needs to be created. No real Alpaca alerts exist yet to test against.
+- [ ] **Ledger record deletion** — The Account Management ledger (Phase 14A) supports adding deposits and withdrawals but does not support removing a record. Add a delete/remove action per ledger row for correcting accidental entries.
 
 ### Phase 16: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*

@@ -2,7 +2,7 @@
   "global": {
     "poll_interval_seconds": 60,
     "market_hours_only": true,
-    "enabled": false
+    "enabled": true
   },
   "strategies": {
     "1": {
@@ -28,34 +28,14 @@
   },
   "portfolios": {
     "1": {
-      "alerts_enabled": true,
-      "alert_on_signal": true,
-      "alert_on_compliance_breach": true,
-      "webhooks": [
-        {
-          "name": "New Webhook",
-          "url": "",
-          "enabled": true,
-          "events": {
-            "entry_long": true,
-            "entry_short": true,
-            "exit_long": true,
-            "exit_short": true,
-            "compliance_breach": true
-          },
-          "payload_template": "",
-          "id": "wh_ff0033"
-        }
-      ]
-    },
-    "5": {
+      "portfolio_id": 1,
       "alerts_enabled": false,
       "alert_on_signal": true,
       "alert_on_compliance_breach": true,
       "webhooks": [
         {
-          "name": "New Webhook",
-          "url": "",
+          "name": "New Webhook test",
+          "url": "https://webhook.site/80f3c796-5c90-4851-add7-68808f7a0532",
           "enabled": true,
           "events": {
             "entry_long": true,
@@ -64,8 +44,50 @@
             "exit_short": true,
             "compliance_breach": true
           },
-          "payload_template": "",
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_ff0033"
+        }
+      ]
+    },
+    "5": {
+      "alerts_enabled": true,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "Actual Test",
+          "url": "https://webhook.site/80f3c796-5c90-4851-add7-68808f7a0532",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": true,
+            "exit_long": true,
+            "exit_short": true,
+            "compliance_breach": true
+          },
+          "payload_template": "{\"symbol\": {{symbol}}, \"quantity\": {{quantity}}, \"action\":\n  {{order_action}}} ",
           "id": "wh_27eaaf"
+        }
+      ]
+    },
+    "4": {
+      "alerts_enabled": false,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "New Webhook Yo",
+          "url": "https://webhook.site/64ecac06-d6a0-4d17-afc0-11a72e104ec1",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": true,
+            "exit_long": true,
+            "exit_short": true,
+            "compliance_breach": true
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_9d0b5b"
         }
       ]
     }

@@ -27,6 +27,7 @@ from interpreters import (
     detect_all_triggers,
     get_confluence_records,
 )
+from confluence_groups import get_enabled_interpreter_keys
 from triggers import generate_trades, calculate_stop_price
 from portfolios import load_portfolios, get_requirement_set_by_id
 
@@ -633,6 +634,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
 
     # Determine position state via generate_trades on recent bars
     confluence_set = set(strategy.get('confluence', [])) if strategy.get('confluence') else None
+    enabled_interp_keys = get_enabled_interpreter_keys()
     trades = generate_trades(
         df,
         direction=strategy.get('direction', 'LONG'),
@@ -645,11 +647,12 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
         stop_config=strategy.get('stop_config'),
         target_config=strategy.get('target_config'),
         bar_count_exit=strategy.get('bar_count_exit'),
+        enabled_interpreter_keys=enabled_interp_keys,
     )
 
     signals = []
     last_bar = df.iloc[-1]
-    interpreter_list = list(INTERPRETERS.keys())
+    interpreter_list = get_enabled_interpreter_keys()
     confluence_records = get_confluence_records(last_bar, "1M", interpreter_list)
 
     # Check the last bar for trigger signals

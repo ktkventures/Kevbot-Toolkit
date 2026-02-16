@@ -141,6 +141,7 @@ from confluence_groups import (
     get_output_descriptions,
     ConfluenceGroup,
     PlotSettings,
+    get_enabled_interpreter_keys,
 )
 import general_packs as gp_module
 import risk_management_packs as rmp_module
@@ -253,6 +254,16 @@ def get_base_trigger_id(confluence_trigger_id: str) -> str:
 # =============================================================================
 # CONFLUENCE RECORD FORMATTING
 # =============================================================================
+
+def get_enabled_gp_columns(df_columns) -> list:
+    """Filter GP_ columns to only include those for currently enabled general packs.
+
+    This is needed because prepare_data_with_indicators() is cached and may
+    contain GP_ columns for packs that have since been disabled.
+    """
+    enabled_ids = {p.id.upper() for p in gp_module.get_enabled_general_packs(gp_module.load_general_packs())}
+    return [c for c in df_columns if c.startswith("GP_") and c[3:] in enabled_ids]
+
 
 def build_interpreter_to_template() -> dict:
     """Build mapping from interpreter keys to template IDs from TEMPLATES data."""
@@ -476,7 +487,8 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
 
     confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
+    general_cols = get_enabled_gp_columns(df.columns)
+    enabled_interp_keys = get_enabled_interpreter_keys()
 
     trades = generate_trades(
         df,
@@ -491,6 +503,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
+        enabled_interpreter_keys=enabled_interp_keys,
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -527,7 +540,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
         confluence_set = confluence_set if confluence_set else None
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
+        general_cols = get_enabled_gp_columns(df.columns)
         return generate_trades(
             df,
             direction=strat['direction'],
@@ -541,6 +554,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             target_config=strat.get('target_config'),
             bar_count_exit=strat.get('bar_count_exit'),
             general_columns=general_cols,
+            enabled_interpreter_keys=get_enabled_interpreter_keys(),
         )
 
 
@@ -584,7 +598,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     confluence_set = set(strat.get('confluence', []))
     confluence_set |= set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
+    general_cols = get_enabled_gp_columns(df.columns)
 
     trades = generate_trades(
         df,
@@ -599,6 +613,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
+        enabled_interpreter_keys=get_enabled_interpreter_keys(),
     )
 
     if len(trades) == 0:
@@ -664,7 +679,7 @@ def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
         return
 
     # Generate trades from the parsed signals
-    trades_df = _generate_webhook_backtest_trades(
+    trades_df, _ = _generate_webhook_backtest_trades(
         parsed, strat['symbol'], strat.get('direction', 'LONG'),
         strat.get('data_days', 30), strat.get('data_seed', 42),
         None, None, strat.get('timeframe', '1Min'),
@@ -782,13 +797,15 @@ def _process_webhook_builder_data(
 
     # Process signals into trades
     with st.spinner("Processing webhook signals..."):
-        trades = _generate_webhook_backtest_trades(
+        trades, df_market = _generate_webhook_backtest_trades(
             signals, symbol, direction, data_days, data_seed,
             start_date, end_date, timeframe,
             risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
         )
 
-    return pd.DataFrame(), trades, trades
+    # Return market data so drill-down tabs (TF, General, Stop, TP) can work
+    df_out = df_market if df_market is not None and len(df_market) > 0 else pd.DataFrame()
+    return df_out, trades, trades
 
 
 def _generate_webhook_backtest_trades(
@@ -799,7 +816,7 @@ def _generate_webhook_backtest_trades(
     """Generate trades from webhook backtest signals.
 
     Pairs entry/exit signals chronologically and applies stop/target logic.
-    Returns a DataFrame matching generate_trades() output format.
+    Returns (trades_df, df_market) — trades DataFrame and the market data used.
     """
     # Pair entries with exits
     pairs = []
@@ -826,7 +843,7 @@ def _generate_webhook_backtest_trades(
     if not pairs:
         return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
                                       "entry_price", "exit_price", "stop_price",
-                                      "pnl", "confluence_records"])
+                                      "pnl", "confluence_records"]), None
 
     # Try to load market data for stop/target evaluation
     df_market = None
@@ -937,6 +954,19 @@ def _generate_webhook_backtest_trades(
             pnl = entry_price - actual_exit_price
         r_multiple = pnl / risk if risk > 0 else 0.0
 
+        # Build confluence records from indicator states at entry bar
+        confluence = set()
+        if df_market is not None and len(df_market) > 0:
+            bars_at_entry = df_market[df_market.index <= entry_time]
+            if len(bars_at_entry) > 0:
+                entry_row = bars_at_entry.iloc[-1]
+                from interpreters import get_confluence_records
+                general_cols = get_enabled_gp_columns(df_market.columns)
+                confluence = get_confluence_records(
+                    entry_row, "1M", get_enabled_interpreter_keys(),
+                    general_columns=general_cols,
+                )
+
         records.append({
             'entry_time': entry_time,
             'exit_time': actual_exit_time,
@@ -946,15 +976,16 @@ def _generate_webhook_backtest_trades(
             'r_multiple': round(r_multiple, 4),
             'win': r_multiple > 0,
             'pnl': round(pnl * (risk_per_trade / risk) if risk > 0 else 0, 2),
-            'confluence_records': set(),
+            'confluence_records': confluence,
         })
 
+    _empty_cols = ["entry_time", "exit_time", "r_multiple", "win",
+                   "entry_price", "exit_price", "stop_price",
+                   "pnl", "confluence_records"]
     if not records:
-        return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
-                                      "entry_price", "exit_price", "stop_price",
-                                      "pnl", "confluence_records"])
+        return pd.DataFrame(columns=_empty_cols), df_market
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(records), df_market
 
 
 def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
@@ -1230,6 +1261,8 @@ def format_exit_triggers_display(strat: dict) -> str:
 
 def count_trading_days(df: pd.DataFrame) -> int:
     """Count unique trading days in a DataFrame with a DatetimeIndex."""
+    if len(df) == 0 or not hasattr(df.index, 'normalize'):
+        return 1
     return max(df.index.normalize().nunique(), 1)
 
 
@@ -1717,6 +1750,8 @@ def analyze_entry_triggers(
     if not effective_exit_triggers and effective_bar_count is None:
         effective_bar_count = 4  # fallback default
 
+    enabled_interp_keys = get_enabled_interpreter_keys(groups)
+
     results = []
     for trig_cid, trig_name in entry_triggers.items():
         base_id = get_base_trigger_id(trig_cid)
@@ -1729,6 +1764,7 @@ def analyze_entry_triggers(
             risk_per_trade=risk_per_trade, stop_config=stop_config,
             target_config=target_config,
             general_columns=general_columns,
+            enabled_interpreter_keys=enabled_interp_keys,
         )
         if len(trades) == 0:
             continue
@@ -1763,6 +1799,7 @@ def analyze_exit_triggers(
     exit_triggers = get_confluence_exit_triggers(groups)
     all_trigger_defs = get_all_triggers(groups)
     base_entry = get_base_trigger_id(entry_trigger_confluence_id)
+    enabled_interp_keys = get_enabled_interpreter_keys(groups)
     results = []
 
     for trig_cid, trig_name in exit_triggers.items():
@@ -1784,6 +1821,7 @@ def analyze_exit_triggers(
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config,
                 general_columns=general_columns,
+                enabled_interpreter_keys=enabled_interp_keys,
             )
         else:
             base_exit = get_base_trigger_id(trig_cid)
@@ -1793,6 +1831,7 @@ def analyze_exit_triggers(
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config,
                 general_columns=general_columns,
+                enabled_interpreter_keys=enabled_interp_keys,
             )
 
         if len(trades) == 0:
@@ -1845,6 +1884,8 @@ def find_best_exit_combinations(
         exit_info[cid] = {'is_bar_count': is_bar_count, 'bar_count_val': bar_count_val,
                           'name': exit_triggers[cid]}
 
+    enabled_interp_keys = get_enabled_interpreter_keys(groups)
+
     results = []
     for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
         for combo in combinations(all_cids, depth):
@@ -1863,6 +1904,7 @@ def find_best_exit_combinations(
                 exit_triggers=signal_base_ids, bar_count_exit=bar_count_exit_val,
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config, general_columns=general_columns,
+                enabled_interpreter_keys=enabled_interp_keys,
             )
 
             if len(trades) < min_trades:
@@ -1926,6 +1968,8 @@ def analyze_risk_management(
     if bar_count_exit and bar_count_val is None:
         bar_count_val = bar_count_exit
 
+    enabled_interp_keys = get_enabled_interpreter_keys(groups)
+
     results = []
 
     for pack in enabled_packs:
@@ -1943,6 +1987,7 @@ def analyze_risk_management(
             risk_per_trade=risk_per_trade, stop_config=sc,
             target_config=tc, confluence_required=confluence_required,
             general_columns=general_columns,
+            enabled_interpreter_keys=enabled_interp_keys,
         )
         if len(trades) == 0:
             continue
@@ -3610,6 +3655,7 @@ def render_strategy_builder():
         st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
 
     # Load data and generate trades
+    selected = st.session_state.selected_confluences
     if _is_webhook_origin:
         # Webhook origin: process uploaded backtest signals
         df, trades, filtered_trades = _process_webhook_builder_data(
@@ -3619,6 +3665,11 @@ def render_strategy_builder():
         )
         if df is None:
             return
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+        # Apply confluence filter to webhook trades (same as standard path)
+        if len(selected) > 0 and len(trades) > 0 and 'confluence_records' in trades.columns:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
     else:
         with st.spinner("Loading market data and running analysis..."):
             df = prepare_data_with_indicators(symbol, data_days, data_seed,
@@ -3629,7 +3680,7 @@ def render_strategy_builder():
                 st.error("No data available")
                 return
 
-            general_cols = [c for c in df.columns if c.startswith("GP_")]
+            general_cols = get_enabled_gp_columns(df.columns)
             trades = generate_trades(
                 df,
                 direction=direction,
@@ -3643,6 +3694,7 @@ def render_strategy_builder():
                 target_config=target_config_dict,
                 bar_count_exit=config.get('bar_count_exit'),
                 general_columns=general_cols,
+                enabled_interpreter_keys=get_enabled_interpreter_keys(),
             )
 
         # Apply confluence filter
@@ -3771,7 +3823,7 @@ def render_strategy_builder():
     left_col, right_col = st.columns([1, 1])
 
     with left_col:
-        _has_live_data = strat.get('alert_tracking_enabled') and len(strat.get('live_executions', [])) > 0
+        _has_live_data = config.get('alert_tracking_enabled') and len(config.get('live_executions', [])) > 0
         _chart_tab_names = ["Equity Curve", "Price Chart"]
         if _has_live_data:
             _chart_tab_names.append("Live vs. Forward")
@@ -4394,6 +4446,13 @@ def render_strategy_builder():
                 if len(gen_confluence_df) > 0:
                     gen_confluence_df = gen_confluence_df[gen_confluence_df['confluence'].str.startswith('GEN-')]
 
+                # Filter to only enabled general packs
+                if len(gen_confluence_df) > 0:
+                    enabled_gp_ids = {p.id.upper() for p in enabled_gen}
+                    gen_confluence_df = gen_confluence_df[gen_confluence_df['confluence'].apply(
+                        lambda c: c.split('-')[1] in enabled_gp_ids if len(c.split('-')) >= 2 else False
+                    )]
+
                 if len(gen_confluence_df) > 0:
                     gen_confluence_df = apply_confluence_filters(gen_confluence_df, gen_filters, gen_search, enabled_groups)
                     gen_confluence_df = gen_confluence_df.head(20)
@@ -4431,6 +4490,12 @@ def render_strategy_builder():
         # Tab 5: Stop Loss Optimization
         # =================================================================
         with tab_sl:
+          if _is_webhook_origin:
+            stop_display = format_stop_display(config)
+            st.caption(f"Current: **{stop_display}**")
+            st.info("Stop loss comparison is not yet available for webhook-origin strategies. "
+                     "The current stop/target configuration is applied to your uploaded signals during backtesting.")
+          else:
             sl_filters = st.session_state.confluence_filters
             sl_search_col, sl_action_col, sl_filter_col = st.columns([3, 1.5, 0.5])
             with sl_search_col:
@@ -4506,6 +4571,12 @@ def render_strategy_builder():
         # Tab 6: Take Profit Optimization
         # =================================================================
         with tab_tp:
+          if _is_webhook_origin:
+            tp_display = format_target_display(config)
+            st.caption(f"Current: **{tp_display}**")
+            st.info("Take profit comparison is not yet available for webhook-origin strategies. "
+                     "The current stop/target configuration is applied to your uploaded signals during backtesting.")
+          else:
             tp_filters = st.session_state.confluence_filters
             tp_search_col, tp_action_col, tp_filter_col = st.columns([3, 1.5, 0.5])
             with tp_search_col:
@@ -4585,19 +4656,28 @@ def render_strategy_builder():
             display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
             display['confluences'] = display['confluence_records'].apply(
                 lambda r: ", ".join([format_confluence_record(rec, enabled_groups) for rec in sorted(r)[:3]]) + ("..." if len(r) > 3 else "")
-            )
+            ) if 'confluence_records' in display.columns else ""
+
+            # Build column list based on available columns
+            _tl_cols = ['time']
+            _tl_config = {'time': 'Time'}
+            if 'entry_trigger' in display.columns:
+                _tl_cols.append('entry_trigger')
+                _tl_config['entry_trigger'] = 'Entry'
+            if 'exit_reason' in display.columns:
+                _tl_cols.append('exit_reason')
+                _tl_config['exit_reason'] = 'Exit Reason'
+            _tl_cols.extend(['R', 'result'])
+            _tl_config.update({'R': 'R-Multiple', 'result': 'Result'})
+            if 'confluence_records' in display.columns:
+                _tl_cols.append('confluences')
+                _tl_config['confluences'] = 'Confluences'
+
             st.dataframe(
-                display[['time', 'entry_trigger', 'exit_reason', 'R', 'result', 'confluences']],
+                display[_tl_cols],
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    'time': 'Time',
-                    'entry_trigger': 'Entry',
-                    'exit_reason': 'Exit Reason',
-                    'R': 'R-Multiple',
-                    'result': 'Result',
-                    'confluences': 'Confluences',
-                }
+                column_config=_tl_config,
             )
 
     # =========================================================================
@@ -5625,7 +5705,7 @@ def render_live_backtest(strat: dict):
         with st.spinner("Running backtest with current data..."):
             confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
             confluence_set = confluence_set if confluence_set else None
-            general_cols = [c for c in df.columns if c.startswith("GP_")]
+            general_cols = get_enabled_gp_columns(df.columns)
 
             st.session_state[bt_cache_key] = generate_trades(
                 df,
@@ -5640,6 +5720,7 @@ def render_live_backtest(strat: dict):
                 target_config=strat.get('target_config'),
                 bar_count_exit=strat.get('bar_count_exit'),
                 general_columns=general_cols,
+                enabled_interpreter_keys=get_enabled_interpreter_keys(),
             )
     trades = st.session_state[bt_cache_key]
 
@@ -5736,7 +5817,7 @@ def render_live_backtest(strat: dict):
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
-                        _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
+                        _ext_gc = get_enabled_gp_columns(_ext_df.columns)
                         _ext_trades = generate_trades(
                             _ext_df,
                             direction=strat['direction'],
@@ -5750,6 +5831,7 @@ def render_live_backtest(strat: dict):
                             target_config=strat.get('target_config'),
                             bar_count_exit=strat.get('bar_count_exit'),
                             general_columns=_ext_gc,
+                            enabled_interpreter_keys=get_enabled_interpreter_keys(),
                         )
                         _ext_kpis = calculate_kpis(
                             _ext_trades,
@@ -6327,26 +6409,85 @@ def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.Data
         return str(val)
 
     with st.expander("Extended KPIs"):
-        ext_data = {
-            "": ["Backtest"] + (["Forward Test", "Delta"] if has_fw else []),
-            "Wins": [bt_sec['win_count']] + ([fw_sec['win_count'], _sec_delta(fw_sec['win_count'], bt_sec['win_count'])] if has_fw else []),
-            "Losses": [bt_sec['loss_count']] + ([fw_sec['loss_count'], _sec_delta(fw_sec['loss_count'], bt_sec['loss_count'])] if has_fw else []),
-            "Best Trade": [f"{bt_sec['best_trade_r']:+.2f}R"] + ([f"{fw_sec['best_trade_r']:+.2f}R", f"{fw_sec['best_trade_r'] - bt_sec['best_trade_r']:+.2f}R"] if has_fw else []),
-            "Worst Trade": [f"{bt_sec['worst_trade_r']:+.2f}R"] + ([f"{fw_sec['worst_trade_r']:+.2f}R", f"{fw_sec['worst_trade_r'] - bt_sec['worst_trade_r']:+.2f}R"] if has_fw else []),
-            "Avg Win": [f"{bt_sec['avg_win_r']:+.2f}R"] + ([f"{fw_sec['avg_win_r']:+.2f}R", f"{fw_sec['avg_win_r'] - bt_sec['avg_win_r']:+.2f}R"] if has_fw else []),
-            "Avg Loss": [f"{bt_sec['avg_loss_r']:+.2f}R"] + ([f"{fw_sec['avg_loss_r']:+.2f}R", f"{fw_sec['avg_loss_r'] - bt_sec['avg_loss_r']:+.2f}R"] if has_fw else []),
-            "Max Consec Wins": [bt_sec['max_consec_wins']] + ([fw_sec['max_consec_wins'], _sec_delta(fw_sec['max_consec_wins'], bt_sec['max_consec_wins'])] if has_fw else []),
-            "Max Consec Losses": [bt_sec['max_consec_losses']] + ([fw_sec['max_consec_losses'], _sec_delta(fw_sec['max_consec_losses'], bt_sec['max_consec_losses'])] if has_fw else []),
-            "Payoff Ratio": [_fmt_sec(bt_sec['payoff_ratio'])] + ([_fmt_sec(fw_sec['payoff_ratio']), _sec_delta(fw_sec['payoff_ratio'], bt_sec['payoff_ratio'])] if has_fw else []),
-            "Recovery Factor": [_fmt_sec(bt_sec['recovery_factor'])] + ([_fmt_sec(fw_sec['recovery_factor']), _sec_delta(fw_sec['recovery_factor'], bt_sec['recovery_factor'])] if has_fw else []),
-            "Longest DD": [f"{bt_sec['longest_dd_trades']} trades"] + ([f"{fw_sec['longest_dd_trades']} trades", _sec_delta(fw_sec['longest_dd_trades'], bt_sec['longest_dd_trades'])] if has_fw else []),
-        }
+        def _cmp_row(label, bt_val, fw_val=None, fmt=".2f", prefix="", suffix=""):
+            """Build a comparison row as all-string values to avoid ArrowInvalid."""
+            bt_str = _fmt_kpi(bt_val, fmt=fmt, prefix=prefix, suffix=suffix)
+            if not has_fw:
+                return [bt_str]
+            fw_str = _fmt_kpi(fw_val, fmt=fmt, prefix=prefix, suffix=suffix)
+            if bt_val is None or fw_val is None or bt_val == float('inf') or fw_val == float('inf'):
+                return [bt_str, fw_str, "—"]
+            delta = fw_val - bt_val
+            return [bt_str, fw_str, f"{delta:+{fmt}}{suffix}"]
 
-        st.dataframe(
-            pd.DataFrame(ext_data),
-            use_container_width=True,
-            hide_index=True,
-        )
+        _hdr = ["Backtest"] + (["Forward Test", "Delta"] if has_fw else [])
+        _fw = fw_sec if has_fw else {}
+
+        ext_perf, ext_risk, ext_dist, ext_dd, ext_streak = st.tabs([
+            "Performance", "Risk-Adjusted", "Distribution", "Drawdown", "Streaks"
+        ])
+
+        with ext_perf:
+            perf_data = {"": _hdr}
+            perf_data["Wins"] = _cmp_row("", bt_sec['win_count'], _fw.get('win_count'), fmt="d")
+            perf_data["Losses"] = _cmp_row("", bt_sec['loss_count'], _fw.get('loss_count'), fmt="d")
+            perf_data["Best Trade"] = _cmp_row("", bt_sec['best_trade_r'], _fw.get('best_trade_r'), suffix="R")
+            perf_data["Worst Trade"] = _cmp_row("", bt_sec['worst_trade_r'], _fw.get('worst_trade_r'), suffix="R")
+            perf_data["Avg Win"] = _cmp_row("", bt_sec['avg_win_r'], _fw.get('avg_win_r'), suffix="R")
+            perf_data["Avg Loss"] = _cmp_row("", bt_sec['avg_loss_r'], _fw.get('avg_loss_r'), suffix="R")
+            perf_data["Payoff Ratio"] = _cmp_row("", bt_sec['payoff_ratio'], _fw.get('payoff_ratio'))
+            perf_data["Gain/Pain"] = _cmp_row("", bt_sec.get('gain_pain_ratio'), _fw.get('gain_pain_ratio'))
+            perf_data["Common Sense"] = _cmp_row("", bt_sec.get('common_sense_ratio'), _fw.get('common_sense_ratio'))
+            perf_data["Exp. Daily"] = _cmp_row("", bt_sec.get('expected_daily'), _fw.get('expected_daily'), prefix="$")
+            perf_data["Exp. Monthly"] = _cmp_row("", bt_sec.get('expected_monthly'), _fw.get('expected_monthly'), prefix="$")
+            perf_data["Exp. Yearly"] = _cmp_row("", bt_sec.get('expected_yearly'), _fw.get('expected_yearly'), prefix="$")
+            st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
+
+        with ext_risk:
+            risk_data = {"": _hdr}
+            risk_data["Sharpe Ratio"] = _cmp_row("", bt_sec.get('sharpe_ratio'), _fw.get('sharpe_ratio'))
+            risk_data["Sortino Ratio"] = _cmp_row("", bt_sec.get('sortino_ratio'), _fw.get('sortino_ratio'))
+            risk_data["Calmar Ratio"] = _cmp_row("", bt_sec.get('calmar_ratio'), _fw.get('calmar_ratio'))
+            bt_kelly = bt_sec.get('kelly_criterion')
+            fw_kelly = _fw.get('kelly_criterion')
+            risk_data["Kelly Criterion"] = [
+                f"{bt_kelly * 100:.1f}%" if bt_kelly is not None else "—"
+            ] + ([
+                f"{fw_kelly * 100:.1f}%" if fw_kelly is not None else "—",
+                f"{(fw_kelly - bt_kelly) * 100:+.1f}%" if bt_kelly is not None and fw_kelly is not None else "—"
+            ] if has_fw else [])
+            risk_data["Daily VaR (95%)"] = _cmp_row("", bt_sec.get('daily_var_95'), _fw.get('daily_var_95'), prefix="$")
+            risk_data["CVaR (95%)"] = _cmp_row("", bt_sec.get('cvar_95'), _fw.get('cvar_95'), prefix="$")
+            risk_data["Volatility"] = _cmp_row("", bt_sec.get('volatility'), _fw.get('volatility'), fmt=".1f", suffix="%")
+            risk_data["R\u00b2"] = [f"{bt_kpis.get('r_squared', 0):.2f}"] + ([f"{fw_kpis.get('r_squared', 0):.2f}", f"{fw_kpis.get('r_squared', 0) - bt_kpis.get('r_squared', 0):+.2f}"] if has_fw else [])
+            st.dataframe(pd.DataFrame(risk_data), use_container_width=True, hide_index=True)
+
+        with ext_dist:
+            dist_data = {"": _hdr}
+            dist_data["Skewness"] = _cmp_row("", bt_sec.get('skewness'), _fw.get('skewness'))
+            dist_data["Kurtosis"] = _cmp_row("", bt_sec.get('kurtosis'), _fw.get('kurtosis'))
+            dist_data["Tail Ratio"] = _cmp_row("", bt_sec.get('tail_ratio'), _fw.get('tail_ratio'))
+            dist_data["Outlier Win"] = _cmp_row("", bt_sec.get('outlier_win_ratio'), _fw.get('outlier_win_ratio'), fmt=".1f", suffix="x")
+            dist_data["Outlier Loss"] = _cmp_row("", bt_sec.get('outlier_loss_ratio'), _fw.get('outlier_loss_ratio'), fmt=".1f", suffix="x")
+            st.dataframe(pd.DataFrame(dist_data), use_container_width=True, hide_index=True)
+
+        with ext_dd:
+            dd_data = {"": _hdr}
+            dd_data["Max R DD"] = [f"{bt_kpis.get('max_r_drawdown', 0):+.1f}R"] + ([f"{fw_kpis.get('max_r_drawdown', 0):+.1f}R", f"{fw_kpis.get('max_r_drawdown', 0) - bt_kpis.get('max_r_drawdown', 0):+.1f}R"] if has_fw else [])
+            dd_data["Recovery Factor"] = _cmp_row("", bt_sec['recovery_factor'], _fw.get('recovery_factor'), fmt=".1f")
+            dd_data["Ulcer Index"] = _cmp_row("", bt_sec.get('ulcer_index'), _fw.get('ulcer_index'), fmt=".3f")
+            dd_data["Serenity Index"] = _cmp_row("", bt_sec.get('serenity_index'), _fw.get('serenity_index'))
+            dd_data["Longest DD (trades)"] = _cmp_row("", bt_sec['longest_dd_trades'], _fw.get('longest_dd_trades'), fmt="d")
+            bt_dd_days = bt_sec.get('longest_dd_days')
+            fw_dd_days = _fw.get('longest_dd_days')
+            dd_data["Longest DD (days)"] = [str(bt_dd_days) if bt_dd_days is not None else "—"] + ([str(fw_dd_days) if fw_dd_days is not None else "—", _sec_delta(fw_dd_days, bt_dd_days) if bt_dd_days is not None and fw_dd_days is not None else "—"] if has_fw else [])
+            st.dataframe(pd.DataFrame(dd_data), use_container_width=True, hide_index=True)
+
+        with ext_streak:
+            streak_data = {"": _hdr}
+            streak_data["Max Consec. Wins"] = _cmp_row("", bt_sec['max_consec_wins'], _fw.get('max_consec_wins'), fmt="d")
+            streak_data["Max Consec. Losses"] = _cmp_row("", bt_sec['max_consec_losses'], _fw.get('max_consec_losses'), fmt="d")
+            st.dataframe(pd.DataFrame(streak_data), use_container_width=True, hide_index=True)
 
 
 def _add_edge_check_traces(fig, x_values, cumulative_r):
@@ -10651,12 +10792,13 @@ def _render_rmp_preview(pack):
         stop_config = pack.get_stop_config()
         target_config = pack.get_target_config()
 
-        rm_general_cols = [c for c in df.columns if c.startswith("GP_")]
+        rm_general_cols = get_enabled_gp_columns(df.columns)
         trades = generate_trades(
             df, direction=direction, entry_trigger=base_entry,
             exit_triggers=exit_list, bar_count_exit=bar_count,
             risk_per_trade=100.0, stop_config=stop_config,
             target_config=target_config, general_columns=rm_general_cols,
+            enabled_interpreter_keys=get_enabled_interpreter_keys(enabled_groups),
         )
 
     # --- Chart with trade markers ---

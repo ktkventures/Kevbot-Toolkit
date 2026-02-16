@@ -201,6 +201,7 @@ def generate_trades(
     target_config: Optional[dict] = None,
     bar_count_exit: Optional[int] = None,
     general_columns: Optional[List[str]] = None,
+    enabled_interpreter_keys: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
     Generate trades based on real trigger logic.
@@ -255,8 +256,8 @@ def generate_trades(
     use_opposite_signal = (exit_trigger == "opposite_signal" and exit_triggers is None)
     use_time_exit = (exit_trigger == "time_exit_50" and exit_triggers is None)
 
-    # Get interpreter list for confluence records
-    interpreter_list = list(INTERPRETERS.keys())
+    # Get interpreter list for confluence records (only enabled groups if specified)
+    interpreter_list = enabled_interpreter_keys if enabled_interpreter_keys is not None else list(INTERPRETERS.keys())
 
     # State machine
     in_position = False
