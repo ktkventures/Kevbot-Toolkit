@@ -487,8 +487,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
 
     confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
-    general_cols = get_enabled_gp_columns(df.columns)
-    enabled_interp_keys = get_enabled_interpreter_keys()
+    general_cols = [c for c in df.columns if c.startswith("GP_")]
 
     trades = generate_trades(
         df,
@@ -503,7 +502,6 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
-        enabled_interpreter_keys=enabled_interp_keys,
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -540,7 +538,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
         confluence_set = confluence_set if confluence_set else None
-        general_cols = get_enabled_gp_columns(df.columns)
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
         return generate_trades(
             df,
             direction=strat['direction'],
@@ -554,7 +552,6 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             target_config=strat.get('target_config'),
             bar_count_exit=strat.get('bar_count_exit'),
             general_columns=general_cols,
-            enabled_interpreter_keys=get_enabled_interpreter_keys(),
         )
 
 
@@ -598,7 +595,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     confluence_set = set(strat.get('confluence', []))
     confluence_set |= set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
-    general_cols = get_enabled_gp_columns(df.columns)
+    general_cols = [c for c in df.columns if c.startswith("GP_")]
 
     trades = generate_trades(
         df,
@@ -613,7 +610,6 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
-        enabled_interpreter_keys=get_enabled_interpreter_keys(),
     )
 
     if len(trades) == 0:
@@ -961,9 +957,10 @@ def _generate_webhook_backtest_trades(
             if len(bars_at_entry) > 0:
                 entry_row = bars_at_entry.iloc[-1]
                 from interpreters import get_confluence_records
-                general_cols = get_enabled_gp_columns(df_market.columns)
+                general_cols = [c for c in df_market.columns if c.startswith("GP_")]
+                from interpreters import INTERPRETERS
                 confluence = get_confluence_records(
-                    entry_row, "1M", get_enabled_interpreter_keys(),
+                    entry_row, "1M", list(INTERPRETERS.keys()),
                     general_columns=general_cols,
                 )
 
@@ -2756,6 +2753,8 @@ def main():
         st.session_state.editing_strategy_id = None
     if 'confirm_delete_id' not in st.session_state:
         st.session_state.confirm_delete_id = None
+    if 'confirm_delete_ledger_id' not in st.session_state:
+        st.session_state.confirm_delete_ledger_id = None
     if 'confirm_edit_id' not in st.session_state:
         st.session_state.confirm_edit_id = None
     if 'viewing_portfolio_id' not in st.session_state:
@@ -3903,10 +3902,19 @@ def render_strategy_builder():
             with _chart_tabs[2]:
                 _live_execs = strat.get('live_executions', [])
                 _ft_start_dt = datetime.fromisoformat(strat['forward_test_start']) if strat.get('forward_test_start') else None
+                if _ft_start_dt and _ft_start_dt.tzinfo:
+                    _ft_start_dt = _ft_start_dt.replace(tzinfo=None)
                 _stored = strat.get('stored_trades', [])
                 # Get forward test trades
-                _ft_trades = [t for t in _stored
-                              if _ft_start_dt and datetime.fromisoformat(t['entry_time']) >= _ft_start_dt]
+                def _entry_after_ft(t):
+                    try:
+                        dt = datetime.fromisoformat(t['entry_time'])
+                        if dt.tzinfo:
+                            dt = dt.replace(tzinfo=None)
+                        return dt >= _ft_start_dt
+                    except (ValueError, KeyError):
+                        return False
+                _ft_trades = [t for t in _stored if _ft_start_dt and _entry_after_ft(t)]
                 _matched_indices = set(e.get('matched_trade_index') for e in _live_execs if e.get('matched_trade_index') is not None)
 
                 # Forward test KPIs
@@ -5007,6 +5015,8 @@ def render_strategy_list():
                     _bt_days = (datetime.fromisoformat(strat['forward_test_start']) - datetime.fromisoformat(strat['lookback_start_date'])).days
                 elif strat.get('lookback_start_date') and strat.get('lookback_end_date'):
                     _bt_days = (datetime.fromisoformat(strat['lookback_end_date']) - datetime.fromisoformat(strat['lookback_start_date'])).days
+                elif strat.get('data_days'):
+                    _bt_days = strat['data_days']
                 else:
                     _bt_days = None
                 if _bt_days is not None:
@@ -5705,7 +5715,7 @@ def render_live_backtest(strat: dict):
         with st.spinner("Running backtest with current data..."):
             confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
             confluence_set = confluence_set if confluence_set else None
-            general_cols = get_enabled_gp_columns(df.columns)
+            general_cols = [c for c in df.columns if c.startswith("GP_")]
 
             st.session_state[bt_cache_key] = generate_trades(
                 df,
@@ -5720,12 +5730,11 @@ def render_live_backtest(strat: dict):
                 target_config=strat.get('target_config'),
                 bar_count_exit=strat.get('bar_count_exit'),
                 general_columns=general_cols,
-                enabled_interpreter_keys=get_enabled_interpreter_keys(),
             )
     trades = st.session_state[bt_cache_key]
 
     if len(trades) == 0:
-        st.warning("No trades generated. The entry trigger may reference a confluence pack that is no longer enabled.")
+        st.warning("No trades generated for the current data window.")
 
     confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
@@ -5817,7 +5826,7 @@ def render_live_backtest(strat: dict):
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
-                        _ext_gc = get_enabled_gp_columns(_ext_df.columns)
+                        _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
                         _ext_trades = generate_trades(
                             _ext_df,
                             direction=strat['direction'],
@@ -5831,7 +5840,6 @@ def render_live_backtest(strat: dict):
                             target_config=strat.get('target_config'),
                             bar_count_exit=strat.get('bar_count_exit'),
                             general_columns=_ext_gc,
-                            enabled_interpreter_keys=get_enabled_interpreter_keys(),
                         )
                         _ext_kpis = calculate_kpis(
                             _ext_trades,
@@ -5969,8 +5977,8 @@ def _get_strategy_relevant_groups(strat: dict) -> list:
     if not enabled_groups:
         return []
 
-    entry_conf_id = strat.get('entry_trigger_confluence_id', '')
-    exit_conf_id = strat.get('exit_trigger_confluence_id', '')
+    entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
+    exit_conf_id = strat.get('exit_trigger_confluence_id') or ''
     confluence_records = strat.get('confluence', [])
 
     # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
@@ -6095,19 +6103,31 @@ def render_forward_test_view(strat: dict):
             st.session_state[ft_cache_key] = prepare_forward_test_data(strat)
     df, backtest_trades, forward_trades, boundary_dt = st.session_state[ft_cache_key]
 
-    if len(df) == 0:
+    is_webhook = strat.get('strategy_origin') == 'webhook_inbound'
+
+    if len(df) == 0 and not is_webhook:
         st.error("No data available for this symbol.")
         return
 
     all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+
+    if len(all_trades) == 0 and is_webhook:
+        st.warning("No trades available. Upload a CSV or send webhook signals to populate this strategy.")
+        return
+
     extended_data_days = strat.get('extended_data_days', 365)
 
     # Compute trading days for KPI comparison
-    boundary_ts = boundary_dt
-    if df.index.tz is not None and boundary_ts.tzinfo is None:
-        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
-    bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
-    fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
+    if len(df) > 0:
+        boundary_ts = boundary_dt
+        if df.index.tz is not None and boundary_ts.tzinfo is None:
+            boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
+        bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
+        fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
+    else:
+        # Webhook strategies: estimate trading days from trade timestamps
+        bt_trading_days = len(set(str(t['exit_time'])[:10] for t in backtest_trades.to_dict('records'))) if len(backtest_trades) > 0 else 0
+        fw_trading_days = len(set(str(t['exit_time'])[:10] for t in forward_trades.to_dict('records'))) if len(forward_trades) > 0 else 0
 
     st.caption(
         f"BT: {len(backtest_trades)} trades ({bt_trading_days}d) · "
@@ -6129,107 +6149,119 @@ def render_forward_test_view(strat: dict):
 
     # --- Tab 2: Equity & KPIs (Extended) ---
     with tab_kpi_ext:
-        fw_ext_lc1, fw_ext_lc2, fw_ext_lc3 = st.columns([1, 2, 4])
-        strat_timeframe_fw = strat.get('timeframe', '1Min')
-        with fw_ext_lc1:
-            fw_ext_mode = st.selectbox(
-                "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
-        with fw_ext_lc2:
-            if fw_ext_mode == "Days":
-                extended_data_days = st.number_input(
-                    "Days", min_value=7, max_value=1825,
-                    value=strat.get('extended_data_days', 365),
-                    step=7, key="fw_ext_days_slider")
-            elif fw_ext_mode == "Bars/Candles":
-                fw_ext_bars = st.number_input(
-                    "Bars", min_value=100, max_value=500000, value=5000,
-                    step=500, key="fw_ext_bar_count")
-                extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
-            elif fw_ext_mode == "Date Range":
-                from datetime import time as dtime
-                fw_dr1, fw_dr2 = st.columns(2)
-                with fw_dr1:
-                    fw_ext_start = st.date_input(
-                        "Start", value=date(2024, 1, 1),
-                        min_value=date(2016, 1, 1), key="fw_ext_start")
-                with fw_dr2:
-                    fw_ext_end = st.date_input(
-                        "End", value=date.today(),
-                        min_value=date(2016, 1, 1), key="fw_ext_end")
-                if fw_ext_start >= fw_ext_end:
-                    st.error("Start must be before end.")
-                extended_data_days = (fw_ext_end - fw_ext_start).days
-        with fw_ext_lc3:
-            fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
-            st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
+        if is_webhook:
+            st.info("Extended lookback is not available for webhook strategies. All trade data is shown in the primary tab.")
+        else:
+            fw_ext_lc1, fw_ext_lc2, fw_ext_lc3 = st.columns([1, 2, 4])
+            strat_timeframe_fw = strat.get('timeframe', '1Min')
+            with fw_ext_lc1:
+                fw_ext_mode = st.selectbox(
+                    "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
+            with fw_ext_lc2:
+                if fw_ext_mode == "Days":
+                    extended_data_days = st.number_input(
+                        "Days", min_value=7, max_value=1825,
+                        value=strat.get('extended_data_days', 365),
+                        step=7, key="fw_ext_days_slider")
+                elif fw_ext_mode == "Bars/Candles":
+                    fw_ext_bars = st.number_input(
+                        "Bars", min_value=100, max_value=500000, value=5000,
+                        step=500, key="fw_ext_bar_count")
+                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
+                elif fw_ext_mode == "Date Range":
+                    from datetime import time as dtime
+                    fw_dr1, fw_dr2 = st.columns(2)
+                    with fw_dr1:
+                        fw_ext_start = st.date_input(
+                            "Start", value=date(2024, 1, 1),
+                            min_value=date(2016, 1, 1), key="fw_ext_start")
+                    with fw_dr2:
+                        fw_ext_end = st.date_input(
+                            "End", value=date.today(),
+                            min_value=date(2016, 1, 1), key="fw_ext_end")
+                    if fw_ext_start >= fw_ext_end:
+                        st.error("Start must be before end.")
+                    extended_data_days = (fw_ext_end - fw_ext_start).days
+            with fw_ext_lc3:
+                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
+                st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
-        ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
+            ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
 
-        # Lazy load: only compute when user clicks the button
-        if ft_ext_key not in st.session_state:
-            if st.button("Load Extended Data", key="ft_ext_load_btn",
-                         type="primary"):
-                with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
-                    st.session_state[ft_ext_key] = prepare_forward_test_data(
-                        strat, data_days_override=extended_data_days
-                    )
-                st.rerun()
-            else:
-                st.info("Click **Load Extended Data** to run the extended backtest.")
+            # Lazy load: only compute when user clicks the button
+            if ft_ext_key not in st.session_state:
+                if st.button("Load Extended Data", key="ft_ext_load_btn",
+                             type="primary"):
+                    with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
+                        st.session_state[ft_ext_key] = prepare_forward_test_data(
+                            strat, data_days_override=extended_data_days
+                        )
+                    st.rerun()
+                else:
+                    st.info("Click **Load Extended Data** to run the extended backtest.")
 
-        if ft_ext_key in st.session_state:
-            ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
+            if ft_ext_key in st.session_state:
+                ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
 
-            if len(ext_df) == 0:
-                st.warning("No data available for extended period.")
-            else:
-                ext_boundary_ts = ext_boundary
-                if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
-                    ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
-                ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
-                ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
+                if len(ext_df) == 0:
+                    st.warning("No data available for extended period.")
+                else:
+                    ext_boundary_ts = ext_boundary
+                    if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
+                        ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
+                    ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
+                    ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
 
-                render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
+                    render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
 
-                ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
-                render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
-                render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
+                    ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
+                    render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
+                    render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
-        enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
-        show_indicators = []
-        indicator_colors = {}
-        for group in overlay_groups:
-            show_indicators.extend(get_overlay_indicators_for_group(group))
-            indicator_colors.update(get_overlay_colors_for_group(group))
+        if len(df) > 0:
+            enabled_groups = get_enabled_groups()
+            overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+            show_indicators = []
+            indicator_colors = {}
+            for group in overlay_groups:
+                show_indicators.extend(get_overlay_indicators_for_group(group))
+                indicator_colors.update(get_overlay_colors_for_group(group))
 
-        osc_panes = build_secondary_panes(df, enabled_groups)
-        render_chart_with_candle_selector(
-            df, all_trades, strat,
-            show_indicators=show_indicators,
-            indicator_colors=indicator_colors,
-            chart_key='forward_test_chart',
-            secondary_panes=osc_panes if osc_panes else None
-        )
+            osc_panes = build_secondary_panes(df, enabled_groups)
+            render_chart_with_candle_selector(
+                df, all_trades, strat,
+                show_indicators=show_indicators,
+                indicator_colors=indicator_colors,
+                chart_key='forward_test_chart',
+                secondary_panes=osc_panes if osc_panes else None
+            )
+        else:
+            st.info("Price chart not available for webhook strategies (no market data).")
 
         render_split_trade_history(backtest_trades, forward_trades)
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
-        render_chart_with_candle_selector(
-            df, all_trades, strat,
-            show_indicators=[],
-            indicator_colors={},
-            chart_key='trade_history_chart'
-        )
+        if len(df) > 0:
+            render_chart_with_candle_selector(
+                df, all_trades, strat,
+                show_indicators=[],
+                indicator_colors={},
+                chart_key='trade_history_chart'
+            )
+        else:
+            st.info("Price chart not available for webhook strategies (no market data).")
 
         render_split_trade_history(backtest_trades, forward_trades)
 
     # --- Tab 5: Confluence Analysis ---
     with tab_confluence_ft:
-        render_confluence_analysis_tab(df, strat, all_trades)
+        if len(df) > 0:
+            render_confluence_analysis_tab(df, strat, all_trades)
+        else:
+            st.info("Confluence analysis not available for webhook strategies (no indicator data).")
 
     # --- Tab 6: Configuration ---
     with tab_config:
@@ -8579,20 +8611,43 @@ def render_portfolio_account(port: dict, portfolio_id: int):
     if ledger:
         st.markdown("**Ledger**")
         ledger_sorted = sorted(ledger, key=lambda e: e.get('date', ''), reverse=True)
-        ledger_display = []
+        # Header row
+        hdr = st.columns([2, 2, 2, 3, 1])
+        hdr[0].markdown("**Date**")
+        hdr[1].markdown("**Type**")
+        hdr[2].markdown("**Amount**")
+        hdr[3].markdown("**Note**")
+        hdr[4].markdown("**Action**")
         for entry in ledger_sorted:
+            eid = entry.get('id', 0)
             amount = entry.get('amount', 0)
             entry_type = entry.get('type', '')
             type_label = entry_type.replace('_', ' ').title()
             if entry.get('auto'):
                 type_label += " (auto)"
-            ledger_display.append({
-                'Date': entry.get('date', ''),
-                'Type': type_label,
-                'Amount': f"${amount:+,.2f}",
-                'Note': entry.get('note', ''),
-            })
-        st.dataframe(pd.DataFrame(ledger_display), use_container_width=True, hide_index=True)
+            row = st.columns([2, 2, 2, 3, 1])
+            row[0].write(entry.get('date', ''))
+            row[1].write(type_label)
+            row[2].write(f"${amount:+,.2f}")
+            row[3].write(entry.get('note', ''))
+            with row[4]:
+                if st.session_state.confirm_delete_ledger_id == eid:
+                    cc = st.columns(2)
+                    with cc[0]:
+                        if st.button("Yes", key=f"ledger_yes_{eid}", type="primary"):
+                            remove_ledger_entry(port, eid)
+                            update_portfolio(portfolio_id, port)
+                            st.session_state.confirm_delete_ledger_id = None
+                            st.toast("Ledger entry removed")
+                            st.rerun()
+                    with cc[1]:
+                        if st.button("No", key=f"ledger_no_{eid}"):
+                            st.session_state.confirm_delete_ledger_id = None
+                            st.rerun()
+                else:
+                    if st.button("🗑", key=f"ledger_del_{eid}"):
+                        st.session_state.confirm_delete_ledger_id = eid
+                        st.rerun()
 
     # Trading Notes
     st.markdown("---")
@@ -10792,13 +10847,12 @@ def _render_rmp_preview(pack):
         stop_config = pack.get_stop_config()
         target_config = pack.get_target_config()
 
-        rm_general_cols = get_enabled_gp_columns(df.columns)
+        rm_general_cols = [c for c in df.columns if c.startswith("GP_")]
         trades = generate_trades(
             df, direction=direction, entry_trigger=base_entry,
             exit_triggers=exit_list, bar_count_exit=bar_count,
             risk_per_trade=100.0, stop_config=stop_config,
             target_config=target_config, general_columns=rm_general_cols,
-            enabled_interpreter_keys=get_enabled_interpreter_keys(enabled_groups),
         )
 
     # --- Chart with trade markers ---

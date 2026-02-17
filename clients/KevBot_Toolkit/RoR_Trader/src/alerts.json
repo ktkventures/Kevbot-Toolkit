@@ -1,5 +1,1697 @@
 [
   {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-20T11:23:00+00:00",
+    "price": 589.95,
+    "stop_price": 589.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 700,
+    "timestamp": "2026-01-20T11:23:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-20T11:23:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-20T11:33:00+00:00",
+    "price": 588.97,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 701,
+    "timestamp": "2026-01-20T11:33:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-20T11:33:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-01-26T11:22:00+00:00",
+    "price": 593.0,
+    "stop_price": 592.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 702,
+    "timestamp": "2026-01-26T11:22:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-26T11:22:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-26T11:26:00+00:00",
+    "price": 592.03,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 703,
+    "timestamp": "2026-01-26T11:26:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-26T11:26:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-26T13:07:00+00:00",
+    "price": 593.05,
+    "stop_price": 592.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 704,
+    "timestamp": "2026-01-26T13:07:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-26T13:07:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-26T13:31:00+00:00",
+    "price": 592.93,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 705,
+    "timestamp": "2026-01-26T13:31:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-26T13:31:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-27T11:16:00+00:00",
+    "price": 593.5,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 706,
+    "timestamp": "2026-01-27T11:16:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T11:16:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-27T11:17:00+00:00",
+    "price": 592.47,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 707,
+    "timestamp": "2026-01-27T11:17:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T11:17:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-01-27T13:03:00+00:00",
+    "price": 593.55,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 708,
+    "timestamp": "2026-01-27T13:03:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T13:03:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-27T13:19:00+00:00",
+    "price": 592.73,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 709,
+    "timestamp": "2026-01-27T13:19:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T13:19:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-27T22:05:00+00:00",
+    "price": 593.45,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 710,
+    "timestamp": "2026-01-27T22:05:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T22:05:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-27T22:06:00+00:00",
+    "price": 592.85,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 711,
+    "timestamp": "2026-01-27T22:06:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T22:06:00",
+        "success": false,
+        "status_code": 429,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": "HTTP 429"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-01-27T22:07:00+00:00",
+    "price": 593.5,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 712,
+    "timestamp": "2026-01-27T22:07:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T22:07:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-27T22:10:00+00:00",
+    "price": 592.75,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 713,
+    "timestamp": "2026-01-27T22:10:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T22:10:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-01-27T23:49:00+00:00",
+    "price": 593.45,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 714,
+    "timestamp": "2026-01-27T23:49:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T23:49:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-27T23:56:00+00:00",
+    "price": 593.24,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 715,
+    "timestamp": "2026-01-27T23:56:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-27T23:56:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-28T00:05:00+00:00",
+    "price": 593.5,
+    "stop_price": 592.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 716,
+    "timestamp": "2026-01-28T00:05:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-28T00:05:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-28T09:27:00+00:00",
+    "price": 623.6,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 717,
+    "timestamp": "2026-01-28T09:27:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-28T09:27:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-01-29T21:56:00+00:00",
+    "price": 594.55,
+    "stop_price": 593.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 718,
+    "timestamp": "2026-01-29T21:56:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-29T21:56:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-29T21:58:00+00:00",
+    "price": 593.53,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 719,
+    "timestamp": "2026-01-29T21:58:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-29T21:58:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-01-30T12:36:00+00:00",
+    "price": 594.95,
+    "stop_price": 594.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 720,
+    "timestamp": "2026-01-30T12:36:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-30T12:36:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-01-30T12:38:00+00:00",
+    "price": 593.97,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 721,
+    "timestamp": "2026-01-30T12:38:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-01-30T12:38:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-02T10:31:00+00:00",
+    "price": 596.5,
+    "stop_price": 595.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 722,
+    "timestamp": "2026-02-02T10:31:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-02T10:31:00",
+        "success": false,
+        "status_code": 500,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": "HTTP 500"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-02T10:35:00+00:00",
+    "price": 595.53,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 723,
+    "timestamp": "2026-02-02T10:35:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-02T10:35:00",
+        "success": false,
+        "status_code": 429,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": "HTTP 429"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-02-03T21:29:00+00:00",
+    "price": 597.05,
+    "stop_price": 596.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 724,
+    "timestamp": "2026-02-03T21:29:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-03T21:29:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-03T21:30:00+00:00",
+    "price": 595.97,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 725,
+    "timestamp": "2026-02-03T21:30:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-03T21:30:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-03T22:04:00+00:00",
+    "price": 596.95,
+    "stop_price": 596.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 726,
+    "timestamp": "2026-02-03T22:04:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-03T22:04:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-03T22:07:00+00:00",
+    "price": 596.55,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 727,
+    "timestamp": "2026-02-03T22:07:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-03T22:07:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-09T11:51:00+00:00",
+    "price": 600.05,
+    "stop_price": 599.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 728,
+    "timestamp": "2026-02-09T11:51:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-09T11:51:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-09T11:57:00+00:00",
+    "price": 599.03,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 729,
+    "timestamp": "2026-02-09T11:57:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-09T11:57:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-02-11T00:28:00+00:00",
+    "price": 600.45,
+    "stop_price": 599.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 730,
+    "timestamp": "2026-02-11T00:28:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T00:28:00",
+        "success": false,
+        "status_code": 500,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": "HTTP 500"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-11T09:00:00+00:00",
+    "price": 599.47,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 731,
+    "timestamp": "2026-02-11T09:00:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T09:00:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-11T09:07:00+00:00",
+    "price": 600.5,
+    "stop_price": 599.5,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 732,
+    "timestamp": "2026-02-11T09:07:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T09:07:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-11T09:15:00+00:00",
+    "price": 600.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 733,
+    "timestamp": "2026-02-11T09:15:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T09:15:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-02-11T21:28:00+00:00",
+    "price": 601.05,
+    "stop_price": 600.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 734,
+    "timestamp": "2026-02-11T21:28:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T21:28:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-11T21:59:00+00:00",
+    "price": 599.97,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 735,
+    "timestamp": "2026-02-11T21:59:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-11T21:59:00",
+        "success": false,
+        "status_code": 429,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": "HTTP 429"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-13T21:37:00+00:00",
+    "price": 601.95,
+    "stop_price": 601.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 736,
+    "timestamp": "2026-02-13T21:37:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-13T21:37:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-13T21:42:00+00:00",
+    "price": 601.03,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 737,
+    "timestamp": "2026-02-13T21:42:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-13T21:42:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL"
+    ],
+    "bar_time": "2026-02-13T22:06:00+00:00",
+    "price": 602.0,
+    "stop_price": 601.0,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 738,
+    "timestamp": "2026-02-13T22:06:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-13T22:06:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bear",
+    "confluence_met": [],
+    "bar_time": "2026-02-13T22:13:00+00:00",
+    "price": 601.32,
+    "atr": 1.25,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 739,
+    "timestamp": "2026-02-13T22:13:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_9d0b5b",
+        "webhook_name": "New Webhook Yo",
+        "portfolio_id": 4,
+        "sent_at": "2026-02-13T22:13:00",
+        "success": true,
+        "status_code": 200,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": \"1\"}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-04T14:30:00+00:00",
+    "price": 598.5,
+    "stop_price": 597.5,
+    "atr": 1.15,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 740,
+    "timestamp": "2026-02-04T14:30:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "strategy_id": 1,
+    "strategy_name": "SPY LONG - EMA Cross (20d Forward Test)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "trigger": "ema_cross_bull",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+"
+    ],
+    "bar_time": "2026-02-10T11:00:00+00:00",
+    "price": 599.5,
+    "stop_price": 598.5,
+    "atr": 1.15,
+    "portfolio_context": [
+      {
+        "portfolio_id": 4,
+        "portfolio_name": "My Portfolio",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 741,
+    "timestamp": "2026-02-10T11:00:00.000000",
+    "acknowledged": false,
+    "webhook_deliveries": [],
+    "webhook_sent": false
+  },
+  {
     "type": "compliance_breach",
     "level": "portfolio",
     "portfolio_id": 4,

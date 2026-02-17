@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.21
+**Version:** 0.22
 **Date:** February 16, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 14A Complete — Phases 11, 12, 13, 14A implemented; Phase 14B scaffold in place (Alpaca SIP upgrade pending); QA fixes applied
+**Status:** Phase 14A Complete — Phases 11, 12, 13, 14A implemented; Phase 14B scaffold in place (Alpaca SIP upgrade pending); QA round 2 fixes applied
 
 ---
 
@@ -1222,11 +1222,13 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
 
 ### QA Notes — Phases 11–14 (Feb 16, 2026)
-*Issues identified during QA session. To be addressed before final sign-off.*
+*Issues identified and resolved during QA session.*
 
-- [ ] **Webhook strategy detail page — "No data available"** — When a saved webhook inbound strategy is opened on the strategy detail page (My Strategies → click strategy), it shows "No data available for this symbol" instead of loading the CSV-backtested data from `stored_trades`. The detail page should render stored trades the same as a standard strategy.
-- [ ] **Phase 13 test data needed** — To validate live alert tracking (three-color equity curve, Live vs. Forward comparison, discrepancy detection), a strategy with spoofed live execution data (`live_executions`, `alert_tracking_enabled`) needs to be created. No real Alpaca alerts exist yet to test against.
-- [ ] **Ledger record deletion** — The Account Management ledger (Phase 14A) supports adding deposits and withdrawals but does not support removing a record. Add a delete/remove action per ledger row for correcting accidental entries.
+- [x] **Webhook strategy detail page — "No data available"** — Webhook strategies now render correctly on the detail page using `stored_trades`. Price Chart, Extended Lookback, and Confluence Analysis tabs show informational messages (no market data for webhook strategies). Fixed `NoneType.startswith` crash for null `exit_trigger_confluence_id`.
+- [x] **Phase 13 test data** — SPY LONG strategy (id=1) populated with spoofed live execution data: 40 live_executions (20 matched trades) across 11 trading days, 5 discrepancies (3 missed alerts, 2 phantom alerts), 42 matching alerts in alerts.json. Forward test start moved to Jan 20 for 27 days of forward testing coverage.
+- [x] **Ledger record deletion** — Each ledger row now has a trash-can delete button with two-step confirmation (Yes/No). Uses existing `remove_ledger_entry()` from portfolios.py.
+- [x] **Confluence pack filtering scoped to builder** — Disabled confluence packs now only affect the Strategy Builder evaluation/drill-down tabs. Existing strategies, portfolios, strategy detail pages, alert monitor, and webhook processing use ALL interpreters and GP columns regardless of enabled state. Previously, disabling a pack could cause "No trades generated" on portfolio pages.
+- [x] **Strategy card BT days caption** — BT days now shows on strategy cards using `data_days` as fallback when `lookback_start_date` is not set. Caption format: `SPY LONG | BT 30d | Fwd 27d | Live 11d`.
 
 ### Phase 16: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*

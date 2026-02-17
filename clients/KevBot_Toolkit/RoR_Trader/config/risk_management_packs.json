@@ -18,7 +18,7 @@
       "base_template": "atr_based",
       "version": "Tight",
       "description": "1x ATR stop, 2x ATR target",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "stop_atr_mult": 1.0,
@@ -42,7 +42,7 @@
       "base_template": "percentage",
       "version": "0.5% / 1%",
       "description": "0.5% stop, 1% target",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "stop_pct": 0.5,
@@ -54,7 +54,7 @@
       "base_template": "swing",
       "version": "Swing 2R",
       "description": "Swing-based stop with 2:1 reward",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "lookback": 5,

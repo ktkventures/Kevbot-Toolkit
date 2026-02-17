@@ -37,7 +37,7 @@
     "alerts": false,
     "id": 1,
     "created_at": "2026-01-16T10:00:00.000000",
-    "forward_test_start": "2026-02-12T17:31:06.794171",
+    "forward_test_start": "2026-01-20T10:00:00.000000",
     "equity_curve_data": {
       "exit_times": [
         "2025-12-15T22:43:00+00:00",
@@ -274,142 +274,685 @@
         "entry_time": "2026-01-20T11:23:00+00:00",
         "exit_time": "2026-01-20T11:33:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 590.0,
+        "stop_price": 589.0,
+        "exit_price": 589.0
       },
       {
         "entry_time": "2026-01-26T11:22:00+00:00",
         "exit_time": "2026-01-26T11:26:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 593.0,
+        "stop_price": 592.0,
+        "exit_price": 592.0
       },
       {
         "entry_time": "2026-01-26T13:07:00+00:00",
         "exit_time": "2026-01-26T13:31:00+00:00",
         "r_multiple": -0.0447,
-        "win": false
+        "win": false,
+        "entry_price": 593.0,
+        "stop_price": 592.0,
+        "exit_price": 592.96
       },
       {
         "entry_time": "2026-01-26T23:44:00+00:00",
         "exit_time": "2026-01-27T00:00:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 593.0,
+        "stop_price": 592.0,
+        "exit_price": 592.0
       },
       {
         "entry_time": "2026-01-27T11:16:00+00:00",
         "exit_time": "2026-01-27T11:17:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 592.5
       },
       {
         "entry_time": "2026-01-27T13:03:00+00:00",
         "exit_time": "2026-01-27T13:19:00+00:00",
         "r_multiple": -0.8029,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 592.7
       },
       {
         "entry_time": "2026-01-27T22:05:00+00:00",
         "exit_time": "2026-01-27T22:06:00+00:00",
         "r_multiple": -0.6236,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 592.88
       },
       {
         "entry_time": "2026-01-27T22:07:00+00:00",
         "exit_time": "2026-01-27T22:10:00+00:00",
         "r_multiple": -0.7806,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 592.72
       },
       {
         "entry_time": "2026-01-27T22:17:00+00:00",
         "exit_time": "2026-01-27T22:27:00+00:00",
         "r_multiple": -0.5784,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 592.92
       },
       {
         "entry_time": "2026-01-27T23:49:00+00:00",
         "exit_time": "2026-01-27T23:56:00+00:00",
         "r_multiple": -0.2885,
-        "win": false
+        "win": false,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 593.21
       },
       {
         "entry_time": "2026-01-28T00:05:00+00:00",
         "exit_time": "2026-01-28T09:27:00+00:00",
         "r_multiple": 30.1335,
-        "win": true
+        "win": true,
+        "entry_price": 593.5,
+        "stop_price": 592.5,
+        "exit_price": 623.63
       },
       {
         "entry_time": "2026-01-29T21:56:00+00:00",
         "exit_time": "2026-01-29T21:58:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 594.5,
+        "stop_price": 593.5,
+        "exit_price": 593.5
       },
       {
         "entry_time": "2026-01-30T12:36:00+00:00",
         "exit_time": "2026-01-30T12:38:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 595.0,
+        "stop_price": 594.0,
+        "exit_price": 594.0
       },
       {
         "entry_time": "2026-02-02T10:31:00+00:00",
         "exit_time": "2026-02-02T10:35:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 596.5,
+        "stop_price": 595.5,
+        "exit_price": 595.5
       },
       {
         "entry_time": "2026-02-03T21:29:00+00:00",
         "exit_time": "2026-02-03T21:30:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 597.0,
+        "stop_price": 596.0,
+        "exit_price": 596.0
       },
       {
         "entry_time": "2026-02-03T22:04:00+00:00",
         "exit_time": "2026-02-03T22:07:00+00:00",
         "r_multiple": -0.4815,
-        "win": false
+        "win": false,
+        "entry_price": 597.0,
+        "stop_price": 596.0,
+        "exit_price": 596.52
       },
       {
         "entry_time": "2026-02-05T10:11:00+00:00",
         "exit_time": "2026-02-05T10:35:00+00:00",
         "r_multiple": 0.0,
-        "win": false
+        "win": false,
+        "entry_price": 598.0,
+        "stop_price": 597.0,
+        "exit_price": 598.0
       },
       {
         "entry_time": "2026-02-09T11:51:00+00:00",
         "exit_time": "2026-02-09T11:57:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 600.0,
+        "stop_price": 599.0,
+        "exit_price": 599.0
       },
       {
         "entry_time": "2026-02-11T00:28:00+00:00",
         "exit_time": "2026-02-11T09:00:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 600.5,
+        "stop_price": 599.5,
+        "exit_price": 599.5
       },
       {
         "entry_time": "2026-02-11T09:07:00+00:00",
         "exit_time": "2026-02-11T09:15:00+00:00",
         "r_multiple": -0.527,
-        "win": false
+        "win": false,
+        "entry_price": 600.5,
+        "stop_price": 599.5,
+        "exit_price": 599.97
       },
       {
         "entry_time": "2026-02-11T21:28:00+00:00",
         "exit_time": "2026-02-11T21:59:00+00:00",
         "r_multiple": -1.0,
-        "win": false
+        "win": false,
+        "entry_price": 601.0,
+        "stop_price": 600.0,
+        "exit_price": 600.0
       },
       {
         "entry_time": "2026-02-13T21:37:00+00:00",
         "exit_time": "2026-02-13T21:42:00+00:00",
+        "entry_price": 602.0,
+        "exit_price": 601.0,
+        "stop_price": 601.0,
         "r_multiple": -1.0,
         "win": false
       },
       {
         "entry_time": "2026-02-13T22:06:00+00:00",
         "exit_time": "2026-02-13T22:13:00+00:00",
+        "entry_price": 602.0,
+        "exit_price": 601.35,
+        "stop_price": 601.0,
         "r_multiple": -0.6545,
         "win": false
       }
     ],
-    "alert_tracking_enabled": true
+    "alert_tracking_enabled": true,
+    "live_executions": [
+      {
+        "alert_id": 700,
+        "type": "entry",
+        "alert_timestamp": "2026-01-20T11:23:00.000000",
+        "alert_price": 589.95,
+        "theoretical_price": 590.0,
+        "slippage_r": -0.05,
+        "matched_trade_index": 22,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 701,
+        "type": "exit",
+        "alert_timestamp": "2026-01-20T11:33:00.000000",
+        "alert_price": 588.97,
+        "theoretical_price": 589.0,
+        "slippage_r": -0.03,
+        "matched_trade_index": 22,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 702,
+        "type": "entry",
+        "alert_timestamp": "2026-01-26T11:22:00.000000",
+        "alert_price": 593.0,
+        "theoretical_price": 593.0,
+        "slippage_r": 0.0,
+        "matched_trade_index": 23,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 703,
+        "type": "exit",
+        "alert_timestamp": "2026-01-26T11:26:00.000000",
+        "alert_price": 592.03,
+        "theoretical_price": 592.0,
+        "slippage_r": 0.03,
+        "matched_trade_index": 23,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 704,
+        "type": "entry",
+        "alert_timestamp": "2026-01-26T13:07:00.000000",
+        "alert_price": 593.05,
+        "theoretical_price": 593.0,
+        "slippage_r": 0.05,
+        "matched_trade_index": 24,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 705,
+        "type": "exit",
+        "alert_timestamp": "2026-01-26T13:31:00.000000",
+        "alert_price": 592.93,
+        "theoretical_price": 592.96,
+        "slippage_r": -0.03,
+        "matched_trade_index": 24,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 706,
+        "type": "entry",
+        "alert_timestamp": "2026-01-27T11:16:00.000000",
+        "alert_price": 593.5,
+        "theoretical_price": 593.5,
+        "slippage_r": 0.0,
+        "matched_trade_index": 26,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 707,
+        "type": "exit",
+        "alert_timestamp": "2026-01-27T11:17:00.000000",
+        "alert_price": 592.47,
+        "theoretical_price": 592.5,
+        "slippage_r": -0.03,
+        "matched_trade_index": 26,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 708,
+        "type": "entry",
+        "alert_timestamp": "2026-01-27T13:03:00.000000",
+        "alert_price": 593.55,
+        "theoretical_price": 593.5,
+        "slippage_r": 0.05,
+        "matched_trade_index": 27,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 709,
+        "type": "exit",
+        "alert_timestamp": "2026-01-27T13:19:00.000000",
+        "alert_price": 592.73,
+        "theoretical_price": 592.7,
+        "slippage_r": 0.03,
+        "matched_trade_index": 27,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 710,
+        "type": "entry",
+        "alert_timestamp": "2026-01-27T22:05:00.000000",
+        "alert_price": 593.45,
+        "theoretical_price": 593.5,
+        "slippage_r": -0.05,
+        "matched_trade_index": 28,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 711,
+        "type": "exit",
+        "alert_timestamp": "2026-01-27T22:06:00.000000",
+        "alert_price": 592.85,
+        "theoretical_price": 592.88,
+        "slippage_r": -0.03,
+        "matched_trade_index": 28,
+        "webhook_delivered": false,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 712,
+        "type": "entry",
+        "alert_timestamp": "2026-01-27T22:07:00.000000",
+        "alert_price": 593.5,
+        "theoretical_price": 593.5,
+        "slippage_r": 0.0,
+        "matched_trade_index": 29,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 713,
+        "type": "exit",
+        "alert_timestamp": "2026-01-27T22:10:00.000000",
+        "alert_price": 592.75,
+        "theoretical_price": 592.72,
+        "slippage_r": 0.03,
+        "matched_trade_index": 29,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 714,
+        "type": "entry",
+        "alert_timestamp": "2026-01-27T23:49:00.000000",
+        "alert_price": 593.45,
+        "theoretical_price": 593.5,
+        "slippage_r": -0.05,
+        "matched_trade_index": 31,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 715,
+        "type": "exit",
+        "alert_timestamp": "2026-01-27T23:56:00.000000",
+        "alert_price": 593.24,
+        "theoretical_price": 593.21,
+        "slippage_r": 0.03,
+        "matched_trade_index": 31,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 716,
+        "type": "entry",
+        "alert_timestamp": "2026-01-28T00:05:00.000000",
+        "alert_price": 593.5,
+        "theoretical_price": 593.5,
+        "slippage_r": 0.0,
+        "matched_trade_index": 32,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 717,
+        "type": "exit",
+        "alert_timestamp": "2026-01-28T09:27:00.000000",
+        "alert_price": 623.6,
+        "theoretical_price": 623.63,
+        "slippage_r": -0.03,
+        "matched_trade_index": 32,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 718,
+        "type": "entry",
+        "alert_timestamp": "2026-01-29T21:56:00.000000",
+        "alert_price": 594.55,
+        "theoretical_price": 594.5,
+        "slippage_r": 0.05,
+        "matched_trade_index": 33,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 719,
+        "type": "exit",
+        "alert_timestamp": "2026-01-29T21:58:00.000000",
+        "alert_price": 593.53,
+        "theoretical_price": 593.5,
+        "slippage_r": 0.03,
+        "matched_trade_index": 33,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 720,
+        "type": "entry",
+        "alert_timestamp": "2026-01-30T12:36:00.000000",
+        "alert_price": 594.95,
+        "theoretical_price": 595.0,
+        "slippage_r": -0.05,
+        "matched_trade_index": 34,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 721,
+        "type": "exit",
+        "alert_timestamp": "2026-01-30T12:38:00.000000",
+        "alert_price": 593.97,
+        "theoretical_price": 594.0,
+        "slippage_r": -0.03,
+        "matched_trade_index": 34,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 722,
+        "type": "entry",
+        "alert_timestamp": "2026-02-02T10:31:00.000000",
+        "alert_price": 596.5,
+        "theoretical_price": 596.5,
+        "slippage_r": 0.0,
+        "matched_trade_index": 35,
+        "webhook_delivered": false,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 723,
+        "type": "exit",
+        "alert_timestamp": "2026-02-02T10:35:00.000000",
+        "alert_price": 595.53,
+        "theoretical_price": 595.5,
+        "slippage_r": 0.03,
+        "matched_trade_index": 35,
+        "webhook_delivered": false,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 724,
+        "type": "entry",
+        "alert_timestamp": "2026-02-03T21:29:00.000000",
+        "alert_price": 597.05,
+        "theoretical_price": 597.0,
+        "slippage_r": 0.05,
+        "matched_trade_index": 36,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 725,
+        "type": "exit",
+        "alert_timestamp": "2026-02-03T21:30:00.000000",
+        "alert_price": 595.97,
+        "theoretical_price": 596.0,
+        "slippage_r": -0.03,
+        "matched_trade_index": 36,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 726,
+        "type": "entry",
+        "alert_timestamp": "2026-02-03T22:04:00.000000",
+        "alert_price": 596.95,
+        "theoretical_price": 597.0,
+        "slippage_r": -0.05,
+        "matched_trade_index": 37,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 727,
+        "type": "exit",
+        "alert_timestamp": "2026-02-03T22:07:00.000000",
+        "alert_price": 596.55,
+        "theoretical_price": 596.52,
+        "slippage_r": 0.03,
+        "matched_trade_index": 37,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 728,
+        "type": "entry",
+        "alert_timestamp": "2026-02-09T11:51:00.000000",
+        "alert_price": 600.05,
+        "theoretical_price": 600.0,
+        "slippage_r": 0.05,
+        "matched_trade_index": 39,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 729,
+        "type": "exit",
+        "alert_timestamp": "2026-02-09T11:57:00.000000",
+        "alert_price": 599.03,
+        "theoretical_price": 599.0,
+        "slippage_r": 0.03,
+        "matched_trade_index": 39,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 730,
+        "type": "entry",
+        "alert_timestamp": "2026-02-11T00:28:00.000000",
+        "alert_price": 600.45,
+        "theoretical_price": 600.5,
+        "slippage_r": -0.05,
+        "matched_trade_index": 40,
+        "webhook_delivered": false,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 731,
+        "type": "exit",
+        "alert_timestamp": "2026-02-11T09:00:00.000000",
+        "alert_price": 599.47,
+        "theoretical_price": 599.5,
+        "slippage_r": -0.03,
+        "matched_trade_index": 40,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 732,
+        "type": "entry",
+        "alert_timestamp": "2026-02-11T09:07:00.000000",
+        "alert_price": 600.5,
+        "theoretical_price": 600.5,
+        "slippage_r": 0.0,
+        "matched_trade_index": 41,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 733,
+        "type": "exit",
+        "alert_timestamp": "2026-02-11T09:15:00.000000",
+        "alert_price": 600.0,
+        "theoretical_price": 599.97,
+        "slippage_r": 0.03,
+        "matched_trade_index": 41,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 734,
+        "type": "entry",
+        "alert_timestamp": "2026-02-11T21:28:00.000000",
+        "alert_price": 601.05,
+        "theoretical_price": 601.0,
+        "slippage_r": 0.05,
+        "matched_trade_index": 42,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 735,
+        "type": "exit",
+        "alert_timestamp": "2026-02-11T21:59:00.000000",
+        "alert_price": 599.97,
+        "theoretical_price": 600.0,
+        "slippage_r": -0.03,
+        "matched_trade_index": 42,
+        "webhook_delivered": false,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 736,
+        "type": "entry",
+        "alert_timestamp": "2026-02-13T21:37:00.000000",
+        "alert_price": 601.95,
+        "theoretical_price": 602.0,
+        "slippage_r": -0.05,
+        "matched_trade_index": 43,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 737,
+        "type": "exit",
+        "alert_timestamp": "2026-02-13T21:42:00.000000",
+        "alert_price": 601.03,
+        "theoretical_price": 601.0,
+        "slippage_r": 0.03,
+        "matched_trade_index": 43,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 738,
+        "type": "entry",
+        "alert_timestamp": "2026-02-13T22:06:00.000000",
+        "alert_price": 602.0,
+        "theoretical_price": 602.0,
+        "slippage_r": 0.0,
+        "matched_trade_index": 44,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      },
+      {
+        "alert_id": 739,
+        "type": "exit",
+        "alert_timestamp": "2026-02-13T22:13:00.000000",
+        "alert_price": 601.32,
+        "theoretical_price": 601.35,
+        "slippage_r": -0.03,
+        "matched_trade_index": 44,
+        "webhook_delivered": true,
+        "webhook_delivery_count": 1
+      }
+    ],
+    "discrepancies": [
+      {
+        "type": "missed_alert",
+        "trade_index": 25,
+        "trade_entry_time": "2026-01-26T23:44:00+00:00",
+        "detected_at": "2026-02-16T15:44:06.906263"
+      },
+      {
+        "type": "missed_alert",
+        "trade_index": 38,
+        "trade_entry_time": "2026-02-05T10:11:00+00:00",
+        "detected_at": "2026-02-16T15:44:06.906263"
+      },
+      {
+        "type": "missed_alert",
+        "trade_index": 30,
+        "trade_entry_time": "2026-01-27T22:17:00+00:00",
+        "detected_at": "2026-02-16T15:44:06.906263"
+      },
+      {
+        "type": "phantom_alert",
+        "alert_id": 740,
+        "alert_timestamp": "2026-02-04T14:30:00.000000",
+        "detected_at": "2026-02-16T15:44:06.906263"
+      },
+      {
+        "type": "phantom_alert",
+        "alert_id": 741,
+        "alert_timestamp": "2026-02-10T11:00:00.000000",
+        "detected_at": "2026-02-16T15:44:06.906263"
+      }
+    ]
   },
   {
     "name": "NVDA LONG - EMA Cross (14d Forward Test)",

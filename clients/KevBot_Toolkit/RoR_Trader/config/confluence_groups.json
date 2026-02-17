@@ -28,7 +28,7 @@
       "base_template": "macd_line",
       "version": "Default",
       "description": "MACD Line vs Signal with 12/26/9 periods",
-      "enabled": true,
+      "enabled": false,
       "is_default": true,
       "parameters": {
         "fast_period": 12,

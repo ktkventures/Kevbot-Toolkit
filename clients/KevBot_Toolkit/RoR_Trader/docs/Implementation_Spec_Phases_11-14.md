@@ -1251,10 +1251,18 @@ Phase 12 (Webhook Inbound)
 - [ ] Real-time engine connects to Alpaca WebSocket (when configured)
 - [ ] Intra-bar triggers fire on tick data
 
-### QA Fixes Applied (Feb 16, 2026)
+### QA Fixes Applied — Round 1 (Feb 16, 2026)
 - [x] Extended KPIs (Phase 11) now visible in Forward Test view — rewrote `render_kpi_comparison()` with tabbed layout
 - [x] Webhook strategy builder — fixed 6 runtime errors (RangeIndex, unbound `selected`, undefined `strat`, missing columns, empty confluence records, missing market data)
 - [x] Webhook drill-down tabs — TF Conditions and General tabs now populate with confluence records from market data indicators
 - [x] General packs defaults — `dow_weekdays` and `cal_avoid_fomc_nfp` now default to `enabled=True`
-- [x] Confluence pack enabled/disabled checkboxes now control drill-down tab visibility — added `get_enabled_interpreter_keys()` for TF packs and `get_enabled_gp_columns()` for General packs, threaded through all `generate_trades()` call sites
+- [x] Confluence pack enabled/disabled checkboxes now control drill-down tab visibility — added `get_enabled_interpreter_keys()` for TF packs and `get_enabled_gp_columns()` for General packs, threaded through strategy builder call sites
 - [x] Fixed early-return tuple bug in `_generate_webhook_backtest_trades()` when no signal pairs found
+
+### QA Fixes Applied — Round 2 (Feb 16, 2026)
+- [x] **Confluence filtering scoped to builder only** — Reverted `enabled_interpreter_keys` and `get_enabled_gp_columns()` from 6 non-builder call sites (`prepare_forward_test_data`, `get_strategy_trades`, `_generate_incremental_trades`, `render_live_backtest`, extended backtest, RM pack detail) and alerts.py. Disabled packs no longer cause "No trades generated" on portfolios or strategy detail pages.
+- [x] **Webhook strategy detail page** — `render_forward_test_view()` now detects webhook strategies (`is_webhook` flag), skips `len(df) == 0` early return, computes trading days from trade timestamps, and shows informational messages on Price Chart / Confluence / Extended tabs. Fixed `Timestamp` not subscriptable error by converting to `str()` before slicing.
+- [x] **Null confluence ID crash** — Fixed `NoneType.startswith` in `_get_strategy_relevant_groups()` when webhook strategies have `null` entry/exit trigger confluence IDs. Changed `strat.get(..., '')` to `strat.get(...) or ''`.
+- [x] **Ledger record deletion** — Added trash-can delete button per ledger row with two-step Yes/No confirmation. Wired to existing `remove_ledger_entry()` from portfolios.py.
+- [x] **Phase 13 spoofed test data** — SPY LONG strategy (id=1) populated with 40 live_executions across 11 trading days, 5 discrepancies (3 missed, 2 phantom), 42 matching alerts. Forward test start moved to Jan 20 for 27-day forward test window.
+- [x] **Strategy card BT days** — Added `data_days` fallback for BT days display on strategy cards when `lookback_start_date` is not set.
