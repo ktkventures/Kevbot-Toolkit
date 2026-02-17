@@ -164,6 +164,28 @@
         "line_width": 1,
         "visible": true
       }
+    },
+    {
+      "id": "bollinger_squeeze_default",
+      "base_template": "bollinger_squeeze",
+      "version": "Default",
+      "description": "Default Bollinger Squeeze configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "bb_period": 20,
+        "bb_mult": 2.0,
+        "squeeze_pct": 4.0
+      },
+      "plot_settings": {
+        "colors": {
+          "upper_color": "#ef4444",
+          "basis_color": "#a855f7",
+          "lower_color": "#22c55e"
+        },
+        "line_width": 1,
+        "visible": true
+      }
     }
   ]
 }

@@ -146,6 +146,7 @@ from confluence_groups import (
 import general_packs as gp_module
 import risk_management_packs as rmp_module
 import pack_registry
+import pack_builder
 
 
 # =============================================================================
@@ -2816,7 +2817,7 @@ def main():
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
-        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs"],
+        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder"],
         "Strategies": ["Strategy Builder", "My Strategies"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
@@ -2887,6 +2888,8 @@ def main():
             render_risk_management_packs()
         elif sub == "User Packs":
             render_user_packs_page()
+        elif sub == "Pack Builder":
+            render_pack_builder_page()
     elif section == "Strategies":
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
@@ -10040,6 +10043,273 @@ def format_parameters(params: dict, template_id: str) -> str:
         parts.append(f"{short_label}: {value}")
 
     return " | ".join(parts)
+
+
+# =============================================================================
+# PACK BUILDER PAGE
+# =============================================================================
+
+def render_pack_builder_page():
+    """Render the AI-Assisted Pack Builder page."""
+    st.header("Pack Builder")
+    st.caption(
+        "Generate a structured prompt for any LLM to create a new confluence pack. "
+        "Paste the LLM's response back to validate and install."
+    )
+
+    # ── Step 1: Describe Your Pack ──
+    st.subheader("Step 1: Describe Your Pack")
+
+    pack_description = st.text_area(
+        "What indicator do you want to add?",
+        placeholder=(
+            "Example: Bollinger Bands with 3 zones (above upper band, "
+            "between bands, below lower band) and squeeze detection triggers..."
+        ),
+        height=100,
+        key="pb_description",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        category = st.selectbox(
+            "Category",
+            ["Momentum", "Trend", "Volume", "Volatility", "Mean Reversion"],
+            key="pb_category",
+        )
+    with col2:
+        st.info("Works with any LLM: Claude, ChatGPT, Gemini, etc.")
+
+    # Optional Pine Script
+    with st.expander("Pine Script (optional)", expanded=False):
+        pine_script = st.text_area(
+            "Paste TradingView Pine Script code to translate",
+            placeholder="// @version=5\nindicator(...)\n...",
+            height=200,
+            key="pb_pine_script",
+        )
+
+    # Optional parameters
+    with st.expander("Custom Parameters (optional)", expanded=False):
+        st.caption(
+            "Define specific parameters you want. If left empty, "
+            "the LLM will choose appropriate defaults."
+        )
+
+        if "pb_params" not in st.session_state:
+            st.session_state.pb_params = []
+
+        for i, param in enumerate(st.session_state.pb_params):
+            pcols = st.columns([2, 1, 1, 1, 0.5])
+            with pcols[0]:
+                param["name"] = st.text_input(
+                    "Name", value=param.get("name", ""),
+                    key=f"pb_param_name_{i}",
+                )
+            with pcols[1]:
+                param["type"] = st.selectbox(
+                    "Type", ["int", "float"],
+                    index=0 if param.get("type") == "int" else 1,
+                    key=f"pb_param_type_{i}",
+                )
+            with pcols[2]:
+                param["default"] = st.text_input(
+                    "Default", value=str(param.get("default", "")),
+                    key=f"pb_param_default_{i}",
+                )
+            with pcols[3]:
+                param["label"] = st.text_input(
+                    "Label", value=param.get("label", ""),
+                    key=f"pb_param_label_{i}",
+                )
+            with pcols[4]:
+                st.write("")
+                st.write("")
+                if st.button("X", key=f"pb_param_del_{i}"):
+                    st.session_state.pb_params.pop(i)
+                    st.rerun()
+
+        if st.button("+ Add Parameter", key="pb_add_param"):
+            st.session_state.pb_params.append({
+                "name": "", "type": "int", "default": "", "label": ""
+            })
+            st.rerun()
+
+    st.divider()
+
+    # ── Step 2: Generate Prompt ──
+    st.subheader("Step 2: Generate & Copy Prompt")
+
+    if st.button(
+        "Generate Prompt",
+        key="pb_generate",
+        type="primary",
+        disabled=not pack_description.strip(),
+    ):
+        # Build parameters list (filter out empty ones)
+        params = [
+            p for p in st.session_state.get("pb_params", [])
+            if p.get("name", "").strip()
+        ]
+
+        prompt = pack_builder.generate_prompt(
+            pack_description=pack_description,
+            pine_script=pine_script if pine_script else "",
+            parameters=params if params else None,
+            category=category,
+        )
+        st.session_state.pb_generated_prompt = prompt
+
+    if "pb_generated_prompt" in st.session_state:
+        st.text_area(
+            "Generated prompt (copy this to your LLM)",
+            value=st.session_state.pb_generated_prompt,
+            height=300,
+            key="pb_prompt_display",
+        )
+        st.caption(
+            "Copy the prompt above and paste it into Claude, ChatGPT, Gemini, "
+            "or any other LLM. Then paste the LLM's full response in Step 3 below."
+        )
+
+    st.divider()
+
+    # ── Step 3: Paste LLM Response ──
+    st.subheader("Step 3: Paste LLM Response")
+
+    llm_response = st.text_area(
+        "Paste the LLM's full response here",
+        placeholder="Paste the complete response including all code blocks...",
+        height=300,
+        key="pb_llm_response",
+    )
+
+    if st.button(
+        "Parse & Validate",
+        key="pb_parse",
+        type="primary",
+        disabled=not llm_response.strip(),
+    ):
+        # Parse
+        success, parsed, parse_errors = pack_builder.parse_llm_response(llm_response)
+
+        if parse_errors:
+            # Filter warnings vs errors
+            warnings = [e for e in parse_errors if e.startswith("Warning:")]
+            hard_errors = [e for e in parse_errors if not e.startswith("Warning:")]
+            if hard_errors:
+                st.error("Parse errors:")
+                for err in hard_errors:
+                    st.markdown(f"- {err}")
+            if warnings:
+                for w in warnings:
+                    st.warning(w)
+
+        if not success:
+            st.error("Failed to extract all required files from the response.")
+            return
+
+        # Validate
+        valid, validation_errors = pack_builder.validate_parsed_response(parsed)
+
+        if validation_errors:
+            st.error("Validation errors:")
+            for err in validation_errors:
+                st.markdown(f"- {err}")
+            if not valid:
+                st.info(
+                    "Fix the issues above and regenerate, or manually edit "
+                    "the response before pasting again."
+                )
+                return
+
+        st.success("Validation passed!")
+
+        # Store parsed result for preview/install
+        st.session_state.pb_parsed = parsed
+
+    # ── Step 4: Preview & Install ──
+    if "pb_parsed" in st.session_state:
+        parsed = st.session_state.pb_parsed
+        manifest = parsed["manifest"]
+
+        st.divider()
+        st.subheader("Step 4: Review & Install")
+
+        # Preview tabs
+        tabs = st.tabs(["Overview", "manifest.json", "indicator.py", "interpreter.py"])
+
+        with tabs[0]:
+            mcol1, mcol2 = st.columns(2)
+            with mcol1:
+                st.markdown(f"**Name:** {manifest.get('name', '?')}")
+                st.markdown(f"**Slug:** `{manifest.get('slug', '?')}`")
+                st.markdown(f"**Category:** {manifest.get('category', '?')}")
+                st.markdown(f"**Description:** {manifest.get('description', '?')}")
+            with mcol2:
+                st.markdown("**Outputs:**")
+                for out in manifest.get("outputs", []):
+                    desc = manifest.get("output_descriptions", {}).get(out, "")
+                    st.markdown(f"- `{out}`: {desc}")
+
+            st.markdown("**Triggers:**")
+            for trig in manifest.get("triggers", []):
+                st.markdown(
+                    f"- `{manifest.get('trigger_prefix', '')}_{trig['base']}`: "
+                    f"{trig.get('name', '')} "
+                    f"({trig.get('direction', '?')} {trig.get('type', '?')})"
+                )
+
+            st.markdown("**Parameters:**")
+            for key, spec in manifest.get("parameters_schema", {}).items():
+                st.markdown(
+                    f"- **{spec.get('label', key)}** (`{key}`): "
+                    f"default={spec.get('default', '?')}"
+                )
+
+        with tabs[1]:
+            st.code(json.dumps(manifest, indent=2), language="json")
+
+        with tabs[2]:
+            st.code(parsed["indicator_code"], language="python")
+
+        with tabs[3]:
+            st.code(parsed["interpreter_code"], language="python")
+
+        # Install button
+        slug = manifest.get("slug", "unknown")
+        existing_packs = pack_registry.get_registered_packs()
+
+        if slug in existing_packs:
+            st.warning(
+                f"A pack with slug `{slug}` already exists. "
+                f"Delete it from the User Packs page first, or ask the LLM "
+                f"to use a different slug."
+            )
+        else:
+            if st.button(
+                f"Install '{manifest.get('name', slug)}'",
+                key="pb_install",
+                type="primary",
+            ):
+                success, installed_slug, install_errors = (
+                    pack_builder.install_pack_from_parsed(parsed)
+                )
+
+                if success:
+                    st.success(
+                        f"Pack '{manifest.get('name')}' installed! "
+                        f"Go to **User Packs** to see it, or use it in the "
+                        f"**Strategy Builder**."
+                    )
+                    # Clean up session state
+                    st.session_state.pop("pb_parsed", None)
+                    st.session_state.pop("pb_generated_prompt", None)
+                    st.cache_data.clear()
+                else:
+                    st.error("Installation failed:")
+                    for err in install_errors:
+                        st.markdown(f"- {err}")
 
 
 # =============================================================================
