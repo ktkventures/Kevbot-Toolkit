@@ -144,6 +144,26 @@
         "line_width": 1,
         "visible": false
       }
+    },
+    {
+      "id": "rsi_zones_default",
+      "base_template": "rsi_zones",
+      "version": "Default",
+      "description": "Default RSI Zones configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "rsi_period": 14,
+        "overbought": 70.0,
+        "oversold": 30.0
+      },
+      "plot_settings": {
+        "colors": {
+          "rsi_color": "#8b5cf6"
+        },
+        "line_width": 1,
+        "visible": true
+      }
     }
   ]
 }

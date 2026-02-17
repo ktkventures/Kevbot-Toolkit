@@ -372,6 +372,14 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 params["sd2_mult"] = float(old_std)
                 params.pop("tolerance_pct", None)
 
+            # Guard: skip groups referencing templates not in TEMPLATES
+            # (e.g., a user pack that was removed)
+            if base_template not in TEMPLATES:
+                print(f"Warning: skipping group '{group_data['id']}' — "
+                      f"template '{base_template}' not found "
+                      f"(user pack may be removed)")
+                continue
+
             group = ConfluenceGroup(
                 id=group_data["id"],
                 base_template=base_template,

@@ -145,6 +145,7 @@ from confluence_groups import (
 )
 import general_packs as gp_module
 import risk_management_packs as rmp_module
+import pack_registry
 
 
 # =============================================================================
@@ -2807,10 +2808,15 @@ def main():
     if 'tp_results' not in st.session_state:
         st.session_state.tp_results = None
 
+    # Load user packs on startup (once per session)
+    if 'user_packs_loaded' not in st.session_state:
+        pack_registry.scan_and_load_all()
+        st.session_state.user_packs_loaded = True
+
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
-        "Confluence Packs": ["TF Confluence", "General", "Risk Management"],
+        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs"],
         "Strategies": ["Strategy Builder", "My Strategies"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
@@ -2879,6 +2885,8 @@ def main():
             render_general_packs()
         elif sub == "Risk Management":
             render_risk_management_packs()
+        elif sub == "User Packs":
+            render_user_packs_page()
     elif section == "Strategies":
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
@@ -10032,6 +10040,157 @@ def format_parameters(params: dict, template_id: str) -> str:
         parts.append(f"{short_label}: {value}")
 
     return " | ".join(parts)
+
+
+# =============================================================================
+# USER PACKS PAGE
+# =============================================================================
+
+def render_user_packs_page():
+    """Render the User Packs management page."""
+    st.header("User Packs")
+    st.caption(
+        "Manage custom confluence packs installed in "
+        f"`{pack_registry.get_user_packs_dir()}/`"
+    )
+
+    packs = pack_registry.get_registered_packs()
+
+    # Header row with count and refresh
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        valid_count = sum(1 for p in packs.values() if p.is_valid)
+        if packs:
+            st.markdown(
+                f"**{len(packs)}** pack{'s' if len(packs) != 1 else ''} "
+                f"discovered ({valid_count} valid)"
+            )
+    with col2:
+        if st.button("Refresh", key="refresh_user_packs", use_container_width=True):
+            pack_registry.refresh_registry()
+            st.session_state.user_packs_loaded = True
+            st.cache_data.clear()
+            st.rerun()
+
+    if not packs:
+        st.info(
+            "No user packs installed. To add a user pack, create a directory "
+            "under `user_packs/` with a `manifest.json`, `indicator.py`, "
+            "and `interpreter.py`."
+        )
+        return
+
+    st.divider()
+
+    # Pack list
+    for slug, pack_info in sorted(packs.items()):
+        m = pack_info.manifest
+
+        # Build expander label with status icon
+        status_icon = "+" if pack_info.is_valid else "x"
+        pack_name = m.get("name", slug)
+        pack_category = m.get("category", "Unknown")
+
+        with st.expander(
+            f"[{status_icon}] {pack_name}  |  {pack_category}",
+            expanded=False,
+        ):
+            # Status
+            if pack_info.is_valid:
+                st.success("Valid and loaded into pipeline")
+            else:
+                st.error("Validation errors:")
+                for err in pack_info.validation_errors:
+                    st.markdown(f"- {err}")
+
+            # Metadata
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                st.markdown(f"**Slug:** `{slug}`")
+                st.markdown(f"**Category:** {pack_category}")
+            with mcol2:
+                st.markdown(f"**Version:** {m.get('version', '1.0.0')}")
+                st.markdown(f"**Author:** {m.get('author', 'Unknown')}")
+            with mcol3:
+                st.markdown(f"**Pack Type:** {m.get('pack_type', 'tf_confluence')}")
+                st.markdown(f"**Trigger Prefix:** `{m.get('trigger_prefix', '')}`")
+
+            st.markdown(f"**Description:** {m.get('description', '')}")
+
+            # Tabs
+            tabs = st.tabs(["Parameters", "Outputs & Triggers", "Files", "Danger Zone"])
+
+            with tabs[0]:  # Parameters
+                schema = m.get("parameters_schema", {})
+                if schema:
+                    for key, spec in schema.items():
+                        st.markdown(
+                            f"- **{spec.get('label', key)}** (`{key}`): "
+                            f"type=`{spec.get('type', '?')}`, "
+                            f"default=`{spec.get('default', '?')}`"
+                            + (f", range=[{spec.get('min')}, {spec.get('max')}]"
+                               if 'min' in spec else "")
+                        )
+                else:
+                    st.info("No parameters defined")
+
+            with tabs[1]:  # Outputs & Triggers
+                st.markdown("**Interpreter Outputs:**")
+                for out in m.get("outputs", []):
+                    desc = m.get("output_descriptions", {}).get(out, "")
+                    st.markdown(f"- `{out}`: {desc}")
+
+                st.markdown("")
+                st.markdown("**Triggers:**")
+                for trig in m.get("triggers", []):
+                    execution = trig.get("execution", "bar_close")
+                    st.markdown(
+                        f"- `{m.get('trigger_prefix', '')}_{trig['base']}`: "
+                        f"{trig.get('name', '')} "
+                        f"({trig.get('direction', '?')} {trig.get('type', '?')}, "
+                        f"{execution})"
+                    )
+
+                st.markdown("")
+                st.markdown("**Indicator Columns:**")
+                for col in m.get("indicator_columns", []):
+                    st.markdown(f"- `{col}`")
+
+            with tabs[2]:  # Files
+                for fname in ["manifest.json", "indicator.py", "interpreter.py"]:
+                    fpath = pack_info.pack_dir / fname
+                    if fpath.exists():
+                        lang = "json" if fname.endswith(".json") else "python"
+                        st.markdown(f"**{fname}**")
+                        st.code(fpath.read_text(), language=lang)
+                    else:
+                        st.warning(f"Missing: {fname}")
+
+            with tabs[3]:  # Danger Zone
+                st.warning(
+                    "Deleting a user pack removes all files from disk and "
+                    "disables associated confluence groups."
+                )
+                confirm_key = f"confirm_delete_user_pack_{slug}"
+                if st.button(
+                    f"Delete '{pack_name}'",
+                    key=f"delete_user_pack_{slug}",
+                    type="primary",
+                ):
+                    st.session_state[confirm_key] = True
+
+                if st.session_state.get(confirm_key):
+                    col_y, col_n = st.columns(2)
+                    with col_y:
+                        if st.button("Yes, Delete", key=f"confirm_y_up_{slug}"):
+                            pack_registry.delete_pack(slug)
+                            st.session_state.pop(confirm_key, None)
+                            st.cache_data.clear()
+                            st.rerun()
+                    with col_n:
+                        if st.button("Cancel", key=f"confirm_n_up_{slug}"):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
 
 
 # =============================================================================

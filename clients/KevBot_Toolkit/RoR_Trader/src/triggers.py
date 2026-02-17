@@ -419,7 +419,24 @@ def get_opposite_trigger(trigger_id: str) -> Optional[str]:
         "vwap_cross_above": "vwap_cross_below",
         "vwap_cross_below": "vwap_cross_above",
     }
-    return opposites.get(trigger_id)
+
+    result = opposites.get(trigger_id)
+    if result:
+        return result
+
+    # Generic opposite detection for user packs (suffix-based)
+    suffix_pairs = [
+        ("_bull", "_bear"), ("_bear", "_bull"),
+        ("_up", "_down"), ("_down", "_up"),
+        ("_pos", "_neg"), ("_neg", "_pos"),
+        ("_buy", "_sell"), ("_sell", "_buy"),
+        ("_long", "_short"), ("_short", "_long"),
+    ]
+    for suffix, opposite_suffix in suffix_pairs:
+        if trigger_id.endswith(suffix):
+            return trigger_id[:-len(suffix)] + opposite_suffix
+
+    return None
 
 
 # =============================================================================

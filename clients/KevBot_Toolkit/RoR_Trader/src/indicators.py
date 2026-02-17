@@ -14,7 +14,7 @@ Each indicator:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass
 
 
@@ -356,6 +356,84 @@ def get_available_overlay_indicators() -> List[str]:
     ]
 
 
+# =============================================================================
+# GROUP INDICATOR FUNCTION REGISTRY
+# =============================================================================
+# Mutable dispatch registry: base_template -> callable(df, group) -> DataFrame.
+# Built-in functions registered below; user packs register via
+# register_group_indicator().
+
+def _run_ema_stack_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run EMA indicators for an ema_stack group."""
+    result = df
+    for period_key in ["short_period", "mid_period", "long_period"]:
+        period = group.parameters.get(period_key)
+        if period:
+            col_name = f"ema_{period}"
+            if col_name not in result.columns:
+                result = result.copy() if result is df else result
+                result[col_name] = calculate_ema(result, period)
+    return result
+
+
+def _run_macd_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run MACD indicators for macd_line or macd_histogram groups."""
+    result = df
+    if "macd_line" not in result.columns:
+        fast = group.parameters.get("fast_period", 12)
+        slow = group.parameters.get("slow_period", 26)
+        signal = group.parameters.get("signal_period", 9)
+        result = result.copy() if result is df else result
+        macd_result = calculate_macd(result, fast, slow, signal)
+        for col, values in macd_result.items():
+            result[col] = values
+    return result
+
+
+def _run_vwap_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run VWAP indicators for a vwap group."""
+    result = df
+    if "vwap_sd1_upper" not in result.columns:
+        sd1_mult = group.parameters.get("sd1_mult", 1.0)
+        sd2_mult = group.parameters.get("sd2_mult", 2.0)
+        result = result.copy() if result is df else result
+        vwap_result = calculate_vwap(result, sd1_mult=sd1_mult, sd2_mult=sd2_mult)
+        for col, values in vwap_result.items():
+            result[col] = values
+    return result
+
+
+def _run_rvol_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run RVOL indicators for an rvol group."""
+    result = df
+    if "vol_sma" not in result.columns:
+        period = group.parameters.get("sma_period", 20)
+        result = result.copy() if result is df else result
+        vol_result = calculate_volume_sma(result, period)
+        for col, values in vol_result.items():
+            result[col] = values
+    return result
+
+
+GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
+    "ema_stack": _run_ema_stack_indicators,
+    "macd_line": _run_macd_indicators,
+    "macd_histogram": _run_macd_indicators,
+    "vwap": _run_vwap_indicators,
+    "rvol": _run_rvol_indicators,
+}
+
+
+def register_group_indicator(template_id: str, func: Callable) -> None:
+    """Register an indicator function for a template type."""
+    GROUP_INDICATOR_FUNCS[template_id] = func
+
+
+def unregister_group_indicator(template_id: str) -> None:
+    """Remove an indicator function for a template type."""
+    GROUP_INDICATOR_FUNCS.pop(template_id, None)
+
+
 def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
     """
     Run indicators for a specific confluence group using its parameters.
@@ -370,45 +448,9 @@ def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
     Returns:
         DataFrame with additional indicator columns for this group's parameters
     """
-    result = df
-
-    if group.base_template == "ema_stack":
-        for period_key in ["short_period", "mid_period", "long_period"]:
-            period = group.parameters.get(period_key)
-            if period:
-                col_name = f"ema_{period}"
-                if col_name not in result.columns:
-                    result = result.copy() if result is df else result
-                    result[col_name] = calculate_ema(result, period)
-
-    elif group.base_template in ("macd_line", "macd_histogram"):
-        if "macd_line" not in result.columns:
-            fast = group.parameters.get("fast_period", 12)
-            slow = group.parameters.get("slow_period", 26)
-            signal = group.parameters.get("signal_period", 9)
-            result = result.copy() if result is df else result
-            macd_result = calculate_macd(result, fast, slow, signal)
-            for col, values in macd_result.items():
-                result[col] = values
-
-    elif group.base_template == "vwap":
-        if "vwap_sd1_upper" not in result.columns:
-            sd1_mult = group.parameters.get("sd1_mult", 1.0)
-            sd2_mult = group.parameters.get("sd2_mult", 2.0)
-            result = result.copy() if result is df else result
-            vwap_result = calculate_vwap(result, sd1_mult=sd1_mult, sd2_mult=sd2_mult)
-            for col, values in vwap_result.items():
-                result[col] = values
-
-    elif group.base_template == "rvol":
-        if "vol_sma" not in result.columns:
-            period = group.parameters.get("sma_period", 20)
-            result = result.copy() if result is df else result
-            vol_result = calculate_volume_sma(result, period)
-            for col, values in vol_result.items():
-                result[col] = values
-
-    return result
+    if group.base_template in GROUP_INDICATOR_FUNCS:
+        return GROUP_INDICATOR_FUNCS[group.base_template](df, group)
+    return df
 
 
 # =============================================================================

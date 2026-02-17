@@ -1,0 +1,108 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "rsi_zones",
+  "name": "RSI Zones",
+  "category": "Momentum",
+  "description": "Relative Strength Index with overbought/oversold zone classification and cross triggers",
+  "author": "RoR Trader",
+  "version": "1.0.0",
+  "created_at": "2026-02-17T00:00:00Z",
+  "pack_type": "tf_confluence",
+
+  "interpreters": ["RSI_ZONES"],
+  "trigger_prefix": "rsi",
+
+  "parameters_schema": {
+    "rsi_period": {
+      "type": "int",
+      "default": 14,
+      "min": 2,
+      "max": 100,
+      "label": "RSI Period"
+    },
+    "overbought": {
+      "type": "float",
+      "default": 70.0,
+      "min": 50,
+      "max": 100,
+      "label": "Overbought Level"
+    },
+    "oversold": {
+      "type": "float",
+      "default": 30.0,
+      "min": 0,
+      "max": 50,
+      "label": "Oversold Level"
+    }
+  },
+
+  "plot_schema": {
+    "rsi_color": {
+      "type": "color",
+      "default": "#8b5cf6",
+      "label": "RSI Line Color"
+    }
+  },
+
+  "outputs": ["OVERBOUGHT", "BULLISH", "NEUTRAL", "BEARISH", "OVERSOLD"],
+  "output_descriptions": {
+    "OVERBOUGHT": "RSI above overbought threshold (>70 default)",
+    "BULLISH": "RSI between 50 and overbought",
+    "NEUTRAL": "RSI near 50 (45-55 range)",
+    "BEARISH": "RSI between oversold and 50",
+    "OVERSOLD": "RSI below oversold threshold (<30 default)"
+  },
+
+  "triggers": [
+    {
+      "base": "enter_overbought",
+      "name": "Enter Overbought",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_overbought",
+      "name": "Exit Overbought",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "enter_oversold",
+      "name": "Enter Oversold",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_oversold",
+      "name": "Exit Oversold",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_above_50",
+      "name": "Cross Above 50",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_below_50",
+      "name": "Cross Below 50",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    }
+  ],
+
+  "indicator_columns": ["rsi"],
+
+  "indicator_function": "calculate_rsi_zones",
+  "interpreter_function": "interpret_rsi_zones",
+  "trigger_function": "detect_rsi_zones_triggers",
+
+  "requires_indicators": ["rsi"]
+}

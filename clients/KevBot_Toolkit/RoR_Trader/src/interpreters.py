@@ -16,7 +16,7 @@ interpreters classify states.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 from dataclasses import dataclass
 
 
@@ -489,6 +489,50 @@ def detect_rvol_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
 
 
 # =============================================================================
+# INTERPRETER & TRIGGER FUNCTION REGISTRIES
+# =============================================================================
+# Mutable dispatch registries. Built-in functions are registered below;
+# user packs register via register_interpreter() / register_trigger_detector().
+
+INTERPRETER_FUNCS: Dict[str, Callable] = {}
+TRIGGER_FUNCS: Dict[str, Callable] = {}
+
+# Register built-in interpreter functions
+INTERPRETER_FUNCS["EMA_STACK"] = interpret_ema_stack
+INTERPRETER_FUNCS["MACD_LINE"] = interpret_macd_line
+INTERPRETER_FUNCS["MACD_HISTOGRAM"] = interpret_macd_histogram
+INTERPRETER_FUNCS["VWAP"] = interpret_vwap
+INTERPRETER_FUNCS["RVOL"] = interpret_rvol
+
+# Register built-in trigger detection functions
+TRIGGER_FUNCS["EMA_STACK"] = detect_ema_triggers
+TRIGGER_FUNCS["MACD_LINE"] = detect_macd_triggers
+TRIGGER_FUNCS["MACD_HISTOGRAM"] = detect_macd_hist_triggers
+TRIGGER_FUNCS["VWAP"] = detect_vwap_triggers
+TRIGGER_FUNCS["RVOL"] = detect_rvol_triggers
+
+
+def register_interpreter(key: str, func: Callable) -> None:
+    """Register an interpreter function for a given key."""
+    INTERPRETER_FUNCS[key] = func
+
+
+def register_trigger_detector(key: str, func: Callable) -> None:
+    """Register a trigger detection function for a given key."""
+    TRIGGER_FUNCS[key] = func
+
+
+def unregister_interpreter(key: str) -> None:
+    """Remove an interpreter function."""
+    INTERPRETER_FUNCS.pop(key, None)
+
+
+def unregister_trigger_detector(key: str) -> None:
+    """Remove a trigger detection function."""
+    TRIGGER_FUNCS.pop(key, None)
+
+
+# =============================================================================
 # MAIN INTERPRETER ENGINE
 # =============================================================================
 
@@ -513,17 +557,13 @@ def run_all_interpreters(
 
     result = df.copy()
 
-    interpreter_funcs = {
-        "EMA_STACK": interpret_ema_stack,
-        "MACD_LINE": interpret_macd_line,
-        "MACD_HISTOGRAM": interpret_macd_histogram,
-        "VWAP": interpret_vwap,
-        "RVOL": interpret_rvol,
-    }
-
     for interp_key in enabled_interpreters:
-        if interp_key in interpreter_funcs:
-            result[interp_key] = interpreter_funcs[interp_key](df)
+        if interp_key in INTERPRETER_FUNCS:
+            try:
+                result[interp_key] = INTERPRETER_FUNCS[interp_key](df)
+            except KeyError:
+                # Missing indicator columns — skip this interpreter
+                pass
 
     return result
 
@@ -540,25 +580,16 @@ def detect_all_triggers(df: pd.DataFrame) -> pd.DataFrame:
     """
     result = df.copy()
 
-    # Collect all triggers
+    # Collect all triggers from registered detectors
     all_triggers = {}
 
-    # EMA triggers (only if columns exist)
-    if all(col in df.columns for col in ['ema_8', 'ema_21', 'ema_50']):
-        all_triggers.update(detect_ema_triggers(df))
-
-    # MACD triggers
-    if all(col in df.columns for col in ['macd_line', 'macd_signal', 'macd_hist']):
-        all_triggers.update(detect_macd_triggers(df))
-        all_triggers.update(detect_macd_hist_triggers(df))
-
-    # VWAP triggers
-    if 'vwap' in df.columns:
-        all_triggers.update(detect_vwap_triggers(df))
-
-    # RVOL triggers
-    if 'rvol' in df.columns:
-        all_triggers.update(detect_rvol_triggers(df))
+    for interp_key, trigger_func in TRIGGER_FUNCS.items():
+        try:
+            triggers = trigger_func(df)
+            all_triggers.update(triggers)
+        except KeyError:
+            # Missing indicator columns — skip this trigger set
+            pass
 
     # Add trigger columns
     for trigger_id, trigger_series in all_triggers.items():
