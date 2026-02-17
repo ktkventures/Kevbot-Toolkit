@@ -397,6 +397,8 @@ def _inject_into_templates(manifest: dict) -> None:
         "output_descriptions": manifest["output_descriptions"],
         "triggers": manifest["triggers"],
         "indicator_columns": manifest["indicator_columns"],
+        "display_type": manifest.get("display_type", "overlay"),
+        "column_color_map": manifest.get("column_color_map", {}),
         "_user_pack": True,
     }
 

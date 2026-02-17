@@ -1,15 +1,16 @@
 {
   "$schema": "pack_spec_v1",
-  "slug": "bollinger_squeeze",
-  "name": "Bollinger Squeeze",
+  "slug": "bollinger_bands",
+  "name": "Bollinger Bands",
   "category": "Momentum",
-  "description": "Bollinger Bands with upper/middle/lower zone classification and bandwidth squeeze detection",
+  "description": "Bollinger Bands with upper/mid/lower zone classification and squeeze detection triggers",
   "author": "user",
   "version": "1.0.0",
   "created_at": "2026-02-17T00:00:00Z",
   "pack_type": "tf_confluence",
+  "display_type": "overlay",
   "interpreters": [
-    "BOLLINGER_SQUEEZE"
+    "BOLLINGER_BANDS"
   ],
   "trigger_prefix": "bb",
   "parameters_schema": {
@@ -27,11 +28,11 @@
       "max": 5.0,
       "label": "StdDev Multiplier"
     },
-    "squeeze_pct": {
+    "squeeze_threshold": {
       "type": "float",
-      "default": 4.0,
-      "min": 1.0,
-      "max": 20.0,
+      "default": 0.04,
+      "min": 0.01,
+      "max": 0.2,
       "label": "Squeeze Threshold (%)"
     }
   },
@@ -53,45 +54,45 @@
     }
   },
   "outputs": [
-    "ABOVE_UPPER",
+    "SQUEEZE_UPPER",
+    "SQUEEZE_MID",
+    "SQUEEZE_LOWER",
     "UPPER_ZONE",
     "MID_ZONE",
-    "LOWER_ZONE",
-    "BELOW_LOWER",
-    "SQUEEZE"
+    "LOWER_ZONE"
   ],
   "output_descriptions": {
-    "ABOVE_UPPER": "Price closed above the upper Bollinger Band",
-    "UPPER_ZONE": "Price between basis and upper band",
-    "MID_ZONE": "Price near the basis (within 25% of band width)",
-    "LOWER_ZONE": "Price between lower band and basis",
-    "BELOW_LOWER": "Price closed below the lower Bollinger Band",
-    "SQUEEZE": "Bandwidth is below squeeze threshold \u2014 low volatility compression"
+    "SQUEEZE_UPPER": "Price in upper zone while bandwidth is below squeeze threshold \u2014 tight bands, price near upper",
+    "SQUEEZE_MID": "Price in mid zone while bandwidth is below squeeze threshold \u2014 tight bands, price near basis",
+    "SQUEEZE_LOWER": "Price in lower zone while bandwidth is below squeeze threshold \u2014 tight bands, price near lower",
+    "UPPER_ZONE": "Price above basis (midline) in normal volatility",
+    "MID_ZONE": "Price near basis within 25% of band width in normal volatility",
+    "LOWER_ZONE": "Price below basis (midline) in normal volatility"
   },
   "triggers": [
     {
       "base": "cross_upper",
       "name": "Cross Above Upper Band",
-      "direction": "SHORT",
+      "direction": "LONG",
       "type": "ENTRY",
       "execution": "bar_close"
     },
     {
       "base": "cross_lower",
       "name": "Cross Below Lower Band",
-      "direction": "LONG",
+      "direction": "SHORT",
       "type": "ENTRY",
       "execution": "bar_close"
     },
     {
-      "base": "cross_above_basis",
+      "base": "cross_basis_up",
       "name": "Cross Above Basis",
       "direction": "LONG",
       "type": "ENTRY",
       "execution": "bar_close"
     },
     {
-      "base": "cross_below_basis",
+      "base": "cross_basis_down",
       "name": "Cross Below Basis",
       "direction": "SHORT",
       "type": "ENTRY",
@@ -106,7 +107,7 @@
     },
     {
       "base": "squeeze_off",
-      "name": "Squeeze Releases",
+      "name": "Squeeze Ends",
       "direction": "BOTH",
       "type": "ENTRY",
       "execution": "bar_close"
@@ -118,9 +119,14 @@
     "bb_lower",
     "bb_bandwidth"
   ],
-  "indicator_function": "calculate_bollinger_squeeze",
-  "interpreter_function": "interpret_bollinger_squeeze",
-  "trigger_function": "detect_bollinger_squeeze_triggers",
+  "column_color_map": {
+    "bb_upper": "upper_color",
+    "bb_basis": "basis_color",
+    "bb_lower": "lower_color"
+  },
+  "indicator_function": "calculate_bollinger_bands",
+  "interpreter_function": "interpret_bollinger_bands",
+  "trigger_function": "detect_bollinger_bands_triggers",
   "requires_indicators": [
     "bb_upper",
     "bb_basis",

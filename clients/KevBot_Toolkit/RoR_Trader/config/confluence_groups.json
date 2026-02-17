@@ -146,42 +146,46 @@
       }
     },
     {
-      "id": "rsi_zones_default",
-      "base_template": "rsi_zones",
+      "id": "bollinger_bands_default",
+      "base_template": "bollinger_bands",
       "version": "Default",
-      "description": "Default RSI Zones configuration",
-      "enabled": true,
-      "is_default": false,
-      "parameters": {
-        "rsi_period": 14,
-        "overbought": 70.0,
-        "oversold": 30.0
-      },
-      "plot_settings": {
-        "colors": {
-          "rsi_color": "#8b5cf6"
-        },
-        "line_width": 1,
-        "visible": true
-      }
-    },
-    {
-      "id": "bollinger_squeeze_default",
-      "base_template": "bollinger_squeeze",
-      "version": "Default",
-      "description": "Default Bollinger Squeeze configuration",
+      "description": "Default Bollinger Bands configuration",
       "enabled": true,
       "is_default": false,
       "parameters": {
         "bb_period": 20,
         "bb_mult": 2.0,
-        "squeeze_pct": 4.0
+        "squeeze_threshold": 0.04
       },
       "plot_settings": {
         "colors": {
           "upper_color": "#ef4444",
           "basis_color": "#a855f7",
           "lower_color": "#22c55e"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "sr_channels_default",
+      "base_template": "sr_channels",
+      "version": "Default",
+      "description": "Default Support Resistance Channels configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "pivot_period": 10,
+        "pivot_source": "High/Low",
+        "channel_width_pct": 5,
+        "min_strength": 1,
+        "max_num_sr": 6,
+        "loopback": 290
+      },
+      "plot_settings": {
+        "colors": {
+          "resistance_color": "#ef4444",
+          "support_color": "#22c55e"
         },
         "line_width": 1,
         "visible": true

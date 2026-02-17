@@ -1,0 +1,133 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "sr_channels",
+  "name": "Support Resistance Channels",
+  "category": "Trend",
+  "description": "Identifies dynamic support and resistance channels from pivot point clusters with breakout detection",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-02-17T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": [
+    "SR_CHANNELS"
+  ],
+  "trigger_prefix": "src",
+  "parameters_schema": {
+    "pivot_period": {
+      "type": "int",
+      "default": 10,
+      "min": 4,
+      "max": 30,
+      "label": "Pivot Period"
+    },
+    "pivot_source": {
+      "type": "str",
+      "default": "High/Low",
+      "label": "Pivot Source (High/Low or Close/Open)"
+    },
+    "channel_width_pct": {
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 8,
+      "label": "Maximum Channel Width %"
+    },
+    "min_strength": {
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 10,
+      "label": "Minimum Strength"
+    },
+    "max_num_sr": {
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 10,
+      "label": "Maximum Number of S/R"
+    },
+    "loopback": {
+      "type": "int",
+      "default": 290,
+      "min": 100,
+      "max": 400,
+      "label": "Loopback Period"
+    }
+  },
+  "plot_schema": {
+    "resistance_color": {
+      "type": "color",
+      "default": "#ef4444",
+      "label": "Resistance Color"
+    },
+    "support_color": {
+      "type": "color",
+      "default": "#22c55e",
+      "label": "Support Color"
+    }
+  },
+  "outputs": [
+    "ABOVE_RESISTANCE",
+    "IN_RESISTANCE",
+    "BETWEEN_LEVELS",
+    "IN_SUPPORT",
+    "BELOW_SUPPORT"
+  ],
+  "output_descriptions": {
+    "ABOVE_RESISTANCE": "Price is above all identified S/R channels \u2014 breakout territory",
+    "IN_RESISTANCE": "Price is inside a channel that acts as resistance (channel is above price center)",
+    "BETWEEN_LEVELS": "Price is between S/R channels, not inside any channel",
+    "IN_SUPPORT": "Price is inside a channel that acts as support (channel is below price center)",
+    "BELOW_SUPPORT": "Price is below all identified S/R channels \u2014 breakdown territory"
+  },
+  "triggers": [
+    {
+      "base": "resistance_broken",
+      "name": "Resistance Broken",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "support_broken",
+      "name": "Support Broken",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "enter_sr_zone",
+      "name": "Enter S/R Zone",
+      "direction": "BOTH",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_sr_zone",
+      "name": "Exit S/R Zone",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "src_nearest_top",
+    "src_nearest_bot",
+    "src_num_channels",
+    "src_in_channel",
+    "src_res_broken",
+    "src_sup_broken"
+  ],
+  "column_color_map": {
+    "src_nearest_top": "resistance_color",
+    "src_nearest_bot": "support_color"
+  },
+  "indicator_function": "calculate_sr_channels",
+  "interpreter_function": "interpret_sr_channels",
+  "trigger_function": "detect_sr_channels_triggers",
+  "requires_indicators": [
+    "src_nearest_top",
+    "src_nearest_bot"
+  ]
+}

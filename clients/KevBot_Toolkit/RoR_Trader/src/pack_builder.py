@@ -43,6 +43,7 @@ def generate_prompt(
     pine_script: str = "",
     parameters: Optional[List[Dict]] = None,
     category: str = "",
+    display_type: str = "overlay",
 ) -> str:
     """
     Assemble a structured prompt combining architecture context with user inputs.
@@ -54,6 +55,8 @@ def generate_prompt(
         parameters: Optional list of parameter definitions
             [{"name": "period", "type": "int", "default": 14, "label": "Period"}]
         category: Optional category hint (e.g., "Momentum", "Trend")
+        display_type: How the indicator renders on charts
+            ("overlay", "oscillator", or "hidden")
 
     Returns:
         Complete prompt string ready to copy to an LLM.
@@ -72,6 +75,25 @@ def generate_prompt(
 
     if category:
         request_parts.append(f"**Category:** {category}\n")
+
+    if display_type == "overlay":
+        request_parts.append(
+            f"**Display Type:** `{display_type}` — "
+            "This indicator draws lines/bands on the price chart. "
+            "Set `display_type` to `\"overlay\"` in the manifest.\n"
+        )
+    elif display_type == "oscillator":
+        request_parts.append(
+            f"**Display Type:** `{display_type}` — "
+            "This indicator renders in a separate pane below the price chart. "
+            "Set `display_type` to `\"oscillator\"` in the manifest.\n"
+        )
+    else:
+        request_parts.append(
+            f"**Display Type:** `{display_type}` — "
+            "This indicator has no chart rendering. "
+            "Set `display_type` to `\"hidden\"` in the manifest.\n"
+        )
 
     if parameters:
         request_parts.append("\n**User-specified parameters:**")
@@ -108,6 +130,18 @@ def generate_prompt(
         "8. Return None for bars with insufficient data (NaN values)\n"
         "9. Trigger keys must be {trigger_prefix}_{base} matching manifest\n"
         "10. Do NOT use any reserved names listed in the reference\n"
+        "11. Set display_type: 'overlay' if indicator draws on the price chart "
+        "(EMAs, bands), 'oscillator' if it belongs in a separate pane "
+        "(RSI, Stochastic), or 'hidden' if no chart rendering needed\n"
+        "12. Include column_color_map mapping each plottable indicator_column "
+        "to its plot_schema color key (omit non-plottable columns like bandwidth)\n"
+        "13. Outputs MUST be mutually exclusive zones — every bar maps to "
+        "exactly one state. Do NOT mix zone states with condition flags "
+        "(e.g., don't have UPPER_ZONE + SQUEEZE as separate outputs if "
+        "squeeze can overlap with any zone). Instead, encode conditions as "
+        "triggers or combine them into the zone names (SQUEEZE_UPPER, etc.)\n"
+        "14. Test your thresholds mentally against typical 1-minute intraday data "
+        "— no single output state should dominate 90%+ of bars\n"
     )
 
     user_request = "\n".join(request_parts)

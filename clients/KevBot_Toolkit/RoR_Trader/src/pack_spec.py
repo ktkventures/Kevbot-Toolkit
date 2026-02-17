@@ -46,9 +46,17 @@ MANIFEST_OPTIONAL_FIELDS = [
     "created_at",
     "plot_schema",
     "requires_indicators",
+    "display_type",
+    "column_color_map",
 ]
 
 VALID_PACK_TYPES = ["tf_confluence"]
+
+# Display types for charting:
+#   overlay   — indicator lines drawn on price chart (EMA, BB, VWAP)
+#   oscillator — separate pane below price chart (RSI, MACD, RVOL)
+#   hidden    — no chart rendering (bar_count)
+VALID_DISPLAY_TYPES = ["overlay", "oscillator", "hidden"]
 
 VALID_TRIGGER_DIRECTIONS = ["LONG", "SHORT", "BOTH"]
 VALID_TRIGGER_TYPES = ["ENTRY", "EXIT"]
@@ -240,6 +248,26 @@ def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
     for func_field in ["indicator_function", "interpreter_function", "trigger_function"]:
         if not isinstance(manifest[func_field], str):
             errors.append(f"'{func_field}' must be a string (function name)")
+
+    # Validate display_type if present
+    display_type = manifest.get("display_type")
+    if display_type is not None and display_type not in VALID_DISPLAY_TYPES:
+        errors.append(
+            f"Invalid display_type '{display_type}': "
+            f"must be one of {VALID_DISPLAY_TYPES}"
+        )
+
+    # Validate column_color_map if present
+    ccm = manifest.get("column_color_map")
+    if ccm is not None:
+        if not isinstance(ccm, dict):
+            errors.append("'column_color_map' must be a dict mapping indicator_column -> plot_schema_key")
+        else:
+            for col, color_key in ccm.items():
+                if col not in manifest["indicator_columns"]:
+                    errors.append(
+                        f"column_color_map key '{col}' not in indicator_columns"
+                    )
 
     return len(errors) == 0, errors
 

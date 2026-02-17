@@ -180,7 +180,28 @@ TIMEFRAME_GUIDANCE = {
 ALPACA_DATA_FLOOR = date(2016, 1, 1)
 
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
-OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
+BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "vwap", "utbot"}
+BUILTIN_OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
+
+
+def is_overlay_template(base_template: str) -> bool:
+    """Check if a template should render as overlay lines on the price chart."""
+    if base_template in BUILTIN_OVERLAY_TEMPLATES:
+        return True
+    template = get_template(base_template)
+    if template:
+        return template.get("display_type") == "overlay"
+    return False
+
+
+def is_oscillator_template(base_template: str) -> bool:
+    """Check if a template should render as a secondary oscillator pane."""
+    if base_template in BUILTIN_OSCILLATOR_TEMPLATES:
+        return True
+    template = get_template(base_template)
+    if template:
+        return template.get("display_type") == "oscillator"
+    return False
 
 # Strategy parameters that affect trade generation — changing any of these
 # invalidates forward test data and requires a forward test reset.
@@ -355,6 +376,11 @@ def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
         long = group.parameters.get("long_period", 200)
         return [f"ema_{short}", f"ema_{mid}", f"ema_{long}"]
 
+    # For user packs with column_color_map, only return the mapped (plottable) columns
+    ccm = template.get("column_color_map", {})
+    if ccm:
+        return list(ccm.keys())
+
     # Other templates have indicator_columns that match actual DataFrame names
     return template.get("indicator_columns", [])
 
@@ -386,6 +412,24 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
         colors["vwap_sd2_lower"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
     elif group.base_template == "utbot":
         colors["utbot_stop"] = group.plot_settings.colors.get("trail_color", "#64748b")
+    else:
+        # Generic fallback for user packs: use column_color_map + plot_schema
+        ccm = template.get("column_color_map", {})
+        plot_schema = template.get("plot_schema", {})
+        if ccm:
+            for col_name, color_key in ccm.items():
+                # Look up the color from group's plot_settings, fall back to plot_schema default
+                default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                colors[col_name] = group.plot_settings.colors.get(color_key, default_color)
+        else:
+            # No column_color_map: try 1:1 match of indicator_columns to plot_schema keys
+            indicator_cols = template.get("indicator_columns", [])
+            color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+            for i, col in enumerate(indicator_cols):
+                if i < len(color_keys):
+                    key = color_keys[i]
+                    default_color = plot_schema[key].get("default", "#8b5cf6")
+                    colors[col] = group.plot_settings.colors.get(key, default_color)
 
     return colors
 
@@ -3875,7 +3919,7 @@ def render_strategy_builder():
                 st.info("No trades match current filters")
 
         with chart_tab2:
-            overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+            overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
 
             if len(overlay_groups) > 0:
                 selected_overlay_groups = st.multiselect(
@@ -5891,7 +5935,7 @@ def render_live_backtest(strat: dict):
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
         enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+        overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
         show_indicators = []
         indicator_colors = {}
         for group in overlay_groups:
@@ -6067,7 +6111,7 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
             grp_indicators = []
             grp_colors = {}
 
-            if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
+            if is_overlay_template(group.base_template):
                 grp_indicators = get_overlay_indicators_for_group(group)
                 grp_colors = get_overlay_colors_for_group(group)
 
@@ -6233,7 +6277,7 @@ def render_forward_test_view(strat: dict):
     with tab_price:
         if len(df) > 0:
             enabled_groups = get_enabled_groups()
-            overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+            overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
             show_indicators = []
             indicator_colors = {}
             for group in overlay_groups:
@@ -9461,11 +9505,6 @@ TEMPLATE_FUNCTIONS = {
 
 def render_code_tab(group: ConfluenceGroup):
     """Render the Code tab showing source code for indicator, interpreter, and trigger functions."""
-    funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
-
-    if not funcs or all(len(v) == 0 for v in funcs.values()):
-        st.info(f"No source code available for template '{group.base_template}'. Implementation pending.")
-        return
 
     # Show this group's effective parameters
     st.markdown("**Active Parameters for this Group**")
@@ -9483,6 +9522,27 @@ def render_code_tab(group: ConfluenceGroup):
     st.divider()
     st.caption("Source code for this confluence pack's indicator, interpreter, and trigger logic.")
 
+    # Check if this is a user pack — read source files directly from disk
+    if template and template.get("_user_pack"):
+        pack = pack_registry.get_pack(group.base_template)
+        if pack and pack.pack_dir.exists():
+            for fname, label in [("indicator.py", "Indicator"), ("interpreter.py", "Interpreter & Triggers")]:
+                fpath = pack.pack_dir / fname
+                if fpath.exists():
+                    with st.expander(label, expanded=True):
+                        st.code(fpath.read_text(), language="python")
+            return
+        else:
+            st.info("User pack source files not found on disk.")
+            return
+
+    # Built-in packs: use TEMPLATE_FUNCTIONS registry
+    funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
+
+    if not funcs or all(len(v) == 0 for v in funcs.values()):
+        st.info(f"No source code available for template '{group.base_template}'.")
+        return
+
     for section_name, func_list in funcs.items():
         if not func_list:
             continue
@@ -9497,7 +9557,7 @@ def render_code_tab(group: ConfluenceGroup):
 
 def render_preview_tab(group: ConfluenceGroup):
     """
-    Render the Preview tab with live indicator visualization on sample data.
+    Render the Preview tab with live indicator visualization on market data.
 
     Shows:
     - Price chart with indicator overlays (for overlay-compatible templates)
@@ -9505,14 +9565,14 @@ def render_preview_tab(group: ConfluenceGroup):
     - Interpreter state timeline
     - Trigger event markers
     """
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
     template = get_template(group.base_template)
     if not template:
         st.error("Template not found.")
         return
 
-    st.caption("Live preview using sample data to verify indicator, interpreter, and trigger behavior.")
+    st.caption(f"Live preview using {get_data_source()} data to verify indicator, interpreter, and trigger behavior.")
 
     # Preview controls
     preview_symbol = st.selectbox(
@@ -9522,23 +9582,12 @@ def render_preview_tab(group: ConfluenceGroup):
         key=f"preview_symbol_{group.id}"
     )
 
-    # Generate sample data
-    with st.spinner("Generating preview data..."):
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=3)
+    # Load market data (Alpaca if configured, mock fallback)
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
-
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         # Run the full indicator pipeline
@@ -9557,14 +9606,13 @@ def render_preview_tab(group: ConfluenceGroup):
     show_indicators = []
     indicator_colors_map = {}
 
-    if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
+    if is_overlay_template(group.base_template):
         st.markdown("**Price Chart with Indicator Overlay**")
         show_indicators = get_overlay_indicators_for_group(group)
         indicator_colors_map = get_overlay_colors_for_group(group)
-    elif group.base_template in ("macd_line", "macd_histogram"):
-        st.markdown("**Price Chart + MACD**")
-    elif group.base_template == "rvol":
-        st.markdown("**Price Chart + Relative Volume**")
+    elif is_oscillator_template(group.base_template):
+        pack_name = template.get("name", group.base_template)
+        st.markdown(f"**Price Chart + {pack_name}**")
 
     secondary_panes = build_secondary_panes(df, [group])
 
@@ -9592,6 +9640,7 @@ def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
     panes = []
     has_macd = False
     has_rvol = False
+    rendered_user_packs = set()
     for group in groups:
         if group.base_template in ("macd_line", "macd_histogram") and not has_macd:
             if "macd_line" in df.columns:
@@ -9601,7 +9650,100 @@ def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
             if "rvol" in df.columns:
                 panes.append(_build_rvol_lwc_pane(df, group))
                 has_rvol = True
+        elif is_oscillator_template(group.base_template) and group.base_template not in rendered_user_packs:
+            pane = _build_generic_oscillator_pane(df, group)
+            if pane:
+                panes.append(pane)
+                rendered_user_packs.add(group.base_template)
     return panes
+
+
+def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict | None:
+    """
+    Build a lightweight-charts pane config for a user pack oscillator.
+
+    Uses column_color_map and plot_schema from the template to render
+    indicator columns as line series in a separate pane.
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return None
+
+    indicator_cols = template.get("indicator_columns", [])
+    ccm = template.get("column_color_map", {})
+    plot_schema = template.get("plot_schema", {})
+
+    # Determine which columns to plot and their colors
+    plot_cols = {}
+    if ccm:
+        for col_name, color_key in ccm.items():
+            if col_name in df.columns:
+                default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                plot_cols[col_name] = group.plot_settings.colors.get(color_key, default_color)
+    else:
+        # Fallback: plot all indicator_columns with available colors
+        color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+        for i, col in enumerate(indicator_cols):
+            if col in df.columns:
+                if i < len(color_keys):
+                    key = color_keys[i]
+                    default_color = plot_schema[key].get("default", "#8b5cf6")
+                    plot_cols[col] = group.plot_settings.colors.get(key, default_color)
+                else:
+                    plot_cols[col] = "#8b5cf6"
+
+    if not plot_cols:
+        return None
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+
+    series = []
+    for col_name, color in plot_cols.items():
+        line_data = []
+        for _, row in plot_df.iterrows():
+            if pd.notna(row.get(col_name)):
+                line_data.append({
+                    "time": int(row['_time']),
+                    "value": float(row[col_name]),
+                })
+        if line_data:
+            series.append({
+                "type": "Line",
+                "data": line_data,
+                "options": {
+                    "color": color,
+                    "lineWidth": 1,
+                    "priceLineVisible": False,
+                    "title": col_name,
+                }
+            })
+
+    if not series:
+        return None
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 200,
+        },
+        "series": series
+    }
 
 
 def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
@@ -10049,6 +10191,311 @@ def format_parameters(params: dict, template_id: str) -> str:
 # PACK BUILDER PAGE
 # =============================================================================
 
+def _exec_code_to_module(code: str, module_name: str):
+    """Execute Python code in an isolated module and return it."""
+    import types
+    mod = types.ModuleType(module_name)
+    mod.__builtins__ = __builtins__
+    # Provide pandas and numpy in the module's namespace
+    import pandas as _pd
+    import numpy as _np
+    mod.pd = _pd
+    mod.np = _np
+    mod.pandas = _pd
+    mod.numpy = _np
+    exec(compile(code, f"<{module_name}>", "exec"), mod.__dict__)
+    return mod
+
+
+def _render_pack_builder_preview(parsed: dict):
+    """
+    Render a live preview of a parsed (but not yet installed) pack.
+
+    Loads the indicator, interpreter, and trigger functions from parsed code
+    strings, runs them on market data, and renders the chart + state timeline
+    + trigger events — same as the Confluence Pack preview tab.
+    """
+    manifest = parsed["manifest"]
+    indicator_code = parsed.get("indicator_code")
+    interpreter_code = parsed.get("interpreter_code")
+
+    if not indicator_code or not interpreter_code:
+        st.warning("Missing indicator or interpreter code — cannot generate preview.")
+        return
+
+    from data_loader import load_market_data, get_data_source
+
+    st.caption(
+        f"Live preview using {get_data_source()} data. This runs your pack's indicator, "
+        "interpreter, and trigger functions before installation."
+    )
+
+    # Load functions from code strings
+    try:
+        ind_mod = _exec_code_to_module(indicator_code, "pb_preview_indicator")
+        interp_mod = _exec_code_to_module(interpreter_code, "pb_preview_interpreter")
+    except Exception as e:
+        st.error(f"Failed to load pack code: {e}")
+        return
+
+    indicator_func = getattr(ind_mod, manifest.get("indicator_function", ""), None)
+    interpreter_func = getattr(interp_mod, manifest.get("interpreter_function", ""), None)
+    trigger_func = getattr(interp_mod, manifest.get("trigger_function", ""), None)
+
+    if not indicator_func:
+        st.error(f"Indicator function '{manifest.get('indicator_function')}' not found in code.")
+        return
+    if not interpreter_func:
+        st.error(f"Interpreter function '{manifest.get('interpreter_function')}' not found in code.")
+        return
+
+    # Build default params from manifest
+    default_params = {
+        key: spec["default"]
+        for key, spec in manifest.get("parameters_schema", {}).items()
+    }
+
+    # Load market data
+    preview_symbol = st.selectbox(
+        "Preview Symbol",
+        AVAILABLE_SYMBOLS,
+        index=0,
+        key="pb_preview_symbol",
+    )
+
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
+
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
+            return
+
+        # Run the pack's indicator function
+        try:
+            df = indicator_func(df, **default_params)
+        except Exception as e:
+            st.error(f"Indicator function error: {e}")
+            return
+
+        # Run the interpreter function
+        try:
+            interp_key = manifest["interpreters"][0] if manifest.get("interpreters") else "STATE"
+            states = interpreter_func(df, **default_params)
+            df[interp_key] = states
+        except Exception as e:
+            st.error(f"Interpreter function error: {e}")
+            return
+
+        # Run the trigger function
+        trigger_prefix = manifest.get("trigger_prefix", "")
+        if trigger_func:
+            try:
+                trigger_results = trigger_func(df, **default_params)
+                for trig_key, trig_series in trigger_results.items():
+                    df[f"trig_{trig_key}"] = trig_series
+            except Exception as e:
+                st.warning(f"Trigger function error: {e}")
+
+    # --- Chart ---
+    display_type = manifest.get("display_type", "overlay")
+    show_indicators = []
+    indicator_colors_map = {}
+
+    ccm = manifest.get("column_color_map", {})
+    plot_schema = manifest.get("plot_schema", {})
+
+    if display_type == "overlay":
+        st.markdown("**Price Chart with Indicator Overlay**")
+        # Get plottable columns and their colors
+        if ccm:
+            show_indicators = [col for col in ccm.keys() if col in df.columns]
+            for col_name, color_key in ccm.items():
+                if col_name in df.columns:
+                    default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                    indicator_colors_map[col_name] = default_color
+        else:
+            indicator_cols = manifest.get("indicator_columns", [])
+            show_indicators = [col for col in indicator_cols if col in df.columns]
+    elif display_type == "oscillator":
+        pack_name = manifest.get("name", "Indicator")
+        st.markdown(f"**Price Chart + {pack_name}**")
+
+    # Build oscillator pane for oscillator-type packs
+    secondary_panes = []
+    if display_type == "oscillator":
+        pane = _build_pack_builder_oscillator_pane(df, manifest)
+        if pane:
+            secondary_panes.append(pane)
+
+    render_chart_with_candle_selector(
+        df,
+        pd.DataFrame(),
+        {"direction": "LONG"},
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors_map,
+        chart_key="pb_preview_chart",
+        secondary_panes=secondary_panes if secondary_panes else None,
+    )
+
+    # --- Interpreter State Timeline ---
+    st.markdown("**Interpreter States**")
+    _render_pack_builder_interpreter_timeline(df, manifest)
+
+    # --- Trigger Events ---
+    st.markdown("**Trigger Events**")
+    _render_pack_builder_trigger_events(df, manifest)
+
+
+def _build_pack_builder_oscillator_pane(df: pd.DataFrame, manifest: dict) -> dict | None:
+    """Build a lightweight-charts oscillator pane from manifest + DataFrame for Pack Builder preview."""
+    ccm = manifest.get("column_color_map", {})
+    plot_schema = manifest.get("plot_schema", {})
+    indicator_cols = manifest.get("indicator_columns", [])
+
+    # Determine which columns to plot
+    plot_cols = {}
+    if ccm:
+        for col_name, color_key in ccm.items():
+            if col_name in df.columns:
+                plot_cols[col_name] = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+    else:
+        color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+        for i, col in enumerate(indicator_cols):
+            if col in df.columns:
+                if i < len(color_keys):
+                    plot_cols[col] = plot_schema[color_keys[i]].get("default", "#8b5cf6")
+                else:
+                    plot_cols[col] = "#8b5cf6"
+
+    if not plot_cols:
+        return None
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+
+    series = []
+    for col_name, color in plot_cols.items():
+        line_data = []
+        for _, row in plot_df.iterrows():
+            if pd.notna(row.get(col_name)):
+                line_data.append({
+                    "time": int(row['_time']),
+                    "value": float(row[col_name]),
+                })
+        if line_data:
+            series.append({
+                "type": "Line",
+                "data": line_data,
+                "options": {
+                    "color": color,
+                    "lineWidth": 1,
+                    "priceLineVisible": False,
+                    "title": col_name,
+                }
+            })
+
+    if not series:
+        return None
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 200,
+        },
+        "series": series
+    }
+
+
+def _render_pack_builder_interpreter_timeline(df: pd.DataFrame, manifest: dict):
+    """Render interpreter state changes for Pack Builder preview."""
+    interp_keys = manifest.get("interpreters", [])
+    if not interp_keys:
+        st.caption("No interpreters defined.")
+        return
+
+    for interp_key in interp_keys:
+        if interp_key not in df.columns:
+            st.caption(f"Interpreter '{interp_key}' not in data.")
+            continue
+
+        states = df[interp_key].dropna()
+        if len(states) == 0:
+            st.caption(f"No state data for '{interp_key}'.")
+            continue
+
+        # State distribution
+        dist = states.value_counts()
+        total = len(states)
+        st.caption(f"**{interp_key}** — State distribution across {total} bars:")
+        dist_records = []
+        for state, count in dist.items():
+            pct = count / total * 100
+            dist_records.append({"State": state, "Count": count, "Pct": f"{pct:.1f}%"})
+        st.dataframe(pd.DataFrame(dist_records), use_container_width=True, hide_index=True)
+
+        # Detect state changes
+        changes = states[states != states.shift(1)]
+        if len(changes) > 0:
+            change_records = []
+            for idx, state in changes.tail(25).items():
+                change_records.append({"Time": str(idx), "State": state})
+            st.caption(f"Last {len(change_records)} state changes (of {len(changes)} total):")
+            st.dataframe(pd.DataFrame(change_records), use_container_width=True, hide_index=True)
+        else:
+            st.warning(
+                "No state changes detected — all bars classified as the same state. "
+                "This likely indicates the thresholds need adjustment or the output "
+                "states are not mutually exclusive."
+            )
+
+
+def _render_pack_builder_trigger_events(df: pd.DataFrame, manifest: dict):
+    """Render trigger events for Pack Builder preview."""
+    trigger_defs = manifest.get("triggers", [])
+    trigger_prefix = manifest.get("trigger_prefix", "")
+
+    if not trigger_defs:
+        st.caption("No triggers defined.")
+        return
+
+    events = []
+    for trig_def in trigger_defs:
+        col = f"trig_{trigger_prefix}_{trig_def['base']}"
+        if col in df.columns:
+            fired = df[df[col] == True]
+            for idx in fired.index:
+                events.append({
+                    "Time": str(idx),
+                    "Trigger": trig_def.get("name", trig_def["base"]),
+                    "Direction": trig_def.get("direction", "?"),
+                    "Type": trig_def.get("type", "?"),
+                    "Price": f"${df.loc[idx, 'close']:.2f}" if 'close' in df.columns else "N/A",
+                })
+
+    if not events:
+        st.caption("No triggers fired in the sample data period.")
+        return
+
+    events_df = pd.DataFrame(events).sort_values("Time", ascending=False).head(30)
+    st.dataframe(events_df, use_container_width=True, hide_index=True)
+    st.caption(f"{len(events)} total trigger events in sample data")
+
+
 def render_pack_builder_page():
     """Render the AI-Assisted Pack Builder page."""
     st.header("Pack Builder")
@@ -10070,7 +10517,7 @@ def render_pack_builder_page():
         key="pb_description",
     )
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         category = st.selectbox(
             "Category",
@@ -10078,6 +10525,17 @@ def render_pack_builder_page():
             key="pb_category",
         )
     with col2:
+        display_type = st.selectbox(
+            "Chart Display",
+            ["overlay", "oscillator", "hidden"],
+            key="pb_display_type",
+            help=(
+                "Overlay: drawn on the price chart (EMAs, Bollinger Bands). "
+                "Oscillator: separate pane below (RSI, Stochastic). "
+                "Hidden: no chart rendering."
+            ),
+        )
+    with col3:
         st.info("Works with any LLM: Claude, ChatGPT, Gemini, etc.")
 
     # Optional Pine Script
@@ -10157,6 +10615,7 @@ def render_pack_builder_page():
             pine_script=pine_script if pine_script else "",
             parameters=params if params else None,
             category=category,
+            display_type=display_type,
         )
         st.session_state.pb_generated_prompt = prompt
 
@@ -10237,7 +10696,10 @@ def render_pack_builder_page():
         st.subheader("Step 4: Review & Install")
 
         # Preview tabs
-        tabs = st.tabs(["Overview", "manifest.json", "indicator.py", "interpreter.py"])
+        tabs = st.tabs([
+            "Overview", "Preview", "manifest.json",
+            "indicator.py", "interpreter.py",
+        ])
 
         with tabs[0]:
             mcol1, mcol2 = st.columns(2)
@@ -10245,6 +10707,7 @@ def render_pack_builder_page():
                 st.markdown(f"**Name:** {manifest.get('name', '?')}")
                 st.markdown(f"**Slug:** `{manifest.get('slug', '?')}`")
                 st.markdown(f"**Category:** {manifest.get('category', '?')}")
+                st.markdown(f"**Display Type:** {manifest.get('display_type', 'overlay')}")
                 st.markdown(f"**Description:** {manifest.get('description', '?')}")
             with mcol2:
                 st.markdown("**Outputs:**")
@@ -10268,12 +10731,15 @@ def render_pack_builder_page():
                 )
 
         with tabs[1]:
-            st.code(json.dumps(manifest, indent=2), language="json")
+            _render_pack_builder_preview(parsed)
 
         with tabs[2]:
-            st.code(parsed["indicator_code"], language="python")
+            st.code(json.dumps(manifest, indent=2), language="json")
 
         with tabs[3]:
+            st.code(parsed["indicator_code"], language="python")
+
+        with tabs[4]:
             st.code(parsed["interpreter_code"], language="python")
 
         # Install button
@@ -10737,40 +11203,20 @@ def _render_gp_details(pack_id, all_packs):
 
 def _render_gp_preview(pack):
     """Render Preview tab for a General Pack — condition evaluation on sample data."""
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
-    st.caption("Live preview using sample data to verify condition behavior.")
+    st.caption(f"Live preview using {get_data_source()} data to verify condition behavior.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        preview_symbol = st.selectbox(
-            "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
-            key=f"gp_preview_symbol_{pack.id}"
-        )
-    with c2:
-        extended = st.checkbox(
-            "Extended Hours (4 AM - 8 PM)",
-            value=pack.base_template in ("trading_session",),
-            key=f"gp_preview_ext_{pack.id}",
-            help="Include pre-market and after-hours bars. Useful for session-based packs."
-        )
+    preview_symbol = st.selectbox(
+        "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
+        key=f"gp_preview_symbol_{pack.id}"
+    )
 
-    with st.spinner("Generating preview data..."):
-        end = datetime.now().replace(hour=20 if extended else 16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=3)
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42,
-                                  extended_hours=extended)
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         # Evaluate condition
@@ -11177,9 +11623,9 @@ def _render_rmp_details(pack_id, all_packs):
 
 def _render_rmp_preview(pack):
     """Render Preview tab for a Risk Management Pack — sample trades with stop/target visualization."""
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
-    st.caption("Live preview using sample trades to verify stop-loss and take-profit behavior.")
+    st.caption(f"Live preview using {get_data_source()} data to verify stop-loss and take-profit behavior.")
 
     # Controls: symbol + entry/exit trigger selection
     c1, c2, c3 = st.columns(3)
@@ -11240,21 +11686,11 @@ def _render_rmp_preview(pack):
                          key=f"rmp_preview_dir_{pack.id}")
 
     # Generate data and run trades
-    with st.spinner("Generating preview trades..."):
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=5)
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=5, timeframe="1Min")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         df = run_all_indicators(df)

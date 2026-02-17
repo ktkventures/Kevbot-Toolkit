@@ -50,6 +50,7 @@ Your response MUST contain exactly three fenced code blocks in this order:
   "version": "1.0.0",
   "created_at": "2026-01-01T00:00:00Z",
   "pack_type": "tf_confluence",
+  "display_type": "overlay | oscillator | hidden",
 
   "interpreters": ["YOUR_PACK_KEY"],
   "trigger_prefix": "your_prefix",
@@ -90,6 +91,9 @@ Your response MUST contain exactly three fenced code blocks in this order:
   ],
 
   "indicator_columns": ["col_name_1", "col_name_2"],
+  "column_color_map": {
+    "col_name_1": "line_color"
+  },
 
   "indicator_function": "calculate_your_pack",
   "interpreter_function": "interpret_your_pack",
@@ -104,9 +108,14 @@ Your response MUST contain exactly three fenced code blocks in this order:
 - **slug**: lowercase, underscores only, starts with letter (e.g., `keltner_channels`)
 - **interpreters**: list with ONE key in UPPERCASE (e.g., `["KELTNER_CHANNELS"]`)
 - **trigger_prefix**: short lowercase prefix for trigger IDs (e.g., `kc`)
+- **display_type**: how this indicator is rendered on charts:
+  - `"overlay"` — lines drawn on the price chart (EMAs, Bollinger Bands, Keltner Channels)
+  - `"oscillator"` — separate pane below the price chart (RSI, Stochastic, CCI)
+  - `"hidden"` — no chart visualization (utility packs like bar count)
 - **outputs**: mutually exclusive states — every bar is classified into exactly one
 - **triggers**: events that fire on state transitions (crosses, flips, etc.)
 - **indicator_columns**: column names your indicator.py adds to the DataFrame
+- **column_color_map**: maps indicator column names to plot_schema color keys for charting. Only include columns that should be plotted (e.g., omit `bb_bandwidth` from an overlay pack since it's not a price-scale value). Example: `{"bb_upper": "upper_color", "bb_basis": "basis_color"}`
 - **indicator_function / interpreter_function / trigger_function**: exact function names in your Python files
 
 ### Reserved Names (DO NOT USE)
@@ -223,6 +232,11 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
 - Only import `pandas`, `numpy`, and `math`
 - `interpret_*` returns a Series with values from manifest `outputs` list
 - Return `None` for bars with NaN/insufficient data
+- **Mutual exclusivity is critical**: Every bar must map to exactly ONE output state. The outputs list should be a set of non-overlapping zones, not a mix of zones + conditions. For example:
+  - GOOD: `["OVERBOUGHT", "BULLISH", "NEUTRAL", "BEARISH", "OVERSOLD"]` — every bar falls into exactly one zone
+  - BAD: `["UPPER_ZONE", "MID_ZONE", "LOWER_ZONE", "SQUEEZE"]` — "SQUEEZE" can overlap with any zone
+  - If you need a condition like "squeeze" or "trending", encode it as a modifier within the zone states (e.g., `"SQUEEZE_UPPER"`, `"SQUEEZE_MID"`, `"SQUEEZE_LOWER"`) or make it a trigger event instead of an output state
+- Avoid output states that are "always true" for typical market data. Test your classification logic mentally: on a typical 1-minute chart, would each state fire a reasonable portion of the time? If one state would dominate 90%+ of bars, the thresholds need adjustment or the state definitions need rethinking
 - `detect_*_triggers` returns a dict of boolean Series
 - Trigger keys MUST be `{trigger_prefix}_{base}` matching manifest triggers
 - Use `.shift(1)` to compare current bar with previous bar for crosses
@@ -244,6 +258,7 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
   "version": "1.0.0",
   "created_at": "2026-01-01T00:00:00Z",
   "pack_type": "tf_confluence",
+  "display_type": "oscillator",
   "interpreters": ["RSI_ZONES"],
   "trigger_prefix": "rsi",
   "parameters_schema": {
@@ -271,6 +286,7 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
     {"base": "cross_below_50", "name": "Cross Below 50", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"}
   ],
   "indicator_columns": ["rsi"],
+  "column_color_map": {"rsi": "rsi_color"},
   "indicator_function": "calculate_rsi_zones",
   "interpreter_function": "interpret_rsi_zones",
   "trigger_function": "detect_rsi_zones_triggers",
