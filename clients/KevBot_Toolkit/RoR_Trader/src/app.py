@@ -236,7 +236,7 @@ SETTINGS_DEFAULTS = {
     "default_stop_config": {"method": "atr", "atr_mult": 1.5},
     "default_target_config": None,
     "global_data_seed": 42,
-    "data_feed": "iex",
+    "data_feed": "sip",
     "realtime_engine_enabled": False,
 }
 
@@ -277,6 +277,11 @@ def get_base_trigger_id(confluence_trigger_id: str) -> str:
 # =============================================================================
 # CONFLUENCE RECORD FORMATTING
 # =============================================================================
+
+def _get_data_feed() -> str:
+    """Return the active data feed setting ('sip' or 'iex') from session state."""
+    return st.session_state.get('data_feed', 'sip')
+
 
 def get_enabled_gp_columns(df_columns) -> list:
     """Filter GP_ columns to only include those for currently enabled general packs.
@@ -441,7 +446,8 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 @st.cache_data(ttl=3600)
 def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
                                   start_date=None, end_date=None,
-                                  timeframe: str = "1Min"):
+                                  timeframe: str = "1Min",
+                                  data_feed: str = "sip"):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -454,13 +460,14 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
         timeframe: Bar timeframe (e.g., "1Min", "5Min", "1Hour")
+        data_feed: Alpaca data feed — "sip" or "iex" (also used as cache key)
 
     Returns DataFrame ready for trade generation and analysis.
     """
     # Load raw bars (Alpaca if configured, mock otherwise)
     df = load_market_data(symbol, days=days, seed=seed,
                           start_date=start_date, end_date=end_date,
-                          timeframe=timeframe)
+                          timeframe=timeframe, feed=data_feed)
 
     if len(df) == 0:
         return df
@@ -524,7 +531,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
-        timeframe=strat_timeframe
+        timeframe=strat_timeframe, data_feed=_get_data_feed(),
     )
 
     if len(df) == 0:
@@ -579,7 +586,8 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             gst_end = datetime.fromisoformat(strat['lookback_end_date'])
         df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                           start_date=gst_start, end_date=gst_end,
-                                          timeframe=strat.get('timeframe', '1Min'))
+                                          timeframe=strat.get('timeframe', '1Min'),
+                                          data_feed=_get_data_feed())
         if len(df) == 0:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
@@ -632,7 +640,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
-        timeframe=timeframe,
+        timeframe=timeframe, data_feed=_get_data_feed(),
     )
 
     if len(df) == 0:
@@ -898,7 +906,7 @@ def _generate_webhook_backtest_trades(
             df_market = prepare_data_with_indicators(
                 symbol, seed=data_seed,
                 start_date=_sd, end_date=_ed,
-                timeframe=timeframe,
+                timeframe=timeframe, data_feed=_get_data_feed(),
             )
             if len(df_market) == 0:
                 df_market = None
@@ -2891,10 +2899,10 @@ def main():
         st.title("RoR Trader")
         st.caption("Return on Risk Trader")
 
-        data_source = get_data_source()
+        data_source = get_data_source(_get_data_feed())
         if is_alpaca_configured():
             st.success(f"{data_source}")
-            st.caption("Free plan: IEX data \u00b7 Paid plan: SIP (all exchanges)")
+            st.caption("IEX: single exchange \u00b7 SIP: consolidated (all exchanges)")
         else:
             st.warning(f"{data_source}")
 
@@ -3728,7 +3736,8 @@ def render_strategy_builder():
         with st.spinner("Loading market data and running analysis..."):
             df = prepare_data_with_indicators(symbol, data_days, data_seed,
                                               start_date=start_date, end_date=end_date,
-                                              timeframe=timeframe)
+                                              timeframe=timeframe,
+                                              data_feed=_get_data_feed())
 
             if len(df) == 0:
                 st.error("No data available")
@@ -5758,7 +5767,8 @@ def render_live_backtest(strat: dict):
     # Data loading (cached via @st.cache_data, 1hr TTL)
     df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                       start_date=strat_start, end_date=strat_end,
-                                      timeframe=strat_timeframe)
+                                      timeframe=strat_timeframe,
+                                      data_feed=_get_data_feed())
 
     if len(df) == 0:
         st.error("No data available for this symbol.")
@@ -5877,7 +5887,8 @@ def render_live_backtest(strat: dict):
                 with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
                     _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
                                                           start_date=ext_start_date, end_date=ext_end_date,
-                                                          timeframe=strat_timeframe)
+                                                          timeframe=strat_timeframe,
+                                                          data_feed=_get_data_feed())
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
@@ -9255,7 +9266,7 @@ def render_settings():
         st.markdown("**Data Feed**")
         _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
         _feed_keys = ["iex", "sip"]
-        _saved_feed = st.session_state.get('data_feed', 'iex')
+        _saved_feed = st.session_state.get('data_feed', 'sip')
         _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
         _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
                              help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
@@ -9572,7 +9583,7 @@ def render_preview_tab(group: ConfluenceGroup):
         st.error("Template not found.")
         return
 
-    st.caption(f"Live preview using {get_data_source()} data to verify indicator, interpreter, and trigger behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify indicator, interpreter, and trigger behavior.")
 
     # Preview controls
     preview_symbol = st.selectbox(
@@ -9584,7 +9595,7 @@ def render_preview_tab(group: ConfluenceGroup):
 
     # Load market data (Alpaca if configured, mock fallback)
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -10226,7 +10237,7 @@ def _render_pack_builder_preview(parsed: dict):
     from data_loader import load_market_data, get_data_source
 
     st.caption(
-        f"Live preview using {get_data_source()} data. This runs your pack's indicator, "
+        f"Live preview using {get_data_source(_get_data_feed())} data. This runs your pack's indicator, "
         "interpreter, and trigger functions before installation."
     )
 
@@ -10264,7 +10275,7 @@ def _render_pack_builder_preview(parsed: dict):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -11205,7 +11216,7 @@ def _render_gp_preview(pack):
     """Render Preview tab for a General Pack — condition evaluation on sample data."""
     from data_loader import load_market_data, get_data_source
 
-    st.caption(f"Live preview using {get_data_source()} data to verify condition behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify condition behavior.")
 
     preview_symbol = st.selectbox(
         "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
@@ -11213,7 +11224,7 @@ def _render_gp_preview(pack):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min")
+        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -11625,7 +11636,7 @@ def _render_rmp_preview(pack):
     """Render Preview tab for a Risk Management Pack — sample trades with stop/target visualization."""
     from data_loader import load_market_data, get_data_source
 
-    st.caption(f"Live preview using {get_data_source()} data to verify stop-loss and take-profit behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify stop-loss and take-profit behavior.")
 
     # Controls: symbol + entry/exit trigger selection
     c1, c2, c3 = st.columns(3)
@@ -11687,7 +11698,7 @@ def _render_rmp_preview(pack):
 
     # Generate data and run trades
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=5, timeframe="1Min")
+        df = load_market_data(preview_symbol, days=5, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")

@@ -32,12 +32,42 @@ def is_alpaca_configured() -> bool:
                 not ALPACA_API_KEY.startswith("your_"))
 
 
+def _filter_rth(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter DataFrame to Regular Trading Hours only (9:30 AM - 4:00 PM ET).
+
+    Alpaca returns extended-hours bars by default. This removes pre-market
+    (4:00-9:29 AM) and after-hours (4:01-8:00 PM) bars to match TradingView RTH.
+    """
+    if len(df) == 0:
+        return df
+
+    try:
+        import pytz
+        et = pytz.timezone("America/New_York")
+        idx = df.index
+        if idx.tz is not None:
+            et_times = idx.tz_convert(et)
+        else:
+            et_times = idx.tz_localize("UTC").tz_convert(et)
+
+        # RTH: 09:30:00 through 15:59:59 ET (last bar at 15:59 closes at 16:00)
+        time_only = et_times.time
+        import datetime as dt_mod
+        rth_start = dt_mod.time(9, 30)
+        rth_end = dt_mod.time(16, 0)
+        mask = [(t >= rth_start and t < rth_end) for t in time_only]
+        return df.loc[mask]
+    except Exception:
+        return df
+
+
 def load_from_alpaca(
     symbol: str,
     days: int = 30,
     timeframe: str = "1Min",
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    feed: str = "sip",
 ) -> Optional[pd.DataFrame]:
     """
     Load historical bar data from Alpaca API.
@@ -48,6 +78,7 @@ def load_from_alpaca(
         timeframe: Bar timeframe ("1Min", "5Min", "15Min", "1Hour", "1Day")
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
+        feed: Data feed — "sip" (consolidated, all exchanges) or "iex" (IEX only)
 
     Returns:
         DataFrame with OHLCV data, or None if fetch fails
@@ -58,6 +89,7 @@ def load_from_alpaca(
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.enums import DataFeed
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
         # Initialize client
@@ -81,17 +113,21 @@ def load_from_alpaca(
         }
         tf = tf_map.get(timeframe, TimeFrame.Minute)
 
-        # Calculate date range
+        # Calculate date range (must be timezone-aware UTC for Alpaca)
         if start_date is None or end_date is None:
-            end_date = datetime.now()
+            from datetime import timezone
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=days)
 
-        # Fetch bars
+        # Select data feed
+        data_feed = DataFeed.SIP if feed == "sip" else DataFeed.IEX
+
         request = StockBarsRequest(
             symbol_or_symbols=[symbol],
             timeframe=tf,
             start=start_date,
-            end=end_date
+            end=end_date,
+            feed=data_feed,
         )
 
         bars = client.get_stock_bars(request)
@@ -104,7 +140,12 @@ def load_from_alpaca(
         if symbol in df.index.get_level_values(0):
             df = df.loc[symbol]
 
-        return df
+        # Filter to Regular Trading Hours (9:30 AM - 4:00 PM ET)
+        # Alpaca returns extended-hours bars by default; RTH filtering
+        # ensures consistency with TradingView's RTH view.
+        df = _filter_rth(df)
+
+        return df if len(df) > 0 else None
 
     except Exception as e:
         print(f"Alpaca fetch failed: {e}")
@@ -152,6 +193,10 @@ def load_from_mock(
     return pd.DataFrame()
 
 
+# Tracks what source was actually used on the last load_market_data call
+_last_actual_source: str = "Unknown"
+
+
 def load_market_data(
     symbol: str,
     days: int = 30,
@@ -160,6 +205,7 @@ def load_market_data(
     force_mock: bool = False,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    feed: str = "sip",
 ) -> pd.DataFrame:
     """
     Load market data, preferring Alpaca if configured.
@@ -172,25 +218,30 @@ def load_market_data(
         force_mock: If True, skip Alpaca and use mock data
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
+        feed: Data feed — "sip" (consolidated) or "iex" (IEX only)
 
     Returns:
         DataFrame with OHLCV data (columns: open, high, low, close, volume, trade_count, vwap)
     """
+    global _last_actual_source
+
     # Try Alpaca first (unless forced to use mock)
     if not force_mock and is_alpaca_configured():
-        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date, end_date=end_date)
+        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date,
+                              end_date=end_date, feed=feed)
         if df is not None and len(df) > 0:
+            feed_label = "SIP" if feed == "sip" else "IEX"
+            _last_actual_source = f"Alpaca {feed_label}"
             return df
 
     # Fall back to mock data
+    _last_actual_source = "Mock Data"
     return load_from_mock(symbol, days, seed, start_date=start_date, end_date=end_date, timeframe=timeframe)
 
 
-def get_data_source() -> str:
-    """Get the current data source being used."""
-    if is_alpaca_configured():
-        return "Alpaca API"
-    return "Mock Data"
+def get_data_source(feed: str = "sip") -> str:
+    """Get the actual data source used on the last load."""
+    return _last_actual_source
 
 
 # =============================================================================
@@ -236,6 +287,7 @@ def load_latest_bars(
     bars: int = 200,
     timeframe: str = "1Min",
     seed: int = 42,
+    feed: str = "sip",
 ) -> pd.DataFrame:
     """
     Load the most recent N bars for a symbol.
@@ -246,7 +298,7 @@ def load_latest_bars(
     import math
     bpd = _bars_per_day(timeframe)
     days = max(1, math.ceil(bars / bpd) + 1)  # +1 for safety margin
-    return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed)
+    return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed, feed=feed)
 
 
 # =============================================================================

@@ -15,9 +15,9 @@
       },
       "plot_settings": {
         "colors": {
-          "short_color": "#22c55e",
-          "mid_color": "#eab308",
-          "long_color": "#ef4444"
+          "short_color": "#d0dcd6",
+          "mid_color": "#08ea82",
+          "long_color": "#842498"
         },
         "line_width": 1,
         "visible": true

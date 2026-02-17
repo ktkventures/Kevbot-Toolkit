@@ -122,9 +122,10 @@ def load_cached_bars(
     timeframe: str,
     bars_needed: int,
     seed: int = 42,
+    feed: str = "sip",
 ) -> pd.DataFrame:
     """Load bars with in-memory caching. Fetches only new bars incrementally."""
-    cache_key = (symbol, timeframe)
+    cache_key = (symbol, timeframe, feed)
 
     if cache_key in _data_cache:
         cached = _data_cache[cache_key]
@@ -134,7 +135,7 @@ def load_cached_bars(
         try:
             new_bars = load_market_data(
                 symbol, start_date=last_time, end_date=datetime.now(),
-                timeframe=timeframe, seed=seed,
+                timeframe=timeframe, seed=seed, feed=feed,
             )
             if len(new_bars) > 0:
                 combined = pd.concat([cached_df, new_bars])
@@ -150,7 +151,7 @@ def load_cached_bars(
         return cached_df.tail(bars_needed).copy()
 
     # Cold start: full load
-    df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed)
+    df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed, feed=feed)
     if len(df) > 0:
         _data_cache[cache_key] = {"df": df, "last_bar_time": df.index[-1]}
     return df
@@ -404,7 +405,7 @@ def check_portfolio_compliance(portfolio_id: int, config: dict):
 # POLLING LOGIC
 # =============================================================================
 
-def poll_strategies(strats: list, config: dict, timeframe: str):
+def poll_strategies(strats: list, config: dict, timeframe: str, feed: str = "sip"):
     """
     Poll a group of strategies that share the same timeframe.
 
@@ -423,7 +424,7 @@ def poll_strategies(strats: list, config: dict, timeframe: str):
     # Pre-load data for each unique symbol
     symbol_data = {}
     for sym, seed in symbol_seeds.items():
-        df = load_cached_bars(sym, timeframe, bars_needed, seed=seed)
+        df = load_cached_bars(sym, timeframe, bars_needed, seed=seed, feed=feed)
         symbol_data[sym] = df
 
     # Process each strategy
@@ -532,7 +533,8 @@ def main():
                         continue
 
                     print(f"  [{tf}] Candle closed — polling {len(tf_strats)} strategies...")
-                    poll_strategies(tf_strats, config, tf)
+                    feed = config.get('global', {}).get('data_feed', 'sip')
+                    poll_strategies(tf_strats, config, tf, feed=feed)
                     _last_poll_cycle[tf] = time.time()
                     polled_count += len(tf_strats)
 

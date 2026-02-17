@@ -1,13 +1,15 @@
 {
   "chart_visible_candles": 200,
   "default_extended_data_days": 365,
-  "default_entry_trigger": "macd_line_default_cross_bull",
-  "default_exit_trigger": "bar_count_default_exit",
+  "default_entry_trigger": "ema_stack_default_cross_bull",
+  "default_exit_trigger": "ema_stack_default_cross_bull",
   "default_stop_config": {
     "method": "swing",
     "lookback": 5,
     "padding": 0.03
   },
   "default_target_config": null,
-  "global_data_seed": 42
+  "global_data_seed": 42,
+  "data_feed": "sip",
+  "realtime_engine_enabled": true
 }
