@@ -1230,7 +1230,57 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] **Confluence pack filtering scoped to builder** — Disabled confluence packs now only affect the Strategy Builder evaluation/drill-down tabs. Existing strategies, portfolios, strategy detail pages, alert monitor, and webhook processing use ALL interpreters and GP columns regardless of enabled state. Previously, disabling a pack could cause "No trades generated" on portfolio pages.
 - [x] **Strategy card BT days caption** — BT days now shows on strategy cards using `data_days` as fallback when `lookback_start_date` is not set. Caption format: `SPY LONG | BT 30d | Fwd 27d | Live 11d`.
 
-### Phase 16: Low-Priority Cleanup & Enhancements
+### Phase 16: AI-Assisted Confluence Pack Builder
+*Standardize the process for adding new indicators, interpreters, and confluence packs to the platform. A guided UI collects user intent and generates a structured prompt that can be fed to any LLM (Claude, ChatGPT, Gemini, etc.). The LLM output is pasted back, validated, and hot-loaded into the system — no manual code wiring required.*
+
+**Problem Statement:**
+- Adding new indicators today requires manually writing Python indicator functions, interpreter logic, trigger definitions, and template registration — a developer-only task
+- Users discover compelling indicators on TradingView or in trading education but have no way to bring them into the platform
+- The existing clone-and-customize flow (rename, adjust parameters) only works with indicators already in the system
+
+**Design Principles:**
+- **LLM-agnostic** — The system generates prompts and consumes structured output; it never calls an AI API directly. Users choose whatever LLM they prefer or have access to
+- **Standardized schema** — A strict Pack Spec format (JSON + Python functions) that any generated pack must conform to, enabling deterministic validation regardless of which LLM produced it
+- **Future API-ready** — The prompt-generation and validation layers are cleanly separated so a direct API integration (Claude, OpenAI, etc.) can be dropped in later without rearchitecting
+
+**Phase 16A — Pack Spec Standard & User Packs Infrastructure:**
+- [ ] **Pack Spec schema definition** — Formal JSON schema describing a complete confluence pack: metadata (name, slug, pack_type, description, version), indicator function signature, interpreter function signature, trigger definitions, template dict entry, parameter defaults. This is the contract that all user-created packs must satisfy
+- [ ] **`user_packs/` directory structure** — Convention: `user_packs/<pack_slug>/` containing `indicator.py`, `interpreter.py`, `triggers.json`, `template.json`, `manifest.json` (metadata + version). Kept separate from core pack files
+- [ ] **Hot-load registry** — On app startup (and on-demand refresh), scan `user_packs/`, validate each manifest against the Pack Spec schema, and register valid packs into `TEMPLATES`, `INTERPRETERS`, and indicator pipeline alongside built-in packs
+- [ ] **User pack CRUD** — Settings page to view installed user packs, enable/disable, delete, view files, and see validation status. Same enable/disable UX as built-in confluence packs
+
+**Phase 16B — Prompt Generator & Paste-Back Workflow:**
+- [ ] **Architecture Context Document** — A curated, version-controlled reference file (`pack_builder_context.md`) containing: Pack Spec schema, `TEMPLATES` dict schema, `INTERPRETERS` dict schema, indicator function signature patterns, column naming conventions (`GP_`, `trig_`, interpreter state columns), general pack condition format, 2-3 complete examples of existing packs (e.g., EMA Stack, VWAP, Volume), and output format instructions
+- [ ] **Pack Builder UI** — New page (or subpage under Confluence Packs) with a guided form:
+  - Pack type selector (TF Confluence / General / Risk Management)
+  - Plain-language description of desired behavior
+  - Optional Pine Script or pseudocode input (text area)
+  - Parameter definitions (name, type, default value — dynamic rows)
+  - "Generate Prompt" button → assembles the architecture context + user input into a single, copy-ready prompt
+- [ ] **Prompt assembly engine** — Combines the architecture context document with user form inputs into a structured prompt. Includes explicit output format instructions: "Return your response as a JSON code block matching the Pack Spec schema, followed by Python code blocks for the indicator and interpreter functions"
+- [ ] **Copy-to-clipboard UX** — Generated prompt displayed in a scrollable text area with a one-click copy button. Clear instructions: "Paste this prompt into your preferred AI assistant (Claude, ChatGPT, etc.), then paste the response below"
+- [ ] **Response paste-back area** — Text area where user pastes the LLM response. "Import Pack" button triggers parsing and validation
+
+**Phase 16C — Validation, Preview & Installation:**
+- [ ] **Response parser** — Extract JSON and Python code blocks from pasted LLM output. Tolerant of markdown formatting, extra commentary, minor whitespace issues
+- [ ] **Schema validation** — Validate extracted JSON against Pack Spec schema. Surface clear error messages for missing fields, invalid types, naming convention violations
+- [ ] **Code validation** — Parse Python indicator/interpreter functions via AST: verify function signatures match expected patterns, check for disallowed imports (only `pandas`, `numpy`, `math` allowed), flag any I/O or network calls
+- [ ] **Column collision check** — Verify generated column names (`GP_*`, `trig_*`, state columns) don't collide with existing built-in or user pack columns
+- [ ] **Dry-run preview** — Run generated indicator + interpreter on a sample DataFrame (e.g., 30 days of SPY data). Show: computed columns, interpreter state distribution, trigger fire count. User reviews before committing
+- [ ] **Install to `user_packs/`** — On approval, write the pack files to `user_packs/<pack_slug>/`, register into the hot-load registry, and surface the new pack in Confluence Pack settings
+
+**Pine Script Porting (built into prompt context):**
+- [ ] Architecture context document includes a Pine Script → Python translation reference section (e.g., `ta.ema()` → `df['close'].ewm(span=N).mean()`, `ta.atr()` → existing ATR helper, `ta.crossover()` → trigger pattern)
+- [ ] When user provides Pine Script input, the prompt assembly engine wraps it with translation-specific instructions: "The user has provided TradingView Pine Script. Translate the indicator logic to Python following the conventions in the reference, then build the full pack spec around it"
+- [ ] Common Pine Script patterns covered in reference: overlays, oscillators, multi-timeframe references, alerts
+
+**Integration Points:**
+- [ ] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
+- [ ] User packs available in Strategy Builder trigger/confluence selection dropdowns
+- [ ] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
+- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files
+
+### Phase 17: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**
@@ -1247,7 +1297,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
-### Phase 17: Scanner Strategy Origin
+### Phase 18: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
 
 - [ ] Add "Scanner" option to Strategy Origin selectbox
