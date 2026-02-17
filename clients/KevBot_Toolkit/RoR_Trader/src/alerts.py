@@ -590,7 +590,7 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
     return confluence_trigger_id
 
 
-def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
+def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -> list:
     """
     Run the full pipeline on recent data and check for entry/exit signals.
 
@@ -598,6 +598,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
         strategy: Strategy dict with symbol, triggers, confluence, etc.
         df: Pre-loaded DataFrame of bars. If None, bars are loaded automatically
             using compute_signal_detection_bars() for the strategy's timeframe.
+        feed: Data feed — "sip" or "iex"
 
     Returns list of signal dicts (usually 0 or 1 items).
     """
@@ -608,7 +609,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
     # Load recent bars if not provided
     if df is None:
         bars_needed = compute_signal_detection_bars(timeframe)
-        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed)
+        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed, feed=feed)
     if len(df) == 0:
         return []
 

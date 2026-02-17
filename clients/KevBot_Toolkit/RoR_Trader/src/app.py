@@ -9593,9 +9593,10 @@ def render_preview_tab(group: ConfluenceGroup):
         key=f"preview_symbol_{group.id}"
     )
 
-    # Load market data (Alpaca if configured, mock fallback)
+    # Load market data — fetch extra history for EMA warmup, display recent portion
+    # 30 days gives ~11,700 RTH bars, enough for EMA 200 to fully converge.
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -9610,6 +9611,10 @@ def render_preview_tab(group: ConfluenceGroup):
         # Run interpreters and triggers
         df = run_all_interpreters(df)
         df = detect_all_triggers(df)
+
+        # Trim to last 3 days for display (indicators already warmed up)
+        display_bars = min(len(df), 390 * 3)
+        df = df.iloc[-display_bars:]
 
     # --- Section 1: Chart ---
     # Overlay templates show indicator lines on the price chart.
@@ -10275,7 +10280,7 @@ def _render_pack_builder_preview(parsed: dict):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -10306,6 +10311,10 @@ def _render_pack_builder_preview(parsed: dict):
                     df[f"trig_{trig_key}"] = trig_series
             except Exception as e:
                 st.warning(f"Trigger function error: {e}")
+
+    # Trim to last 3 days for display (indicators already warmed up)
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
 
     # --- Chart ---
     display_type = manifest.get("display_type", "overlay")
@@ -11224,7 +11233,7 @@ def _render_gp_preview(pack):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=3, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -11233,6 +11242,10 @@ def _render_gp_preview(pack):
         # Evaluate condition
         condition_col = gp_module.evaluate_condition(df, pack)
         df[pack.get_condition_column()] = condition_col
+
+    # Trim to last 3 days for display (indicators already warmed up)
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
 
     # --- Build condition state change markers ---
     col_name = pack.get_condition_column()
@@ -11698,7 +11711,7 @@ def _render_rmp_preview(pack):
 
     # Generate data and run trades
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=5, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
