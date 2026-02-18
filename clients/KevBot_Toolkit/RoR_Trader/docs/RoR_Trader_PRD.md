@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.22
-**Date:** February 16, 2026
+**Version:** 0.23
+**Date:** February 17, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 14A Complete — Phases 11, 12, 13, 14A implemented; Phase 14B scaffold in place (Alpaca SIP upgrade pending); QA round 2 fixes applied
+**Status:** Phase 16 Complete — Phases 11–14 implemented; Alpaca SIP upgrade live; Phase 16 (AI-Assisted Confluence Pack Builder) fully implemented with 16A, 16B, 16C complete
 
 ---
 
@@ -1193,13 +1193,20 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - **Alert tracking separate from portfolio webhooks** — Users should be able to track alert executions for confidence-building without routing them to a broker. This is essentially paper trading validation — "would my alerts have fired correctly?" — without the commitment of a live portfolio.
 - **Override vs. additive** — When live data exists for a period, it replaces the forward test data for that period on the equity curve (since live is higher fidelity). Periods without live data fall back to forward test. Periods before forward test start show backtest data.
 
-### Phase 14: Live Portfolio Management — 14A COMPLETE (Feb 14, 2026); 14B scaffold in place
+### Phase 14: Live Portfolio Management — 14A COMPLETE (Feb 14, 2026); 14B data infrastructure COMPLETE (Feb 17, 2026)
 *Active trading account management — bridge between backtesting and real-world trading.*
 
 - [x] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
 - [x] Deposit/withdrawal ledger — track additions to and deductions from the trading account balance
 - [x] Trading notes — freeform notes area for the user to document observations, adjustments, and context per portfolio
 - [x] Live balance tracking — actual account balance based on webhook triggers + manual adjustments, independent of backtest projections
+- [x] **Alpaca SIP data feed upgrade** — User upgraded Alpaca plan to paid SIP ($99/mo); all data paths now use consolidated SIP feed (all exchanges) instead of IEX (single exchange). Candlestick prices now match TradingView exactly
+- [x] **Data feed wiring** — `feed` parameter threaded through entire data pipeline: `data_loader.py` → `app.py` → `alert_monitor.py` → `alerts.py`. Feed setting (`sip`/`iex`) stored in `config/settings.json` and selectable on Connections settings page
+- [x] **UTC timezone fix** — `datetime.now()` replaced with `datetime.now(timezone.utc)` in Alpaca API calls to prevent timezone-dependent data truncation
+- [x] **RTH (Regular Trading Hours) filter** — `_filter_rth()` strips pre-market (4:00–9:29 AM ET) and after-hours (4:01–8:00 PM ET) bars from Alpaca data to match TradingView RTH mode
+- [x] **Actual data source tracking** — `get_data_source()` now reports what was *actually* used (e.g., "Alpaca SIP" or "Mock Data") rather than what was configured, preventing silent mock-data fallback from going unnoticed
+- [x] **EMA warmup fix** — All preview charts load 30 days of data (~11,700 RTH bars) for indicator warmup, then trim to last 3 days for display. EMA 200 now converges properly, matching TradingView
+- [x] **Connections settings subpage** — Alpaca API key status display, data feed selector (IEX/SIP), real-time engine toggle
 - [ ] Intra-bar real-time alert engine — WebSocket streaming via Alpaca for `[I]` triggers:
   - Subscribe to real-time trades/quotes for active strategy symbols
   - Build partial OHLCV bars from tick data
@@ -1207,10 +1214,10 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
   - Fire alerts the moment condition is met, not at bar close
   - `[C]` triggers continue using the existing bar-close polling model
   - Mirrors TradingView's "once per bar" (intra-bar) vs. "once per bar close" alert modes
-  - Requires Alpaca paid plan ($99/mo) for SIP real-time feed with no symbol limit (free plan limited to IEX, 30 symbols)
+  - SIP real-time feed now available (paid plan active)
   - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
 
-### Phase 15: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026)
+### Phase 15: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026; Connections added Feb 17, 2026)
 *Implemented as part of the sidebar-to-inline refactor in Phase 10. See Phase 10 "Settings Page" section for details.*
 
 - [x] Settings navigation page — 6th top-level nav item
@@ -1218,7 +1225,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] Default Triggers — Default Entry and Exit Trigger selectboxes for new strategies
 - [x] Default Risk Management — Default Stop Loss and Target with full method+parameter config
 - [x] Development — Data Seed (mock mode only)
-- [ ] **Connections** subpage — Alpaca API configuration, data source status (future)
+- [x] **Connections** subpage — Alpaca API key status (masked display), data feed selector (IEX/SIP with description captions), real-time engine enable/disable toggle. Data feed default changed from IEX to SIP after Alpaca plan upgrade
 - [x] Persist settings to `config/settings.json` — `load_settings()` / `save_settings()` helpers with merge-on-load for forward compatibility; Settings page "Save Settings" button writes all defaults to disk; loaded into session state on app startup with fallback to `SETTINGS_DEFAULTS`
 
 ### QA Notes — Phases 11–14 (Feb 16, 2026)
@@ -1230,7 +1237,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] **Confluence pack filtering scoped to builder** — Disabled confluence packs now only affect the Strategy Builder evaluation/drill-down tabs. Existing strategies, portfolios, strategy detail pages, alert monitor, and webhook processing use ALL interpreters and GP columns regardless of enabled state. Previously, disabling a pack could cause "No trades generated" on portfolio pages.
 - [x] **Strategy card BT days caption** — BT days now shows on strategy cards using `data_days` as fallback when `lookback_start_date` is not set. Caption format: `SPY LONG | BT 30d | Fwd 27d | Live 11d`.
 
-### Phase 16: AI-Assisted Confluence Pack Builder
+### Phase 16: AI-Assisted Confluence Pack Builder — COMPLETE (Feb 17, 2026)
 *Standardize the process for adding new indicators, interpreters, and confluence packs to the platform. A guided UI collects user intent and generates a structured prompt that can be fed to any LLM (Claude, ChatGPT, Gemini, etc.). The LLM output is pasted back, validated, and hot-loaded into the system — no manual code wiring required.*
 
 **Problem Statement:**
@@ -1243,42 +1250,38 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - **Standardized schema** — A strict Pack Spec format (JSON + Python functions) that any generated pack must conform to, enabling deterministic validation regardless of which LLM produced it
 - **Future API-ready** — The prompt-generation and validation layers are cleanly separated so a direct API integration (Claude, OpenAI, etc.) can be dropped in later without rearchitecting
 
-**Phase 16A — Pack Spec Standard & User Packs Infrastructure:**
-- [ ] **Pack Spec schema definition** — Formal JSON schema describing a complete confluence pack: metadata (name, slug, pack_type, description, version), indicator function signature, interpreter function signature, trigger definitions, template dict entry, parameter defaults. This is the contract that all user-created packs must satisfy
-- [ ] **`user_packs/` directory structure** — Convention: `user_packs/<pack_slug>/` containing `indicator.py`, `interpreter.py`, `triggers.json`, `template.json`, `manifest.json` (metadata + version). Kept separate from core pack files
-- [ ] **Hot-load registry** — On app startup (and on-demand refresh), scan `user_packs/`, validate each manifest against the Pack Spec schema, and register valid packs into `TEMPLATES`, `INTERPRETERS`, and indicator pipeline alongside built-in packs
-- [ ] **User pack CRUD** — Settings page to view installed user packs, enable/disable, delete, view files, and see validation status. Same enable/disable UX as built-in confluence packs
+**Phase 16A — Pack Spec Standard & User Packs Infrastructure (COMPLETE):**
+- [x] **Pack Spec schema definition** — `src/pack_spec.py` defines manifest schema, allowed imports, disallowed calls/modules. `validate_manifest()`, `validate_python_file()` (AST-based safety check), `validate_function_exists()` for function signature verification
+- [x] **`user_packs/` directory structure** — Convention: `user_packs/<pack_slug>/` containing `indicator.py`, `interpreter.py`, and `manifest.json` (metadata + version + parameters + outputs). Kept separate from core pack files
+- [x] **Hot-load registry** — `src/pack_registry.py` scans `user_packs/` on startup, validates manifests, AST-checks Python files, dynamically imports via `importlib.util`, and registers into `TEMPLATES`, `INTERPRETER_FUNCS`, `TRIGGER_FUNCS`, `GROUP_INDICATOR_FUNCS`. Auto-creates `ConfluenceGroup` for new packs
+- [x] **Registry-based dispatch** — Refactored `interpreters.py` (`run_all_interpreters()`, `detect_all_triggers()`) and `indicators.py` (`run_indicators_for_group()`) from hard-coded dispatch to mutable registries. Built-in and user packs share the same execution path
+- [x] **User pack CRUD** — User Packs tab on Confluence Packs page shows installed packs with expandable cards (metadata, parameters, outputs/triggers, source files). Delete button with confirmation removes pack from disk and all registries. Refresh button hot-reloads without restart
 
-**Phase 16B — Prompt Generator & Paste-Back Workflow:**
-- [ ] **Architecture Context Document** — A curated, version-controlled reference file (`pack_builder_context.md`) containing: Pack Spec schema, `TEMPLATES` dict schema, `INTERPRETERS` dict schema, indicator function signature patterns, column naming conventions (`GP_`, `trig_`, interpreter state columns), general pack condition format, 2-3 complete examples of existing packs (e.g., EMA Stack, VWAP, Volume), and output format instructions
-- [ ] **Pack Builder UI** — New page (or subpage under Confluence Packs) with a guided form:
-  - Pack type selector (TF Confluence / General / Risk Management)
-  - Plain-language description of desired behavior
-  - Optional Pine Script or pseudocode input (text area)
-  - Parameter definitions (name, type, default value — dynamic rows)
-  - "Generate Prompt" button → assembles the architecture context + user input into a single, copy-ready prompt
-- [ ] **Prompt assembly engine** — Combines the architecture context document with user form inputs into a structured prompt. Includes explicit output format instructions: "Return your response as a JSON code block matching the Pack Spec schema, followed by Python code blocks for the indicator and interpreter functions"
-- [ ] **Copy-to-clipboard UX** — Generated prompt displayed in a scrollable text area with a one-click copy button. Clear instructions: "Paste this prompt into your preferred AI assistant (Claude, ChatGPT, etc.), then paste the response below"
-- [ ] **Response paste-back area** — Text area where user pastes the LLM response. "Import Pack" button triggers parsing and validation
+**Phase 16B — Prompt Generator & Paste-Back Workflow (COMPLETE):**
+- [x] **Architecture Context Document** — `src/pack_builder_context.py` generates a comprehensive context document containing: Pack Spec schema, indicator/interpreter function signature patterns, column naming conventions, complete examples of all 3 pack types (TF Confluence, General, Risk Management), Pine Script → Python translation reference, and output format instructions
+- [x] **Pack Builder UI** — "Pack Builder" tab on Confluence Packs page with guided form: pack type selector (TF Confluence / General / Risk Management) with mutual exclusivity, plain-language description, optional Pine Script/pseudocode input, dynamic parameter rows (name, type, default), "Generate Prompt" button
+- [x] **Prompt assembly engine** — Combines architecture context + user form inputs into a structured prompt. Type-specific instructions and examples included based on selected pack type
+- [x] **Copy-to-clipboard UX** — Generated prompt displayed in scrollable text area with copy button and clear instructions for pasting into preferred AI assistant
+- [x] **Response paste-back area** — Text area for pasting LLM response with "Import Pack" button
 
-**Phase 16C — Validation, Preview & Installation:**
-- [ ] **Response parser** — Extract JSON and Python code blocks from pasted LLM output. Tolerant of markdown formatting, extra commentary, minor whitespace issues
-- [ ] **Schema validation** — Validate extracted JSON against Pack Spec schema. Surface clear error messages for missing fields, invalid types, naming convention violations
-- [ ] **Code validation** — Parse Python indicator/interpreter functions via AST: verify function signatures match expected patterns, check for disallowed imports (only `pandas`, `numpy`, `math` allowed), flag any I/O or network calls
-- [ ] **Column collision check** — Verify generated column names (`GP_*`, `trig_*`, state columns) don't collide with existing built-in or user pack columns
-- [ ] **Dry-run preview** — Run generated indicator + interpreter on a sample DataFrame (e.g., 30 days of SPY data). Show: computed columns, interpreter state distribution, trigger fire count. User reviews before committing
-- [ ] **Install to `user_packs/`** — On approval, write the pack files to `user_packs/<pack_slug>/`, register into the hot-load registry, and surface the new pack in Confluence Pack settings
+**Phase 16C — Validation, Preview & Installation (COMPLETE):**
+- [x] **Response parser** — Extracts JSON manifest and Python code blocks from pasted LLM output. Tolerant of markdown formatting, extra commentary, whitespace variations
+- [x] **Schema validation** — Validates extracted JSON against Pack Spec schema with clear error messages for missing fields, invalid types, naming convention violations
+- [x] **Code validation** — AST-based validation: verifies function signatures, checks for disallowed imports (only `pandas`, `numpy`, `math`, `collections` allowed), flags I/O or network calls, rejects `exec`/`eval`/`compile`/`__import__`
+- [x] **Column collision check** — Verifies generated column names don't collide with existing built-in or user pack columns
+- [x] **Dry-run preview** — Runs generated indicator + interpreter on live market data (30 days SPY via Alpaca SIP). Shows: dynamic candlestick chart with indicator overlays (using TradingView Lightweight Charts), interpreter state distribution bar chart, trigger fire counts, computed column samples. Preview uses real data, not mock
+- [x] **Install to `user_packs/`** — On approval, writes pack files to `user_packs/<pack_slug>/`, registers into hot-load registry, and surfaces new pack in Confluence Pack settings with enable/disable checkbox
 
 **Pine Script Porting (built into prompt context):**
-- [ ] Architecture context document includes a Pine Script → Python translation reference section (e.g., `ta.ema()` → `df['close'].ewm(span=N).mean()`, `ta.atr()` → existing ATR helper, `ta.crossover()` → trigger pattern)
-- [ ] When user provides Pine Script input, the prompt assembly engine wraps it with translation-specific instructions: "The user has provided TradingView Pine Script. Translate the indicator logic to Python following the conventions in the reference, then build the full pack spec around it"
-- [ ] Common Pine Script patterns covered in reference: overlays, oscillators, multi-timeframe references, alerts
+- [x] Architecture context document includes Pine Script → Python translation reference (e.g., `ta.ema()` → `df['close'].ewm(span=N).mean()`, `ta.atr()` → ATR helper, `ta.crossover()` → trigger pattern, `ta.rsi()` → RSI formula)
+- [x] When user provides Pine Script input, the prompt assembly engine wraps it with translation-specific instructions
+- [x] Common Pine Script patterns covered: overlays, oscillators, band-based indicators, volume indicators
 
 **Integration Points:**
-- [ ] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
-- [ ] User packs available in Strategy Builder trigger/confluence selection dropdowns
-- [ ] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
-- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files
+- [x] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
+- [x] User packs available in Strategy Builder trigger/confluence selection dropdowns
+- [x] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
+- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 17)
 
 ### Phase 17: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*

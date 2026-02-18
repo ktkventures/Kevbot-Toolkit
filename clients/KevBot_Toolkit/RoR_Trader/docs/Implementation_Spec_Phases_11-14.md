@@ -1,7 +1,7 @@
 # RoR Trader — Implementation Spec: Phases 11–14
 
-**Version:** 0.2
-**Date:** February 13, 2026
+**Version:** 0.3
+**Date:** February 17, 2026
 **Purpose:** Detailed, autonomous-implementation-ready spec for Phases 11–14. Designed for a "Ralph Wiggum" loop — each phase can be implemented without user validation between steps.
 
 **Reference Images:** `docs/reference_images/DaviddTech *.png` (5 screenshots)
@@ -25,17 +25,25 @@
 
 | File | Purpose | Approx Lines |
 |------|---------|-------------|
-| `src/app.py` | Main Streamlit app — all pages, tabs, UI | ~9,300 |
+| `src/app.py` | Main Streamlit app — all pages, tabs, UI | ~10,500 |
 | `src/triggers.py` | Trade generation engine (`generate_trades`) | ~700 |
-| `src/indicators.py` | Technical indicator calculations | ~440 |
+| `src/indicators.py` | Technical indicator calculations (registry-based dispatch) | ~500 |
+| `src/interpreters.py` | Confluence interpreters (registry-based dispatch) | ~600 |
 | `src/alerts.py` | Alert detection, webhook delivery, templates | ~960 |
+| `src/alert_monitor.py` | Background alert polling with feed-aware caching | ~250 |
 | `src/confluence_groups.py` | Confluence pack system, templates, interpreters | ~1,200 |
 | `src/mock_data.py` | Mock OHLCV data generator | ~200 |
-| `src/data_loader.py` | Alpaca/mock data loading | ~270 |
+| `src/data_loader.py` | Alpaca/mock data loading, RTH filter, source tracking | ~325 |
+| `src/pack_spec.py` | Pack Spec schema definitions + AST validation | ~200 |
+| `src/pack_registry.py` | User pack hot-load, import, register/unregister | ~350 |
+| `src/pack_builder_context.py` | Architecture context + prompt assembly for Pack Builder | ~400 |
+| `src/realtime_engine.py` | Real-time WebSocket engine scaffold | ~100 |
+| `user_packs/` | User-created confluence packs (hot-loaded on startup) | |
 | `config/strategies.json` | Persisted strategy data | |
 | `config/alert_config.json` | Alert monitoring & webhook config | |
 | `config/alerts.json` | Fired alert history (last 500) | |
-| `config/settings.json` | User settings | |
+| `config/settings.json` | User settings (includes `data_feed: "sip"`) | |
+| `config/confluence_groups.json` | Confluence group configs (built-in + user packs) | |
 
 ### Existing Data Structures
 
@@ -1241,14 +1249,20 @@ Phase 12 (Webhook Inbound)
 - [x] Balance computed correctly from ledger sum
 - [x] Balance history chart renders
 - [x] Trading notes save and render markdown
+- [x] Ledger record deletion — trash-can delete button per row with two-step Yes/No confirmation
 - [ ] Trading P&L auto-generates ledger entries from live executions — *depends on Phase 13 live data*
-- **Note:** Ledger currently lacks delete/remove action for correcting accidental entries — to be added.
 
-### Phase 14B — SCAFFOLD COMPLETE (Alpaca SIP subscription pending)
-- [x] Connections section in Settings shows Alpaca status and data feed selection
+### Phase 14B — DATA INFRASTRUCTURE COMPLETE (Feb 17, 2026); WebSocket engine pending
+- [x] Connections section in Settings shows Alpaca API key status (masked) and data feed selection (IEX/SIP)
 - [x] Real-time engine scaffolded (`src/realtime_engine.py` created)
-- [ ] User prompted to confirm Alpaca SIP access at stop point
-- [ ] Real-time engine connects to Alpaca WebSocket (when configured)
+- [x] **Alpaca SIP subscription active** — User upgraded to paid plan ($99/mo). All data paths now use SIP consolidated feed
+- [x] **Data feed wiring** — `feed` parameter threaded through `data_loader.py` → `app.py` (`prepare_data_with_indicators`, all preview functions) → `alert_monitor.py` (`load_cached_bars`, `poll_strategies`) → `alerts.py` (`detect_signals`). Feed included in `@st.cache_data` key for proper cache busting
+- [x] **UTC timezone fix** — `datetime.now()` → `datetime.now(timezone.utc)` in `load_from_alpaca()`. Prevents MST/PST systems from truncating 7+ hours of market data
+- [x] **RTH filter** — `_filter_rth()` in `data_loader.py` strips pre-market and after-hours bars. Converts bar timestamps to ET, keeps only 9:30 AM–4:00 PM. Matches TradingView RTH mode
+- [x] **Actual source tracking** — `_last_actual_source` module-level variable in `data_loader.py`. `get_data_source()` returns what was *actually* used (e.g., "Alpaca SIP" vs "Mock Data") rather than configured source. Prevents silent mock-data fallback from misleading UI captions
+- [x] **EMA warmup** — All preview functions load 30 days (~11,700 RTH bars) for indicator warmup, then `df.iloc[-display_bars:]` trims to last 3 days for display. EMA 200 now converges properly
+- [x] **Data feed default changed** — `SETTINGS_DEFAULTS['data_feed']` changed from `"iex"` to `"sip"`
+- [ ] Real-time engine connects to Alpaca WebSocket (SIP subscription now active — ready to implement)
 - [ ] Intra-bar triggers fire on tick data
 
 ### QA Fixes Applied — Round 1 (Feb 16, 2026)
@@ -1266,3 +1280,29 @@ Phase 12 (Webhook Inbound)
 - [x] **Ledger record deletion** — Added trash-can delete button per ledger row with two-step Yes/No confirmation. Wired to existing `remove_ledger_entry()` from portfolios.py.
 - [x] **Phase 13 spoofed test data** — SPY LONG strategy (id=1) populated with 40 live_executions across 11 trading days, 5 discrepancies (3 missed, 2 phantom), 42 matching alerts. Forward test start moved to Jan 20 for 27-day forward test window.
 - [x] **Strategy card BT days** — Added `data_days` fallback for BT days display on strategy cards when `lookback_start_date` is not set.
+
+### Data Infrastructure Improvements (Feb 17, 2026)
+*Alpaca SIP upgrade, RTH filtering, timezone fix, EMA warmup — all data paths now produce charts matching TradingView.*
+
+- [x] **Alpaca SIP wiring** — Added `feed` parameter to `load_from_alpaca()`, `load_market_data()`, `load_latest_bars()` in `data_loader.py`. Added `_get_data_feed()` helper in `app.py`. Added `data_feed` parameter to `prepare_data_with_indicators()` (included in `@st.cache_data` key for proper cache busting). Updated all 8 call sites in `app.py`, all 4 preview `load_market_data` calls, `alert_monitor.py` (`load_cached_bars`, `poll_strategies`), and `alerts.py` (`detect_signals`).
+- [x] **UTC timezone fix** — Root cause: `datetime.now()` on MST system returned local time as naive datetime; Alpaca interpreted as UTC, cutting off 7 hours of market data. Fix: `datetime.now(timezone.utc)` in `load_from_alpaca()`.
+- [x] **RTH filter** — `_filter_rth()` converts bar timestamps to Eastern Time via `pytz`, keeps only 9:30 AM–4:00 PM ET. Applied after Alpaca fetch in `load_from_alpaca()`. Matches TradingView's RTH mode.
+- [x] **Actual source tracking** — Added `_last_actual_source` module-level variable. `get_data_source()` returns what was *actually* used on the last `load_market_data()` call. Prevents UI showing "Alpaca SIP" when data silently fell back to mock.
+- [x] **EMA warmup in previews** — Changed all 4 preview render functions (`_render_ema_stack_preview`, `_render_macd_preview`, `_render_vwap_preview`, `_render_gp_preview`, `_render_rmp_preview`) from `days=3` to `days=30`. After running indicators, display trimmed to last 3 days: `df = df.iloc[-display_bars:]`.
+- [x] **Default data feed** — `SETTINGS_DEFAULTS['data_feed']` changed from `"iex"` to `"sip"`.
+
+### Phase 16 Implementation Notes (Feb 16–17, 2026)
+*AI-Assisted Confluence Pack Builder — see PRD Phase 16 for full feature list.*
+
+**New files created:**
+- `src/pack_spec.py` (~200 lines) — Manifest schema, `ALLOWED_IMPORTS`, `DISALLOWED_CALLS`, `DISALLOWED_MODULES`. `validate_manifest()`, `validate_python_file()` (AST walk), `validate_function_exists()`.
+- `src/pack_registry.py` (~350 lines) — `RegisteredPack` dataclass, `scan_and_load_all()`, `load_single_pack()`, `register_pack()`, `unregister_pack()`, `delete_pack()`, `_import_module_safely()`. Wrapper factories adapt user `(df, **params)` signatures to match built-in `(df)` signatures.
+- `src/pack_builder_context.py` (~400 lines) — `generate_architecture_context()`, `assemble_prompt()`, Pine Script translation reference, complete pack examples for all 3 types.
+- `user_packs/` directory with example packs (Bollinger Bands, S/R Channels)
+
+**Existing files modified:**
+- `src/interpreters.py` — Added `INTERPRETER_FUNCS` and `TRIGGER_FUNCS` mutable dicts. Registered all built-in functions. Rewrote `run_all_interpreters()` and `detect_all_triggers()` to dispatch from registries. Added `register_interpreter()`, `register_trigger_detector()`, `unregister_interpreter()`, `unregister_trigger_detector()`.
+- `src/indicators.py` — Added `GROUP_INDICATOR_FUNCS` registry. Extracted per-template logic into named functions. Rewrote `run_indicators_for_group()` to dispatch from registry. Added `register_group_indicator()`, `unregister_group_indicator()`.
+- `src/confluence_groups.py` — Guard to skip groups whose `base_template` is not in TEMPLATES (handles removed user packs).
+- `src/triggers.py` — Generic suffix-based opposite trigger lookup (`_bull↔_bear`, `_up↔_down`, `_buy↔_sell`) as fallback.
+- `src/app.py` — `pack_registry.scan_and_load_all()` on startup. User Packs tab, Pack Builder tab with full guided workflow (type selector, description, Pine Script input, parameter rows, generate prompt, paste-back, validation, preview with dynamic charts, install). Preview uses real Alpaca SIP data.
