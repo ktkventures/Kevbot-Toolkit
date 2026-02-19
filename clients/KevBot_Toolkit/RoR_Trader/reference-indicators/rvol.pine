@@ -1,0 +1,19 @@
+//@version=5
+indicator("RVOL 10s / 1m / 5m (status line)", shorttitle="RVOL 10s/1m/5m", overlay=true)
+
+// Avg bars used to compute RVOL on each timeframe
+len = input.int(20, "Average bars (per TF)")
+
+f_rvol(tf) =>
+    v  = request.security(syminfo.tickerid, tf, volume,  gaps=barmerge.gaps_off)
+    ma = request.security(syminfo.tickerid, tf, ta.sma(volume, len), gaps=barmerge.gaps_off)
+    nz(ma) == 0 ? na : v / ma
+
+rv10s = f_rvol("10S")
+rv1m  = f_rvol("1")
+rv5m  = f_rvol("5")
+
+// Push values to the status line (no on-chart plots)
+plot(rv10s, title="RV10s", display=display.status_line, precision=2)
+plot(rv1m,  title="RV1m",  display=display.status_line, precision=2)
+plot(rv5m,  title="RV5m",  display=display.status_line, precision=2)

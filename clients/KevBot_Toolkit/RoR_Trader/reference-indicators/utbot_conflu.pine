@@ -1,0 +1,325 @@
+//This is a work in progress. Its my first attempt at trying to group together a bunch of different indicators.
+
+//@version=6
+indicator("UT Bot Confluence Pro + Exits + SR", "UT_Conflu", overlay=true, max_lines_count=500, max_boxes_count=200)
+
+//─────────────────────────────────────── UT BOT CORE
+groupUT = "UT Bot Core"
+aKey   = input.float(1.0, "Key Value (Sensitivity Multiplier)", minval=0.1, step=0.1, group=groupUT, tooltip="Higher = looser trailing line; lower = tighter.")
+atrLen = input.int(10, "ATR Period", minval=1, group=groupUT, tooltip="ATR period for UT trailing stop.")
+showTrail = input.bool(true, "Show UT Bot Trail", group=groupUT, tooltip="Toggle the dynamic ATR trailing line on/off.")
+src = close
+xATR = ta.atr(atrLen)
+nLoss = aKey * xATR
+var float trail = na
+trail := na(trail[1]) ? src - nLoss : (src > trail[1] and src[1] > trail[1] ? math.max(trail[1], src - nLoss) : (src < trail[1] and src[1] < trail[1] ? math.min(trail[1], src + nLoss) : (src > trail[1] ? src - nLoss : src + nLoss)))
+plot(showTrail ? trail : na, title="UT Bot Trail", color=color.new(color.orange, 0), linewidth=2)
+ema1 = ta.ema(src, 1)
+buyRaw  = ta.crossover(ema1, trail)
+sellRaw = ta.crossunder(ema1, trail)
+
+//─────────────────────────────────────── CONFLUENCE FILTERS
+groupFilters = "Confluence Filters"
+fastLen = input.int(9,  "Fast EMA", group=groupFilters)
+slowLen = input.int(21, "Slow EMA", group=groupFilters)
+use1m  = input.bool(true,  "Use 1m EMA Trend", group=groupFilters)
+use5m  = input.bool(true,  "Use 5m EMA Trend", group=groupFilters)
+use15m = input.bool(false, "Use 15m EMA Trend", group=groupFilters)
+use1h  = input.bool(false, "Use 1h EMA Trend", group=groupFilters)
+useVWAP = input.bool(true, "Use VWAP Filter (ON by default)", group=groupFilters)
+useMACD = input.bool(true, "Use MACD Momentum Filter", group=groupFilters)
+showRaw = input.bool(true, "Show Raw Buy/Sell Labels", group=groupFilters)
+
+emaTrend(tf) =>
+    f = request.security(syminfo.tickerid, tf, ta.ema(close, fastLen))
+    s = request.security(syminfo.tickerid, tf, ta.ema(close, slowLen))
+    f > s
+
+emaBull_1m  = emaTrend("1")
+emaBull_5m  = emaTrend("5")
+emaBull_15m = emaTrend("15")
+emaBull_1h  = emaTrend("60")
+vwapVal = ta.vwap(close)
+macdLine = ta.ema(close, 12) - ta.ema(close, 26)
+signalLine = ta.ema(macdLine, 9)
+
+longFilter  = ( (not use1m  or emaBull_1m)  and (not use5m  or emaBull_5m)  and (not use15m or emaBull_15m) and (not use1h or emaBull_1h) and (not useVWAP or close > vwapVal) and (not useMACD or macdLine > signalLine) )
+shortFilter = ( (not use1m  or not emaBull_1m) and (not use5m  or not emaBull_5m) and (not use15m or not emaBull_15m==false) and (not use1h or not emaBull_1h) and (not useVWAP or close < vwapVal) and (not useMACD or macdLine < signalLine) )
+
+buyPlus  = buyRaw  and longFilter
+sellPlus = sellRaw and shortFilter
+
+//─────────────────────────────────────── SR CHANNEL (faithful to source)
+groupSR = "SR Channel"
+srEnable   = input.bool(true,  "Enable SR Channel (for exits & drawing)", group=groupSR)
+srDraw     = input.bool(true,  "Draw SR Channels", group=groupSR)
+prd        = input.int(10,     "Pivot Period", minval=4, maxval=30, group=groupSR, tooltip="Used while calculating Pivot Points, checks left & right bars")
+ChannelW   = input.int(5,      "Maximum Channel Width %", minval=1, maxval=8, group=groupSR)
+minstrength= input.int(1,      "Minimum Strength", minval=1, group=groupSR)
+maxnumsr   = input.int(6,      "Maximum Number of S/R", minval=1, maxval=10, group=groupSR) - 1
+loopback   = input.int(290,    "Loopback Period", minval=100, maxval=400, group=groupSR)
+res_col    = input.color(color.new(color.red, 75),  "Resistance Color", group=groupSR)
+sup_col    = input.color(color.new(color.lime, 75), "Support Color",    group=groupSR)
+inch_col   = input.color(color.new(color.gray, 75), "Color When Price in Channel", group=groupSR)
+
+// pivots
+float ph = srEnable ? ta.pivothigh(high, prd, prd) : na
+float pl = srEnable ? ta.pivotlow (low,  prd, prd) : na
+// channel width basis
+float prdhighest = srEnable ? ta.highest(300) : na
+float prdlowest  = srEnable ? ta.lowest(300)  : na
+float cwidth     = srEnable ? (prdhighest - prdlowest) * ChannelW / 100 : na
+
+// pivot buffers
+var float[] pivotvals = array.new_float(0)
+var float[] pivotlocs = array.new_float(0)
+if srEnable and (not na(ph) or not na(pl))
+    array.unshift(pivotvals, not na(ph) ? ph : pl)
+    array.unshift(pivotlocs, bar_index)
+    for x = array.size(pivotvals) - 1 to 0 by 1
+        if bar_index - array.get(pivotlocs, x) > loopback
+            array.pop(pivotvals)
+            array.pop(pivotlocs)
+            continue
+        break
+
+get_sr_vals(ind) =>
+    float lo = array.get(pivotvals, ind)
+    float hi = lo
+    int numpp = 0
+    for y = 0 to array.size(pivotvals) - 1 by 1
+        float cpp = array.get(pivotvals, y)
+        float wdth = cpp <= hi ? hi - cpp : cpp - lo
+        if wdth <= cwidth
+            if cpp <= hi
+                lo := math.min(lo, cpp)
+            else
+                hi := math.max(hi, cpp)
+            numpp += 20
+    [hi, lo, numpp]
+
+// main SR store (pairs)
+var float[] suportresistance = array.new_float(20, 0)
+changeit(x, y) =>
+    tmp = array.get(suportresistance, y*2)
+    array.set(suportresistance, y*2, array.get(suportresistance, x*2))
+    array.set(suportresistance, x*2, tmp)
+    tmp := array.get(suportresistance, y*2+1)
+    array.set(suportresistance, y*2+1, array.get(suportresistance, x*2+1))
+    array.set(suportresistance, x*2+1, tmp)
+
+if srEnable and (not na(ph) or not na(pl))
+    supres = array.new_float(0)
+    stren  = array.new_float(10, 0)
+    for x = 0 to array.size(pivotvals) - 1 by 1
+        [hi, lo, strength] = get_sr_vals(x)
+        array.push(supres, strength), array.push(supres, hi), array.push(supres, lo)
+    for x = 0 to array.size(pivotvals) - 1 by 1
+        h = array.get(supres, x*3+1), l = array.get(supres, x*3+2), s = 0
+        for y = 0 to loopback by 1
+            if (high[y] <= h and high[y] >= l) or (low[y] <= h and low[y] >= l)
+                s += 1
+        array.set(supres, x*3, array.get(supres, x*3) + s)
+    array.fill(suportresistance, 0)
+    srcIdx = 0
+    for x = 0 to array.size(pivotvals) - 1 by 1
+        stv = -1., stl = -1
+        for y = 0 to array.size(pivotvals) - 1 by 1
+            if array.get(supres, y*3) > stv and array.get(supres, y*3) >= minstrength * 20
+                stv := array.get(supres, y*3), stl := y
+        if stl >= 0
+            hh = array.get(supres, stl*3+1), ll = array.get(supres, stl*3+2)
+            array.set(suportresistance, srcIdx*2, hh), array.set(suportresistance, srcIdx*2+1, ll), array.set(stren, srcIdx, array.get(supres, stl*3))
+            for y = 0 to array.size(pivotvals) - 1 by 1
+                if (array.get(supres, y*3+1) <= hh and array.get(supres, y*3+1) >= ll) or (array.get(supres, y*3+2) <= hh and array.get(supres, y*3+2) >= ll)
+                    array.set(supres, y*3, -1)
+            srcIdx += 1
+            if srcIdx >= 10
+                break
+    for x = 0 to 8 by 1
+        for y = x + 1 to 9 by 1
+            if array.size(suportresistance) > y*2+1 and array.get(stren, y) > array.get(stren, x)
+                tmp = array.get(stren, y), array.set(stren, y, array.get(stren, x)), changeit(x, y)
+
+// draw boxes (like original, but fixed syntax)
+get_level(ind) =>
+    float ret = na
+    if ind < array.size(suportresistance)
+        val = array.get(suportresistance, ind)
+        if val != 0
+            ret := val
+    ret
+
+get_color(ind) =>
+    color ret = na
+    if ind < array.size(suportresistance)
+        if array.get(suportresistance, ind) != 0
+            hi = array.get(suportresistance, ind)
+            lo = array.get(suportresistance, ind + 1)
+            ret := (hi > close and lo > close) ? res_col :
+                   (hi < close and lo < close) ? sup_col : inch_col
+    ret
+
+var box[] srchannels = array.new_box(10)
+if srEnable and srDraw
+    for x = 0 to math.min(9, maxnumsr) by 1
+        box.delete(array.get(srchannels, x))
+        srcol = get_color(x*2)
+        if not na(srcol)
+            array.set(srchannels, x, box.new(left=bar_index, top=get_level(x*2), right=bar_index+1, bottom=get_level(x*2+1), border_color=srcol, border_width=1, extend=extend.both, bgcolor=srcol))
+
+// broken flags (exactly like original)
+resistancebroken = false
+supportbroken    = false
+not_in_a_channel = true
+if srEnable
+    for x = 0 to math.min(9, maxnumsr) by 1
+        if close <= array.get(suportresistance, x*2) and close >= array.get(suportresistance, x*2+1)
+            not_in_a_channel := false
+    if not_in_a_channel
+        for x = 0 to math.min(9, maxnumsr) by 1
+            if close[1] <= array.get(suportresistance, x*2) and close > array.get(suportresistance, x*2)
+                resistancebroken := true
+            if close[1] >= array.get(suportresistance, x*2+1) and close < array.get(suportresistance, x*2+1)
+                supportbroken := true
+
+//─────────────────────────────────────── EXIT LOGIC
+groupExit = "Exit Logic"
+useExit  = input.bool(true,  "Enable Exit Logic", group=groupExit)
+exitOpp  = input.bool(true,  "Exit on Opposite Buy+/Sell+", group=groupExit)
+exitOppRaw = input.bool(false, "Exit on Opposite Buy/Sell", group=groupExit)
+exitMACD = input.bool(true,  "Exit on MACD Cross", group=groupExit)
+exitSR   = input.bool(true,  "Exit on SR Break (uses SR logic)", group=groupExit)
+useIntrabar = input.bool(false, "Use Intrabar Logic (trigger mid-bar instead of bar close)", group=groupExit)
+showExitOppRaw     = input.bool(true, "Show Exit Reason – Opp Raw",     group=groupExit)
+showExitOppPlus    = input.bool(true, "Show Exit Reason – Opp +",       group=groupExit)
+showExitMACD       = input.bool(true, "Show Exit Reason – MACD",        group=groupExit)
+showExitSRBreak    = input.bool(true, "Show Exit Reason – SR Break",    group=groupExit)
+showExitSwingStop  = input.bool(true, "Show Exit Reason – Swing Stop",   group=groupExit)
+showExitBarCount   = input.bool(true, "Show Exit Reason – Bar Exit",    group=groupExit)
+
+
+//─────────────────────────────────────── ADVANCED EXIT OPTIONS
+useSwingExit = input.bool(true,  "Exit on Swing-High/Low Stop", group=groupExit, tooltip="If long, exits when price closes below the most recent swing-low X bars back (and vice-versa).")
+swingBars = input.int(5, "Swing Lookback Bars", minval=2, group=groupExit, tooltip="Number of bars to look back for swing high/low reference.")
+
+useBarExit = input.bool(true, "Exit After X Bars Closed", group=groupExit, tooltip="If enabled, exits after this many bars have closed since entry.")
+barExitCount = input.int(4, "Bars to Hold", minval=1, group=groupExit, tooltip="Number of bars before exit if still open.")
+
+// ───────────────────────────────────────
+// Swing-based dynamic stop
+swingLow  = ta.lowest(low,  swingBars)
+swingHigh = ta.highest(high, swingBars)
+longSwingStop  = useSwingExit and close < swingLow
+shortSwingStop = useSwingExit and close > swingHigh
+
+// ───────────────────────────────────────
+// Bar-count exit tracker (fires once per trade)
+var int barsSinceLongEntry  = na
+var int barsSinceShortEntry = na
+var bool longExitedAfterBars  = false
+var bool shortExitedAfterBars = false
+
+// Reset counters on new entries
+if buyPlus
+    barsSinceLongEntry := 0
+    longExitedAfterBars := false
+else if sellPlus
+    barsSinceShortEntry := 0
+    shortExitedAfterBars := false
+else
+    if not na(barsSinceLongEntry)
+        barsSinceLongEntry += 1
+    if not na(barsSinceShortEntry)
+        barsSinceShortEntry += 1
+
+// Trigger exit only once when threshold reached
+longBarExit  = useBarExit and not longExitedAfterBars and (barsSinceLongEntry >= barExitCount)
+shortBarExit = useBarExit and not shortExitedAfterBars and (barsSinceShortEntry >= barExitCount)
+
+// Mark as exited (prevents repeated triggers)
+if longBarExit
+    longExitedAfterBars := true
+if shortBarExit
+    shortExitedAfterBars := true
+
+
+
+//─────────────────────────────────────── MERGED EXIT LOGIC
+// Compute all exit conditions first
+macdCrossDown = ta.crossunder(macdLine, signalLine)
+macdCrossUp   = ta.crossover(macdLine, signalLine)
+
+string longExitReason  = na
+string shortExitReason = na
+
+if useExit
+    if na(longExitReason) and exitOppRaw and sellRaw
+        longExitReason := "Opposite Buy/Sell"
+    if na(longExitReason) and exitOpp and sellPlus
+        longExitReason := "Opposite Buy+/Sell+"
+    if na(longExitReason) and exitMACD and macdCrossDown
+        longExitReason := "MACD Cross"
+    if na(longExitReason) and exitSR and supportbroken
+        longExitReason := "SR Break"
+    if na(longExitReason) and useSwingExit and close < swingLow
+        longExitReason := "Swing Stop"
+    if na(longExitReason) and useBarExit and longBarExit
+        longExitReason := "Bar Exit"
+
+    if na(shortExitReason) and exitOppRaw and buyRaw
+        shortExitReason := "Opposite Buy/Sell"
+    if na(shortExitReason) and exitOpp and buyPlus
+        shortExitReason := "Opposite Buy+/Sell+"
+    if na(shortExitReason) and exitMACD and macdCrossUp
+        shortExitReason := "MACD Cross"
+    if na(shortExitReason) and exitSR and resistancebroken
+        shortExitReason := "SR Break"
+    if na(shortExitReason) and useSwingExit and close > swingHigh
+        shortExitReason := "Swing Stop"
+    if na(shortExitReason) and useBarExit and shortBarExit
+        shortExitReason := "Bar Exit"
+
+// Final triggers – only the *first* satisfied reason
+longExit  = not na(longExitReason)
+shortExit = not na(shortExitReason)
+
+
+//────────────── SIGNAL MARKERS (Anchored to Previous Trail, Top Layer) ──────────────
+offset = (high - low) * 0.002
+liveTrailPrev = barstate.isrealtime ? trail[1] : trail[1]
+
+// BUY RAW (green X slightly above previous trail)
+plotshape(showRaw and buyRaw ? liveTrailPrev + offset : na, title="Buy Raw", style=shape.xcross, color=color.new(color.lime, 0), size=size.tiny, location=location.absolute, display=display.all)
+
+// SELL RAW (red X slightly below previous trail)
+plotshape(showRaw and sellRaw ? liveTrailPrev - offset : na, title="Sell Raw", style=shape.xcross, color=color.new(color.red, 0), size=size.tiny, location=location.absolute, display=display.all)
+
+// BUY+ (confirmed buy triangle above previous trail)
+plotshape(buyPlus ? liveTrailPrev + offset : na, title="Buy+", style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, location=location.absolute, display=display.all)
+
+// SELL+ (confirmed sell triangle below previous trail)
+plotshape(sellPlus ? liveTrailPrev - offset : na, title="Sell+", style=shape.triangledown, color=color.new(color.red, 0), size=size.small, location=location.absolute, display=display.all)
+
+
+
+// Exit markers (X’s at exact exit price)
+plotshape(longExit  and (useIntrabar or barstate.isconfirmed) ? close : na,  title="Exit Long",  style=shape.xcross, color=color.new(color.lime,0), size=size.small, location=location.absolute)
+plotshape(shortExit and (useIntrabar or barstate.isconfirmed) ? close : na, title="Exit Short", style=shape.xcross, color=color.new(color.red,0),  size=size.small, location=location.absolute)
+
+//─────────────────────────────── EXIT LABELS (reason only, no "Exit" text)
+var float exitOffset = (high - low) * 0.02  // ~2% offset to move away from Buy/Sell
+
+if longExit
+    label.new(bar_index, high + exitOffset, longExitReason, yloc=yloc.abovebar, style=label.style_label_down, color=color.new(color.yellow, 0), textcolor=color.black, size=size.small)
+
+if shortExit
+    label.new(bar_index, low - exitOffset, shortExitReason, yloc=yloc.belowbar, style=label.style_label_up, color=color.new(color.yellow, 0), textcolor=color.black, size=size.small)
+
+
+
+
+alertcondition(buyPlus,   "UT Bot Confluence Pro | Buy+",   "Buy+ Confirmed")
+alertcondition(sellPlus,  "UT Bot Confluence Pro | Sell+",  "Sell+ Confirmed")
+alertcondition(longExit,  "UT Bot Confluence Pro | Exit Long",  "Exit Long Triggered")
+alertcondition(shortExit, "UT Bot Confluence Pro | Exit Short", "Exit Short Triggered")
