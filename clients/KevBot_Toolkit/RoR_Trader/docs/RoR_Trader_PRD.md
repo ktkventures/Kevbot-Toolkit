@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.31
+**Version:** 0.32
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17A Complete — Charting infrastructure fully upgraded: Track A quick wins (per-candle coloring, line styles, band fills, reference lines, plot_config manifest) + Track B vendored LWC fork (v4.2.3, createPriceLine, 4 primitives plugins: BandIndicator, Rectangle, SessionHighlighting, AnchoredText); Phases 11–16 complete
+**Status:** Phase 17B Complete — Interpreter & trigger chart overlays: "Show Conditions" toggle (SessionHighlighting background bands + AnchoredText state labels) and "Show Triggers" toggle (direction-colored arrow markers) on Confluence Analysis and Pack Builder Preview tabs; Phase 17A charting infrastructure complete; Phases 11–16 complete
 
 ---
 
@@ -1405,15 +1405,15 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Phase 17B: Interpreter & Trigger Chart Overlays**
 *Add toggle controls on preview tabs that overlay interpreter states and trigger events directly on the price chart. Bridges the gap between tabular data and visual chart analysis — users can see exactly when and where conditions changed and triggers fired.*
 
-- [ ] **"Show Conditions" toggle** — next to interpreter state tables on preview tabs. When enabled:
+- [x] **"Show Conditions" toggle** — next to interpreter state tables on preview tabs. When enabled:
   - Background color bands on the price chart for each interpreter state transition (e.g., green band during `FULL_BULL_STACK`, red during `FULL_BEAR_STACK`, gray during `NEUTRAL`)
   - Text label at each state transition point showing the new state name
   - Selector for which interpreter to overlay when multiple are active (one at a time to avoid visual clutter)
-- [ ] **"Show Triggers" toggle** — next to trigger event tables on preview tabs. When enabled:
+- [x] **"Show Triggers" toggle** — next to trigger event tables on preview tabs. When enabled:
   - Marker + text label at each bar where a trigger fired (e.g., "LONG ENTRY" arrow, "EXIT" marker)
   - Distinct from trade entry/exit markers — shows raw trigger fires regardless of whether confluence filtered them into an actual trade
   - Helps debug "why didn't a trade happen here?" — trigger fired but interpreter state was wrong, or vice versa
-- [ ] Both toggles off by default to keep charts clean; user enables as needed for analysis
+- [x] Both toggles off by default to keep charts clean; user enables as needed for analysis
 
 **Phase 17C: Pine Script Export**
 *Add a "Copy Pine Script" button to indicator preview/code tabs. Enables cross-referencing RoR Trader indicator behavior against TradingView by pasting the same indicator into both platforms.*

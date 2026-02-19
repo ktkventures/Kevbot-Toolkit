@@ -2288,7 +2288,8 @@ def render_candle_selector(chart_key: str) -> int:
 def render_chart_with_candle_selector(
     df, trades, config, show_indicators=None, indicator_colors=None,
     chart_key='price_chart', secondary_panes=None, extra_markers=None,
-    candle_colors=None, indicator_line_styles=None, band_fills=None
+    candle_colors=None, indicator_line_styles=None, band_fills=None,
+    extra_primitives=None
 ):
     """Render a price chart with a per-chart candle count selector.
 
@@ -2307,6 +2308,7 @@ def render_chart_with_candle_selector(
         candle_colors=candle_colors,
         indicator_line_styles=indicator_line_styles,
         band_fills=band_fills,
+        extra_primitives=extra_primitives,
     )
 
 
@@ -2323,6 +2325,7 @@ def render_price_chart(
     candle_colors: dict = None,
     indicator_line_styles: dict = None,
     band_fills: list = None,
+    extra_primitives: list = None,
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -2343,6 +2346,8 @@ def render_price_chart(
             are set from the column values. E.g., {'color': 'bar_color', 'wickColor': 'bar_wick_color'}
         indicator_line_styles: Dict mapping indicator column names to LWC lineStyle int values
             (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted). Default: 0 (Solid).
+        extra_primitives: List of primitive dicts to attach to the price chart series
+            (e.g., sessionHighlight, anchoredText). Merged with band_fills primitives.
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -2526,6 +2531,10 @@ def render_price_chart(
                             "data": band_data,
                         }
                     })
+
+    # Merge any extra primitives (e.g., condition overlay bands/labels)
+    if extra_primitives:
+        primitives.extend(extra_primitives)
 
     # Build chart pane list (price chart + optional synced secondary panes)
     price_pane = {"chart": chart_options, "series": series}
@@ -6330,6 +6339,34 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
 
             grp_band_fills = get_band_fills_for_group(group)
             grp_line_styles = get_line_styles_for_group(group)
+
+            # --- Overlay toggles ---
+            interp_keys = template.get("interpreters", [])
+            tcol1, tcol2, tcol3 = st.columns([1, 1, 1])
+            show_conditions = tcol1.checkbox(
+                "Show Conditions", value=False,
+                key=f"show_cond_ca_{group.id}",
+            )
+            selected_interp = interp_keys[0] if interp_keys else None
+            if show_conditions and len(interp_keys) > 1:
+                selected_interp = tcol2.selectbox(
+                    "Interpreter", interp_keys,
+                    key=f"interp_sel_ca_{group.id}",
+                )
+            show_triggers = tcol3.checkbox(
+                "Show Triggers", value=False,
+                key=f"show_trig_ca_{group.id}",
+            )
+
+            # Build overlay data
+            cond_primitives = []
+            if show_conditions and selected_interp:
+                cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+
+            trig_markers = []
+            if show_triggers:
+                trig_markers = _build_trigger_overlay(df, group, template)
+
             render_chart_with_candle_selector(
                 df,
                 trades,
@@ -6340,6 +6377,8 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
                 secondary_panes=secondary_panes if secondary_panes else None,
                 band_fills=grp_band_fills if grp_band_fills else None,
                 indicator_line_styles=grp_line_styles if grp_line_styles else None,
+                extra_markers=trig_markers if trig_markers else None,
+                extra_primitives=cond_primitives if cond_primitives else None,
             )
 
             # Interpreter state timeline
@@ -10111,6 +10150,33 @@ def render_preview_tab(group: ConfluenceGroup):
     grp_band_fills = get_band_fills_for_group(group)
     grp_line_styles = get_line_styles_for_group(group)
 
+    # --- Overlay toggles ---
+    interp_keys = template.get("interpreters", [])
+    tcol1, tcol2, tcol3 = st.columns([1, 1, 1])
+    show_conditions = tcol1.checkbox(
+        "Show Conditions", value=False,
+        key=f"show_cond_pv_{group.id}",
+    )
+    selected_interp = interp_keys[0] if interp_keys else None
+    if show_conditions and len(interp_keys) > 1:
+        selected_interp = tcol2.selectbox(
+            "Interpreter", interp_keys,
+            key=f"interp_sel_pv_{group.id}",
+        )
+    show_triggers = tcol3.checkbox(
+        "Show Triggers", value=False,
+        key=f"show_trig_pv_{group.id}",
+    )
+
+    # Build overlay data
+    cond_primitives = []
+    if show_conditions and selected_interp:
+        cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+
+    trig_markers = []
+    if show_triggers:
+        trig_markers = _build_trigger_overlay(df, group, template)
+
     render_chart_with_candle_selector(
         df,
         pd.DataFrame(),  # no trade markers on preview
@@ -10121,6 +10187,8 @@ def render_preview_tab(group: ConfluenceGroup):
         secondary_panes=secondary_panes if secondary_panes else None,
         band_fills=grp_band_fills if grp_band_fills else None,
         indicator_line_styles=grp_line_styles if grp_line_styles else None,
+        extra_markers=trig_markers if trig_markers else None,
+        extra_primitives=cond_primitives if cond_primitives else None,
     )
 
     # --- Section 2: Interpreter State Timeline ---
@@ -10445,6 +10513,142 @@ def _build_rvol_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
         },
         "series": series
     }
+
+
+# Color palettes for interpreter state overlays
+_STATE_BG_COLORS = [
+    "rgba(34,197,94,0.06)",     # green
+    "rgba(245,158,11,0.06)",    # amber
+    "rgba(239,68,68,0.06)",     # red
+    "rgba(139,92,246,0.06)",    # purple
+    "rgba(59,130,246,0.06)",    # blue
+    "rgba(236,72,153,0.06)",    # pink
+]
+_STATE_TEXT_COLORS = [
+    "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#3b82f6", "#ec4899",
+]
+
+_TRIGGER_DIRECTION_STYLE = {
+    "LONG":  {"color": "#22c55e", "shape": "arrowUp",  "position": "belowBar"},
+    "SHORT": {"color": "#ef4444", "shape": "arrowDown", "position": "aboveBar"},
+    "BOTH":  {"color": "#f59e0b", "shape": "circle",    "position": "aboveBar"},
+}
+
+
+def _build_condition_overlay(df: pd.DataFrame, template: dict, interp_key: str):
+    """Build SessionHighlighting + AnchoredText primitives for interpreter state overlay.
+
+    Returns:
+        (primitives_list, extra_markers_list) — primitives for background bands + text labels,
+        and empty markers list (reserved for future use).
+    """
+    if interp_key not in df.columns:
+        return [], []
+
+    states = df[interp_key].dropna()
+    if len(states) == 0:
+        return [], []
+
+    # Map state strings to colors via template outputs order
+    outputs = template.get("outputs", [])
+    state_color_map = {}
+    state_text_map = {}
+    for i, out in enumerate(outputs):
+        state_color_map[out] = _STATE_BG_COLORS[i % len(_STATE_BG_COLORS)]
+        state_text_map[out] = _STATE_TEXT_COLORS[i % len(_STATE_TEXT_COLORS)]
+
+    # Detect state transitions
+    changes = states[states != states.shift(1)]
+    if len(changes) == 0:
+        return [], []
+
+    # Build SessionHighlighting ranges — consecutive state periods
+    ranges = []
+    change_indices = list(changes.index)
+    for i, idx in enumerate(change_indices):
+        state = changes.loc[idx]
+        start_ts = int(pd.to_datetime(idx).timestamp())
+
+        # End time = next transition (or last bar in data)
+        if i + 1 < len(change_indices):
+            end_ts = int(pd.to_datetime(change_indices[i + 1]).timestamp())
+        else:
+            end_ts = int(pd.to_datetime(states.index[-1]).timestamp())
+
+        color = state_color_map.get(state, "rgba(148,163,184,0.05)")
+        ranges.append({
+            "startTime": start_ts,
+            "endTime": end_ts,
+            "color": color,
+        })
+
+    primitives = []
+    if ranges:
+        primitives.append({
+            "type": "sessionHighlight",
+            "seriesIndex": 0,
+            "options": {"ranges": ranges},
+        })
+
+    # Build AnchoredText at each state transition
+    for idx, state in changes.items():
+        ts = int(pd.to_datetime(idx).timestamp())
+        high_price = float(df.loc[idx, 'high']) if 'high' in df.columns else None
+        if high_price is None:
+            continue
+        text_color = state_text_map.get(state, "#94a3b8")
+        primitives.append({
+            "type": "anchoredText",
+            "seriesIndex": 0,
+            "options": {
+                "time": ts,
+                "price": high_price,
+                "text": str(state),
+                "color": text_color,
+                "fontSize": 9,
+                "position": "above",
+            },
+        })
+
+    return primitives, []
+
+
+def _build_trigger_overlay(df: pd.DataFrame, group, template: dict):
+    """Build LWC markers for trigger fire events.
+
+    Returns:
+        List of marker dicts for extra_markers parameter.
+    """
+    trigger_defs = template.get("triggers", [])
+    if not trigger_defs:
+        return []
+
+    markers = []
+    for trig_def in trigger_defs:
+        base = trig_def["base"]
+        possible_cols = [
+            f"trig_{group.id}_{base}",
+            f"trig_{template.get('trigger_prefix', '')}_{base}",
+        ]
+
+        for col in possible_cols:
+            if col in df.columns:
+                fired = df[df[col] == True]
+                direction = trig_def.get("direction", "BOTH")
+                style = _TRIGGER_DIRECTION_STYLE.get(direction, _TRIGGER_DIRECTION_STYLE["BOTH"])
+
+                for idx in fired.index:
+                    ts = int(pd.to_datetime(idx).timestamp())
+                    markers.append({
+                        "time": ts,
+                        "position": style["position"],
+                        "color": style["color"],
+                        "shape": style["shape"],
+                        "text": trig_def.get("name", base),
+                    })
+                break
+
+    return markers
 
 
 def _render_interpreter_timeline(df: pd.DataFrame, group: ConfluenceGroup, template: dict):
