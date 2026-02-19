@@ -6,6 +6,10 @@ import {
   SeriesType,
 } from "lightweight-charts"
 import React, { useRef, useEffect } from "react"
+import { BandIndicator } from "./plugins/BandIndicator"
+import { Rectangle } from "./plugins/Rectangle"
+import { SessionHighlighting } from "./plugins/SessionHighlighting"
+import { AnchoredText } from "./plugins/AnchoredText"
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
 
@@ -89,8 +93,18 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
             try {
               switch (prim.type) {
-                // Plugin types will be registered here as they are implemented
-                // e.g., "bandFill", "rectangle", "backgroundZone", "textAnnotation"
+                case "bandFill":
+                  targetSeries.attachPrimitive(new BandIndicator(prim.options) as any)
+                  break
+                case "rectangle":
+                  targetSeries.attachPrimitive(new Rectangle(prim.options) as any)
+                  break
+                case "sessionHighlight":
+                  targetSeries.attachPrimitive(new SessionHighlighting(prim.options) as any)
+                  break
+                case "anchoredText":
+                  targetSeries.attachPrimitive(new AnchoredText(prim.options) as any)
+                  break
                 default:
                   console.warn(`Unknown primitive type: ${prim.type}`)
               }

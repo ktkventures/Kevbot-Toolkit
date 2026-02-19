@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.30
+**Version:** 0.31
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17A In Progress — Charting infrastructure upgraded: Track A quick wins complete (per-candle coloring, line styles, band fills, reference lines, plot_config manifest); Track B foundation complete (vendored LWC fork at v4.2.3 with createPriceLine + primitives dispatcher); Phases 11–16 complete
+**Status:** Phase 17A Complete — Charting infrastructure fully upgraded: Track A quick wins (per-candle coloring, line styles, band fills, reference lines, plot_config manifest) + Track B vendored LWC fork (v4.2.3, createPriceLine, 4 primitives plugins: BandIndicator, Rectangle, SessionHighlighting, AnchoredText); Phases 11–16 complete
 
 ---
 
@@ -1374,7 +1374,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - A broader indicator library gives more confluence options for strategy construction and optimization
 - Users need to visually verify that indicators, interpreter states, and trigger events behave correctly on the chart before trusting them for live trading
 
-**Phase 17A: Charting Infrastructure Upgrade** *(Track A complete, Track B foundation complete)*
+**Phase 17A: Charting Infrastructure Upgrade** *(COMPLETE)*
 *Fork the `streamlit-lightweight-charts` wrapper to unlock the TradingView Lightweight Charts v4.1+ Plugins/Primitives API. The core JS library already supports all needed features — the bottleneck is the Python→JS wrapper only exposing the 6 basic series types and never calling `attachPrimitive()`.*
 
 Track A — Quick wins (no fork needed, passthrough to existing LWC JS):
@@ -1382,7 +1382,7 @@ Track A — Quick wins (no fork needed, passthrough to existing LWC JS):
 - [x] **Per-candle dynamic coloring** — `color`, `wickColor`, `borderColor` per candle data dict, driven by `candle_color_column` in `plot_config`. Wired through `render_price_chart()` to all chart call sites
 - [x] **Dashed/dotted line styles** — `lineStyle: 0-4` passthrough in Line series options, driven by `plot_config.line_styles` per indicator column. Wired through all overlay and oscillator pane renderers
 - [x] **Horizontal reference lines** — constant-value Line series for MACD zero line (dashed gray) and generic oscillator panes via `plot_config.reference_lines`
-- [x] **Area series band fills** — overlapping Area series with transparent fills for upper/lower bands (Bollinger, VWAP SD). Driven by `plot_config.band_fills` in manifest. Wired through all 6 chart call sites (strategy detail, backtest, forward test, confluence per-group, preview, Pack Builder)
+- [x] **Band fills** — driven by `plot_config.band_fills` in manifest, wired through all 6 chart call sites. Initially implemented as overlapping Area series (Track A), then upgraded to proper BandIndicator primitive (Track B)
 - [x] **`plot_config` manifest field** — new optional field in `pack_spec.py` with validation for `band_fills`, `reference_lines`, `line_styles`, `candle_color_column`. Bollinger Bands user pack updated as reference implementation
 - [ ] **Extended marker shapes** — `circle` and `square` in addition to existing `arrowUp`/`arrowDown`. Use for SuperTrend/UT Bot signal markers (deferred — already supported by LWC, just needs pack config)
 
@@ -1391,10 +1391,10 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] **LWC JS upgraded to v4.2.3** — `package.json` bumped from `^4.0.0` to `^4.2.0`, production build successful (142KB gzipped). Pinned `streamlit-component-lib-react-hooks@1.1.1` for Node 18 / webpack compatibility
 - [x] **`createPriceLine()` support** — series-level price lines wired in `LightweightCharts.tsx`. Python side: add `"priceLines": [...]` to any series dict
 - [x] **Primitives dispatcher skeleton** — `chartsData[i].primitives` array processed with switch dispatch by type. Plugin type cases to be added as implementations land
-- [ ] **Filled bands between lines** — wire BandIndicator plugin via primitives dispatcher (replaces Area series interim approach)
-- [ ] **Box/rectangle annotations** — wire Rectangle plugin for S/R channel zones, support/resistance boxes
-- [ ] **Text annotations at coordinates** — wire AnchoredText plugin for exit reason labels, pattern names
-- [ ] **Background color zones** — wire SessionHighlighting plugin for interpreter state visualization
+- [x] **BandIndicator plugin** — TypeScript primitive that draws filled polygon between upper/lower price curves. Replaces Area series interim. Wired through primitives dispatcher and `render_price_chart()`
+- [x] **Rectangle plugin** — TypeScript primitive for box annotations at time/price coordinates (S/R zones, support/resistance boxes)
+- [x] **AnchoredText plugin** — TypeScript primitive for text labels at time/price coordinates (state labels, pattern names)
+- [x] **SessionHighlighting plugin** — TypeScript primitive for full-height background color zones using `drawBackground()` (interpreter state visualization)
 
 ### Design Decisions (Phase 17A — Charting Infrastructure)
 - **Fork existing wrapper over migrating to ECharts or other library** — The current `streamlit-lightweight-charts` (v0.7.20) wrapper already renders TradingView-identical charts. The core LWC v4.1+ JS library supports all needed features via its Plugins/Primitives API (`attachPrimitive()`, `ISeriesPrimitive`, `CanvasRenderingContext2D`). Forking the wrapper to wire through primitives is a scoped JS change that preserves all existing chart code and the TradingView visual identity. ECharts was evaluated as the strongest alternative (checks every feature box, excellent performance) but would require rewriting `render_price_chart()` and produces a TradingView-*like* but not identical look. The fork approach is lower risk and lower migration cost.

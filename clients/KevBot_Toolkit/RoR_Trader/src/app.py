@@ -2498,54 +2498,40 @@ def render_price_chart(
                         "options": line_opts
                     })
 
-    # Add band fill Area series (interim approach — overlapping Area series for filled bands)
+    # Build primitives list (BandIndicator fills, etc.)
+    primitives = []
     if band_fills:
         for bf in band_fills:
             upper_col = bf.get("upper_column")
             lower_col = bf.get("lower_column")
             fill_color = bf.get("fill_color", "rgba(128,128,128,0.1)")
             if upper_col in candles.columns and lower_col in candles.columns:
-                upper_data = []
-                lower_data = []
+                band_data = []
                 for _, row in candles.iterrows():
                     t = int(row['time'])
-                    if pd.notna(row.get(upper_col)):
-                        upper_data.append({"time": t, "value": float(row[upper_col])})
-                    if pd.notna(row.get(lower_col)):
-                        lower_data.append({"time": t, "value": float(row[lower_col])})
-                # Upper band: fill downward (toward the lower band)
-                if upper_data:
-                    series.append({
-                        "type": "Area",
-                        "data": upper_data,
+                    upper_val = row.get(upper_col)
+                    lower_val = row.get(lower_col)
+                    if pd.notna(upper_val) and pd.notna(lower_val):
+                        band_data.append({
+                            "time": t,
+                            "upperValue": float(upper_val),
+                            "lowerValue": float(lower_val),
+                        })
+                if band_data:
+                    primitives.append({
+                        "type": "bandFill",
+                        "seriesIndex": 0,
                         "options": {
-                            "topColor": "rgba(0,0,0,0)",
-                            "bottomColor": fill_color,
-                            "lineColor": "rgba(0,0,0,0)",
-                            "lineWidth": 0,
-                            "priceLineVisible": False,
-                            "crosshairMarkerVisible": False,
-                            "lastValueVisible": False,
-                        }
-                    })
-                # Lower band: fill upward (toward the upper band)
-                if lower_data:
-                    series.append({
-                        "type": "Area",
-                        "data": lower_data,
-                        "options": {
-                            "topColor": fill_color,
-                            "bottomColor": "rgba(0,0,0,0)",
-                            "lineColor": "rgba(0,0,0,0)",
-                            "lineWidth": 0,
-                            "priceLineVisible": False,
-                            "crosshairMarkerVisible": False,
-                            "lastValueVisible": False,
+                            "fillColor": fill_color,
+                            "data": band_data,
                         }
                     })
 
     # Build chart pane list (price chart + optional synced secondary panes)
-    chart_panes = [{"chart": chart_options, "series": series}]
+    price_pane = {"chart": chart_options, "series": series}
+    if primitives:
+        price_pane["primitives"] = primitives
+    chart_panes = [price_pane]
     if secondary_panes:
         # Trim secondary pane data to match the visible candle window
         for pane in secondary_panes:
