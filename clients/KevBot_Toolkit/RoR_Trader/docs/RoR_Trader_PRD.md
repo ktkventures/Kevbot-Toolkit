@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.28
+**Version:** 0.29
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 16 Complete — Phases 11–14C implemented; Alpaca SIP upgrade live; Phase 16 (AI-Assisted Confluence Pack Builder) fully implemented with 16A, 16B, 16C complete; Phase 13 Alert Analysis enhancements complete; Phase 14B (Unified Streaming Alert Engine) implemented; Phase 14C (Trading Session Input) implemented
@@ -1366,30 +1366,75 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 20)
 
 ### Phase 17: Indicator & Confluence Maturity
-*Validate, expand, and harden the indicator/confluence library to a production-ready standard. Goal: a trusted foundation of indicators and interpreters that can support real trading strategies and live algorithmic execution with confidence.*
+*Validate, expand, and harden the indicator/confluence library to a production-ready standard. Upgrade charting infrastructure to support TradingView-quality visualizations. Goal: a trusted foundation of indicators, interpreters, and chart rendering that can support real trading strategies and live algorithmic execution with confidence.*
 
 **Motivation:**
 - Before building real strategies and deploying live webhooks, the indicator foundation must be validated against TradingView for data integrity
 - The Pack Builder (Phase 16) enables adding new indicators, but known charting/plotting limitations need to be addressed (e.g., support/resistance channels, band fills, multi-line overlays)
 - A broader indicator library gives more confluence options for strategy construction and optimization
+- Users need to visually verify that indicators, interpreter states, and trigger events behave correctly on the chart before trusting them for live trading
 
-**Indicator Audit & Validation:**
+**Phase 17A: Charting Infrastructure Upgrade**
+*Fork the `streamlit-lightweight-charts` wrapper to unlock the TradingView Lightweight Charts v4.1+ Plugins/Primitives API. The core JS library already supports all needed features — the bottleneck is the Python→JS wrapper only exposing the 6 basic series types and never calling `attachPrimitive()`.*
+
+Quick wins (already work through current wrapper, no fork needed):
+- [x] `reference-indicators/` folder created with Pine Script references (MACD, Swing 123, SR Channel, UT Bot Alerts, VWAP, RVOL Status, UT Bot Conflu MAIN, Strat Assistant, SuperTrend)
+- [ ] **Per-candle dynamic coloring** — add `color`, `wickColor`, `borderColor` to individual candle data dicts for pattern-based bar coloring (Swing 123 inside/outside bars, UT Bot bull/bear zones)
+- [ ] **Dashed/dotted line styles** — `lineStyle: 0-4` in Line series options (solid, dotted, dashed, large dashed, sparse dotted). Use for previous day/week high-low reference lines
+- [ ] **Extended marker shapes** — `circle` and `square` in addition to existing `arrowUp`/`arrowDown`. Use for SuperTrend/UT Bot signal markers
+- [ ] **Area series for filled regions** — use overlapping Area series with `invertFilledArea` as interim band fill approximation (Bollinger Bands, VWAP bands)
+- [ ] **Horizontal reference lines** — constant-value Line series workaround for MACD zero line, RSI overbought/oversold levels
+
+Fork work (requires modifying wrapper frontend JS to call `attachPrimitive()`):
+- [ ] **Filled bands between lines** — wire through the Bands Indicator plugin for proper shaded fills (Bollinger Bands, VWAP SD bands, SuperTrend trend fills)
+- [ ] **Box/rectangle annotations** — wire through Rectangle Drawing Tool plugin for S/R channel zones, support/resistance boxes
+- [ ] **Text annotations at coordinates** — wire through Anchored Text plugin or custom primitive for exit reason labels, pattern names, interpreter state labels
+- [ ] **Background color zones** — wire through Session Highlighting plugin for interpreter state visualization (bull/bear/neutral background shading per time range)
+- [ ] Update `pack_spec.py` manifest schema to support new plot types: `fill` (band fill between two columns), `line_style` (solid/dashed/dotted), `marker_shape` (circle/square/arrow), `background_zone` (interpreter state shading)
+- [ ] Update `column_color_map` to support composite plot definitions (e.g., `{"type": "band_fill", "upper": "bb_upper", "lower": "bb_lower", "fill_color": "rgba(168,85,247,0.15)"}`)
+
+### Design Decisions (Phase 17A — Charting Infrastructure)
+- **Fork existing wrapper over migrating to ECharts or other library** — The current `streamlit-lightweight-charts` (v0.7.20) wrapper already renders TradingView-identical charts. The core LWC v4.1+ JS library supports all needed features via its Plugins/Primitives API (`attachPrimitive()`, `ISeriesPrimitive`, `CanvasRenderingContext2D`). Forking the wrapper to wire through primitives is a scoped JS change that preserves all existing chart code and the TradingView visual identity. ECharts was evaluated as the strongest alternative (checks every feature box, excellent performance) but would require rewriting `render_price_chart()` and produces a TradingView-*like* but not identical look. The fork approach is lower risk and lower migration cost.
+- **Quick wins before fork** — Per-candle coloring, dashed lines, extended markers, and area series all work through the existing wrapper today (options pass through to the JS library). These can be implemented immediately to improve indicator rendering while the fork work proceeds in parallel.
+- **Manifest-driven plot configuration** — Rather than hardcoding each indicator's chart rendering in `app.py`, extend the pack manifest schema so user packs can declaratively specify fill regions, line styles, marker shapes, and background zones. The rendering engine reads the manifest and dispatches to the appropriate chart primitive. This keeps the Pack Builder workflow intact — LLM-generated packs can specify their own charting requirements.
+
+**Phase 17B: Interpreter & Trigger Chart Overlays**
+*Add toggle controls on preview tabs that overlay interpreter states and trigger events directly on the price chart. Bridges the gap between tabular data and visual chart analysis — users can see exactly when and where conditions changed and triggers fired.*
+
+- [ ] **"Show Conditions" toggle** — next to interpreter state tables on preview tabs. When enabled:
+  - Background color bands on the price chart for each interpreter state transition (e.g., green band during `FULL_BULL_STACK`, red during `FULL_BEAR_STACK`, gray during `NEUTRAL`)
+  - Text label at each state transition point showing the new state name
+  - Selector for which interpreter to overlay when multiple are active (one at a time to avoid visual clutter)
+- [ ] **"Show Triggers" toggle** — next to trigger event tables on preview tabs. When enabled:
+  - Marker + text label at each bar where a trigger fired (e.g., "LONG ENTRY" arrow, "EXIT" marker)
+  - Distinct from trade entry/exit markers — shows raw trigger fires regardless of whether confluence filtered them into an actual trade
+  - Helps debug "why didn't a trade happen here?" — trigger fired but interpreter state was wrong, or vice versa
+- [ ] Both toggles off by default to keep charts clean; user enables as needed for analysis
+
+**Phase 17C: Pine Script Export**
+*Add a "Copy Pine Script" button to indicator preview/code tabs. Enables cross-referencing RoR Trader indicator behavior against TradingView by pasting the same indicator into both platforms.*
+
+- [ ] **Copy Pine Script button** — on preview tabs for indicators that have a Pine Script reference in `reference-indicators/`. One-click copy to clipboard
+- [ ] **Pack Builder Pine Script output** — when creating a new indicator via Pack Builder, optionally generate a Pine Script equivalent alongside the Python implementation. Lets users verify the indicator plots identically in TradingView
+- [ ] **Future: Composite Pine Script generator** — given a strategy's full confluence setup (multiple indicators + interpreters + triggers), generate a single TradingView study that reproduces the complete signal chain. Useful for visual validation of the entire strategy logic against TradingView charts. (Deferred — scoping TBD)
+
+**Phase 17D: Indicator Audit & Expansion**
+*Validate existing indicators and add new ones from the reference library.*
+
 - [ ] Audit all existing built-in indicators against TradingView — verify numerical correctness for EMA Stack, Bollinger Bands, UT Bot, VWAP, RSI, MACD, ATR
 - [ ] Fix VWAP session-aware reset — cumulative VWAP must reset at session boundaries (identified in Phase 14C)
 - [ ] Document any known deviations from TradingView's calculations and whether they are intentional
-
-**Reference Indicators & Pack Builder Stress Test:**
-- [ ] Create `reference_indicators/` folder with TradingView Pine Script references for target indicators
-- [ ] Add indicators via Pack Builder workflow to stress-test the full pipeline (prompt generation → LLM response → validation → hot-load → charting)
-- [ ] Identify and fix charting/plotting gaps — support/resistance channels, filled bands, horizontal levels, multi-series overlays, histogram plots
-- [ ] Harden pack spec to support additional chart annotation types as needed
-
-**Confluence Structure Review:**
+- [ ] Add reference indicators via Pack Builder workflow to stress-test the full pipeline (prompt generation → LLM response → validation → hot-load → charting):
+  - SuperTrend — ATR-based trend following with filled trend regions and buy/sell signals
+  - Swing 123 — pattern-based candle coloring (inside/outside bars, C2/C3 setups)
+  - SR Channel — support/resistance zone detection with box annotations (primary test case for rectangle primitives)
+  - RVOL Status — relative volume across multiple timeframes (status display)
+  - Strat Assistant — multi-timeframe continuity with bar coloring and reference lines (most complex rendering test)
 - [ ] Review interpreter output states for consistency and completeness across all packs
 - [ ] Ensure all interpreters produce mutually exclusive, exhaustive states (no gaps in classification)
 - [ ] Validate that confluence conditions flow correctly through the full pipeline: indicator → interpreter → trigger → trade generation → alert
 
-**End State:** A library of validated, production-quality indicators and interpreters. New strategies built after this phase can be trusted for live trading without concern about data integrity issues forcing strategy deletion or rebuild.
+**End State:** A library of validated, production-quality indicators and interpreters with TradingView-quality chart rendering. Chart overlays for interpreter states and trigger events provide full visual transparency into the signal chain. Pine Script export enables cross-platform validation. New strategies built after this phase can be trusted for live trading without concern about data integrity or rendering issues.
 
 ### Phase 18: Multi-Timeframe Confluence
 *Evaluate confluence conditions across multiple timeframes — a single strategy can check higher-timeframe context (e.g., 15-min EMA trend) before entering on a lower timeframe (e.g., 1-min candles). One of the most common edges in professional trading.*
