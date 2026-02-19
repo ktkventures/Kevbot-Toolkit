@@ -1363,36 +1363,35 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
 - [x] User packs available in Strategy Builder trigger/confluence selection dropdowns
 - [x] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
-- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 17)
+- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 20)
 
-### Phase 17: Low-Priority Cleanup & Enhancements
-*Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
+### Phase 17: Indicator & Confluence Maturity
+*Validate, expand, and harden the indicator/confluence library to a production-ready standard. Goal: a trusted foundation of indicators and interpreters that can support real trading strategies and live algorithmic execution with confidence.*
 
-**Expanded Backtest Range:**
-- [ ] Date range picker on My Strategies page or strategy detail — select a custom backtest start date earlier than the original
-- [ ] Run full pipeline for the expanded window and merge new backtest trades into `stored_trades` (additive, does not affect existing forward test data)
-- [ ] Distinct from Data View filter (Phase 10C) — filter shows subsets of existing data instantly; expanded backtest generates new data by running the pipeline
+**Motivation:**
+- Before building real strategies and deploying live webhooks, the indicator foundation must be validated against TradingView for data integrity
+- The Pack Builder (Phase 16) enables adding new indicators, but known charting/plotting limitations need to be addressed (e.g., support/resistance channels, band fills, multi-line overlays)
+- A broader indicator library gives more confluence options for strategy construction and optimization
 
-**Optimization Workflow Polish (deferred from Phase 9/10):**
-- [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
-- [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
-- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
-- [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
+**Indicator Audit & Validation:**
+- [ ] Audit all existing built-in indicators against TradingView — verify numerical correctness for EMA Stack, Bollinger Bands, UT Bot, VWAP, RSI, MACD, ATR
+- [ ] Fix VWAP session-aware reset — cumulative VWAP must reset at session boundaries (identified in Phase 14C)
+- [ ] Document any known deviations from TradingView's calculations and whether they are intentional
 
-**UX Polish:**
-- [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
+**Reference Indicators & Pack Builder Stress Test:**
+- [ ] Create `reference_indicators/` folder with TradingView Pine Script references for target indicators
+- [ ] Add indicators via Pack Builder workflow to stress-test the full pipeline (prompt generation → LLM response → validation → hot-load → charting)
+- [ ] Identify and fix charting/plotting gaps — support/resistance channels, filled bands, horizontal levels, multi-series overlays, histogram plots
+- [ ] Harden pack spec to support additional chart annotation types as needed
 
-### Phase 18: Scanner Strategy Origin
-*Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
+**Confluence Structure Review:**
+- [ ] Review interpreter output states for consistency and completeness across all packs
+- [ ] Ensure all interpreters produce mutually exclusive, exhaustive states (no gaps in classification)
+- [ ] Validate that confluence conditions flow correctly through the full pipeline: indicator → interpreter → trigger → trade generation → alert
 
-- [ ] Add "Scanner" option to Strategy Origin selectbox
-- [ ] Scanner configuration fields — screener criteria (price range, volume, gap %, sector, float), universe source (Alpaca screener APIs), scan frequency
-- [ ] 1:many ticker architecture — a single scanner strategy evaluates triggers across all matching symbols; trades attributed to individual symbols but KPIs aggregated at strategy level
-- [ ] Scanner backtest — run trigger/confluence evaluation across historical screener results; requires architecture planning for data volume and performance
-- [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
-- [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
+**End State:** A library of validated, production-quality indicators and interpreters. New strategies built after this phase can be trusted for live trading without concern about data integrity issues forcing strategy deletion or rebuild.
 
-### Phase 19: Multi-Timeframe Confluence
+### Phase 18: Multi-Timeframe Confluence
 *Evaluate confluence conditions across multiple timeframes — a single strategy can check higher-timeframe context (e.g., 15-min EMA trend) before entering on a lower timeframe (e.g., 1-min candles). One of the most common edges in professional trading.*
 
 **Problem Statement:**
@@ -1426,11 +1425,38 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [ ] Optimizable Variables box shows timeframe prefix on selected conditions
 - [ ] Auto-Search can search across timeframe × condition combinations
 
-### Design Decisions (Phase 19 — Multi-Timeframe Confluence)
+### Design Decisions (Phase 18 — Multi-Timeframe Confluence)
 - **Timeframe management page over per-strategy timeframe config** — A centralized page where users enable timeframes mirrors the existing pattern for confluence packs (enable/disable globally, use in any strategy). This avoids per-strategy timeframe UI complexity and keeps the drill-down experience consistent.
 - **Matrix approach (timeframes × packs)** — Rather than manually configuring "run BB on 5m" per strategy, the system generates all valid combinations from enabled timeframes and enabled packs. The drill-down then lets users pick the specific TF:condition pairs that improve their strategy. This is consistent with how entry/exit/stop/target drill-down already works.
 - **Forward-fill for multi-TF alignment** — A 15-min EMA value computed at 9:45:00 should apply to all 1-min bars from 9:45:00 to 9:59:59. Forward-filling the higher-TF series onto the primary-TF index is the standard approach (same as TradingView's `request.security()` for MTF indicators). The value updates when the higher-TF bar closes.
 - **After Phase 14B** — The streaming engine's `SymbolHub` with multiple `BarBuilder` instances per symbol is the natural foundation for real-time MTF evaluation. Building MTF confluence first would require the backtest-only pipeline now and streaming retrofit later — double integration work. Phase 14B's architecture was designed with this use case in mind (`SymbolHub` accommodates single-strategy-multiple-timeframes, not just multiple-strategy-different-timeframes).
+
+### Phase 19: Scanner Strategy Origin
+*Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
+
+- [ ] Add "Scanner" option to Strategy Origin selectbox
+- [ ] Scanner configuration fields — screener criteria (price range, volume, gap %, sector, float), universe source (Alpaca screener APIs), scan frequency
+- [ ] 1:many ticker architecture — a single scanner strategy evaluates triggers across all matching symbols; trades attributed to individual symbols but KPIs aggregated at strategy level
+- [ ] Scanner backtest — run trigger/confluence evaluation across historical screener results; requires architecture planning for data volume and performance
+- [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
+- [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
+
+### Phase 20: Low-Priority Cleanup & Enhancements
+*Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
+
+**Expanded Backtest Range:**
+- [ ] Date range picker on My Strategies page or strategy detail — select a custom backtest start date earlier than the original
+- [ ] Run full pipeline for the expanded window and merge new backtest trades into `stored_trades` (additive, does not affect existing forward test data)
+- [ ] Distinct from Data View filter (Phase 10C) — filter shows subsets of existing data instantly; expanded backtest generates new data by running the pipeline
+
+**Optimization Workflow Polish (deferred from Phase 9/10):**
+- [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
+- [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
+- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
+- [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
+
+**UX Polish:**
+- [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
 ---
 
