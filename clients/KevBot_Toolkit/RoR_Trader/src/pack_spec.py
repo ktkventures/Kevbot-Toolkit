@@ -48,6 +48,7 @@ MANIFEST_OPTIONAL_FIELDS = [
     "requires_indicators",
     "display_type",
     "column_color_map",
+    "plot_config",
 ]
 
 VALID_PACK_TYPES = ["tf_confluence"]
@@ -268,6 +269,49 @@ def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
                     errors.append(
                         f"column_color_map key '{col}' not in indicator_columns"
                     )
+
+    # Validate plot_config if present
+    plot_config = manifest.get("plot_config")
+    if plot_config is not None:
+        if not isinstance(plot_config, dict):
+            errors.append("'plot_config' must be a dict")
+        else:
+            # Validate band_fills
+            for i, bf in enumerate(plot_config.get("band_fills", [])):
+                if not isinstance(bf, dict):
+                    errors.append(f"plot_config.band_fills[{i}] must be a dict")
+                    continue
+                for req in ("upper_column", "lower_column", "fill_color_key"):
+                    if req not in bf:
+                        errors.append(f"plot_config.band_fills[{i}] missing '{req}'")
+                if bf.get("upper_column") and bf["upper_column"] not in manifest["indicator_columns"]:
+                    errors.append(f"plot_config.band_fills[{i}].upper_column '{bf['upper_column']}' not in indicator_columns")
+                if bf.get("lower_column") and bf["lower_column"] not in manifest["indicator_columns"]:
+                    errors.append(f"plot_config.band_fills[{i}].lower_column '{bf['lower_column']}' not in indicator_columns")
+
+            # Validate reference_lines
+            for i, rl in enumerate(plot_config.get("reference_lines", [])):
+                if not isinstance(rl, dict):
+                    errors.append(f"plot_config.reference_lines[{i}] must be a dict")
+                    continue
+                if "value" not in rl:
+                    errors.append(f"plot_config.reference_lines[{i}] missing 'value'")
+                elif not isinstance(rl["value"], (int, float)):
+                    errors.append(f"plot_config.reference_lines[{i}].value must be numeric")
+
+            # Validate line_styles
+            line_styles = plot_config.get("line_styles", {})
+            if not isinstance(line_styles, dict):
+                errors.append("plot_config.line_styles must be a dict")
+            else:
+                for col, style in line_styles.items():
+                    if not isinstance(style, int) or style not in range(5):
+                        errors.append(f"plot_config.line_styles['{col}'] must be 0-4 (Solid/Dotted/Dashed/LargeDashed/SparseDotted)")
+
+            # Validate candle_color_column
+            ccc = plot_config.get("candle_color_column")
+            if ccc is not None and ccc not in manifest["indicator_columns"]:
+                errors.append(f"plot_config.candle_color_column '{ccc}' not in indicator_columns")
 
     return len(errors) == 0, errors
 

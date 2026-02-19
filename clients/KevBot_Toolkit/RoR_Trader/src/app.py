@@ -391,6 +391,47 @@ def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
     return template.get("indicator_columns", [])
 
 
+def get_band_fills_for_group(group: ConfluenceGroup) -> list:
+    """
+    Get band fill definitions from a group's template plot_config.
+
+    Returns list of dicts: [{"upper_column": str, "lower_column": str, "fill_color": str}]
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return []
+
+    plot_config = template.get("plot_config", {})
+    band_fills = plot_config.get("band_fills", [])
+    if not band_fills:
+        return []
+
+    plot_schema = template.get("plot_schema", {})
+    result = []
+    for bf in band_fills:
+        fill_color_key = bf.get("fill_color_key", "")
+        default_color = plot_schema.get(fill_color_key, {}).get("default", "rgba(128,128,128,0.1)")
+        fill_color = group.plot_settings.colors.get(fill_color_key, default_color)
+        result.append({
+            "upper_column": bf["upper_column"],
+            "lower_column": bf["lower_column"],
+            "fill_color": fill_color,
+        })
+    return result
+
+
+def get_line_styles_for_group(group: ConfluenceGroup) -> dict:
+    """
+    Get per-column line style overrides from a group's template plot_config.
+
+    Returns dict mapping column_name -> lineStyle int (0=Solid, 1=Dotted, 2=Dashed, etc.)
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return {}
+    return template.get("plot_config", {}).get("line_styles", {})
+
+
 def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
     """
     Get colors mapped to actual DataFrame column names for a confluence group.
@@ -2246,7 +2287,8 @@ def render_candle_selector(chart_key: str) -> int:
 @st.fragment
 def render_chart_with_candle_selector(
     df, trades, config, show_indicators=None, indicator_colors=None,
-    chart_key='price_chart', secondary_panes=None, extra_markers=None
+    chart_key='price_chart', secondary_panes=None, extra_markers=None,
+    candle_colors=None, indicator_line_styles=None, band_fills=None
 ):
     """Render a price chart with a per-chart candle count selector.
 
@@ -2262,6 +2304,9 @@ def render_chart_with_candle_selector(
         secondary_panes=secondary_panes,
         visible_candles=vc,
         extra_markers=extra_markers,
+        candle_colors=candle_colors,
+        indicator_line_styles=indicator_line_styles,
+        band_fills=band_fills,
     )
 
 
@@ -2275,6 +2320,9 @@ def render_price_chart(
     secondary_panes: list = None,
     visible_candles: int = None,
     extra_markers: list = None,
+    candle_colors: dict = None,
+    indicator_line_styles: dict = None,
+    band_fills: list = None,
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -2290,6 +2338,11 @@ def render_price_chart(
         indicator_colors: Dict mapping column names to colors (from confluence group settings)
         secondary_panes: List of lightweight-charts pane config dicts to render below the price chart
         visible_candles: Override for number of visible candles (None = use global default from session state)
+        candle_colors: Dict mapping indicator column name to per-candle color column name in df,
+            or a DataFrame column name string. When present, per-candle color/wickColor/borderColor
+            are set from the column values. E.g., {'color': 'bar_color', 'wickColor': 'bar_wick_color'}
+        indicator_line_styles: Dict mapping indicator column names to LWC lineStyle int values
+            (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted). Default: 0 (Solid).
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -2314,6 +2367,15 @@ def render_price_chart(
         candles = candles.tail(visible_candles).reset_index(drop=True)
 
     candle_data = candles[['time', 'open', 'high', 'low', 'close']].to_dict('records')
+
+    # Apply per-candle dynamic coloring (e.g., Swing 123 bar colors, UT Bot bull/bear)
+    if candle_colors:
+        for prop, col_name in candle_colors.items():
+            if prop in ('color', 'wickColor', 'borderColor') and col_name in candles.columns:
+                for i, (_, row) in enumerate(candles.iterrows()):
+                    val = row.get(col_name)
+                    if pd.notna(val) and val:
+                        candle_data[i][prop] = str(val)
 
     # Time window for filtering markers and secondary pane data
     min_time = candles['time'].min() if len(candles) > 0 else 0
@@ -2419,15 +2481,66 @@ def render_price_chart(
                     else:
                         color = INDICATOR_COLORS.get(ind_id, "#FFFFFF")
 
+                    line_opts = {
+                        "color": color,
+                        "lineWidth": 2,
+                        "priceLineVisible": False,
+                        "crosshairMarkerVisible": True,
+                        "title": ind_id.upper().replace("_", " ")
+                    }
+                    # Apply line style (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted)
+                    if indicator_line_styles and ind_id in indicator_line_styles:
+                        line_opts["lineStyle"] = indicator_line_styles[ind_id]
+
                     series.append({
                         "type": "Line",
                         "data": ind_data,
+                        "options": line_opts
+                    })
+
+    # Add band fill Area series (interim approach — overlapping Area series for filled bands)
+    if band_fills:
+        for bf in band_fills:
+            upper_col = bf.get("upper_column")
+            lower_col = bf.get("lower_column")
+            fill_color = bf.get("fill_color", "rgba(128,128,128,0.1)")
+            if upper_col in candles.columns and lower_col in candles.columns:
+                upper_data = []
+                lower_data = []
+                for _, row in candles.iterrows():
+                    t = int(row['time'])
+                    if pd.notna(row.get(upper_col)):
+                        upper_data.append({"time": t, "value": float(row[upper_col])})
+                    if pd.notna(row.get(lower_col)):
+                        lower_data.append({"time": t, "value": float(row[lower_col])})
+                # Upper band: fill downward (toward the lower band)
+                if upper_data:
+                    series.append({
+                        "type": "Area",
+                        "data": upper_data,
                         "options": {
-                            "color": color,
-                            "lineWidth": 2,
+                            "topColor": "rgba(0,0,0,0)",
+                            "bottomColor": fill_color,
+                            "lineColor": "rgba(0,0,0,0)",
+                            "lineWidth": 0,
                             "priceLineVisible": False,
-                            "crosshairMarkerVisible": True,
-                            "title": ind_id.upper().replace("_", " ")
+                            "crosshairMarkerVisible": False,
+                            "lastValueVisible": False,
+                        }
+                    })
+                # Lower band: fill upward (toward the upper band)
+                if lower_data:
+                    series.append({
+                        "type": "Area",
+                        "data": lower_data,
+                        "options": {
+                            "topColor": fill_color,
+                            "bottomColor": "rgba(0,0,0,0)",
+                            "lineColor": "rgba(0,0,0,0)",
+                            "lineWidth": 0,
+                            "priceLineVisible": False,
+                            "crosshairMarkerVisible": False,
+                            "lastValueVisible": False,
                         }
                     })
 
@@ -4011,6 +4124,12 @@ def render_strategy_builder():
                 show_indicators = []
                 indicator_colors = {}
 
+            band_fills = []
+            indicator_line_styles = {}
+            for group in overlay_groups:
+                band_fills.extend(get_band_fills_for_group(group))
+                indicator_line_styles.update(get_line_styles_for_group(group))
+
             if len(filtered_trades) > 0:
                 st.caption(f"{len(filtered_trades)} trades on {symbol} ({direction})")
             else:
@@ -4018,7 +4137,9 @@ def render_strategy_builder():
 
             osc_panes = build_secondary_panes(df, enabled_groups)
             render_chart_with_candle_selector(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
-                               secondary_panes=osc_panes if osc_panes else None)
+                               secondary_panes=osc_panes if osc_panes else None,
+                               band_fills=band_fills if band_fills else None,
+                               indicator_line_styles=indicator_line_styles if indicator_line_styles else None)
 
         # Live vs. Forward comparison tab
         if _has_live_data:
@@ -6031,9 +6152,13 @@ def render_live_backtest(strat: dict):
         overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
         show_indicators = []
         indicator_colors = {}
+        band_fills = []
+        indicator_line_styles = {}
         for group in overlay_groups:
             show_indicators.extend(get_overlay_indicators_for_group(group))
             indicator_colors.update(get_overlay_colors_for_group(group))
+            band_fills.extend(get_band_fills_for_group(group))
+            indicator_line_styles.update(get_line_styles_for_group(group))
 
         osc_panes = build_secondary_panes(df, enabled_groups)
         render_chart_with_candle_selector(
@@ -6041,7 +6166,9 @@ def render_live_backtest(strat: dict):
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
             chart_key='detail_price_chart',
-            secondary_panes=osc_panes if osc_panes else None
+            secondary_panes=osc_panes if osc_panes else None,
+            band_fills=band_fills if band_fills else None,
+            indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
         )
 
         render_backtest_trade_table(trades)
@@ -6215,6 +6342,8 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
 
             secondary_panes = build_secondary_panes(df, [group])
 
+            grp_band_fills = get_band_fills_for_group(group)
+            grp_line_styles = get_line_styles_for_group(group)
             render_chart_with_candle_selector(
                 df,
                 trades,
@@ -6222,7 +6351,9 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
                 show_indicators=grp_indicators,
                 indicator_colors=grp_colors,
                 chart_key=f"confluence_chart_{group.id}",
-                secondary_panes=secondary_panes if secondary_panes else None
+                secondary_panes=secondary_panes if secondary_panes else None,
+                band_fills=grp_band_fills if grp_band_fills else None,
+                indicator_line_styles=grp_line_styles if grp_line_styles else None,
             )
 
             # Interpreter state timeline
@@ -6383,9 +6514,13 @@ def render_forward_test_view(strat: dict):
             overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
             show_indicators = []
             indicator_colors = {}
+            band_fills = []
+            indicator_line_styles = {}
             for group in overlay_groups:
                 show_indicators.extend(get_overlay_indicators_for_group(group))
                 indicator_colors.update(get_overlay_colors_for_group(group))
+                band_fills.extend(get_band_fills_for_group(group))
+                indicator_line_styles.update(get_line_styles_for_group(group))
 
             osc_panes = build_secondary_panes(df, enabled_groups)
             render_chart_with_candle_selector(
@@ -6393,7 +6528,9 @@ def render_forward_test_view(strat: dict):
                 show_indicators=show_indicators,
                 indicator_colors=indicator_colors,
                 chart_key='forward_test_chart',
-                secondary_panes=osc_panes if osc_panes else None
+                secondary_panes=osc_panes if osc_panes else None,
+                band_fills=band_fills if band_fills else None,
+                indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
             )
         else:
             st.info("Price chart not available for webhook strategies (no market data).")
@@ -9985,6 +10122,8 @@ def render_preview_tab(group: ConfluenceGroup):
         st.markdown(f"**Price Chart + {pack_name}**")
 
     secondary_panes = build_secondary_panes(df, [group])
+    grp_band_fills = get_band_fills_for_group(group)
+    grp_line_styles = get_line_styles_for_group(group)
 
     render_chart_with_candle_selector(
         df,
@@ -9993,7 +10132,9 @@ def render_preview_tab(group: ConfluenceGroup):
         show_indicators=show_indicators,
         indicator_colors=indicator_colors_map,
         chart_key=f"preview_chart_{group.id}",
-        secondary_panes=secondary_panes if secondary_panes else None
+        secondary_panes=secondary_panes if secondary_panes else None,
+        band_fills=grp_band_fills if grp_band_fills else None,
+        indicator_line_styles=grp_line_styles if grp_line_styles else None,
     )
 
     # --- Section 2: Interpreter State Timeline ---
@@ -10069,6 +10210,10 @@ def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> 
     time_col = plot_df.columns[0]
     plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
 
+    # Read line_styles from plot_config if available
+    plot_config = template.get("plot_config", {})
+    line_styles_map = plot_config.get("line_styles", {})
+
     series = []
     for col_name, color in plot_cols.items():
         line_data = []
@@ -10079,19 +10224,43 @@ def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> 
                     "value": float(row[col_name]),
                 })
         if line_data:
+            line_opts = {
+                "color": color,
+                "lineWidth": 1,
+                "priceLineVisible": False,
+                "title": col_name,
+            }
+            if col_name in line_styles_map:
+                line_opts["lineStyle"] = line_styles_map[col_name]
             series.append({
                 "type": "Line",
                 "data": line_data,
-                "options": {
-                    "color": color,
-                    "lineWidth": 1,
-                    "priceLineVisible": False,
-                    "title": col_name,
-                }
+                "options": line_opts,
             })
 
     if not series:
         return None
+
+    # Add reference lines from plot_config (e.g., zero line for oscillators)
+    ref_lines = plot_config.get("reference_lines", [])
+    if ref_lines and series:
+        first_time = series[0]["data"][0]["time"]
+        last_time = series[0]["data"][-1]["time"]
+        for rl in ref_lines:
+            series.append({
+                "type": "Line",
+                "data": [{"time": first_time, "value": rl.get("value", 0)},
+                         {"time": last_time, "value": rl.get("value", 0)}],
+                "options": {
+                    "color": rl.get("color", "rgba(128,128,128,0.3)"),
+                    "lineWidth": rl.get("line_width", 1),
+                    "lineStyle": rl.get("line_style", 2),
+                    "priceLineVisible": False,
+                    "crosshairMarkerVisible": False,
+                    "lastValueVisible": False,
+                    "title": "",
+                }
+            })
 
     return {
         "chart": {
@@ -10179,6 +10348,25 @@ def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
                 "lineWidth": 1,
                 "priceLineVisible": False,
                 "title": "Signal",
+            }
+        })
+
+    # Add dashed zero reference line
+    any_data = hist_data or macd_data or signal_data
+    if any_data:
+        first_time = any_data[0]["time"]
+        last_time = any_data[-1]["time"]
+        series.append({
+            "type": "Line",
+            "data": [{"time": first_time, "value": 0}, {"time": last_time, "value": 0}],
+            "options": {
+                "color": "rgba(128,128,128,0.3)",
+                "lineWidth": 1,
+                "lineStyle": 2,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
             }
         })
 
@@ -10701,6 +10889,20 @@ def _render_pack_builder_preview(parsed: dict):
         if pane:
             secondary_panes.append(pane)
 
+    # Extract band fills and line styles from manifest plot_config
+    pb_band_fills = []
+    pb_line_styles = {}
+    pb_plot_config = manifest.get("plot_config", {})
+    for bf in pb_plot_config.get("band_fills", []):
+        fill_color_key = bf.get("fill_color_key", "")
+        fill_color = plot_schema.get(fill_color_key, {}).get("default", "rgba(128,128,128,0.1)")
+        pb_band_fills.append({
+            "upper_column": bf["upper_column"],
+            "lower_column": bf["lower_column"],
+            "fill_color": fill_color,
+        })
+    pb_line_styles = pb_plot_config.get("line_styles", {})
+
     render_chart_with_candle_selector(
         df,
         pd.DataFrame(),
@@ -10709,6 +10911,8 @@ def _render_pack_builder_preview(parsed: dict):
         indicator_colors=indicator_colors_map,
         chart_key="pb_preview_chart",
         secondary_panes=secondary_panes if secondary_panes else None,
+        band_fills=pb_band_fills if pb_band_fills else None,
+        indicator_line_styles=pb_line_styles if pb_line_styles else None,
     )
 
     # --- Interpreter State Timeline ---

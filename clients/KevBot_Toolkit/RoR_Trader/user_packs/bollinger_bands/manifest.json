@@ -51,7 +51,21 @@
       "type": "color",
       "default": "#22c55e",
       "label": "Lower Band Color"
+    },
+    "band_fill_color": {
+      "type": "color",
+      "default": "rgba(168,85,247,0.08)",
+      "label": "Band Fill Color"
     }
+  },
+  "plot_config": {
+    "band_fills": [
+      {
+        "upper_column": "bb_upper",
+        "lower_column": "bb_lower",
+        "fill_color_key": "band_fill_color"
+      }
+    ]
   },
   "outputs": [
     "SQUEEZE_UPPER",
