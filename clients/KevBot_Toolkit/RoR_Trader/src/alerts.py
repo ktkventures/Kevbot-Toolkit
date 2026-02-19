@@ -43,7 +43,7 @@ _SIGNAL_DETECTION_BARS_FLOOR = 200
 _INDICATOR_WARMUP = 50
 
 
-def compute_signal_detection_bars(timeframe: str) -> int:
+def compute_signal_detection_bars(timeframe: str, session: str = "RTH") -> int:
     """Compute minimum bars needed for accurate signal detection.
 
     Ensures we load at least:
@@ -51,8 +51,8 @@ def compute_signal_detection_bars(timeframe: str) -> int:
     - Enough bars for the longest indicator warmup (EMA 50)
     - Minimum 200 bars floor
     """
-    from data_loader import BARS_PER_DAY
-    full_day = int(BARS_PER_DAY.get(timeframe, 390))
+    from data_loader import _bars_per_day
+    full_day = int(_bars_per_day(timeframe, session))
     return max(full_day, _INDICATOR_WARMUP, _SIGNAL_DETECTION_BARS_FLOOR)
 
 DEFAULT_GLOBAL_CONFIG = {
@@ -607,9 +607,11 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -
     timeframe = strategy.get('timeframe', '1Min')
 
     # Load recent bars if not provided
+    session = strategy.get('trading_session', 'RTH')
     if df is None:
-        bars_needed = compute_signal_detection_bars(timeframe)
-        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed, feed=feed)
+        bars_needed = compute_signal_detection_bars(timeframe, session)
+        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe,
+                              seed=seed, feed=feed, session=session)
     if len(df) == 0:
         return []
 

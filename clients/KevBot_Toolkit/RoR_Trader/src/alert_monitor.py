@@ -78,8 +78,11 @@ def _signal_handler(signum, frame):
     print(f"\nReceived signal {signum}, shutting down...")
 
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+# Only register signal handlers when running as standalone script
+# (importing this module from another thread would fail otherwise).
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
 
 
 # =============================================================================
@@ -87,6 +90,7 @@ signal.signal(signal.SIGINT, _signal_handler)
 # =============================================================================
 
 TIMEFRAME_SECONDS = {
+    "10Sec": 10, "30Sec": 30,  # Sub-minute (streaming engine only)
     "1Min": 60, "2Min": 120, "3Min": 180, "5Min": 300,
     "10Min": 600, "15Min": 900, "30Min": 1800,
     "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,
@@ -123,9 +127,10 @@ def load_cached_bars(
     bars_needed: int,
     seed: int = 42,
     feed: str = "sip",
+    session: str = "RTH",
 ) -> pd.DataFrame:
     """Load bars with in-memory caching. Fetches only new bars incrementally."""
-    cache_key = (symbol, timeframe, feed)
+    cache_key = (symbol, timeframe, feed, session)
 
     if cache_key in _data_cache:
         cached = _data_cache[cache_key]
@@ -135,7 +140,7 @@ def load_cached_bars(
         try:
             new_bars = load_market_data(
                 symbol, start_date=last_time, end_date=datetime.now(),
-                timeframe=timeframe, seed=seed, feed=feed,
+                timeframe=timeframe, seed=seed, feed=feed, session=session,
             )
             if len(new_bars) > 0:
                 combined = pd.concat([cached_df, new_bars])
@@ -151,7 +156,8 @@ def load_cached_bars(
         return cached_df.tail(bars_needed).copy()
 
     # Cold start: full load
-    df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed, feed=feed)
+    df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe,
+                          seed=seed, feed=feed, session=session)
     if len(df) > 0:
         _data_cache[cache_key] = {"df": df, "last_bar_time": df.index[-1]}
     return df
@@ -214,25 +220,37 @@ def get_monitored_strategies(config: dict) -> list:
     return monitored
 
 
-def should_poll(config: dict) -> bool:
-    """Check if we should poll based on market hours setting."""
+def should_poll(config: dict, strategies: list = None) -> bool:
+    """Check if we should poll based on market hours and strategy sessions."""
     if not config.get('global', {}).get('market_hours_only', True):
         return True
 
-    now = datetime.now()
-    # Market hours: 9:30 AM - 4:00 PM ET (simplified, no timezone conversion)
-    hour = now.hour
-    minute = now.minute
+    import pytz
+    import datetime as dt_mod
+    et = pytz.timezone("America/New_York")
+    now = datetime.now(et)
 
-    if hour < 9 or (hour == 9 and minute < 30):
-        return False
-    if hour >= 16:
-        return False
     # Skip weekends
     if now.weekday() >= 5:
         return False
 
-    return True
+    # Determine the widest session window across monitored strategies
+    from data_loader import SESSION_HOURS
+    sessions = {s.get('trading_session', 'RTH') for s in (strategies or [])} or {'RTH'}
+
+    earliest_start = dt_mod.time(23, 59)
+    latest_end = dt_mod.time(0, 0)
+    for sess in sessions:
+        sh, sm, eh, em = SESSION_HOURS.get(sess, (9, 30, 16, 0))
+        s_time = dt_mod.time(sh, sm)
+        e_time = dt_mod.time(eh, em)
+        if s_time < earliest_start:
+            earliest_start = s_time
+        if e_time > latest_end:
+            latest_end = e_time
+
+    current_time = now.time()
+    return earliest_start <= current_time < latest_end
 
 
 def update_monitor_status(**kwargs):
@@ -409,28 +427,31 @@ def poll_strategies(strats: list, config: dict, timeframe: str, feed: str = "sip
     """
     Poll a group of strategies that share the same timeframe.
 
-    Pre-loads data per unique symbol (deduplication), then runs
+    Pre-loads data per unique (symbol, session) pair (deduplication), then runs
     detect_signals with the pre-loaded DataFrame.
     """
-    bars_needed = compute_signal_detection_bars(timeframe)
-
-    # Deduplicate by symbol — load data once per symbol
-    symbol_seeds = {}
+    # Deduplicate by (symbol, session) — load data once per unique pair
+    symbol_session_seeds = {}
     for strat in strats:
         sym = strat.get('symbol', 'SPY')
-        if sym not in symbol_seeds:
-            symbol_seeds[sym] = strat.get('data_seed', 42)
+        sess = strat.get('trading_session', 'RTH')
+        key = (sym, sess)
+        if key not in symbol_session_seeds:
+            symbol_session_seeds[key] = strat.get('data_seed', 42)
 
-    # Pre-load data for each unique symbol
-    symbol_data = {}
-    for sym, seed in symbol_seeds.items():
-        df = load_cached_bars(sym, timeframe, bars_needed, seed=seed, feed=feed)
-        symbol_data[sym] = df
+    # Pre-load data for each unique (symbol, session)
+    data_cache = {}
+    for (sym, sess), seed in symbol_session_seeds.items():
+        bars_needed = compute_signal_detection_bars(timeframe, sess)
+        df = load_cached_bars(sym, timeframe, bars_needed, seed=seed,
+                              feed=feed, session=sess)
+        data_cache[(sym, sess)] = df
 
     # Process each strategy
     for strat in strats:
         sym = strat.get('symbol', 'SPY')
-        df = symbol_data.get(sym, pd.DataFrame())
+        sess = strat.get('trading_session', 'RTH')
+        df = data_cache.get((sym, sess), pd.DataFrame())
 
         try:
             signals = detect_signals(strat, df=df.copy() if len(df) > 0 else None)
@@ -496,12 +517,18 @@ def main():
                 time.sleep(poll_interval)
                 continue
 
-            if not should_poll(config):
-                print(f"Outside market hours, sleeping {poll_interval}s...")
-                time.sleep(poll_interval)
+            # If the streaming engine is connected, sleep and let it handle alerts
+            status = load_monitor_status()
+            if status.get('streaming_connected', False):
+                time.sleep(5)
                 continue
 
             strategies = get_monitored_strategies(config)
+
+            if not should_poll(config, strategies):
+                print(f"Outside market hours, sleeping {poll_interval}s...")
+                time.sleep(poll_interval)
+                continue
 
             if not strategies:
                 time.sleep(poll_interval)

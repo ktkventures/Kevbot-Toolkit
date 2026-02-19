@@ -160,6 +160,7 @@ TIMEFRAMES = [
     "1Day", "1Week", "1Month",
 ]
 DIRECTIONS = ["LONG", "SHORT"]
+TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours"]
 
 TIMEFRAME_GUIDANCE = {
     "1Min":   "~390 bars/day \u00b7 recommended \u226490 days",
@@ -208,7 +209,7 @@ def is_oscillator_template(base_template: str) -> bool:
 # Note: risk_per_trade is in generate_trades() signature but unused in the body;
 # it only affects calculate_kpis() dollar values, so it's excluded here.
 OPTIMIZABLE_PARAMS = frozenset({
-    'symbol', 'direction', 'timeframe',
+    'symbol', 'direction', 'timeframe', 'trading_session',
     'entry_trigger', 'entry_trigger_confluence_id',
     'exit_trigger', 'exit_triggers', 'exit_trigger_confluence_ids',
     'stop_config', 'stop_atr_mult', 'target_config', 'bar_count_exit',
@@ -447,7 +448,8 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
                                   start_date=None, end_date=None,
                                   timeframe: str = "1Min",
-                                  data_feed: str = "sip"):
+                                  data_feed: str = "sip",
+                                  session: str = "RTH"):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -461,13 +463,15 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         end_date: Explicit end date (overrides days)
         timeframe: Bar timeframe (e.g., "1Min", "5Min", "1Hour")
         data_feed: Alpaca data feed — "sip" or "iex" (also used as cache key)
+        session: Trading session — "RTH", "Pre-Market", "After Hours", "Extended Hours"
 
     Returns DataFrame ready for trade generation and analysis.
     """
     # Load raw bars (Alpaca if configured, mock otherwise)
     df = load_market_data(symbol, days=days, seed=seed,
                           start_date=start_date, end_date=end_date,
-                          timeframe=timeframe, feed=data_feed)
+                          timeframe=timeframe, feed=data_feed,
+                          session=session)
 
     if len(df) == 0:
         return df
@@ -532,6 +536,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
         timeframe=strat_timeframe, data_feed=_get_data_feed(),
+        session=strat.get('trading_session', 'RTH'),
     )
 
     if len(df) == 0:
@@ -587,7 +592,8 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
         df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                           start_date=gst_start, end_date=gst_end,
                                           timeframe=strat.get('timeframe', '1Min'),
-                                          data_feed=_get_data_feed())
+                                          data_feed=_get_data_feed(),
+                                          session=strat.get('trading_session', 'RTH'))
         if len(df) == 0:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
@@ -641,6 +647,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
         timeframe=timeframe, data_feed=_get_data_feed(),
+        session=strat.get('trading_session', 'RTH'),
     )
 
     if len(df) == 0:
@@ -907,6 +914,7 @@ def _generate_webhook_backtest_trades(
                 symbol, seed=data_seed,
                 start_date=_sd, end_date=_ed,
                 timeframe=timeframe, data_feed=_get_data_feed(),
+                session=strat.get('trading_session', 'RTH'),
             )
             if len(df_market) == 0:
                 df_market = None
@@ -1178,7 +1186,7 @@ def extract_portfolio_equity_curve_data(combined_trades: pd.DataFrame) -> dict:
     }
 
 
-def render_mini_equity_curve_from_data(eq_data: dict, key: str):
+def render_mini_equity_curve_from_data(eq_data: dict, key: str, strat: dict = None):
     """Render mini equity curve from persisted equity curve data dict."""
     exit_times = eq_data.get('exit_times', [])
     cumulative_r = eq_data.get('cumulative_r', [])
@@ -1193,7 +1201,7 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
     fig = go.Figure()
 
     if boundary_index is not None and boundary_index < len(times):
-        # Backtest portion
+        # Backtest portion (blue)
         if boundary_index > 0:
             fig.add_trace(go.Scatter(
                 x=times[:boundary_index], y=cumulative_r[:boundary_index],
@@ -1201,7 +1209,7 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
                 fill="tozeroy", fillcolor="rgba(33, 150, 243, 0.08)",
                 showlegend=False
             ))
-        # Forward portion (with bridge point from backtest)
+        # Forward portion (orange, with bridge point from backtest)
         fw_start = max(0, boundary_index - 1)
         fig.add_trace(go.Scatter(
             x=times[fw_start:], y=cumulative_r[fw_start:],
@@ -1209,6 +1217,42 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
             fill="tozeroy", fillcolor="rgba(255, 152, 0, 0.08)",
             showlegend=False
         ))
+
+        # Live portion (green) — overlay from live_executions with slippage
+        if strat and strat.get('alert_tracking_enabled') and strat.get('live_executions'):
+            live_execs = strat['live_executions']
+            stored = strat.get('stored_trades', [])
+            live_trade_indices = set()
+            slippage_map = {}
+            for ex in live_execs:
+                tidx = ex.get('matched_trade_index')
+                if tidx is not None:
+                    live_trade_indices.add(tidx)
+                    if tidx not in slippage_map:
+                        slippage_map[tidx] = 0
+                    slippage_map[tidx] += ex.get('slippage_r', 0)
+
+            if live_trade_indices and len(stored) > 0:
+                bt_cumr = cumulative_r[boundary_index - 1] if boundary_index > 0 else 0
+                live_times = []
+                live_cumr = []
+                cumulative = bt_cumr
+                for idx in sorted(live_trade_indices):
+                    if idx < len(stored):
+                        t = stored[idx]
+                        adj_r = t.get('r_multiple', 0) - slippage_map.get(idx, 0)
+                        cumulative += adj_r
+                        try:
+                            live_times.append(pd.Timestamp(t['exit_time']))
+                            live_cumr.append(cumulative)
+                        except (ValueError, KeyError):
+                            pass
+                if live_times:
+                    fig.add_trace(go.Scatter(
+                        x=live_times, y=live_cumr,
+                        mode="lines", line=dict(color="#4CAF50", width=2),
+                        showlegend=False
+                    ))
     else:
         final_r = cumulative_r[-1]
         color = "#4CAF50" if final_r >= 0 else "#f44336"
@@ -1234,12 +1278,19 @@ def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     if len(trades_df) == 0:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Match timezone awareness of the entry_time column
-    if hasattr(trades_df['entry_time'].dtype, 'tz') and trades_df['entry_time'].dtype.tz is not None:
-        boundary_dt = pd.Timestamp(boundary_dt).tz_localize(trades_df['entry_time'].dtype.tz)
+    boundary_ts = pd.Timestamp(boundary_dt)
+    col_tz = getattr(trades_df['entry_time'].dtype, 'tz', None)
 
-    backtest = trades_df[trades_df['entry_time'] < boundary_dt].copy()
-    forward = trades_df[trades_df['entry_time'] >= boundary_dt].copy()
+    # Normalize timezone awareness so comparison never fails
+    if col_tz is not None and boundary_ts.tzinfo is None:
+        boundary_ts = boundary_ts.tz_localize(col_tz)
+    elif col_tz is not None and boundary_ts.tzinfo is not None:
+        boundary_ts = boundary_ts.tz_convert(col_tz)
+    elif col_tz is None and boundary_ts.tzinfo is not None:
+        boundary_ts = boundary_ts.tz_localize(None)
+
+    backtest = trades_df[trades_df['entry_time'] < boundary_ts].copy()
+    forward = trades_df[trades_df['entry_time'] >= boundary_ts].copy()
     return backtest, forward
 
 
@@ -3179,10 +3230,10 @@ def render_strategy_builder():
                 st.rerun()
 
     # =========================================================================
-    # ROW 1: Method | Ticker | TF | Dir | Lookback | Params | Name | FT/AL | Load
+    # ROW 1: Method | Ticker | TF | Dir | Session | Lookback | Params | Name | FT/AL | Load
     # =========================================================================
-    r1c0, r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(
-        [0.6, 0.8, 0.8, 0.55, 0.7, 1.2, 1.4, 0.45, 0.5])
+    r1c0, r1c1, r1c2, r1c3, r1c3b, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(
+        [0.6, 0.8, 0.8, 0.55, 0.7, 0.7, 1.1, 1.1, 0.45, 0.5])
 
     with r1c0:
         _origin_options = ["Standard", "Webhook Inbound"]
@@ -3205,6 +3256,12 @@ def render_strategy_builder():
         direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
         direction = st.selectbox("Direction", DIRECTIONS, index=direction_idx, key="sb_direction")
 
+    with r1c3b:
+        _saved_sess = edit_config.get('trading_session', 'RTH')
+        _sess_idx = TRADING_SESSIONS.index(_saved_sess) if _saved_sess in TRADING_SESSIONS else 0
+        trading_session = st.selectbox("Session", TRADING_SESSIONS, index=_sess_idx, key="sb_session",
+            help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM")
+
     # Re-fetch entry triggers with actual selected direction
     entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
 
@@ -3226,7 +3283,7 @@ def render_strategy_builder():
             saved_bar_count = edit_config.get('bar_count', 1000)
             bar_count = st.number_input("Bars", min_value=100, max_value=500000,
                                          value=saved_bar_count, step=100, key="sb_bar_count")
-            data_days = days_from_bar_count(bar_count, timeframe)
+            data_days = days_from_bar_count(bar_count, timeframe, session=trading_session)
         elif lookback_mode == "Date Range":
             from datetime import time as dtime
             saved_start = edit_config.get('lookback_start_date')
@@ -3266,7 +3323,7 @@ def render_strategy_builder():
         load_clicked = st.button("Load Data", type="primary", use_container_width=True)
 
     # Bar estimate (computed now, rendered after validation via placeholder)
-    est_bars = estimate_bar_count(data_days, timeframe)
+    est_bars = estimate_bar_count(data_days, timeframe, session=trading_session)
     _status_placeholder = st.empty()
 
     # =========================================================================
@@ -3645,6 +3702,7 @@ def render_strategy_builder():
         'symbol': symbol,
         'direction': direction,
         'timeframe': timeframe,
+        'trading_session': trading_session,
         'entry_trigger': base_entry_trigger_id,
         'entry_trigger_confluence_id': entry_trigger,
         'exit_triggers': signal_exit_base_ids,
@@ -3737,7 +3795,8 @@ def render_strategy_builder():
             df = prepare_data_with_indicators(symbol, data_days, data_seed,
                                               start_date=start_date, end_date=end_date,
                                               timeframe=timeframe,
-                                              data_feed=_get_data_feed())
+                                              data_feed=_get_data_feed(),
+                                              session=trading_session)
 
             if len(df) == 0:
                 st.error("No data available")
@@ -5072,8 +5131,11 @@ def render_strategy_list():
                 # Name
                 st.markdown(f"#### {strat['name']}")
 
-                # Symbol / Direction / Duration segments / Monitoring
+                # Symbol / Direction / Session / Duration segments / Monitoring
                 _caption_parts = [f"{strat['symbol']} {strat['direction']}"]
+                _session = strat.get('trading_session', 'RTH')
+                if _session != 'RTH':
+                    _caption_parts.append(f'<span style="color:#9C27B0">{_session}</span>')
                 # BT days
                 if strat.get('lookback_start_date') and strat.get('forward_test_start'):
                     _bt_days = (datetime.fromisoformat(strat['forward_test_start']) - datetime.fromisoformat(strat['lookback_start_date'])).days
@@ -5109,7 +5171,7 @@ def render_strategy_list():
 
                 # Mini equity curve (full card width)
                 if not is_legacy and eq_data and len(eq_data.get('exit_times', [])) > 0:
-                    render_mini_equity_curve_from_data(eq_data, key=f"mini_eq_{sid}")
+                    render_mini_equity_curve_from_data(eq_data, key=f"mini_eq_{sid}", strat=strat)
 
                 # KPI metrics
                 kpi_cols = st.columns(5)
@@ -5139,6 +5201,18 @@ def render_strategy_list():
                     st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
                 else:
                     st.caption("Confluence: None")
+
+                # Alert tracking toggle
+                if strat.get('forward_testing'):
+                    _card_at = strat.get('alert_tracking_enabled', False)
+                    _card_at_new = st.toggle("Alert Tracking", value=_card_at, key=f"card_at_{sid}")
+                    if _card_at_new != _card_at:
+                        strat['alert_tracking_enabled'] = _card_at_new
+                        if not _card_at_new:
+                            strat['live_executions'] = []
+                            strat['discrepancies'] = []
+                        update_strategy(sid, strat)
+                        st.rerun()
 
                 # Action buttons
                 btn_cols = st.columns(4)
@@ -5235,17 +5309,18 @@ def render_strategy_detail(strategy_id: int):
 
     enabled_groups = get_enabled_groups()
 
-    meta_row1 = st.columns(6)
+    meta_row1 = st.columns(7)
     meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
     meta_row1[1].markdown(f"**Direction:** {strat['direction']}")
     meta_row1[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
+    meta_row1[3].markdown(f"**Session:** {strat.get('trading_session', 'RTH')}")
     if strat.get('strategy_origin') == 'webhook_inbound':
-        meta_row1[3].markdown("**Origin:** Webhook Inbound")
-        meta_row1[4].markdown(f"**Signals:** {len(strat.get('webhook_config', {}).get('backtest_signals', []))}")
+        meta_row1[4].markdown("**Origin:** Webhook Inbound")
+        meta_row1[5].markdown(f"**Signals:** {len(strat.get('webhook_config', {}).get('backtest_signals', []))}")
     else:
-        meta_row1[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-        meta_row1[4].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
-    meta_row1[5].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
+        meta_row1[4].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
+        meta_row1[5].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
+    meta_row1[6].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
 
     # Confluence conditions (TF + General)
     confluence = strat.get('confluence', [])
@@ -5768,7 +5843,8 @@ def render_live_backtest(strat: dict):
     df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                       start_date=strat_start, end_date=strat_end,
                                       timeframe=strat_timeframe,
-                                      data_feed=_get_data_feed())
+                                      data_feed=_get_data_feed(),
+                                      session=strat.get('trading_session', 'RTH'))
 
     if len(df) == 0:
         st.error("No data available for this symbol.")
@@ -5805,11 +5881,16 @@ def render_live_backtest(strat: dict):
     confluence_set = confluence_set if confluence_set else None
     extended_data_days = strat.get('extended_data_days', 365)
 
-    # 7-tab layout
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence, tab_config, tab_alerts = st.tabs([
+    # Tab layout — conditionally include Alert Analysis
+    _bt_has_alert_analysis = strat.get('alert_tracking_enabled') and strat.get('live_executions')
+    _bt_tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
-    ])
+    ]
+    if _bt_has_alert_analysis:
+        _bt_tab_names.append("Alert Analysis")
+    _bt_tabs = st.tabs(_bt_tab_names)
+    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence, tab_config, tab_alerts = _bt_tabs[:7]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
@@ -5857,7 +5938,7 @@ def render_live_backtest(strat: dict):
                 ext_bar_count = st.number_input(
                     "Bars", min_value=100, max_value=500000, value=5000,
                     step=500, key="bt_ext_bar_count")
-                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe)
+                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe, session=strat.get('trading_session', 'RTH'))
             elif ext_lookback_mode == "Date Range":
                 from datetime import time as dtime
                 dr1, dr2 = st.columns(2)
@@ -5875,7 +5956,7 @@ def render_live_backtest(strat: dict):
                 ext_end_date = datetime.combine(ext_end_input, dtime(16, 0))
                 extended_data_days = (ext_end_input - ext_start_input).days
         with ext_lc3:
-            ext_est = estimate_bar_count(extended_data_days, strat_timeframe)
+            ext_est = estimate_bar_count(extended_data_days, strat_timeframe, session=strat.get('trading_session', 'RTH'))
             st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
 
         bt_ext_key = f"bt_ext_{strat['id']}_{extended_data_days}_{ext_start_date}_{ext_end_date}"
@@ -5888,7 +5969,8 @@ def render_live_backtest(strat: dict):
                     _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
                                                           start_date=ext_start_date, end_date=ext_end_date,
                                                           timeframe=strat_timeframe,
-                                                          data_feed=_get_data_feed())
+                                                          data_feed=_get_data_feed(),
+                                                          session=strat.get('trading_session', 'RTH'))
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
@@ -6025,6 +6107,11 @@ def render_live_backtest(strat: dict):
     # --- Tab 7: Alerts ---
     with tab_alerts:
         render_strategy_alerts_tab(strat)
+
+    # --- Tab 8: Alert Analysis (conditional) ---
+    if _bt_has_alert_analysis:
+        with _bt_tabs[7]:
+            render_alert_analysis_tab(strat)
 
 
 # =============================================================================
@@ -6201,11 +6288,16 @@ def render_forward_test_view(strat: dict):
         f"Boundary: {boundary_dt.strftime('%Y-%m-%d')}"
     )
 
-    # 7-tab layout
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs([
+    # Tab layout — conditionally include Alert Analysis
+    _has_alert_analysis = strat.get('alert_tracking_enabled') and strat.get('live_executions')
+    _tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
-    ])
+    ]
+    if _has_alert_analysis:
+        _tab_names.append("Alert Analysis")
+    _tabs = st.tabs(_tab_names)
+    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = _tabs[:7]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
@@ -6233,7 +6325,7 @@ def render_forward_test_view(strat: dict):
                     fw_ext_bars = st.number_input(
                         "Bars", min_value=100, max_value=500000, value=5000,
                         step=500, key="fw_ext_bar_count")
-                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
+                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
                 elif fw_ext_mode == "Date Range":
                     from datetime import time as dtime
                     fw_dr1, fw_dr2 = st.columns(2)
@@ -6249,7 +6341,7 @@ def render_forward_test_view(strat: dict):
                         st.error("Start must be before end.")
                     extended_data_days = (fw_ext_end - fw_ext_start).days
             with fw_ext_lc3:
-                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
+                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
                 st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
             ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
@@ -6376,6 +6468,205 @@ def render_forward_test_view(strat: dict):
     # --- Tab 7: Alerts ---
     with tab_alerts:
         render_strategy_alerts_tab(strat)
+
+    # --- Tab 8: Alert Analysis (conditional) ---
+    if _has_alert_analysis:
+        with _tabs[7]:
+            render_alert_analysis_tab(strat)
+
+
+def render_alert_analysis_tab(strat: dict):
+    """Render Alert Analysis tab: FT vs Live comparison, trade-by-trade detail, discrepancies."""
+    live_execs = strat.get('live_executions', [])
+    stored = strat.get('stored_trades', [])
+    discrepancies = strat.get('discrepancies', [])
+
+    if not live_execs:
+        st.info("No live execution data available for analysis.")
+        return
+
+    ft_start_str = strat.get('forward_test_start', '')
+    ft_start_dt = datetime.fromisoformat(ft_start_str) if ft_start_str else None
+    if ft_start_dt and ft_start_dt.tzinfo:
+        ft_start_dt = ft_start_dt.replace(tzinfo=None)
+
+    # Identify forward test trades from stored_trades
+    def _is_ft(t):
+        try:
+            dt = datetime.fromisoformat(t['entry_time'])
+            if dt.tzinfo:
+                dt = dt.replace(tzinfo=None)
+            return ft_start_dt and dt >= ft_start_dt
+        except (ValueError, KeyError):
+            return False
+
+    ft_trades = [t for t in stored if _is_ft(t)] if ft_start_dt else stored
+
+    # Build maps from live executions
+    matched_indices = set()
+    entry_execs = {}  # trade_index -> exec
+    exit_execs = {}   # trade_index -> exec
+    for ex in live_execs:
+        tidx = ex.get('matched_trade_index')
+        if tidx is not None:
+            matched_indices.add(tidx)
+            if ex.get('type') == 'entry':
+                entry_execs[tidx] = ex
+            elif ex.get('type') == 'exit':
+                exit_execs[tidx] = ex
+
+    # ── Section A: Summary Metrics ──
+    st.markdown("### Summary Metrics")
+
+    # Forward test KPIs
+    ft_r = [t.get('r_multiple', 0) for t in ft_trades]
+    ft_wins = [r for r in ft_r if r > 0]
+    ft_losses = [r for r in ft_r if r < 0]
+    ft_total = len(ft_r)
+    ft_wr = (len(ft_wins) / ft_total * 100) if ft_total > 0 else 0
+    ft_pf = (sum(ft_wins) / abs(sum(ft_losses))) if ft_losses else float('inf')
+    ft_avg_r = (sum(ft_r) / ft_total) if ft_total > 0 else 0
+    ft_total_r = sum(ft_r)
+
+    # Live KPIs (adjust R by slippage for matched trades)
+    live_r = []
+    for idx in sorted(matched_indices):
+        if idx < len(stored):
+            entry_slip = entry_execs.get(idx, {}).get('slippage_r', 0)
+            exit_slip = exit_execs.get(idx, {}).get('slippage_r', 0)
+            adj_r = stored[idx].get('r_multiple', 0) - entry_slip - exit_slip
+            live_r.append(adj_r)
+    live_wins = [r for r in live_r if r > 0]
+    live_losses = [r for r in live_r if r < 0]
+    live_total = len(live_r)
+    live_wr = (len(live_wins) / live_total * 100) if live_total > 0 else 0
+    live_pf = (sum(live_wins) / abs(sum(live_losses))) if live_losses else float('inf')
+    live_avg_r = (sum(live_r) / live_total) if live_total > 0 else 0
+    live_total_r = sum(live_r)
+
+    # Slippage & webhook stats
+    all_slippages = [ex.get('slippage_r', 0) for ex in live_execs]
+    avg_slippage = (sum(all_slippages) / len(all_slippages)) if all_slippages else 0
+    webhook_success = sum(1 for ex in live_execs if ex.get('webhook_delivered'))
+    webhook_rate = (webhook_success / len(live_execs) * 100) if live_execs else 0
+    missed_count = sum(1 for d in discrepancies if d.get('type') == 'missed_alert')
+    phantom_count = sum(1 for d in discrepancies if d.get('type') == 'phantom_alert')
+
+    def _delta_html(fwd_val, live_val, fmt=".2f", pct=False):
+        diff = live_val - fwd_val
+        sym = "\u25b2" if diff > 0 else "\u25bc" if diff < 0 else "="
+        color = "#4CAF50" if diff >= 0 else "#f44336"
+        suffix = "%" if pct else ""
+        return f'<span style="color:{color}">{sym} {diff:+{fmt}}{suffix}</span>'
+
+    _hdr = st.columns([1.2, 1, 1, 0.8])
+    _hdr[0].markdown("**Metric**")
+    _hdr[1].markdown(f'<span style="color:#FF9800">**Forward Test**</span>', unsafe_allow_html=True)
+    _hdr[2].markdown(f'<span style="color:#4CAF50">**Live (Adjusted)**</span>', unsafe_allow_html=True)
+    _hdr[3].markdown("**Delta**")
+
+    rows = [
+        ("Total Trades", f"{ft_total}", f"{live_total}", ""),
+        ("Win Rate", f"{ft_wr:.1f}%", f"{live_wr:.1f}%", _delta_html(ft_wr, live_wr, ".1f", True)),
+        ("Profit Factor",
+         f"{ft_pf:.2f}" if ft_pf != float('inf') else "\u221e",
+         f"{live_pf:.2f}" if live_pf != float('inf') else "\u221e",
+         _delta_html(ft_pf, live_pf) if ft_pf != float('inf') and live_pf != float('inf') else ""),
+        ("Avg R", f"{ft_avg_r:+.3f}", f"{live_avg_r:+.3f}", _delta_html(ft_avg_r, live_avg_r, ".3f")),
+        ("Total R", f"{ft_total_r:+.2f}", f"{live_total_r:+.2f}", _delta_html(ft_total_r, live_total_r)),
+        ("Avg Slippage", "\u2014", f"{avg_slippage:+.4f}R", ""),
+        ("Webhook Success", "\u2014", f"{webhook_rate:.0f}% ({webhook_success}/{len(live_execs)})", ""),
+        ("Missed Alerts", "\u2014", str(missed_count), ""),
+        ("Phantom Alerts", "\u2014", str(phantom_count), ""),
+    ]
+    for label, fwd_v, live_v, delta in rows:
+        _r = st.columns([1.2, 1, 1, 0.8])
+        _r[0].markdown(f"**{label}**")
+        _r[1].markdown(fwd_v)
+        _r[2].markdown(live_v)
+        if delta:
+            _r[3].markdown(delta, unsafe_allow_html=True)
+
+    # ── Section B: Trade-by-Trade Comparison ──
+    with st.expander("Trade-by-Trade Comparison", expanded=True):
+        tbt_rows = []
+        ft_start_idx = 0
+        if ft_start_dt:
+            for i, t in enumerate(stored):
+                try:
+                    dt = datetime.fromisoformat(t['entry_time'])
+                    if dt.tzinfo:
+                        dt = dt.replace(tzinfo=None)
+                    if dt >= ft_start_dt:
+                        ft_start_idx = i
+                        break
+                except (ValueError, KeyError):
+                    pass
+
+        for trade_num, idx in enumerate(range(ft_start_idx, len(stored))):
+            t = stored[idx]
+            entry_ex = entry_execs.get(idx)
+            exit_ex = exit_execs.get(idx)
+            ft_r_val = t.get('r_multiple', 0)
+
+            entry_slip = entry_ex.get('slippage_r', 0) if entry_ex else None
+            exit_slip = exit_ex.get('slippage_r', 0) if exit_ex else None
+            total_slip = (entry_slip or 0) + (exit_slip or 0)
+            live_r_val = ft_r_val - total_slip if idx in matched_indices else None
+
+            entry_time_str = t.get('entry_time', '')[:16].replace('T', ' ')
+            exit_time_str = t.get('exit_time', '')[:16].replace('T', ' ')
+
+            row = {
+                "Trade #": trade_num + 1,
+                "Entry": entry_time_str,
+                "Exit": exit_time_str,
+                "FT R": round(ft_r_val, 3),
+                "Live R": round(live_r_val, 3) if live_r_val is not None else "\u2014",
+                "Delta R": round(ft_r_val - live_r_val, 3) if live_r_val is not None else "\u2014",
+                "Entry Slip": f"{entry_slip:+.4f}" if entry_slip is not None else "\u2014",
+                "Exit Slip": f"{exit_slip:+.4f}" if exit_slip is not None else "\u2014",
+                "Webhook": "\u2705" if (entry_ex or exit_ex) and (entry_ex or {}).get('webhook_delivered', False) else ("\u274c" if idx in matched_indices else "\u2014"),
+            }
+            tbt_rows.append(row)
+
+        if tbt_rows:
+            tbt_df = pd.DataFrame(tbt_rows)
+            st.dataframe(tbt_df, use_container_width=True, hide_index=True)
+            coverage = len(matched_indices)
+            st.caption(f"{coverage} of {len(ft_trades)} forward test trades had matching alerts ({coverage / len(ft_trades) * 100:.0f}% coverage)" if ft_trades else "")
+        else:
+            st.info("No forward test trades to compare.")
+
+    # ── Section C: Discrepancy Detail ──
+    if discrepancies:
+        with st.expander(f"Discrepancies ({len(discrepancies)})", expanded=False):
+            missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
+            phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
+
+            if missed:
+                st.markdown("**Missed Alerts** (forward test trade with no matching alert)")
+                missed_data = []
+                for d in missed:
+                    missed_data.append({
+                        "Trade #": d.get('trade_index', '?'),
+                        "Entry Time": d.get('trade_entry_time', '')[:16].replace('T', ' '),
+                        "Expected Trigger": d.get('expected_trigger', '\u2014'),
+                        "Status": "No alert fired",
+                    })
+                st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+
+            if phantom:
+                st.markdown("**Phantom Alerts** (alert fired with no matching forward test trade)")
+                phantom_data = []
+                for d in phantom:
+                    phantom_data.append({
+                        "Alert ID": d.get('alert_id', '?'),
+                        "Timestamp": d.get('alert_timestamp', '')[:16].replace('T', ' '),
+                        "Trigger": d.get('trigger', '\u2014'),
+                        "Status": "No matching trade",
+                    })
+                st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
 
 
 def render_strategy_alerts_tab(strat: dict):
@@ -6695,17 +6986,21 @@ def render_backtest_trade_table(trades: pd.DataFrame):
     display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
     display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
     display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+    has_exit_reason = 'exit_reason' in display.columns
+    cols = ['entry', 'exit', 'exit_reason', 'R', 'result'] if has_exit_reason else ['entry', 'exit', 'R', 'result']
+    col_config = {
+        'entry': 'Entry Time',
+        'exit': 'Exit Time',
+        'R': 'R-Multiple',
+        'result': 'Result',
+    }
+    if has_exit_reason:
+        col_config['exit_reason'] = 'Exit Reason'
     st.dataframe(
-        display[['entry', 'exit', 'exit_reason', 'R', 'result']],
+        display[cols],
         use_container_width=True,
         hide_index=True,
-        column_config={
-            'entry': 'Entry Time',
-            'exit': 'Exit Time',
-            'exit_reason': 'Exit Reason',
-            'R': 'R-Multiple',
-            'result': 'Result',
-        }
+        column_config=col_config,
     )
 
 
@@ -6900,15 +7195,19 @@ def render_split_trade_history(backtest_trades: pd.DataFrame, forward_trades: pd
         display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
         display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
         display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
-        return display[['entry', 'exit', 'exit_reason', 'R', 'result']]
+        has_exit_reason = 'exit_reason' in display.columns
+        cols = ['entry', 'exit', 'exit_reason', 'R', 'result'] if has_exit_reason else ['entry', 'exit', 'R', 'result']
+        return display[cols]
 
     trade_col_config = {
         'entry': 'Entry Time',
         'exit': 'Exit Time',
-        'exit_reason': 'Exit Reason',
         'R': 'R-Multiple',
         'result': 'Result',
     }
+    if len(forward_trades) > 0 and 'exit_reason' in forward_trades.columns or \
+       len(backtest_trades) > 0 and 'exit_reason' in backtest_trades.columns:
+        trade_col_config['exit_reason'] = 'Exit Reason'
 
     with st.expander(f"Forward Test Trades ({len(forward_trades)})", expanded=True):
         if len(forward_trades) > 0:
@@ -6965,6 +7264,7 @@ def load_strategy_into_builder(strat: dict):
         'symbol': strat['symbol'],
         'direction': strat['direction'],
         'timeframe': strat.get('timeframe', '1Min'),
+        'trading_session': strat.get('trading_session', 'RTH'),
         'entry_trigger': strat.get('entry_trigger'),
         'entry_trigger_confluence_id': strat.get('entry_trigger_confluence_id', ''),
         # New multi-exit format
@@ -8142,13 +8442,36 @@ def _render_monitor_status_bar(status: dict, config: dict):
     col_status, col_info, col_action = st.columns([2, 4, 2])
 
     with col_status:
-        if is_running:
-            st.success("Monitor: Running")
+        streaming = status.get('streaming_connected', False)
+        # Also check engine singleton (streaming_connected only updates after WS connects)
+        _engine_running = False
+        _engine_info = {}
+        try:
+            from realtime_engine import engine_status as _rt_stat
+            _engine_info = _rt_stat()
+            _engine_running = _engine_info.get('running', False)
+        except Exception:
+            pass
+
+        if streaming or _engine_info.get('connected', False):
+            st.success("Engine: Streaming")
+        elif _engine_running:
+            st.warning("Engine: Connecting...")
+        elif is_running:
+            st.success("Monitor: Polling")
         else:
             st.error("Monitor: Stopped")
 
     with col_info:
-        if is_running:
+        if _engine_running:
+            sym_count = len(_engine_info.get('symbols', []))
+            ticks = _engine_info.get('tick_count', 0)
+            syms = ", ".join(_engine_info.get('symbols', []))
+            info_parts = [f"Symbols: {syms or 'none'}", f"Ticks: {ticks:,}"]
+            if _engine_info.get('started_at'):
+                info_parts.append(f"Started: {_engine_info['started_at'][:19]}")
+            st.caption(" | ".join(info_parts))
+        elif is_running:
             last_poll = status.get('last_poll', 'Never')
             strats = status.get('strategies_monitored', 0)
             duration = status.get('last_poll_duration_ms')
@@ -8160,15 +8483,23 @@ def _render_monitor_status_bar(status: dict, config: dict):
             errors = status.get('errors', [])
             if errors:
                 st.warning(f"{len(errors)} recent error(s). Latest: {errors[-1].get('error', '?')}")
-        else:
+        elif not _engine_running:
             if not config.get('global', {}).get('enabled', False):
                 st.caption("Enable alerts in Global Settings to start the monitor.")
             else:
                 st.caption("Monitor is not running. Click Start to begin polling.")
 
     with col_action:
-        if is_running:
+        if is_running or _engine_running or status.get('streaming_connected', False):
             if st.button("Stop Monitor", type="secondary", use_container_width=True):
+                # Stop streaming engine if active
+                try:
+                    from realtime_engine import stop_engine, engine_status as rt_status
+                    if rt_status().get('running'):
+                        stop_engine()
+                except Exception:
+                    pass
+                # Stop poller subprocess
                 pid = status.get('pid')
                 if pid:
                     try:
@@ -8176,23 +8507,35 @@ def _render_monitor_status_bar(status: dict, config: dict):
                     except (OSError, ProcessLookupError):
                         pass
                 status['running'] = False
+                status['streaming_connected'] = False
                 save_monitor_status(status)
                 st.rerun()
         else:
             can_start = config.get('global', {}).get('enabled', False)
             if st.button("Start Monitor", type="primary", disabled=not can_start,
                          use_container_width=True):
-                # Launch alert_monitor.py as a background process
-                monitor_script = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "alert_monitor.py"
-                )
-                subprocess.Popen(
-                    ["python", monitor_script],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                st.toast("Monitor starting...")
+                if st.session_state.get('realtime_engine_enabled', False):
+                    # Start the streaming engine instead of the poller
+                    try:
+                        from realtime_engine import start_engine
+                        from alert_monitor import get_monitored_strategies
+                        strategies = get_monitored_strategies(config)
+                        start_engine(strategies, config)
+                        st.toast("Streaming engine starting...")
+                    except Exception as e:
+                        st.error(f"Failed to start streaming engine: {e}")
+                else:
+                    # Launch alert_monitor.py as a background process
+                    monitor_script = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "alert_monitor.py"
+                    )
+                    subprocess.Popen(
+                        ["python", monitor_script],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    st.toast("Monitor starting...")
                 import time
                 time.sleep(1)  # brief delay for status file to be written
                 st.rerun()
@@ -9278,7 +9621,18 @@ def render_settings():
                                     help="Enable WebSocket streaming for intra-bar [I] triggers")
             st.session_state['realtime_engine_enabled'] = _rt_enabled
             if _rt_enabled:
-                st.caption("Real-time engine will stream live data for active [I]-trigger strategies.")
+                try:
+                    from realtime_engine import engine_status as rt_status
+                    es = rt_status()
+                    if es.get('running'):
+                        sym_count = len(es.get('symbols', []))
+                        ticks = es.get('tick_count', 0)
+                        mode = "Connected" if es.get('connected') else "Reconnecting"
+                        st.success(f"Streaming: {mode} | {sym_count} symbols | {ticks:,} ticks")
+                    else:
+                        st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+                except Exception:
+                    st.caption("Engine will start when you click Start Monitor on the Alerts page.")
         else:
             st.session_state['realtime_engine_enabled'] = False
             st.caption("Real-time engine requires SIP data feed.")

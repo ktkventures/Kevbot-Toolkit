@@ -28,7 +28,7 @@
       "base_template": "macd_line",
       "version": "Default",
       "description": "MACD Line vs Signal with 12/26/9 periods",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "fast_period": 12,
@@ -49,7 +49,7 @@
       "base_template": "macd_histogram",
       "version": "Default",
       "description": "MACD Histogram momentum with 12/26/9 periods",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "fast_period": 12,
@@ -70,7 +70,7 @@
       "base_template": "vwap",
       "version": "Default",
       "description": "VWAP with 1\u03c3/2\u03c3 standard deviation bands (7-zone system)",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "sd1_mult": 1.0,
@@ -91,7 +91,7 @@
       "base_template": "rvol",
       "version": "Default",
       "description": "Relative volume with 20-period SMA baseline",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "sma_period": 20,
@@ -113,7 +113,7 @@
       "base_template": "utbot",
       "version": "Default",
       "description": "UT Bot with ATR period 10, multiplier 1.0",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "atr_period": 10,
@@ -134,7 +134,7 @@
       "base_template": "bar_count",
       "version": "Default",
       "description": "Exit after 4 candles if no other exit triggers fire",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "candle_count": 4

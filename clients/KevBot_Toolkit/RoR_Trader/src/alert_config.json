@@ -5,51 +5,24 @@
     "enabled": true
   },
   "strategies": {
-    "1": {
+    "18": {
       "alerts_enabled": true,
       "alert_on_entry": true,
       "alert_on_exit": true
     },
-    "2": {
+    "19": {
       "alerts_enabled": true,
       "alert_on_entry": true,
       "alert_on_exit": true
     },
-    "3": {
-      "alerts_enabled": true,
-      "alert_on_entry": true,
-      "alert_on_exit": true
-    },
-    "4": {
+    "20": {
       "alerts_enabled": true,
       "alert_on_entry": true,
       "alert_on_exit": true
     }
   },
   "portfolios": {
-    "1": {
-      "portfolio_id": 1,
-      "alerts_enabled": false,
-      "alert_on_signal": true,
-      "alert_on_compliance_breach": true,
-      "webhooks": [
-        {
-          "name": "New Webhook test",
-          "url": "https://webhook.site/80f3c796-5c90-4851-add7-68808f7a0532",
-          "enabled": true,
-          "events": {
-            "entry_long": true,
-            "entry_short": true,
-            "exit_long": true,
-            "exit_short": true,
-            "compliance_breach": true
-          },
-          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
-          "id": "wh_ff0033"
-        }
-      ]
-    },
-    "5": {
+    "6": {
       "alerts_enabled": true,
       "alert_on_signal": true,
       "alert_on_compliance_breach": true,
@@ -70,14 +43,14 @@
         }
       ]
     },
-    "4": {
-      "alerts_enabled": false,
+    "7": {
+      "alerts_enabled": true,
       "alert_on_signal": true,
       "alert_on_compliance_breach": true,
       "webhooks": [
         {
-          "name": "New Webhook Yo",
-          "url": "https://webhook.site/64ecac06-d6a0-4d17-afc0-11a72e104ec1",
+          "name": "Demo Webhook",
+          "url": "https://webhook.site/demo-standard",
           "enabled": true,
           "events": {
             "entry_long": true,
@@ -86,8 +59,29 @@
             "exit_short": true,
             "compliance_breach": true
           },
-          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
-          "id": "wh_9d0b5b"
+          "payload_template": "{\"symbol\": \"{{symbol}}\", \"action\": \"{{order_action}}\", \"quantity\": {{quantity}}}",
+          "id": "wh_demo01"
+        }
+      ]
+    },
+    "8": {
+      "alerts_enabled": true,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "Demo Webhook AAPL",
+          "url": "https://webhook.site/demo-webhook",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": true,
+            "exit_long": true,
+            "exit_short": true,
+            "compliance_breach": true
+          },
+          "payload_template": "{\"symbol\": \"{{symbol}}\", \"action\": \"{{order_action}}\", \"quantity\": {{quantity}}}",
+          "id": "wh_demo02"
         }
       ]
     }

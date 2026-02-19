@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.23
-**Date:** February 17, 2026
+**Version:** 0.28
+**Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 16 Complete — Phases 11–14 implemented; Alpaca SIP upgrade live; Phase 16 (AI-Assisted Confluence Pack Builder) fully implemented with 16A, 16B, 16C complete
+**Status:** Phase 16 Complete — Phases 11–14C implemented; Alpaca SIP upgrade live; Phase 16 (AI-Assisted Confluence Pack Builder) fully implemented with 16A, 16B, 16C complete; Phase 13 Alert Analysis enhancements complete; Phase 14B (Unified Streaming Alert Engine) implemented; Phase 14C (Trading Session Input) implemented
 
 ---
 
@@ -1105,8 +1105,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 - **Dynamic bar count** — VWAP requires a full trading day of data (390 bars on 1-min). The old hardcoded 200 bars produced inaccurate VWAP values for intraday strategies. `compute_signal_detection_bars()` ensures enough data for both indicator warmup and VWAP accuracy.
 
 **Future Phases (from this discussion):**
-- Phase 14 (future): WebSocket streaming for [I] (interpretation) triggers — real-time price feeds for sub-candle signal detection
-- Future: Sub-minute candles — 10-second and 30-second bars for faster signal response
+- Phase 14B: Unified Streaming Alert Engine — WebSocket streaming replaces polling for both `[I]` and `[C]` triggers; sub-millisecond alert latency; sub-minute candle support (10s, 30s); polling retained as fallback only
 
 ### Phase 10C: Incremental Data Refresh ✓
 *"Update Data" button with incremental refresh — only processes new forward test data, not historical trades.*
@@ -1180,12 +1179,16 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 3. **Live/triggered** — actual alert executions, reflects real-world timing, slippage, and missed signals (highest confidence)
 
 - [x] Alert execution correlation — match fired alerts (from `alerts.json`) to forward test trades by symbol, signal type, and timestamp proximity; store matched execution data (alert trigger price, alert fire time) alongside theoretical trade data
-- [x] Three-color equity curve — backtest segment, forward test segment, and live/triggered segment each rendered in distinct colors on strategy detail and strategy card mini equity curves; transition points visible at a glance
+- [x] Three-color equity curve — backtest segment (blue), forward test segment (orange), and live/triggered segment (green) each rendered in distinct colors on both strategy detail full-size equity curves and strategy card mini equity curves; transition points visible at a glance
 - [x] Strategy card caption enhancement — pipe-delimited status line shows backtest duration, forward test duration, and monitored duration with color-coded text matching equity curve segment colors (e.g., `SPY LONG | BT 45d | Fwd 14d | Live 5d`)
 - [x] Discrepancy detection — identify cases where forward test shows a trade but no corresponding alert fired (potential alert/webhook issue), and cases where an alert fired but no forward test trade exists; surface discrepancies as annotations on equity curve and as a count on strategy cards
 - [x] Alert tracking mode — enable alert execution tracking per strategy independent of portfolio webhook allocation; allows users to validate alert behavior and build confidence before committing to a live portfolio
 - [x] Live segment uses actual alert trigger prices rather than theoretical bar prices — captures real-world slippage between theoretical entry/exit and actual alert fire time
 - [x] Strategy detail page — dedicated "Live vs. Forward" comparison tab showing side-by-side metrics: theoretical forward test KPIs vs. actual live execution KPIs, with delta highlighting
+- [x] Alert Analysis tab — dedicated tab on strategy detail page (appears when alert tracking enabled with live executions): summary metrics table (FT vs Live KPIs with delta indicators, avg slippage, webhook success rate, missed/phantom counts), trade-by-trade comparison table (per-trade entry/exit slippage, adjusted R, webhook status, coverage percentage), and discrepancy detail (missed alerts + phantom alerts breakdown)
+- [x] Alert tracking toggle on strategy cards — compact toggle on each forward-testing strategy card for enabling/disabling alert tracking directly from the list view, with persistence and live data cleanup on disable
+- [x] Trade history graceful degradation — `exit_reason` column made optional in trade tables; stored_trades (minimal 4-field format) render without crash on both backtest-only and forward test detail views
+- [x] Timezone-safe trade boundary splitting — `split_trades_at_boundary()` handles all timezone mismatch combinations (aware/naive, different timezones) via normalize-before-compare pattern
 
 ### Design Decisions (Phase 13 — Live Alerts Validation)
 - **Three-tier confidence model** — Backtest is retrospective curve-fitting. Forward test proves the strategy works on unseen data but still uses theoretical bar prices. Live alert data is the closest proxy to actual trading — it captures webhook delivery timing, missed signals, and price differences between bar close and alert fire time. Visualizing all three tiers on one equity curve lets users see exactly where theory diverges from reality.
@@ -1193,7 +1196,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - **Alert tracking separate from portfolio webhooks** — Users should be able to track alert executions for confidence-building without routing them to a broker. This is essentially paper trading validation — "would my alerts have fired correctly?" — without the commitment of a live portfolio.
 - **Override vs. additive** — When live data exists for a period, it replaces the forward test data for that period on the equity curve (since live is higher fidelity). Periods without live data fall back to forward test. Periods before forward test start show backtest data.
 
-### Phase 14: Live Portfolio Management — 14A COMPLETE (Feb 14, 2026); 14B data infrastructure COMPLETE (Feb 17, 2026)
+### Phase 14: Live Portfolio Management — 14A COMPLETE (Feb 14, 2026); 14B COMPLETE (Feb 18, 2026); 14C COMPLETE (Feb 19, 2026)
 *Active trading account management — bridge between backtesting and real-world trading.*
 
 - [x] Account Management tab on portfolio detail page — separate from backtest/analysis tabs
@@ -1207,15 +1210,70 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] **Actual data source tracking** — `get_data_source()` now reports what was *actually* used (e.g., "Alpaca SIP" or "Mock Data") rather than what was configured, preventing silent mock-data fallback from going unnoticed
 - [x] **EMA warmup fix** — All preview charts load 30 days of data (~11,700 RTH bars) for indicator warmup, then trim to last 3 days for display. EMA 200 now converges properly, matching TradingView
 - [x] **Connections settings subpage** — Alpaca API key status display, data feed selector (IEX/SIP), real-time engine toggle
-- [ ] Intra-bar real-time alert engine — WebSocket streaming via Alpaca for `[I]` triggers:
-  - Subscribe to real-time trades/quotes for active strategy symbols
-  - Build partial OHLCV bars from tick data
-  - Check price-level trigger conditions against live ticks (e.g., price crossing UT Bot trail)
-  - Fire alerts the moment condition is met, not at bar close
-  - `[C]` triggers continue using the existing bar-close polling model
-  - Mirrors TradingView's "once per bar" (intra-bar) vs. "once per bar close" alert modes
-  - SIP real-time feed now available (paid plan active)
-  - The `[C]` / `[I]` execution type property added in Phase 8 determines which alert engine each trigger uses
+- [x] **Unified Streaming Alert Engine** — Replace polling-based alert monitor with WebSocket-first architecture. Single Alpaca SIP stream handles both `[I]` and `[C]` triggers:
+  - [x] `UnifiedStreamingEngine` — lifecycle manager with singleton API (`start_engine`, `stop_engine`, `engine_status`). Spawns daemon thread with asyncio WebSocket loop, `ThreadPoolExecutor(4)` for non-blocking webhook delivery
+  - [x] `BarBuilder` — clock-aligned OHLCV bar aggregation from ticks. `_align_to_period()` snaps timestamps to bar boundaries (e.g., 09:31:23 → 09:31:00 for 60s bars). Maintains 500-bar rolling DataFrame per (symbol, timeframe) with warmup data from `load_latest_bars()`
+  - [x] `SymbolHub` — per-symbol tick dispatcher managing multiple `BarBuilder` instances (one per timeframe). On bar close, runs full `detect_signals()` pipeline (indicators → interpreters → triggers) then enriches + saves + delivers alerts via callback
+  - [x] `AlertCooldown` — deduplication keyed by `"strategy_id:signal_type"` with configurable cooldown window (default: bar duration)
+  - [x] `TriggerLevelCache` — stub for future `[I]` intra-bar triggers. All current triggers are `bar_close`; cache will be populated when UT Bot / VWAP triggers gain `intra_bar` execution type
+  - [x] **Polling fallback** — `alert_monitor.py` checks `streaming_connected` flag in `monitor_status.json`; when True, poller sleeps (5s loop) instead of polling. Engine sets flag on connect/disconnect
+  - [x] **Exponential backoff reconnection** — 5s → 10s → 20s → 40s → 60s cap on WebSocket disconnect; resets to 5s on successful reconnect
+  - [x] **Signal handler guard** — `alert_monitor.py` `signal.signal()` calls wrapped in `if __name__ == "__main__"` to allow safe import from non-main threads (Streamlit sessions, daemon threads)
+  - [x] **Sub-minute timeframe support** — `10Sec` and `30Sec` added to `TIMEFRAME_SECONDS` (alert_monitor, realtime_engine) and `BARS_PER_DAY` (data_loader). UI selection deferred
+  - [x] **App integration** — Start Monitor button routes to streaming engine when RT Engine toggle is enabled; Stop button stops both engine and poller subprocess; status bar shows "Engine: Streaming" / "Monitor: Polling" / "Monitor: Stopped"; Settings page shows live engine stats (connection status, symbol count, tick count)
+  - The `[C]` / `[I]` execution type property on `TriggerDefinition` determines evaluation path (every tick vs. bar close)
+
+### Design Decisions (Phase 14B — Unified Streaming Alert Engine)
+- **Streaming-first over polling-first** — The original design used bar-close polling for `[C]` triggers and added WebSocket streaming only for `[I]` triggers. The unified approach uses WebSocket streaming as the primary path for *both* trigger types. Rationale: (1) if you're already receiving ticks for `[I]` evaluation, you have all the data needed to build bars locally — polling the REST API for the same data is redundant; (2) local bar completion detection is milliseconds vs. 4-6 seconds for API poll + compute; (3) one data source is simpler than two parallel systems.
+- **Local bar builder over Alpaca bar API** — Building bars from ticks enables sub-minute timeframes (10s, 30s) that Alpaca's REST API doesn't serve. It also eliminates the 3-second "finalization buffer" the poller needed — the bar is complete the instant a tick arrives in the next period. For standard timeframes (1m, 5m), locally-built bars produce identical OHLCV to Alpaca's server-side aggregation since both use the same tick stream.
+- **Pre-computed trigger levels for `[I]` evaluation** — `[I]` trigger conditions (e.g., "price crosses above UT Bot trailing stop") depend on indicator values computed from completed bars. The trigger *level* is computed once at bar close, then held constant until the next bar closes. Each incoming tick only needs a float comparison against this cached level — no indicator recomputation. This makes per-tick evaluation O(1) regardless of indicator complexity.
+- **Incremental indicator pipeline** — On bar close, the new bar is appended to a rolling history DataFrame and indicators are recomputed for the latest bar only. For most indicators (EMA, ATR, MACD), the rolling nature means only the most recent value depends on the new bar. This is bounded by the number of unique (symbol, timeframe) pairs, not the number of strategies — 50 strategies on SPY 1Min share one indicator computation.
+- **Polling as fallback, not co-primary** — `alert_monitor.py` is retained as a degraded-mode fallback when the WebSocket disconnects. The engine detects disconnection, switches to polling temporarily, and attempts reconnection with exponential backoff. This ensures alerts continue (with higher latency) during network issues rather than going silent.
+- **Alert cooldown for `[I]` triggers** — Without deduplication, an `[I]` trigger could fire hundreds of times per second as price oscillates around the trigger level. A configurable cooldown (default: once per bar period) prevents duplicate alerts while still capturing the first crossing.
+- **Sub-minute candles for HFT use cases** — 10-second and 30-second bars are built from the same tick stream as standard bars. The bar builder maintains multiple timeframe aggregators per symbol. This is prerequisite for high-frequency strategies where a 5-15 second alert delay on 1-minute candles is unacceptable.
+- **Scalability by symbol deduplication** — The expensive operations (tick processing, bar building, indicator computation) are per-symbol, not per-strategy. 1,000 strategies across 50 symbols = 50 bar builders and 50 indicator pipelines. Strategy evaluation (trigger level comparison) is trivially cheap. This architecture scales linearly with symbol count, not strategy count — critical for future multi-tenant deployment.
+
+### Phase 14C: Trading Session Input — COMPLETE (Feb 19, 2026)
+*"Trading Session" added as a first-class strategy input controlling when a strategy is active, how data is loaded, and when the streaming engine processes ticks.*
+
+**Problem Statement (resolved):**
+- All strategies previously assumed RTH — no way to create pre-market, after-hours, or extended-hours strategies
+- Indicators like VWAP reset at session open — the definition of "session open" changes depending on the trading session
+- The streaming engine and data loader needed to know which sessions are active to subscribe to the correct data windows
+
+**Trading Session Types:**
+- **RTH** (Regular Trading Hours, 9:30 AM – 4:00 PM ET) — default for all existing and new strategies
+- **Pre-Market** (4:00 AM – 9:30 AM ET) — strategies that trade the pre-market session only
+- **After Hours** (4:00 PM – 8:00 PM ET) — strategies that trade the after-hours session only
+- **Extended Hours** (4:00 AM – 8:00 PM ET) — strategies that span the full extended session (pre-market + RTH + after hours)
+
+**Strategy Builder Integration:**
+- [x] Trading Session selector — primary input in Strategy Builder alongside Symbol, Direction, Timeframe. Selectbox with four session types, defaulting to RTH (`app.py:3262`)
+- [x] Strategy schema gains `trading_session` field. Existing strategies use `.get('trading_session', 'RTH')` fallback — no migration needed
+- [x] Session type displayed on strategy cards and detail page headers (`app.py:5316`)
+
+**Data Pipeline Impact:**
+- [x] `data_loader.py` — `SESSION_HOURS` dict defines all 4 session windows; `_filter_session()` filters bars to the strategy's session; all `load_market_data()` paths accept `session` parameter
+- [x] `estimate_bar_count()` and `days_from_bar_count()` are session-aware (`data_loader.py:295-312`)
+- [x] Backtest engine — trade entry/exit windows constrained to the strategy's trading session via session-filtered data input
+
+**Streaming Engine Impact:**
+- [x] Session gate in `realtime_engine.py:316-318` — `_is_in_session()` prevents signal evaluation outside strategy's session window
+- [x] Engine subscribes to ticks for the union of all active strategies' sessions (`alert_monitor.py:237-244`)
+- [x] `BarBuilder` bar boundaries clock-aligned; bars only created when ticks arrive during active session
+- [x] Ticks outside a strategy's session window ignored for that strategy but processed for others with overlapping sessions
+
+**Confluence System:**
+- [x] Session filter interpreter in `general_packs.py:403-419` — "Filter trades by market session" confluence condition evaluates `IN_SESSION` / `OUT_OF_SESSION` per bar
+
+**Known Limitations:**
+- VWAP does not yet reset at session boundaries — cumulative across loaded bars. Low impact for RTH strategies; affects correctness for extended-hours strategies using VWAP
+
+### Design Decisions (Phase 14C — Trading Session Input)
+- **First-class input over confluence condition** — Trading session fundamentally shapes the data pipeline: which bars exist, when indicators reset, when the engine listens. A confluence condition is evaluated *after* data is loaded and indicators are computed — by then it's too late. Session must be known before any data loading occurs, making it a peer of Symbol, Direction, and Timeframe.
+- **Four discrete sessions over custom time ranges** — Custom time ranges (e.g., "10:00 AM – 2:00 PM") add complexity with minimal benefit. The four standard sessions cover 99% of retail trading use cases and align with how brokers, exchanges, and data providers categorize market hours. Custom ranges can be added later if needed.
+- **RTH as default** — The vast majority of retail strategies operate during regular trading hours. Defaulting to RTH means existing strategies require no migration and new users get sensible behavior without configuration.
+- **Union subscription for streaming** — The engine subscribes to the broadest window needed across all active strategies. This is simpler than managing per-strategy subscriptions and avoids reconnection overhead when strategies with different sessions are started/stopped. The per-strategy filtering happens at evaluation time, not subscription time.
 
 ### Phase 15: Settings Page — COMPLETED (merged into Phase 10, Feb 11, 2026; Connections added Feb 17, 2026)
 *Implemented as part of the sidebar-to-inline refactor in Phase 10. See Phase 10 "Settings Page" section for details.*
@@ -1236,6 +1294,30 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] **Ledger record deletion** — Each ledger row now has a trash-can delete button with two-step confirmation (Yes/No). Uses existing `remove_ledger_entry()` from portfolios.py.
 - [x] **Confluence pack filtering scoped to builder** — Disabled confluence packs now only affect the Strategy Builder evaluation/drill-down tabs. Existing strategies, portfolios, strategy detail pages, alert monitor, and webhook processing use ALL interpreters and GP columns regardless of enabled state. Previously, disabling a pack could cause "No trades generated" on portfolio pages.
 - [x] **Strategy card BT days caption** — BT days now shows on strategy cards using `data_days` as fallback when `lookback_start_date` is not set. Caption format: `SPY LONG | BT 30d | Fwd 27d | Live 11d`.
+
+### QA Notes — Alert Analysis & Demo Strategies (Feb 18, 2026)
+*Demo strategies created for UI validation; bugs found and fixed.*
+
+- [x] **Demo strategies created** — Strategy 19 (SPY LONG - EMA Cross Demo, standard origin, 299 trades, 118 FT trades, 104 live executions, 11 discrepancies) and Strategy 20 (AAPL LONG - Webhook Inbound Demo, webhook origin, 121 trades, 48 FT trades, 44 live executions, 4 discrepancies). Portfolios 7 and 8 with webhook configurations. 153 alert records in alerts.json.
+- [x] **KeyError `exit_reason` crash** — `format_trade_table()` and `render_backtest_trade_table()` expected `exit_reason` column, but `stored_trades` only store 4 fields (entry_time, exit_time, r_multiple, win). Fixed: column presence check before including in display. Affected both webhook and standard strategies using stored_trades path.
+- [x] **Timezone mismatch in `split_trades_at_boundary()`** — Hardened to handle all 4 timezone combinations: trades tz-aware + boundary naive (localize), trades tz-aware + boundary aware (convert), trades naive + boundary aware (strip), both naive (no-op). Previously only handled the first case.
+- [x] **Mini equity curve 3-color support** — `render_mini_equity_curve_from_data()` now accepts optional `strat` parameter. When alert tracking is enabled with live_executions, computes green overlay trace from slippage-adjusted matched trades. Previously only rendered 2 colors (blue BT, orange FT).
+- [x] **Alert tracking toggle on strategy cards** — `st.toggle("Alert Tracking")` added to each forward-testing strategy card. Mirrors the detail page toggle behavior: persists via `update_strategy()`, clears live_executions and discrepancies on disable.
+- [x] **Alert Analysis tab** — New `render_alert_analysis_tab()` function (~120 lines). Conditionally appears as 8th tab in both `render_live_backtest()` and `render_forward_test_view()` when strategy has alert tracking + live executions. Three sections: summary metrics (FT vs Live KPIs with deltas), trade-by-trade comparison, discrepancy detail.
+
+### QA Notes — Phase 14B Streaming Engine (Feb 18, 2026)
+*Implementation complete. Live verification performed during RTH; after-hours tick issue identified and under investigation.*
+
+- [x] **Syntax check** — All 4 modified files (`realtime_engine.py`, `alert_monitor.py`, `data_loader.py`, `app.py`) pass `py_compile`
+- [x] **Module import** — `realtime_engine.py` imports cleanly, singleton API returns correct default status, all 5 classes instantiable
+- [x] **BarBuilder unit test** — Clock-aligned bar aggregation verified: 3 ticks in same period → 1 completed bar on next-period tick. OHLCV values correct (O=first, H=max, L=min, C=last, V=sum)
+- [x] **AlertCooldown unit test** — Cooldown suppression within window, firing after window, independent keys all verified
+- [x] **Signal handler guard** — `alert_monitor.py` importable from non-main threads after `if __name__ == "__main__"` guard on `signal.signal()` calls
+- [x] **Live streaming (market hours)** — Verified during RTH: WebSocket connects, ticks flow, bars build, pipeline runs on bar close. Working correctly during regular trading hours
+- [x] **Polling bypass** — With streaming engine connected, `alert_monitor.py` subprocess sleeps instead of polling (`streaming_connected` flag verified)
+- [x] **Disconnect/reconnect** — Engine detects disconnect → `streaming_connected` flips to False → poller resumes → engine reconnects with backoff. Verified
+- [~] **Stop lifecycle** — Basic stop flow works (engine stops, poller killed, UI reverts). Needs verification that `streaming_engine.log` records clean shutdown correctly
+- [x] **After-hours tick data** — After RTH ended, tick count initially dropped to zero. Root cause: stale app instance from prior session; restarting RoR Trader resolved the issue. After-hours ticks confirmed working via Alpaca SIP
 
 ### Phase 16: AI-Assisted Confluence Pack Builder — COMPLETE (Feb 17, 2026)
 *Standardize the process for adding new indicators, interpreters, and confluence packs to the platform. A guided UI collects user intent and generates a structured prompt that can be fed to any LLM (Claude, ChatGPT, Gemini, etc.). The LLM output is pasted back, validated, and hot-loaded into the system — no manual code wiring required.*
@@ -1309,6 +1391,46 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [ ] Scanner backtest — run trigger/confluence evaluation across historical screener results; requires architecture planning for data volume and performance
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
+
+### Phase 19: Multi-Timeframe Confluence
+*Evaluate confluence conditions across multiple timeframes — a single strategy can check higher-timeframe context (e.g., 15-min EMA trend) before entering on a lower timeframe (e.g., 1-min candles). One of the most common edges in professional trading.*
+
+**Problem Statement:**
+- Currently, all TF confluence conditions evaluate on the strategy's primary timeframe only. A 1-min strategy with Bollinger Bands as confluence only sees BB values on 1-min bars
+- Traders commonly use higher-timeframe context for confluence (e.g., "only take 1-min longs when 15-min EMA Stack is bullish")
+- TF conditions currently display without a timeframe prefix (e.g., "Bollinger Bands Default: Squeeze Mid"), which is ambiguous once multiple timeframes are in play
+
+**Timeframe Management Page:**
+- [ ] New "Timeframes" sub-page under Confluence Packs (alongside TF Confluence, General, Risk Management, User Packs, Pack Builder)
+- [ ] Enable/disable individual timeframes (10s, 30s, 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1H, 2H, 4H, 1D, 1W, 1M) — sub-minute timeframes require Phase 14B streaming engine
+- [ ] Enabled timeframes combine with enabled TF packs to produce a matrix of available conditions. E.g., 3 timeframes × 4 packs = 12 TF condition groups available in drill-down
+
+**Timeframe-Prefixed Conditions:**
+- [ ] TF confluence conditions display with timeframe prefix: `5m: Bollinger Bands Default: Squeeze Mid`, `15m: EMA Stack Default: SML`
+- [ ] Confluence records format: `{TF}:{GROUP_ID}_{STATE}` (e.g., `5m:BOLLINGER_BANDS_DEFAULT_SQUEEZE_MID`)
+- [ ] Strategy's primary timeframe is always enabled and shown without prefix for clarity (or with subtle formatting to distinguish it)
+
+**Data Pipeline:**
+- [ ] Strategy schema gains `timeframes: List[str]` — list of timeframes used by the strategy's confluence conditions (primary timeframe always included)
+- [ ] `prepare_data_with_indicators()` extended to load and compute indicators at multiple timeframes for the same symbol
+- [ ] Multi-timeframe data alignment — higher-timeframe values forward-filled to primary timeframe index for confluence evaluation (e.g., 15-min EMA value held constant across fifteen 1-min bars until next 15-min bar completes)
+- [ ] Backtest loads data at all required timeframes; Alpaca REST API supports all standard timeframes ≥ 1-min
+
+**Streaming Engine Integration (depends on Phase 14B):**
+- [ ] `SymbolHub` already supports multiple `BarBuilder` instances per symbol — MTF confluence registers additional timeframes on the hub for the strategy's confluence requirements
+- [ ] On higher-timeframe bar close, recompute indicators for that timeframe and update confluence state for all strategies using it
+- [ ] Sub-minute timeframes (10s, 30s) only available via streaming engine (no REST API support)
+
+**Strategy Builder UI:**
+- [ ] Drill-down TF Conditions tab shows conditions grouped by timeframe with timeframe headers
+- [ ] Optimizable Variables box shows timeframe prefix on selected conditions
+- [ ] Auto-Search can search across timeframe × condition combinations
+
+### Design Decisions (Phase 19 — Multi-Timeframe Confluence)
+- **Timeframe management page over per-strategy timeframe config** — A centralized page where users enable timeframes mirrors the existing pattern for confluence packs (enable/disable globally, use in any strategy). This avoids per-strategy timeframe UI complexity and keeps the drill-down experience consistent.
+- **Matrix approach (timeframes × packs)** — Rather than manually configuring "run BB on 5m" per strategy, the system generates all valid combinations from enabled timeframes and enabled packs. The drill-down then lets users pick the specific TF:condition pairs that improve their strategy. This is consistent with how entry/exit/stop/target drill-down already works.
+- **Forward-fill for multi-TF alignment** — A 15-min EMA value computed at 9:45:00 should apply to all 1-min bars from 9:45:00 to 9:59:59. Forward-filling the higher-TF series onto the primary-TF index is the standard approach (same as TradingView's `request.security()` for MTF indicators). The value updates when the higher-TF bar closes.
+- **After Phase 14B** — The streaming engine's `SymbolHub` with multiple `BarBuilder` instances per symbol is the natural foundation for real-time MTF evaluation. Building MTF confluence first would require the backtest-only pipeline now and streaming retrofit later — double integration work. Phase 14B's architecture was designed with this use case in mind (`SymbolHub` accommodates single-strategy-multiple-timeframes, not just multiple-strategy-different-timeframes).
 
 ---
 
