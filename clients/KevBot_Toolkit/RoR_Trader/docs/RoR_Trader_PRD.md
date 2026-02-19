@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.32
+**Version:** 0.33
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17B Complete — Interpreter & trigger chart overlays: "Show Conditions" toggle (SessionHighlighting background bands + AnchoredText state labels) and "Show Triggers" toggle (direction-colored arrow markers) on Confluence Analysis and Pack Builder Preview tabs; Phase 17A charting infrastructure complete; Phases 11–16 complete
+**Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, reference-indicators/ directory for user-provided scripts; Phases 17A–B charting/overlays complete; Phases 11–16 complete
 
 ---
 
@@ -1418,8 +1418,8 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Phase 17C: Pine Script Export**
 *Add a "Copy Pine Script" button to indicator preview/code tabs. Enables cross-referencing RoR Trader indicator behavior against TradingView by pasting the same indicator into both platforms.*
 
-- [ ] **Copy Pine Script button** — on preview tabs for indicators that have a Pine Script reference in `reference-indicators/`. One-click copy to clipboard
-- [ ] **Pack Builder Pine Script output** — when creating a new indicator via Pack Builder, optionally generate a Pine Script equivalent alongside the Python implementation. Lets users verify the indicator plots identically in TradingView
+- [x] **Copy Pine Script button** — on preview tabs for indicators that have a Pine Script reference in `reference-indicators/`. One-click copy to clipboard
+- [x] **Pack Builder Pine Script output** — when creating a new indicator via Pack Builder, optionally generate a Pine Script equivalent alongside the Python implementation. Lets users verify the indicator plots identically in TradingView
 - [ ] **Future: Composite Pine Script generator** — given a strategy's full confluence setup (multiple indicators + interpreters + triggers), generate a single TradingView study that reproduces the complete signal chain. Useful for visual validation of the entire strategy logic against TradingView charts. (Deferred — scoping TBD)
 
 **Phase 17D: Indicator Audit & Expansion**

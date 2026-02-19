@@ -10030,6 +10030,29 @@ TEMPLATE_FUNCTIONS = {
 }
 
 
+def _load_pine_script_for_template(template_name: str):
+    """Load Pine Script reference for a template, if available.
+
+    Checks user pack directory first, then reference-indicators/.
+    Returns the Pine Script content string, or None.
+    """
+    # User pack: user_packs/{slug}/reference.pine
+    pack = pack_registry.get_pack(template_name)
+    if pack and pack.pack_dir.exists():
+        pine_path = pack.pack_dir / "reference.pine"
+        if pine_path.exists():
+            return pine_path.read_text()
+
+    # Built-in reference: reference-indicators/{template_name}.pine
+    ref_dir = os.path.join(os.path.dirname(__file__), "..", "reference-indicators")
+    ref_path = os.path.join(ref_dir, f"{template_name}.pine")
+    if os.path.exists(ref_path):
+        with open(ref_path, "r") as f:
+            return f.read()
+
+    return None
+
+
 def render_code_tab(group: ConfluenceGroup):
     """Render the Code tab showing source code for indicator, interpreter, and trigger functions."""
 
@@ -10058,28 +10081,32 @@ def render_code_tab(group: ConfluenceGroup):
                 if fpath.exists():
                     with st.expander(label, expanded=True):
                         st.code(fpath.read_text(), language="python")
-            return
         else:
             st.info("User pack source files not found on disk.")
-            return
+    else:
+        # Built-in packs: use TEMPLATE_FUNCTIONS registry
+        funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
 
-    # Built-in packs: use TEMPLATE_FUNCTIONS registry
-    funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
+        if not funcs or all(len(v) == 0 for v in funcs.values()):
+            st.info(f"No source code available for template '{group.base_template}'.")
+        else:
+            for section_name, func_list in funcs.items():
+                if not func_list:
+                    continue
+                with st.expander(f"{section_name}", expanded=True):
+                    for func in func_list:
+                        try:
+                            source = inspect.getsource(func)
+                            st.code(source, language="python")
+                        except (OSError, TypeError):
+                            st.warning(f"Could not retrieve source for {func.__name__}")
 
-    if not funcs or all(len(v) == 0 for v in funcs.values()):
-        st.info(f"No source code available for template '{group.base_template}'.")
-        return
-
-    for section_name, func_list in funcs.items():
-        if not func_list:
-            continue
-        with st.expander(f"{section_name}", expanded=True):
-            for func in func_list:
-                try:
-                    source = inspect.getsource(func)
-                    st.code(source, language="python")
-                except (OSError, TypeError):
-                    st.warning(f"Could not retrieve source for {func.__name__}")
+    # Pine Script reference (available for both user packs and built-ins)
+    pine_content = _load_pine_script_for_template(group.base_template)
+    if pine_content:
+        with st.expander("Pine Script Reference", expanded=False):
+            st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+            st.code(pine_content, language="pine")
 
 
 def render_preview_tab(group: ConfluenceGroup):
@@ -10198,6 +10225,13 @@ def render_preview_tab(group: ConfluenceGroup):
     # --- Section 3: Trigger Events ---
     st.markdown("**Trigger Events**")
     _render_trigger_events_table(df, group, template)
+
+    # --- Section 4: Pine Script Reference (if available) ---
+    pine_content = _load_pine_script_for_template(group.base_template)
+    if pine_content:
+        with st.expander("Pine Script Reference", expanded=False):
+            st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+            st.code(pine_content, language="pine")
 
 
 def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
@@ -11464,10 +11498,13 @@ def render_pack_builder_page():
         st.subheader("Step 4: Review & Install")
 
         # Preview tabs
-        tabs = st.tabs([
+        tab_names = [
             "Overview", "Preview", "manifest.json",
             "indicator.py", "interpreter.py",
-        ])
+        ]
+        if parsed.get("pine_script_code"):
+            tab_names.append("reference.pine")
+        tabs = st.tabs(tab_names)
 
         with tabs[0]:
             mcol1, mcol2 = st.columns(2)
@@ -11509,6 +11546,11 @@ def render_pack_builder_page():
 
         with tabs[4]:
             st.code(parsed["interpreter_code"], language="python")
+
+        if parsed.get("pine_script_code"):
+            with tabs[5]:
+                st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+                st.code(parsed["pine_script_code"], language="pine")
 
         # Install button
         slug = manifest.get("slug", "unknown")

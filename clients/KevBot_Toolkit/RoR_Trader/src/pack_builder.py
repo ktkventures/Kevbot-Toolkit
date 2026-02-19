@@ -142,6 +142,10 @@ def generate_prompt(
         "triggers or combine them into the zone names (SQUEEZE_UPPER, etc.)\n"
         "14. Test your thresholds mentally against typical 1-minute intraday data "
         "— no single output state should dominate 90%+ of bars\n"
+        "15. ALSO generate a TradingView Pine Script v5 equivalent of the indicator. "
+        "Output it as a fourth code block fenced with ```pine. "
+        "The Pine Script should produce the same visual output as indicator.py "
+        "when loaded in TradingView. Include //@version=5 header and indicator() call.\n"
     )
 
     user_request = "\n".join(request_parts)
@@ -171,6 +175,7 @@ def parse_llm_response(response_text: str) -> Tuple[bool, Dict, List[str]]:
             "manifest": dict (parsed JSON),
             "indicator_code": str (Python source),
             "interpreter_code": str (Python source),
+            "pine_script_code": str or None (Pine Script source, optional),
         }
     """
     errors = []
@@ -178,6 +183,7 @@ def parse_llm_response(response_text: str) -> Tuple[bool, Dict, List[str]]:
         "manifest": None,
         "indicator_code": None,
         "interpreter_code": None,
+        "pine_script_code": None,
     }
 
     # Extract code blocks (fenced markdown or unfenced with comment headers)
@@ -193,6 +199,7 @@ def parse_llm_response(response_text: str) -> Tuple[bool, Dict, List[str]]:
     # Identify each block by content/language hints
     json_blocks = []
     python_blocks = []
+    pine_blocks = []
 
     for lang, content in code_blocks:
         content_stripped = content.strip()
@@ -200,9 +207,16 @@ def parse_llm_response(response_text: str) -> Tuple[bool, Dict, List[str]]:
         # Detect JSON blocks
         if lang == "json" or content_stripped.startswith("{"):
             json_blocks.append(content_stripped)
+        # Detect Pine Script blocks
+        elif lang == "pine" or lang == "pinescript" or content_stripped.startswith("//@version"):
+            pine_blocks.append(content_stripped)
         # Detect Python blocks
         elif lang == "python" or lang == "py" or "def " in content_stripped:
             python_blocks.append(content_stripped)
+
+    # Extract Pine Script (optional — not required for success)
+    if pine_blocks:
+        parsed["pine_script_code"] = pine_blocks[0]
 
     # Parse manifest (first JSON block)
     if not json_blocks:
@@ -540,6 +554,11 @@ def install_pack_from_parsed(parsed: Dict) -> Tuple[bool, str, List[str]]:
         # Write interpreter.py
         with open(pack_dir / "interpreter.py", "w") as f:
             f.write(parsed["interpreter_code"])
+
+        # Write reference.pine (optional)
+        if parsed.get("pine_script_code"):
+            with open(pack_dir / "reference.pine", "w") as f:
+                f.write(parsed["pine_script_code"])
 
         # Register the pack
         pack = pack_registry.load_single_pack(pack_dir)
