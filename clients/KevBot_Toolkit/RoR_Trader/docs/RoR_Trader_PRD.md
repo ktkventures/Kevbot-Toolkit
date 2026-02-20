@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.39
+**Version:** 0.40
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 18A COMPLETE — Multi-Timeframe Confluence: Timeframe management page, TF label utilities, sub-minute timeframes, enabled_timeframes settings. Phase 18B next. Phase 17D complete; Phases 17A–C, 11–16 complete
+**Status:** Phase 18B COMPLETE — Multi-Timeframe Confluence: Backtest pipeline resamples to secondary TFs, forward-fills interpreter states, MTF confluence records in drill-down and trade generation. Phase 18C next. Phases 18A, 17A–D, 11–16 complete
 
 ---
 
@@ -1464,27 +1464,25 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] Matrix summary display — shows N timeframes x M packs = N*M condition groups available
 - [x] Condition matrix preview table when multiple timeframes enabled
 
-**Phase 18B: Multi-TF Backtest Data Pipeline**
-- [ ] `prepare_data_with_indicators()` extended to accept + process secondary timeframes
-- [ ] `resample_to_timeframe()` utility — resample primary TF OHLCV to coarser timeframes using pandas
-- [ ] Run indicators + interpreters independently on each secondary TF's resampled DataFrame
-- [ ] Forward-fill interpreter STATE columns only (not raw indicators) to primary TF index with `{INTERP}__{tf_label}` column naming
-- [ ] `get_mtf_confluence_records()` helper — builds confluence records for primary + all secondary TFs
-- [ ] TF confluence conditions display with timeframe prefix: `5m: EMA Stack Default: SML`, `15m: MACD Line: M>S+`
-- [ ] Primary TF records keep `"1M"` prefix (backward-compatible). Secondary TF records use lowercase labels (`"5m"`, `"15m"`, etc.)
-- [ ] Strategy's required secondary TFs inferred from selected confluence conditions (no explicit schema field needed)
-- [ ] Multi-timeframe data alignment — higher-TF values forward-filled to primary TF index (standard TradingView `request.security()` pattern)
+**Phase 18B: Multi-TF Backtest Data Pipeline — COMPLETE (Feb 19, 2026)**
+- [x] `prepare_data_with_indicators()` extended with `secondary_tfs` parameter — resamples primary TF data to each secondary TF
+- [x] `resample_to_timeframe()` utility in `data_loader.py` — resamples OHLCV to coarser timeframes using pandas
+- [x] Indicators + interpreters run independently on each secondary TF's resampled DataFrame
+- [x] Forward-fills interpreter STATE columns only (not raw indicators) to primary TF index with `{INTERP}__{tf_label}` column naming
+- [x] `get_mtf_confluence_records()` helper in `interpreters.py` — builds confluence records for primary ("1M") + all secondary TFs (lowercase labels)
+- [x] `format_confluence_record()` shows timeframe prefix for non-primary TFs: `5m: EMA Stack (Default): SML`
+- [x] `generate_trades()` accepts `secondary_tf_map` parameter — uses MTF records for confluence filtering and trade tagging
+- [x] Strategy's required secondary TFs inferred from confluence conditions via `get_required_tfs_from_confluence()`
+- [x] All trade generation call sites wired: strategy builder, forward test, incremental trades, strategy detail, extended backtest, drill-down analysis (entry/exit triggers, exit combos, risk management)
+- [x] Drill-down groups conditions by timeframe with section headers when MTF data present
+- [x] `get_secondary_tf_map()` utility extracts TF map from `__`-suffixed column names
+- [x] `_get_secondary_tfs()` helper computes enabled secondary TFs (excludes primary TF and sub-minute streaming-only TFs)
 
 **Phase 18C: Streaming Engine MTF Integration**
 - [ ] `SymbolHub.start()` registers required secondary TFs from strategy confluence conditions
 - [ ] `SymbolHub._on_bar_close()` gathers secondary TF interpreter states from other BarBuilders
 - [ ] `detect_signals()` accepts `secondary_tf_dfs` parameter, runs pipeline on secondary TFs, builds MTF confluence records
 - [ ] Alert monitor polling fallback loads secondary TF data for strategies that need it
-
-**Strategy Builder UI (18B):**
-- [ ] Drill-down TF Conditions tab shows conditions grouped by timeframe with timeframe headers
-- [ ] Optimizable Variables box shows timeframe prefix on selected conditions
-- [ ] Auto-Search can search across timeframe × condition combinations
 
 ### Design Decisions (Phase 18 — Multi-Timeframe Confluence)
 - **Timeframe management page over per-strategy timeframe config** — A centralized page where users enable timeframes mirrors the existing pattern for confluence packs (enable/disable globally, use in any strategy). This avoids per-strategy timeframe UI complexity and keeps the drill-down experience consistent.

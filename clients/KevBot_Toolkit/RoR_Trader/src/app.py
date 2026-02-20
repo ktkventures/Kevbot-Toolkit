@@ -295,6 +295,20 @@ def _get_data_feed() -> str:
     return st.session_state.get('data_feed', 'sip')
 
 
+def _get_secondary_tfs(primary_tf: str) -> tuple:
+    """Return enabled secondary timeframes (excluding primary and sub-minute).
+
+    Sub-minute TFs are excluded because they cannot be resampled from REST data.
+    Returns a tuple for Streamlit cache hashability.
+    """
+    from data_loader import SUB_MINUTE_TIMEFRAMES
+    settings = load_settings()
+    enabled = set(settings.get("enabled_timeframes", ["1Min"]))
+    # Remove the primary TF and any sub-minute TFs (streaming-only)
+    secondary = enabled - {primary_tf} - SUB_MINUTE_TIMEFRAMES
+    return tuple(sorted(secondary))
+
+
 def get_enabled_gp_columns(df_columns) -> list:
     """Filter GP_ columns to only include those for currently enabled general packs.
 
@@ -360,10 +374,15 @@ def format_confluence_record(record: str, groups: list = None) -> str:
     # Find the first enabled group with this template
     for group in groups:
         if group.base_template == template_id:
+            # Show TF prefix for non-primary timeframes
+            if timeframe != "1M":
+                return f"{timeframe}: {group.name}: {state}"
             return f"{group.name}: {state}"
 
     # Fallback: just clean up the interpreter name
     interpreter_name = interpreter.replace("_", " ").title()
+    if timeframe != "1M":
+        return f"{timeframe}: {interpreter_name}: {state}"
     return f"{interpreter_name}: {state}"
 
 
@@ -501,7 +520,8 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
                                   start_date=None, end_date=None,
                                   timeframe: str = "1Min",
                                   data_feed: str = "sip",
-                                  session: str = "RTH"):
+                                  session: str = "RTH",
+                                  secondary_tfs: tuple = ()):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -516,9 +536,14 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         timeframe: Bar timeframe (e.g., "1Min", "5Min", "1Hour")
         data_feed: Alpaca data feed — "sip" or "iex" (also used as cache key)
         session: Trading session — "RTH", "Pre-Market", "After Hours", "Extended Hours"
+        secondary_tfs: Tuple of secondary timeframes to compute for MTF confluence
+            (e.g., ("5Min", "15Min")).  Use tuple for Streamlit cache hashability.
 
     Returns DataFrame ready for trade generation and analysis.
+    Includes forward-filled ``{INTERP}__{tf_label}`` columns for secondary TFs.
     """
+    from data_loader import resample_to_timeframe, get_tf_label
+
     # Load raw bars (Alpaca if configured, mock otherwise)
     df = load_market_data(symbol, days=days, seed=seed,
                           start_date=start_date, end_date=end_date,
@@ -549,7 +574,47 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         col_name = gpack.get_condition_column()
         df[col_name] = gp_module.evaluate_condition(df, gpack)
 
+    # ── Multi-Timeframe: resample + run pipeline on secondary TFs ──────
+    if secondary_tfs and len(df) > 0:
+        interp_keys = list(INTERPRETERS.keys())
+        for sec_tf in secondary_tfs:
+            try:
+                sec_df = resample_to_timeframe(df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+                if len(sec_df) == 0:
+                    continue
+                # Run same indicator/interpreter pipeline on resampled data
+                sec_df = run_all_indicators(sec_df)
+                for group in get_enabled_groups(load_confluence_groups()):
+                    sec_df = run_indicators_for_group(sec_df, group)
+                sec_df = run_all_interpreters(sec_df)
+
+                # Forward-fill interpreter STATE columns to primary TF index
+                tf_label = get_tf_label(sec_tf)
+                for interp_col in interp_keys:
+                    if interp_col in sec_df.columns:
+                        suffixed = f"{interp_col}__{tf_label}"
+                        df[suffixed] = sec_df[interp_col].reindex(df.index, method='ffill')
+            except Exception:
+                # Skip this secondary TF if resampling fails
+                pass
+
     return df
+
+
+def get_secondary_tf_map(df: pd.DataFrame) -> dict:
+    """Extract the secondary TF map from column names containing '__'.
+
+    Returns ``{tf_label: [suffixed_col_names]}`` suitable for passing to
+    ``get_mtf_confluence_records()`` or ``generate_trades(secondary_tf_map=...)``.
+    """
+    tf_map: dict = {}
+    for col in df.columns:
+        if "__" in col:
+            parts = col.rsplit("__", 1)
+            if len(parts) == 2:
+                tf_label = parts[1]
+                tf_map.setdefault(tf_label, []).append(col)
+    return tf_map
 
 
 def prepare_forward_test_data(strat: dict, data_days_override: int = None):
@@ -584,11 +649,17 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
 
     strat_timeframe = strat.get('timeframe', '1Min')
+    # Determine required secondary TFs from strategy's confluence conditions
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    required_tf_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in required_tf_labels))
+
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
         timeframe=strat_timeframe, data_feed=_get_data_feed(),
         session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs,
     )
 
     if len(df) == 0:
@@ -598,6 +669,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
     general_cols = [c for c in df.columns if c.startswith("GP_")]
+    sec_tf_map = get_secondary_tf_map(df)
 
     trades = generate_trades(
         df,
@@ -612,6 +684,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
+        secondary_tf_map=sec_tf_map if sec_tf_map else None,
     )
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
@@ -641,16 +714,21 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
         if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
             gst_start = datetime.fromisoformat(strat['lookback_start_date'])
             gst_end = datetime.fromisoformat(strat['lookback_end_date'])
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
         df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                           start_date=gst_start, end_date=gst_end,
                                           timeframe=strat.get('timeframe', '1Min'),
                                           data_feed=_get_data_feed(),
-                                          session=strat.get('trading_session', 'RTH'))
+                                          session=strat.get('trading_session', 'RTH'),
+                                          secondary_tfs=sec_tfs)
         if len(df) == 0:
             return pd.DataFrame()
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
         confluence_set = confluence_set if confluence_set else None
         general_cols = [c for c in df.columns if c.startswith("GP_")]
+        sec_tf_map = get_secondary_tf_map(df)
         return generate_trades(
             df,
             direction=strat['direction'],
@@ -664,6 +742,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
             target_config=strat.get('target_config'),
             bar_count_exit=strat.get('bar_count_exit'),
             general_columns=general_cols,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
         )
 
 
@@ -695,11 +774,16 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     start_date = since_as_dt - timedelta(days=warmup_days)
     end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
 
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
         timeframe=timeframe, data_feed=_get_data_feed(),
         session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs,
     )
 
     if len(df) == 0:
@@ -709,6 +793,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     confluence_set |= set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
     general_cols = [c for c in df.columns if c.startswith("GP_")]
+    sec_tf_map = get_secondary_tf_map(df)
 
     trades = generate_trades(
         df,
@@ -723,6 +808,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         target_config=strat.get('target_config'),
         bar_count_exit=strat.get('bar_count_exit'),
         general_columns=general_cols,
+        secondary_tf_map=sec_tf_map if sec_tf_map else None,
     )
 
     if len(trades) == 0:
@@ -1905,6 +1991,7 @@ def analyze_entry_triggers(
         effective_bar_count = 4  # fallback default
 
     enabled_interp_keys = get_enabled_interpreter_keys(groups)
+    _stf = get_secondary_tf_map(df) or None
 
     results = []
     for trig_cid, trig_name in entry_triggers.items():
@@ -1919,6 +2006,7 @@ def analyze_entry_triggers(
             target_config=target_config,
             general_columns=general_columns,
             enabled_interpreter_keys=enabled_interp_keys,
+            secondary_tf_map=_stf,
         )
         if len(trades) == 0:
             continue
@@ -1954,6 +2042,7 @@ def analyze_exit_triggers(
     all_trigger_defs = get_all_triggers(groups)
     base_entry = get_base_trigger_id(entry_trigger_confluence_id)
     enabled_interp_keys = get_enabled_interpreter_keys(groups)
+    _stf = get_secondary_tf_map(df) or None
     results = []
 
     for trig_cid, trig_name in exit_triggers.items():
@@ -1976,6 +2065,7 @@ def analyze_exit_triggers(
                 target_config=target_config,
                 general_columns=general_columns,
                 enabled_interpreter_keys=enabled_interp_keys,
+                secondary_tf_map=_stf,
             )
         else:
             base_exit = get_base_trigger_id(trig_cid)
@@ -1986,6 +2076,7 @@ def analyze_exit_triggers(
                 target_config=target_config,
                 general_columns=general_columns,
                 enabled_interpreter_keys=enabled_interp_keys,
+                secondary_tf_map=_stf,
             )
 
         if len(trades) == 0:
@@ -2039,6 +2130,7 @@ def find_best_exit_combinations(
                           'name': exit_triggers[cid]}
 
     enabled_interp_keys = get_enabled_interpreter_keys(groups)
+    _stf = get_secondary_tf_map(df) or None
 
     results = []
     for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
@@ -2059,6 +2151,7 @@ def find_best_exit_combinations(
                 risk_per_trade=risk_per_trade, stop_config=stop_config,
                 target_config=target_config, general_columns=general_columns,
                 enabled_interpreter_keys=enabled_interp_keys,
+                secondary_tf_map=_stf,
             )
 
             if len(trades) < min_trades:
@@ -2123,6 +2216,7 @@ def analyze_risk_management(
         bar_count_val = bar_count_exit
 
     enabled_interp_keys = get_enabled_interpreter_keys(groups)
+    _stf = get_secondary_tf_map(df) or None
 
     results = []
 
@@ -2142,6 +2236,7 @@ def analyze_risk_management(
             target_config=tc, confluence_required=confluence_required,
             general_columns=general_columns,
             enabled_interpreter_keys=enabled_interp_keys,
+            secondary_tf_map=_stf,
         )
         if len(trades) == 0:
             continue
@@ -3912,18 +4007,21 @@ def render_strategy_builder():
             mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
             filtered_trades = trades[mask]
     else:
+        sec_tfs = _get_secondary_tfs(timeframe)
         with st.spinner("Loading market data and running analysis..."):
             df = prepare_data_with_indicators(symbol, data_days, data_seed,
                                               start_date=start_date, end_date=end_date,
                                               timeframe=timeframe,
                                               data_feed=_get_data_feed(),
-                                              session=trading_session)
+                                              session=trading_session,
+                                              secondary_tfs=sec_tfs)
 
             if len(df) == 0:
                 st.error("No data available")
                 return
 
             general_cols = get_enabled_gp_columns(df.columns)
+            sec_tf_map = get_secondary_tf_map(df)
             trades = generate_trades(
                 df,
                 direction=direction,
@@ -3938,6 +4036,7 @@ def render_strategy_builder():
                 bar_count_exit=config.get('bar_count_exit'),
                 general_columns=general_cols,
                 enabled_interpreter_keys=get_enabled_interpreter_keys(),
+                secondary_tf_map=sec_tf_map if sec_tf_map else None,
             )
 
         # Apply confluence filter
@@ -4590,8 +4689,29 @@ def render_strategy_builder():
                     confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
                     confluence_df = confluence_df.head(20)
 
+                    # Detect if multiple TFs present for section grouping
+                    _prev_tf_prefix = None
+                    _has_mtf = any(not c.startswith("1M-") for c in confluence_df['confluence'] if isinstance(c, str))
+                    if _has_mtf:
+                        # Group by TF prefix, then sort by PF within each group
+                        confluence_df = confluence_df.copy()
+                        confluence_df['_tf'] = confluence_df['confluence'].apply(
+                            lambda c: c.split("-")[0] if isinstance(c, str) and not c.startswith("GEN-") else "ZZZ")
+                        confluence_df = confluence_df.sort_values(
+                            ['_tf', 'profit_factor'], ascending=[True, False], na_position='last')
+                        confluence_df = confluence_df.drop(columns=['_tf'])
+
                     for _, row in confluence_df.iterrows():
                         conf = row['confluence']
+
+                        # Show TF section header when timeframe changes (only if MTF data present)
+                        if _has_mtf and isinstance(conf, str) and not conf.startswith("GEN-"):
+                            _tf_prefix = conf.split("-")[0]
+                            if _tf_prefix != _prev_tf_prefix:
+                                _prev_tf_prefix = _tf_prefix
+                                tf_header = "Primary" if _tf_prefix == "1M" else _tf_prefix
+                                st.markdown(f"---\n**{tf_header}**")
+
                         conf_display = format_confluence_record(conf, enabled_groups)
                         is_selected = conf in selected
 
@@ -5969,11 +6089,15 @@ def render_live_backtest(strat: dict):
         strat_end = datetime.fromisoformat(strat['lookback_end_date'])
 
     # Data loading (cached via @st.cache_data, 1hr TTL)
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    _req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    _sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in _req_labels))
     df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                       start_date=strat_start, end_date=strat_end,
                                       timeframe=strat_timeframe,
                                       data_feed=_get_data_feed(),
-                                      session=strat.get('trading_session', 'RTH'))
+                                      session=strat.get('trading_session', 'RTH'),
+                                      secondary_tfs=_sec_tfs)
 
     if len(df) == 0:
         st.error("No data available for this symbol.")
@@ -5986,6 +6110,7 @@ def render_live_backtest(strat: dict):
             confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
             confluence_set = confluence_set if confluence_set else None
             general_cols = [c for c in df.columns if c.startswith("GP_")]
+            _stf_map = get_secondary_tf_map(df)
 
             st.session_state[bt_cache_key] = generate_trades(
                 df,
@@ -6000,6 +6125,7 @@ def render_live_backtest(strat: dict):
                 target_config=strat.get('target_config'),
                 bar_count_exit=strat.get('bar_count_exit'),
                 general_columns=general_cols,
+                secondary_tf_map=_stf_map if _stf_map else None,
             )
     trades = st.session_state[bt_cache_key]
 
@@ -6099,11 +6225,13 @@ def render_live_backtest(strat: dict):
                                                           start_date=ext_start_date, end_date=ext_end_date,
                                                           timeframe=strat_timeframe,
                                                           data_feed=_get_data_feed(),
-                                                          session=strat.get('trading_session', 'RTH'))
+                                                          session=strat.get('trading_session', 'RTH'),
+                                                          secondary_tfs=_sec_tfs)
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
                         _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
+                        _ext_stf = get_secondary_tf_map(_ext_df)
                         _ext_trades = generate_trades(
                             _ext_df,
                             direction=strat['direction'],
@@ -6117,6 +6245,7 @@ def render_live_backtest(strat: dict):
                             target_config=strat.get('target_config'),
                             bar_count_exit=strat.get('bar_count_exit'),
                             general_columns=_ext_gc,
+                            secondary_tf_map=_ext_stf if _ext_stf else None,
                         )
                         _ext_kpis = calculate_kpis(
                             _ext_trades,

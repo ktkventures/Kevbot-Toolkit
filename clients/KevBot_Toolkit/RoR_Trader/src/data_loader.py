@@ -313,6 +313,47 @@ def get_required_tfs_from_confluence(confluence_records) -> set:
 
 
 # =============================================================================
+# RESAMPLING (Multi-Timeframe)
+# =============================================================================
+
+# Mapping from canonical timeframe strings to pandas resample rules
+_RESAMPLE_RULES = {
+    "2Min": "2min", "3Min": "3min", "5Min": "5min",
+    "10Min": "10min", "15Min": "15min", "30Min": "30min",
+    "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
+    "1Day": "1D",
+}
+
+
+def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
+    """Resample OHLCV data from a finer timeframe to a coarser one.
+
+    Args:
+        df: OHLCV DataFrame with DatetimeIndex (must be finer than target_tf).
+        target_tf: Canonical target timeframe (e.g., "5Min", "15Min", "1Hour").
+
+    Returns:
+        Resampled DataFrame with OHLCV columns. Rows where open is NaN are dropped.
+    """
+    rule = _RESAMPLE_RULES.get(target_tf)
+    if rule is None:
+        raise ValueError(f"Cannot resample to timeframe '{target_tf}'. "
+                         f"Supported: {list(_RESAMPLE_RULES.keys())}")
+
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if "volume" in df.columns:
+        agg["volume"] = "sum"
+    if "trade_count" in df.columns:
+        agg["trade_count"] = "sum"
+    if "vwap" in df.columns:
+        # VWAP must be recomputed on the resampled data — skip here
+        pass
+
+    resampled = df.resample(rule).agg(agg)
+    return resampled.dropna(subset=["open"])
+
+
+# =============================================================================
 # BAR ESTIMATION HELPERS
 # =============================================================================
 

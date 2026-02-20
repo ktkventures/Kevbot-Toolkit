@@ -761,6 +761,43 @@ def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[st
     return records
 
 
+def get_mtf_confluence_records(
+    row: pd.Series,
+    primary_interpreters: List[str],
+    secondary_tf_map: Optional[Dict[str, List[str]]] = None,
+    general_columns: Optional[List[str]] = None,
+) -> Set[str]:
+    """
+    Build confluence records for primary TF + all secondary TFs.
+
+    Primary TF records use the "1M" prefix.  Secondary TF records use lowercase
+    labels ("5m", "15m", etc.) derived from the column suffix ``__{tf_label}``.
+
+    Args:
+        row: A single DataFrame row (with primary + forward-filled secondary cols).
+        primary_interpreters: Interpreter column names on the primary TF.
+        secondary_tf_map: ``{tf_label: [suffixed_col_names]}`` for each secondary TF.
+            Column names have the form ``{INTERP}__{tf_label}``.
+        general_columns: GP_* columns (not timeframe-specific).
+
+    Returns:
+        Combined set of confluence record strings.
+    """
+    # Primary TF records (prefix "1M")
+    records = get_confluence_records(row, "1M", primary_interpreters, general_columns)
+
+    # Secondary TF records
+    if secondary_tf_map:
+        for tf_label, suffixed_cols in secondary_tf_map.items():
+            for col in suffixed_cols:
+                if col in row.index and pd.notna(row[col]):
+                    # Strip __{tf_label} suffix to get the base interpreter name
+                    base_interp = col.rsplit("__", 1)[0]
+                    records.add(f"{tf_label}-{base_interp}-{row[col]}")
+
+    return records
+
+
 def get_available_triggers() -> Dict[str, str]:
     """
     Get all available triggers with display names.

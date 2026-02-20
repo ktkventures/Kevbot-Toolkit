@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
-from interpreters import get_confluence_records, INTERPRETERS
+from interpreters import get_confluence_records, get_mtf_confluence_records, INTERPRETERS
 
 
 @dataclass
@@ -202,6 +202,7 @@ def generate_trades(
     bar_count_exit: Optional[int] = None,
     general_columns: Optional[List[str]] = None,
     enabled_interpreter_keys: Optional[List[str]] = None,
+    secondary_tf_map: Optional[Dict[str, List[str]]] = None,
 ) -> pd.DataFrame:
     """
     Generate trades based on real trigger logic.
@@ -274,7 +275,12 @@ def generate_trades(
             if row.get(entry_col, False):
                 # Check confluence if required
                 if confluence_required and len(confluence_required) > 0:
-                    current_confluence = get_confluence_records(row, "1M", interpreter_list, general_columns=general_columns)
+                    if secondary_tf_map:
+                        current_confluence = get_mtf_confluence_records(
+                            row, interpreter_list, secondary_tf_map, general_columns)
+                    else:
+                        current_confluence = get_confluence_records(
+                            row, "1M", interpreter_list, general_columns=general_columns)
                     if not isinstance(current_confluence, set):
                         current_confluence = set()
                     if not confluence_required.issubset(current_confluence):
@@ -372,7 +378,12 @@ def generate_trades(
                 r_multiple = pnl / risk
 
                 # Get confluence at entry
-                confluence = get_confluence_records(entry_row, "1M", interpreter_list, general_columns=general_columns)
+                if secondary_tf_map:
+                    confluence = get_mtf_confluence_records(
+                        entry_row, interpreter_list, secondary_tf_map, general_columns)
+                else:
+                    confluence = get_confluence_records(
+                        entry_row, "1M", interpreter_list, general_columns=general_columns)
                 if not isinstance(confluence, set):
                     confluence = set()
 
