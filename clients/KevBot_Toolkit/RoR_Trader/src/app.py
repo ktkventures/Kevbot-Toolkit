@@ -3834,12 +3834,16 @@ def render_strategy_builder():
             valid_cids = [c for c in replace_cids if c in exit_options]
             if valid_cids:
                 st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
+            st.session_state.pop('sb_bar_count_exit_removed', None)
         if 'pending_remove_exit_idx' in st.session_state:
             rm_idx = st.session_state.pop('pending_remove_exit_idx')
             addl = st.session_state.sb_additional_exits
             adj_idx = rm_idx - 1  # index 0 is primary
             if 0 <= adj_idx < len(addl):
                 addl.pop(adj_idx)
+        if 'pending_remove_bar_count_exit' in st.session_state:
+            st.session_state.pop('pending_remove_bar_count_exit')
+            st.session_state.sb_bar_count_exit_removed = True
 
         # Add additional exits to selections
         for cid in st.session_state.get('sb_additional_exits', []):
@@ -3899,6 +3903,7 @@ def render_strategy_builder():
 
     # Separate bar_count exits from signal-based exits
     bar_count_exit_value = None
+    bar_count_removed = st.session_state.get('sb_bar_count_exit_removed', False)
     signal_exit_base_ids = []
     signal_exit_confluence_ids = []
     signal_exit_names = []
@@ -3906,7 +3911,8 @@ def render_strategy_builder():
         is_bar_count = False
         for g in enabled_groups:
             if g.get_trigger_id("exit") == cid and g.base_template == "bar_count":
-                bar_count_exit_value = g.parameters.get("candle_count", 4)
+                if not bar_count_removed:
+                    bar_count_exit_value = g.parameters.get("candle_count", 4)
                 is_bar_count = True
                 break
         if not is_bar_count:
@@ -4096,16 +4102,14 @@ def render_strategy_builder():
                 with e_col1:
                     st.markdown(f"_{ename}_")
                 with e_col2:
-                    if len(ov_exit_names) > 1:
-                        if st.button("✕", key=f"var_rm_exit_{idx_e}"):
-                            actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
-                            if actual_idx is not None:
-                                st.session_state.pending_remove_exit_idx = actual_idx
-                            else:
-                                remaining_cids = [c for c in config.get('exit_trigger_confluence_ids', [])]
-                                if remaining_cids:
-                                    st.session_state.pending_replace_exits = remaining_cids
-                            st.rerun()
+                    if st.button("✕", key=f"var_rm_exit_{idx_e}"):
+                        actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
+                        if actual_idx is not None:
+                            st.session_state.pending_remove_exit_idx = actual_idx
+                        else:
+                            # Bar_count exit removal
+                            st.session_state.pending_remove_bar_count_exit = True
+                        st.rerun()
             if not ov_exit_names:
                 st.markdown("_None_")
 
@@ -4509,13 +4513,16 @@ def render_strategy_builder():
                 exit_tag_cols = st.columns(min(tag_count, 4))
                 for i_et, (et_name, et_cid) in enumerate(zip(exit_tag_names, exit_tag_cids)):
                     with exit_tag_cols[i_et % 4]:
-                        if tag_count > 1 and et_cid is not None:
-                            actual_idx = i_et if i_et < len(config.get('exit_trigger_confluence_ids', [])) else None
-                            if actual_idx is not None and st.button(f"✕ {et_name}", key=f"ext_rm_{et_cid}"):
+                        actual_idx = i_et if i_et < len(config.get('exit_trigger_confluence_ids', [])) else None
+                        if et_cid is not None and actual_idx is not None:
+                            if st.button(f"✕ {et_name}", key=f"ext_rm_{et_cid}"):
                                 st.session_state.pending_remove_exit_idx = actual_idx
                                 st.rerun()
                         else:
-                            st.caption(et_name)
+                            # Bar_count exit — show removable button
+                            if st.button(f"✕ {et_name}", key="ext_rm_bar_count"):
+                                st.session_state.pending_remove_bar_count_exit = True
+                                st.rerun()
 
             if not config.get('entry_trigger_confluence_id'):
                 st.warning("Select an entry trigger first.")
@@ -4689,29 +4696,8 @@ def render_strategy_builder():
                     confluence_df = apply_confluence_filters(confluence_df, filters, search_query, enabled_groups)
                     confluence_df = confluence_df.head(20)
 
-                    # Detect if multiple TFs present for section grouping
-                    _prev_tf_prefix = None
-                    _has_mtf = any(not c.startswith("1M-") for c in confluence_df['confluence'] if isinstance(c, str))
-                    if _has_mtf:
-                        # Group by TF prefix, then sort by PF within each group
-                        confluence_df = confluence_df.copy()
-                        confluence_df['_tf'] = confluence_df['confluence'].apply(
-                            lambda c: c.split("-")[0] if isinstance(c, str) and not c.startswith("GEN-") else "ZZZ")
-                        confluence_df = confluence_df.sort_values(
-                            ['_tf', 'profit_factor'], ascending=[True, False], na_position='last')
-                        confluence_df = confluence_df.drop(columns=['_tf'])
-
                     for _, row in confluence_df.iterrows():
                         conf = row['confluence']
-
-                        # Show TF section header when timeframe changes (only if MTF data present)
-                        if _has_mtf and isinstance(conf, str) and not conf.startswith("GEN-"):
-                            _tf_prefix = conf.split("-")[0]
-                            if _tf_prefix != _prev_tf_prefix:
-                                _prev_tf_prefix = _tf_prefix
-                                tf_header = "Primary" if _tf_prefix == "1M" else _tf_prefix
-                                st.markdown(f"---\n**{tf_header}**")
-
                         conf_display = format_confluence_record(conf, enabled_groups)
                         is_selected = conf in selected
 
