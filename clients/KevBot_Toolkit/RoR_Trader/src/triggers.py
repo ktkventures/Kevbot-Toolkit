@@ -357,25 +357,29 @@ def generate_trades(
             exit_price = row['close']
 
             # 1. Check stop loss (highest priority)
+            # Gap-aware fill: if the bar opens past the stop (overnight gap,
+            # flash crash), fill at the open — not the stop level.
             if direction == "LONG" and row['low'] <= stop_price:
                 exit_triggered = True
                 exit_reason = "stop_loss"
-                exit_price = stop_price
+                exit_price = min(stop_price, row['open'])
             elif direction == "SHORT" and row['high'] >= stop_price:
                 exit_triggered = True
                 exit_reason = "stop_loss"
-                exit_price = stop_price
+                exit_price = max(stop_price, row['open'])
 
             # 2. Check target (second priority)
+            # Gap-aware fill: if the bar opens past the target (gap in your
+            # favor), fill at the open — you get the windfall.
             if not exit_triggered and target_price is not None:
                 if direction == "LONG" and row['high'] >= target_price:
                     exit_triggered = True
                     exit_reason = "target"
-                    exit_price = target_price
+                    exit_price = max(target_price, row['open'])
                 elif direction == "SHORT" and row['low'] <= target_price:
                     exit_triggered = True
                     exit_reason = "target"
-                    exit_price = target_price
+                    exit_price = min(target_price, row['open'])
 
             # 3. Check bar count exit
             if not exit_triggered and bar_count_exit is not None:

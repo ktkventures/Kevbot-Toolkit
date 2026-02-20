@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.43
+**Version:** 0.44
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 19 COMPLETE — Intra-Bar Trigger Evaluation fully implemented (19A dual trigger definitions + TriggerLevelCache, 19B trigger column wiring, 19C streaming tick-level evaluation, 19D backtest level-fill pricing, 19E chart price arrows with custom cross/xcross shapes, 19F alert badges + polish). Candlestick theme system added (classic/neutral/neutral_hollow). Stale exit state fix for drill-down Add button. Phases 17A–D, 18A–C, 11–16 complete
+**Status:** Gap-aware stop/target fills implemented (Phase 23 partial). Phase 19 COMPLETE. Phases 17A–D, 18A–C, 11–16 complete
 
 ---
 
@@ -1610,7 +1610,35 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - Hybrid approach likely best: use a provider for historical backfill, self-record going forward for zero ongoing cost.
 - Sub-minute bars have significantly more noise — strategies built on these timeframes need robust confluence filtering.
 
-### Phase 23: Low-Priority Cleanup & Enhancements
+### Phase 23: Execution Realism — Spread, Slippage & Order Types
+*Improving backtest accuracy and live execution to reflect real-world trading costs. Needs discussion before committing to a direction.*
+
+**Gap-Aware Stop/Target Fills (DONE):**
+- [x] When a bar opens past the stop level (overnight gap, flash crash), fill at the open instead of the stop — `min(stop, open)` for LONG, `max(stop, open)` for SHORT
+- [x] Same for targets: gap through target fills at the open (windfall) — `max(target, open)` for LONG, `min(target, open)` for SHORT
+- [x] No config changes — always active, universally more realistic
+
+**Bid-Ask Spread Modeling (TO DISCUSS):**
+- [ ] Configurable spread cost deducted from each trade's P&L (fixed amount or percentage)
+- [ ] Potentially different defaults for regular hours vs extended hours (SPY: ~$0.01 RTH, ~$0.02–$0.05 extended)
+- [ ] On tight-stop strategies, spread can eat a significant % of risk — users need visibility into this
+- [ ] Open question: per-symbol defaults? Per-session? Or just a single global setting?
+
+**Order Type Selection (TO DISCUSS):**
+- [ ] Per-strategy setting: Market vs Limit for live alert execution
+- [ ] **Market order**: fire alert → immediate execution at market price (current implicit behavior)
+- [ ] **Limit order**: fire alert → place limit at target entry level → auto-cancel after configurable timeout if unfilled
+- [ ] Primarily affects the streaming engine / alert system, not the backtester
+- [ ] Trade-off: limit orders avoid overpaying but risk missing the trade entirely; market orders guarantee entry but with potential slippage
+
+**General Slippage Estimation (TO DISCUSS):**
+- [ ] Small configurable slippage amount added to entries and deducted from exits
+- [ ] Models market impact beyond bid-ask spread (order queue, volatility, size)
+- [ ] Could be a per-trade fixed cost or a percentage of trade value
+
+> **Note:** The gap-fill fix is implemented. The remaining items need discussion to decide overall direction — whether to tackle spread/slippage as a single unified "execution cost" model or as separate independent features, and how order types interact with the existing alert pipeline.
+
+### Phase 24: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**
