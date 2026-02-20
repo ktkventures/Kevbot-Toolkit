@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.36
+**Version:** 0.37
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, 10 reference Pine Scripts seeded (MACD, RVOL, SR Channel, UT Bot, VWAP, Swing 123, SuperTrend, Strat Assistant, UT Bot Conflu); Phases 17A–B charting/overlays complete; Phases 11–16 complete
+**Status:** Phase 17D Complete — Indicator audit & expansion: all built-in indicators validated against TradingView Pine Script references, VWAP fixed to compute cumulative session VWAP from scratch (not Alpaca per-bar), EMA Stack split into pure ordering + EMA Price Position (24 PSML permutations), UT Bot fully implemented, 3 new packs (SuperTrend, Swing 123, Strat Assistant), trading session dropdown on all preview tabs; Phases 17A–C, 11–16 complete
 
 ---
 
@@ -1267,7 +1267,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] Session filter interpreter in `general_packs.py:403-419` — "Filter trades by market session" confluence condition evaluates `IN_SESSION` / `OUT_OF_SESSION` per bar
 
 **Known Limitations:**
-- VWAP does not yet reset at session boundaries — cumulative across loaded bars. Low impact for RTH strategies; affects correctness for extended-hours strategies using VWAP
+- ~~VWAP does not yet reset at session boundaries~~ — **Resolved in Phase 17D.** VWAP now computes cumulative session VWAP from scratch with session-aware reset (gap > 30 min detection). Alpaca's per-bar VWAP column is ignored.
 
 ### Design Decisions (Phase 14C — Trading Session Input)
 - **First-class input over confluence condition** — Trading session fundamentally shapes the data pipeline: which bars exist, when indicators reset, when the engine listens. A confluence condition is evaluated *after* data is loaded and indicators are computed — by then it's too late. Session must be known before any data loading occurs, making it a peer of Symbol, Direction, and Timeframe.
@@ -1441,6 +1441,9 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] Fix VWAP SD bands — replaced simple expanding std with volume-weighted standard deviation matching TradingView formula
 - [x] Fix UT Bot preview — removed `utbot_direction` from chart overlay columns, added UTBOT to interpreter config so it actually runs
 - [x] Add Show Conditions background painting to General Packs preview tab
+- [x] Fix VWAP cumulative calculation — Alpaca's `vwap` column is a per-bar VWAP (volume-weighted average within each 1-min bar), not a cumulative session VWAP. Using it collapsed SD bands to ~0. Now always computes our own cumulative session VWAP from scratch, matching TradingView's `ta.vwap()` behavior.
+- [x] Add Trading Session dropdown (RTH / Pre-Market / After Hours / Extended Hours) to all preview tabs — TF Confluence, General Packs, and Pack Builder. Previews load data with `session="Extended Hours"` so all session filters work.
+- [x] Auto-migration for EMA Price Position default confluence group — existing configs automatically gain `ema_price_position_default` group on load
 
 **End State:** A library of validated, production-quality indicators and interpreters with TradingView-quality chart rendering. Chart overlays for interpreter states and trigger events provide full visual transparency into the signal chain. Pine Script export enables cross-platform validation. New strategies built after this phase can be trusted for live trading without concern about data integrity or rendering issues.
 
