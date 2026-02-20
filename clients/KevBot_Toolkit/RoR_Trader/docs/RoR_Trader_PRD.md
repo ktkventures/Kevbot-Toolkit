@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.33
+**Version:** 0.34
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, reference-indicators/ directory for user-provided scripts; Phases 17A–B charting/overlays complete; Phases 11–16 complete
+**Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, 10 reference Pine Scripts seeded (MACD, RVOL, SR Channel, UT Bot, VWAP, Swing 123, SuperTrend, Strat Assistant, UT Bot Conflu); Phases 17A–B charting/overlays complete; Phases 11–16 complete
 
 ---
 
