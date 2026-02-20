@@ -1652,6 +1652,20 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
 - [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
 
+**Data Refresh (Hard vs Soft):**
+- [ ] Two refresh modes for strategy data: **Soft** (current behavior — appends new bars from websocket/API to cached data) and **Hard** (full recompile — re-fetches all historical bars, re-runs indicators, triggers, and backtester from scratch)
+- [ ] Soft is fast but can accumulate drift if cached candles differ from source; Hard is slower but guarantees data integrity
+- [ ] UI: two distinct buttons or a dropdown on the strategy detail / builder page
+
+**Strategy Copy — Default Preservation:**
+- [ ] Copying a strategy should carry over ALL config fields including `bar_count_exit` and other defaults
+- [ ] Investigate why Copy drops bar_count_exit — likely the copy flow doesn't include fields that come from default settings vs explicit user selections
+- [ ] Audit the copy/save flow to ensure default entry trigger, default exit trigger, and default stop/target all persist correctly
+
+**Strategy Builder Default Behavior:**
+- [ ] Review how default triggers and default exits populate on new/copied strategies — current behavior is occasionally inconsistent
+- [ ] Ensure default_entry_trigger, default_exit_trigger, and default_stop_config from settings always apply cleanly when no saved value exists
+
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
