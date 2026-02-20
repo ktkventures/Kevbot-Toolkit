@@ -34221,152 +34221,152 @@
     "forward_test_start": "2026-02-20T14:05:04.243044",
     "alert_tracking_enabled": true,
     "updated_at": "2026-02-20T14:06:32.985104",
-    "data_refreshed_at": "2026-02-20T15:05:18.724027",
+    "data_refreshed_at": "2026-02-20T16:32:15.081895",
     "live_executions": [],
     "discrepancies": [
       {
         "type": "missed_alert",
         "trade_index": 1400,
         "trade_entry_time": "2026-02-20T14:17:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1401,
         "trade_entry_time": "2026-02-20T14:22:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1402,
         "trade_entry_time": "2026-02-20T14:25:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1403,
         "trade_entry_time": "2026-02-20T14:32:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1404,
         "trade_entry_time": "2026-02-20T14:55:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1405,
         "trade_entry_time": "2026-02-20T15:08:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1406,
         "trade_entry_time": "2026-02-20T15:17:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1407,
         "trade_entry_time": "2026-02-20T15:36:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1408,
         "trade_entry_time": "2026-02-20T15:41:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1409,
         "trade_entry_time": "2026-02-20T16:19:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1410,
         "trade_entry_time": "2026-02-20T16:32:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1411,
         "trade_entry_time": "2026-02-20T17:27:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1412,
         "trade_entry_time": "2026-02-20T17:39:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1413,
         "trade_entry_time": "2026-02-20T17:49:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1414,
         "trade_entry_time": "2026-02-20T18:22:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1415,
         "trade_entry_time": "2026-02-20T18:36:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1416,
         "trade_entry_time": "2026-02-20T19:22:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1417,
         "trade_entry_time": "2026-02-20T19:30:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1418,
         "trade_entry_time": "2026-02-20T19:50:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1419,
         "trade_entry_time": "2026-02-20T20:01:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1420,
         "trade_entry_time": "2026-02-20T20:22:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1421,
         "trade_entry_time": "2026-02-20T20:30:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1422,
         "trade_entry_time": "2026-02-20T20:39:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       },
       {
         "type": "missed_alert",
         "trade_index": 1423,
         "trade_entry_time": "2026-02-20T20:54:00+00:00",
-        "detected_at": "2026-02-20T15:05:18.723940"
+        "detected_at": "2026-02-20T16:32:15.081823"
       }
     ]
   },

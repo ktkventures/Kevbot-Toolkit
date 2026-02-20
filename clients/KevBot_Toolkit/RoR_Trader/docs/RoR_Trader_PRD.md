@@ -1657,9 +1657,10 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
 
 **Data Refresh (Hard vs Soft):**
-- [ ] Two refresh modes for strategy data: **Soft** (current behavior — appends new bars from websocket/API to cached data) and **Hard** (full recompile — re-fetches all historical bars, re-runs indicators, triggers, and backtester from scratch)
-- [ ] Soft is fast but can accumulate drift if cached candles differ from source; Hard is slower but guarantees data integrity
-- [ ] UI: two distinct buttons or a dropdown on the strategy detail / builder page
+- [x] Hard refresh button on strategy detail page — calls `refresh_strategy_data()`, clears all session caches, recomputes KPIs
+- [x] Hard refresh button on portfolio detail page — clears portfolio analytics cache and underlying strategy caches
+- [ ] Two refresh modes: **Soft** (current behavior — appends new bars) and **Hard** (full recompile — re-fetches all historical bars from scratch). Current refresh button uses incremental (soft) mode.
+- [ ] UI: dropdown or toggle for soft vs hard refresh mode
 
 **Strategy Copy — Default Preservation:**
 - [ ] Copying a strategy should carry over ALL config fields including `bar_count_exit` and other defaults
@@ -1669,6 +1670,12 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Strategy Builder Default Behavior:**
 - [ ] Review how default triggers and default exits populate on new/copied strategies — current behavior is occasionally inconsistent
 - [ ] Ensure default_entry_trigger, default_exit_trigger, and default_stop_config from settings always apply cleanly when no saved value exists
+
+**Alert Pipeline Fix (Prep to Go Live):**
+- [x] Auto-sync `alert_config.json` when "Track Alerts" toggle is changed — enables/disables `alerts_enabled` for the strategy in the alert config, so the alert monitor picks up real strategies
+- [x] One-time backfill on app startup for strategies with `alert_tracking_enabled` but missing from `alert_config.json`
+- [x] Alert Analysis tab now shows when discrepancies exist (not just live_executions) — displays missed/phantom alert tables with explanation
+- [x] Alerts tab shows discrepancy context when no alerts exist but discrepancies are detected
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button

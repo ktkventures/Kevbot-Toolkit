@@ -3298,6 +3298,26 @@ def main():
         pack_registry.scan_and_load_all()
         st.session_state.user_packs_loaded = True
 
+    # Backfill alert_config for strategies with alert_tracking_enabled (once per session)
+    if not st.session_state.get('_alert_config_backfilled'):
+        st.session_state._alert_config_backfilled = True
+        _all_strats = load_strategies()
+        _acfg = load_alert_config()
+        _acfg_needs_save = False
+        for _s in _all_strats:
+            _sid_str = str(_s['id'])
+            if _s.get('alert_tracking_enabled') and _sid_str not in _acfg.get('strategies', {}):
+                if 'strategies' not in _acfg:
+                    _acfg['strategies'] = {}
+                _acfg['strategies'][_sid_str] = {
+                    'alerts_enabled': True,
+                    'alert_on_entry': True,
+                    'alert_on_exit': True,
+                }
+                _acfg_needs_save = True
+        if _acfg_needs_save:
+            save_alert_config(_acfg)
+
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
@@ -5824,21 +5844,34 @@ def render_strategy_detail(strategy_id: int):
         st.caption("No confluence conditions")
 
     # Action bar
-    action_cols = st.columns([1, 1, 1, 1, 1.5, 2.5])
+    action_cols = st.columns([0.8, 1, 1, 1, 1, 1.5, 1.7])
     with action_cols[0]:
+        if st.button("Refresh", key="detail_refresh", help="Re-fetch market data and recompute KPIs"):
+            with st.spinner("Refreshing strategy data..."):
+                refresh_strategy_data(strategy_id)
+            st.session_state.strategy_trades_cache.pop(strategy_id, None)
+            st.session_state.pop(f"bt_trades_{strategy_id}", None)
+            st.session_state.pop(f"ft_data_{strategy_id}", None)
+            for _k in [k for k in list(st.session_state)
+                       if k.startswith(f"bt_ext_{strategy_id}_")
+                       or k.startswith(f"ft_ext_{strategy_id}_")]:
+                st.session_state.pop(_k, None)
+            st.toast("Strategy data refreshed.")
+            st.rerun()
+    with action_cols[1]:
         if st.button("Edit Strategy", key="detail_edit"):
             initiate_edit(strat)
-    with action_cols[1]:
+    with action_cols[2]:
         if st.button("Clone", key="detail_clone"):
             new = duplicate_strategy(strategy_id)
             if new:
                 st.toast(f"Cloned as '{new['name']}'")
                 st.rerun()
-    with action_cols[2]:
+    with action_cols[3]:
         if st.button("Delete", key="detail_delete", type="secondary"):
             st.session_state.confirm_delete_id = strategy_id
             st.rerun()
-    with action_cols[3]:
+    with action_cols[4]:
         if strat.get('forward_testing') and strat.get('forward_test_start'):
             ft_start = datetime.fromisoformat(strat['forward_test_start'])
             ft_days = (datetime.now() - ft_start).days
@@ -5848,7 +5881,7 @@ def render_strategy_detail(strategy_id: int):
         else:
             status = "⚪ Backtest Only"
         st.markdown(f"**{status}**")
-    with action_cols[4]:
+    with action_cols[5]:
         _at_enabled = strat.get('alert_tracking_enabled', False)
         _at_new = st.toggle("Track Alerts", value=_at_enabled, key=f"alert_tracking_{strategy_id}")
         if _at_new != _at_enabled:
@@ -5857,6 +5890,12 @@ def render_strategy_detail(strategy_id: int):
                 strat['live_executions'] = []
                 strat['discrepancies'] = []
             update_strategy(strategy_id, strat)
+            # Auto-sync alert_config.json
+            set_strategy_alert_config(strategy_id, {
+                'alerts_enabled': _at_new,
+                'alert_on_entry': True,
+                'alert_on_exit': True,
+            })
             st.rerun()
 
     # Inline delete confirmation
@@ -6374,7 +6413,7 @@ def render_live_backtest(strat: dict):
     extended_data_days = strat.get('extended_data_days', 365)
 
     # Tab layout — conditionally include Alert Analysis
-    _bt_has_alert_analysis = strat.get('alert_tracking_enabled') and strat.get('live_executions')
+    _bt_has_alert_analysis = strat.get('alert_tracking_enabled') and (strat.get('live_executions') or strat.get('discrepancies'))
     _bt_tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
@@ -6824,7 +6863,7 @@ def render_forward_test_view(strat: dict):
     )
 
     # Tab layout — conditionally include Alert Analysis
-    _has_alert_analysis = strat.get('alert_tracking_enabled') and strat.get('live_executions')
+    _has_alert_analysis = strat.get('alert_tracking_enabled') and (strat.get('live_executions') or strat.get('discrepancies'))
     _tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
@@ -7022,8 +7061,38 @@ def render_alert_analysis_tab(strat: dict):
     stored = strat.get('stored_trades', [])
     discrepancies = strat.get('discrepancies', [])
 
-    if not live_execs:
-        st.info("No live execution data available for analysis.")
+    if not live_execs and not discrepancies:
+        st.info("No live execution data or discrepancies available for analysis.")
+        return
+
+    if not live_execs and discrepancies:
+        st.subheader("Alert Discrepancies")
+        missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
+        phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
+        if missed:
+            st.warning(
+                f"**{len(missed)} forward test trade(s) had no matching alert** (missed alerts). "
+                "This typically means alert generation was not enabled when these trades occurred."
+            )
+            missed_data = []
+            for d in missed:
+                missed_data.append({
+                    "Trade #": d.get('trade_index', '?'),
+                    "Entry Time": str(d.get('trade_entry_time', ''))[:16].replace('T', ' '),
+                    "Status": "No alert fired",
+                })
+            st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+        if phantom:
+            st.warning(f"**{len(phantom)} phantom alert(s)** (alert fired with no matching forward test trade)")
+            phantom_data = []
+            for d in phantom:
+                phantom_data.append({
+                    "Alert ID": d.get('alert_id', '?'),
+                    "Timestamp": str(d.get('alert_timestamp', ''))[:16].replace('T', ' '),
+                    "Status": "No matching trade",
+                })
+            st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+        st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
         return
 
     ft_start_str = strat.get('forward_test_start', '')
@@ -7247,6 +7316,17 @@ def render_strategy_alerts_tab(strat: dict):
 
     if not alerts:
         st.caption("No alerts for this strategy yet.")
+        _discrepancies = strat.get('discrepancies', [])
+        if strat.get('alert_tracking_enabled') and _discrepancies:
+            _missed = sum(1 for d in _discrepancies if d.get('type') == 'missed_alert')
+            _phantom = sum(1 for d in _discrepancies if d.get('type') == 'phantom_alert')
+            st.warning(
+                f"**{len(_discrepancies)} discrepancies detected** "
+                f"({_missed} missed alerts, {_phantom} phantom alerts). "
+                f"See the **Alert Analysis** tab for details."
+            )
+        elif strat.get('alert_tracking_enabled'):
+            st.info("Alert tracking is enabled. Alerts will appear here once the monitor detects signals.")
     else:
         for alert in alerts:
             alert_type = alert.get('type', 'unknown')
@@ -8360,19 +8440,30 @@ def render_portfolio_detail(portfolio_id: int):
     st.caption(meta)
 
     # Action bar
-    action_cols = st.columns([1, 1, 1, 5])
+    action_cols = st.columns([0.8, 1, 1, 1, 4.2])
     with action_cols[0]:
+        if st.button("Refresh", key="pdetail_refresh", help="Recompute portfolio analytics"):
+            st.session_state.pop(f"port_data_{portfolio_id}", None)
+            for _alloc in port.get('strategies', []):
+                _sid = _alloc.get('strategy_id')
+                if _sid:
+                    st.session_state.strategy_trades_cache.pop(_sid, None)
+                    st.session_state.pop(f"bt_trades_{_sid}", None)
+                    st.session_state.pop(f"ft_data_{_sid}", None)
+            st.toast("Portfolio data refreshed.")
+            st.rerun()
+    with action_cols[1]:
         if st.button("Edit Portfolio", key="pdetail_edit"):
             st.session_state.editing_portfolio_id = portfolio_id
             st.session_state.viewing_portfolio_id = None
             st.rerun()
-    with action_cols[1]:
+    with action_cols[2]:
         if st.button("Clone", key="pdetail_clone"):
             new = duplicate_portfolio(portfolio_id)
             if new:
                 st.toast(f"Cloned as '{new['name']}'")
                 st.rerun()
-    with action_cols[2]:
+    with action_cols[3]:
         if st.button("Delete", key="pdetail_del", type="secondary"):
             st.session_state.confirm_delete_portfolio_id = portfolio_id
             st.rerun()
