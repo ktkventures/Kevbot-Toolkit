@@ -1363,7 +1363,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
 - [x] User packs available in Strategy Builder trigger/confluence selection dropdowns
 - [x] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
-- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 21)
+- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 22)
 
 ### Phase 17: Indicator & Confluence Maturity
 *Validate, expand, and harden the indicator/confluence library to a production-ready standard. Upgrade charting infrastructure to support TradingView-quality visualizations. Goal: a trusted foundation of indicators, interpreters, and chart rendering that can support real trading strategies and live algorithmic execution with confidence.*
@@ -1518,7 +1518,27 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - **Opt-in per trigger** — Not all traders want intra-bar evaluation (some prefer bar-close discipline). The per-trigger checkbox keeps it explicit.
 - **Backtest uses high/low approximation** — Without true tick data in backtest, checking if bar high ≥ level (for long) or bar low ≤ level (for short) determines if the level was breached. Entry price uses the level itself (equivalent to a limit order fill). This is the standard approach in TradingView strategy backtests.
 
-### Phase 20: Scanner Strategy Origin
+### Phase 20: General & Risk Management Pack Audit
+*Audit, validate, and expand the General Confluence and Risk Management pack libraries. Ensure condition logic, parameter schemas, preview rendering, and pipeline integration match production expectations. Identify structural improvements now that the indicator audit (17D) and intra-bar infrastructure (19) are complete.*
+
+**General Packs Audit:**
+- [ ] Audit all general pack templates (Time of Day, Trading Session, Day of Week, Calendar Filter) — verify condition evaluation logic, parameter schemas, output states, and preview rendering
+- [ ] Evaluate whether general packs need triggers (e.g., session open/close trigger, time-window entry trigger)
+- [ ] Ensure preview tab Show Conditions overlay renders correctly for all general pack types
+- [ ] Identify any new general pack templates to add (e.g., market regime, volatility filter, news blackout)
+
+**Risk Management Packs Audit:**
+- [ ] Audit all risk management templates (ATR-Based, Fixed Dollar, Percentage, Swing, Risk:Reward) — verify stop/target calculation logic, parameter schemas, and interaction with trade execution
+- [ ] Evaluate intra-bar exit timing for risk management — stops and targets should ideally evaluate tick-by-tick once Phase 19 infrastructure is available (exit at stop price rather than waiting for bar close)
+- [ ] Review risk management parameter ranges and defaults for realistic trading scenarios
+- [ ] Ensure risk management packs integrate correctly with the execution model (stop_config, target_config in strategy schema)
+- [ ] Identify structural improvements — e.g., trailing stops, breakeven stops, partial profit taking, time-based exits
+
+**Preview & UI Improvements:**
+- [ ] Consistent preview rendering across all pack types (TF Confluence, General, Risk Management) — condition overlay, state timeline, distribution metrics
+- [ ] Risk management preview — visualize stop/target levels on sample trades
+
+### Phase 21: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
 
 - [ ] Add "Scanner" option to Strategy Origin selectbox
@@ -1528,7 +1548,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
-### Phase 21: Low-Priority Cleanup & Enhancements
+### Phase 22: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**

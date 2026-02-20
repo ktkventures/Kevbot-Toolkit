@@ -12113,13 +12113,70 @@ def _render_gp_preview(pack):
             'text': state,
         })
 
+    # --- Show Conditions toggle ---
+    show_conditions = st.checkbox(
+        "Show Conditions", value=False,
+        key=f"gp_show_cond_{pack.id}",
+    )
+
+    cond_primitives = []
+    if show_conditions and outputs:
+        # Build SessionHighlighting background bands (same style as TF confluence packs)
+        state_bg_map = {}
+        state_text_map = {}
+        for i, out in enumerate(outputs):
+            state_bg_map[out] = _STATE_BG_COLORS[i % len(_STATE_BG_COLORS)]
+            state_text_map[out] = _STATE_TEXT_COLORS[i % len(_STATE_TEXT_COLORS)]
+
+        change_indices = list(changes.index)
+        ranges = []
+        for i, idx in enumerate(change_indices):
+            state = changes.loc[idx]
+            start_ts = int(pd.to_datetime(idx).timestamp())
+            if i + 1 < len(change_indices):
+                end_ts = int(pd.to_datetime(change_indices[i + 1]).timestamp())
+            else:
+                end_ts = int(pd.to_datetime(states.index[-1]).timestamp())
+            ranges.append({
+                "startTime": start_ts,
+                "endTime": end_ts,
+                "color": state_bg_map.get(state, "rgba(148,163,184,0.05)"),
+            })
+
+        if ranges:
+            cond_primitives.append({
+                "type": "sessionHighlight",
+                "seriesIndex": 0,
+                "options": {"ranges": ranges},
+            })
+
+        # Add state text labels at each transition
+        for idx, state in changes.items():
+            ts = int(pd.to_datetime(idx).timestamp())
+            high_price = float(df.loc[idx, 'high']) if 'high' in df.columns else None
+            if high_price is None:
+                continue
+            cond_primitives.append({
+                "type": "anchoredText",
+                "seriesIndex": 0,
+                "options": {
+                    "time": ts,
+                    "price": high_price,
+                    "text": str(state),
+                    "color": state_text_map.get(state, "#94a3b8"),
+                    "fontSize": 9,
+                    "position": "above",
+                },
+            })
+
     # --- Price Chart with condition markers ---
     st.markdown("**Price Chart**")
     markers_df = pd.DataFrame()
     render_chart_with_candle_selector(
         df, markers_df, {"direction": "LONG"},
         chart_key=f"gp_preview_chart_{pack.id}",
-        extra_markers=condition_markers,
+        extra_markers=condition_markers if not show_conditions else None,
+        extra_primitives=cond_primitives if cond_primitives else None,
     )
 
     # --- Condition State Timeline ---

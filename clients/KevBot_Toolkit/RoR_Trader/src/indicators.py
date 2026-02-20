@@ -218,20 +218,23 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
         cum_vol = df['volume'].groupby(session_id).cumsum()
         vwap = cum_tp_vol / cum_vol
 
-    # Calculate bands using deviation from VWAP with session-aware expanding std
+    # Calculate bands using volume-weighted standard deviation, matching TradingView:
+    # stdev = sqrt( cumsum(Vol * (TP - VWAP)^2) / cumsum(Vol) )
     typical_price = (df['high'] + df['low'] + df['close']) / 3
-    deviation = typical_price - vwap
+    sq_dev_vol = df['volume'] * (typical_price - vwap) ** 2
 
     if isinstance(df.index, pd.DatetimeIndex):
         gaps = df.index.to_series().diff()
         session_start = gaps > pd.Timedelta(minutes=30)
         session_start.iloc[0] = True
         session_id = session_start.cumsum()
-        rolling_std = deviation.groupby(session_id).apply(
-            lambda s: s.expanding(min_periods=5).std()
-        ).droplevel(0)
+        cum_sq_dev_vol = sq_dev_vol.groupby(session_id).cumsum()
+        cum_vol = df['volume'].groupby(session_id).cumsum()
     else:
-        rolling_std = deviation.rolling(window=20, min_periods=5).std()
+        cum_sq_dev_vol = sq_dev_vol.cumsum()
+        cum_vol = df['volume'].cumsum()
+
+    rolling_std = np.sqrt(cum_sq_dev_vol / cum_vol)
 
     return {
         "vwap": vwap,

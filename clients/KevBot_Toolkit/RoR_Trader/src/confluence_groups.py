@@ -291,7 +291,7 @@ TEMPLATES: Dict[str, Dict] = {
             {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
             {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
         ],
-        "indicator_columns": ["utbot_stop", "utbot_direction"],
+        "indicator_columns": ["utbot_stop"],
     },
     "bar_count": {
         "name": "Bar Count Exit",

@@ -76,6 +76,14 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
         outputs=["EXTREME", "HIGH", "NORMAL", "LOW", "MINIMAL"],
         triggers=["rvol_spike", "rvol_extreme", "rvol_fade"]
     ),
+    "UTBOT": InterpreterConfig(
+        name="UT Bot",
+        description="ATR trailing stop direction",
+        category="Trend",
+        requires_indicators=["utbot_stop", "utbot_direction"],
+        outputs=["BULL", "BEAR"],
+        triggers=["utbot_buy", "utbot_sell"]
+    ),
 }
 
 
