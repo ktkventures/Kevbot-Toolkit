@@ -301,6 +301,7 @@ class SymbolHub:
             enrich_signal_with_portfolio_context,
             load_alert_config,
         )
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label, get_tf_label
 
         df = builder.history
         if len(df) < 10:
@@ -318,7 +319,21 @@ class SymbolHub:
                 continue
 
             try:
-                signals = detect_signals(strat, df=df.copy())
+                # Gather secondary TF histories for MTF confluence
+                secondary_tf_dfs = None
+                req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+                if req_labels:
+                    secondary_tf_dfs = {}
+                    for lbl in req_labels:
+                        sec_tf_str = get_tf_from_label(lbl)
+                        sec_tf_sec = TIMEFRAME_SECONDS.get(sec_tf_str)
+                        if sec_tf_sec and sec_tf_sec in self.builders:
+                            sec_history = self.builders[sec_tf_sec].history
+                            if len(sec_history) > 0:
+                                secondary_tf_dfs[lbl] = sec_history.copy()
+
+                signals = detect_signals(strat, df=df.copy(),
+                                         secondary_tf_dfs=secondary_tf_dfs)
 
                 for sig in signals:
                     # Enrich — mirrors alert_monitor.py poll_strategies() pattern
@@ -427,27 +442,40 @@ class UnifiedStreamingEngine:
                 hub.add_strategy(strat)
 
             # Register unique (timeframe, session) combos for this symbol
+            # Includes both primary TFs and any secondary TFs required by MTF confluence
+            from data_loader import get_required_tfs_from_confluence, get_tf_from_label
             seen_tf: set = set()
             for strat in strats:
                 tf_str = strat.get('timeframe', '1Min')
                 tf_sec = TIMEFRAME_SECONDS.get(tf_str, 60)
                 session = strat.get('trading_session', 'RTH')
-                tf_key = (tf_sec, session)
-                if tf_key in seen_tf:
-                    continue
-                seen_tf.add(tf_key)
 
-                bars_needed = max(compute_signal_detection_bars(tf_str, session), MAX_HISTORY)
-                try:
-                    warmup_df = load_latest_bars(
-                        sym, bars=bars_needed, timeframe=tf_str,
-                        seed=strat.get('data_seed', 42), feed='sip',
-                        session=session,
-                    )
-                except Exception as e:
-                    logger.error("Warmup load failed for %s/%s: %s", sym, tf_str, e)
-                    warmup_df = pd.DataFrame()
-                hub.add_timeframe(tf_sec, warmup_df)
+                # Collect primary + required secondary timeframes
+                tfs_to_register = [(tf_str, tf_sec)]
+                req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+                for lbl in req_labels:
+                    sec_tf_str = get_tf_from_label(lbl)
+                    sec_tf_sec = TIMEFRAME_SECONDS.get(sec_tf_str)
+                    if sec_tf_sec is not None:
+                        tfs_to_register.append((sec_tf_str, sec_tf_sec))
+
+                for reg_tf_str, reg_tf_sec in tfs_to_register:
+                    tf_key = (reg_tf_sec, session)
+                    if tf_key in seen_tf:
+                        continue
+                    seen_tf.add(tf_key)
+
+                    bars_needed = max(compute_signal_detection_bars(reg_tf_str, session), MAX_HISTORY)
+                    try:
+                        warmup_df = load_latest_bars(
+                            sym, bars=bars_needed, timeframe=reg_tf_str,
+                            seed=strat.get('data_seed', 42), feed='sip',
+                            session=session,
+                        )
+                    except Exception as e:
+                        logger.error("Warmup load failed for %s/%s: %s", sym, reg_tf_str, e)
+                        warmup_df = pd.DataFrame()
+                    hub.add_timeframe(reg_tf_sec, warmup_df)
 
             self.hubs[sym] = hub
 

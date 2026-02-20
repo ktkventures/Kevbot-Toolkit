@@ -428,8 +428,12 @@ def poll_strategies(strats: list, config: dict, timeframe: str, feed: str = "sip
     Poll a group of strategies that share the same timeframe.
 
     Pre-loads data per unique (symbol, session) pair (deduplication), then runs
-    detect_signals with the pre-loaded DataFrame.
+    detect_signals with the pre-loaded DataFrame.  For strategies with
+    multi-timeframe confluence conditions, secondary TF data is also loaded
+    and passed to detect_signals().
     """
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+
     # Deduplicate by (symbol, session) — load data once per unique pair
     symbol_session_seeds = {}
     for strat in strats:
@@ -439,7 +443,7 @@ def poll_strategies(strats: list, config: dict, timeframe: str, feed: str = "sip
         if key not in symbol_session_seeds:
             symbol_session_seeds[key] = strat.get('data_seed', 42)
 
-    # Pre-load data for each unique (symbol, session)
+    # Pre-load primary TF data for each unique (symbol, session)
     data_cache = {}
     for (sym, sess), seed in symbol_session_seeds.items():
         bars_needed = compute_signal_detection_bars(timeframe, sess)
@@ -447,14 +451,36 @@ def poll_strategies(strats: list, config: dict, timeframe: str, feed: str = "sip
                               feed=feed, session=sess)
         data_cache[(sym, sess)] = df
 
+    # Cache for secondary TF data: (symbol, session, secondary_tf_str) → df
+    sec_data_cache = {}
+
     # Process each strategy
     for strat in strats:
         sym = strat.get('symbol', 'SPY')
         sess = strat.get('trading_session', 'RTH')
         df = data_cache.get((sym, sess), pd.DataFrame())
 
+        # Load secondary TF data for MTF confluence
+        secondary_tf_dfs = None
+        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+        if req_labels:
+            secondary_tf_dfs = {}
+            seed = strat.get('data_seed', 42)
+            for lbl in req_labels:
+                sec_tf_str = get_tf_from_label(lbl)
+                cache_key = (sym, sess, sec_tf_str)
+                if cache_key not in sec_data_cache:
+                    sec_bars = compute_signal_detection_bars(sec_tf_str, sess)
+                    sec_data_cache[cache_key] = load_cached_bars(
+                        sym, sec_tf_str, sec_bars, seed=seed,
+                        feed=feed, session=sess)
+                sec_df = sec_data_cache[cache_key]
+                if len(sec_df) > 0:
+                    secondary_tf_dfs[lbl] = sec_df.copy()
+
         try:
-            signals = detect_signals(strat, df=df.copy() if len(df) > 0 else None)
+            signals = detect_signals(strat, df=df.copy() if len(df) > 0 else None,
+                                     secondary_tf_dfs=secondary_tf_dfs)
 
             for sig in signals:
                 # Enrich with strategy info

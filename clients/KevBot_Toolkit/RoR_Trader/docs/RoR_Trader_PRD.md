@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.40
+**Version:** 0.41
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 18B COMPLETE — Multi-Timeframe Confluence: Backtest pipeline resamples to secondary TFs, forward-fills interpreter states, MTF confluence records in drill-down and trade generation. Phase 18C next. Phases 18A, 17A–D, 11–16 complete
+**Status:** Phase 18 COMPLETE — Multi-Timeframe Confluence fully implemented (18A timeframe management, 18B backtest pipeline, 18C streaming engine integration). Phase 19 next. Phases 17A–D, 11–16 complete
 
 ---
 
@@ -1478,11 +1478,11 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] `get_secondary_tf_map()` utility extracts TF map from `__`-suffixed column names
 - [x] `_get_secondary_tfs()` helper computes enabled secondary TFs (excludes primary TF and sub-minute streaming-only TFs)
 
-**Phase 18C: Streaming Engine MTF Integration**
-- [ ] `SymbolHub.start()` registers required secondary TFs from strategy confluence conditions
-- [ ] `SymbolHub._on_bar_close()` gathers secondary TF interpreter states from other BarBuilders
-- [ ] `detect_signals()` accepts `secondary_tf_dfs` parameter, runs pipeline on secondary TFs, builds MTF confluence records
-- [ ] Alert monitor polling fallback loads secondary TF data for strategies that need it
+**Phase 18C: Streaming Engine MTF Integration — COMPLETE (Feb 19, 2026)**
+- [x] `StreamingEngine.start()` registers required secondary TFs from strategy confluence conditions via `get_required_tfs_from_confluence()`
+- [x] `SymbolHub._on_bar_close()` gathers secondary TF histories from other BarBuilders and passes as `secondary_tf_dfs` to `detect_signals()`
+- [x] `detect_signals()` accepts `secondary_tf_dfs` parameter — runs pipeline on each secondary TF df, forward-fills interpreter states, builds MTF confluence records via `get_mtf_confluence_records()`
+- [x] Alert monitor polling fallback loads secondary TF data per strategy and passes to `detect_signals()`
 
 ### Design Decisions (Phase 18 — Multi-Timeframe Confluence)
 - **Timeframe management page over per-strategy timeframe config** — A centralized page where users enable timeframes mirrors the existing pattern for confluence packs (enable/disable globally, use in any strategy). This avoids per-strategy timeframe UI complexity and keeps the drill-down experience consistent.

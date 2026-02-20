@@ -26,6 +26,7 @@ from interpreters import (
     run_all_interpreters,
     detect_all_triggers,
     get_confluence_records,
+    get_mtf_confluence_records,
 )
 from interpreters import INTERPRETERS as _ALL_INTERPRETERS
 from triggers import generate_trades, calculate_stop_price
@@ -590,7 +591,8 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
     return confluence_trigger_id
 
 
-def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -> list:
+def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
+                   secondary_tf_dfs: dict = None) -> list:
     """
     Run the full pipeline on recent data and check for entry/exit signals.
 
@@ -599,6 +601,9 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -
         df: Pre-loaded DataFrame of bars. If None, bars are loaded automatically
             using compute_signal_detection_bars() for the strategy's timeframe.
         feed: Data feed — "sip" or "iex"
+        secondary_tf_dfs: Optional dict ``{tf_label: pd.DataFrame}`` of secondary
+            timeframe bar data for multi-timeframe confluence.  Each DataFrame
+            should contain raw OHLCV bars; the pipeline is run on them here.
 
     Returns list of signal dicts (usually 0 or 1 items).
     """
@@ -615,8 +620,28 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -
     if len(df) == 0:
         return []
 
-    # Run pipeline
+    # Run pipeline on primary TF
     df = _run_pipeline(df)
+
+    # ── Multi-Timeframe: run pipeline on secondary TFs, forward-fill states ──
+    secondary_tf_map = {}
+    interp_keys = list(_ALL_INTERPRETERS.keys())
+    if secondary_tf_dfs:
+        for tf_label, sec_df in secondary_tf_dfs.items():
+            if sec_df is None or len(sec_df) == 0:
+                continue
+            try:
+                sec_df = _run_pipeline(sec_df.copy())
+                suffixed_cols = []
+                for interp_col in interp_keys:
+                    if interp_col in sec_df.columns:
+                        suffixed = f"{interp_col}__{tf_label}"
+                        df[suffixed] = sec_df[interp_col].reindex(df.index, method='ffill')
+                        suffixed_cols.append(suffixed)
+                if suffixed_cols:
+                    secondary_tf_map[tf_label] = suffixed_cols
+            except Exception:
+                pass
 
     # Get trigger IDs
     entry_trigger = strategy.get('entry_trigger', '')
@@ -649,12 +674,17 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip") -
         stop_config=strategy.get('stop_config'),
         target_config=strategy.get('target_config'),
         bar_count_exit=strategy.get('bar_count_exit'),
+        secondary_tf_map=secondary_tf_map if secondary_tf_map else None,
     )
 
     signals = []
     last_bar = df.iloc[-1]
-    interpreter_list = list(_ALL_INTERPRETERS.keys())
-    confluence_records = get_confluence_records(last_bar, "1M", interpreter_list)
+    interpreter_list = interp_keys
+    if secondary_tf_map:
+        confluence_records = get_mtf_confluence_records(
+            last_bar, interpreter_list, secondary_tf_map)
+    else:
+        confluence_records = get_confluence_records(last_bar, "1M", interpreter_list)
 
     # Check the last bar for trigger signals
     entry_col = f"trig_{entry_trigger}"
