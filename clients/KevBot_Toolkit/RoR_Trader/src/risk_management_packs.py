@@ -69,7 +69,8 @@ class RiskManagementPack:
 
     def get_target_config(self) -> Optional[dict]:
         """Generate the take-profit config dict from this pack's parameters.
-        Returns None if the pack doesn't define a target."""
+        Returns None if no target is configured — trades will exit only via
+        stop loss, signal triggers, or bar count exit."""
         template = TEMPLATES.get(self.base_template)
         if not template:
             return None
@@ -83,63 +84,127 @@ class RiskManagementPack:
 # CONFIG BUILDERS
 # =============================================================================
 
+def _clamp(val, default, mn=None, mx=None):
+    """Clamp a parameter value to schema range."""
+    try:
+        val = type(default)(val) if val is not None else default
+    except (TypeError, ValueError):
+        val = default
+    if mn is not None:
+        val = max(val, mn)
+    if mx is not None:
+        val = min(val, mx)
+    return val
+
+
 def _atr_stop(params: dict) -> dict:
-    return {"method": "atr", "atr_mult": params.get("stop_atr_mult", 1.5)}
+    mult = _clamp(params.get("stop_atr_mult", 1.5), 1.5, 0.5, 5.0)
+    return {"method": "atr", "atr_mult": mult}
 
 def _atr_target(params: dict) -> Optional[dict]:
     mult = params.get("target_atr_mult")
     if mult is None or mult <= 0:
         return None
+    mult = _clamp(mult, 3.0, 0.0, 10.0)
     return {"method": "atr", "atr_mult": mult}
 
 def _fixed_stop(params: dict) -> dict:
-    return {"method": "fixed_dollar", "dollar_amount": params.get("stop_amount", 1.0)}
+    amt = _clamp(params.get("stop_amount", 1.0), 1.0, 0.01, 100.0)
+    return {"method": "fixed_dollar", "dollar_amount": amt}
 
 def _fixed_target(params: dict) -> Optional[dict]:
     amt = params.get("target_amount")
     if amt is None or amt <= 0:
         return None
+    amt = _clamp(amt, 2.0, 0.0, 100.0)
     return {"method": "fixed_dollar", "dollar_amount": amt}
 
 def _pct_stop(params: dict) -> dict:
-    return {"method": "percentage", "percentage": params.get("stop_pct", 0.5)}
+    pct = _clamp(params.get("stop_pct", 0.5), 0.5, 0.01, 10.0)
+    return {"method": "percentage", "percentage": pct}
 
 def _pct_target(params: dict) -> Optional[dict]:
     pct = params.get("target_pct")
     if pct is None or pct <= 0:
         return None
+    pct = _clamp(pct, 1.0, 0.0, 20.0)
     return {"method": "percentage", "percentage": pct}
 
 def _swing_stop(params: dict) -> dict:
-    return {
-        "method": "swing",
-        "lookback": params.get("lookback", 5),
-        "padding": params.get("padding", 0.05),
-    }
+    lb = _clamp(params.get("lookback", 5), 5, 2, 50)
+    pad = _clamp(params.get("padding", 0.05), 0.05, 0.0, 10.0)
+    return {"method": "swing", "lookback": lb, "padding": pad}
 
 def _swing_target(params: dict) -> Optional[dict]:
     rr = params.get("rr_ratio")
     if rr is None or rr <= 0:
         return None
+    rr = _clamp(rr, 2.0, 0.0, 10.0)
     return {"method": "risk_reward", "rr_ratio": rr}
 
 def _rr_stop(params: dict) -> dict:
     method = params.get("stop_method", "atr")
+    if method not in ("atr", "fixed_dollar", "percentage", "swing"):
+        method = "atr"
     if method == "atr":
-        return {"method": "atr", "atr_mult": params.get("stop_atr_mult", 1.5)}
+        mult = _clamp(params.get("stop_atr_mult", 1.5), 1.5, 0.5, 5.0)
+        return {"method": "atr", "atr_mult": mult}
     elif method == "fixed_dollar":
-        return {"method": "fixed_dollar", "dollar_amount": params.get("stop_amount", 1.0)}
+        amt = _clamp(params.get("stop_amount", 1.0), 1.0, 0.01, 100.0)
+        return {"method": "fixed_dollar", "dollar_amount": amt}
     elif method == "percentage":
-        return {"method": "percentage", "percentage": params.get("stop_pct", 0.5)}
-    elif method == "swing":
-        return {"method": "swing", "lookback": params.get("lookback", 5), "padding": params.get("padding", 0.05)}
-    return {"method": "atr", "atr_mult": 1.5}
+        pct = _clamp(params.get("stop_pct", 0.5), 0.5, 0.01, 10.0)
+        return {"method": "percentage", "percentage": pct}
+    else:  # swing
+        lb = _clamp(params.get("lookback", 5), 5, 2, 50)
+        pad = _clamp(params.get("padding", 0.05), 0.05, 0.0, 10.0)
+        return {"method": "swing", "lookback": lb, "padding": pad}
 
 def _rr_target(params: dict) -> Optional[dict]:
     rr = params.get("rr_ratio")
     if rr is None or rr <= 0:
         return None
+    rr = _clamp(rr, 2.0, 0.5, 10.0)
     return {"method": "risk_reward", "rr_ratio": rr}
+
+
+# --- Trailing stop builders ---
+
+def _atr_trailing_stop(params: dict) -> dict:
+    config = {"method": "atr", "atr_mult": _clamp(params.get("stop_atr_mult", 1.5), 1.5, 0.5, 5.0)}
+    config["trailing"] = {
+        "enabled": True,
+        "method": "atr",
+        "atr_mult": _clamp(params.get("trail_atr_mult", 1.0), 1.0, 0.3, 5.0),
+        "activation_r": _clamp(params.get("trail_activation_r", 0.5), 0.5, 0.0, 5.0),
+    }
+    return config
+
+def _atr_trailing_target(params: dict) -> Optional[dict]:
+    mult = params.get("target_atr_mult", 0.0)
+    if mult is None or mult <= 0:
+        return None
+    mult = _clamp(mult, 3.0, 0.0, 10.0)
+    return {"method": "atr", "atr_mult": mult}
+
+
+# --- Breakeven stop builders ---
+
+def _breakeven_stop_builder(params: dict) -> dict:
+    config = {"method": "atr", "atr_mult": _clamp(params.get("stop_atr_mult", 1.5), 1.5, 0.5, 5.0)}
+    config["breakeven"] = {
+        "enabled": True,
+        "activation_r": _clamp(params.get("be_activation_r", 1.0), 1.0, 0.1, 5.0),
+        "offset": _clamp(params.get("be_offset", 0.0), 0.0, 0.0, 2.0),
+    }
+    return config
+
+def _breakeven_target_builder(params: dict) -> Optional[dict]:
+    mult = params.get("target_atr_mult", 3.0)
+    if mult is None or mult <= 0:
+        return None
+    mult = _clamp(mult, 3.0, 0.0, 10.0)
+    return {"method": "atr", "atr_mult": mult}
 
 
 # =============================================================================
@@ -226,6 +291,38 @@ TEMPLATES: Dict[str, Dict] = {
         "target_summary": "{rr_ratio}R",
         "build_stop": _rr_stop,
         "build_target": _rr_target,
+    },
+
+    "atr_trailing": {
+        "name": "ATR Trailing",
+        "category": "Trailing",
+        "description": "ATR-based initial stop with trailing stop that ratchets in your favor",
+        "parameters_schema": {
+            "stop_atr_mult": {"type": "float", "default": 1.5, "min": 0.5, "max": 5.0, "label": "Initial Stop ATR×"},
+            "trail_atr_mult": {"type": "float", "default": 1.0, "min": 0.3, "max": 5.0, "label": "Trail ATR×"},
+            "trail_activation_r": {"type": "float", "default": 0.5, "min": 0.0, "max": 5.0, "label": "Trail Activation (R)"},
+            "target_atr_mult": {"type": "float", "default": 0.0, "min": 0.0, "max": 10.0, "label": "Target ATR× (0=none)"},
+        },
+        "stop_summary": "ATR x{stop_atr_mult} → Trail x{trail_atr_mult}",
+        "target_summary": "ATR x{target_atr_mult}",
+        "build_stop": _atr_trailing_stop,
+        "build_target": _atr_trailing_target,
+    },
+
+    "breakeven_stop": {
+        "name": "Breakeven Stop",
+        "category": "Trailing",
+        "description": "ATR stop that moves to breakeven after reaching an R threshold",
+        "parameters_schema": {
+            "stop_atr_mult": {"type": "float", "default": 1.5, "min": 0.5, "max": 5.0, "label": "Initial Stop ATR×"},
+            "be_activation_r": {"type": "float", "default": 1.0, "min": 0.1, "max": 5.0, "label": "BE Activation (R)"},
+            "be_offset": {"type": "float", "default": 0.0, "min": 0.0, "max": 2.0, "label": "BE Offset ($)"},
+            "target_atr_mult": {"type": "float", "default": 3.0, "min": 0.0, "max": 10.0, "label": "Target ATR× (0=none)"},
+        },
+        "stop_summary": "ATR x{stop_atr_mult} → BE at {be_activation_r}R",
+        "target_summary": "ATR x{target_atr_mult}",
+        "build_stop": _breakeven_stop_builder,
+        "build_target": _breakeven_target_builder,
     },
 }
 
@@ -353,6 +450,26 @@ def create_default_packs() -> List[RiskManagementPack]:
             is_default=True,
             parameters={"lookback": 5, "padding": 0.05, "rr_ratio": 2.0},
         ),
+        RiskManagementPack(
+            id="atr_trailing_default",
+            base_template="atr_trailing",
+            version="Default",
+            description="1.5x ATR stop with 1x ATR trailing after 0.5R",
+            enabled=False,
+            is_default=True,
+            parameters={"stop_atr_mult": 1.5, "trail_atr_mult": 1.0,
+                        "trail_activation_r": 0.5, "target_atr_mult": 0.0},
+        ),
+        RiskManagementPack(
+            id="breakeven_1r",
+            base_template="breakeven_stop",
+            version="BE at 1R",
+            description="1.5x ATR stop, moves to breakeven at 1R, 3x ATR target",
+            enabled=False,
+            is_default=True,
+            parameters={"stop_atr_mult": 1.5, "be_activation_r": 1.0,
+                        "be_offset": 0.0, "target_atr_mult": 3.0},
+        ),
     ]
     return defaults
 
@@ -407,6 +524,41 @@ def duplicate_pack(pack: RiskManagementPack, new_id: str, new_version: str) -> R
         is_default=False,
         parameters=dict(pack.parameters),
     )
+
+
+def validate_parameters(params: dict, template_id: str) -> dict:
+    """Validate and clamp parameters against the template schema.
+    Returns a sanitized copy of params."""
+    schema = get_parameter_schema(template_id)
+    if not schema:
+        return dict(params)
+    validated = {}
+    for key, spec in schema.items():
+        val = params.get(key, spec.get("default"))
+        ptype = spec.get("type")
+        if ptype == "int":
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                val = spec.get("default", 0)
+            if "min" in spec:
+                val = max(val, spec["min"])
+            if "max" in spec:
+                val = min(val, spec["max"])
+        elif ptype == "float":
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                val = spec.get("default", 0.0)
+            if "min" in spec:
+                val = max(val, spec["min"])
+            if "max" in spec:
+                val = min(val, spec["max"])
+        elif ptype == "select":
+            if val not in spec.get("options", []):
+                val = spec.get("default")
+        validated[key] = val
+    return validated
 
 
 def format_parameters(params: dict, template_id: str) -> str:

@@ -3719,7 +3719,10 @@ def render_strategy_builder():
         edit_config['stop_config'] = pending_sc
         st.session_state.strategy_config = dict(edit_config)
         for k in ['sb_stop_method', 'sb_stop_atr', 'sb_stop_dollar',
-                  'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding']:
+                  'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding',
+                  'sb_trail_enabled', 'sb_trail_method', 'sb_trail_atr',
+                  'sb_trail_dollar', 'sb_trail_pct', 'sb_trail_activation',
+                  'sb_be_enabled', 'sb_be_activation', 'sb_be_offset']:
             st.session_state.pop(k, None)
     if 'pending_target_config' in st.session_state:
         pending_tc = st.session_state.pop('pending_target_config')
@@ -3908,6 +3911,75 @@ def render_strategy_builder():
                     value=float(saved_stop.get('padding', 0.05)),
                     step=0.01, key="sb_stop_padding",
                 )
+
+            # --- Optional: Trailing Stop ---
+            saved_trail = saved_stop.get('trailing', {})
+            trail_enabled = st.checkbox(
+                "Trailing Stop",
+                value=saved_trail.get('enabled', False),
+                key="sb_trail_enabled",
+            )
+            if trail_enabled:
+                trail_methods = ["ATR", "Fixed $", "Pct %"]
+                trail_keys = ["atr", "fixed_dollar", "percentage"]
+                saved_tm = saved_trail.get('method', 'atr')
+                trail_idx = trail_keys.index(saved_tm) if saved_tm in trail_keys else 0
+                trail_method_idx = st.selectbox(
+                    "Trail Method", range(len(trail_methods)),
+                    index=trail_idx,
+                    format_func=lambda i: trail_methods[i],
+                    key="sb_trail_method",
+                )
+                trail_key = trail_keys[trail_method_idx]
+                trail_cfg = {"enabled": True, "method": trail_key}
+                if trail_key == "atr":
+                    trail_cfg["atr_mult"] = st.number_input(
+                        "Trail ATR×", min_value=0.3, max_value=5.0,
+                        value=float(saved_trail.get('atr_mult', 1.0)),
+                        step=0.1, key="sb_trail_atr",
+                    )
+                elif trail_key == "fixed_dollar":
+                    trail_cfg["dollar_amount"] = st.number_input(
+                        "Trail $", min_value=0.01, max_value=100.0,
+                        value=float(saved_trail.get('dollar_amount', 0.50)),
+                        step=0.05, key="sb_trail_dollar",
+                    )
+                elif trail_key == "percentage":
+                    trail_cfg["percentage"] = st.number_input(
+                        "Trail %", min_value=0.01, max_value=10.0,
+                        value=float(saved_trail.get('percentage', 0.3)),
+                        step=0.05, key="sb_trail_pct",
+                    )
+                trail_cfg["activation_r"] = st.number_input(
+                    "Activation (R)", min_value=0.0, max_value=5.0,
+                    value=float(saved_trail.get('activation_r', 0.5)),
+                    step=0.1, key="sb_trail_activation",
+                )
+                stop_config_dict["trailing"] = trail_cfg
+
+            # --- Optional: Breakeven Stop ---
+            saved_be = saved_stop.get('breakeven', {})
+            be_enabled = st.checkbox(
+                "Breakeven Stop",
+                value=saved_be.get('enabled', False),
+                key="sb_be_enabled",
+            )
+            if be_enabled:
+                be_r = st.number_input(
+                    "BE Activation (R)", min_value=0.1, max_value=5.0,
+                    value=float(saved_be.get('activation_r', 1.0)),
+                    step=0.1, key="sb_be_activation",
+                )
+                be_offset = st.number_input(
+                    "BE Offset ($)", min_value=0.0, max_value=2.0,
+                    value=float(saved_be.get('offset', 0.0)),
+                    step=0.01, key="sb_be_offset",
+                )
+                stop_config_dict["breakeven"] = {
+                    "enabled": True,
+                    "activation_r": be_r,
+                    "offset": be_offset,
+                }
 
         stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
 
@@ -12532,6 +12604,10 @@ def _render_gp_preview(pack):
     )
     df = _filter_session(df, gp_preview_session)
 
+    if len(df) == 0:
+        st.warning("No data after session filter. Try selecting 'Extended Hours' to see this pack's behavior.")
+        return
+
     # Trim to last 3 days for display
     display_bars = min(len(df), 390 * 3)
     df = df.iloc[-display_bars:]
@@ -12560,6 +12636,29 @@ def _render_gp_preview(pack):
             'shape': 'circle',
             'text': state,
         })
+
+    # --- Build trigger markers (arrows at state transitions) ---
+    trigger_markers = []
+    trigger_results = gp_module.detect_triggers(df, pack)
+    if trigger_results:
+        # Map column names back to trigger display names
+        trig_defs = template.get("triggers", []) if template else []
+        col_to_name = {}
+        for td in trig_defs:
+            col_key = f"gp_trig_{pack.id}_{td['base']}"
+            col_to_name[col_key] = td.get("name", td["base"])
+        for trig_col, trig_series in trigger_results.items():
+            fired = trig_series[trig_series == True]
+            trig_label = col_to_name.get(trig_col, trig_col)
+            for t_idx in fired.index:
+                ts = int(pd.to_datetime(t_idx).timestamp())
+                trigger_markers.append({
+                    'time': ts,
+                    'position': 'belowBar',
+                    'color': '#3b82f6',
+                    'shape': 'arrowUp',
+                    'text': trig_label,
+                })
 
     # --- Show Conditions toggle ---
     show_conditions = st.checkbox(
@@ -12620,10 +12719,14 @@ def _render_gp_preview(pack):
     # --- Price Chart with condition markers ---
     st.markdown("**Price Chart**")
     markers_df = pd.DataFrame()
+    # Combine condition + trigger markers; trigger markers always show
+    all_markers = list(trigger_markers)
+    if not show_conditions:
+        all_markers = condition_markers + all_markers
     render_chart_with_candle_selector(
         df, markers_df, {"direction": "LONG"},
         chart_key=f"gp_preview_chart_{pack.id}",
-        extra_markers=condition_markers if not show_conditions else None,
+        extra_markers=all_markers if all_markers else None,
         extra_primitives=cond_primitives if cond_primitives else None,
     )
 
@@ -13090,14 +13193,49 @@ def _render_rmp_preview(pack):
             target_config=target_config, general_columns=rm_general_cols,
         )
 
-    # --- Chart with trade markers ---
+    # --- Chart with trade markers + stop/target lines ---
     st.markdown("**Price Chart with Trades**")
     st.caption(f"Stop: {rmp_module.format_stop_summary(pack)} | "
                f"Target: {rmp_module.format_target_summary(pack)}")
 
+    # Build stop/target level markers as extra markers on candle bodies
+    st_markers = []
+    if len(trades) > 0:
+        for _, t in trades.iterrows():
+            entry_ts = int(pd.to_datetime(t['entry_time']).timestamp())
+            # Stop level marker (red triangle down at entry bar)
+            if pd.notna(t.get('stop_price')):
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'belowBar',
+                    'color': 'rgba(239,68,68,0.7)',
+                    'shape': 'arrowDown',
+                    'text': f"S:{t['stop_price']:.2f}",
+                })
+            # Target level marker (green triangle up at entry bar)
+            if pd.notna(t.get('target_price')):
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'aboveBar',
+                    'color': 'rgba(34,197,94,0.7)',
+                    'shape': 'arrowUp',
+                    'text': f"T:{t['target_price']:.2f}",
+                })
+            # Initial stop marker for trailing stops (dashed marker)
+            init_stop = t.get('initial_stop_price')
+            if pd.notna(init_stop) and pd.notna(t.get('stop_price')) and abs(init_stop - t['stop_price']) > 0.001:
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'inBar',
+                    'color': 'rgba(239,68,68,0.4)',
+                    'shape': 'circle',
+                    'text': f"IS:{init_stop:.2f}",
+                })
+
     render_chart_with_candle_selector(
         df, trades, {"direction": direction},
         chart_key=f"rmp_preview_chart_{pack.id}",
+        extra_markers=st_markers if st_markers else None,
     )
 
     # --- Trade Summary ---
@@ -13113,6 +13251,20 @@ def _render_rmp_preview(pack):
         k4.metric("Avg R", f"{kpis['avg_r']:+.2f}")
         k5.metric("Total R", f"{kpis['total_r']:+.1f}")
         k6.metric("Max DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+        # Exit reason breakdown
+        if 'exit_reason' in trades.columns:
+            reasons = trades['exit_reason'].value_counts()
+            if len(reasons) > 0:
+                st.markdown("**Exit Reasons**")
+                reason_cols = st.columns(min(len(reasons), 6))
+                for i, (reason, count) in enumerate(reasons.items()):
+                    pct = count / len(trades) * 100
+                    reason_cols[i % len(reason_cols)].metric(
+                        reason.replace('_', ' ').title(),
+                        f"{pct:.0f}%",
+                        help=f"{count} trades",
+                    )
 
         # Trade details table
         st.markdown("**Trade Details**")

@@ -11,11 +11,14 @@ This module handles:
 Replaces the mock trade generation with real trigger-based logic.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 from interpreters import get_confluence_records, get_mtf_confluence_records, INTERPRETERS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,6 +76,7 @@ def calculate_stop_price(
         atr = row.get('atr', entry_price * 0.01)
         if pd.isna(atr) or atr <= 0:
             atr = entry_price * 0.01
+            logger.debug("ATR NaN/invalid at bar %d, using fallback: %.4f", bar_index, atr)
         mult = stop_config.get("atr_mult", 1.5)
         distance = atr * mult
 
@@ -87,8 +91,14 @@ def calculate_stop_price(
         lookback = stop_config.get("lookback", 5)
         padding = stop_config.get("padding", 0.0)
         start_idx = max(0, bar_index - lookback)
-        lookback_slice = df.iloc[start_idx:bar_index + 1]
-        if direction == "LONG":
+        lookback_slice = df.iloc[start_idx:bar_index]  # Exclude current bar
+        if len(lookback_slice) == 0:
+            # Not enough history — fall back to ATR
+            atr = row.get('atr', entry_price * 0.01)
+            if pd.isna(atr) or atr <= 0:
+                atr = entry_price * 0.01
+            distance = atr * 1.5
+        elif direction == "LONG":
             swing_level = lookback_slice['low'].min()
             return swing_level - padding
         else:
@@ -167,7 +177,9 @@ def calculate_target_price(
         lookback = target_config.get("lookback", 5)
         padding = target_config.get("padding", 0.0)
         start_idx = max(0, bar_index - lookback)
-        lookback_slice = df.iloc[start_idx:bar_index + 1]
+        lookback_slice = df.iloc[start_idx:bar_index]  # Exclude current bar
+        if len(lookback_slice) == 0:
+            return None  # Not enough history for swing target
         if direction == "LONG":
             swing_level = lookback_slice['high'].max()
             return swing_level + padding
@@ -182,6 +194,82 @@ def calculate_target_price(
         return entry_price + distance
     else:
         return entry_price - distance
+
+
+# =============================================================================
+# TRAILING / BREAKEVEN STOP UPDATES
+# =============================================================================
+
+def update_stop_price(
+    current_stop: float,
+    entry_price: float,
+    direction: str,
+    row: pd.Series,
+    stop_config: dict,
+) -> float:
+    """Update stop price for trailing and/or breakeven stops.
+
+    Called on each bar while in a position.  Stop can only ratchet in the
+    favorable direction (LONG: up, SHORT: down).
+
+    Modifier keys on stop_config:
+      trailing:  {"enabled": True, "method": "atr"|"fixed_dollar"|"percentage",
+                  "atr_mult": float, "dollar_amount": float, "percentage": float,
+                  "activation_r": float}
+      breakeven: {"enabled": True, "activation_r": float, "offset": float}
+    """
+    new_stop = current_stop
+    risk = abs(entry_price - current_stop)
+    if risk <= 0:
+        risk = entry_price * 0.01
+
+    # 1. Breakeven activation
+    be = stop_config.get("breakeven")
+    if be and be.get("enabled"):
+        if direction == "LONG":
+            unrealized_r = (row['close'] - entry_price) / risk
+        else:
+            unrealized_r = (entry_price - row['close']) / risk
+        if unrealized_r >= be.get("activation_r", 1.0):
+            be_offset = be.get("offset", 0.0)
+            if direction == "LONG":
+                be_level = entry_price + be_offset
+                new_stop = max(new_stop, be_level)
+            else:
+                be_level = entry_price - be_offset
+                new_stop = min(new_stop, be_level)
+
+    # 2. Trailing stop
+    trail = stop_config.get("trailing")
+    if trail and trail.get("enabled"):
+        if direction == "LONG":
+            unrealized_r = (row['close'] - entry_price) / risk
+        else:
+            unrealized_r = (entry_price - row['close']) / risk
+
+        if unrealized_r >= trail.get("activation_r", 0.0):
+            trail_method = trail.get("method", "atr")
+            if trail_method == "atr":
+                atr = row.get('atr', entry_price * 0.01)
+                if pd.isna(atr) or atr <= 0:
+                    atr = entry_price * 0.01
+                trail_distance = atr * trail.get("atr_mult", 1.0)
+            elif trail_method == "fixed_dollar":
+                trail_distance = trail.get("dollar_amount", 1.0)
+            elif trail_method == "percentage":
+                trail_distance = entry_price * (trail.get("percentage", 0.5) / 100.0)
+            else:
+                trail_distance = None
+
+            if trail_distance is not None:
+                if direction == "LONG":
+                    trail_level = row['close'] - trail_distance
+                    new_stop = max(new_stop, trail_level)
+                else:
+                    trail_level = row['close'] + trail_distance
+                    new_stop = min(new_stop, trail_level)
+
+    return new_stop
 
 
 # =============================================================================
@@ -290,6 +378,7 @@ def generate_trades(
     entry_price = None
     entry_row = None
     stop_price = None
+    initial_stop = None
     target_price = None
     entry_bar_i = None
 
@@ -345,8 +434,15 @@ def generate_trades(
                 target_price = calculate_target_price(
                     entry_price, stop_price, direction, row, df, i, effective_target
                 )
+                initial_stop = stop_price  # Store for trade record
 
         else:
+            # Update trailing / breakeven stop before checking exit conditions
+            if effective_stop and (effective_stop.get("trailing") or effective_stop.get("breakeven")):
+                stop_price = update_stop_price(
+                    stop_price, entry_price, direction, row, effective_stop,
+                )
+
             # Check for exit conditions
             # Priority: stop > target > signal exit triggers
             # Same-bar conflict resolution: stop is checked first, so if both
@@ -435,7 +531,7 @@ def generate_trades(
                 else:
                     pnl = entry_price - exit_price
 
-                risk = abs(entry_price - stop_price)
+                risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price - stop_price)
                 if risk <= 0:
                     risk = entry_price * 0.01  # Fallback
 
@@ -457,6 +553,7 @@ def generate_trades(
                     'entry_price': entry_price,
                     'exit_price': exit_price,
                     'stop_price': stop_price,
+                    'initial_stop_price': initial_stop,
                     'target_price': target_price,
                     'pnl': pnl,
                     'risk': risk,
@@ -474,6 +571,7 @@ def generate_trades(
                 entry_price = None
                 entry_row = None
                 stop_price = None
+                initial_stop = None
                 target_price = None
                 entry_bar_i = None
 

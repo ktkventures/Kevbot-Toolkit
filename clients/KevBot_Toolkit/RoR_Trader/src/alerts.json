@@ -1,5 +1,69 @@
 [
   {
+    "type": "entry_signal",
+    "level": "strategy",
+    "symbol": "TEST",
+    "direction": "LONG",
+    "strategy_name": "Test Alert (E2E Verification)",
+    "strategy_id": 0,
+    "price": 100.0,
+    "stop_price": 98.5,
+    "atr": 1.5,
+    "trigger": "test_trigger",
+    "confluence_met": [
+      "TEST-CONDITION"
+    ],
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "timestamp": "2026-02-20T14:52:30.117902",
+    "acknowledged": false,
+    "webhook_sent": false,
+    "portfolio_context": [],
+    "webhook_deliveries": [],
+    "id": 1156
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "rvol_extreme",
+    "confluence_met": [],
+    "bar_time": "2026-02-19 17:48:00+00:00",
+    "price": 682.63,
+    "stop_price": 682.36,
+    "atr": 0.5291166731261443,
+    "level": "strategy",
+    "strategy_id": 18,
+    "strategy_name": "SPY LONG - Xtreme Vol + 4m Exit",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 6,
+        "portfolio_name": "spy xtreme 4 candles",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1155,
+    "timestamp": "2026-02-19T10:48:59.543604",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_27eaaf",
+        "webhook_name": "Actual Test",
+        "portfolio_id": 6,
+        "sent_at": "2026-02-19T10:49:00.644162",
+        "success": false,
+        "status_code": 429,
+        "payload_sent": "{\"symbol\": \"SPY\", \"quantity\": 370, \"action\": \"buy\"}",
+        "error": "HTTP 429"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
     "type": "exit_signal",
     "level": "strategy",
     "strategy_id": 20,

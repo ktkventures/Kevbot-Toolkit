@@ -82,7 +82,11 @@ TEMPLATES: Dict[str, Dict] = {
             "IN_WINDOW": "Current time is within the configured window",
             "OUT_OF_WINDOW": "Current time is outside the configured window",
         },
-        "triggers": [],
+        "triggers": [
+            {"base": "window_open", "name": "Window Opens", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "window_close", "name": "Window Closes", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
+        ],
+        "trigger_prefix": "tod",
         "condition_logic": "time_window",
     },
 
@@ -103,7 +107,11 @@ TEMPLATES: Dict[str, Dict] = {
             "IN_SESSION": "Current time is within the selected session",
             "OUT_OF_SESSION": "Current time is outside the selected session",
         },
-        "triggers": [],
+        "triggers": [
+            {"base": "session_open", "name": "Session Opens", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "session_close", "name": "Session Closes", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
+        ],
+        "trigger_prefix": "session",
         "condition_logic": "session_filter",
     },
 
@@ -124,6 +132,7 @@ TEMPLATES: Dict[str, Dict] = {
             "BLOCKED_DAY": "Today is a blocked trading day",
         },
         "triggers": [],
+        "trigger_prefix": "dow",
         "condition_logic": "day_filter",
     },
 
@@ -135,14 +144,19 @@ TEMPLATES: Dict[str, Dict] = {
             "avoid_fomc": {"type": "bool", "default": True, "label": "Avoid FOMC Days"},
             "avoid_opex": {"type": "bool", "default": False, "label": "Avoid OpEx Days"},
             "avoid_nfp": {"type": "bool", "default": True, "label": "Avoid NFP Days"},
-            "buffer_minutes": {"type": "int", "default": 30, "min": 0, "max": 120, "label": "Buffer (minutes)"},
+            "buffer_minutes": {"type": "int", "default": 30, "min": 0, "max": 120, "label": "Buffer (minutes)",
+                              "help": "Buffer around event time (future: event calendar API; proxy mode uses full-day blocks)"},
         },
         "outputs": ["CLEAR", "BLOCKED"],
         "output_descriptions": {
             "CLEAR": "No high-impact events — trading allowed",
             "BLOCKED": "High-impact event window — trading blocked",
         },
-        "triggers": [],
+        "triggers": [
+            {"base": "event_block_start", "name": "Event Block Starts", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
+            {"base": "event_clear", "name": "Event Block Clears", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close"},
+        ],
+        "trigger_prefix": "cal",
         "condition_logic": "calendar_filter",
     },
 }
@@ -332,6 +346,43 @@ def duplicate_pack(pack: GeneralPack, new_id: str, new_version: str) -> GeneralP
     )
 
 
+def validate_parameters(params: dict, template_id: str) -> dict:
+    """Validate and clamp parameters against the template schema.
+    Returns a sanitized copy of params."""
+    schema = get_parameter_schema(template_id)
+    if not schema:
+        return dict(params)
+    validated = {}
+    for key, spec in schema.items():
+        val = params.get(key, spec.get("default"))
+        ptype = spec.get("type")
+        if ptype == "int":
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                val = spec.get("default", 0)
+            if "min" in spec:
+                val = max(val, spec["min"])
+            if "max" in spec:
+                val = min(val, spec["max"])
+        elif ptype == "float":
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                val = spec.get("default", 0.0)
+            if "min" in spec:
+                val = max(val, spec["min"])
+            if "max" in spec:
+                val = min(val, spec["max"])
+        elif ptype == "bool":
+            val = bool(val)
+        elif ptype == "select":
+            if val not in spec.get("options", []):
+                val = spec.get("default")
+        validated[key] = val
+    return validated
+
+
 def format_parameters(params: dict, template_id: str) -> str:
     template = TEMPLATES.get(template_id)
     if not template:
@@ -373,17 +424,19 @@ def evaluate_condition(df: pd.DataFrame, pack: 'GeneralPack') -> pd.Series:
         return _eval_day_of_week(df, pack.parameters)
     elif logic == "calendar_filter":
         return _eval_calendar_filter(df, pack.parameters)
-    return pd.Series("UNKNOWN", index=df.index)
+    # Unknown template — use the template's last output (typically the "inactive" state)
+    template = TEMPLATES.get(pack.base_template, {})
+    outputs = template.get("outputs", [])
+    fallback = outputs[-1] if outputs else "BLOCKED"
+    return pd.Series(fallback, index=df.index)
 
 
-def _eval_time_of_day(df: pd.DataFrame, params: dict) -> pd.Series:
-    """Check if each bar's time falls within [start_hour:start_minute, end_hour:end_minute)."""
-    sh = params.get("start_hour", 9)
-    sm = params.get("start_minute", 30)
-    eh = params.get("end_hour", 12)
-    em = params.get("end_minute", 0)
-    start_minutes = sh * 60 + sm
-    end_minutes = eh * 60 + em
+def _eval_time_window(df: pd.DataFrame, start_h: int, start_m: int,
+                      end_h: int, end_m: int,
+                      in_label: str, out_label: str) -> pd.Series:
+    """Shared logic: check if each bar's timestamp falls within a time window."""
+    start_minutes = start_h * 60 + start_m
+    end_minutes = end_h * 60 + end_m
 
     idx = df.index
     if hasattr(idx, 'get_level_values'):
@@ -395,32 +448,26 @@ def _eval_time_of_day(df: pd.DataFrame, params: dict) -> pd.Series:
     bar_minutes = idx.hour * 60 + idx.minute
     in_window = (bar_minutes >= start_minutes) & (bar_minutes < end_minutes)
     return pd.Series(
-        ["IN_WINDOW" if v else "OUT_OF_WINDOW" for v in in_window],
+        [in_label if v else out_label for v in in_window],
         index=df.index,
+    )
+
+
+def _eval_time_of_day(df: pd.DataFrame, params: dict) -> pd.Series:
+    """Check if each bar's time falls within [start_hour:start_minute, end_hour:end_minute)."""
+    return _eval_time_window(
+        df,
+        params.get("start_hour", 9), params.get("start_minute", 30),
+        params.get("end_hour", 12), params.get("end_minute", 0),
+        "IN_WINDOW", "OUT_OF_WINDOW",
     )
 
 
 def _eval_trading_session(df: pd.DataFrame, params: dict) -> pd.Series:
     """Check if each bar falls within the selected trading session."""
     session = params.get("session", "regular")
-    window = SESSION_WINDOWS.get(session, SESSION_WINDOWS["regular"])
-    sh, sm, eh, em = window
-    start_minutes = sh * 60 + sm
-    end_minutes = eh * 60 + em
-
-    idx = df.index
-    if hasattr(idx, 'get_level_values'):
-        try:
-            idx = idx.get_level_values(-1)
-        except Exception:
-            pass
-
-    bar_minutes = idx.hour * 60 + idx.minute
-    in_session = (bar_minutes >= start_minutes) & (bar_minutes < end_minutes)
-    return pd.Series(
-        ["IN_SESSION" if v else "OUT_OF_SESSION" for v in in_session],
-        index=df.index,
-    )
+    sh, sm, eh, em = SESSION_WINDOWS.get(session, SESSION_WINDOWS["regular"])
+    return _eval_time_window(df, sh, sm, eh, em, "IN_SESSION", "OUT_OF_SESSION")
 
 
 def _eval_day_of_week(df: pd.DataFrame, params: dict) -> pd.Series:
@@ -435,7 +482,10 @@ def _eval_day_of_week(df: pd.DataFrame, params: dict) -> pd.Series:
 
     results = []
     for dt in idx:
-        day_name = day_map.get(dt.dayofweek, "")
+        day_name = day_map.get(dt.dayofweek)
+        if day_name is None:
+            results.append("BLOCKED_DAY")  # Weekend
+            continue
         allowed = params.get(day_name, True)
         results.append("ALLOWED_DAY" if allowed else "BLOCKED_DAY")
     return pd.Series(results, index=df.index)
@@ -443,10 +493,10 @@ def _eval_day_of_week(df: pd.DataFrame, params: dict) -> pd.Series:
 
 def _eval_calendar_filter(df: pd.DataFrame, params: dict) -> pd.Series:
     """Simplified calendar filter — blocks known high-impact event days.
-    In production this would check an event calendar API. For preview,
-    we simulate by blocking the first Wednesday of each month (FOMC proxy)
-    and the first Friday (NFP proxy)."""
+    In production this would check an event calendar API.  For now we use
+    proxy rules: first Wednesday = FOMC, first Friday = NFP, third Friday = OpEx."""
     avoid_fomc = params.get("avoid_fomc", True)
+    avoid_opex = params.get("avoid_opex", False)
     avoid_nfp = params.get("avoid_nfp", True)
 
     idx = df.index
@@ -459,9 +509,14 @@ def _eval_calendar_filter(df: pd.DataFrame, params: dict) -> pd.Series:
     results = []
     for dt in idx:
         blocked = False
+        # FOMC proxy: first Wednesday of the month (day 1-7)
         if avoid_fomc and dt.dayofweek == 2 and dt.day <= 7:
             blocked = True
+        # NFP proxy: first Friday of the month (day 1-7)
         if avoid_nfp and dt.dayofweek == 4 and dt.day <= 7:
+            blocked = True
+        # OpEx proxy: third Friday of the month (day 15-21)
+        if avoid_opex and dt.dayofweek == 4 and 15 <= dt.day <= 21:
             blocked = True
         results.append("BLOCKED" if blocked else "CLEAR")
     return pd.Series(results, index=df.index)
@@ -474,3 +529,45 @@ def get_state_transitions(condition_series: pd.Series) -> pd.DataFrame:
     transitions = condition_series[changed].reset_index()
     transitions.columns = ["time", "state"]
     return transitions
+
+
+def detect_triggers(df: pd.DataFrame, pack: 'GeneralPack') -> Dict[str, pd.Series]:
+    """Detect triggers from condition state transitions.
+
+    Returns dict mapping trigger column name -> boolean Series.
+    Triggers fire on the bar where the condition state transitions.
+    """
+    template = TEMPLATES.get(pack.base_template)
+    if not template:
+        return {}
+
+    triggers = template.get("triggers", [])
+    if not triggers:
+        return {}
+
+    col = pack.get_condition_column()
+    if col not in df.columns:
+        return {}
+
+    states = df[col]
+    outputs = template.get("outputs", [])
+    positive_state = outputs[0] if len(outputs) > 0 else None
+    negative_state = outputs[1] if len(outputs) > 1 else None
+
+    prev = states.shift(1)
+    result = {}
+
+    for trig in triggers:
+        base = trig["base"]
+        col_name = f"gp_trig_{pack.id}_{base}"
+
+        if base in ("window_open", "session_open", "event_clear"):
+            # Fires when transitioning INTO the positive state
+            result[col_name] = (states == positive_state) & (prev != positive_state)
+        elif base in ("window_close", "session_close", "event_block_start"):
+            # Fires when transitioning INTO the negative state
+            result[col_name] = (states == negative_state) & (prev != negative_state)
+        else:
+            result[col_name] = pd.Series(False, index=df.index)
+
+    return result

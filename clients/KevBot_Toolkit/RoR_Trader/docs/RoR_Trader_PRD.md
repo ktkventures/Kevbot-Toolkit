@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.44
+**Version:** 0.45
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
 **Status:** Gap-aware stop/target fills implemented (Phase 23 partial). Phase 19 COMPLETE. Phases 17A–D, 18A–C, 11–16 complete
@@ -1547,25 +1547,29 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - **Backtest uses high/low approximation** — Without true tick data in backtest, checking if bar high ≥ level (for long) or bar low ≤ level (for short) determines if the level was breached. Entry price uses the level itself (equivalent to a limit order fill). This is the standard approach in TradingView strategy backtests.
 - **Confluence evaluates at bar close only** — Intra-bar triggers fire mid-bar only if confluence was satisfied at the last bar close. This avoids re-running the full confluence pipeline per tick while still gating triggers on confluence state.
 
-### Phase 20: General & Risk Management Pack Audit
+### Phase 20: General & Risk Management Pack Audit ✅
 *Audit, validate, and expand the General Confluence and Risk Management pack libraries. Ensure condition logic, parameter schemas, preview rendering, and pipeline integration match production expectations. Identify structural improvements now that the indicator audit (17D) and intra-bar infrastructure (Phase 19) are complete.*
 
-**General Packs Audit:**
-- [ ] Audit all general pack templates (Time of Day, Trading Session, Day of Week, Calendar Filter) — verify condition evaluation logic, parameter schemas, output states, and preview rendering
-- [ ] Evaluate whether general packs need triggers (e.g., session open/close trigger, time-window entry trigger)
-- [ ] Ensure preview tab Show Conditions overlay renders correctly for all general pack types
-- [ ] Identify any new general pack templates to add (e.g., market regime, volatility filter, news blackout)
+**General Packs Audit (20A):**
+- [x] Audit all general pack templates — fixed calendar_filter (avoid_opex now implemented as 3rd-Friday proxy, buffer_minutes help text clarified), DRYed time_of_day / trading_session shared eval logic, fixed weekend BLOCKED_DAY handling, removed UNKNOWN fallback state, added validate_parameters()
+- [x] Evaluate and add general pack triggers (20B) — window_open/close for time_of_day, session_open/close for trading_session, event_block_start/clear for calendar_filter, with detect_triggers() and preview markers
+- [x] Preview Show Conditions overlay renders correctly; added empty-data warning after session filter
+- [ ] New GP templates identified but deferred: market regime (VIX), volatility filter (ATR), news blackout
 
-**Risk Management Packs Audit:**
-- [ ] Audit all risk management templates (ATR-Based, Fixed Dollar, Percentage, Swing, Risk:Reward) — verify stop/target calculation logic, parameter schemas, and interaction with trade execution
-- [ ] Evaluate intra-bar exit timing for risk management — stops and targets should ideally evaluate tick-by-tick once Phase 19 infrastructure is available (exit at stop price rather than waiting for bar close)
-- [ ] Review risk management parameter ranges and defaults for realistic trading scenarios
-- [ ] Ensure risk management packs integrate correctly with the execution model (stop_config, target_config in strategy schema)
-- [ ] Identify structural improvements — e.g., trailing stops, breakeven stops, partial profit taking, time-based exits
+**Risk Management Packs Audit (20C):**
+- [x] Audit all RM templates — fixed swing stop lookback bias (exclude current bar), added ATR NaN fallback logging, added parameter clamping to all builder functions, added validate_parameters()
+- [ ] Intra-bar exit timing for RM — identified; requires position tracking in streaming engine (deferred)
+- [x] Reviewed parameter ranges and defaults — all builders now clamp to schema min/max
+- [x] RM packs integrate correctly with execution model; target_config=None documented as "stop/signal only"
+- [x] Trailing stops and breakeven stops implemented (20D) — update_stop_price() in triggers.py, atr_trailing and breakeven_stop templates with default packs, strategy builder UI with trailing/breakeven checkboxes
+- [x] Fixed trailing stop R-multiple inflation bug — R-multiple calculation now uses initial stop price (pre-trail) as risk denominator instead of final (trailed) stop price, which was artificially shrinking risk and inflating R-multiples
 
-**Preview & UI Improvements:**
-- [ ] Consistent preview rendering across all pack types (TF Confluence, General, Risk Management) — condition overlay, state timeline, distribution metrics
-- [ ] Risk management preview — visualize stop/target levels on sample trades
+**Preview & UI Improvements (20E):**
+- [x] GP preview: trigger arrow markers at state transitions, empty-data warning; RM preview: stop/target level markers, exit reason breakdown metrics
+- [x] Risk management preview — stop/target markers on trades with initial vs final stop for trailing visualization
+
+**Deferred for future phases:**
+- Partial profit taking, pyramiding, dynamic position sizing, event calendar API, GP triggers as entry/exit triggers, new GP templates, RM intra-bar exits
 
 ### Phase 21: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
