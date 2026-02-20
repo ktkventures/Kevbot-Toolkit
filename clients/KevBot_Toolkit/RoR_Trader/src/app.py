@@ -10571,6 +10571,45 @@ _TRIGGER_DIRECTION_STYLE = {
     "BOTH":  {"color": "#f59e0b", "shape": "circle",    "position": "aboveBar"},
 }
 
+# =============================================================================
+# EXECUTION TAG HELPERS  [C] = bar close, [I] = intra-bar, [I?] = candidate
+# =============================================================================
+
+# Triggers that compare price against a pre-computed level and *could*
+# be evaluated tick-by-tick once the intra-bar engine is built.
+_INTRABAR_CANDIDATE_TRIGGERS: set = {
+    # VWAP — price vs known VWAP / SD band levels
+    "vwap_cross_above", "vwap_cross_below",
+    "vwap_enter_upper_extreme", "vwap_enter_lower_extreme",
+    "vwap_return_to_vwap",
+    # UT Bot — price vs trailing stop level
+    "utbot_buy", "utbot_sell",
+    # SuperTrend — price vs ST line
+    "st_bull_flip", "st_bear_flip",
+    # Bollinger Bands — price vs band levels
+    "bb_cross_upper", "bb_cross_lower",
+    "bb_cross_basis_up", "bb_cross_basis_down",
+    # SR Channels — price vs channel boundaries
+    "src_resistance_broken", "src_support_broken",
+    # RVOL — volume accumulates intra-bar
+    "rvol_spike", "rvol_extreme",
+}
+
+
+def _execution_tag(trigger_base: str, execution: str = "bar_close") -> str:
+    """Return a display tag for the trigger's execution mode.
+
+    Returns one of:
+      ``[I]``  — actually evaluated intra-bar
+      ``[I?]`` — currently bar-close but *could* be intra-bar
+      ``[C]``  — bar-close only (needs completed candle)
+    """
+    if execution == "intra_bar":
+        return "`[I]`"
+    if trigger_base in _INTRABAR_CANDIDATE_TRIGGERS:
+        return "`[I?]`"
+    return "`[C]`"
+
 
 def _build_condition_overlay(df: pd.DataFrame, template: dict, interp_key: str):
     """Build SessionHighlighting + AnchoredText primitives for interpreter state overlay.
@@ -10908,7 +10947,7 @@ def render_group_details(group_id: str, all_groups: list):
             st.markdown("**Interpreter Outputs**")
             output_descriptions = get_output_descriptions(group.base_template)
             for output, description in output_descriptions.items():
-                st.markdown(f"- **{output}**: {description}")
+                st.markdown(f"- `[C]` **{output}**: {description}")
 
         with col2:
             st.markdown("**Available Triggers**")
@@ -10916,7 +10955,8 @@ def render_group_details(group_id: str, all_groups: list):
             for trigger in triggers:
                 direction_icon = "LONG" if trigger.direction == "LONG" else "SHORT" if trigger.direction == "SHORT" else "BOTH"
                 type_icon = "ENTRY" if trigger.trigger_type == "ENTRY" else "EXIT"
-                st.markdown(f"- **{trigger.name}**")
+                tag = _execution_tag(trigger.base_trigger, trigger.execution)
+                st.markdown(f"- {tag} **{trigger.name}**")
                 st.caption(f"  {direction_icon} {type_icon} | ID: `{trigger.id}`")
 
     # TAB 4: Preview
@@ -11521,12 +11561,14 @@ def render_pack_builder_page():
                 st.markdown("**Outputs:**")
                 for out in manifest.get("outputs", []):
                     desc = manifest.get("output_descriptions", {}).get(out, "")
-                    st.markdown(f"- `{out}`: {desc}")
+                    st.markdown(f"- `[C]` `{out}`: {desc}")
 
             st.markdown("**Triggers:**")
             for trig in manifest.get("triggers", []):
+                trig_base = f"{manifest.get('trigger_prefix', '')}_{trig['base']}"
+                tag = _execution_tag(trig_base, trig.get("execution", "bar_close"))
                 st.markdown(
-                    f"- `{manifest.get('trigger_prefix', '')}_{trig['base']}`: "
+                    f"- {tag} `{trig_base}`: "
                     f"{trig.get('name', '')} "
                     f"({trig.get('direction', '?')} {trig.get('type', '?')})"
                 )
@@ -11687,14 +11729,16 @@ def render_user_packs_page():
                 st.markdown("**Interpreter Outputs:**")
                 for out in m.get("outputs", []):
                     desc = m.get("output_descriptions", {}).get(out, "")
-                    st.markdown(f"- `{out}`: {desc}")
+                    st.markdown(f"- `[C]` `{out}`: {desc}")
 
                 st.markdown("")
                 st.markdown("**Triggers:**")
                 for trig in m.get("triggers", []):
                     execution = trig.get("execution", "bar_close")
+                    trig_base = f"{m.get('trigger_prefix', '')}_{trig['base']}"
+                    tag = _execution_tag(trig_base, execution)
                     st.markdown(
-                        f"- `{m.get('trigger_prefix', '')}_{trig['base']}`: "
+                        f"- {tag} `{trig_base}`: "
                         f"{trig.get('name', '')} "
                         f"({trig.get('direction', '?')} {trig.get('type', '?')}, "
                         f"{execution})"
@@ -11968,14 +12012,18 @@ def _render_gp_details(pack_id, all_packs):
             st.markdown("**Conditions**")
             output_descs = gp_module.get_output_descriptions(pack.base_template)
             for output, desc in output_descs.items():
-                st.markdown(f"- **{output}**: {desc}")
+                st.markdown(f"- `[C]` **{output}**: {desc}")
         with col2:
             st.markdown("**Triggers**")
             triggers = template.get("triggers", [])
             if triggers:
+                trigger_prefix = template.get("trigger_prefix", "")
                 for t in triggers:
-                    st.markdown(f"- **{t['name']}**")
-                    st.caption(f"  {t['direction']} {t['type']} | {t.get('execution', 'bar_close')}")
+                    execution = t.get("execution", "bar_close")
+                    trig_base = f"{trigger_prefix}_{t['base']}" if trigger_prefix else t.get("base", "")
+                    tag = _execution_tag(trig_base, execution)
+                    st.markdown(f"- {tag} **{t['name']}**")
+                    st.caption(f"  {t['direction']} {t['type']} | {execution}")
             else:
                 st.caption("No triggers (conditions only)")
 

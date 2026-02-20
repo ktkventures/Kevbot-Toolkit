@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.35
+**Version:** 0.36
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, 10 reference Pine Scripts seeded (MACD, RVOL, SR Channel, UT Bot, VWAP, Swing 123, SuperTrend, Strat Assistant, UT Bot Conflu); Phases 17A–B charting/overlays complete; Phases 11–16 complete
@@ -1363,7 +1363,7 @@ The strategy lifecycle has three confidence tiers, each progressively closer to 
 - [x] User packs appear in Confluence Packs settings pages alongside built-in packs with enable/disable checkboxes
 - [x] User packs available in Strategy Builder trigger/confluence selection dropdowns
 - [x] User packs participate in the full pipeline: `prepare_data_with_indicators()` → `run_all_interpreters()` → `detect_all_triggers()` → `generate_trades()`
-- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 20)
+- [ ] Version tracking on user-created packs — edit history stored in manifest, rollback by restoring previous version files (deferred to Phase 21)
 
 ### Phase 17: Indicator & Confluence Maturity
 *Validate, expand, and harden the indicator/confluence library to a production-ready standard. Upgrade charting infrastructure to support TradingView-quality visualizations. Goal: a trusted foundation of indicators, interpreters, and chart rendering that can support real trading strategies and live algorithmic execution with confidence.*
@@ -1436,6 +1436,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] Review interpreter output states for consistency — all packs produce mutually exclusive, exhaustive states
 - [x] Update Pack Builder context document — added `plot_config` documentation, `candle_color_column` guidance, Wilder smoothing note, expanded reserved names for all packs
 - [x] Update `pack_spec.py` reserved names — trigger prefixes, interpreter keys, and indicator columns updated for all installed packs
+- [x] Add execution mode tags (`[C]`, `[I?]`, `[I]`) to all Outputs & Triggers displays — Confluence Packs, User Packs, General Packs, and Pack Builder review panel. Intra-bar candidate triggers identified and tagged `[I?]`
 
 **End State:** A library of validated, production-quality indicators and interpreters with TradingView-quality chart rendering. Chart overlays for interpreter states and trigger events provide full visual transparency into the signal chain. Pine Script export enables cross-platform validation. New strategies built after this phase can be trusted for live trading without concern about data integrity or rendering issues.
 
@@ -1479,7 +1480,45 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - **Forward-fill for multi-TF alignment** — A 15-min EMA value computed at 9:45:00 should apply to all 1-min bars from 9:45:00 to 9:59:59. Forward-filling the higher-TF series onto the primary-TF index is the standard approach (same as TradingView's `request.security()` for MTF indicators). The value updates when the higher-TF bar closes.
 - **After Phase 14B** — The streaming engine's `SymbolHub` with multiple `BarBuilder` instances per symbol is the natural foundation for real-time MTF evaluation. Building MTF confluence first would require the backtest-only pipeline now and streaming retrofit later — double integration work. Phase 14B's architecture was designed with this use case in mind (`SymbolHub` accommodates single-strategy-multiple-timeframes, not just multiple-strategy-different-timeframes).
 
-### Phase 19: Scanner Strategy Origin
+### Phase 19: Intra-Bar Trigger Evaluation
+*Evaluate select triggers tick-by-tick against pre-computed levels instead of waiting for bar close — enables faster entries/exits for price-vs-level crossover triggers while preserving bar-close semantics for pattern-based triggers.*
+
+**Problem Statement:**
+- All triggers currently evaluate once per bar close, even when the trigger condition is simply "price crossed above/below a known level" (e.g., VWAP cross, UT Bot stop, SuperTrend flip, Bollinger Band cross)
+- For fast-moving markets, waiting for bar close means entries can be late by up to one full bar duration (1–5 minutes)
+- Pattern-based triggers (EMA stack changes, MACD histogram shifts, Swing 123 patterns, Strat combos) inherently require a completed bar and must remain bar-close
+
+**Trigger Classification:**
+- `[C]` Bar-Close — trigger requires a completed candle to evaluate (EMA crossovers, MACD histogram, bar patterns, candle patterns). Remains bar-close only.
+- `[I]` Intra-Bar — trigger compares current tick price against a pre-computed level and can fire mid-bar. Level is recalculated on each bar close.
+- `[I?]` Intra-Bar Candidate — trigger *could* be intra-bar but is not yet wired. UI tags already show these.
+
+**Intra-Bar Candidates:**
+- [ ] VWAP crosses (price vs VWAP line, price enters/exits SD band extremes)
+- [ ] UT Bot signals (price crosses trailing stop level)
+- [ ] SuperTrend flips (price crosses ST line)
+- [ ] Bollinger Band crosses (price vs upper/lower/basis)
+- [ ] SR Channel breaks (price vs nearest support/resistance level)
+- [ ] RVOL spikes (volume vs threshold — bar-volume based, may remain bar-close)
+
+**Streaming Engine Integration (depends on Phase 14B):**
+- [ ] `SymbolHub.on_trade()` path gains an intra-bar trigger evaluation hook
+- [ ] Intra-bar triggers register their "level" (a float) after each bar close; tick handler checks `price >= level` or `price <= level`
+- [ ] When intra-bar trigger fires, alert and confluence state update immediately (do not wait for bar close)
+- [ ] Backtest approximation — use bar high/low to determine if level was crossed within the bar; entry price = the level (limit-fill assumption)
+
+**UI:**
+- [x] Execution tags (`[C]`, `[I]`, `[I?]`) already display on all Outputs & Triggers tabs (implemented in Phase 17D)
+- [ ] Per-trigger toggle in strategy drill-down: "Evaluate intra-bar" checkbox (default off, only shown for `[I]`-capable triggers)
+- [ ] Alert monitor respects intra-bar setting — fires alert on tick cross rather than bar close
+
+### Design Decisions (Phase 19 — Intra-Bar Trigger Evaluation)
+- **Level-based approach** — Rather than re-running the full indicator/interpreter pipeline on every tick (expensive), intra-bar triggers simply compare the current price against a pre-computed level that updates on each bar close. This keeps tick-path evaluation O(1) per trigger.
+- **After Phase 18 (Multi-Timeframe)** — Intra-bar evaluation shares the same streaming engine infrastructure as multi-timeframe confluence. Building MTF first ensures the `SymbolHub` architecture is solid before adding tick-level evaluation on top.
+- **Opt-in per trigger** — Not all traders want intra-bar evaluation (some prefer bar-close discipline). The per-trigger checkbox keeps it explicit.
+- **Backtest uses high/low approximation** — Without true tick data in backtest, checking if bar high ≥ level (for long) or bar low ≤ level (for short) determines if the level was breached. Entry price uses the level itself (equivalent to a limit order fill). This is the standard approach in TradingView strategy backtests.
+
+### Phase 20: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
 
 - [ ] Add "Scanner" option to Strategy Origin selectbox
@@ -1489,7 +1528,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
-### Phase 20: Low-Priority Cleanup & Enhancements
+### Phase 21: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**
