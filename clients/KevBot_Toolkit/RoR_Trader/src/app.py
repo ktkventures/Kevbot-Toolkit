@@ -250,6 +250,26 @@ SETTINGS_DEFAULTS = {
     "data_feed": "sip",
     "realtime_engine_enabled": False,
     "enabled_timeframes": ["1Min"],
+    "candle_theme": "neutral",
+}
+
+# Candlestick color themes — keys match the candle_theme setting
+CANDLE_THEMES = {
+    "classic": {
+        "upColor": "#26a69a", "downColor": "#ef5350",
+        "borderUpColor": "#26a69a", "borderDownColor": "#ef5350",
+        "wickUpColor": "#26a69a", "wickDownColor": "#ef5350",
+    },
+    "neutral": {
+        "upColor": "#FFFFFF", "downColor": "#787B86",
+        "borderUpColor": "#FFFFFF", "borderDownColor": "#787B86",
+        "wickUpColor": "#FFFFFF", "wickDownColor": "#787B86",
+    },
+    "neutral_hollow": {
+        "upColor": "transparent", "downColor": "#787B86",
+        "borderUpColor": "#FFFFFF", "borderDownColor": "#787B86",
+        "wickUpColor": "#FFFFFF", "wickDownColor": "#787B86",
+    },
 }
 
 
@@ -2117,6 +2137,7 @@ def find_best_exit_combinations(
         return pd.DataFrame()
 
     # Pre-classify each exit trigger as bar_count or signal
+    all_trigger_defs = get_all_triggers(groups)
     exit_info = {}
     for cid in all_cids:
         is_bar_count = False
@@ -2126,8 +2147,12 @@ def find_best_exit_combinations(
                 bar_count_val = g.parameters.get("candle_count", 4)
                 is_bar_count = True
                 break
+        _tdef = all_trigger_defs.get(cid)
+        _exec = _tdef.execution if _tdef else 'bar_close'
+        _badge = "[C]" if _exec == 'bar_close' else "[I]"
         exit_info[cid] = {'is_bar_count': is_bar_count, 'bar_count_val': bar_count_val,
-                          'name': exit_triggers[cid]}
+                          'name': exit_triggers[cid],
+                          'name_with_badge': f"{_badge} {exit_triggers[cid]}"}
 
     enabled_interp_keys = get_enabled_interpreter_keys(groups)
     _stf = get_secondary_tf_map(df) or None
@@ -2160,7 +2185,7 @@ def find_best_exit_combinations(
             kpis = calculate_kpis(trades, starting_balance=starting_balance,
                                   risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
-            combo_names = [exit_info[c]['name'] for c in combo]
+            combo_names = [exit_info[c]['name_with_badge'] for c in combo]
             results.append({
                 'combination': set(combo),
                 'combo_str': " + ".join(sorted(combo_names)),
@@ -2524,6 +2549,69 @@ def render_price_chart(
                 'text': f"{trade['r_multiple']:+.1f}R"
             })
 
+    # Build target-price markers (left ▸) — entry/exit prices on candle bodies
+    target_entry_data = []
+    target_exit_data = []
+    if len(trades) > 0:
+        for _, trade in trades.iterrows():
+            entry_time = int(pd.to_datetime(trade['entry_time']).timestamp())
+            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
+            if entry_time >= min_time:
+                target_entry_data.append({
+                    "time": entry_time,
+                    "value": float(trade['entry_price']),
+                })
+            if exit_time >= min_time:
+                target_exit_data.append({
+                    "time": exit_time,
+                    "value": float(trade['exit_price']),
+                })
+
+    # Build alert-price markers (right ◂) — only when real alerts exist
+    alert_entry_data = []
+    alert_exit_data = []
+    strategy_id = config.get('id')
+    if strategy_id is not None and len(trades) > 0:
+        try:
+            from alerts import load_alerts
+            all_alerts = load_alerts()
+            strat_alerts = [a for a in all_alerts
+                            if a.get('strategy_id') == strategy_id
+                            and a.get('price') is not None]
+            if strat_alerts:
+                for _, trade in trades.iterrows():
+                    entry_ts = pd.to_datetime(trade['entry_time']).timestamp()
+                    exit_ts = pd.to_datetime(trade['exit_time']).timestamp()
+                    # Match entry alert: within 2 bars of entry_time
+                    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC
+                    tf_sec = _TF_SEC.get(config.get('timeframe', '1Min'), 60)
+                    for alert in strat_alerts:
+                        alert_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
+                        alert_price = alert.get('price')
+                        if alert_price is None:
+                            continue
+                        if alert.get('type') == 'entry_signal' and abs(alert_ts - entry_ts) <= tf_sec * 2:
+                            if int(alert_ts) >= min_time:
+                                alert_entry_data.append({
+                                    "time": int(entry_ts),
+                                    "value": float(alert_price),
+                                })
+                            break
+                    for alert in strat_alerts:
+                        alert_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
+                        alert_price = alert.get('price')
+                        if alert_price is None:
+                            continue
+                        if alert.get('type') == 'exit_signal' and abs(alert_ts - exit_ts) <= tf_sec * 2:
+                            if int(alert_ts) >= min_time:
+                                alert_exit_data.append({
+                                    "time": int(exit_ts),
+                                    "value": float(alert_price),
+                                })
+                            break
+        except Exception:
+            pass  # Alerts not available — skip alert-price markers
+
     # Append any extra markers (e.g., condition state changes)
     if extra_markers:
         for em in extra_markers:
@@ -2557,20 +2645,99 @@ def render_price_chart(
         "height": 350 if secondary_panes else 450
     }
 
-    # Candlestick series with markers
+    # Candlestick series with markers — theme from settings
+    _candle_theme_key = st.session_state.get('candle_theme', 'neutral')
+    _candle_colors = CANDLE_THEMES.get(_candle_theme_key, CANDLE_THEMES['neutral'])
     series = [{
         "type": "Candlestick",
         "data": candle_data,
-        "options": {
-            "upColor": "#26a69a",
-            "downColor": "#ef5350",
-            "borderUpColor": "#26a69a",
-            "borderDownColor": "#ef5350",
-            "wickUpColor": "#26a69a",
-            "wickDownColor": "#ef5350"
-        },
+        "options": _candle_colors,
         "markers": markers
     }]
+
+    # Add target-price markers (+) — always shown when trades exist
+    if target_entry_data:
+        target_entry_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "cross",
+             "color": "#2196F3", "size": 1}
+            for d in target_entry_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": target_entry_data,
+            "options": {
+                "color": "#2196F3",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": target_entry_markers,
+        })
+    if target_exit_data:
+        target_exit_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "cross",
+             "color": "#4CAF50", "size": 1}
+            for d in target_exit_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": target_exit_data,
+            "options": {
+                "color": "#4CAF50",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": target_exit_markers,
+        })
+
+    # Add alert-price markers (×) — only with real recorded alerts
+    if alert_entry_data:
+        alert_entry_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "xcross",
+             "color": "rgba(33,150,243,0.8)", "size": 1}
+            for d in alert_entry_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": alert_entry_data,
+            "options": {
+                "color": "rgba(33,150,243,0.6)",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": alert_entry_markers,
+        })
+    if alert_exit_data:
+        alert_exit_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "xcross",
+             "color": "rgba(76,175,80,0.8)", "size": 1}
+            for d in alert_exit_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": alert_exit_data,
+            "options": {
+                "color": "rgba(76,175,80,0.6)",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": alert_exit_markers,
+        })
 
     # Add indicator overlays
     if show_indicators:
@@ -3817,12 +3984,17 @@ def render_strategy_builder():
         exit_trigger_selections.append((primary_exit_cid, primary_exit_name))
 
     if not _is_webhook_origin:
-        # Initialize additional exits from saved strategy
-        if 'sb_additional_exits' not in st.session_state:
+        # Initialize additional exits from saved strategy.
+        # Re-init when the editing context changes (prevents stale CIDs from
+        # a previous strategy leaking into a different one).
+        _current_edit_ctx = editing_id or '__new__'
+        if ('sb_additional_exits' not in st.session_state
+                or st.session_state.get('_sb_exits_ctx') != _current_edit_ctx):
             saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
             if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
                 saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
             st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
+            st.session_state._sb_exits_ctx = _current_edit_ctx
 
         # Process pending exit operations from drill-down
         if 'pending_add_exit' in st.session_state:
@@ -3845,11 +4017,15 @@ def render_strategy_builder():
             st.session_state.pop('pending_remove_bar_count_exit')
             st.session_state.sb_bar_count_exit_removed = True
 
-        # Add additional exits to selections
-        for cid in st.session_state.get('sb_additional_exits', []):
-            if cid in exit_options:
-                name = all_trigger_map[cid].name if cid in all_trigger_map else ""
-                exit_trigger_selections.append((cid, name))
+        # Add additional exits to selections (prune stale CIDs that are no
+        # longer valid — can happen when switching strategies or disabling groups)
+        _valid_addl = [cid for cid in st.session_state.get('sb_additional_exits', [])
+                       if cid in exit_options]
+        if len(_valid_addl) != len(st.session_state.get('sb_additional_exits', [])):
+            st.session_state.sb_additional_exits = _valid_addl
+        for cid in _valid_addl:
+            name = all_trigger_map[cid].name if cid in all_trigger_map else ""
+            exit_trigger_selections.append((cid, name))
 
     # =========================================================================
     # VALIDATION + STATUS LINE
@@ -4075,6 +4251,7 @@ def render_strategy_builder():
     render_secondary_kpis(filtered_trades, kpis, key_prefix="builder")
 
     # Optimizable Variables
+    _ov_all_tdefs = get_all_triggers(enabled_groups)
     with st.expander("Optimizable Variables"):
         var_cols = st.columns(6)
 
@@ -4082,7 +4259,9 @@ def render_strategy_builder():
         with var_cols[0]:
             st.caption("**Entry**")
             e_name = config.get('entry_trigger_name') or '?'
-            st.markdown(f"_{e_name}_")
+            _e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
+            _e_badge = "`[C]`" if not _e_tdef or _e_tdef.execution == 'bar_close' else "`[I]`"
+            st.markdown(f"{_e_badge} _{e_name}_")
 
         # 2. Exit Trigger(s)
         with var_cols[1]:
@@ -4100,7 +4279,9 @@ def render_strategy_builder():
             for idx_e, (ename, ecid) in enumerate(zip(ov_exit_names, ov_exit_cids)):
                 e_col1, e_col2 = st.columns([4, 1])
                 with e_col1:
-                    st.markdown(f"_{ename}_")
+                    _ex_tdef = _ov_all_tdefs.get(ecid or '') if ecid else None
+                    _ex_badge = "`[C]`" if not _ex_tdef or _ex_tdef.execution == 'bar_close' else "`[I]`"
+                    st.markdown(f"{_ex_badge} _{ename}_")
                 with e_col2:
                     if st.button("✕", key=f"var_rm_exit_{idx_e}"):
                         actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
@@ -4403,7 +4584,9 @@ def render_strategy_builder():
 
             # Active entry tag
             entry_tag_name = config.get('entry_trigger_name') or '?'
-            st.caption(f"Current: **{entry_tag_name}**")
+            _cur_e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
+            _cur_e_badge = "`[C]`" if not _cur_e_tdef or _cur_e_tdef.execution == 'bar_close' else "`[I]`"
+            st.caption(f"Current: {_cur_e_badge} **{entry_tag_name}**")
 
             # Build confluence set for filtering
             confluence_set = selected if len(selected) > 0 else None
@@ -4433,17 +4616,15 @@ def render_strategy_builder():
 
                 for _, row in display_df.iterrows():
                     is_current = (row['trigger_id'] == current_entry_cid)
+                    _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
                     with st.container(border=True):
-                        t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                        t1, t2 = st.columns([4.3, 0.7])
                         with t1:
-                            label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                            label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
                             if is_current:
                                 label += " _(current)_"
                             st.markdown(label)
                         with t2:
-                            exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
-                            st.caption(exec_tag)
-                        with t3:
                             if not is_current and row['trigger_id'] in entry_trigger_options:
                                 if st.button("Replace", key=f"rep_entry_{row['trigger_id']}"):
                                     st.session_state.pending_entry_trigger = entry_trigger_options.index(row['trigger_id'])
@@ -4555,17 +4736,15 @@ def render_strategy_builder():
 
                     for _, row in display_df.iterrows():
                         is_current = (row['trigger_id'] in current_exit_cids)
+                        _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
                         with st.container(border=True):
-                            t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                            t1, t2 = st.columns([4.3, 0.7])
                             with t1:
-                                label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                                label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
                                 if is_current:
                                     label += " _(current)_"
                                 st.markdown(label)
                             with t2:
-                                exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
-                                st.caption(exec_tag)
-                            with t3:
                                 if not is_current and has_exit_triggers and len(st.session_state.get('sb_additional_exits', [])) < 2:
                                     if row['trigger_id'] in exit_options:
                                         if st.button("Add", key=f"add_exit_{row['trigger_id']}"):
@@ -7005,6 +7184,8 @@ def render_strategy_alerts_tab(strat: dict):
                 badge = ":red[EXIT]"
             else:
                 badge = f":gray[{alert_type.upper()}]"
+            if alert.get('source') == 'intra_bar':
+                badge += " :violet[Intra-bar]"
 
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
@@ -8458,6 +8639,8 @@ def render_portfolio_deploy(port):
                 badge = ":orange[COMPLIANCE]"
             else:
                 badge = f":gray[{alert_type.upper()}]"
+            if alert.get('source') == 'intra_bar':
+                badge += " :violet[Intra-bar]"
 
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
@@ -8984,6 +9167,8 @@ def _render_alert_row(alert: dict, prefix: str = ""):
         badge = ":orange[COMPLIANCE]"
     else:
         badge = f":gray[{alert_type.upper()}]"
+    if alert.get('source') == 'intra_bar':
+        badge += " :violet[Intra-bar]"
 
     with st.container():
         col_time, col_badge, col_detail = st.columns([2, 1, 6])
@@ -9109,6 +9294,9 @@ def _render_portfolio_alerts_tab():
                 else:
                     badge = f":gray[{alert_type.upper()}]"
 
+                # Add intra-bar badge when alert was triggered mid-bar
+                ib_badge = " :violet[Intra-bar]" if alert.get('source') == 'intra_bar' else ""
+
                 with st.container():
                     col_t, col_b, col_d = st.columns([2, 1, 6])
                     with col_t:
@@ -9119,7 +9307,7 @@ def _render_portfolio_alerts_tab():
                         except (ValueError, TypeError):
                             st.caption(ts[:16] if ts else '?')
                     with col_b:
-                        st.markdown(badge)
+                        st.markdown(badge + ib_badge)
                     with col_d:
                         strategy_name = alert.get('strategy_name', '')
                         price = alert.get('price')
@@ -9699,6 +9887,22 @@ def render_settings():
     )
     st.session_state['chart_visible_candles'] = candle_presets[preset_label]
     st.caption("Individual charts have a per-chart override dropdown.")
+
+    theme_options = {"Classic (Green / Red)": "classic",
+                     "Neutral (White / Gray)": "neutral",
+                     "Neutral Hollow (Hollow White / Gray)": "neutral_hollow"}
+    current_theme = st.session_state.get('candle_theme', 'neutral')
+    theme_labels = list(theme_options.keys())
+    theme_values = list(theme_options.values())
+    theme_idx = theme_values.index(current_theme) if current_theme in theme_values else 1
+    theme_label = st.selectbox(
+        "Candlestick Theme",
+        theme_labels,
+        index=theme_idx,
+        key="settings_candle_theme",
+        help="Color scheme for candlestick charts. Neutral themes help indicators and markers stand out.",
+    )
+    st.session_state['candle_theme'] = theme_options[theme_label]
 
     # --- Backtest Defaults ---
     st.divider()
@@ -10813,28 +11017,9 @@ _TRIGGER_DIRECTION_STYLE = {
 # EXECUTION TAG HELPERS  [C] = bar close, [I] = intra-bar, [I?] = candidate
 # =============================================================================
 
-# Triggers that compare price against a pre-computed level and *could*
-# be evaluated tick-by-tick once the intra-bar engine is built.
-_INTRABAR_CANDIDATE_TRIGGERS: set = {
-    # VWAP — price vs known VWAP / SD band levels
-    "vwap_cross_above", "vwap_cross_below",
-    "vwap_enter_upper_extreme", "vwap_enter_lower_extreme",
-    "vwap_return_to_vwap",
-    # UT Bot — price vs trailing stop level
-    "utbot_buy", "utbot_sell",
-    # SuperTrend — price vs ST line
-    "st_bull_flip", "st_bear_flip",
-    # Bollinger Bands — price vs band levels
-    "bb_cross_upper", "bb_cross_lower",
-    "bb_cross_basis_up", "bb_cross_basis_down",
-    # SR Channels — price vs channel boundaries
-    "src_resistance_broken", "src_support_broken",
-    # RVOL — volume accumulates intra-bar
-    "rvol_spike", "rvol_extreme",
-    # EMA Price Position — price vs EMA levels
-    "ema_pp_cross_short_up", "ema_pp_cross_short_down",
-    "ema_pp_cross_mid_up", "ema_pp_cross_mid_down",
-}
+# Phase 19: All viable intra-bar candidates now have companion _ib triggers
+# with execution="intra_bar".  This set is empty — kept for reference.
+_INTRABAR_CANDIDATE_TRIGGERS: set = set()
 
 
 def _execution_tag(trigger_base: str, execution: str = "bar_close") -> str:

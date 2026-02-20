@@ -688,13 +688,23 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
 
     # Check the last bar for trigger signals
     entry_col = f"trig_{entry_trigger}"
+    # _ib triggers share the boolean column with their bar-close base
+    if entry_col not in df.columns and entry_trigger.endswith('_ib'):
+        entry_col = f"trig_{entry_trigger[:-3]}"
 
     # Build list of exit trigger columns to check
     exit_cols = []
     if exit_triggers_list:
-        exit_cols = [f"trig_{et}" for et in exit_triggers_list]
+        for et in exit_triggers_list:
+            ec = f"trig_{et}"
+            if ec not in df.columns and et.endswith('_ib'):
+                ec = f"trig_{et[:-3]}"
+            exit_cols.append(ec)
     elif exit_trigger and exit_trigger not in ("opposite_signal", "fixed_r_2", "fixed_r_3", "trailing_stop", "time_exit_50"):
-        exit_cols = [f"trig_{exit_trigger}"]
+        ec = f"trig_{exit_trigger}"
+        if ec not in df.columns and exit_trigger.endswith('_ib'):
+            ec = f"trig_{exit_trigger[:-3]}"
+        exit_cols = [ec]
 
     # Determine if currently in position
     in_position = False

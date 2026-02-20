@@ -221,33 +221,128 @@ class AlertCooldown:
 
 
 # =============================================================================
-# TriggerLevelCache — stub for future [I] intra-bar triggers
+# INTRABAR LEVEL MAP — maps trigger bases to indicator columns + cross direction
+# =============================================================================
+
+# Keyed by base trigger name (without _ib suffix).  The _ib companion triggers
+# strip their suffix to look up the level spec here.
+INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
+    # VWAP
+    "vwap_cross_above":          {"column": "vwap",            "cross": "above"},
+    "vwap_cross_below":          {"column": "vwap",            "cross": "below"},
+    "vwap_enter_upper_extreme":  {"column": "vwap_sd2_upper",  "cross": "above"},
+    "vwap_enter_lower_extreme":  {"column": "vwap_sd2_lower",  "cross": "below"},
+    # UT Bot
+    "utbot_buy":                 {"column": "utbot_stop",      "cross": "above"},
+    "utbot_sell":                {"column": "utbot_stop",      "cross": "below"},
+    # SuperTrend (user pack)
+    "st_bull_flip":              {"column": "st_line",         "cross": "above"},
+    "st_bear_flip":              {"column": "st_line",         "cross": "below"},
+    # Bollinger Bands (user pack)
+    "bb_cross_upper":            {"column": "bb_upper",        "cross": "above"},
+    "bb_cross_lower":            {"column": "bb_lower",        "cross": "below"},
+    "bb_cross_basis_up":         {"column": "bb_basis",        "cross": "above"},
+    "bb_cross_basis_down":       {"column": "bb_basis",        "cross": "below"},
+    # SR Channels (user pack)
+    "src_resistance_broken":     {"column": "src_nearest_top", "cross": "above"},
+    "src_support_broken":        {"column": "src_nearest_bot", "cross": "below"},
+    # EMA Price Position — column is dynamic based on group parameters
+    "ema_pp_cross_short_up":     {"column": "ema_9",  "cross": "above", "param_key": "short_period"},
+    "ema_pp_cross_short_down":   {"column": "ema_9",  "cross": "below", "param_key": "short_period"},
+    "ema_pp_cross_mid_up":       {"column": "ema_21", "cross": "above", "param_key": "mid_period"},
+    "ema_pp_cross_mid_down":     {"column": "ema_21", "cross": "below", "param_key": "mid_period"},
+}
+
+
+# =============================================================================
+# TriggerLevelCache — O(1) intra-bar crossing detection
 # =============================================================================
 
 class TriggerLevelCache:
     """Cache of trigger levels for O(1) intra-bar price comparisons.
 
-    Currently a stub — all existing triggers are ``bar_close`` [C].
-    Will be populated when UT Bot / VWAP triggers gain ``intra_bar`` execution.
+    On each bar close, ``update_from_indicators()`` extracts the latest
+    indicator value for each active intra-bar trigger.  Between bar closes,
+    ``check()`` compares tick prices against cached levels with crossing-
+    direction tracking.
     """
 
     def __init__(self):
-        self._levels: Dict[str, float] = {}  # "strategy_id:trigger_id" → level
+        self._levels: Dict[str, float] = {}             # key → level price
+        self._cross_dir: Dict[str, str] = {}             # key → "above"/"below"
+        self._prev_side: Dict[str, Optional[str]] = {}   # key → last side of level
 
-    def update_from_indicators(self, strategy: dict, df: pd.DataFrame):
-        """Extract trigger levels from latest indicators.  No-op for now."""
-        pass
+    def update_from_indicators(self, strategy_id: int, trigger_base: str,
+                               df: pd.DataFrame, group_params: Optional[dict] = None):
+        """Extract the trigger level from the last bar's indicators.
 
-    def check(self, strategy_id: int, trigger_id: str, price: float) -> bool:
-        """O(1) check whether price crosses a cached trigger level."""
-        key = f"{strategy_id}:{trigger_id}"
+        Args:
+            strategy_id: The strategy ID for namespacing.
+            trigger_base: The base trigger name (with or without ``_ib`` suffix).
+            df: OHLCV+indicators DataFrame; level is read from ``iloc[-1]``.
+            group_params: Group parameters dict, used to resolve dynamic EMA
+                columns (e.g., ``ema_{short_period}``).
+        """
+        base = trigger_base.removesuffix("_ib")
+        spec = INTRABAR_LEVEL_MAP.get(base)
+        if spec is None or len(df) == 0:
+            return
+
+        # Resolve column name (dynamic for EMA)
+        col = spec["column"]
+        if "param_key" in spec and group_params:
+            period = group_params.get(spec["param_key"])
+            if period is not None:
+                col = f"ema_{period}"
+
+        last_bar = df.iloc[-1]
+        if col not in last_bar.index or pd.isna(last_bar[col]):
+            return
+
+        key = f"{strategy_id}:{trigger_base}"
+        level = float(last_bar[col])
+        close = float(last_bar["close"])
+
+        self._levels[key] = level
+        self._cross_dir[key] = spec["cross"]
+        # Initialize prev_side from bar close relative to new level
+        self._prev_side[key] = "above" if close > level else "below" if close < level else None
+
+    def check(self, key: str, price: float) -> bool:
+        """O(1) crossing detection.  Returns True on first crossing in the required direction.
+
+        Args:
+            key: ``"strategy_id:trigger_base"`` string.
+            price: Current tick price.
+        """
         level = self._levels.get(key)
         if level is None:
             return False
-        return price >= level  # placeholder comparison
+
+        cross_dir = self._cross_dir.get(key)
+        current_side = "above" if price > level else "below" if price < level else None
+        prev = self._prev_side.get(key)
+        self._prev_side[key] = current_side
+
+        if prev is None or current_side is None:
+            return False
+
+        if cross_dir == "above" and prev == "below" and current_side == "above":
+            return True
+        if cross_dir == "below" and prev == "above" and current_side == "below":
+            return True
+
+        return False
+
+    def get_level(self, key: str) -> Optional[float]:
+        """Return the cached level price for a key, or None."""
+        return self._levels.get(key)
 
     def clear(self):
+        """Clear all cached levels and state."""
         self._levels.clear()
+        self._cross_dir.clear()
+        self._prev_side.clear()
 
 
 # =============================================================================
@@ -262,12 +357,17 @@ class SymbolHub:
     pipeline via ``detect_signals()`` and fires alert callbacks.
     """
 
-    def __init__(self, symbol: str, alert_callback: Optional[Callable] = None):
+    def __init__(self, symbol: str, alert_callback: Optional[Callable] = None,
+                 trigger_cache: Optional[TriggerLevelCache] = None):
         self.symbol = symbol
         self.builders: Dict[int, BarBuilder] = {}  # tf_seconds → BarBuilder
         self.strategies: List[dict] = []
         self._alert_callback = alert_callback
         self._cooldown = AlertCooldown()
+        self._trigger_cache = trigger_cache or TriggerLevelCache()
+        self._confluence_met: Dict[int, bool] = {}       # strategy_id → confluence ok?
+        self._intrabar_fired: Dict[str, set] = {}        # "strat_id:tf" → {trigger_bases}
+        self._ib_cooldown = AlertCooldown()               # separate cooldown for intra-bar
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
 
@@ -290,8 +390,119 @@ class SymbolHub:
             completed = builder.process_tick(price, volume, timestamp)
             if completed is not None:
                 self._on_bar_close(tf_seconds, builder, timestamp)
+        # Intra-bar trigger evaluation on every tick
+        self._check_intrabar_triggers(price, timestamp)
 
     # -- private --------------------------------------------------------
+
+    def _get_intrabar_trigger_bases(self, strat: dict) -> List[str]:
+        """Return base trigger names for intra-bar triggers in this strategy."""
+        try:
+            from confluence_groups import get_all_triggers
+            all_triggers = get_all_triggers()
+            bases = []
+            trigger_ids = [strat.get('entry_trigger_confluence_id', '')]
+            trigger_ids.extend(strat.get('exit_trigger_confluence_ids', []))
+            if strat.get('exit_trigger_confluence_id'):
+                trigger_ids.append(strat['exit_trigger_confluence_id'])
+            for tid in trigger_ids:
+                if tid and tid in all_triggers:
+                    tdef = all_triggers[tid]
+                    if tdef.execution == 'intra_bar':
+                        bases.append(tdef.base_trigger)
+            return bases
+        except Exception:
+            return []
+
+    def _get_group_params_for_trigger(self, trigger_base: str) -> Optional[dict]:
+        """Look up the group parameters for a trigger base (needed for EMA dynamic columns)."""
+        try:
+            from confluence_groups import get_enabled_groups, get_group_triggers
+            for group in get_enabled_groups():
+                for trig in get_group_triggers(group):
+                    if trig.base_trigger == trigger_base:
+                        return group.parameters
+        except Exception:
+            pass
+        return None
+
+    def _check_intrabar_triggers(self, price: float, timestamp: datetime):
+        """Evaluate intra-bar triggers against cached levels on every tick."""
+        from alerts import save_alert, enrich_signal_with_portfolio_context, load_alert_config
+
+        for strat in self.strategies:
+            strat_id = strat['id']
+            strat_tf = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
+
+            # Session gate
+            if not _is_in_session(timestamp, strat.get('trading_session', 'RTH')):
+                continue
+
+            ib_bases = self._get_intrabar_trigger_bases(strat)
+            if not ib_bases:
+                continue
+
+            # Confluence gate: only fire if confluence was met at last bar close
+            if not self._confluence_met.get(strat_id, True):
+                continue
+
+            dedup_key = f"{strat_id}:{strat_tf}"
+
+            for trigger_base in ib_bases:
+                cache_key = f"{strat_id}:{trigger_base}"
+
+                if self._trigger_cache.check(cache_key, price):
+                    # Check dedup — don't re-fire same trigger this bar
+                    fired_set = self._intrabar_fired.get(dedup_key, set())
+                    base_no_ib = trigger_base.removesuffix("_ib")
+                    if base_no_ib in fired_set:
+                        continue
+
+                    # Cooldown — min(tf_seconds / 2, 30) seconds
+                    cooldown_secs = min(strat_tf / 2.0, 30.0)
+                    ib_cooldown_key = f"ib:{strat_id}:{trigger_base}"
+                    if not self._ib_cooldown.can_fire(ib_cooldown_key, timestamp,
+                                                      cooldown_seconds=cooldown_secs):
+                        continue
+
+                    # Mark as fired for dedup
+                    if dedup_key not in self._intrabar_fired:
+                        self._intrabar_fired[dedup_key] = set()
+                    self._intrabar_fired[dedup_key].add(base_no_ib)
+
+                    # Determine signal type based on trigger direction
+                    entry_cid = strat.get('entry_trigger_confluence_id', '')
+                    sig_type = 'entry_signal' if entry_cid.endswith(trigger_base) else 'exit_signal'
+
+                    level = self._trigger_cache.get_level(cache_key)
+
+                    sig = {
+                        'type': sig_type,
+                        'trigger': trigger_base,
+                        'bar_time': timestamp.isoformat(),
+                        'price': price,
+                        'level': 'strategy',
+                        'strategy_id': strat_id,
+                        'strategy_name': strat.get('name', f"Strategy {strat_id}"),
+                        'symbol': strat.get('symbol', '?'),
+                        'direction': strat.get('direction', '?'),
+                        'risk_per_trade': strat.get('risk_per_trade', 100.0),
+                        'timeframe': strat.get('timeframe', '1Min'),
+                        'strategy_alerts_visible': True,
+                        'source': 'intra_bar',
+                        'intrabar_level': float(level) if level is not None else None,
+                    }
+
+                    sig = enrich_signal_with_portfolio_context(sig, strat_id)
+                    config = load_alert_config()
+                    alert = save_alert(sig)
+
+                    logger.info("Intra-bar alert: %s for %s (%s) @ %.2f (level=%.2f)",
+                                sig_type, strat.get('name'), self.symbol, price,
+                                level if level else 0)
+
+                    if self._alert_callback:
+                        self._alert_callback(alert, config)
 
     def _on_bar_close(self, tf_seconds: int, builder: BarBuilder, timestamp: datetime):
         """Run full pipeline and evaluate signals for all matching strategies."""
@@ -318,6 +529,9 @@ class SymbolHub:
             if not _is_in_session(timestamp, strat.get('trading_session', 'RTH')):
                 continue
 
+            strat_id = strat['id']
+            dedup_key = f"{strat_id}:{tf_seconds}"
+
             try:
                 # Gather secondary TF histories for MTF confluence
                 secondary_tf_dfs = None
@@ -335,11 +549,36 @@ class SymbolHub:
                 signals = detect_signals(strat, df=df.copy(),
                                          secondary_tf_dfs=secondary_tf_dfs)
 
+                # Track confluence state for intra-bar gating
+                confluence_set = set(strat.get('confluence', []))
+                if confluence_set:
+                    from interpreters import get_confluence_records
+                    from confluence_groups import get_enabled_interpreter_keys
+                    interp_keys = get_enabled_interpreter_keys()
+                    last_bar = df.iloc[-1]
+                    current_conf = get_confluence_records(last_bar, "1M", interp_keys)
+                    self._confluence_met[strat_id] = confluence_set.issubset(current_conf)
+                else:
+                    self._confluence_met[strat_id] = True
+
+                # Update trigger cache for intra-bar triggers
+                ib_bases = self._get_intrabar_trigger_bases(strat)
+                for trigger_base in ib_bases:
+                    group_params = self._get_group_params_for_trigger(trigger_base)
+                    self._trigger_cache.update_from_indicators(
+                        strat_id, trigger_base, df, group_params)
+
+                # Clear intra-bar dedup set for this strategy/TF (new bar period)
+                self._intrabar_fired.pop(dedup_key, None)
+
+                # Get fired intra-bar trigger bases for dedup at bar-close
+                fired_ib = self._intrabar_fired.get(dedup_key, set())
+
                 for sig in signals:
                     # Enrich — mirrors alert_monitor.py poll_strategies() pattern
                     sig['level'] = 'strategy'
-                    sig['strategy_id'] = strat['id']
-                    sig['strategy_name'] = strat.get('name', f"Strategy {strat['id']}")
+                    sig['strategy_id'] = strat_id
+                    sig['strategy_name'] = strat.get('name', f"Strategy {strat_id}")
                     sig['symbol'] = strat.get('symbol', '?')
                     sig['direction'] = strat.get('direction', '?')
                     sig['risk_per_trade'] = strat.get('risk_per_trade', 100.0)
@@ -347,10 +586,16 @@ class SymbolHub:
                     sig['strategy_alerts_visible'] = True
                     sig['source'] = 'streaming'
 
-                    sig = enrich_signal_with_portfolio_context(sig, strat['id'])
+                    # Dedup: suppress bar-close if trigger already fired intra-bar
+                    trigger_name = sig.get('trigger', '')
+                    if trigger_name.removesuffix('_ib') in fired_ib:
+                        logger.debug("Bar-close suppressed (intra-bar already fired): %s", trigger_name)
+                        continue
+
+                    sig = enrich_signal_with_portfolio_context(sig, strat_id)
 
                     # Cooldown — prevents re-firing the same signal type within one bar
-                    cooldown_key = f"{strat['id']}:{sig.get('type', 'unknown')}"
+                    cooldown_key = f"{strat_id}:{sig.get('type', 'unknown')}"
                     if not self._cooldown.can_fire(cooldown_key, timestamp,
                                                    cooldown_seconds=float(tf_seconds)):
                         logger.debug("Alert suppressed by cooldown: %s", cooldown_key)
@@ -437,7 +682,8 @@ class UnifiedStreamingEngine:
         # Create SymbolHubs with warmup data
         self.hubs = {}
         for sym, strats in by_symbol.items():
-            hub = SymbolHub(sym, alert_callback=self._queue_alert_delivery)
+            hub = SymbolHub(sym, alert_callback=self._queue_alert_delivery,
+                          trigger_cache=self._trigger_cache)
             for strat in strats:
                 hub.add_strategy(strat)
 

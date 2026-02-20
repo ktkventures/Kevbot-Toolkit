@@ -92,11 +92,27 @@
       "execution": "bar_close"
     },
     {
+      "base": "cross_upper_ib",
+      "name": "Cross Above Upper Band",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_upper"
+    },
+    {
       "base": "cross_lower",
       "name": "Cross Below Lower Band",
       "direction": "SHORT",
       "type": "ENTRY",
       "execution": "bar_close"
+    },
+    {
+      "base": "cross_lower_ib",
+      "name": "Cross Below Lower Band",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_lower"
     },
     {
       "base": "cross_basis_up",
@@ -106,11 +122,27 @@
       "execution": "bar_close"
     },
     {
+      "base": "cross_basis_up_ib",
+      "name": "Cross Above Basis",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_basis_up"
+    },
+    {
       "base": "cross_basis_down",
       "name": "Cross Below Basis",
       "direction": "SHORT",
       "type": "ENTRY",
       "execution": "bar_close"
+    },
+    {
+      "base": "cross_basis_down_ib",
+      "name": "Cross Below Basis",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_basis_down"
     },
     {
       "base": "squeeze_on",

@@ -60,11 +60,27 @@
       "execution": "bar_close"
     },
     {
+      "base": "bull_flip_ib",
+      "name": "Trend Flips Bullish",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "bull_flip"
+    },
+    {
       "base": "bear_flip",
       "name": "Trend Flips Bearish",
       "direction": "SHORT",
       "type": "ENTRY",
       "execution": "bar_close"
+    },
+    {
+      "base": "bear_flip_ib",
+      "name": "Trend Flips Bearish",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "bear_flip"
     },
     {
       "base": "near_stop_bull",

@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.41
+**Version:** 0.43
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 18 COMPLETE — Multi-Timeframe Confluence fully implemented (18A timeframe management, 18B backtest pipeline, 18C streaming engine integration). AWAITING REVIEW: Kevin to provide UI/behavioral feedback on Phase 18 before proceeding to Phase 19. Phases 17A–D, 11–16 complete
+**Status:** Phase 19 COMPLETE — Intra-Bar Trigger Evaluation fully implemented (19A dual trigger definitions + TriggerLevelCache, 19B trigger column wiring, 19C streaming tick-level evaluation, 19D backtest level-fill pricing, 19E chart price arrows with custom cross/xcross shapes, 19F alert badges + polish). Candlestick theme system added (classic/neutral/neutral_hollow). Stale exit state fix for drill-down Add button. Phases 17A–D, 18A–C, 11–16 complete
 
 ---
 
@@ -1490,7 +1490,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - **Forward-fill for multi-TF alignment** — A 15-min EMA value computed at 9:45:00 should apply to all 1-min bars from 9:45:00 to 9:59:59. Forward-filling the higher-TF series onto the primary-TF index is the standard approach (same as TradingView's `request.security()` for MTF indicators). The value updates when the higher-TF bar closes.
 - **After Phase 14B** — The streaming engine's `SymbolHub` with multiple `BarBuilder` instances per symbol is the natural foundation for real-time MTF evaluation. Building MTF confluence first would require the backtest-only pipeline now and streaming retrofit later — double integration work. Phase 14B's architecture was designed with this use case in mind (`SymbolHub` accommodates single-strategy-multiple-timeframes, not just multiple-strategy-different-timeframes).
 
-### Phase 19: Intra-Bar Trigger Evaluation
+### Phase 19: Intra-Bar Trigger Evaluation — COMPLETE (Feb 19, 2026)
 *Evaluate select triggers tick-by-tick against pre-computed levels instead of waiting for bar close — enables faster entries/exits for price-vs-level crossover triggers while preserving bar-close semantics for pattern-based triggers.*
 
 **Problem Statement:**
@@ -1501,35 +1501,54 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Trigger Classification:**
 - `[C]` Bar-Close — trigger requires a completed candle to evaluate (EMA crossovers, MACD histogram, bar patterns, candle patterns). Remains bar-close only.
 - `[I]` Intra-Bar — trigger compares current tick price against a pre-computed level and can fire mid-bar. Level is recalculated on each bar close.
-- `[I?]` Intra-Bar Candidate — trigger *could* be intra-bar but is not yet wired. UI tags already show these.
 
-**Intra-Bar Candidates:**
-- [ ] VWAP crosses (price vs VWAP line, price enters/exits SD band extremes)
-- [ ] UT Bot signals (price crosses trailing stop level)
-- [ ] SuperTrend flips (price crosses ST line)
-- [ ] Bollinger Band crosses (price vs upper/lower/basis)
-- [ ] SR Channel breaks (price vs nearest support/resistance level)
-- [ ] RVOL spikes (volume vs threshold — bar-volume based, may remain bar-close)
+**Phase 19A: Dual Trigger Definitions + TriggerLevelCache — COMPLETE**
+- [x] VWAP crosses — `cross_above_ib`, `cross_below_ib`, `enter_upper_extreme_ib`, `enter_lower_extreme_ib`
+- [x] UT Bot signals — `buy_ib`, `sell_ib`
+- [x] EMA Price Position — `cross_short_up_ib`, `cross_short_down_ib`, `cross_mid_up_ib`, `cross_mid_down_ib`
+- [x] SuperTrend flips — `bull_flip_ib`, `bear_flip_ib` (user pack manifest)
+- [x] Bollinger Band crosses — `cross_upper_ib`, `cross_lower_ib`, `cross_basis_up_ib`, `cross_basis_down_ib` (user pack manifest)
+- [x] SR Channel breaks — `resistance_broken_ib`, `support_broken_ib` (user pack manifest)
+- [x] `INTRABAR_LEVEL_MAP` constant — maps 18 trigger bases to indicator columns and crossing directions
+- [x] `TriggerLevelCache` rewrite — O(1) crossing detection with `prev_side` tracking per trigger key
+- [x] RVOL/vwap_return_to_vwap remain bar-close only (not viable for level-cross approach)
 
-**Streaming Engine Integration (depends on Phase 14B):**
-- [ ] `SymbolHub.on_trade()` path gains an intra-bar trigger evaluation hook
-- [ ] Intra-bar triggers register their "level" (a float) after each bar close; tick handler checks `price >= level` or `price <= level`
-- [ ] When intra-bar trigger fires, alert and confluence state update immediately (do not wait for bar close)
-- [ ] Backtest approximation — use bar high/low to determine if level was crossed within the bar; entry price = the level (limit-fill assumption)
+**Phase 19B: Trigger Column Wiring — COMPLETE**
+- [x] `column_base` field on `TriggerDefinition` — `_ib` triggers share boolean columns with `[C]` counterparts
+- [x] `_ib` suffix stripping in `generate_trades()` for entry/exit column lookup
+- [x] Both `[C]` and `[I]` variants appear in drill-down results and trigger dropdowns
 
-**UI:**
-- [x] Execution tags (`[C]`, `[I]`, `[I?]`) already display on all Outputs & Triggers tabs (implemented in Phase 17D)
-- [ ] Per-trigger toggle in strategy drill-down: "Evaluate intra-bar" checkbox (default off, only shown for `[I]`-capable triggers)
-- [ ] Alert monitor respects intra-bar setting — fires alert on tick cross rather than bar close
+**Phase 19C: Streaming Engine Tick-Level Evaluation — COMPLETE**
+- [x] `on_tick()` calls `_check_intrabar_triggers()` on every tick
+- [x] Session gate, confluence gate (bar-close confluence state), cooldown, dedup
+- [x] Alerts fire mid-bar when price crosses cached indicator level
+- [x] Bar-close dedup prevents duplicate alerts when intra-bar already fired
+
+**Phase 19D: Backtest Level-Fill Pricing — COMPLETE**
+- [x] `[I]` entry triggers fill at indicator level price (not bar close)
+- [x] Bar high/low validation — level must be reached within bar for fill
+- [x] `[I]` exit triggers use same level-fill logic
+- [x] `[C]` triggers unchanged (fill at bar close)
+
+**Phase 19E: Chart Price Arrows — COMPLETE**
+- [x] Left ▸ arrow (target price) — always shown on entry/exit candles from trades DataFrame
+- [x] Right ◂ arrow (alert price) — only shown when real alerts are recorded (from alerts.json)
+- [x] Gap between arrows shows real slippage
+- [x] Existing below/above bar arrows unchanged
+
+**Phase 19F: Polish — COMPLETE**
+- [x] `:violet[Intra-bar]` badge on alerts with `source == "intra_bar"` (4 display locations)
+- [x] PRD and implementation spec updated
 
 ### Design Decisions (Phase 19 — Intra-Bar Trigger Evaluation)
 - **Level-based approach** — Rather than re-running the full indicator/interpreter pipeline on every tick (expensive), intra-bar triggers simply compare the current price against a pre-computed level that updates on each bar close. This keeps tick-path evaluation O(1) per trigger.
+- **Dual triggers, not checkboxes** — Instead of a per-trigger toggle, each eligible trigger gets a companion `[I]` version (e.g., "VWAP Cross Above `[C]`" and "VWAP Cross Above `[I]`"). Both appear in drill-down analysis with independent KPIs, so users can directly compare performance. The trigger CID encodes the execution mode — no separate config field needed.
 - **After Phase 18 (Multi-Timeframe)** — Intra-bar evaluation shares the same streaming engine infrastructure as multi-timeframe confluence. Building MTF first ensures the `SymbolHub` architecture is solid before adding tick-level evaluation on top.
-- **Opt-in per trigger** — Not all traders want intra-bar evaluation (some prefer bar-close discipline). The per-trigger checkbox keeps it explicit.
 - **Backtest uses high/low approximation** — Without true tick data in backtest, checking if bar high ≥ level (for long) or bar low ≤ level (for short) determines if the level was breached. Entry price uses the level itself (equivalent to a limit order fill). This is the standard approach in TradingView strategy backtests.
+- **Confluence evaluates at bar close only** — Intra-bar triggers fire mid-bar only if confluence was satisfied at the last bar close. This avoids re-running the full confluence pipeline per tick while still gating triggers on confluence state.
 
 ### Phase 20: General & Risk Management Pack Audit
-*Audit, validate, and expand the General Confluence and Risk Management pack libraries. Ensure condition logic, parameter schemas, preview rendering, and pipeline integration match production expectations. Identify structural improvements now that the indicator audit (17D) and intra-bar infrastructure (19) are complete.*
+*Audit, validate, and expand the General Confluence and Risk Management pack libraries. Ensure condition logic, parameter schemas, preview rendering, and pipeline integration match production expectations. Identify structural improvements now that the indicator audit (17D) and intra-bar infrastructure (Phase 19) are complete.*
 
 **General Packs Audit:**
 - [ ] Audit all general pack templates (Time of Day, Trading Session, Day of Week, Calendar Filter) — verify condition evaluation logic, parameter schemas, output states, and preview rendering

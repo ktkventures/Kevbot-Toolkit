@@ -48,6 +48,7 @@ class TriggerDefinition:
     direction: str           # "LONG", "SHORT", or "BOTH"
     trigger_type: str        # "ENTRY" or "EXIT"
     execution: str = "bar_close"  # "bar_close" or "intra_bar"
+    column_base: Optional[str] = None  # If set, share boolean column with this base trigger
 
 
 @dataclass
@@ -188,9 +189,13 @@ TEMPLATES: Dict[str, Dict] = {
         },
         "triggers": [
             {"base": "cross_short_up", "name": "Price > Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_up_ib", "name": "Price > Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_up"},
             {"base": "cross_short_down", "name": "Price < Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_down_ib", "name": "Price < Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_down"},
             {"base": "cross_mid_up", "name": "Price > Mid EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_mid_up_ib", "name": "Price > Mid EMA", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_up"},
             {"base": "cross_mid_down", "name": "Price < Mid EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_mid_down_ib", "name": "Price < Mid EMA", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_down"},
         ],
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
@@ -284,9 +289,13 @@ TEMPLATES: Dict[str, Dict] = {
         },
         "triggers": [
             {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_above_ib", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_above"},
             {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_below_ib", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_below"},
             {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_upper_extreme_ib", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "enter_upper_extreme"},
             {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_lower_extreme_ib", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "enter_lower_extreme"},
             {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
         ],
         "indicator_columns": ["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"],
@@ -346,7 +355,9 @@ TEMPLATES: Dict[str, Dict] = {
         },
         "triggers": [
             {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "buy_ib", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy"},
             {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "sell_ib", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "sell"},
         ],
         "indicator_columns": ["utbot_stop"],
     },
@@ -833,6 +844,7 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
             direction=trig_def["direction"],
             trigger_type=trig_def["type"],
             execution=trig_def.get("execution", "bar_close"),
+            column_base=trig_def.get("column_base"),
         )
         triggers.append(trigger)
 

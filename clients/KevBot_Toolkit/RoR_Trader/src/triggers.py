@@ -225,6 +225,10 @@ def generate_trades(
     trades = []
     entry_col = f"trig_{entry_trigger}"
 
+    # _ib triggers share the boolean column with their bar-close base
+    if entry_col not in df.columns and entry_trigger.endswith('_ib'):
+        entry_col = f"trig_{entry_trigger[:-3]}"
+
     # Verify trigger column exists
     if entry_col not in df.columns:
         print(f"Warning: Trigger column {entry_col} not found")
@@ -260,6 +264,26 @@ def generate_trades(
     # Get interpreter list for confluence records (only enabled groups if specified)
     interpreter_list = enabled_interpreter_keys if enabled_interpreter_keys is not None else list(INTERPRETERS.keys())
 
+    # Resolve intra-bar level-fill for entry trigger
+    _entry_is_ib = entry_trigger.endswith('_ib')
+    _entry_level_spec = None
+    if _entry_is_ib:
+        from realtime_engine import INTRABAR_LEVEL_MAP
+        _entry_base = entry_trigger.removesuffix('_ib')
+        # Strip the trigger prefix to get the map key (e.g., "vwap_cross_above")
+        _entry_level_spec = INTRABAR_LEVEL_MAP.get(_entry_base)
+
+    # Resolve intra-bar level-fill for exit triggers
+    _exit_ib_specs: Dict[str, dict] = {}  # exit_trigger → level_spec
+    if _entry_is_ib or any(et.endswith('_ib') for et in effective_exit_triggers):
+        from realtime_engine import INTRABAR_LEVEL_MAP as _ILM
+        for et in effective_exit_triggers:
+            if et.endswith('_ib'):
+                _exit_base = et.removesuffix('_ib')
+                spec = _ILM.get(_exit_base)
+                if spec:
+                    _exit_ib_specs[et] = spec
+
     # State machine
     in_position = False
     entry_idx = None
@@ -286,10 +310,29 @@ def generate_trades(
                     if not confluence_required.issubset(current_confluence):
                         continue  # Confluence not met, skip entry
 
+                # Determine entry price: level-fill for [I] triggers, close for [C]
+                if _entry_level_spec is not None:
+                    level_col = _entry_level_spec['column']
+                    level_val = row.get(level_col)
+                    if level_val is not None and not pd.isna(level_val):
+                        level_val = float(level_val)
+                        cross_dir = _entry_level_spec['cross']
+                        # Verify bar high/low reaches the level
+                        if cross_dir == 'above' and row['high'] >= level_val:
+                            fill_price = level_val
+                        elif cross_dir == 'below' and row['low'] <= level_val:
+                            fill_price = level_val
+                        else:
+                            continue  # Level not reached within bar
+                    else:
+                        fill_price = row['close']
+                else:
+                    fill_price = row['close']
+
                 # Enter position
                 in_position = True
                 entry_idx = idx
-                entry_price = row['close']
+                entry_price = fill_price
                 entry_row = row
                 entry_bar_i = i
 
@@ -358,7 +401,24 @@ def generate_trades(
             if not exit_triggered and len(effective_exit_triggers) > 0:
                 for et in effective_exit_triggers:
                     exit_col = f"trig_{et}"
+                    # _ib triggers share the boolean column with their bar-close base
+                    if exit_col not in df.columns and et.endswith('_ib'):
+                        exit_col = f"trig_{et[:-3]}"
                     if exit_col in df.columns and row.get(exit_col, False):
+                        # Level-fill for [I] exit triggers
+                        et_spec = _exit_ib_specs.get(et)
+                        if et_spec is not None:
+                            lv_col = et_spec['column']
+                            lv_val = row.get(lv_col)
+                            if lv_val is not None and not pd.isna(lv_val):
+                                lv_val = float(lv_val)
+                                c_dir = et_spec['cross']
+                                if c_dir == 'above' and row['high'] >= lv_val:
+                                    exit_price = lv_val
+                                elif c_dir == 'below' and row['low'] <= lv_val:
+                                    exit_price = lv_val
+                                else:
+                                    continue  # Level not reached
                         exit_triggered = True
                         exit_reason = "signal_exit"
                         break

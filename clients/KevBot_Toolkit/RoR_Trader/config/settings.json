@@ -1,7 +1,7 @@
 {
   "chart_visible_candles": 200,
   "default_extended_data_days": 365,
-  "default_entry_trigger": "macd_line_default_cross_bull",
+  "default_entry_trigger": "utbot_default_buy_ib",
   "default_exit_trigger": "bar_count_default_exit",
   "default_stop_config": {
     "method": "swing",
@@ -12,5 +12,12 @@
   "global_data_seed": 42,
   "data_feed": "sip",
   "realtime_engine_enabled": true,
-  "enabled_timeframes": ["1Min"]
+  "enabled_timeframes": [
+    "1Min",
+    "5Min",
+    "15Min",
+    "1Hour",
+    "1Day"
+  ],
+  "candle_theme": "neutral"
 }

@@ -90,11 +90,27 @@
       "execution": "bar_close"
     },
     {
+      "base": "resistance_broken_ib",
+      "name": "Resistance Broken",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "resistance_broken"
+    },
+    {
       "base": "support_broken",
       "name": "Support Broken",
       "direction": "SHORT",
       "type": "ENTRY",
       "execution": "bar_close"
+    },
+    {
+      "base": "support_broken_ib",
+      "name": "Support Broken",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "support_broken"
     },
     {
       "base": "enter_sr_zone",
