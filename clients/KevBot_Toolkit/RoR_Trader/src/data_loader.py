@@ -266,6 +266,7 @@ def get_data_source(feed: str = "sip") -> str:
 # =============================================================================
 
 TF_LABELS = {
+    "5Sec": "5s", "10Sec": "10s", "15Sec": "15s", "30Sec": "30s",
     "1Min": "1m", "2Min": "2m", "3Min": "3m", "5Min": "5m",
     "10Min": "10m", "15Min": "15m", "30Min": "30m",
     "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
@@ -273,11 +274,15 @@ TF_LABELS = {
 }
 TF_FROM_LABEL = {v: k for k, v in TF_LABELS.items()}
 
-# Timeframes available for MTF confluence (excludes sub-minute streaming-only TFs)
+# All timeframes available for MTF confluence selection
 MTF_AVAILABLE_TIMEFRAMES = [
+    "5Sec", "10Sec", "15Sec", "30Sec",
     "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
     "1Hour", "2Hour", "4Hour", "1Day",
 ]
+
+# Sub-minute timeframes that require streaming engine (no REST API / backtest support)
+SUB_MINUTE_TIMEFRAMES = {"5Sec", "10Sec", "15Sec", "30Sec"}
 
 
 def get_tf_label(timeframe: str) -> str:
@@ -330,7 +335,7 @@ SESSION_MARKET_HOURS = {
 
 # Approximate trading bars per day by timeframe (6.5 RTH market hours)
 BARS_PER_DAY = {
-    "10Sec": 2340, "30Sec": 780,  # Sub-minute (streaming engine only)
+    "5Sec": 4680, "10Sec": 2340, "15Sec": 1560, "30Sec": 780,  # Sub-minute (streaming engine only)
     "1Min": 390, "2Min": 195, "3Min": 130, "5Min": 78,
     "10Min": 39, "15Min": 26, "30Min": 13,
     "1Hour": 7, "2Hour": 4, "4Hour": 2,

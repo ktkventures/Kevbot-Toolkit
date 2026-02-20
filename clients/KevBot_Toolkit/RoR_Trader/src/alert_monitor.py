@@ -90,7 +90,7 @@ if __name__ == "__main__":
 # =============================================================================
 
 TIMEFRAME_SECONDS = {
-    "10Sec": 10, "30Sec": 30,  # Sub-minute (streaming engine only)
+    "5Sec": 5, "10Sec": 10, "15Sec": 15, "30Sec": 30,  # Sub-minute (streaming engine only)
     "1Min": 60, "2Min": 120, "3Min": 180, "5Min": 300,
     "10Min": 600, "15Min": 900, "30Min": 1800,
     "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,

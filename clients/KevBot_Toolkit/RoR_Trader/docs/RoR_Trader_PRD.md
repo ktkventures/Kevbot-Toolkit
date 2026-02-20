@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.38
+**Version:** 0.39
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 18A In Progress — Multi-Timeframe Confluence: Timeframe management page, TF label utilities, enabled_timeframes settings. Phase 17D complete; Phases 17A–C, 11–16 complete
+**Status:** Phase 18A COMPLETE — Multi-Timeframe Confluence: Timeframe management page, TF label utilities, sub-minute timeframes, enabled_timeframes settings. Phase 18B next. Phase 17D complete; Phases 17A–C, 11–16 complete
 
 ---
 
@@ -1456,9 +1456,11 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - TF conditions currently display without a timeframe prefix (e.g., "Bollinger Bands Default: Squeeze Mid"), which is ambiguous once multiple timeframes are in play
 
 **Phase 18A: Timeframe Management & Data Model — COMPLETE (Feb 19, 2026)**
-- [x] New "Timeframes" sub-page under Confluence Packs — enable/disable individual timeframes (1m through 1d), grid layout with checkboxes
+- [x] New "Timeframes" sub-page under Confluence Packs — enable/disable individual timeframes (5s through 1d), grid layout with checkboxes
 - [x] `enabled_timeframes` setting in `config/settings.json` — persisted list of enabled timeframes, defaults to `["1Min"]`
 - [x] TF label mapping utilities in `data_loader.py` — `TF_LABELS`, `TF_FROM_LABEL`, `get_tf_label()`, `get_tf_from_label()`, `get_required_tfs_from_confluence()`
+- [x] Sub-minute timeframes (5Sec, 10Sec, 15Sec, 30Sec) — available for streaming engine only, marked "(streaming)" in UI, no REST API / backtest support
+- [x] `SUB_MINUTE_TIMEFRAMES` set and `BARS_PER_DAY` entries for sub-minute timeframes
 - [x] Matrix summary display — shows N timeframes x M packs = N*M condition groups available
 - [x] Condition matrix preview table when multiple timeframes enabled
 
@@ -1558,7 +1560,40 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
-### Phase 22: Low-Priority Cleanup & Enhancements
+### Phase 22: Sub-Minute Historical Data & HFT Backtesting
+*Build our own sub-minute historical data by recording tick streams for priority tickers, and/or integrate alternative data providers (Databento, Polygon.io, etc.) to enable backtesting on sub-minute timeframes (5s, 10s, 15s, 30s).*
+
+**Problem Statement:**
+- Alpaca's REST API does not provide sub-minute historical bars — the finest granularity available is 1-minute
+- Sub-minute timeframes (5s, 10s, 15s, 30s) currently work only via the streaming engine (live data), making them impossible to backtest
+- HFT-style strategies and scalping setups often rely on sub-minute charts that need backtesting to validate edge before going live
+- Without sub-minute historical data, traders cannot evaluate or optimize sub-minute confluence conditions
+
+**Self-Recorded Tick Data:**
+- [ ] Priority ticker list — user-configurable list of high-priority symbols to continuously record
+- [ ] Tick stream recorder — background service that connects to Alpaca's streaming API and persists raw trades/quotes for priority tickers
+- [ ] Local storage format — efficient on-disk format (Parquet, HDF5, or SQLite) for raw tick data, partitioned by date and symbol
+- [ ] Sub-minute bar aggregation — utility to build 5s/10s/15s/30s bars from recorded tick data for backtesting
+- [ ] Retention policy — configurable data retention window (e.g., 30/60/90 days) to manage disk usage
+- [ ] Recording status UI — show which tickers are being recorded, data freshness, disk usage, and recording health
+
+**Alternative Data Providers:**
+- [ ] Research and evaluate sub-minute data providers: Databento, Polygon.io, FirstRate Data, Kibot, TickData
+- [ ] Provider comparison — cost, granularity, coverage, API quality, data quality, latency
+- [ ] Integration module — pluggable data source for sub-minute historical bars alongside existing Alpaca integration
+- [ ] Provider connection settings — API keys, subscription tier, rate limits managed in Settings > Connections
+
+**Backtest Integration:**
+- [ ] `load_from_alpaca()` and `load_market_data()` extended to detect sub-minute timeframes and route to self-recorded data or alternative provider
+- [ ] Backtest pipeline works identically for sub-minute TFs — same indicator/interpreter/trigger evaluation, just on finer-grained bars
+- [ ] Sub-minute backtest performance — ensure pipeline handles the higher bar counts efficiently (a 30-day 5-second backtest = ~140k bars per session)
+
+**Design Considerations:**
+- Self-recording creates a "cold start" problem — data only exists from when recording began. Alternative providers solve this but add cost.
+- Hybrid approach likely best: use a provider for historical backfill, self-record going forward for zero ongoing cost.
+- Sub-minute bars have significantly more noise — strategies built on these timeframes need robust confluence filtering.
+
+### Phase 23: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**

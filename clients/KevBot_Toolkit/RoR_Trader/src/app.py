@@ -160,6 +160,7 @@ import pack_builder
 
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
 TIMEFRAMES = [
+    "5Sec", "10Sec", "15Sec", "30Sec",
     "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
     "1Hour", "2Hour", "4Hour",
     "1Day", "1Week", "1Month",
@@ -168,6 +169,10 @@ DIRECTIONS = ["LONG", "SHORT"]
 TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours"]
 
 TIMEFRAME_GUIDANCE = {
+    "5Sec":   "~4680 bars/day \u00b7 streaming engine only",
+    "10Sec":  "~2340 bars/day \u00b7 streaming engine only",
+    "15Sec":  "~1560 bars/day \u00b7 streaming engine only",
+    "30Sec":  "~780 bars/day \u00b7 streaming engine only",
     "1Min":   "~390 bars/day \u00b7 recommended \u226490 days",
     "2Min":   "~195 bars/day \u00b7 recommended \u22646 months",
     "3Min":   "~130 bars/day \u00b7 recommended \u22646 months",
@@ -9823,7 +9828,7 @@ def render_settings():
 
 def render_timeframes_page():
     """Render the Timeframes management page for multi-timeframe confluence."""
-    from data_loader import MTF_AVAILABLE_TIMEFRAMES, TF_LABELS
+    from data_loader import MTF_AVAILABLE_TIMEFRAMES, TF_LABELS, SUB_MINUTE_TIMEFRAMES
 
     st.header("Timeframes")
     st.caption(
@@ -9831,6 +9836,7 @@ def render_timeframes_page():
         "in the Strategy Builder drill-down. Enabled timeframes combine with enabled "
         "TF Confluence Packs to produce the full matrix of available conditions."
     )
+    st.caption("Sub-minute timeframes (5s–30s) require the streaming engine and are not available for backtesting.")
 
     settings = load_settings()
     enabled = set(settings.get("enabled_timeframes", ["1Min"]))
@@ -9858,10 +9864,12 @@ def render_timeframes_page():
             with cols[i]:
                 label = TF_LABELS.get(tf, tf)
                 is_enabled = tf in enabled
+                is_sub_min = tf in SUB_MINUTE_TIMEFRAMES
+                suffix = " (streaming)" if is_sub_min else ""
 
                 # Show checkbox
                 new_val = st.checkbox(
-                    f"**{label}** ({tf})",
+                    f"**{label}**{suffix}",
                     value=is_enabled,
                     key=f"tf_enable_{tf}",
                 )
