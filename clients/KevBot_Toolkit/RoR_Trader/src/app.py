@@ -45,12 +45,14 @@ from interpreters import (
     get_confluence_records,
     get_available_triggers,
     interpret_ema_stack,
+    interpret_ema_price_position,
     interpret_macd_line,
     interpret_macd_histogram,
     interpret_vwap,
     interpret_rvol,
     interpret_utbot,
     detect_ema_triggers,
+    detect_ema_price_position_triggers,
     detect_macd_triggers,
     detect_macd_hist_triggers,
     detect_vwap_triggers,
@@ -184,7 +186,7 @@ TIMEFRAME_GUIDANCE = {
 ALPACA_DATA_FLOOR = date(2016, 1, 1)
 
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
-BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "vwap", "utbot"}
+BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "vwap", "utbot"}
 BUILTIN_OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
 
@@ -379,7 +381,7 @@ def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
     if not template:
         return []
 
-    if group.base_template == "ema_stack":
+    if group.base_template in ("ema_stack", "ema_price_position"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
@@ -447,7 +449,7 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 
     colors = {}
 
-    if group.base_template == "ema_stack":
+    if group.base_template in ("ema_stack", "ema_price_position"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
@@ -10005,6 +10007,11 @@ TEMPLATE_FUNCTIONS = {
         "Interpreter": [interpret_ema_stack],
         "Triggers": [detect_ema_triggers],
     },
+    "ema_price_position": {
+        "Indicator": [calculate_ema],
+        "Interpreter": [interpret_ema_price_position],
+        "Triggers": [detect_ema_price_position_triggers],
+    },
     "macd_line": {
         "Indicator": [calculate_macd],
         "Interpreter": [interpret_macd_line],
@@ -10593,6 +10600,9 @@ _INTRABAR_CANDIDATE_TRIGGERS: set = {
     "src_resistance_broken", "src_support_broken",
     # RVOL — volume accumulates intra-bar
     "rvol_spike", "rvol_extreme",
+    # EMA Price Position — price vs EMA levels
+    "ema_pp_cross_short_up", "ema_pp_cross_short_down",
+    "ema_pp_cross_mid_up", "ema_pp_cross_mid_down",
 }
 
 

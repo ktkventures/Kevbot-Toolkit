@@ -141,9 +141,9 @@ Advanced charting configuration. Include this object in the manifest for indicat
 
 ### Reserved Names (DO NOT USE)
 
-These trigger prefixes are taken: `ema`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
+These trigger prefixes are taken: `ema`, `ema_pp`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
 
-These interpreter keys are taken: `EMA_STACK`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
+These interpreter keys are taken: `EMA_STACK`, `EMA_PRICE_POSITION`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
 
 These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`
 

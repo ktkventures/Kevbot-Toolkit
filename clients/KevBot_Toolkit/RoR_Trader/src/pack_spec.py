@@ -67,7 +67,7 @@ VALID_PARAM_TYPES = ["int", "float", "str", "bool"]
 
 # Built-in trigger prefixes that user packs cannot use
 BUILTIN_TRIGGER_PREFIXES = {
-    "ema", "macd", "macd_hist", "vwap", "rvol", "utbot", "bar_count",
+    "ema", "ema_pp", "macd", "macd_hist", "vwap", "rvol", "utbot", "bar_count",
     "bb", "src", "st", "sw123", "strat",
 }
 
@@ -87,7 +87,7 @@ BUILTIN_INDICATOR_COLUMNS = {
 
 # Built-in interpreter keys that user packs cannot collide with
 BUILTIN_INTERPRETER_KEYS = {
-    "EMA_STACK", "MACD_LINE", "MACD_HISTOGRAM", "VWAP", "RVOL", "UTBOT",
+    "EMA_STACK", "EMA_PRICE_POSITION", "MACD_LINE", "MACD_HISTOGRAM", "VWAP", "RVOL", "UTBOT",
     "BOLLINGER_BANDS", "SR_CHANNELS", "SUPERTREND", "SWING_123", "STRAT_ASSISTANT",
 }
 

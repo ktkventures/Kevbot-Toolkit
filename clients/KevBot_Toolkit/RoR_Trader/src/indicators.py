@@ -525,6 +525,7 @@ def _run_utbot_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
 
 GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "ema_stack": _run_ema_stack_indicators,
+    "ema_price_position": _run_ema_stack_indicators,
     "macd_line": _run_macd_indicators,
     "macd_histogram": _run_macd_indicators,
     "vwap": _run_vwap_indicators,

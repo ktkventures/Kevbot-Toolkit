@@ -1437,6 +1437,10 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] Update Pack Builder context document — added `plot_config` documentation, `candle_color_column` guidance, Wilder smoothing note, expanded reserved names for all packs
 - [x] Update `pack_spec.py` reserved names — trigger prefixes, interpreter keys, and indicator columns updated for all installed packs
 - [x] Add execution mode tags (`[C]`, `[I?]`, `[I]`) to all Outputs & Triggers displays — Confluence Packs, User Packs, General Packs, and Pack Builder review panel. Intra-bar candidate triggers identified and tagged `[I?]`
+- [x] Split EMA Stack into pure EMA ordering (no price) + new EMA Price Position pack (4-char PSML codes with all 24 permutations). EMA Stack now only compares Short/Mid/Long relative to each other. EMA Price Position includes price in the ordering with triggers for price crossing Short/Mid EMAs.
+- [x] Fix VWAP SD bands — replaced simple expanding std with volume-weighted standard deviation matching TradingView formula
+- [x] Fix UT Bot preview — removed `utbot_direction` from chart overlay columns, added UTBOT to interpreter config so it actually runs
+- [x] Add Show Conditions background painting to General Packs preview tab
 
 **End State:** A library of validated, production-quality indicators and interpreters with TradingView-quality chart rendering. Chart overlays for interpreter states and trigger events provide full visual transparency into the signal chain. Pine Script export enables cross-platform validation. New strategies built after this phase can be trusted for live trading without concern about data integrity or rendering issues.
 

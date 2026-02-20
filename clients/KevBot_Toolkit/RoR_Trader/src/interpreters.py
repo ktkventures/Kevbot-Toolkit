@@ -35,10 +35,23 @@ class InterpreterConfig:
 # INTERPRETER DEFINITIONS
 # =============================================================================
 
+# All 24 possible orderings of Price (P), Short (S), Mid (M), Long (L)
+# grouped by price position: 1st (most bullish) → 4th (most bearish)
+_EMA_PP_OUTPUTS = [
+    # P above all EMAs (bullish)
+    "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
+    # P second (above two EMAs)
+    "SPML", "SPLM", "MPSL", "MPLS", "LPSM", "LPMS",
+    # P third (above one EMA)
+    "SMPL", "MSPL", "SLPM", "LSPM", "MLPS", "LMPS",
+    # P below all EMAs (bearish)
+    "SMLP", "SLMP", "MSLP", "MLSP", "LSMP", "LMSP",
+]
+
 INTERPRETERS: Dict[str, InterpreterConfig] = {
     "EMA_STACK": InterpreterConfig(
         name="EMA Stack",
-        description="Analyzes EMA alignment (8, 21, 50) relative to price",
+        description="Analyzes EMA alignment (8, 21, 50) — pure EMA ordering without price",
         category="Moving Averages",
         requires_indicators=["ema_8", "ema_21", "ema_50"],
         outputs=["SML", "SLM", "MSL", "MLS", "LSM", "LMS"],
@@ -84,6 +97,15 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
         outputs=["BULL", "BEAR"],
         triggers=["utbot_buy", "utbot_sell"]
     ),
+    "EMA_PRICE_POSITION": InterpreterConfig(
+        name="EMA Price Position",
+        description="Price position within the EMA stack (4-char ordering: P, S, M, L)",
+        category="Moving Averages",
+        requires_indicators=["ema_8", "ema_21", "ema_50"],
+        outputs=_EMA_PP_OUTPUTS,
+        triggers=["ema_pp_cross_short_up", "ema_pp_cross_short_down",
+                   "ema_pp_cross_mid_up", "ema_pp_cross_mid_down"]
+    ),
 }
 
 
@@ -93,20 +115,22 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
 
 def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
     """
-    Interpret EMA Stack alignment.
+    Interpret EMA Stack alignment — pure EMA ordering (no price).
+
+    Compares the three EMA lines relative to each other. Price is NOT
+    included; see EMA_PRICE_POSITION for price-inclusive ordering.
 
     Requires: ema_8, ema_21, ema_50 columns
 
-    Outputs:
-    - SML: Price > Short > Mid > Long (Full Bull Stack)
-    - SLM: Short > Price > Mid > Long (Price below short)
-    - MSL: Short > Mid > Price > Long (Price in middle)
-    - MLS: Short > Mid > Long > Price (Price below all, bull order)
-    - LSM: Long > Short > Mid or other transitional
-    - LMS: Price < Short < Mid < Long (Full Bear Stack)
+    Outputs (Short=ema_8, Mid=ema_21, Long=ema_50):
+    - SML: Short > Mid > Long (Full Bull Stack — trending up)
+    - SLM: Short > Long > Mid (Short leading, mid dipped below long)
+    - MSL: Mid > Short > Long (Short pulling back under mid)
+    - MLS: Mid > Long > Short (Mid leading, bearish short)
+    - LSM: Long > Short > Mid (Long on top, transitional)
+    - LMS: Long > Mid > Short (Full Bear Stack — trending down)
     """
     def interpret(row):
-        p = row['close']
         s = row.get('ema_8', np.nan)
         m = row.get('ema_21', np.nan)
         l = row.get('ema_50', np.nan)
@@ -114,24 +138,20 @@ def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
         if pd.isna(s) or pd.isna(m) or pd.isna(l):
             return None
 
-        # Full bull stack: Price > Short > Mid > Long
-        if p > s > m > l:
+        if s > m > l:
             return "SML"
-        # Bull but price below short EMA
-        elif s > p > m > l:
+        elif s > l > m:
             return "SLM"
-        # Price between mid and long
-        elif s > m > p > l:
+        elif m > s > l:
             return "MSL"
-        # Price below all EMAs but EMAs still bullish order
-        elif s > m > l > p:
+        elif m > l > s:
             return "MLS"
-        # Full bear stack: Long > Mid > Short > Price
-        elif l > m > s > p:
-            return "LMS"
-        # Various transitional states
-        else:
+        elif l > s > m:
             return "LSM"
+        elif l > m > s:
+            return "LMS"
+        else:
+            return "SML"  # fallback for exact equality
 
     return df.apply(interpret, axis=1)
 
@@ -166,6 +186,74 @@ def detect_ema_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
     triggers['ema_mid_cross_bear'] = (
         (df['ema_21'] < df['ema_50']) &
         (df['ema_21'].shift(1) >= df['ema_50'].shift(1))
+    )
+
+    return triggers
+
+
+# =============================================================================
+# EMA PRICE POSITION INTERPRETER
+# =============================================================================
+
+def interpret_ema_price_position(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret price position within the EMA stack.
+
+    Generates a 4-character code showing the ordering of Price (P),
+    Short EMA (S), Mid EMA (M), and Long EMA (L) from highest to lowest.
+
+    Example states:
+    - PSML: Price > Short > Mid > Long (full bull, price leading)
+    - SPML: Short > Price > Mid > Long (bull EMAs, price dipped below short)
+    - SMLP: Short > Mid > Long > Price (bull EMAs, price below all)
+    - LMSP: Long > Mid > Short > Price (full bear, price trailing)
+
+    Requires: ema_8, ema_21, ema_50 columns
+    """
+    def interpret(row):
+        p = row['close']
+        s = row.get('ema_8', np.nan)
+        m = row.get('ema_21', np.nan)
+        l = row.get('ema_50', np.nan)
+
+        if pd.isna(s) or pd.isna(m) or pd.isna(l):
+            return None
+
+        items = [('P', p), ('S', s), ('M', m), ('L', l)]
+        items.sort(key=lambda x: -x[1])  # sort descending by value
+        return ''.join(item[0] for item in items)
+
+    return df.apply(interpret, axis=1)
+
+
+def detect_ema_price_position_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """
+    Detect price-vs-EMA crossover triggers.
+
+    Triggers:
+    - ema_pp_cross_short_up: Price crosses above Short EMA
+    - ema_pp_cross_short_down: Price crosses below Short EMA
+    - ema_pp_cross_mid_up: Price crosses above Mid EMA
+    - ema_pp_cross_mid_down: Price crosses below Mid EMA
+    """
+    triggers = {}
+    close = df['close']
+    prev_close = close.shift(1)
+
+    # Price crosses above/below Short EMA
+    triggers['ema_pp_cross_short_up'] = (
+        (close > df['ema_8']) & (prev_close <= df['ema_8'].shift(1))
+    )
+    triggers['ema_pp_cross_short_down'] = (
+        (close < df['ema_8']) & (prev_close >= df['ema_8'].shift(1))
+    )
+
+    # Price crosses above/below Mid EMA
+    triggers['ema_pp_cross_mid_up'] = (
+        (close > df['ema_21']) & (prev_close <= df['ema_21'].shift(1))
+    )
+    triggers['ema_pp_cross_mid_down'] = (
+        (close < df['ema_21']) & (prev_close >= df['ema_21'].shift(1))
     )
 
     return triggers
@@ -551,9 +639,11 @@ INTERPRETER_FUNCS["MACD_HISTOGRAM"] = interpret_macd_histogram
 INTERPRETER_FUNCS["VWAP"] = interpret_vwap
 INTERPRETER_FUNCS["RVOL"] = interpret_rvol
 INTERPRETER_FUNCS["UTBOT"] = interpret_utbot
+INTERPRETER_FUNCS["EMA_PRICE_POSITION"] = interpret_ema_price_position
 
 # Register built-in trigger detection functions
 TRIGGER_FUNCS["EMA_STACK"] = detect_ema_triggers
+TRIGGER_FUNCS["EMA_PRICE_POSITION"] = detect_ema_price_position_triggers
 TRIGGER_FUNCS["MACD_LINE"] = detect_macd_triggers
 TRIGGER_FUNCS["MACD_HISTOGRAM"] = detect_macd_hist_triggers
 TRIGGER_FUNCS["VWAP"] = detect_vwap_triggers
