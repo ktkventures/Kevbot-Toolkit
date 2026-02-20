@@ -68,6 +68,7 @@ VALID_PARAM_TYPES = ["int", "float", "str", "bool"]
 # Built-in trigger prefixes that user packs cannot use
 BUILTIN_TRIGGER_PREFIXES = {
     "ema", "macd", "macd_hist", "vwap", "rvol", "utbot", "bar_count",
+    "bb", "src", "st", "sw123", "strat",
 }
 
 # Built-in indicator columns that user packs cannot collide with
@@ -77,11 +78,17 @@ BUILTIN_INDICATOR_COLUMNS = {
     "vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower",
     "atr", "vol_sma", "rvol",
     "utbot_stop", "utbot_direction",
+    "bb_upper", "bb_basis", "bb_lower", "bb_bandwidth",
+    "src_nearest_top", "src_nearest_bot", "src_num_channels", "src_in_channel",
+    "st_line", "st_direction", "st_atr",
+    "sw123_pattern", "sw123_candle_color",
+    "strat_bar_type", "strat_combo", "strat_actionable", "strat_candle_color",
 }
 
 # Built-in interpreter keys that user packs cannot collide with
 BUILTIN_INTERPRETER_KEYS = {
     "EMA_STACK", "MACD_LINE", "MACD_HISTOGRAM", "VWAP", "RVOL", "UTBOT",
+    "BOLLINGER_BANDS", "SR_CHANNELS", "SUPERTREND", "SWING_123", "STRAT_ASSISTANT",
 }
 
 SLUG_PATTERN = re.compile(r'^[a-z][a-z0-9_]*$')

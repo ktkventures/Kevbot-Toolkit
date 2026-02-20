@@ -118,13 +118,34 @@ Your response MUST contain exactly three fenced code blocks in this order:
 - **column_color_map**: maps indicator column names to plot_schema color keys for charting. Only include columns that should be plotted (e.g., omit `bb_bandwidth` from an overlay pack since it's not a price-scale value). Example: `{"bb_upper": "upper_color", "bb_basis": "basis_color"}`
 - **indicator_function / interpreter_function / trigger_function**: exact function names in your Python files
 
+### plot_config (Optional)
+
+Advanced charting configuration. Include this object in the manifest for indicators that need more than simple line plots:
+
+- **band_fills**: Array of fill definitions between two indicator columns
+  ```json
+  "band_fills": [{"upper_column": "bb_upper", "lower_column": "bb_lower", "fill_color_key": "band_fill_color"}]
+  ```
+- **reference_lines**: Array of horizontal reference lines for oscillators
+  ```json
+  "reference_lines": [{"value": 70, "color": "#ef4444", "label": "Overbought"}, {"value": 30, "color": "#22c55e", "label": "Oversold"}]
+  ```
+- **line_styles**: Dict mapping indicator column to line style integer (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted)
+  ```json
+  "line_styles": {"signal_line": 2}
+  ```
+- **candle_color_column**: Column name containing hex color strings for bar coloring. Use this for pattern-based indicators (e.g., Swing 1-2-3, Strat bars) where the primary output is candle coloring rather than overlay lines. Set `display_type` to `"hidden"` when using this. The column should contain hex color strings (e.g., `"#22c55e"`) or empty strings for default candle color.
+  ```json
+  "candle_color_column": "my_candle_color"
+  ```
+
 ### Reserved Names (DO NOT USE)
 
-These trigger prefixes are taken: `ema`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `bar_count`
+These trigger prefixes are taken: `ema`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
 
-These interpreter keys are taken: `EMA_STACK`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`
+These interpreter keys are taken: `EMA_STACK`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
 
-These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_direction`
+These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`
 
 ---
 
@@ -380,7 +401,7 @@ If the user provides TradingView Pine Script, translate using these mappings:
 | `ta.ema(close, N)` | `df['close'].ewm(span=N, adjust=False).mean()` |
 | `ta.sma(close, N)` | `df['close'].rolling(window=N).mean()` |
 | `ta.rsi(close, N)` | Wilder RSI: `ewm(span=N)` on gain/loss |
-| `ta.atr(N)` | True Range EWM: `max(H-L, |H-prevC|, |L-prevC|).ewm(span=N).mean()` |
+| `ta.atr(N)` | True Range with Wilder smoothing: `tr = max(H-L, |H-prevC|, |L-prevC|)`, then `atr[i] = atr[i-1] + (1/N) * (tr[i] - atr[i-1])` (alpha=1/N, NOT 2/(N+1)) |
 | `ta.stdev(src, N)` | `df[src].rolling(window=N).std()` |
 | `ta.crossover(a, b)` | `(a > b) & (a.shift(1) <= b.shift(1))` |
 | `ta.crossunder(a, b)` | `(a < b) & (a.shift(1) >= b.shift(1))` |

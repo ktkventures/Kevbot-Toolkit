@@ -118,8 +118,8 @@ def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
         # Price below all EMAs but EMAs still bullish order
         elif s > m > l > p:
             return "MLS"
-        # Full bear stack: Price < Short < Mid < Long
-        elif p < s < m < l:
+        # Full bear stack: Long > Mid > Short > Price
+        elif l > m > s > p:
             return "LMS"
         # Various transitional states
         else:
@@ -489,6 +489,45 @@ def detect_rvol_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
 
 
 # =============================================================================
+# UT BOT INTERPRETER
+# =============================================================================
+
+def interpret_utbot(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret UT Bot direction.
+
+    Requires: utbot_direction column
+
+    Outputs:
+    - BULL: Price above trailing stop (bullish trend)
+    - BEAR: Price below trailing stop (bearish trend)
+    """
+    def interpret(row):
+        d = row.get('utbot_direction', np.nan)
+        if pd.isna(d) or d == 0:
+            return None
+        return "BULL" if d == 1 else "BEAR"
+
+    return df.apply(interpret, axis=1)
+
+
+def detect_utbot_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect UT Bot buy/sell triggers (direction flips)."""
+    triggers = {}
+
+    d = df['utbot_direction']
+    d_prev = d.shift(1)
+
+    # Buy signal: direction flips to bullish
+    triggers['utbot_buy'] = (d == 1) & (d_prev != 1)
+
+    # Sell signal: direction flips to bearish
+    triggers['utbot_sell'] = (d == -1) & (d_prev != -1)
+
+    return triggers
+
+
+# =============================================================================
 # INTERPRETER & TRIGGER FUNCTION REGISTRIES
 # =============================================================================
 # Mutable dispatch registries. Built-in functions are registered below;
@@ -503,6 +542,7 @@ INTERPRETER_FUNCS["MACD_LINE"] = interpret_macd_line
 INTERPRETER_FUNCS["MACD_HISTOGRAM"] = interpret_macd_histogram
 INTERPRETER_FUNCS["VWAP"] = interpret_vwap
 INTERPRETER_FUNCS["RVOL"] = interpret_rvol
+INTERPRETER_FUNCS["UTBOT"] = interpret_utbot
 
 # Register built-in trigger detection functions
 TRIGGER_FUNCS["EMA_STACK"] = detect_ema_triggers
@@ -510,6 +550,7 @@ TRIGGER_FUNCS["MACD_LINE"] = detect_macd_triggers
 TRIGGER_FUNCS["MACD_HISTOGRAM"] = detect_macd_hist_triggers
 TRIGGER_FUNCS["VWAP"] = detect_vwap_triggers
 TRIGGER_FUNCS["RVOL"] = detect_rvol_triggers
+TRIGGER_FUNCS["UTBOT"] = detect_utbot_triggers
 
 
 def register_interpreter(key: str, func: Callable) -> None:

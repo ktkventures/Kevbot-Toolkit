@@ -36,6 +36,7 @@ from indicators import (
     calculate_vwap,
     calculate_volume_sma,
     calculate_atr,
+    calculate_utbot,
 )
 from interpreters import (
     INTERPRETERS,
@@ -48,11 +49,13 @@ from interpreters import (
     interpret_macd_histogram,
     interpret_vwap,
     interpret_rvol,
+    interpret_utbot,
     detect_ema_triggers,
     detect_macd_triggers,
     detect_macd_hist_triggers,
     detect_vwap_triggers,
     detect_rvol_triggers,
+    detect_utbot_triggers,
 )
 from triggers import (
     generate_trades,
@@ -10023,9 +10026,9 @@ TEMPLATE_FUNCTIONS = {
         "Triggers": [detect_rvol_triggers],
     },
     "utbot": {
-        "Indicator": [],
-        "Interpreter": [],
-        "Triggers": [],
+        "Indicator": [calculate_utbot],
+        "Interpreter": [interpret_utbot],
+        "Triggers": [detect_utbot_triggers],
     },
 }
 

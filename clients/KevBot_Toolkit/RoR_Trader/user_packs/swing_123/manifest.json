@@ -1,0 +1,95 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "swing_123",
+  "name": "Swing 1-2-3",
+  "category": "Trend",
+  "description": "Candle 2 and Candle 3 pattern detection for swing reversal and continuation signals",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-02-19T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "hidden",
+  "interpreters": ["SWING_123"],
+  "trigger_prefix": "sw123",
+  "parameters_schema": {},
+  "plot_schema": {
+    "bull_c2_color": {
+      "type": "color",
+      "default": "#FFD11A",
+      "label": "Bullish C2 Color"
+    },
+    "bull_c3_color": {
+      "type": "color",
+      "default": "#FFFF00",
+      "label": "Bullish C3 Color"
+    },
+    "bear_c2_color": {
+      "type": "color",
+      "default": "#FF66B3",
+      "label": "Bearish C2 Color"
+    },
+    "bear_c3_color": {
+      "type": "color",
+      "default": "#FF33CC",
+      "label": "Bearish C3 Color"
+    }
+  },
+  "plot_config": {
+    "candle_color_column": "sw123_candle_color"
+  },
+  "outputs": [
+    "BULL_C3",
+    "BULL_C2",
+    "BEAR_C3",
+    "BEAR_C2",
+    "NEUTRAL"
+  ],
+  "output_descriptions": {
+    "BULL_C3": "Bullish Candle 3: Prior bar was C2 and current close > prior high (continuation confirmed)",
+    "BULL_C2": "Bullish Candle 2: Made lower low but closed above prior close (reversal candidate)",
+    "BEAR_C3": "Bearish Candle 3: Prior bar was C2 and current close < prior low (continuation confirmed)",
+    "BEAR_C2": "Bearish Candle 2: Made higher high but closed below prior close (reversal candidate)",
+    "NEUTRAL": "No swing pattern detected on this bar"
+  },
+  "triggers": [
+    {
+      "base": "bull_c2",
+      "name": "Bullish Candle 2",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "bull_c3",
+      "name": "Bullish Candle 3",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "bear_c2",
+      "name": "Bearish Candle 2",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "bear_c3",
+      "name": "Bearish Candle 3",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "sw123_pattern",
+    "sw123_candle_color"
+  ],
+  "column_color_map": {},
+  "indicator_function": "calculate_swing_123",
+  "interpreter_function": "interpret_swing_123",
+  "trigger_function": "detect_swing_123_triggers",
+  "requires_indicators": [
+    "sw123_pattern"
+  ]
+}

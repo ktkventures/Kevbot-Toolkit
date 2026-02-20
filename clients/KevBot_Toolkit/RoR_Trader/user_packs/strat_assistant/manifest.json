@@ -1,0 +1,117 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "strat_assistant",
+  "name": "Strat Assistant",
+  "category": "Trend",
+  "description": "The Strat bar pattern classification (1-2-3), strategy combo detection, and actionable signals (Shooter/Hammer)",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-02-19T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "hidden",
+  "interpreters": ["STRAT_ASSISTANT"],
+  "trigger_prefix": "strat",
+  "parameters_schema": {
+    "wick_pct": {
+      "type": "float",
+      "default": 0.75,
+      "min": 0.5,
+      "max": 0.95,
+      "label": "Action Wick Percentage"
+    }
+  },
+  "plot_schema": {
+    "inside_color": {
+      "type": "color",
+      "default": "#F6BE00",
+      "label": "Inside Bar Color"
+    },
+    "two_up_color": {
+      "type": "color",
+      "default": "#22c55e",
+      "label": "2-Up Color"
+    },
+    "two_down_color": {
+      "type": "color",
+      "default": "#ef4444",
+      "label": "2-Down Color"
+    },
+    "outside_color": {
+      "type": "color",
+      "default": "#d946ef",
+      "label": "Outside Bar Color"
+    }
+  },
+  "plot_config": {
+    "candle_color_column": "strat_candle_color"
+  },
+  "outputs": [
+    "INSIDE",
+    "TWO_UP",
+    "TWO_DOWN",
+    "OUTSIDE"
+  ],
+  "output_descriptions": {
+    "INSIDE": "1-Bar: High <= prior high AND low >= prior low (consolidation/coiling)",
+    "TWO_UP": "2-Up Bar: Higher high, low held (bullish expansion)",
+    "TWO_DOWN": "2-Down Bar: Lower low, high held (bearish expansion)",
+    "OUTSIDE": "3-Bar: Higher high AND lower low (outside/engulfing bar)"
+  },
+  "triggers": [
+    {
+      "base": "bull_c2",
+      "name": "Bullish 2-Up",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "bear_c2",
+      "name": "Bearish 2-Down",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "outside_bar",
+      "name": "Outside Bar (3)",
+      "direction": "BOTH",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "inside_bar",
+      "name": "Inside Bar (1)",
+      "direction": "BOTH",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "shooter",
+      "name": "Shooter Signal",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "hammer",
+      "name": "Hammer Signal",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "strat_bar_type",
+    "strat_combo",
+    "strat_actionable",
+    "strat_candle_color"
+  ],
+  "column_color_map": {},
+  "indicator_function": "calculate_strat_assistant",
+  "interpreter_function": "interpret_strat_assistant",
+  "trigger_function": "detect_strat_assistant_triggers",
+  "requires_indicators": [
+    "strat_bar_type"
+  ]
+}

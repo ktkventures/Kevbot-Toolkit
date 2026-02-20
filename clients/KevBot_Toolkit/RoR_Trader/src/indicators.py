@@ -184,7 +184,8 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     """
     Calculate VWAP with dual standard deviation bands (7-zone system).
 
-    If VWAP already exists in df, use it. Otherwise calculate.
+    If VWAP already exists in df, use it. Otherwise calculate with
+    session-aware reset (cumulative sums reset at each market open).
 
     Args:
         df: DataFrame with OHLCV data
@@ -199,13 +200,38 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     if 'vwap' in df.columns and df['vwap'].notna().any():
         vwap = df['vwap']
     else:
-        # Calculate VWAP (cumulative for the session)
+        # Calculate VWAP with session-aware reset
         typical_price = (df['high'] + df['low'] + df['close']) / 3
-        vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        tp_vol = typical_price * df['volume']
 
-    # Calculate bands using rolling standard deviation
+        # Detect session boundaries (gap > 30 min between bars)
+        if isinstance(df.index, pd.DatetimeIndex):
+            gaps = df.index.to_series().diff()
+            session_start = gaps > pd.Timedelta(minutes=30)
+            session_start.iloc[0] = True
+        else:
+            session_start = pd.Series(False, index=df.index)
+            session_start.iloc[0] = True
+
+        session_id = session_start.cumsum()
+        cum_tp_vol = tp_vol.groupby(session_id).cumsum()
+        cum_vol = df['volume'].groupby(session_id).cumsum()
+        vwap = cum_tp_vol / cum_vol
+
+    # Calculate bands using deviation from VWAP with session-aware expanding std
     typical_price = (df['high'] + df['low'] + df['close']) / 3
-    rolling_std = typical_price.rolling(window=20, min_periods=5).std()
+    deviation = typical_price - vwap
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        gaps = df.index.to_series().diff()
+        session_start = gaps > pd.Timedelta(minutes=30)
+        session_start.iloc[0] = True
+        session_id = session_start.cumsum()
+        rolling_std = deviation.groupby(session_id).apply(
+            lambda s: s.expanding(min_periods=5).std()
+        ).droplevel(0)
+    else:
+        rolling_std = deviation.rolling(window=20, min_periods=5).std()
 
     return {
         "vwap": vwap,
@@ -213,6 +239,72 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
         "vwap_sd1_lower": vwap - (sd1_mult * rolling_std),
         "vwap_sd2_upper": vwap + (sd2_mult * rolling_std),
         "vwap_sd2_lower": vwap - (sd2_mult * rolling_std),
+    }
+
+
+def calculate_utbot(
+    df: pd.DataFrame,
+    atr_period: int = 10,
+    atr_multiplier: float = 1.0
+) -> Dict[str, pd.Series]:
+    """
+    Calculate UT Bot trailing stop and direction.
+
+    Based on the UT Bot Alerts Pine Script indicator:
+    - ATR-based trailing stop that ratchets in the trend direction
+    - Direction flips when price crosses the trailing stop
+
+    Returns dict with:
+    - utbot_stop: Trailing stop level
+    - utbot_direction: 1 for bullish, -1 for bearish
+    """
+    close = df['close'].values
+    high = df['high'].values
+    low = df['low'].values
+    n = len(close)
+
+    # True Range
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    tr = np.maximum(high - low,
+                    np.maximum(np.abs(high - prev_close),
+                               np.abs(low - prev_close)))
+
+    # ATR via Wilder smoothing (alpha = 1/period), matching Pine v4 atr()
+    atr = np.zeros(n)
+    atr[0] = tr[0]
+    alpha = 1.0 / atr_period
+    for i in range(1, n):
+        atr[i] = atr[i - 1] + alpha * (tr[i] - atr[i - 1])
+
+    n_loss = atr_multiplier * atr
+
+    # Trailing stop: ratchets up in uptrend, ratchets down in downtrend
+    trail_stop = np.zeros(n)
+    trail_stop[0] = close[0] - n_loss[0]
+    for i in range(1, n):
+        if close[i] > trail_stop[i - 1] and close[i - 1] > trail_stop[i - 1]:
+            trail_stop[i] = max(trail_stop[i - 1], close[i] - n_loss[i])
+        elif close[i] < trail_stop[i - 1] and close[i - 1] < trail_stop[i - 1]:
+            trail_stop[i] = min(trail_stop[i - 1], close[i] + n_loss[i])
+        elif close[i] > trail_stop[i - 1]:
+            trail_stop[i] = close[i] - n_loss[i]
+        else:
+            trail_stop[i] = close[i] + n_loss[i]
+
+    # Direction: 1=bull, -1=bear
+    direction = np.zeros(n)
+    for i in range(1, n):
+        if close[i - 1] < trail_stop[i - 1] and close[i] > trail_stop[i - 1]:
+            direction[i] = 1
+        elif close[i - 1] > trail_stop[i - 1] and close[i] < trail_stop[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+
+    return {
+        "utbot_stop": pd.Series(trail_stop, index=df.index),
+        "utbot_direction": pd.Series(direction, index=df.index),
     }
 
 
@@ -415,12 +507,26 @@ def _run_rvol_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
     return result
 
 
+def _run_utbot_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run UT Bot indicators for a utbot group."""
+    result = df
+    if "utbot_stop" not in result.columns:
+        atr_period = group.parameters.get("atr_period", 10)
+        atr_multiplier = group.parameters.get("atr_multiplier", 1.0)
+        result = result.copy() if result is df else result
+        utbot_result = calculate_utbot(result, atr_period, atr_multiplier)
+        for col, values in utbot_result.items():
+            result[col] = values
+    return result
+
+
 GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "ema_stack": _run_ema_stack_indicators,
     "macd_line": _run_macd_indicators,
     "macd_histogram": _run_macd_indicators,
     "vwap": _run_vwap_indicators,
     "rvol": _run_rvol_indicators,
+    "utbot": _run_utbot_indicators,
 }
 
 

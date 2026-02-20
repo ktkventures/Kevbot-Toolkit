@@ -1,0 +1,99 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "supertrend",
+  "name": "SuperTrend",
+  "category": "Trend",
+  "description": "ATR-based trend-following indicator with dynamic support/resistance bands and trend direction",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-02-19T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": ["SUPERTREND"],
+  "trigger_prefix": "st",
+  "parameters_schema": {
+    "atr_period": {
+      "type": "int",
+      "default": 10,
+      "min": 1,
+      "max": 50,
+      "label": "ATR Period"
+    },
+    "atr_multiplier": {
+      "type": "float",
+      "default": 3.0,
+      "min": 0.5,
+      "max": 10.0,
+      "label": "ATR Multiplier"
+    }
+  },
+  "plot_schema": {
+    "bull_color": {
+      "type": "color",
+      "default": "#22c55e",
+      "label": "Bull Trend Color"
+    },
+    "bear_color": {
+      "type": "color",
+      "default": "#ef4444",
+      "label": "Bear Trend Color"
+    }
+  },
+  "outputs": [
+    "BULL_TRENDING",
+    "BULL_NEAR_STOP",
+    "BEAR_TRENDING",
+    "BEAR_NEAR_STOP"
+  ],
+  "output_descriptions": {
+    "BULL_TRENDING": "Price above SuperTrend line, trending higher",
+    "BULL_NEAR_STOP": "Price above SuperTrend but within 0.5x ATR of stop — tight to support",
+    "BEAR_TRENDING": "Price below SuperTrend line, trending lower",
+    "BEAR_NEAR_STOP": "Price below SuperTrend but within 0.5x ATR of stop — tight to resistance"
+  },
+  "triggers": [
+    {
+      "base": "bull_flip",
+      "name": "Trend Flips Bullish",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "bear_flip",
+      "name": "Trend Flips Bearish",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "near_stop_bull",
+      "name": "Approaching Bull Stop",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    },
+    {
+      "base": "near_stop_bear",
+      "name": "Approaching Bear Stop",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "st_line",
+    "st_direction",
+    "st_atr"
+  ],
+  "column_color_map": {
+    "st_line": "bull_color"
+  },
+  "indicator_function": "calculate_supertrend",
+  "interpreter_function": "interpret_supertrend",
+  "trigger_function": "detect_supertrend_triggers",
+  "requires_indicators": [
+    "st_line",
+    "st_direction"
+  ]
+}

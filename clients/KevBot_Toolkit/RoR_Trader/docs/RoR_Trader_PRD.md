@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.34
+**Version:** 0.35
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 17C Complete — Pine Script export: reference.pine display on Code/Preview tabs with copy-to-clipboard, Pack Builder generates Pine Script v5 equivalent alongside Python, 10 reference Pine Scripts seeded (MACD, RVOL, SR Channel, UT Bot, VWAP, Swing 123, SuperTrend, Strat Assistant, UT Bot Conflu); Phases 17A–B charting/overlays complete; Phases 11–16 complete
@@ -1425,18 +1425,17 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Phase 17D: Indicator Audit & Expansion**
 *Validate existing indicators and add new ones from the reference library.*
 
-- [ ] Audit all existing built-in indicators against TradingView — verify numerical correctness for EMA Stack, Bollinger Bands, UT Bot, VWAP, RSI, MACD, ATR
-- [ ] Fix VWAP session-aware reset — cumulative VWAP must reset at session boundaries (identified in Phase 14C)
-- [ ] Document any known deviations from TradingView's calculations and whether they are intentional
-- [ ] Add reference indicators via Pack Builder workflow to stress-test the full pipeline (prompt generation → LLM response → validation → hot-load → charting):
-  - SuperTrend — ATR-based trend following with filled trend regions and buy/sell signals
-  - Swing 123 — pattern-based candle coloring (inside/outside bars, C2/C3 setups)
-  - SR Channel — support/resistance zone detection with box annotations (primary test case for rectangle primitives)
-  - RVOL Status — relative volume across multiple timeframes (status display)
-  - Strat Assistant — multi-timeframe continuity with bar coloring and reference lines (most complex rendering test)
-- [ ] Review interpreter output states for consistency and completeness across all packs
-- [ ] Ensure all interpreters produce mutually exclusive, exhaustive states (no gaps in classification)
-- [ ] Validate that confluence conditions flow correctly through the full pipeline: indicator → interpreter → trigger → trade generation → alert
+- [x] Audit all existing built-in indicators against TradingView Pine Script references — verified EMA Stack, MACD (Line + Histogram), VWAP, RVOL, UT Bot, Bollinger Bands, SR Channels. Full audit documented in `docs/Implementation_Spec_Phase_17D.md`
+- [x] Fix EMA Stack `LMS` dead code bug — condition `p < s < m < l` was identical to MLS; corrected to `l > m > s > p` (true bear stack)
+- [x] Fix VWAP session-aware reset — fallback cumulative VWAP now resets at session boundaries (gaps > 30 min); SD bands use session-aware expanding deviation
+- [x] Implement UT Bot indicator + interpreter + triggers — was template-only with empty function lists; now fully implemented with ATR trailing stop, BULL/BEAR states, buy/sell triggers
+- [x] Add new packs from reference library:
+  - SuperTrend (`user_packs/supertrend/`) — ATR-based trend following with 4 states (BULL_TRENDING, BULL_NEAR_STOP, BEAR_TRENDING, BEAR_NEAR_STOP) and 4 triggers
+  - Swing 123 (`user_packs/swing_123/`) — C2/C3 pattern detection with candle coloring, 5 states and 4 triggers
+  - Strat Assistant (`user_packs/strat_assistant/`) — Bar pattern classification (1/2/3), 16+ strategy combos, Shooter/Hammer signals, 4 states and 6 triggers. FTC deferred (requires multi-TF infrastructure)
+- [x] Review interpreter output states for consistency — all packs produce mutually exclusive, exhaustive states
+- [x] Update Pack Builder context document — added `plot_config` documentation, `candle_color_column` guidance, Wilder smoothing note, expanded reserved names for all packs
+- [x] Update `pack_spec.py` reserved names — trigger prefixes, interpreter keys, and indicator columns updated for all installed packs
 
 **End State:** A library of validated, production-quality indicators and interpreters with TradingView-quality chart rendering. Chart overlays for interpreter states and trigger events provide full visual transparency into the signal chain. Pine Script export enables cross-platform validation. New strategies built after this phase can be trusted for live trading without concern about data integrity or rendering issues.
 
