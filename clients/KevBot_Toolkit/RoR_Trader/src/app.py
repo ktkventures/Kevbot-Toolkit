@@ -244,6 +244,7 @@ SETTINGS_DEFAULTS = {
     "global_data_seed": 42,
     "data_feed": "sip",
     "realtime_engine_enabled": False,
+    "enabled_timeframes": ["1Min"],
 }
 
 
@@ -3033,7 +3034,7 @@ def main():
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
-        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder"],
+        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder", "Timeframes"],
         "Strategies": ["Strategy Builder", "My Strategies"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
@@ -3106,6 +3107,8 @@ def main():
             render_user_packs_page()
         elif sub == "Pack Builder":
             render_pack_builder_page()
+        elif sub == "Timeframes":
+            render_timeframes_page()
     elif section == "Strategies":
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
@@ -9812,6 +9815,100 @@ def render_settings():
             st.toast("Settings saved")
         else:
             st.error("Failed to save settings.")
+
+
+# =============================================================================
+# TIMEFRAMES PAGE (Multi-Timeframe Confluence)
+# =============================================================================
+
+def render_timeframes_page():
+    """Render the Timeframes management page for multi-timeframe confluence."""
+    from data_loader import MTF_AVAILABLE_TIMEFRAMES, TF_LABELS
+
+    st.header("Timeframes")
+    st.caption(
+        "Enable additional timeframes to unlock higher-timeframe confluence conditions "
+        "in the Strategy Builder drill-down. Enabled timeframes combine with enabled "
+        "TF Confluence Packs to produce the full matrix of available conditions."
+    )
+
+    settings = load_settings()
+    enabled = set(settings.get("enabled_timeframes", ["1Min"]))
+    enabled_groups = get_enabled_groups()
+    pack_count = len(enabled_groups)
+
+    # --- Matrix summary ---
+    tf_count = len(enabled)
+    st.info(
+        f"**{tf_count} timeframe{'s' if tf_count != 1 else ''}** x "
+        f"**{pack_count} TF pack{'s' if pack_count != 1 else ''}** = "
+        f"**{tf_count * pack_count} condition group{'s' if tf_count * pack_count != 1 else ''}** "
+        f"available in drill-down"
+    )
+
+    # --- Timeframe grid ---
+    changed = False
+
+    # Group into rows of 4 for a clean grid
+    tfs = MTF_AVAILABLE_TIMEFRAMES
+    for row_start in range(0, len(tfs), 4):
+        row_tfs = tfs[row_start:row_start + 4]
+        cols = st.columns(4)
+        for i, tf in enumerate(row_tfs):
+            with cols[i]:
+                label = TF_LABELS.get(tf, tf)
+                is_enabled = tf in enabled
+
+                # Show checkbox
+                new_val = st.checkbox(
+                    f"**{label}** ({tf})",
+                    value=is_enabled,
+                    key=f"tf_enable_{tf}",
+                )
+                if new_val != is_enabled:
+                    changed = True
+                    if new_val:
+                        enabled.add(tf)
+                    else:
+                        enabled.discard(tf)
+
+    # --- Save on change ---
+    if changed:
+        # Ensure at least one timeframe is always enabled
+        if len(enabled) == 0:
+            enabled.add("1Min")
+            st.warning("At least one timeframe must be enabled.")
+        settings["enabled_timeframes"] = sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99)
+        save_settings(settings)
+        st.rerun()
+
+    # --- Show enabled packs for context ---
+    st.divider()
+    st.subheader("Enabled TF Packs")
+    if pack_count == 0:
+        st.warning("No TF Confluence Packs are enabled. Enable packs on the TF Confluence page.")
+    else:
+        pack_names = [g.name for g in enabled_groups]
+        st.write(", ".join(pack_names))
+
+    # --- Show sample matrix ---
+    if pack_count > 0 and len(enabled) > 1:
+        st.subheader("Condition Matrix Preview")
+        st.caption("Each cell represents a group of interpreter states available as confluence conditions.")
+        matrix_data = {}
+        for tf in sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99):
+            tf_label = TF_LABELS.get(tf, tf)
+            matrix_data[tf_label] = []
+            for g in enabled_groups:
+                matrix_data[tf_label].append(g.name)
+        import pandas as _pd
+        matrix_df = _pd.DataFrame(matrix_data, index=[g.name for g in enabled_groups])
+        # Transpose so TFs are rows, packs are columns
+        matrix_df = _pd.DataFrame(
+            {g.name: ["Yes"] * len(enabled) for g in enabled_groups},
+            index=[TF_LABELS.get(tf, tf) for tf in sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99)]
+        )
+        st.dataframe(matrix_df, use_container_width=True)
 
 
 # =============================================================================

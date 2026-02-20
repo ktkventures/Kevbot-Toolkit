@@ -262,6 +262,52 @@ def get_data_source(feed: str = "sip") -> str:
 
 
 # =============================================================================
+# TIMEFRAME LABEL MAPPING (for Multi-Timeframe Confluence)
+# =============================================================================
+
+TF_LABELS = {
+    "1Min": "1m", "2Min": "2m", "3Min": "3m", "5Min": "5m",
+    "10Min": "10m", "15Min": "15m", "30Min": "30m",
+    "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
+    "1Day": "1d", "1Week": "1w", "1Month": "1mo",
+}
+TF_FROM_LABEL = {v: k for k, v in TF_LABELS.items()}
+
+# Timeframes available for MTF confluence (excludes sub-minute streaming-only TFs)
+MTF_AVAILABLE_TIMEFRAMES = [
+    "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
+    "1Hour", "2Hour", "4Hour", "1Day",
+]
+
+
+def get_tf_label(timeframe: str) -> str:
+    """Convert canonical timeframe (e.g. '5Min') to short label (e.g. '5m')."""
+    return TF_LABELS.get(timeframe, timeframe.lower())
+
+
+def get_tf_from_label(label: str) -> str:
+    """Convert short label (e.g. '5m') to canonical timeframe (e.g. '5Min')."""
+    return TF_FROM_LABEL.get(label, label)
+
+
+def get_required_tfs_from_confluence(confluence_records) -> set:
+    """
+    Extract unique secondary TF labels from confluence record prefixes.
+
+    Records like '5m-EMA_STACK_DEFAULT-SML' → {'5m'}.
+    Ignores 'GEN-' prefixed records and '1M' (primary TF).
+    """
+    tfs = set()
+    for record in (confluence_records or []):
+        if record.startswith("GEN-"):
+            continue
+        tf_label = record.split("-")[0]
+        if tf_label != "1M":
+            tfs.add(tf_label)
+    return tfs
+
+
+# =============================================================================
 # BAR ESTIMATION HELPERS
 # =============================================================================
 

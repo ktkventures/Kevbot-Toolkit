@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.37
+**Version:** 0.38
 **Date:** February 19, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 17D Complete — Indicator audit & expansion: all built-in indicators validated against TradingView Pine Script references, VWAP fixed to compute cumulative session VWAP from scratch (not Alpaca per-bar), EMA Stack split into pure ordering + EMA Price Position (24 PSML permutations), UT Bot fully implemented, 3 new packs (SuperTrend, Swing 123, Strat Assistant), trading session dropdown on all preview tabs; Phases 17A–C, 11–16 complete
+**Status:** Phase 18A In Progress — Multi-Timeframe Confluence: Timeframe management page, TF label utilities, enabled_timeframes settings. Phase 17D complete; Phases 17A–C, 11–16 complete
 
 ---
 
@@ -1455,28 +1455,31 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - Traders commonly use higher-timeframe context for confluence (e.g., "only take 1-min longs when 15-min EMA Stack is bullish")
 - TF conditions currently display without a timeframe prefix (e.g., "Bollinger Bands Default: Squeeze Mid"), which is ambiguous once multiple timeframes are in play
 
-**Timeframe Management Page:**
-- [ ] New "Timeframes" sub-page under Confluence Packs (alongside TF Confluence, General, Risk Management, User Packs, Pack Builder)
-- [ ] Enable/disable individual timeframes (10s, 30s, 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1H, 2H, 4H, 1D, 1W, 1M) — sub-minute timeframes require Phase 14B streaming engine
-- [ ] Enabled timeframes combine with enabled TF packs to produce a matrix of available conditions. E.g., 3 timeframes × 4 packs = 12 TF condition groups available in drill-down
+**Phase 18A: Timeframe Management & Data Model — COMPLETE (Feb 19, 2026)**
+- [x] New "Timeframes" sub-page under Confluence Packs — enable/disable individual timeframes (1m through 1d), grid layout with checkboxes
+- [x] `enabled_timeframes` setting in `config/settings.json` — persisted list of enabled timeframes, defaults to `["1Min"]`
+- [x] TF label mapping utilities in `data_loader.py` — `TF_LABELS`, `TF_FROM_LABEL`, `get_tf_label()`, `get_tf_from_label()`, `get_required_tfs_from_confluence()`
+- [x] Matrix summary display — shows N timeframes x M packs = N*M condition groups available
+- [x] Condition matrix preview table when multiple timeframes enabled
 
-**Timeframe-Prefixed Conditions:**
-- [ ] TF confluence conditions display with timeframe prefix: `5m: Bollinger Bands Default: Squeeze Mid`, `15m: EMA Stack Default: SML`
-- [ ] Confluence records format: `{TF}:{GROUP_ID}_{STATE}` (e.g., `5m:BOLLINGER_BANDS_DEFAULT_SQUEEZE_MID`)
-- [ ] Strategy's primary timeframe is always enabled and shown without prefix for clarity (or with subtle formatting to distinguish it)
+**Phase 18B: Multi-TF Backtest Data Pipeline**
+- [ ] `prepare_data_with_indicators()` extended to accept + process secondary timeframes
+- [ ] `resample_to_timeframe()` utility — resample primary TF OHLCV to coarser timeframes using pandas
+- [ ] Run indicators + interpreters independently on each secondary TF's resampled DataFrame
+- [ ] Forward-fill interpreter STATE columns only (not raw indicators) to primary TF index with `{INTERP}__{tf_label}` column naming
+- [ ] `get_mtf_confluence_records()` helper — builds confluence records for primary + all secondary TFs
+- [ ] TF confluence conditions display with timeframe prefix: `5m: EMA Stack Default: SML`, `15m: MACD Line: M>S+`
+- [ ] Primary TF records keep `"1M"` prefix (backward-compatible). Secondary TF records use lowercase labels (`"5m"`, `"15m"`, etc.)
+- [ ] Strategy's required secondary TFs inferred from selected confluence conditions (no explicit schema field needed)
+- [ ] Multi-timeframe data alignment — higher-TF values forward-filled to primary TF index (standard TradingView `request.security()` pattern)
 
-**Data Pipeline:**
-- [ ] Strategy schema gains `timeframes: List[str]` — list of timeframes used by the strategy's confluence conditions (primary timeframe always included)
-- [ ] `prepare_data_with_indicators()` extended to load and compute indicators at multiple timeframes for the same symbol
-- [ ] Multi-timeframe data alignment — higher-timeframe values forward-filled to primary timeframe index for confluence evaluation (e.g., 15-min EMA value held constant across fifteen 1-min bars until next 15-min bar completes)
-- [ ] Backtest loads data at all required timeframes; Alpaca REST API supports all standard timeframes ≥ 1-min
+**Phase 18C: Streaming Engine MTF Integration**
+- [ ] `SymbolHub.start()` registers required secondary TFs from strategy confluence conditions
+- [ ] `SymbolHub._on_bar_close()` gathers secondary TF interpreter states from other BarBuilders
+- [ ] `detect_signals()` accepts `secondary_tf_dfs` parameter, runs pipeline on secondary TFs, builds MTF confluence records
+- [ ] Alert monitor polling fallback loads secondary TF data for strategies that need it
 
-**Streaming Engine Integration (depends on Phase 14B):**
-- [ ] `SymbolHub` already supports multiple `BarBuilder` instances per symbol — MTF confluence registers additional timeframes on the hub for the strategy's confluence requirements
-- [ ] On higher-timeframe bar close, recompute indicators for that timeframe and update confluence state for all strategies using it
-- [ ] Sub-minute timeframes (10s, 30s) only available via streaming engine (no REST API support)
-
-**Strategy Builder UI:**
+**Strategy Builder UI (18B):**
 - [ ] Drill-down TF Conditions tab shows conditions grouped by timeframe with timeframe headers
 - [ ] Optimizable Variables box shows timeframe prefix on selected conditions
 - [ ] Auto-Search can search across timeframe × condition combinations

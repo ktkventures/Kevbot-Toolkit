@@ -11,5 +11,6 @@
   "default_target_config": null,
   "global_data_seed": 42,
   "data_feed": "sip",
-  "realtime_engine_enabled": true
+  "realtime_engine_enabled": true,
+  "enabled_timeframes": ["1Min"]
 }
