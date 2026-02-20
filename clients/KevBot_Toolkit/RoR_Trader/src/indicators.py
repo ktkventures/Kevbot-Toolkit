@@ -184,8 +184,8 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     """
     Calculate VWAP with dual standard deviation bands (7-zone system).
 
-    If VWAP already exists in df, use it. Otherwise calculate with
-    session-aware reset (cumulative sums reset at each market open).
+    Computes cumulative session VWAP from scratch with session-aware reset
+    (cumulative sums reset at each market open, detected by >30min gaps).
 
     Args:
         df: DataFrame with OHLCV data
@@ -197,42 +197,31 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     - vwap_sd1_upper/lower: Inner SD bands (±sd1_mult × rolling std)
     - vwap_sd2_upper/lower: Outer SD bands (±sd2_mult × rolling std)
     """
-    if 'vwap' in df.columns and df['vwap'].notna().any():
-        vwap = df['vwap']
-    else:
-        # Calculate VWAP with session-aware reset
-        typical_price = (df['high'] + df['low'] + df['close']) / 3
-        tp_vol = typical_price * df['volume']
-
-        # Detect session boundaries (gap > 30 min between bars)
-        if isinstance(df.index, pd.DatetimeIndex):
-            gaps = df.index.to_series().diff()
-            session_start = gaps > pd.Timedelta(minutes=30)
-            session_start.iloc[0] = True
-        else:
-            session_start = pd.Series(False, index=df.index)
-            session_start.iloc[0] = True
-
-        session_id = session_start.cumsum()
-        cum_tp_vol = tp_vol.groupby(session_id).cumsum()
-        cum_vol = df['volume'].groupby(session_id).cumsum()
-        vwap = cum_tp_vol / cum_vol
-
-    # Calculate bands using volume-weighted standard deviation, matching TradingView:
-    # stdev = sqrt( cumsum(Vol * (TP - VWAP)^2) / cumsum(Vol) )
+    # Always compute cumulative session VWAP from scratch.
+    # NOTE: Alpaca's 'vwap' column is a per-bar VWAP (average within each
+    # 1-min bar), NOT a cumulative session VWAP.  Using it collapses the SD
+    # bands because (typical_price - per_bar_vwap) ≈ 0 for every bar.
     typical_price = (df['high'] + df['low'] + df['close']) / 3
-    sq_dev_vol = df['volume'] * (typical_price - vwap) ** 2
+    tp_vol = typical_price * df['volume']
 
+    # Detect session boundaries (gap > 30 min between bars)
     if isinstance(df.index, pd.DatetimeIndex):
         gaps = df.index.to_series().diff()
         session_start = gaps > pd.Timedelta(minutes=30)
         session_start.iloc[0] = True
-        session_id = session_start.cumsum()
-        cum_sq_dev_vol = sq_dev_vol.groupby(session_id).cumsum()
-        cum_vol = df['volume'].groupby(session_id).cumsum()
     else:
-        cum_sq_dev_vol = sq_dev_vol.cumsum()
-        cum_vol = df['volume'].cumsum()
+        session_start = pd.Series(False, index=df.index)
+        session_start.iloc[0] = True
+
+    session_id = session_start.cumsum()
+    cum_tp_vol = tp_vol.groupby(session_id).cumsum()
+    cum_vol = df['volume'].groupby(session_id).cumsum()
+    vwap = cum_tp_vol / cum_vol
+
+    # Calculate bands using volume-weighted standard deviation, matching TradingView:
+    # stdev = sqrt( cumsum(Vol * (TP - VWAP)^2) / cumsum(Vol) )
+    sq_dev_vol = df['volume'] * (typical_price - vwap) ** 2
+    cum_sq_dev_vol = sq_dev_vol.groupby(session_id).cumsum()
 
     rolling_std = np.sqrt(cum_sq_dev_vol / cum_vol)
 

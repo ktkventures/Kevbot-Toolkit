@@ -449,6 +449,31 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
             )
             groups.append(group)
 
+        # Migration: add ema_price_position_default if no such group exists
+        if not any(g.base_template == "ema_price_position" for g in groups):
+            groups.append(ConfluenceGroup(
+                id="ema_price_position_default",
+                base_template="ema_price_position",
+                version="Default",
+                description="Price position within the EMA stack (P, S, M, L ordering)",
+                enabled=True,
+                is_default=True,
+                parameters={
+                    "short_period": 9,
+                    "mid_period": 21,
+                    "long_period": 200,
+                },
+                plot_settings=PlotSettings(
+                    colors={
+                        "short_color": "#22c55e",
+                        "mid_color": "#eab308",
+                        "long_color": "#ef4444",
+                    },
+                    line_width=1,
+                    visible=True,
+                ),
+            ))
+
         # Migration: add bar_count_default if no bar_count group exists
         if not any(g.base_template == "bar_count" for g in groups):
             groups.append(ConfluenceGroup(
@@ -525,6 +550,28 @@ def create_default_groups() -> List[ConfluenceGroup]:
             base_template="ema_stack",
             version="Default",
             description="Standard EMA stack with 9/21/200 periods",
+            enabled=True,
+            is_default=True,
+            parameters={
+                "short_period": 9,
+                "mid_period": 21,
+                "long_period": 200,
+            },
+            plot_settings=PlotSettings(
+                colors={
+                    "short_color": "#22c55e",
+                    "mid_color": "#eab308",
+                    "long_color": "#ef4444",
+                },
+                line_width=1,
+                visible=True,
+            ),
+        ),
+        ConfluenceGroup(
+            id="ema_price_position_default",
+            base_template="ema_price_position",
+            version="Default",
+            description="Price position within the EMA stack (P, S, M, L ordering)",
             enabled=True,
             is_default=True,
             parameters={

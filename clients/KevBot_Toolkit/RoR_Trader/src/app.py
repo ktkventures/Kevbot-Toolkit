@@ -10149,7 +10149,7 @@ def render_preview_tab(group: ConfluenceGroup):
     # Load market data — fetch extra history for EMA warmup, display recent portion
     # 30 days gives ~11,700 RTH bars, enough for EMA 200 to fully converge.
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -10165,9 +10165,20 @@ def render_preview_tab(group: ConfluenceGroup):
         df = run_all_interpreters(df)
         df = detect_all_triggers(df)
 
-        # Trim to last 3 days for display (indicators already warmed up)
-        display_bars = min(len(df), 390 * 3)
-        df = df.iloc[-display_bars:]
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,  # RTH by default
+        key=f"preview_session_{group.id}",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, preview_session)
+
+    # Trim to last 3 days for display (indicators already warmed up)
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
 
     # --- Section 1: Chart ---
     # Overlay templates show indicator lines on the price chart.
@@ -11099,7 +11110,7 @@ def _render_pack_builder_preview(parsed: dict):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -11130,6 +11141,17 @@ def _render_pack_builder_preview(parsed: dict):
                     df[f"trig_{trig_key}"] = trig_series
             except Exception as e:
                 st.warning(f"Trigger function error: {e}")
+
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    pb_preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,
+        key="pb_preview_session",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, pb_preview_session)
 
     # Trim to last 3 days for display (indicators already warmed up)
     display_bars = min(len(df), 390 * 3)
@@ -12084,7 +12106,7 @@ def _render_gp_preview(pack):
     )
 
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
@@ -12094,7 +12116,18 @@ def _render_gp_preview(pack):
         condition_col = gp_module.evaluate_condition(df, pack)
         df[pack.get_condition_column()] = condition_col
 
-    # Trim to last 3 days for display (indicators already warmed up)
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    gp_preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,  # RTH by default
+        key=f"gp_preview_session_{pack.id}",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, gp_preview_session)
+
+    # Trim to last 3 days for display
     display_bars = min(len(df), 390 * 3)
     df = df.iloc[-display_bars:]
 
@@ -12619,7 +12652,7 @@ def _render_rmp_preview(pack):
 
     # Generate data and run trades
     with st.spinner("Loading preview data..."):
-        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed())
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
         if df is None or len(df) == 0:
             st.error("No data available for preview.")
