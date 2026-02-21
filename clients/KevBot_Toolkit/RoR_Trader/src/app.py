@@ -1299,23 +1299,24 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
 
 
 def _extract_minimal_trades(trades: pd.DataFrame) -> list:
-    """Extract minimal trade records for persistent storage.
-
-    Only stores the 4 fields needed for KPI and equity curve computation:
-    entry_time, exit_time, r_multiple, win.
-    """
+    """Extract minimal trade records for persistent storage."""
     if len(trades) == 0:
         return []
     records = []
     for _, row in trades.iterrows():
         et = row["entry_time"]
         xt = row["exit_time"]
-        records.append({
+        rec = {
             "entry_time": et.isoformat() if hasattr(et, 'isoformat') else str(et),
             "exit_time": xt.isoformat() if hasattr(xt, 'isoformat') else str(xt),
             "r_multiple": round(float(row["r_multiple"]), 4),
             "win": bool(row["win"]),
-        })
+        }
+        if "entry_price" in row and pd.notna(row["entry_price"]):
+            rec["entry_price"] = round(float(row["entry_price"]), 4)
+        if "exit_price" in row and pd.notna(row["exit_price"]):
+            rec["exit_price"] = round(float(row["exit_price"]), 4)
+        records.append(rec)
     return records
 
 
@@ -3648,8 +3649,10 @@ def render_strategy_builder():
         )
 
     with r1c1:
-        symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
-        symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx, key="sb_symbol")
+        symbol = st.text_input(
+            "Ticker", value=edit_config.get('symbol', 'SPY'),
+            key="sb_symbol", help="Any Alpaca-supported stock ticker (e.g. SPY, AAPL, PLTR)",
+        ).strip().upper()
 
     with r1c2:
         tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
@@ -4291,9 +4294,10 @@ def render_strategy_builder():
                                               secondary_tfs=sec_tfs)
 
             if len(df) == 0:
-                st.error("No data available")
+                st.error(f"No data available for **{symbol}**. Check that the ticker is valid on Alpaca.")
                 return
 
+            st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
             general_cols = get_enabled_gp_columns(df.columns)
             sec_tf_map = get_secondary_tf_map(df)
             trades = generate_trades(
@@ -5298,6 +5302,12 @@ def render_strategy_builder():
             # Build column list based on available columns
             _tl_cols = ['time']
             _tl_config = {'time': 'Time'}
+            if 'entry_price' in display.columns and 'exit_price' in display.columns:
+                display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+                display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+                _tl_cols.extend(['entry_px', 'exit_px'])
+                _tl_config['entry_px'] = 'Entry Price'
+                _tl_config['exit_px'] = 'Exit Price'
             if 'entry_trigger' in display.columns:
                 _tl_cols.append('entry_trigger')
                 _tl_config['entry_trigger'] = 'Entry'
@@ -5476,7 +5486,8 @@ def render_strategy_list():
     filter_cols = st.columns([1, 1, 1, 2])
 
     with filter_cols[0]:
-        ticker_filter = st.selectbox("Ticker", ["All"] + AVAILABLE_SYMBOLS, key="strat_filter_ticker")
+        _used_tickers = sorted(set(s.get('symbol', '') for s in strategies if s.get('symbol')))
+        ticker_filter = st.selectbox("Ticker", ["All"] + _used_tickers, key="strat_filter_ticker")
     with filter_cols[1]:
         direction_filter = st.selectbox("Direction", ["All", "LONG", "SHORT"], key="strat_filter_dir")
     with filter_cols[2]:
@@ -7610,13 +7621,24 @@ def render_backtest_trade_table(trades: pd.DataFrame):
     display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
     display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
     has_exit_reason = 'exit_reason' in display.columns
-    cols = ['entry', 'exit', 'exit_reason', 'R', 'result'] if has_exit_reason else ['entry', 'exit', 'R', 'result']
+    has_prices = 'entry_price' in display.columns and 'exit_price' in display.columns
+    cols = ['entry', 'exit']
+    if has_prices:
+        display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+        display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+        cols.extend(['entry_px', 'exit_px'])
+    if has_exit_reason:
+        cols.append('exit_reason')
+    cols.extend(['R', 'result'])
     col_config = {
         'entry': 'Entry Time',
         'exit': 'Exit Time',
         'R': 'R-Multiple',
         'result': 'Result',
     }
+    if has_prices:
+        col_config['entry_px'] = 'Entry Price'
+        col_config['exit_px'] = 'Exit Price'
     if has_exit_reason:
         col_config['exit_reason'] = 'Exit Reason'
     st.dataframe(
@@ -7819,17 +7841,28 @@ def render_split_trade_history(backtest_trades: pd.DataFrame, forward_trades: pd
         display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
         display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
         has_exit_reason = 'exit_reason' in display.columns
-        cols = ['entry', 'exit', 'exit_reason', 'R', 'result'] if has_exit_reason else ['entry', 'exit', 'R', 'result']
+        has_prices = 'entry_price' in display.columns and 'exit_price' in display.columns
+        cols = ['entry', 'exit']
+        if has_prices:
+            display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+            display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+            cols.extend(['entry_px', 'exit_px'])
+        if has_exit_reason:
+            cols.append('exit_reason')
+        cols.extend(['R', 'result'])
         return display[cols]
 
+    _all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True) if len(backtest_trades) > 0 and len(forward_trades) > 0 else (backtest_trades if len(backtest_trades) > 0 else forward_trades)
     trade_col_config = {
         'entry': 'Entry Time',
         'exit': 'Exit Time',
         'R': 'R-Multiple',
         'result': 'Result',
     }
-    if len(forward_trades) > 0 and 'exit_reason' in forward_trades.columns or \
-       len(backtest_trades) > 0 and 'exit_reason' in backtest_trades.columns:
+    if 'entry_price' in _all_trades.columns and 'exit_price' in _all_trades.columns:
+        trade_col_config['entry_px'] = 'Entry Price'
+        trade_col_config['exit_px'] = 'Exit Price'
+    if 'exit_reason' in _all_trades.columns:
         trade_col_config['exit_reason'] = 'Exit Reason'
 
     with st.expander(f"Forward Test Trades ({len(forward_trades)})", expanded=True):

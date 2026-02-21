@@ -1677,6 +1677,13 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [x] Alert Analysis tab now shows when discrepancies exist (not just live_executions) — displays missed/phantom alert tables with explanation
 - [x] Alerts tab shows discrepancy context when no alerts exist but discrepancies are detected
 
+**Strategy Builder Improvements:**
+- [x] Ticker input changed from hardcoded 8-symbol dropdown to free-text input — supports any Alpaca-tradeable stock ticker
+- [x] Strategy list ticker filter dynamically populated from tickers in use (not hardcoded)
+- [x] Entry price and exit price columns added to all trade list tables (Strategy Builder, Trade History, Split Trade History)
+- [x] `_extract_minimal_trades()` now persists entry_price and exit_price in stored trades
+- [x] Data confirmation caption after load: shows bar count, symbol, timeframe, session, and data source for verification
+
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
