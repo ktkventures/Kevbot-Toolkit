@@ -141,11 +141,11 @@ Advanced charting configuration. Include this object in the manifest for indicat
 
 ### Reserved Names (DO NOT USE)
 
-These trigger prefixes are taken: `ema`, `ema_pp`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
+These trigger prefixes are taken: `ema`, `ema_pp`, `ema_pp_v2`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `utbot_v2`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
 
-These interpreter keys are taken: `EMA_STACK`, `EMA_PRICE_POSITION`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
+These interpreter keys are taken: `EMA_STACK`, `EMA_PRICE_POSITION`, `EMA_PRICE_POSITION_V2`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `UTBOT_V2`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
 
-These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`
+These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_stop_prev`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`
 
 ---
 
@@ -262,6 +262,35 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
 - Trigger keys MUST be `{trigger_prefix}_{base}` matching manifest triggers
 - Use `.shift(1)` to compare current bar with previous bar for crosses
 - Trigger detection should be vectorized (boolean operations on Series)
+
+### Intra-Bar Triggers and Realistic Entry Prices
+
+Triggers can use `"execution": "intra_bar"` to fill at a specific indicator level rather than the bar's close price. This is more realistic for crossover-based entries because the trade would execute when price reaches the indicator line, not at bar close.
+
+**How intra-bar triggers work:**
+- Define both a bar-close trigger and an `_ib` companion in the manifest:
+  ```json
+  {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+  {"base": "buy_ib", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy"}
+  ```
+- The `_ib` trigger shares the same boolean signal as its bar-close base but fills at the indicator level
+- The entry level mapping is registered in `realtime_engine.py`'s `INTRABAR_LEVEL_MAP`
+
+**Important — use the previous bar's indicator level for entry price:**
+
+When an indicator line recalculates on the signal candle (e.g., an ATR trailing stop that flips direction, or any dynamic line), the current bar's indicator value is NOT the level price crossed. The realistic entry price is the **previous bar's** indicator level — that's the line price actually had to cross to trigger the signal.
+
+To handle this correctly:
+1. In `indicator.py`, add a `_prev` column: `result["your_line_prev"] = result["your_line"].shift(1)`
+2. In `INTRABAR_LEVEL_MAP`, map the `_ib` trigger to the `_prev` column:
+   ```python
+   "your_prefix_buy": {"column": "your_line_prev", "cross": "above"}
+   ```
+3. The trigger still fires on the same candle as the crossover, but the fill price uses the previous bar's level
+
+This prevents artificially favorable backtesting results from indicators that shift when they change state.
+
+**When to use `_prev` columns:** Any indicator where the plotted line recalculates or jumps when the signal fires (ATR trailing stops, dynamic support/resistance, adaptive moving averages). Static or slow-moving indicators like standard EMAs generally don't need this since the EMA value barely changes bar-to-bar.
 
 ---
 

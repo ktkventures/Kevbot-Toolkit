@@ -623,6 +623,64 @@ def detect_utbot_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
     return triggers
 
 
+def detect_utbot_confirmed_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect UT Bot buy/sell triggers (same candle, confirmed entry price).
+
+    Fires on the same candle as v1 (when direction flips), but the companion
+    intra-bar trigger fills at the PREVIOUS bar's trailing stop level — the
+    level price actually had to cross to flip direction — rather than the
+    current bar's recalculated stop.
+    """
+    triggers = {}
+
+    d = df['utbot_direction']
+    d_prev = d.shift(1)
+
+    # Buy signal: direction flips to bullish (same timing as v1)
+    triggers['utbot_v2_buy'] = (d == 1) & (d_prev != 1)
+
+    # Sell signal: direction flips to bearish (same timing as v1)
+    triggers['utbot_v2_sell'] = (d == -1) & (d_prev != -1)
+
+    return triggers
+
+
+def detect_ema_price_position_confirmed_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect price-vs-EMA crossover triggers (same candle, confirmed entry price).
+
+    Fires on the same candle as v1 (when price crosses the EMA), but the
+    companion intra-bar trigger fills at the PREVIOUS bar's EMA level — the
+    level price actually had to cross — rather than the current bar's EMA
+    which has already shifted.
+
+    Triggers:
+    - ema_pp_v2_cross_short_up: Price crosses above Short EMA
+    - ema_pp_v2_cross_short_down: Price crosses below Short EMA
+    - ema_pp_v2_cross_mid_up: Price crosses above Mid EMA
+    - ema_pp_v2_cross_mid_down: Price crosses below Mid EMA
+    """
+    triggers = {}
+    close = df['close']
+    prev_close = close.shift(1)
+
+    # Same-candle crossover detection (identical to v1)
+    triggers['ema_pp_v2_cross_short_up'] = (
+        (close > df['ema_8']) & (prev_close <= df['ema_8'].shift(1))
+    )
+    triggers['ema_pp_v2_cross_short_down'] = (
+        (close < df['ema_8']) & (prev_close >= df['ema_8'].shift(1))
+    )
+
+    triggers['ema_pp_v2_cross_mid_up'] = (
+        (close > df['ema_21']) & (prev_close <= df['ema_21'].shift(1))
+    )
+    triggers['ema_pp_v2_cross_mid_down'] = (
+        (close < df['ema_21']) & (prev_close >= df['ema_21'].shift(1))
+    )
+
+    return triggers
+
+
 # =============================================================================
 # INTERPRETER & TRIGGER FUNCTION REGISTRIES
 # =============================================================================
@@ -639,7 +697,9 @@ INTERPRETER_FUNCS["MACD_HISTOGRAM"] = interpret_macd_histogram
 INTERPRETER_FUNCS["VWAP"] = interpret_vwap
 INTERPRETER_FUNCS["RVOL"] = interpret_rvol
 INTERPRETER_FUNCS["UTBOT"] = interpret_utbot
+INTERPRETER_FUNCS["UTBOT_V2"] = interpret_utbot
 INTERPRETER_FUNCS["EMA_PRICE_POSITION"] = interpret_ema_price_position
+INTERPRETER_FUNCS["EMA_PRICE_POSITION_V2"] = interpret_ema_price_position
 
 # Register built-in trigger detection functions
 TRIGGER_FUNCS["EMA_STACK"] = detect_ema_triggers
@@ -649,6 +709,8 @@ TRIGGER_FUNCS["MACD_HISTOGRAM"] = detect_macd_hist_triggers
 TRIGGER_FUNCS["VWAP"] = detect_vwap_triggers
 TRIGGER_FUNCS["RVOL"] = detect_rvol_triggers
 TRIGGER_FUNCS["UTBOT"] = detect_utbot_triggers
+TRIGGER_FUNCS["UTBOT_V2"] = detect_utbot_confirmed_triggers
+TRIGGER_FUNCS["EMA_PRICE_POSITION_V2"] = detect_ema_price_position_confirmed_triggers
 
 
 def register_interpreter(key: str, func: Callable) -> None:

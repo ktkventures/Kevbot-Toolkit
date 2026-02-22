@@ -146,46 +146,65 @@
       }
     },
     {
-      "id": "bollinger_bands_default",
-      "base_template": "bollinger_bands",
+      "id": "utbot_v2_default",
+      "base_template": "utbot_v2",
       "version": "Default",
-      "description": "Default Bollinger Bands configuration",
+      "description": "UT Bot (Confirmed) \u2014 signals fire 1 bar after ATR trailing stop crossover",
       "enabled": true,
-      "is_default": false,
+      "is_default": true,
       "parameters": {
-        "bb_period": 20,
-        "bb_mult": 2.0,
-        "squeeze_threshold": 0.04
+        "atr_period": 10,
+        "atr_multiplier": 1.0
       },
       "plot_settings": {
         "colors": {
-          "upper_color": "#ef4444",
-          "basis_color": "#a855f7",
-          "lower_color": "#22c55e"
+          "buy_color": "#22c55e",
+          "sell_color": "#ef4444",
+          "trail_color": "#64748b"
         },
         "line_width": 1,
         "visible": true
       }
     },
     {
-      "id": "sr_channels_default",
-      "base_template": "sr_channels",
+      "id": "ema_price_position_v2_default",
+      "base_template": "ema_price_position_v2",
       "version": "Default",
-      "description": "Default Support Resistance Channels configuration",
+      "description": "EMA Price Position (Confirmed) \u2014 crossover signals fire 1 bar after the cross",
       "enabled": true,
-      "is_default": false,
+      "is_default": true,
       "parameters": {
-        "pivot_period": 10,
-        "pivot_source": "High/Low",
-        "channel_width_pct": 5,
-        "min_strength": 1,
-        "max_num_sr": 6,
-        "loopback": 290
+        "short_period": 9,
+        "mid_period": 21,
+        "long_period": 200
       },
       "plot_settings": {
         "colors": {
-          "resistance_color": "#ef4444",
-          "support_color": "#22c55e"
+          "short_color": "#22c55e",
+          "mid_color": "#eab308",
+          "long_color": "#ef4444"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "ema_price_position_default",
+      "base_template": "ema_price_position",
+      "version": "Default",
+      "description": "Price position within the EMA stack (P, S, M, L ordering)",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {
+        "short_period": 9,
+        "mid_period": 21,
+        "long_period": 200
+      },
+      "plot_settings": {
+        "colors": {
+          "short_color": "#22c55e",
+          "mid_color": "#eab308",
+          "long_color": "#ef4444"
         },
         "line_width": 1,
         "visible": true

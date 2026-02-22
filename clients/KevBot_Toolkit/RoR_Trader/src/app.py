@@ -191,7 +191,7 @@ TIMEFRAME_GUIDANCE = {
 ALPACA_DATA_FLOOR = date(2016, 1, 1)
 
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
-BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "vwap", "utbot"}
+BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
 BUILTIN_OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
 
@@ -426,11 +426,14 @@ def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
     if not template:
         return []
 
-    if group.base_template in ("ema_stack", "ema_price_position"):
+    if group.base_template in ("ema_stack", "ema_price_position", "ema_price_position_v2"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
         return [f"ema_{short}", f"ema_{mid}", f"ema_{long}"]
+
+    if group.base_template in ("utbot", "utbot_v2"):
+        return ["utbot_stop"]
 
     # For user packs with column_color_map, only return the mapped (plottable) columns
     ccm = template.get("column_color_map", {})
@@ -494,7 +497,7 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 
     colors = {}
 
-    if group.base_template in ("ema_stack", "ema_price_position"):
+    if group.base_template in ("ema_stack", "ema_price_position", "ema_price_position_v2"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
@@ -507,7 +510,7 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
         colors["vwap_sd1_lower"] = group.plot_settings.colors.get("sd1_band_color", "#c4b5fd")
         colors["vwap_sd2_upper"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
         colors["vwap_sd2_lower"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
-    elif group.base_template == "utbot":
+    elif group.base_template in ("utbot", "utbot_v2"):
         colors["utbot_stop"] = group.plot_settings.colors.get("trail_color", "#64748b")
     else:
         # Generic fallback for user packs: use column_color_map + plot_schema

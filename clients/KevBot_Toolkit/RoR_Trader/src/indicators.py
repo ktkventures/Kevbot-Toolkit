@@ -512,6 +512,29 @@ def _run_utbot_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
     return result
 
 
+def _run_utbot_v2_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run UT Bot indicators + previous-bar trailing stop for confirmed fills."""
+    result = _run_utbot_indicators(df, group)
+    if "utbot_stop" in result.columns and "utbot_stop_prev" not in result.columns:
+        result = result.copy() if result is df else result
+        result["utbot_stop_prev"] = result["utbot_stop"].shift(1)
+    return result
+
+
+def _run_ema_price_position_v2_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run EMA indicators + previous-bar EMA levels for confirmed fills."""
+    result = _run_ema_stack_indicators(df, group)
+    for period_key in ["short_period", "mid_period"]:
+        period = group.parameters.get(period_key)
+        if period:
+            col = f"ema_{period}"
+            prev_col = f"ema_{period}_prev"
+            if col in result.columns and prev_col not in result.columns:
+                result = result.copy() if result is df else result
+                result[prev_col] = result[col].shift(1)
+    return result
+
+
 GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "ema_stack": _run_ema_stack_indicators,
     "ema_price_position": _run_ema_stack_indicators,
@@ -520,6 +543,8 @@ GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "vwap": _run_vwap_indicators,
     "rvol": _run_rvol_indicators,
     "utbot": _run_utbot_indicators,
+    "utbot_v2": lambda df, group: _run_utbot_v2_indicators(df, group),
+    "ema_price_position_v2": lambda df, group: _run_ema_price_position_v2_indicators(df, group),
 }
 
 
