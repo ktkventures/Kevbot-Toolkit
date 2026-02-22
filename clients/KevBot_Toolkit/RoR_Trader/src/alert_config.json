@@ -34,6 +34,16 @@
       "alerts_enabled": true,
       "alert_on_entry": true,
       "alert_on_exit": true
+    },
+    "25": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
+    },
+    "27": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
     }
   },
   "portfolios": {
