@@ -1706,6 +1706,44 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 
 > **Note:** The gap-fill fix is implemented. The remaining items need discussion to decide overall direction — whether to tackle spread/slippage as a single unified "execution cost" model or as separate independent features, and how order types interact with the existing alert pipeline.
 
+### Phase 26: Portfolio Risk Intelligence & Balance-Aware Execution
+*Enhanced portfolio analytics, balance-aware quantity sizing, and compliance-driven position management. Full spec: `docs/Implementation_Spec_Phase_26.md`.*
+
+**26A: Enhanced Risk Analytics**
+- [ ] Daily Drawdown Chart — bar chart of daily P&L % with `max_daily_loss_pct` and `daily_pause_pct` threshold overlay lines from requirement set; highlight breach days
+- [ ] New rule type `daily_pause_pct` — soft limit (pause, resume next day) distinct from `max_daily_loss_pct` (hard limit); add to TTP template and evaluation engine
+- [ ] Historical Worst-Case Analysis — worst single day, worst losing streak, top 5 worst days table with breach status per rule
+- [ ] Monte Carlo Simulation — shuffle trade order (daily blocks/weekly blocks/individual trades), 500–5,000 runs; output bust probability, daily pause probability, max DD distribution histogram, equity curve confidence bands (5th/25th/50th/75th/95th percentiles)
+- [ ] Profit Target Progress — progress bar on Prop Firm Check tab showing current P&L % vs `min_profit_pct` target with estimated days remaining
+
+**26B: Balance-Aware Quantity Sizing**
+- [ ] `get_available_balance()` — compute buying power from ledger (deposits - withdrawals + trading P&L - estimated open position capital)
+- [ ] Optional `auto_adjust_sizing` toggle per portfolio — when enabled, cap webhook quantity at `min(risk_quantity, buying_power / entry_price)`
+- [ ] Insufficient balance handling — quantity >= 1: fire with reduced quantity + `adjusted_quantity` flag; quantity < 1: skip webhook + `skipped_reason: "insufficient_balance"`
+- [ ] Warning banners on Performance/Deploy tabs when risk-per-trade exceeds available balance
+- [ ] Concurrent entry tie-break: first-come-first-served, profit factor as tie-breaker
+
+**26C: Portfolio-Specific Compliance Actions**
+- [ ] Portfolio-scoped webhook suppression — `compliance_paused` flag per portfolio; suppresses entry webhooks only (exits always fire); other portfolios with same strategies unaffected
+- [ ] Real-time compliance check on each exit — evaluate `max_daily_loss_pct`, `daily_pause_pct`, `max_total_drawdown_pct` from ledger P&L after each exit delivery
+- [ ] Auto-close on breach — fire per-strategy close alerts for all open positions in the breached portfolio, plus portfolio-level compliance breach alert
+- [ ] Auto-resume for daily pause (next market open); manual resume required for max DD breach
+- [ ] Compliance pause UI — banner on Deploy tab, "Resume Trading" button, "Paused" badge on portfolio cards, breach annotation on equity curve
+
+**26D: Future — Advanced Prop Firm Rules (deferred)**
+- [ ] Min trade duration (`min_trade_duration_sec`) — post-trade validation; TTP requires 10 seconds
+- [ ] Min profit per share (`min_profit_per_share`) — TTP requires $0.10/share for profit to count; trades below don't count toward profit target
+- [ ] Position sizing limits (`max_position_shares`, `max_position_dollars`, `max_position_pct`)
+- [ ] Alpaca API integration — real-time balance, positions, order history; reconcile with ledger
+- [ ] Multi-account portfolio architecture — portfolio maps to specific trading account with its own balance/rules/endpoints
+
+**Design Decisions (Phase 26):**
+- Account balance from existing ledger system, not broker API — users may be on different platforms; API integration deferred to 26D
+- Compliance evaluation uses ledger P&L (webhook exits), not backtest KPIs — closer to actual account state including real slippage
+- Monte Carlo default: shuffle daily blocks to preserve intraday correlation (time-of-day matters); user can switch to weekly blocks or individual trades
+- On compliance breach: close ALL open positions in portfolio regardless of which strategy caused the loss — prop firms treat the account as one unit of risk
+- Concurrent entry buying power: first-come-first-served to avoid adding latency; profit factor tie-break for truly simultaneous triggers
+
 ### Phase 25: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
