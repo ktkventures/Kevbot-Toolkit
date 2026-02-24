@@ -19,5 +19,6 @@
     "1Hour",
     "1Day"
   ],
-  "candle_theme": "neutral"
+  "candle_theme": "neutral",
+  "display_timezone": "US/Mountain"
 }

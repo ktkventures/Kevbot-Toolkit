@@ -214,6 +214,7 @@ Strategies and portfolios should display:
 ### 4.3 User Settings
 
 - **Chart Defaults** - Default visible candles (chart zoom level) ✓
+- **Display Timezone** - All timestamps (text displays, price chart axes, trade markers, alert badges) rendered in a user-chosen timezone (US/Eastern, US/Central, US/Mountain, US/Pacific, UTC). Does not affect calculations or stored data. ✓
 - **Default Triggers** - Default entry/exit triggers for new strategies ✓
 - **Default Risk Management** - Default stop loss and target for new strategies ✓
 - **Development** - Data seed for mock data mode ✓
@@ -1598,7 +1599,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 
 **21C: Alert-vs-Backtest Validation — DONE**
 - [x] Trigger Timing Analysis table — shows theoretical trigger time vs actual alert time for each matched execution, with Time Delta (seconds), theoretical vs alert price, and slippage in R-multiples
-- [x] Timezone normalization — both Theo Time and Alert Time now display in local timezone (was showing UTC vs local, causing visual 7-hour gap confusion)
+- [x] Timezone normalization — both Theo Time and Alert Time now display in user-configurable display timezone (was showing UTC vs local, causing visual 7-hour gap confusion); superseded by app-wide Display Timezone setting (see Phase 25)
 - [x] Split time delta metrics — "Bar-Close Time Delta" computed only from bar-close actions (meaningful); intra-bar count shown separately since intra-bar timing delta vs bar boundary is not meaningful (the alert IS the trigger)
 - [x] Summary metrics — 4-column layout: FT (All), FT (Alerts-Enabled), Alert Actual, Delta. Delta compares FT (Alerts-Enabled) vs Alert Actual for apples-to-apples execution fidelity measurement
 - [x] FT (Alerts-Enabled) column — FT KPIs computed only from trades during the alert-enabled window (first alert onward), isolating execution quality from strategy quality
@@ -1754,6 +1755,15 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] `bar_count_exit` display fix — strategies using only a candle count exit (e.g., 4-bar exit) now correctly show the exit name instead of "Unknown"; bar count exits always tagged `[C]`
 - [x] Strategies with both signal exits and bar_count_exit display both (e.g., "`[I]` UTBot Below, `[C]` 4-bar exit")
 - [x] Data confirmation caption after load: shows bar count, symbol, timeframe, session, and data source for verification
+
+**Display Timezone — User-Configurable Timestamps (DONE):**
+- [x] New `display_timezone` setting (default US/Eastern) with dropdown in Settings > Display section — options: US/Eastern, US/Central, US/Mountain, US/Pacific, UTC
+- [x] `format_display_ts()` central helper — converts any timestamp (str, datetime, pd.Timestamp) to display timezone; naive timestamps assumed UTC; graceful fallback on parse errors
+- [x] `_to_chart_unix()` helper — converts UTC timestamps to display-timezone Unix seconds for lightweight-charts (which has no native TZ support); handles both Series (vectorized) and scalar inputs
+- [x] All text timestamp displays (~30 locations) route through `format_display_ts()` — alert badges, strategy metadata, trade tables, timing analysis, discrepancy tables, engine status
+- [x] All price chart timestamps (~10 conversion points) route through `_to_chart_unix()` — candlestick data, trade entry/exit markers, alert-price markers, trigger overlays, condition markers, secondary panes (oscillator, MACD, RVOL)
+- [x] All `datetime.now()` calls standardized to `datetime.now(timezone.utc)` across app.py, alerts.py, and realtime_engine.py — ensures stored timestamps are consistently UTC
+- [x] Zero changes to trade generation, signal detection, or any calculation logic — timezone conversion is purely a display-layer concern
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button

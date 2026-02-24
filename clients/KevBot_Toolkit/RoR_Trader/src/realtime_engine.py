@@ -1016,7 +1016,7 @@ class UnifiedStreamingEngine:
             max_workers=4, thread_name_prefix="alert-delivery")
 
         self._running = True
-        self._start_time = datetime.now().isoformat()
+        self._start_time = datetime.now(timezone.utc).isoformat()
 
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="streaming-engine")

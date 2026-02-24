@@ -16,7 +16,7 @@ import math
 import secrets
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from data_loader import load_latest_bars
@@ -440,7 +440,7 @@ def save_alert(alert: dict) -> dict:
     max_id = max((a.get('id', 0) for a in alerts), default=0)
     alert['id'] = max_id + 1
     if 'timestamp' not in alert:
-        alert['timestamp'] = datetime.now().isoformat()
+        alert['timestamp'] = datetime.now(timezone.utc).isoformat()
     if 'acknowledged' not in alert:
         alert['acknowledged'] = False
     alerts.insert(0, alert)  # prepend (most recent first)
@@ -749,7 +749,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
                     "type": "entry_signal",
                     "trigger": entry_trigger,
                     "confluence_met": list(confluence_records & confluence_set) if confluence_set else [],
-                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
+                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,
                     "stop_price": float(stop_price),
                     "atr": float(atr_val),
@@ -762,7 +762,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
                     "type": "exit_signal",
                     "trigger": ec.replace("trig_", ""),
                     "confluence_met": list(confluence_records),
-                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
+                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,
                     "stop_price": None,
                     "atr": float(atr_val),
@@ -850,7 +850,7 @@ def _format_default_webhook_payload(alert: dict) -> dict:
         "embeds": [{
             "title": strategy_name,
             "fields": fields,
-            "timestamp": alert.get('timestamp', datetime.now().isoformat()),
+            "timestamp": alert.get('timestamp', datetime.now(timezone.utc).isoformat()),
         }]
     }
 
@@ -1171,7 +1171,7 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
 
     # Build discrepancies
     discrepancies = []
-    now_iso = datetime.now().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     # Missed alerts: forward test trades with no matching alert
     for trade_idx, trade, _ in ft_trades:

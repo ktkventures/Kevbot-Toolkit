@@ -22,6 +22,7 @@ import copy
 import subprocess
 import signal as signal_module
 import inspect
+import pytz
 
 from data_loader import load_market_data, get_data_source, is_alpaca_configured, estimate_bar_count, days_from_bar_count
 from indicators import (
@@ -251,6 +252,7 @@ SETTINGS_DEFAULTS = {
     "realtime_engine_enabled": False,
     "enabled_timeframes": ["1Min"],
     "candle_theme": "neutral",
+    "display_timezone": "US/Eastern",
 }
 
 # Candlestick color themes — keys match the candle_theme setting
@@ -271,6 +273,81 @@ CANDLE_THEMES = {
         "wickUpColor": "#FFFFFF", "wickDownColor": "#787B86",
     },
 }
+
+# Timezone options for the Settings dropdown
+DISPLAY_TIMEZONE_OPTIONS = {
+    "US/Eastern":  "US/Eastern",
+    "US/Central":  "US/Central",
+    "US/Mountain": "US/Mountain",
+    "US/Pacific":  "US/Pacific",
+    "UTC":         "UTC",
+}
+
+
+def format_display_ts(ts, fmt='%Y-%m-%d %H:%M:%S', date_only=False):
+    """Convert any timestamp to the user's chosen display timezone.
+
+    Args:
+        ts: str (ISO), datetime, or pd.Timestamp
+        fmt: strftime format (ignored if date_only=True)
+        date_only: if True, returns YYYY-MM-DD only
+    Returns:
+        Formatted string, or em-dash on failure
+    """
+    if not ts:
+        return "\u2014"
+    try:
+        tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+        target_tz = pytz.timezone(tz_name)
+
+        if isinstance(ts, str):
+            dt = datetime.fromisoformat(ts)
+        elif isinstance(ts, pd.Timestamp):
+            dt = ts.to_pydatetime()
+        else:
+            dt = ts
+
+        # Make aware: if naive, assume UTC
+        if dt.tzinfo is None:
+            dt = pytz.utc.localize(dt)
+
+        local_dt = dt.astimezone(target_tz)
+        if date_only:
+            return local_dt.strftime('%Y-%m-%d')
+        return local_dt.strftime(fmt)
+    except Exception:
+        if isinstance(ts, str):
+            return ts[:19].replace('T', ' ') if ts else "\u2014"
+        return "\u2014"
+
+
+def _to_chart_unix(ts):
+    """Convert UTC timestamp(s) to Unix seconds in the user's display timezone.
+
+    Lightweight-charts renders Unix timestamps as-is (no TZ support).
+    By shifting to the display timezone first, chart axis labels show
+    local time while all calculations remain in UTC.
+
+    Args:
+        ts: pd.Series, pd.Timestamp, datetime, or ISO string
+    Returns:
+        pd.Series of int64 (for Series input) or int (for scalar input)
+    """
+    tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+    try:
+        if isinstance(ts, pd.Series):
+            s = pd.to_datetime(ts, utc=True)
+            return s.dt.tz_convert(tz_name).dt.tz_localize(None).astype(int) // 10**9
+        # Scalar
+        dt = pd.Timestamp(ts)
+        if dt.tzinfo is None:
+            dt = dt.tz_localize('UTC')
+        return int(dt.tz_convert(tz_name).tz_localize(None).value // 10**9)
+    except Exception:
+        # Fallback: return raw UTC conversion
+        if isinstance(ts, pd.Series):
+            return pd.to_datetime(ts).astype(int) // 10**9
+        return int(pd.Timestamp(ts).value // 10**9)
 
 
 # =============================================================================
@@ -2573,7 +2650,7 @@ def render_price_chart(
     # Verify the expected column exists; fall back to positional if not
     if time_col not in candles.columns:
         time_col = candles.columns[0]
-    candles['time'] = pd.to_datetime(candles[time_col]).astype(int) // 10**9
+    candles['time'] = _to_chart_unix(candles[time_col])
 
     # Apply visible candles preset — trim to last N candles.
     # The lightweight-charts component always calls fitContent() on render,
@@ -2606,8 +2683,8 @@ def render_price_chart(
 
     if len(trades) > 0:
         # Vectorized timestamp conversion — avoid per-row pd.to_datetime
-        _entry_ts = pd.to_datetime(trades['entry_time']).astype(int) // 10**9
-        _exit_ts = pd.to_datetime(trades['exit_time']).astype(int) // 10**9
+        _entry_ts = _to_chart_unix(trades['entry_time'])
+        _exit_ts = _to_chart_unix(trades['exit_time'])
         _has_prices = 'entry_price' in trades.columns and 'exit_price' in trades.columns
 
         for i, (_, trade) in enumerate(trades.iterrows()):
@@ -2668,7 +2745,7 @@ def render_price_chart(
                 exit_alerts_parsed = []
                 for alert in strat_alerts:
                     try:
-                        a_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
+                        a_ts = _to_chart_unix(alert.get('bar_time', alert.get('timestamp', '')))
                     except Exception:
                         continue
                     a_price = alert.get('price')
@@ -2681,8 +2758,8 @@ def render_price_chart(
 
                 # Only match trades within visible window
                 for _, trade in trades.iterrows():
-                    entry_ts = pd.to_datetime(trade['entry_time']).timestamp()
-                    exit_ts = pd.to_datetime(trade['exit_time']).timestamp()
+                    entry_ts = _to_chart_unix(trade['entry_time'])
+                    exit_ts = _to_chart_unix(trade['exit_time'])
                     if exit_ts < min_time:
                         continue
                     # Match entry alert
@@ -2958,7 +3035,7 @@ def save_strategy(strategy: dict):
 
     # Add timestamp and ID (max+1 is safe after deletions)
     strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
-    strategy['created_at'] = datetime.now().isoformat()
+    strategy['created_at'] = datetime.now(timezone.utc).isoformat()
 
     # Forward testing is always on
     strategy['forward_testing'] = True
@@ -3024,7 +3101,7 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
 
         updated_strategy['id'] = strategy_id
         updated_strategy['created_at'] = strat['created_at']
-        updated_strategy['updated_at'] = datetime.now().isoformat()
+        updated_strategy['updated_at'] = datetime.now(timezone.utc).isoformat()
         updated_strategy['forward_testing'] = True
 
         if 'confluence' in updated_strategy and isinstance(updated_strategy['confluence'], set):
@@ -3187,11 +3264,11 @@ def refresh_strategy_data(strategy_id: int) -> bool:
                                 _dollar_pnl = _r_mult * _risk
                                 _add_ledger(_prt, 'trading_pnl', round(_dollar_pnl, 2),
                                             note=f"{strat.get('name', '')} trade #{_ti}",
-                                            date=_ex.get('alert_timestamp', '')[:10],
+                                            date=format_display_ts(_ex.get('alert_timestamp', ''), date_only=True),
                                             auto=True)
                         update_portfolio(_pid, _prt)
 
-        strat['data_refreshed_at'] = datetime.now().isoformat()
+        strat['data_refreshed_at'] = datetime.now(timezone.utc).isoformat()
         strategies[i] = strat
 
         with open(STRATEGIES_FILE, 'w') as f:
@@ -3268,7 +3345,7 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
 
     new_strategy = copy.deepcopy(source)
     new_strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
-    new_strategy['created_at'] = datetime.now().isoformat()
+    new_strategy['created_at'] = datetime.now(timezone.utc).isoformat()
     new_strategy['name'] = source['name'] + " (Copy)"
     new_strategy['forward_testing'] = False
     new_strategy.pop('forward_test_start', None)
@@ -3656,11 +3733,7 @@ def render_dashboard():
             last_poll = monitor.get('last_poll', '')
             poll_time = ''
             if last_poll:
-                try:
-                    dt = datetime.fromisoformat(last_poll)
-                    poll_time = f" (last poll: {dt.strftime('%H:%M:%S')})"
-                except (ValueError, TypeError):
-                    pass
+                poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
             strats_mon = monitor.get('strategies_monitored', 0)
             st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
         else:
@@ -4852,7 +4925,7 @@ def render_strategy_builder():
                 st.markdown(f"**{len(_bt_sigs)} Signals Loaded**")
                 _sig_df = pd.DataFrame(_bt_sigs)
                 if 'timestamp' in _sig_df.columns:
-                    _sig_df['timestamp'] = pd.to_datetime(_sig_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+                    _sig_df['timestamp'] = pd.to_datetime(_sig_df['timestamp']).apply(lambda t: format_display_ts(t, '%Y-%m-%d %H:%M'))
                 st.dataframe(_sig_df, use_container_width=True, hide_index=True, height=400)
             else:
                 st.info("No backtest signals loaded. Upload a CSV in the builder to see signals here.")
@@ -5395,7 +5468,7 @@ def render_strategy_builder():
     with st.expander("Trade List"):
         if len(filtered_trades) > 0:
             display = filtered_trades.tail(20).copy()
-            display['time'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+            display['time'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
             display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
             display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
             display['confluences'] = display['confluence_records'].apply(
@@ -6468,7 +6541,7 @@ def render_saved_kpis(strat: dict):
     st.markdown(f"**Target:** {format_target_display(strat)}")
     st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat, _kpi_trigger_defs)}")
     created = strat.get('created_at', 'Unknown')
-    st.markdown(f"**Created:** {created[:10] if len(created) >= 10 else created}")
+    st.markdown(f"**Created:** {format_display_ts(created, date_only=True)}")
 
 
 def render_live_backtest(strat: dict):
@@ -6739,14 +6812,14 @@ def render_live_backtest(strat: dict):
             if lb_mode == "Bars/Candles" and strat.get('bar_count'):
                 st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
             elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
-                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+                st.markdown(f"- Lookback: {format_display_ts(strat['lookback_start_date'], date_only=True)} to {format_display_ts(strat['lookback_end_date'], date_only=True)}")
             else:
                 st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
-            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
+            st.markdown(f"- Created: {format_display_ts(created)}")
             if strat.get('updated_at'):
-                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+                st.markdown(f"- Last Updated: {format_display_ts(strat['updated_at'])}")
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
@@ -6938,8 +7011,9 @@ def render_forward_test_view(strat: dict):
     forward_start_dt = datetime.fromisoformat(forward_start_str)
     duration_days = _days_since(forward_start_dt)
 
+    _ft_display = format_display_ts(forward_start_str, '%Y-%m-%d %H:%M')
     st.markdown(
-        f"**Forward Testing since {forward_start_str[:10]}** "
+        f"**Forward Testing since {_ft_display}** "
         f"({duration_days}d)"
     )
 
@@ -6979,7 +7053,7 @@ def render_forward_test_view(strat: dict):
     st.caption(
         f"BT: {len(backtest_trades)} trades ({bt_trading_days}d) · "
         f"FW: {len(forward_trades)} trades ({fw_trading_days}d) · "
-        f"Boundary: {boundary_dt.strftime('%Y-%m-%d')}"
+        f"Boundary: {format_display_ts(boundary_dt, date_only=True)}"
     )
 
     # Tab layout — include Alert Analysis when tracking is enabled
@@ -7141,15 +7215,15 @@ def render_forward_test_view(strat: dict):
             if lb_mode == "Bars/Candles" and strat.get('bar_count'):
                 st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
             elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
-                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+                st.markdown(f"- Lookback: {format_display_ts(strat['lookback_start_date'], date_only=True)} to {format_display_ts(strat['lookback_end_date'], date_only=True)}")
             else:
                 st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
-            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
-            st.markdown(f"- Forward Test Start: {forward_start_str[:19]}")
+            st.markdown(f"- Created: {format_display_ts(created)}")
+            st.markdown(f"- Forward Test Start: {format_display_ts(forward_start_str)}")
             if strat.get('updated_at'):
-                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+                st.markdown(f"- Last Updated: {format_display_ts(strat['updated_at'])}")
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
@@ -7266,15 +7340,6 @@ def _compute_alert_analysis(strat: dict) -> dict:
         dt = datetime.fromisoformat(s)
         return dt.astimezone(_tz2.utc).replace(tzinfo=None)
 
-    def _to_local_str(s):
-        """Convert any timestamp string to local time display (HH:MM:SS)."""
-        try:
-            dt = datetime.fromisoformat(s)
-            local_dt = dt.astimezone()  # converts to system local tz
-            return local_dt.strftime('%Y-%m-%d %H:%M:%S')
-        except (ValueError, TypeError):
-            return s[:19].replace('T', ' ') if s else "\u2014"
-
     timing_rows = []
     barclose_time_deltas = []   # time deltas for bar-close only
     intrabar_time_deltas = []   # time deltas for intra-bar only
@@ -7307,8 +7372,8 @@ def _compute_alert_analysis(strat: dict) -> dict:
             "Trade #": (tidx - ft_start_idx + 1) if tidx is not None else "?",
             "Type": ex.get('type', '').title(),
             "Source": "Intra-Bar" if is_intrabar else "Bar Close",
-            "Theo Time": _to_local_str(theo_time_raw) if theo_time_raw else "\u2014",
-            "Alert Time": _to_local_str(alert_time_raw) if alert_time_raw else "\u2014",
+            "Theo Time": format_display_ts(theo_time_raw) if theo_time_raw else "\u2014",
+            "Alert Time": format_display_ts(alert_time_raw) if alert_time_raw else "\u2014",
             "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
             "Theo Price": f"${theo_price:.2f}" if theo_price else "\u2014",
             "Alert Price": f"${alert_price:.2f}" if alert_price else "\u2014",
@@ -7378,8 +7443,8 @@ def _compute_alert_analysis(strat: dict) -> dict:
         exit_slip = exit_ex.get('slippage_r', 0) if exit_ex else None
         total_slip = (entry_slip or 0) + (exit_slip or 0)
         live_r_val = ft_r_val - total_slip if idx in matched_indices else None
-        entry_time_str = t.get('entry_time', '')[:16].replace('T', ' ')
-        exit_time_str = t.get('exit_time', '')[:16].replace('T', ' ')
+        entry_time_str = format_display_ts(t.get('entry_time', ''), '%Y-%m-%d %H:%M')
+        exit_time_str = format_display_ts(t.get('exit_time', ''), '%Y-%m-%d %H:%M')
         tbt_rows.append({
             "Trade #": trade_num + 1,
             "Entry": entry_time_str,
@@ -7452,7 +7517,7 @@ def render_alert_analysis_tab(strat: dict):
             for d in missed:
                 missed_data.append({
                     "Trade #": d.get('trade_index', '?'),
-                    "Entry Time": str(d.get('trade_entry_time', ''))[:16].replace('T', ' '),
+                    "Entry Time": format_display_ts(d.get('trade_entry_time', ''), '%Y-%m-%d %H:%M'),
                     "Status": "No alert fired",
                 })
             st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
@@ -7462,7 +7527,7 @@ def render_alert_analysis_tab(strat: dict):
             for d in phantom:
                 phantom_data.append({
                     "Alert ID": d.get('alert_id', '?'),
-                    "Timestamp": str(d.get('alert_timestamp', ''))[:16].replace('T', ' '),
+                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M'),
                     "Status": "No matching trade",
                 })
             st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
@@ -7611,7 +7676,7 @@ def render_alert_analysis_tab(strat: dict):
                 for d in missed:
                     missed_data.append({
                         "Trade #": d.get('trade_index', '?'),
-                        "Entry Time": d.get('trade_entry_time', '')[:16].replace('T', ' '),
+                        "Entry Time": format_display_ts(d.get('trade_entry_time', ''), '%Y-%m-%d %H:%M'),
                         "Expected Trigger": d.get('expected_trigger', '\u2014'),
                         "Status": "No alert fired",
                     })
@@ -7624,8 +7689,8 @@ def render_alert_analysis_tab(strat: dict):
                     phantom_data.append({
                         "Alert ID": d.get('alert_id', '?'),
                         "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
-                        "Timestamp": str(d.get('alert_timestamp', ''))[:19].replace('T', ' '),
-                        "Bar Time": str(d.get('bar_time', ''))[:19].replace('T', ' ') if d.get('bar_time') else "\u2014",
+                        "Timestamp": format_display_ts(d.get('alert_timestamp', '')),
+                        "Bar Time": format_display_ts(d.get('bar_time', '')) if d.get('bar_time') else "\u2014",
                         "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
                         "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
                         "Status": "No matching trade",
@@ -7696,11 +7761,7 @@ def render_strategy_alerts_tab(strat: dict):
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
                 ts = alert.get('timestamp', '')
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16] if ts else '?')
+                st.caption(format_display_ts(ts, '%m/%d %H:%M'))
             with col_b:
                 st.markdown(badge)
             with col_d:
@@ -7959,8 +8020,8 @@ def render_backtest_trade_table(trades: pd.DataFrame):
         return
 
     display = trades.copy()
-    display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-    display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+    display['entry'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
+    display['exit'] = display['exit_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
     display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
     display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
     has_exit_reason = 'exit_reason' in display.columns
@@ -8183,8 +8244,8 @@ def render_split_trade_history(backtest_trades: pd.DataFrame, forward_trades: pd
     """Render trade history split into forward test and backtest sections."""
     def format_trade_table(trades: pd.DataFrame) -> pd.DataFrame:
         display = trades.copy()
-        display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-        display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+        display['entry'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
+        display['exit'] = display['exit_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
         display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
         display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
         has_exit_reason = 'exit_reason' in display.columns
@@ -9188,11 +9249,7 @@ def render_portfolio_deploy(port):
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
                 ts = alert.get('timestamp', '')
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16] if ts else '?')
+                st.caption(format_display_ts(ts, '%m/%d %H:%M'))
             with col_b:
                 st.markdown(badge)
             with col_d:
@@ -9485,7 +9542,7 @@ def _render_monitor_status_bar(status: dict, config: dict):
             syms = ", ".join(_engine_info.get('symbols', []))
             info_parts = [f"Symbols: {syms or 'none'}", f"Ticks: {ticks:,}"]
             if _engine_info.get('started_at'):
-                info_parts.append(f"Started: {_engine_info['started_at'][:19]}")
+                info_parts.append(f"Started: {format_display_ts(_engine_info['started_at'])}")
             st.caption(" | ".join(info_parts))
         elif is_running:
             last_poll = status.get('last_poll', 'Never')
@@ -9649,7 +9706,7 @@ def _render_send_test_alert(config: dict):
                 "webhook_id": wh.get("id", ""),
                 "webhook_name": wh.get("name", ""),
                 "portfolio_id": wh["portfolio_id"],
-                "sent_at": datetime.now().isoformat(),
+                "sent_at": datetime.now(timezone.utc).isoformat(),
                 "success": result["success"],
                 "status_code": result.get("status_code"),
                 "payload_sent": result.get("payload_sent", ""),
@@ -9764,12 +9821,7 @@ def _render_alert_row(alert: dict, prefix: str = ""):
 
         with col_time:
             ts = alert.get('timestamp', '')
-            if ts:
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16])
+            st.caption(format_display_ts(ts, '%m/%d %H:%M'))
 
         with col_badge:
             st.markdown(badge)
@@ -9890,11 +9942,7 @@ def _render_portfolio_alerts_tab():
                     col_t, col_b, col_d = st.columns([2, 1, 6])
                     with col_t:
                         ts = alert.get('timestamp', '')
-                        try:
-                            dt = datetime.fromisoformat(ts)
-                            st.caption(dt.strftime("%m/%d %H:%M"))
-                        except (ValueError, TypeError):
-                            st.caption(ts[:16] if ts else '?')
+                        st.caption(format_display_ts(ts, '%m/%d %H:%M'))
                     with col_b:
                         st.markdown(badge + ib_badge)
                     with col_d:
@@ -9968,11 +10016,7 @@ def _render_outbound_webhooks_tab():
 
             with col_time:
                 ts = d.get("sent_at", "")
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M:%S"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:19] if ts else "?")
+                st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
 
             with col_status:
                 st.markdown(status_badge)
@@ -10135,7 +10179,7 @@ def render_portfolio_account(port: dict, portfolio_id: int):
     with note_cols[0]:
         if st.button("Save Notes", key=f"save_notes_{portfolio_id}"):
             account['notes'] = new_notes
-            account['notes_updated_at'] = datetime.now().isoformat()
+            account['notes_updated_at'] = datetime.now(timezone.utc).isoformat()
             update_portfolio(portfolio_id, port)
             st.toast("Notes saved")
             st.rerun()
@@ -10294,7 +10338,7 @@ def _render_webhook_editor(portfolio_id: int, port: dict, wh: dict, index: int):
                     "price": 100.0, "stop_price": 98.5, "atr": 1.5,
                     "trigger": "test_trigger", "confluence_met": ["TEST-CONDITION"],
                     "risk_per_trade": 100.0, "timeframe": "1Min",
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 ctx = build_placeholder_context(test_alert, {
                     "portfolio_id": portfolio_id,
@@ -10454,6 +10498,22 @@ def render_webhook_templates_page():
 def render_settings():
     """Render the Settings page — global app preferences."""
     st.header("Settings")
+
+    # --- Display ---
+    st.subheader("Display")
+    tz_labels = list(DISPLAY_TIMEZONE_OPTIONS.keys())
+    tz_values = list(DISPLAY_TIMEZONE_OPTIONS.values())
+    current_tz = st.session_state.get('display_timezone', 'US/Eastern')
+    tz_idx = tz_values.index(current_tz) if current_tz in tz_values else 0
+    sel_tz = st.selectbox(
+        "Display Timezone",
+        tz_labels,
+        index=tz_idx,
+        key="settings_display_timezone",
+        help="All timestamps in the app will be shown in this timezone. "
+             "Does not affect calculations or stored data.",
+    )
+    st.session_state['display_timezone'] = DISPLAY_TIMEZONE_OPTIONS[sel_tz]
 
     # --- Chart Defaults ---
     st.subheader("Chart Defaults")
@@ -11330,7 +11390,7 @@ def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> 
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     # Read line_styles from plot_config if available
     plot_config = template.get("plot_config", {})
@@ -11421,7 +11481,7 @@ def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     hist_data = []
     macd_data = []
@@ -11531,7 +11591,7 @@ def _build_rvol_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     rvol_data = []
     for _, row in plot_df.iterrows():
@@ -11729,7 +11789,7 @@ def _build_trigger_overlay(df: pd.DataFrame, group, template: dict):
                 style = _TRIGGER_DIRECTION_STYLE.get(direction, _TRIGGER_DIRECTION_STYLE["BOTH"])
 
                 for idx in fired.index:
-                    ts = int(pd.to_datetime(idx).timestamp())
+                    ts = _to_chart_unix(idx)
                     markers.append({
                         "time": ts,
                         "position": style["position"],
@@ -12243,7 +12303,7 @@ def _build_pack_builder_oscillator_pane(df: pd.DataFrame, manifest: dict) -> dic
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     series = []
     for col_name, color in plot_cols.items():
@@ -13145,7 +13205,7 @@ def _render_gp_preview(pack):
 
     condition_markers = []
     for idx, state in changes.items():
-        ts = int(pd.to_datetime(idx).timestamp())
+        ts = _to_chart_unix(idx)
         condition_markers.append({
             'time': ts,
             'position': 'aboveBar',
@@ -13168,7 +13228,7 @@ def _render_gp_preview(pack):
             fired = trig_series[trig_series == True]
             trig_label = col_to_name.get(trig_col, trig_col)
             for t_idx in fired.index:
-                ts = int(pd.to_datetime(t_idx).timestamp())
+                ts = _to_chart_unix(t_idx)
                 trigger_markers.append({
                     'time': ts,
                     'position': 'belowBar',
@@ -13216,7 +13276,7 @@ def _render_gp_preview(pack):
 
         # Add state text labels at each transition
         for idx, state in changes.items():
-            ts = int(pd.to_datetime(idx).timestamp())
+            ts = _to_chart_unix(idx)
             high_price = float(df.loc[idx, 'high']) if 'high' in df.columns else None
             if high_price is None:
                 continue
@@ -13719,7 +13779,7 @@ def _render_rmp_preview(pack):
     st_markers = []
     if len(trades) > 0:
         for _, t in trades.iterrows():
-            entry_ts = int(pd.to_datetime(t['entry_time']).timestamp())
+            entry_ts = _to_chart_unix(t['entry_time'])
             # Stop level marker (red triangle down at entry bar)
             if pd.notna(t.get('stop_price')):
                 st_markers.append({
