@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.46
+**Version:** 0.47
 **Date:** February 23, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A done, 21C/21E done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
+**Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A/C/E/F done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
 
 ---
 
@@ -1598,12 +1598,16 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 
 **21C: Alert-vs-Backtest Validation — DONE**
 - [x] Trigger Timing Analysis table — shows theoretical trigger time vs actual alert time for each matched execution, with Time Delta (seconds), theoretical vs alert price, and slippage in R-multiples
-- [x] Summary metrics — average entry slippage, average exit slippage, average time delta across all matched executions
+- [x] Timezone normalization — both Theo Time and Alert Time now display in local timezone (was showing UTC vs local, causing visual 7-hour gap confusion)
+- [x] Split time delta metrics — "Bar-Close Time Delta" computed only from bar-close actions (meaningful); intra-bar count shown separately since intra-bar timing delta vs bar boundary is not meaningful (the alert IS the trigger)
+- [x] Summary metrics — 4-column layout: FT (All), FT (Alerts-Enabled), Alert Actual, Delta. Delta compares FT (Alerts-Enabled) vs Alert Actual for apples-to-apples execution fidelity measurement
+- [x] FT (Alerts-Enabled) column — FT KPIs computed only from trades during the alert-enabled window (first alert onward), isolating execution quality from strategy quality
+- [x] Dollar per-share slippage — Avg Entry Slip ($/sh) and Avg Exit Slip ($/sh) in summary metrics, plus dedicated "Trade-by-Trade: Dollar Per Share Slippage" expandable table showing Theo vs Alert prices and per-share deltas
+- [x] R-multiple and dollar TBT tables — separated into two expandable sections to avoid column overload; R-based for risk-normalized view, $/share for intuitive per-share cost view
 - [x] Enriched execution records — `bar_time` and `source` fields added to entry/exit execution records in `match_alerts_to_trades()` for timing analysis
 - [x] Enriched phantom alert discrepancies — now include `alert_type`, `bar_time`, `source`, and `price` fields for better debugging
 - [x] Alert analysis caching — heavy computation extracted into `_compute_alert_analysis()` with session state cache keyed by `data_refreshed_at` timestamp, eliminating recomputation on tab switches
 - [x] Alert matching performance — pre-parsed timestamps split by entry/exit type before nested loops, sorted for efficient matching (eliminated O(n²) datetime parsing)
-- [x] Trade-by-trade comparison — side-by-side FT vs Live trade comparison with entry/exit price, R-multiple, and win rate comparison
 - [x] Discrepancy detection — missed alerts (FT trades without matching alerts) and phantom alerts (alerts without matching FT trades) surfaced with full context
 
 **21D: Webhook Payload Reliability**

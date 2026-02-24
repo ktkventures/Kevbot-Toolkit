@@ -7185,16 +7185,29 @@ def _compute_alert_analysis(strat: dict) -> dict:
             except (ValueError, KeyError):
                 pass
 
-    # Timing rows
+    # Timing rows — normalize all display timestamps to local timezone
     from datetime import timezone as _tz2
     def _to_utc(s):
         dt = datetime.fromisoformat(s)
         return dt.astimezone(_tz2.utc).replace(tzinfo=None)
 
+    def _to_local_str(s):
+        """Convert any timestamp string to local time display (HH:MM:SS)."""
+        try:
+            dt = datetime.fromisoformat(s)
+            local_dt = dt.astimezone()  # converts to system local tz
+            return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            return s[:19].replace('T', ' ') if s else "\u2014"
+
     timing_rows = []
+    barclose_time_deltas = []   # time deltas for bar-close only
+    intrabar_time_deltas = []   # time deltas for intra-bar only
     for ex in live_execs:
         tidx = ex.get('matched_trade_index')
         trade = stored[tidx] if tidx is not None and tidx < len(stored) else {}
+        source = ex.get('source', 'unknown')
+        is_intrabar = source == 'intra_bar'
         if ex.get('type') == 'entry':
             theo_time_raw = trade.get('entry_time', '')
         else:
@@ -7206,6 +7219,10 @@ def _compute_alert_analysis(strat: dict) -> dict:
                 theo_dt = _to_utc(theo_time_raw)
                 alert_dt = _to_utc(alert_time_raw)
                 time_delta_s = (alert_dt - theo_dt).total_seconds()
+                if is_intrabar:
+                    intrabar_time_deltas.append(time_delta_s)
+                else:
+                    barclose_time_deltas.append(time_delta_s)
         except (ValueError, TypeError):
             pass
         theo_price = ex.get('theoretical_price', 0)
@@ -7214,9 +7231,9 @@ def _compute_alert_analysis(strat: dict) -> dict:
         timing_rows.append({
             "Trade #": (tidx - ft_start_idx + 1) if tidx is not None else "?",
             "Type": ex.get('type', '').title(),
-            "Source": ex.get('source', 'unknown').replace('_', ' ').title(),
-            "Theo Time": theo_time_raw[:19].replace('T', ' ') if theo_time_raw else "\u2014",
-            "Alert Time": alert_time_raw[:19].replace('T', ' ') if alert_time_raw else "\u2014",
+            "Source": "Intra-Bar" if is_intrabar else "Bar Close",
+            "Theo Time": _to_local_str(theo_time_raw) if theo_time_raw else "\u2014",
+            "Alert Time": _to_local_str(alert_time_raw) if alert_time_raw else "\u2014",
             "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
             "Theo Price": f"${theo_price:.2f}" if theo_price else "\u2014",
             "Alert Price": f"${alert_price:.2f}" if alert_price else "\u2014",
@@ -7226,11 +7243,57 @@ def _compute_alert_analysis(strat: dict) -> dict:
 
     entry_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'entry']
     exit_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'exit']
-    time_deltas = [r["Time \u0394 (s)"] for r in timing_rows if r["Time \u0394 (s)"] != "\u2014"]
-    time_vals = [float(t) for t in time_deltas] if time_deltas else []
+    # Dollar per-share slippage
+    entry_dollar_slips = []
+    exit_dollar_slips = []
+    for ex in live_execs:
+        ap = ex.get('alert_price', 0)
+        tp = ex.get('theoretical_price', 0)
+        if ap and tp:
+            delta = ap - tp
+            if ex.get('type') == 'entry':
+                entry_dollar_slips.append(delta)
+            elif ex.get('type') == 'exit':
+                exit_dollar_slips.append(delta)
 
-    # Trade-by-trade rows
+    # Determine alerts-enabled window from first alert timestamp
+    # FT trades within this window form the apples-to-apples comparison
+    first_alert_dt = None
+    for ex in live_execs:
+        ts = ex.get('alert_timestamp', '')
+        if ts:
+            try:
+                dt = _to_utc(ts)
+                if first_alert_dt is None or dt < first_alert_dt:
+                    first_alert_dt = dt
+            except (ValueError, TypeError):
+                pass
+
+    # FT (Alerts-Enabled): trades that occurred during the alert-enabled window
+    ft_ae_trades = []
+    if first_alert_dt:
+        for t in ft_trades:
+            try:
+                entry_dt = datetime.fromisoformat(t['entry_time'])
+                if entry_dt.tzinfo:
+                    entry_dt = entry_dt.astimezone(_tz2.utc).replace(tzinfo=None)
+                if entry_dt >= first_alert_dt:
+                    ft_ae_trades.append(t)
+            except (ValueError, KeyError):
+                pass
+
+    ft_ae_r = [t.get('r_multiple', 0) for t in ft_ae_trades]
+    ft_ae_wins = [r for r in ft_ae_r if r > 0]
+    ft_ae_losses = [r for r in ft_ae_r if r < 0]
+    ft_ae_total = len(ft_ae_r)
+    ft_ae_wr = (len(ft_ae_wins) / ft_ae_total * 100) if ft_ae_total > 0 else 0
+    ft_ae_pf = (sum(ft_ae_wins) / abs(sum(ft_ae_losses))) if ft_ae_losses else float('inf')
+    ft_ae_avg_r = (sum(ft_ae_r) / ft_ae_total) if ft_ae_total > 0 else 0
+    ft_ae_total_r = sum(ft_ae_r)
+
+    # Trade-by-trade rows (R-based and dollar-based)
     tbt_rows = []
+    tbt_dollar_rows = []
     for trade_num, idx in enumerate(range(ft_start_idx, len(stored))):
         t = stored[idx]
         entry_ex = entry_execs.get(idx)
@@ -7253,17 +7316,39 @@ def _compute_alert_analysis(strat: dict) -> dict:
             "Exit Slip": f"{exit_slip:+.4f}" if exit_slip is not None else "\u2014",
             "Webhook": "\u2705" if (entry_ex or exit_ex) and (entry_ex or {}).get('webhook_delivered', False) else ("\u274c" if idx in matched_indices else "\u2014"),
         })
+        # Dollar-based row
+        entry_theo = entry_ex.get('theoretical_price', 0) if entry_ex else None
+        entry_alert = entry_ex.get('alert_price', 0) if entry_ex else None
+        exit_theo = exit_ex.get('theoretical_price', 0) if exit_ex else None
+        exit_alert = exit_ex.get('alert_price', 0) if exit_ex else None
+        entry_dollar = (entry_alert - entry_theo) if (entry_alert and entry_theo) else None
+        exit_dollar = (exit_alert - exit_theo) if (exit_alert and exit_theo) else None
+        tbt_dollar_rows.append({
+            "Trade #": trade_num + 1,
+            "Entry": entry_time_str,
+            "Theo Entry $": f"${entry_theo:.2f}" if entry_theo else "\u2014",
+            "Alert Entry $": f"${entry_alert:.2f}" if entry_alert else "\u2014",
+            "Entry \u0394/sh": f"{entry_dollar:+.3f}" if entry_dollar is not None else "\u2014",
+            "Theo Exit $": f"${exit_theo:.2f}" if exit_theo else "\u2014",
+            "Alert Exit $": f"${exit_alert:.2f}" if exit_alert else "\u2014",
+            "Exit \u0394/sh": f"{exit_dollar:+.3f}" if exit_dollar is not None else "\u2014",
+            "Net \u0394/sh": f"{((entry_dollar or 0) + (exit_dollar or 0)):+.3f}" if idx in matched_indices else "\u2014",
+        })
 
     return {
         'ft_trades': ft_trades, 'ft_total': ft_total, 'ft_wr': ft_wr, 'ft_pf': ft_pf,
         'ft_avg_r': ft_avg_r, 'ft_total_r': ft_total_r,
+        'ft_ae_total': ft_ae_total, 'ft_ae_wr': ft_ae_wr, 'ft_ae_pf': ft_ae_pf,
+        'ft_ae_avg_r': ft_ae_avg_r, 'ft_ae_total_r': ft_ae_total_r,
         'live_total': live_total, 'live_wr': live_wr, 'live_pf': live_pf,
         'live_avg_r': live_avg_r, 'live_total_r': live_total_r,
         'avg_slippage': avg_slippage, 'webhook_success': webhook_success,
         'webhook_rate': webhook_rate, 'missed_count': missed_count, 'phantom_count': phantom_count,
         'matched_indices': matched_indices, 'timing_rows': timing_rows,
-        'entry_slips': entry_slips, 'exit_slips': exit_slips, 'time_vals': time_vals,
-        'tbt_rows': tbt_rows, 'ft_start_idx': ft_start_idx,
+        'entry_slips': entry_slips, 'exit_slips': exit_slips,
+        'entry_dollar_slips': entry_dollar_slips, 'exit_dollar_slips': exit_dollar_slips,
+        'barclose_time_deltas': barclose_time_deltas, 'intrabar_time_deltas': intrabar_time_deltas,
+        'tbt_rows': tbt_rows, 'tbt_dollar_rows': tbt_dollar_rows, 'ft_start_idx': ft_start_idx,
     }
 
 
@@ -7321,6 +7406,8 @@ def render_alert_analysis_tab(strat: dict):
     ft_trades = aa['ft_trades']
     ft_total = aa['ft_total']; ft_wr = aa['ft_wr']; ft_pf = aa['ft_pf']
     ft_avg_r = aa['ft_avg_r']; ft_total_r = aa['ft_total_r']
+    ft_ae_total = aa['ft_ae_total']; ft_ae_wr = aa['ft_ae_wr']; ft_ae_pf = aa['ft_ae_pf']
+    ft_ae_avg_r = aa['ft_ae_avg_r']; ft_ae_total_r = aa['ft_ae_total_r']
     live_total = aa['live_total']; live_wr = aa['live_wr']; live_pf = aa['live_pf']
     live_avg_r = aa['live_avg_r']; live_total_r = aa['live_total_r']
     avg_slippage = aa['avg_slippage']
@@ -7338,62 +7425,102 @@ def render_alert_analysis_tab(strat: dict):
         suffix = "%" if pct else ""
         return f'<span style="color:{color}">{sym} {diff:+{fmt}}{suffix}</span>'
 
-    _hdr = st.columns([1.2, 1, 1, 0.8])
+    _hdr = st.columns([1.5, 1, 1, 1, 0.8])
     _hdr[0].markdown("**Metric**")
-    _hdr[1].markdown(f'<span style="color:#FF9800">**Forward Test**</span>', unsafe_allow_html=True)
-    _hdr[2].markdown(f'<span style="color:#4CAF50">**Live (Adjusted)**</span>', unsafe_allow_html=True)
-    _hdr[3].markdown("**Delta**")
+    _hdr[1].markdown(f'<span style="color:#FF9800">**Forward Test (All)**</span>', unsafe_allow_html=True)
+    _hdr[2].markdown(f'<span style="color:#2196F3">**FT (Alerts-Enabled)**</span>', unsafe_allow_html=True)
+    _hdr[3].markdown(f'<span style="color:#4CAF50">**Alert Actual**</span>', unsafe_allow_html=True)
+    _hdr[4].markdown("**Delta**")
+
+    def _fmt_pf(v):
+        return f"{v:.2f}" if v != float('inf') else "\u221e"
 
     rows = [
-        ("Total Trades", f"{ft_total}", f"{live_total}", ""),
-        ("Win Rate", f"{ft_wr:.1f}%", f"{live_wr:.1f}%", _delta_html(ft_wr, live_wr, ".1f", True)),
-        ("Profit Factor",
-         f"{ft_pf:.2f}" if ft_pf != float('inf') else "\u221e",
-         f"{live_pf:.2f}" if live_pf != float('inf') else "\u221e",
-         _delta_html(ft_pf, live_pf) if ft_pf != float('inf') and live_pf != float('inf') else ""),
-        ("Avg R", f"{ft_avg_r:+.3f}", f"{live_avg_r:+.3f}", _delta_html(ft_avg_r, live_avg_r, ".3f")),
-        ("Total R", f"{ft_total_r:+.2f}", f"{live_total_r:+.2f}", _delta_html(ft_total_r, live_total_r)),
-        ("Avg Slippage", "\u2014", f"{avg_slippage:+.4f}R", ""),
-        ("Webhook Success", "\u2014", f"{webhook_rate:.0f}% ({webhook_success}/{len(live_execs)})", ""),
-        ("Missed Alerts", "\u2014", str(missed_count), ""),
-        ("Phantom Alerts", "\u2014", str(phantom_count), ""),
+        ("Total Trades", f"{ft_total}", f"{ft_ae_total}", f"{live_total}",
+         ""),
+        ("Win Rate", f"{ft_wr:.1f}%", f"{ft_ae_wr:.1f}%", f"{live_wr:.1f}%",
+         _delta_html(ft_ae_wr, live_wr, ".1f", True) if ft_ae_total > 0 else ""),
+        ("Profit Factor", _fmt_pf(ft_pf), _fmt_pf(ft_ae_pf), _fmt_pf(live_pf),
+         _delta_html(ft_ae_pf, live_pf) if ft_ae_pf != float('inf') and live_pf != float('inf') else ""),
+        ("Avg R", f"{ft_avg_r:+.3f}", f"{ft_ae_avg_r:+.3f}", f"{live_avg_r:+.3f}",
+         _delta_html(ft_ae_avg_r, live_avg_r, ".3f") if ft_ae_total > 0 else ""),
+        ("Total R", f"{ft_total_r:+.2f}", f"{ft_ae_total_r:+.2f}", f"{live_total_r:+.2f}",
+         _delta_html(ft_ae_total_r, live_total_r) if ft_ae_total > 0 else ""),
+        ("Avg Slippage (R)", "\u2014", "\u2014", f"{avg_slippage:+.4f}R",
+         ""),
+        ("Avg Entry Slip ($/sh)", "\u2014", "\u2014",
+         f"{sum(aa['entry_dollar_slips'])/len(aa['entry_dollar_slips']):+.3f}" if aa['entry_dollar_slips'] else "\u2014",
+         ""),
+        ("Avg Exit Slip ($/sh)", "\u2014", "\u2014",
+         f"{sum(aa['exit_dollar_slips'])/len(aa['exit_dollar_slips']):+.3f}" if aa['exit_dollar_slips'] else "\u2014",
+         ""),
+        ("Webhook Success", "\u2014", "\u2014", f"{webhook_rate:.0f}% ({webhook_success}/{len(live_execs)})",
+         ""),
+        ("Missed Alerts", "\u2014", "\u2014", str(missed_count),
+         ""),
+        ("Phantom Alerts", "\u2014", "\u2014", str(phantom_count),
+         ""),
     ]
-    for label, fwd_v, live_v, delta in rows:
-        _r = st.columns([1.2, 1, 1, 0.8])
+    for label, ft_all_v, ft_ae_v, live_v, delta in rows:
+        _r = st.columns([1.5, 1, 1, 1, 0.8])
         _r[0].markdown(f"**{label}**")
-        _r[1].markdown(fwd_v)
-        _r[2].markdown(live_v)
+        _r[1].markdown(ft_all_v)
+        _r[2].markdown(ft_ae_v)
+        _r[3].markdown(live_v)
         if delta:
-            _r[3].markdown(delta, unsafe_allow_html=True)
+            _r[4].markdown(delta, unsafe_allow_html=True)
+
+    st.caption("**Delta** compares FT (Alerts-Enabled) vs Alert Actual \u2014 the apples-to-apples execution fidelity measure. "
+               "FT (All) vs Backtest tells you strategy quality; FT (Alerts-Enabled) vs Alert Actual tells you execution quality.")
 
     # ── Section B: Trigger Timing Analysis ──
     timing_rows = aa['timing_rows']
-    with st.expander("Trigger Timing Analysis", expanded=True):
+    with st.expander("Trigger Timing Analysis", expanded=False):
         if timing_rows:
             timing_df = pd.DataFrame(timing_rows)
             st.dataframe(timing_df, use_container_width=True, hide_index=True)
 
             entry_slips = aa['entry_slips']
             exit_slips = aa['exit_slips']
-            time_vals = aa['time_vals']
-            cols = st.columns(3)
+            barclose_deltas = aa['barclose_time_deltas']
+            intrabar_deltas = aa['intrabar_time_deltas']
+            cols = st.columns(4)
             if entry_slips:
                 cols[0].metric("Avg Entry Slippage", f"{sum(entry_slips)/len(entry_slips):+.4f}R")
             if exit_slips:
                 cols[1].metric("Avg Exit Slippage", f"{sum(exit_slips)/len(exit_slips):+.4f}R")
-            if time_vals:
-                cols[2].metric("Avg Time Delta", f"{sum(time_vals)/len(time_vals):+.1f}s")
+            if barclose_deltas:
+                cols[2].metric("Bar-Close Time \u0394", f"{sum(barclose_deltas)/len(barclose_deltas):+.1f}s",
+                               help="Avg seconds between bar close and alert fire (bar-close actions only)")
+            if intrabar_deltas:
+                cols[3].metric("Intra-Bar Count", f"{len(intrabar_deltas)}",
+                               help="Intra-bar alerts fire when price crosses the trigger level mid-bar. "
+                                    "Time delta vs bar boundary is not meaningful for these.")
+            if not barclose_deltas and not intrabar_deltas:
+                st.caption("No timing data available.")
         else:
             st.info("No matched executions to analyze trigger timing.")
 
-    # ── Section C: Trade-by-Trade Comparison ──
+    # ── Section C: Trade-by-Trade Comparison (R-Based) ──
     tbt_rows = aa['tbt_rows']
-    with st.expander("Trade-by-Trade Comparison", expanded=False):
+    with st.expander("Trade-by-Trade: R-Multiple Comparison", expanded=False):
         if tbt_rows:
             tbt_df = pd.DataFrame(tbt_rows)
             st.dataframe(tbt_df, use_container_width=True, hide_index=True)
             coverage = len(matched_indices)
             st.caption(f"{coverage} of {len(ft_trades)} forward test trades had matching alerts ({coverage / len(ft_trades) * 100:.0f}% coverage)" if ft_trades else "")
+        else:
+            st.info("No forward test trades to compare.")
+
+    # ── Section C2: Trade-by-Trade Comparison ($/Share) ──
+    tbt_dollar_rows = aa['tbt_dollar_rows']
+    with st.expander("Trade-by-Trade: Dollar Per Share Slippage", expanded=False):
+        if tbt_dollar_rows:
+            tbt_dollar_df = pd.DataFrame(tbt_dollar_rows)
+            st.dataframe(tbt_dollar_df, use_container_width=True, hide_index=True)
+            st.caption("Positive = alert price higher than theoretical. "
+                       "For entries (LONG): positive = paid more (worse). "
+                       "For exits (LONG): positive = sold higher (better).")
         else:
             st.info("No forward test trades to compare.")
 
