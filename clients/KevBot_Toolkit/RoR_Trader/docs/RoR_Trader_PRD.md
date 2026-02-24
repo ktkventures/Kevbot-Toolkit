@@ -1,6 +1,6 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.47
+**Version:** 0.48
 **Date:** February 23, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A/C/E/F done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
@@ -1744,6 +1744,15 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] Strategy list ticker filter dynamically populated from tickers in use (not hardcoded)
 - [x] Entry price and exit price columns added to all trade list tables (Strategy Builder, Trade History, Split Trade History)
 - [x] `_extract_minimal_trades()` now persists entry_price and exit_price in stored trades
+
+**Execution Mode Tags — Universal [C]/[I] Display (DONE):**
+- [x] `get_trigger_display_name()` and `format_exit_triggers_display()` updated with optional `trigger_defs` parameter — when provided, entry/exit names are prefixed with `[C]` (bar close) or `[I]` (intra-bar) execution tags
+- [x] Strategy cards — entry/exit triggers on the card grid now show [C]/[I] tags
+- [x] Strategy detail page header — meta row Entry/Exit fields now show tags
+- [x] Config tabs (live backtest + forward test) — Entry/Exit display shows tags
+- [x] Saved KPIs / legacy strategy view — exit triggers display shows tags
+- [x] `bar_count_exit` display fix — strategies using only a candle count exit (e.g., 4-bar exit) now correctly show the exit name instead of "Unknown"; bar count exits always tagged `[C]`
+- [x] Strategies with both signal exits and bar_count_exit display both (e.g., "`[I]` UTBot Below, `[C]` 4-bar exit")
 - [x] Data confirmation caption after load: shows bar count, symbol, timeframe, session, and data source for verification
 
 **UX Polish:**

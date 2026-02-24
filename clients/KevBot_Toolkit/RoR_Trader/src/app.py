@@ -1515,15 +1515,63 @@ def format_target_display(strat: dict) -> str:
     return "None"
 
 
-def format_exit_triggers_display(strat: dict) -> str:
-    """Format exit triggers for human-readable display."""
-    names = strat.get('exit_trigger_names')
+def format_exit_triggers_display(strat: dict, trigger_defs: dict = None) -> str:
+    """Format exit triggers for human-readable display.
+
+    Args:
+        strat: Strategy config dict.
+        trigger_defs: Optional dict mapping confluence_id -> TriggerDefinition.
+            When provided, each exit name is prefixed with [C]/[I] execution tag.
+    """
+    parts = []
+
+    # Signal-based exits (modern multi-exit)
+    names = strat.get('exit_trigger_names') or []
+    cids = strat.get('exit_trigger_confluence_ids') or []
     if names:
-        return ", ".join(names)
-    name = strat.get('exit_trigger_name')
-    if name:
-        return name
-    return strat.get('exit_trigger', 'Unknown')
+        for idx, name in enumerate(names):
+            if trigger_defs is not None:
+                cid = cids[idx] if idx < len(cids) else None
+                tdef = trigger_defs.get(cid or '') if cid else None
+                tag = _execution_tag(
+                    tdef.base_trigger if tdef else '',
+                    tdef.execution if tdef else 'bar_close'
+                )
+                parts.append(f"{tag} {name}")
+            else:
+                parts.append(name)
+    else:
+        # Legacy fallback: single exit trigger name
+        name = strat.get('exit_trigger_name')
+        if name:
+            if trigger_defs is not None:
+                cid = strat.get('exit_trigger_confluence_id')
+                tdef = trigger_defs.get(cid or '') if cid else None
+                tag = _execution_tag(
+                    tdef.base_trigger if tdef else '',
+                    tdef.execution if tdef else 'bar_close'
+                )
+                parts.append(f"{tag} {name}")
+            else:
+                parts.append(name)
+
+    # Bar count exit
+    bar_count = strat.get('bar_count_exit')
+    if bar_count:
+        label = f"{bar_count}-bar exit"
+        if trigger_defs is not None:
+            parts.append(f"`[C]` {label}")
+        else:
+            parts.append(label)
+
+    if parts:
+        return ", ".join(parts)
+
+    # Final fallback for very old legacy strategies
+    legacy = strat.get('exit_trigger')
+    if legacy:
+        return legacy
+    return "Unknown"
 
 
 def count_trading_days(df: pd.DataFrame) -> int:
@@ -3237,10 +3285,29 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
     return new_strategy
 
 
-def get_trigger_display_name(strat: dict, trigger_key: str) -> str:
-    """Get display name for a trigger, handling legacy strategies."""
+def get_trigger_display_name(strat: dict, trigger_key: str, trigger_defs: dict = None) -> str:
+    """Get display name for a trigger, handling legacy strategies.
+
+    Args:
+        strat: Strategy config dict.
+        trigger_key: Base key like 'entry_trigger'.
+        trigger_defs: Optional dict mapping confluence_id -> TriggerDefinition.
+            When provided, the name is prefixed with [C]/[I] execution tag.
+    """
     name_key = trigger_key + '_name'
-    return strat.get(name_key, strat.get(trigger_key, 'Unknown'))
+    name = strat.get(name_key, strat.get(trigger_key, 'Unknown'))
+
+    if trigger_defs is not None:
+        conf_id_key = trigger_key + '_confluence_id'
+        cid = strat.get(conf_id_key)
+        tdef = trigger_defs.get(cid or '') if cid else None
+        tag = _execution_tag(
+            tdef.base_trigger if tdef else '',
+            tdef.execution if tdef else 'bar_close'
+        )
+        return f"{tag} {name}"
+
+    return name
 
 
 # =============================================================================
@@ -5625,6 +5692,7 @@ def render_strategy_list():
 
     # --- Strategy Cards ---
     enabled_groups = get_enabled_groups()
+    _card_trigger_defs = get_all_triggers(enabled_groups)
 
     # Pre-compute set of strategy IDs being monitored (in webhook-enabled portfolios)
     _alert_config = load_alert_config()
@@ -5742,8 +5810,8 @@ def render_strategy_list():
                 if strat.get('strategy_origin') == 'webhook_inbound':
                     st.caption(f"Origin: Webhook Inbound")
                 else:
-                    entry_display = get_trigger_display_name(strat, 'entry_trigger')
-                    exit_display = format_exit_triggers_display(strat)
+                    entry_display = get_trigger_display_name(strat, 'entry_trigger', _card_trigger_defs)
+                    exit_display = format_exit_triggers_display(strat, _card_trigger_defs)
                     st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
                 st.caption(f"Stop: {stop_display} | Target: {target_display}")
 
@@ -5861,6 +5929,7 @@ def render_strategy_detail(strategy_id: int):
     st.header(strat['name'])
 
     enabled_groups = get_enabled_groups()
+    _detail_trigger_defs = get_all_triggers(enabled_groups)
 
     meta_row1 = st.columns(7)
     meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
@@ -5871,8 +5940,8 @@ def render_strategy_detail(strategy_id: int):
         meta_row1[4].markdown("**Origin:** Webhook Inbound")
         meta_row1[5].markdown(f"**Signals:** {len(strat.get('webhook_config', {}).get('backtest_signals', []))}")
     else:
-        meta_row1[4].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-        meta_row1[5].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
+        meta_row1[4].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger', _detail_trigger_defs)}")
+        meta_row1[5].markdown(f"**Exit:** {format_exit_triggers_display(strat, _detail_trigger_defs)}")
     meta_row1[6].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
 
     # Confluence conditions (TF + General)
@@ -6393,9 +6462,11 @@ def render_saved_kpis(strat: dict):
     kpi_cols[7].metric("Max R DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
 
     st.subheader("Strategy Configuration")
+    _kpi_groups = get_enabled_groups()
+    _kpi_trigger_defs = get_all_triggers(_kpi_groups)
     st.markdown(f"**Stop Loss:** {format_stop_display(strat)}")
     st.markdown(f"**Target:** {format_target_display(strat)}")
-    st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat)}")
+    st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat, _kpi_trigger_defs)}")
     created = strat.get('created_at', 'Unknown')
     st.markdown(f"**Created:** {created[:10] if len(created) >= 10 else created}")
 
@@ -6650,14 +6721,16 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 6: Configuration ---
     with tab_config:
+        _cfg_groups = get_enabled_groups()
+        _cfg_trigger_defs = get_all_triggers(_cfg_groups)
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Strategy Setup**")
             st.markdown(f"- Ticker: {strat['symbol']}")
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
-            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger', _cfg_trigger_defs)}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat, _cfg_trigger_defs)}")
         with col2:
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
@@ -7050,14 +7123,16 @@ def render_forward_test_view(strat: dict):
 
     # --- Tab 6: Configuration ---
     with tab_config:
+        _cfg_groups = get_enabled_groups()
+        _cfg_trigger_defs = get_all_triggers(_cfg_groups)
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Strategy Setup**")
             st.markdown(f"- Ticker: {strat['symbol']}")
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
-            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger', _cfg_trigger_defs)}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat, _cfg_trigger_defs)}")
         with col2:
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
