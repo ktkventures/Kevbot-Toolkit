@@ -3241,7 +3241,26 @@ def refresh_strategy_data(strategy_id: int) -> bool:
             match_result = match_alerts_to_trades(strat)
             new_execs = match_result.get('live_executions', [])
             strat['live_executions'] = new_execs
-            strat['discrepancies'] = match_result.get('discrepancies', [])
+
+            # Preserve detected_at for previously-known discrepancies so dismiss stays valid
+            _old_disc = strat.get('discrepancies', [])
+            _new_disc = match_result.get('discrepancies', [])
+            _old_detected = {}
+            for _od in _old_disc:
+                if _od.get('type') == 'missed_alert':
+                    _old_detected[('missed', _od.get('trade_index'))] = _od.get('detected_at')
+                elif _od.get('type') == 'phantom_alert':
+                    _old_detected[('phantom', _od.get('alert_id'))] = _od.get('detected_at')
+            for _nd in _new_disc:
+                if _nd.get('type') == 'missed_alert':
+                    _key = ('missed', _nd.get('trade_index'))
+                elif _nd.get('type') == 'phantom_alert':
+                    _key = ('phantom', _nd.get('alert_id'))
+                else:
+                    continue
+                if _key in _old_detected:
+                    _nd['detected_at'] = _old_detected[_key]
+            strat['discrepancies'] = _new_disc
 
             # Auto-generate trading P&L ledger entries for new exit executions
             if len(new_execs) > old_exec_count:
@@ -3424,6 +3443,8 @@ def main():
         st.session_state.confirm_delete_ledger_id = None
     if 'confirm_edit_id' not in st.session_state:
         st.session_state.confirm_edit_id = None
+    if 'confirm_reset_alerts_id' not in st.session_state:
+        st.session_state.confirm_reset_alerts_id = None
     if 'viewing_portfolio_id' not in st.session_state:
         st.session_state.viewing_portfolio_id = None
     if 'editing_portfolio_id' not in st.session_state:
@@ -5857,8 +5878,11 @@ def render_strategy_list():
                 # Monitor badge
                 if sid in _monitored_ids:
                     _caption_parts.append('<span style="color:#FF9800">Monitored</span>')
-                # Discrepancy badge
+                # Discrepancy badge (only show un-dismissed discrepancies)
                 _discrepancies = strat.get('discrepancies', [])
+                _dismissed_at = strat.get('discrepancies_dismissed_at', '')
+                if _dismissed_at:
+                    _discrepancies = [d for d in _discrepancies if d.get('detected_at', '') > _dismissed_at]
                 if _discrepancies:
                     _caption_parts.append(f'<span style="color:#f44336">\u26a0 {len(_discrepancies)}</span>')
                 st.markdown(f"<small>{' | '.join(_caption_parts)}</small>", unsafe_allow_html=True)
@@ -5905,6 +5929,7 @@ def render_strategy_list():
                         if not _card_at_new:
                             strat['live_executions'] = []
                             strat['discrepancies'] = []
+                            strat.pop('discrepancies_dismissed_at', None)
                         update_strategy(sid, strat)
                         st.rerun()
 
@@ -6033,7 +6058,7 @@ def render_strategy_detail(strategy_id: int):
         st.caption("No confluence conditions")
 
     # Action bar
-    action_cols = st.columns([0.8, 1, 1, 1, 1, 1.5, 1.7])
+    action_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1.5, 1.7])
     with action_cols[0]:
         if st.button("Refresh", key="detail_refresh", help="Re-fetch market data and recompute KPIs"):
             with st.spinner("Refreshing strategy data..."):
@@ -6061,6 +6086,12 @@ def render_strategy_detail(strategy_id: int):
             st.session_state.confirm_delete_id = strategy_id
             st.rerun()
     with action_cols[4]:
+        if strat.get('alert_tracking_enabled'):
+            if st.button("Reset Alerts", key="detail_reset_alerts", type="secondary",
+                         help="Clear all alert history, executions, and discrepancies for this strategy"):
+                st.session_state.confirm_reset_alerts_id = strategy_id
+                st.rerun()
+    with action_cols[5]:
         if strat.get('forward_testing') and strat.get('forward_test_start'):
             ft_start = datetime.fromisoformat(strat['forward_test_start'])
             ft_days = _days_since(ft_start)
@@ -6070,7 +6101,7 @@ def render_strategy_detail(strategy_id: int):
         else:
             status = "⚪ Backtest Only"
         st.markdown(f"**{status}**")
-    with action_cols[5]:
+    with action_cols[6]:
         _at_enabled = strat.get('alert_tracking_enabled', False)
         _at_new = st.toggle("Track Alerts", value=_at_enabled, key=f"alert_tracking_{strategy_id}")
         if _at_new != _at_enabled:
@@ -6078,6 +6109,7 @@ def render_strategy_detail(strategy_id: int):
             if not _at_new:
                 strat['live_executions'] = []
                 strat['discrepancies'] = []
+                strat.pop('discrepancies_dismissed_at', None)
             update_strategy(strategy_id, strat)
             # Auto-sync alert_config.json
             set_strategy_alert_config(strategy_id, {
@@ -6105,6 +6137,29 @@ def render_strategy_detail(strategy_id: int):
         with confirm_cols[1]:
             if st.button("Cancel", key="detail_cancel_del"):
                 st.session_state.confirm_delete_id = None
+                st.rerun()
+
+    # Inline reset alerts confirmation
+    if st.session_state.confirm_reset_alerts_id == strategy_id:
+        st.warning("This will clear all live executions, discrepancies, and alert history for this strategy. Alert tracking will remain enabled.")
+        rc = st.columns([1, 1, 6])
+        with rc[0]:
+            if st.button("Yes, Reset", key="detail_confirm_reset_alerts", type="primary"):
+                strat['live_executions'] = []
+                strat['discrepancies'] = []
+                strat.pop('discrepancies_dismissed_at', None)
+                update_strategy(strategy_id, strat)
+                from alerts import delete_alerts_for_strategy
+                delete_alerts_for_strategy(strategy_id)
+                # Clear analysis cache
+                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strategy_id}")]:
+                    st.session_state.pop(_k, None)
+                st.session_state.confirm_reset_alerts_id = None
+                st.toast("Alert tracking data reset.")
+                st.rerun()
+        with rc[1]:
+            if st.button("Cancel", key="detail_cancel_reset_alerts"):
+                st.session_state.confirm_reset_alerts_id = None
                 st.rerun()
 
     # Inline edit confirmation (forward-tested strategies)
@@ -7494,8 +7549,31 @@ def _compute_alert_analysis(strat: dict) -> dict:
 
 def render_alert_analysis_tab(strat: dict):
     """Render Alert Analysis tab: FT vs Live comparison, trade-by-trade detail, discrepancies."""
+    strategy_id = strat['id']
+
+    # Date filter
+    _filter_options = ["All Time", "Last 7 Days", "Last 14 Days", "Last 30 Days"]
+    _filter_col1, _filter_col2 = st.columns([1, 3])
+    with _filter_col1:
+        _selected_filter = st.selectbox(
+            "Time Range", _filter_options,
+            key=f"aa_filter_{strategy_id}",
+            label_visibility="collapsed",
+        )
+
+    _filter_cutoff = None
+    if _selected_filter != "All Time":
+        _days_map = {"Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30}
+        _cutoff_dt = datetime.now(timezone.utc) - timedelta(days=_days_map[_selected_filter])
+        _filter_cutoff = _cutoff_dt.isoformat()
+
+    # Load and filter data
     live_execs = strat.get('live_executions', [])
     discrepancies = strat.get('discrepancies', [])
+
+    if _filter_cutoff:
+        live_execs = [e for e in live_execs if e.get('alert_timestamp', '') >= _filter_cutoff]
+        discrepancies = [d for d in discrepancies if d.get('detected_at', '') >= _filter_cutoff]
 
     if not live_execs and not discrepancies:
         st.info(
@@ -7531,14 +7609,23 @@ def render_alert_analysis_tab(strat: dict):
                     "Status": "No matching trade",
                 })
             st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+        if st.button("Dismiss Discrepancies", key=f"dismiss_disc_early_{strat['id']}",
+                     help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+            strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+            update_strategy(strat['id'], strat)
+            st.toast("Discrepancies dismissed.")
+            st.rerun()
         st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
         return
 
-    # Use cached analysis data (recomputed only after refresh)
-    _aa_cache_key = f"alert_analysis_{strat['id']}"
+    # Use cached analysis data (recomputed only after refresh or filter change)
+    _aa_cache_key = f"alert_analysis_{strategy_id}_{_selected_filter}"
     _aa_refreshed = strat.get('data_refreshed_at', '')
     if _aa_cache_key not in st.session_state or st.session_state.get(f"{_aa_cache_key}_ts") != _aa_refreshed:
-        st.session_state[_aa_cache_key] = _compute_alert_analysis(strat)
+        _filtered_strat = dict(strat)
+        _filtered_strat['live_executions'] = live_execs
+        _filtered_strat['discrepancies'] = discrepancies
+        st.session_state[_aa_cache_key] = _compute_alert_analysis(_filtered_strat)
         st.session_state[f"{_aa_cache_key}_ts"] = _aa_refreshed
 
     aa = st.session_state[_aa_cache_key]
@@ -7696,6 +7783,15 @@ def render_alert_analysis_tab(strat: dict):
                         "Status": "No matching trade",
                     })
                 st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+
+            if st.button("Dismiss Discrepancies", key=f"dismiss_disc_{strat['id']}",
+                         help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+                strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+                update_strategy(strat['id'], strat)
+                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                    st.session_state.pop(_k, None)
+                st.toast("Discrepancies dismissed.")
+                st.rerun()
 
 
 def render_strategy_alerts_tab(strat: dict):

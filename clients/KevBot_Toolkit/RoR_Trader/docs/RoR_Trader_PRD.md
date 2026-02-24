@@ -1610,6 +1610,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] Alert analysis caching — heavy computation extracted into `_compute_alert_analysis()` with session state cache keyed by `data_refreshed_at` timestamp, eliminating recomputation on tab switches
 - [x] Alert matching performance — pre-parsed timestamps split by entry/exit type before nested loops, sorted for efficient matching (eliminated O(n²) datetime parsing)
 - [x] Discrepancy detection — missed alerts (FT trades without matching alerts) and phantom alerts (alerts without matching FT trades) surfaced with full context
+- [x] Discrepancy management — Reset Alert Tracking, Dismiss Discrepancies, and Date Filter on Alert Analysis tab (see Phase 25)
 
 **21D: Webhook Payload Reliability**
 - [x] Fix empty `{{quantity}}` on exit webhooks — exit signal path now resolves quantity from position state
@@ -1764,6 +1765,14 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] All price chart timestamps (~10 conversion points) route through `_to_chart_unix()` — candlestick data, trade entry/exit markers, alert-price markers, trigger overlays, condition markers, secondary panes (oscillator, MACD, RVOL)
 - [x] All `datetime.now()` calls standardized to `datetime.now(timezone.utc)` across app.py, alerts.py, and realtime_engine.py — ensures stored timestamps are consistently UTC
 - [x] Zero changes to trade generation, signal detection, or any calculation logic — timezone conversion is purely a display-layer concern
+
+**Alert Data Management (DONE):**
+- [x] "Reset Alert Tracking" button on strategy detail action bar — clears `live_executions`, `discrepancies`, and all alerts from `alerts.json` for that strategy; keeps `alert_tracking_enabled` on; confirmation dialog before destructive action
+- [x] `delete_alerts_for_strategy()` function in alerts.py — removes all alerts for a given strategy_id
+- [x] "Dismiss Discrepancies" button — stores `discrepancies_dismissed_at` timestamp on strategy; badge only counts discrepancies with `detected_at > dismissed_at`; button available in both discrepancies-only view and full analysis expander
+- [x] `detected_at` preservation on refresh — `match_alerts_to_trades()` always sets `detected_at = now`, so `refresh_strategy_data()` now merges `detected_at` from previously-known discrepancies (keyed by missed/trade_index or phantom/alert_id) to prevent dismissed discrepancies from reappearing as "new"
+- [x] Date filter on Alert Analysis tab — selectbox with "All Time", "Last 7 Days", "Last 14 Days", "Last 30 Days"; filters `live_executions` (by `alert_timestamp`) and `discrepancies` (by `detected_at`) before analysis; cache key includes filter selection; scoped to Analysis tab only
+- [x] Dismissed state automatically cleared when alert tracking toggled off (both card and detail page) or when Reset is used
 
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button

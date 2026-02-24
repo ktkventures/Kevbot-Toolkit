@@ -472,6 +472,13 @@ def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
     return filtered[:limit]
 
 
+def delete_alerts_for_strategy(strategy_id: int):
+    """Remove all alerts for a strategy from alerts.json."""
+    alerts = load_alerts(limit=10000)
+    filtered = [a for a in alerts if a.get('strategy_id') != strategy_id]
+    _save_all_alerts(filtered)
+
+
 def get_alerts_for_portfolio(portfolio_id: int, limit: int = 50) -> list:
     """Get alerts related to a specific portfolio."""
     alerts = load_alerts(limit=10000)
