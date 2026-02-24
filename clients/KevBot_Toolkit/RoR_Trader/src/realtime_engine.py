@@ -378,6 +378,7 @@ class SymbolHub:
         self._ib_cooldown = AlertCooldown()               # separate cooldown for intra-bar
         self._position_state: Dict[int, bool] = {}       # strategy_id → True if in position
         self._position_entry: Dict[int, dict] = {}      # strategy_id → entry details when in position
+        self._first_bar_closed = False                   # True after first real bar close (not warmup)
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
 
@@ -457,7 +458,7 @@ class SymbolHub:
                     self._position_entry[strat_id] = {
                         'entry_price': float(last_trade.get('entry_price', 0)),
                         'stop_price': float(last_trade['stop_price']) if pd.notna(last_trade.get('stop_price')) else None,
-                        'entry_bar_count': len(builder.history),
+                        'entry_bar_count': builder._bar_count,
                         'direction': strat.get('direction', 'LONG'),
                     }
                 logger.info("Position state for %s: %s",
@@ -521,6 +522,11 @@ class SymbolHub:
 
     def _check_intrabar_triggers(self, price: float, timestamp: datetime):
         """Evaluate intra-bar triggers against cached levels on every tick."""
+        # Skip until the first real bar close — warmup-seeded levels have a stale
+        # prev_side that causes false crossings on the first tick.
+        if not self._first_bar_closed:
+            return
+
         from alerts import save_alert, enrich_signal_with_portfolio_context, load_alert_config
         from triggers import calculate_stop_price
 
@@ -617,7 +623,7 @@ class SymbolHub:
                         self._position_entry[strat_id] = {
                             'entry_price': price,
                             'stop_price': float(stop_price) if stop_price is not None else None,
-                            'entry_bar_count': len(entry_builder.history) if entry_builder else 0,
+                            'entry_bar_count': entry_builder._bar_count if entry_builder else 0,
                             'direction': strat.get('direction', 'LONG'),
                         }
 
@@ -678,6 +684,11 @@ class SymbolHub:
         df = builder.history
         if len(df) < 10:
             return  # Not enough data for reliable signals
+
+        # Mark warmup complete — intra-bar triggers are now safe to fire
+        if not self._first_bar_closed:
+            self._first_bar_closed = True
+            logger.info("First real bar closed for %s — intra-bar triggers enabled", self.symbol)
 
         config = load_alert_config()
 
@@ -809,7 +820,7 @@ class SymbolHub:
                         self._position_entry[strat_id] = {
                             'entry_price': sig.get('price'),
                             'stop_price': sig.get('stop_price'),
-                            'entry_bar_count': len(builder.history),
+                            'entry_bar_count': builder._bar_count,
                             'direction': strat.get('direction', 'LONG'),
                         }
                     elif sig_type == 'exit_signal':
@@ -877,7 +888,7 @@ class SymbolHub:
         # Check bar-count exit
         bar_count_exit = strat.get('bar_count_exit')
         if bar_count_exit:
-            bars_held = len(builder.history) - entry.get('entry_bar_count', len(builder.history))
+            bars_held = builder._bar_count - entry.get('entry_bar_count', builder._bar_count)
             if bars_held >= int(bar_count_exit):
                 logger.info("Managed exit: bar count (%d >= %d) for %s (%s)",
                             bars_held, int(bar_count_exit), strat.get('name'), self.symbol)

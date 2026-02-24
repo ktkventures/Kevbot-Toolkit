@@ -7402,6 +7402,12 @@ def _compute_alert_analysis(strat: dict) -> dict:
     timing_rows = []
     barclose_time_deltas = []   # time deltas for bar-close only
     intrabar_time_deltas = []   # time deltas for intra-bar only
+    # Bar period in seconds — trade timestamps use bar START, so bar-close
+    # triggers actually fire at bar START + period.  Offset the theoretical
+    # time by the bar duration so the delta reflects real latency from the
+    # bar close, not from the bar start.
+    from realtime_engine import TIMEFRAME_SECONDS as _TFS
+    _bar_period_s = _TFS.get(strat.get('timeframe', '1Min'), 60)
     for ex in live_execs:
         tidx = ex.get('matched_trade_index')
         trade = stored[tidx] if tidx is not None and tidx < len(stored) else {}
@@ -7417,10 +7423,14 @@ def _compute_alert_analysis(strat: dict) -> dict:
             if theo_time_raw and alert_time_raw:
                 theo_dt = _to_utc(theo_time_raw)
                 alert_dt = _to_utc(alert_time_raw)
-                time_delta_s = (alert_dt - theo_dt).total_seconds()
+                raw_delta = (alert_dt - theo_dt).total_seconds()
                 if is_intrabar:
+                    time_delta_s = raw_delta
                     intrabar_time_deltas.append(time_delta_s)
                 else:
+                    # Offset by bar period: trade timestamp = bar START,
+                    # alert fires at bar CLOSE + tick latency
+                    time_delta_s = raw_delta - _bar_period_s
                     barclose_time_deltas.append(time_delta_s)
         except (ValueError, TypeError):
             pass

@@ -181,6 +181,50 @@ This avoids code duplication and ensures both views stay in sync. The `key_prefi
 
 ---
 
+## Alert Pipeline Reliability Fixes — COMPLETE
+
+Discovered and fixed during live alert testing between Sub-Phase A and Sub-Phase B.
+
+### Fix 1: Spurious Alerts on Monitoring Startup — COMPLETE
+
+**Problem**: Alerts fired within the first few minutes of starting monitoring that didn't correspond to any trade in the forward test history. Intra-bar triggers (VWAP cross, EMA cross) would fire immediately on the first live tick.
+
+**Root cause**: `TriggerLevelCache.update_from_indicators()` seeded `prev_side` from the last warmup bar's close price (potentially hours old). The first live tick at a different price was detected as a false "crossing" — a gap between stale warmup data and the current market price, not a real signal.
+
+**Fix**: Added `_first_bar_closed` flag to `SymbolHub.__init__()`. `_check_intrabar_triggers()` returns immediately if the flag is `False`. The flag is set to `True` on the first real `_on_bar_close()` call (~60 seconds max suppression). This ensures intra-bar triggers only fire after the trigger cache has been properly initialized from a real completed bar.
+
+**Files**: `realtime_engine.py` (`SymbolHub.__init__`, `_check_intrabar_triggers`, `_on_bar_close`)
+
+---
+
+### Fix 2: Bar-Count Managed Exits Never Firing — COMPLETE
+
+**Problem**: Strategies with bar-count-based exits (e.g., "exit after N bars") never triggered their managed exit because `bars_held` was always computed as ~0.
+
+**Root cause**: `entry_bar_count` was set using `len(builder.history)`, which is capped at `MAX_HISTORY = 500` bars. Once history reached 500, both entry and current bar counts hovered near 500, so `bars_held = current - entry ≈ 0`. Positions got stuck open indefinitely.
+
+**Fix**: Changed all 4 locations from `len(builder.history)` to `builder._bar_count` (a monotonically increasing counter that is never capped):
+1. `_init_position_state()` — warmup entry tracking
+2. `_check_intrabar_triggers()` — intra-bar entry tracking
+3. `_on_bar_close()` — bar-close entry tracking
+4. `_check_managed_exits()` — bar-count exit comparison
+
+**Files**: `realtime_engine.py` (4 locations)
+
+---
+
+### Fix 3: Trigger Timing Delta Accuracy — COMPLETE
+
+**Problem**: The trigger timing analysis on the Alerts tab showed bar-close alerts with ~60-second deltas, making it appear alerts were firing a full minute late. In reality, latency was ~2 seconds.
+
+**Root cause**: Trade timestamps use the bar period START time (e.g., 13:44:00 for the 13:44-13:45 bar), but bar-close alerts fire at the bar CLOSE (~13:45:01). The raw delta of ~61 seconds was misleading — 59 seconds is the bar period, and ~2 seconds is actual latency.
+
+**Fix**: For bar-close triggers, subtract `_bar_period_s` (looked up from `TIMEFRAME_SECONDS` based on the strategy's timeframe) from the raw delta. Intra-bar trigger deltas are unaffected since they fire at the actual crossing time.
+
+**Files**: `app.py` (trigger timing analysis section)
+
+---
+
 ## Sub-Phase B: Balance-Aware Quantity Sizing
 
 *To be reviewed and approved before implementation. Touches the webhook pipeline.*
@@ -315,7 +359,12 @@ Sub-Phase A: Risk Analytics — COMPLETE
   Shared helper: _render_risk_analytics() ✓
   Recommendations performance fix ✓
 
-Sub-Phase B: Balance-Aware Sizing (review after alert pipeline validation)
+Alert Pipeline Reliability Fixes — COMPLETE
+  Fix 1: Spurious startup alerts (_first_bar_closed gate) ✓
+  Fix 2: Bar-count managed exits (builder._bar_count) ✓
+  Fix 3: Trigger timing delta accuracy (bar period offset) ✓
+
+Sub-Phase B: Balance-Aware Sizing
   B1: Available Balance from Ledger ← uses existing account system
   B3: Auto-Adjust Setting ← portfolio schema change
   B2: Quantity Cap ← modifies webhook pipeline (careful)
@@ -328,7 +377,7 @@ Sub-Phase C: Compliance Actions (review after B is complete)
   C4: Close-All Template ← depends on C2
 ```
 
-**Recommended next**: Validate alert pipeline → B1 → B3 → B2 → B4 → (review) → C1 → C2 → C3 → C4
+**Recommended next**: B1 → B3 → B2 → B4 → (review) → C1 → C2 → C3 → C4
 
 ---
 
