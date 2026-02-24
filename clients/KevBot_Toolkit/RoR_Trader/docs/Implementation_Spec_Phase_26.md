@@ -29,13 +29,13 @@ All changes are additive — existing portfolio functionality (equity curves, dr
 
 ---
 
-## Sub-Phase A: Enhanced Risk Analytics
+## Sub-Phase A: Enhanced Risk Analytics — COMPLETE
 
 **Goal**: Charts and simulations that answer "given my portfolio's historical performance, what's the probability of hitting my max loss / daily pause threshold?"
 
-**This is the initial implementation target.** Sub-phases B and C are documented below for planning but will be reviewed and approved separately before implementation.
+**Status**: All items complete and deployed. All features shared between Performance tab and Portfolio Builder via `_render_risk_analytics()` helper.
 
-### A1: Daily Drawdown Chart
+### A1: Daily Drawdown Chart — COMPLETE
 
 The existing drawdown chart (app.py line 9116) shows **cumulative peak-to-trough drawdown %** — addresses `max_total_drawdown_pct`. We need a complementary chart for **daily P&L** to address `max_daily_loss_pct` and `daily_pause_pct`.
 
@@ -73,7 +73,7 @@ passed = worst_day_pct <= rule_value
 
 ---
 
-### A2: Historical Worst-Case Analysis
+### A2: Historical Worst-Case Analysis — COMPLETE
 
 **What to build:**
 - Expandable section on Performance tab: "Worst-Case Analysis"
@@ -91,7 +91,7 @@ passed = worst_day_pct <= rule_value
 
 ---
 
-### A3: Monte Carlo Simulation
+### A3: Monte Carlo Simulation — COMPLETE
 
 **What to build:**
 - Expandable section on Performance tab: "Risk Simulation"
@@ -126,7 +126,7 @@ passed = worst_day_pct <= rule_value
 
 ---
 
-### A4: Profit Target Progress
+### A4: Profit Target Progress — COMPLETE
 
 **What to build:**
 - Progress indicator on the Prop Firm Check tab
@@ -138,6 +138,46 @@ passed = worst_day_pct <= rule_value
 **Data source**: `kpis['total_pnl']` and `starting_balance`.
 
 **Files**: `app.py` (Prop Firm Check tab enhancement)
+
+---
+
+### A5: Capital Utilization & Buying Power — COMPLETE
+
+**What was built:**
+- `compute_capital_utilization()` in `portfolios.py`: computes a timeline of capital deployed in open positions and available buying power over the portfolio's trade history
+- For each trade: `quantity = floor(scaled_risk / risk)`, `capital = quantity × entry_price`
+- Events at entry (capital locked) and exit (capital returned + P&L realized)
+- Area chart in `_render_risk_analytics()` showing available buying power over time with starting balance and zero reference lines
+- Orange dotted line showing capital deployed in open positions
+- Metrics: Peak Capital Deployed, Min Buying Power, Max Concurrent Positions
+- Warning banner when buying power goes negative (insufficient capital)
+- Shared between Performance tab and Portfolio Builder
+
+**Files**: `portfolios.py` (`compute_capital_utilization()`), `app.py` (chart in `_render_risk_analytics()`)
+
+---
+
+### Additional: Strategy Recommendations Performance Fix — COMPLETE
+
+**Problem**: "Analyze Recommendations" in Portfolio Builder loaded indefinitely because each candidate strategy triggered `get_strategy_trades()` → `prepare_forward_test_data()` with API calls.
+
+**Fix**:
+- `_get_fast_strategy_trades(strat)`: uses `stored_trades` from strategy objects (instant, no API calls) via existing `_trades_df_from_stored()` pattern
+- Falls back to session cache, returns `None` if neither available
+- Two-pass approach before running analysis: pre-cache from stored_trades, then fetch remaining with visible progress bar
+- Recommendations now complete near-instantly when strategies have been recently updated
+
+**Files**: `app.py` (`_get_fast_strategy_trades()`, updated recommendations flow)
+
+---
+
+### Shared Helper: `_render_risk_analytics()` — COMPLETE
+
+All Sub-Phase A features (A1, A2, A3, A5) are rendered through a shared helper function `_render_risk_analytics(port, data, key_prefix)` that is called from both:
+- `render_portfolio_performance()` (Performance tab) with `key_prefix="perf"`
+- `render_portfolio_builder()` (Builder page) with `key_prefix="builder"`
+
+This avoids code duplication and ensures both views stay in sync. The `key_prefix` parameter prevents Streamlit widget key collisions.
 
 ---
 
@@ -266,13 +306,16 @@ Deferred to a later phase. Documented for planning.
 ## Implementation Priority & Dependencies
 
 ```
-Sub-Phase A: Risk Analytics (no dependencies, purely additive, IMPLEMENT FIRST)
-  A1: Daily Drawdown Chart ← builds on existing drawdown chart
-  A2: Worst-Case Analysis ← uses existing daily_pnl data
-  A3: Monte Carlo Simulation ← uses existing trade data + new portfolios.py function
-  A4: Profit Target Progress ← uses existing KPIs
+Sub-Phase A: Risk Analytics — COMPLETE
+  A1: Daily Drawdown Chart ✓
+  A2: Worst-Case Analysis ✓
+  A3: Monte Carlo Simulation ✓
+  A4: Profit Target Progress ✓
+  A5: Capital Utilization & Buying Power ✓
+  Shared helper: _render_risk_analytics() ✓
+  Recommendations performance fix ✓
 
-Sub-Phase B: Balance-Aware Sizing (review after A is complete)
+Sub-Phase B: Balance-Aware Sizing (review after alert pipeline validation)
   B1: Available Balance from Ledger ← uses existing account system
   B3: Auto-Adjust Setting ← portfolio schema change
   B2: Quantity Cap ← modifies webhook pipeline (careful)
@@ -285,7 +328,7 @@ Sub-Phase C: Compliance Actions (review after B is complete)
   C4: Close-All Template ← depends on C2
 ```
 
-**Recommended order**: A1 → A2 → A4 → A3 → (review) → B1 → B3 → B2 → B4 → (review) → C1 → C2 → C3 → C4
+**Recommended next**: Validate alert pipeline → B1 → B3 → B2 → B4 → (review) → C1 → C2 → C3 → C4
 
 ---
 
@@ -293,7 +336,7 @@ Sub-Phase C: Compliance Actions (review after B is complete)
 
 | Change | Risk | Mitigation |
 |--------|------|------------|
-| A1-A4 (charts/analytics) | Low | Read-only, no pipeline impact |
+| A1-A5 (charts/analytics) | Low | Read-only, no pipeline impact — DEPLOYED |
 | B2 (quantity cap) | Medium | Only active when `auto_adjust_sizing` explicitly enabled by user |
 | B4 (skip webhook) | Medium | Alert still saved with `skipped_reason`, visible in UI for audit |
 | C1 (suppress entries) | High | Only when rule actually breached; exits always fire; manual resume available |

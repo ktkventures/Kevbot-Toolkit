@@ -83,6 +83,10 @@ from portfolios import (
     delete_requirement_set,
     duplicate_requirement_set,
     compute_strategy_recommendations,
+    get_daily_limit_thresholds,
+    compute_worst_case_analysis,
+    compute_capital_utilization,
+    run_monte_carlo,
     get_account,
     compute_account_balance,
     add_ledger_entry,
@@ -8667,6 +8671,19 @@ def get_cached_strategy_trades(strat):
     return st.session_state.strategy_trades_cache[sid]
 
 
+def _get_fast_strategy_trades(strat):
+    """Get strategy trades from stored_trades (instant) or fall back to cached fetch."""
+    stored = strat.get('stored_trades')
+    if stored:
+        return _trades_df_from_stored(stored)
+    # Already in session cache (previously computed this session)
+    sid = strat['id']
+    if sid in st.session_state.strategy_trades_cache:
+        return st.session_state.strategy_trades_cache[sid]
+    # Need full computation — caller handles progress bar
+    return None
+
+
 def get_cached_forward_test_data(strat):
     """Cache forward test data in session state (compute once per session)."""
     cache_key = f"ft_data_{strat['id']}"
@@ -8752,6 +8769,7 @@ def render_portfolio_builder():
         'starting_balance': starting_balance,
         'compound_rate': compound_rate,
         'strategies': builder_strategies,
+        'requirement_set_id': req_set_id if req_set_id else None,
     }
 
     data = None
@@ -8856,6 +8874,8 @@ def render_portfolio_builder():
                     'risk_per_trade': add_risk,
                 })
                 st.session_state.builder_recommendations = None
+                for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                    st.session_state.pop(_k, None)
                 st.rerun()
         elif len(modern_strategies) == 0:
             st.caption("No strategies available. Create strategies first.")
@@ -8886,12 +8906,31 @@ def render_portfolio_builder():
                 if rc3.button("x", key=f"builder_rm_{i}"):
                     st.session_state.portfolio_builder_strategies.pop(i)
                     st.session_state.builder_recommendations = None
+                    for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                        st.session_state.pop(_k, None)
                     st.rerun()
 
         # --- Recommendations ---
         if builder_strategies and available:
             with st.expander("Strategy Recommendations"):
                 if st.button("Analyze Recommendations", key="builder_rec_btn"):
+                    # Pre-cache: use stored_trades where available, fetch the rest with progress
+                    needs_fetch = []
+                    for cand in available:
+                        result = _get_fast_strategy_trades(cand)
+                        if result is not None:
+                            st.session_state.strategy_trades_cache[cand['id']] = result
+                        else:
+                            needs_fetch.append(cand)
+
+                    if needs_fetch:
+                        progress = st.progress(0, text=f"Fetching data for {len(needs_fetch)} strategies...")
+                        for idx, cand in enumerate(needs_fetch):
+                            progress.progress((idx + 1) / len(needs_fetch),
+                                              text=f"Fetching {cand.get('name', '')} ({idx+1}/{len(needs_fetch)})...")
+                            get_cached_strategy_trades(cand)
+                        progress.empty()
+
                     with st.spinner("Evaluating candidates..."):
                         recs = compute_strategy_recommendations(
                             preview_portfolio, data if data else {'combined_trades': pd.DataFrame(), 'daily_pnl': pd.DataFrame(), 'strategy_daily_pnl': pd.DataFrame(), 'strategy_trades': {}, 'equity_curve': pd.Series(dtype=float)},
@@ -8914,9 +8953,15 @@ def render_portfolio_builder():
                                     'risk_per_trade': s.get('risk_per_trade', 100.0) if s else 100.0,
                                 })
                                 st.session_state.builder_recommendations = None
+                                for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                                    st.session_state.pop(_k, None)
                                 st.rerun()
                 elif recs is not None:
                     st.caption("No recommendations available.")
+
+    # --- Risk Analytics (full width, below charts + strategy management) ---
+    if data and kpis and len(data['combined_trades']) > 0:
+        _render_risk_analytics(preview_portfolio, data, key_prefix="builder")
 
     st.divider()
 
@@ -8987,6 +9032,9 @@ def render_portfolio_detail(portfolio_id: int):
                     st.session_state.strategy_trades_cache.pop(_sid, None)
                     st.session_state.pop(f"bt_trades_{_sid}", None)
                     st.session_state.pop(f"ft_data_{_sid}", None)
+            # Clear Monte Carlo caches for this portfolio
+            for _k in [k for k in list(st.session_state) if k.startswith(f"mc_result_{portfolio_id}_")]:
+                st.session_state.pop(_k, None)
             st.toast("Portfolio data refreshed.")
             st.rerun()
     with action_cols[1]:
@@ -9061,6 +9109,256 @@ def render_portfolio_detail(portfolio_id: int):
 
     with tab_deploy:
         render_portfolio_deploy(port)
+
+
+def _render_risk_analytics(port, data, key_prefix="perf"):
+    """Render capital utilization, Daily P&L vs Limits, Worst-Case Analysis,
+    and Monte Carlo sections.
+
+    Shared by the Performance tab and the portfolio builder.
+    key_prefix avoids Streamlit widget key collisions between callers.
+    """
+    daily = data['daily_pnl']
+    starting_balance = port.get('starting_balance', 10000.0)
+
+    # --- Capital Utilization ---
+    st.subheader("Capital Utilization")
+    _cu = compute_capital_utilization(data['combined_trades'], starting_balance)
+    if _cu is not None:
+        _tl = _cu['timeline']
+
+        _fig_cu = go.Figure()
+
+        # Available buying power (area)
+        _fig_cu.add_trace(go.Scatter(
+            x=_tl['time'], y=_tl['available_buying_power'],
+            mode='lines', name='Available Buying Power',
+            line=dict(color='#2196F3', width=2),
+            fill='tozeroy', fillcolor='rgba(33, 150, 243, 0.15)',
+        ))
+
+        # Capital deployed (secondary line)
+        _fig_cu.add_trace(go.Scatter(
+            x=_tl['time'], y=_tl['capital_deployed'],
+            mode='lines', name='Capital Deployed',
+            line=dict(color='#FF9800', width=1.5, dash='dot'),
+        ))
+
+        # Reference lines
+        _fig_cu.add_hline(
+            y=starting_balance, line_dash="dash", line_color="#4CAF50",
+            annotation_text="Starting Balance", annotation_font_color="#4CAF50",
+        )
+        _fig_cu.add_hline(
+            y=0, line_dash="dash", line_color="#f44336", opacity=0.6,
+            annotation_text="Insufficient Capital", annotation_font_color="#f44336",
+        )
+
+        _fig_cu.update_layout(
+            height=350, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="", yaxis_title="Dollars ($)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(_fig_cu, use_container_width=True, key=f"{key_prefix}_capital_util")
+
+        _cu_cols = st.columns(3)
+        _cu_cols[0].metric(
+            "Peak Capital Deployed",
+            f"${_cu['peak_capital_deployed']:,.0f}",
+            delta=f"{_cu['peak_capital_pct']:.1f}% of balance",
+        )
+        _cu_cols[1].metric(
+            "Min Buying Power",
+            f"${_cu['min_buying_power']:,.0f}",
+            delta=f"{_cu['min_buying_power_pct']:.1f}% of balance",
+            delta_color="inverse",
+        )
+        _cu_cols[2].metric(
+            "Max Concurrent Positions",
+            _cu['max_concurrent_positions'],
+        )
+
+        if _cu['insufficient_capital_events'] > 0:
+            st.warning(
+                f"{_cu['insufficient_capital_events']} instance(s) where buying power "
+                "was insufficient to support all open positions."
+            )
+    else:
+        st.info("Capital utilization requires entry price and stop data.")
+
+    # --- Daily P&L vs Limits chart ---
+    st.subheader("Daily P&L vs Limits")
+    if len(daily) > 0:
+        _dpct = daily.copy()
+        _dpct['pnl_pct'] = _dpct['daily_pnl'] / starting_balance * 100
+
+        _thresholds = get_daily_limit_thresholds(port)
+        _max_daily_loss = _thresholds.get('max_daily_loss_pct')
+        _daily_pause = _thresholds.get('daily_pause_pct')
+
+        _bar_colors = []
+        for _, _row in _dpct.iterrows():
+            _pct = _row['pnl_pct']
+            if _max_daily_loss is not None and _pct < 0 and abs(_pct) >= _max_daily_loss:
+                _bar_colors.append('#f44336')
+            elif _daily_pause is not None and _pct < 0 and abs(_pct) >= _daily_pause:
+                _bar_colors.append('#FF9800')
+            else:
+                _bar_colors.append('#2196F3')
+
+        _fig_dl = go.Figure()
+        _fig_dl.add_trace(go.Bar(
+            x=_dpct['date'], y=_dpct['pnl_pct'],
+            marker_color=_bar_colors, name='Daily P&L %',
+        ))
+        if _max_daily_loss is not None:
+            _fig_dl.add_hline(
+                y=-_max_daily_loss, line_dash="dash", line_color="#f44336",
+                annotation_text="Max Daily Loss", annotation_font_color="#f44336",
+            )
+        if _daily_pause is not None:
+            _fig_dl.add_hline(
+                y=-_daily_pause, line_dash="dash", line_color="#FF9800",
+                annotation_text="Daily Pause", annotation_font_color="#FF9800",
+            )
+        _fig_dl.add_hline(y=0, line_color="gray", opacity=0.3)
+        _fig_dl.update_layout(
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="", yaxis_title="Daily P&L (% of Starting Balance)",
+            showlegend=False,
+        )
+        st.plotly_chart(_fig_dl, use_container_width=True, key=f"{key_prefix}_daily_limits")
+
+        _cap_parts = []
+        if _max_daily_loss is not None:
+            _bc = ((_dpct['pnl_pct'] < 0) & (_dpct['pnl_pct'].abs() >= _max_daily_loss)).sum()
+            _cap_parts.append(f"{_bc} day(s) breached max daily loss ({_max_daily_loss}%)")
+        if _daily_pause is not None:
+            _pc = ((_dpct['pnl_pct'] < 0) & (_dpct['pnl_pct'].abs() >= _daily_pause)).sum()
+            _cap_parts.append(f"{_pc} day(s) breached daily pause ({_daily_pause}%)")
+        if _cap_parts:
+            st.caption(" | ".join(_cap_parts))
+        elif not _thresholds:
+            st.caption("No daily loss limits configured in the portfolio's requirement set.")
+
+    # --- Worst-Case Analysis ---
+    with st.expander("Worst-Case Analysis", expanded=False):
+        _wc_thresholds = get_daily_limit_thresholds(port)
+        _wc = compute_worst_case_analysis(
+            data['daily_pnl'], starting_balance, _wc_thresholds,
+        )
+        if _wc['worst_day_date'] is not None:
+            _wc1 = st.columns(3)
+            _wc1[0].metric("Worst Single Day", f"${_wc['worst_day_dollars']:+,.0f}",
+                           delta=f"{_wc['worst_day_pct']:+.1f}%", delta_color="inverse")
+            _wc1[1].metric("Worst Losing Streak", f"{_wc['worst_streak_days']} days",
+                           delta=f"${_wc['worst_streak_dollars']:+,.0f}", delta_color="inverse")
+            _wc1[2].metric("Worst 5-Day Rolling DD", f"${_wc['worst_5day_rolling_dd']:+,.0f}")
+
+            _wc2 = st.columns(2)
+            if _wc_thresholds.get('daily_pause_pct') is not None:
+                _wc2[0].metric("Days Breaching Daily Pause", _wc['days_breach_daily_pause'])
+            if _wc_thresholds.get('max_daily_loss_pct') is not None:
+                _wc2[1].metric("Days Breaching Max Daily Loss", _wc['days_breach_max_daily_loss'])
+
+            if _wc['top_5_worst_days']:
+                st.markdown("**Top 5 Worst Days**")
+                _wdf = pd.DataFrame(_wc['top_5_worst_days'])
+                _wdf.columns = ['Date', 'P&L ($)', 'P&L (%)', 'Cumulative DD %', 'Breach Status']
+                _wdf['P&L ($)'] = _wdf['P&L ($)'].apply(lambda x: f"${x:+,.0f}")
+                _wdf['P&L (%)'] = _wdf['P&L (%)'].apply(lambda x: f"{x:+.2f}%")
+                _wdf['Cumulative DD %'] = _wdf['Cumulative DD %'].apply(lambda x: f"{x:.2f}%")
+                st.dataframe(_wdf, use_container_width=True, hide_index=True)
+        else:
+            st.info("No trading data available for worst-case analysis.")
+
+    # --- Monte Carlo Simulation ---
+    _port_key = port.get('id', 'builder')
+    with st.expander("Risk Simulation (Monte Carlo)", expanded=False):
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            _shuffle = st.selectbox(
+                "Shuffle Mode", options=['daily', 'weekly', 'individual'],
+                format_func=lambda x: {'daily': 'Daily Blocks (default)',
+                                        'weekly': 'Weekly Blocks',
+                                        'individual': 'Individual Trades'}[x],
+                key=f"mc_shuffle_{key_prefix}_{_port_key}",
+            )
+        with _mc2:
+            _nsims = st.slider(
+                "Number of Simulations",
+                min_value=500, max_value=5000, value=1000, step=500,
+                key=f"mc_nsims_{key_prefix}_{_port_key}",
+            )
+
+        _mc_ck = f"mc_result_{key_prefix}_{_port_key}_{_shuffle}_{_nsims}"
+
+        _run = st.button("Run Simulation", key=f"mc_run_{key_prefix}_{_port_key}")
+        if _run:
+            _mc_thresh = get_daily_limit_thresholds(port)
+            with st.spinner(f"Running {_nsims} simulations ({_shuffle} mode)..."):
+                _mcr = run_monte_carlo(
+                    data['combined_trades'], data['daily_pnl'],
+                    starting_balance, _mc_thresh,
+                    n_simulations=_nsims, shuffle_mode=_shuffle,
+                )
+            st.session_state[_mc_ck] = _mcr
+
+        _mcr = st.session_state.get(_mc_ck)
+        if _mcr is not None and len(_mcr.get('max_dd_values', [])) > 0:
+            _pc = st.columns(3)
+            _pc[0].metric("Bust Probability", f"{_mcr['bust_probability']:.1f}%")
+            _pc[1].metric("Daily Pause Probability", f"{_mcr['daily_pause_probability']:.1f}%")
+            _pc[2].metric("Max Daily Loss Probability", f"{_mcr['max_daily_loss_probability']:.1f}%")
+
+            _sc = st.columns(3)
+            _sc[0].metric("Median Max DD", f"{_mcr['median_max_dd']:.1f}%")
+            _sc[1].metric("95th Percentile Max DD", f"{_mcr['p95_max_dd']:.1f}%")
+            _sc[2].metric("Expected Worst Day", f"{_mcr['expected_worst_day']:.2f}%")
+
+            st.markdown("**Max Drawdown Distribution**")
+            _fdd = go.Figure()
+            _fdd.add_trace(go.Histogram(x=_mcr['max_dd_values'], nbinsx=50,
+                                         marker_color='#2196F3', name='Max DD %'))
+            _dd_lim = get_daily_limit_thresholds(port).get('max_total_drawdown_pct')
+            if _dd_lim is not None:
+                _fdd.add_vline(x=-_dd_lim, line_dash="dash", line_color="#f44336",
+                               annotation_text="Max DD Limit", annotation_font_color="#f44336")
+            _fdd.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0),
+                               xaxis_title="Max Drawdown %", yaxis_title="Frequency", showlegend=False)
+            st.plotly_chart(_fdd, use_container_width=True, key=f"{key_prefix}_mc_dd_{_port_key}")
+
+            _pctiles = _mcr['equity_percentiles']
+            _ns = len(_pctiles['50'])
+            if _ns > 0:
+                st.markdown("**Equity Curve Confidence Bands**")
+                _xa = list(range(_ns))
+                _feq = go.Figure()
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['95'].tolist(),
+                                           mode='lines', line=dict(width=0), showlegend=False))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['5'].tolist(),
+                                           mode='lines', line=dict(width=0),
+                                           fill='tonexty', fillcolor='rgba(33, 150, 243, 0.1)', name='5th-95th'))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['75'].tolist(),
+                                           mode='lines', line=dict(width=0), showlegend=False))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['25'].tolist(),
+                                           mode='lines', line=dict(width=0),
+                                           fill='tonexty', fillcolor='rgba(33, 150, 243, 0.25)', name='25th-75th'))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['50'].tolist(),
+                                           mode='lines', name='Median', line=dict(color='white', width=2)))
+                _feq.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                _xl = {'daily': 'Trading Days', 'weekly': 'Trading Days', 'individual': 'Trades'}
+                _feq.update_layout(
+                    height=350, margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title=_xl.get(_mcr['shuffle_mode'], 'Steps'),
+                    yaxis_title="Cumulative P&L ($)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                )
+                st.plotly_chart(_feq, use_container_width=True, key=f"{key_prefix}_mc_eq_{_port_key}")
+
+            st.caption(f"Based on {_mcr['n_simulations']} simulations, {_mcr['shuffle_mode']} shuffle mode.")
+        elif not _run:
+            st.info("Click 'Run Simulation' to generate Monte Carlo analysis.")
 
 
 def render_portfolio_performance(port, kpis, data, drawdown):
@@ -9148,6 +9446,9 @@ def render_portfolio_performance(port, kpis, data, drawdown):
         dd_cols[0].caption(f"Max DD: {kpis['max_drawdown_pct']:.1f}% (${kpis['max_drawdown_dollars']:,.0f})")
         dd_cols[1].caption(f"Profitable Days: {kpis['profitable_days_pct']:.0f}% ({kpis['profitable_days_count']}/{kpis['total_trading_days']})")
         dd_cols[2].caption(f"Avg Daily P&L: ${kpis['avg_daily_pnl']:+,.0f} (Std: ${kpis['daily_pnl_std']:,.0f})")
+
+    # Risk analytics (shared helper: Daily P&L vs Limits, Worst-Case, Monte Carlo)
+    _render_risk_analytics(port, data, key_prefix="perf")
 
     # Daily P&L distribution
     chart_left, chart_right = st.columns(2)
@@ -9272,6 +9573,43 @@ def render_portfolio_prop_firm(port, kpis, daily_pnl):
     else:
         failed = [r['name'] for r in result['rules'] if not r['passed']]
         st.error(f"NON-COMPLIANT — Failed: {', '.join(failed)}")
+
+    # Profit Target Progress
+    _profit_rule = None
+    for _rule in req_set.get('rules', []):
+        if _rule['type'] == 'min_profit_pct':
+            _profit_rule = _rule
+            break
+
+    if _profit_rule is not None:
+        _target_pct = _profit_rule['value']
+        _sb = port.get('starting_balance', 10000.0)
+        _current_pct = kpis['total_pnl'] / _sb * 100 if _sb > 0 else 0
+        _progress_fraction = max(0.0, min(_current_pct / _target_pct, 1.0))
+
+        st.subheader("Profit Target Progress")
+        st.progress(_progress_fraction)
+
+        _avg_daily = kpis.get('avg_daily_pnl', 0)
+        if _avg_daily > 0:
+            _remaining_pnl = (_target_pct / 100 * _sb) - kpis['total_pnl']
+            if _remaining_pnl > 0:
+                _est_days = int(np.ceil(_remaining_pnl / _avg_daily))
+                st.caption(
+                    f"{_current_pct:.1f}% of {_target_pct:.1f}% target "
+                    f"(estimated {_est_days} trading days remaining at current avg daily P&L)"
+                )
+            else:
+                st.caption(f"{_current_pct:.1f}% of {_target_pct:.1f}% target — TARGET REACHED")
+        elif _current_pct >= _target_pct:
+            st.caption(f"{_current_pct:.1f}% of {_target_pct:.1f}% target — TARGET REACHED")
+        else:
+            st.caption(
+                f"{_current_pct:.1f}% of {_target_pct:.1f}% target "
+                f"(cannot estimate days remaining — avg daily P&L is not positive)"
+            )
+
+        st.divider()
 
     # Margin of safety
     st.subheader("Margin of Safety")

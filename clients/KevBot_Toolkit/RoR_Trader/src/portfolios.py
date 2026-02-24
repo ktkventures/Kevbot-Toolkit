@@ -36,6 +36,8 @@ PROP_FIRM_RULES = {
             {"name": "Min Profitable Days", "type": "min_profitable_days", "value": 3,
              "threshold_pct": 0.5,
              "description": "At least 3 days with 0.5%+ gain"},
+            {"name": "Daily Pause", "type": "daily_pause_pct", "value": 1.5,
+             "description": "Pause trading if daily loss exceeds 1.5%"},
         ]
     },
     "ftmo": {
@@ -554,6 +556,20 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
         value_display = f"{days} days"
         margin = days - rule_value
 
+    elif rule_type == 'daily_pause_pct':
+        # Same calc as max_daily_loss_pct — semantic difference:
+        # daily_pause = soft limit (pause, resume next day)
+        # max_daily_loss = hard limit (potential disqualification)
+        if len(daily_pnl) > 0:
+            worst_day = daily_pnl['daily_pnl'].min()
+            worst_day_pct = abs(worst_day) / starting_balance * 100
+        else:
+            worst_day_pct = 0
+        passed = worst_day_pct <= rule_value
+        limit_display = f"-{rule_value}%"
+        value_display = f"-{worst_day_pct:.1f}%"
+        margin = rule_value - worst_day_pct
+
     else:
         return {'name': name, 'limit_display': '?', 'value_display': '?',
                 'passed': True, 'margin': 0}
@@ -589,6 +605,358 @@ def evaluate_requirement_set(
         'firm_name': firm_name,
         'rules': results,
         'overall_pass': overall_pass,
+    }
+
+
+def get_daily_limit_thresholds(portfolio: dict) -> dict:
+    """
+    Extract risk limit thresholds from the portfolio's requirement set.
+
+    Returns dict with optional keys:
+        - 'max_daily_loss_pct': float (hard limit)
+        - 'daily_pause_pct': float (soft limit)
+        - 'max_total_drawdown_pct': float
+    """
+    req_id = portfolio.get('requirement_set_id')
+    if not req_id:
+        return {}
+    req_set = get_requirement_set_by_id(req_id)
+    if not req_set:
+        return {}
+    thresholds = {}
+    for rule in req_set.get('rules', []):
+        if rule['type'] == 'max_daily_loss_pct':
+            thresholds['max_daily_loss_pct'] = rule['value']
+        elif rule['type'] == 'daily_pause_pct':
+            thresholds['daily_pause_pct'] = rule['value']
+        elif rule['type'] == 'max_total_drawdown_pct':
+            thresholds['max_total_drawdown_pct'] = rule['value']
+    return thresholds
+
+
+def compute_worst_case_analysis(
+    daily_pnl: pd.DataFrame,
+    starting_balance: float,
+    thresholds: dict,
+) -> dict:
+    """
+    Compute historical worst-case metrics from portfolio daily P&L data.
+
+    Returns dict with worst_day, streak, rolling DD, breach counts, and top 5 worst days.
+    """
+    if len(daily_pnl) == 0:
+        return {
+            'worst_day_dollars': 0, 'worst_day_pct': 0, 'worst_day_date': None,
+            'worst_streak_days': 0, 'worst_streak_dollars': 0,
+            'worst_5day_rolling_dd': 0,
+            'days_breach_daily_pause': 0, 'days_breach_max_daily_loss': 0,
+            'top_5_worst_days': [],
+        }
+
+    dp = daily_pnl.copy()
+    dp['pnl_pct'] = dp['daily_pnl'] / starting_balance * 100
+    dp['cumulative_pnl'] = dp['daily_pnl'].cumsum()
+    dp['balance'] = dp['cumulative_pnl'] + starting_balance
+    dp['peak'] = dp['balance'].cummax()
+    dp['dd_pct'] = (dp['balance'] - dp['peak']) / dp['peak'] * 100
+
+    # Worst single day
+    worst_idx = dp['daily_pnl'].idxmin()
+    worst_day_dollars = dp.loc[worst_idx, 'daily_pnl']
+    worst_day_pct = dp.loc[worst_idx, 'pnl_pct']
+    worst_day_date = dp.loc[worst_idx, 'date']
+
+    # Worst consecutive losing streak
+    is_loss = (dp['daily_pnl'] < 0).astype(int)
+    streak_id = (is_loss != is_loss.shift()).cumsum()
+    loss_groups = dp[is_loss == 1].groupby(streak_id[is_loss == 1])
+    if len(loss_groups) > 0:
+        streak_stats = loss_groups.agg(
+            days=('daily_pnl', 'count'),
+            total_loss=('daily_pnl', 'sum'),
+        )
+        worst_streak_row = streak_stats.loc[streak_stats['days'].idxmax()]
+        worst_streak_days = int(worst_streak_row['days'])
+        worst_streak_dollars = float(worst_streak_row['total_loss'])
+    else:
+        worst_streak_days = 0
+        worst_streak_dollars = 0.0
+
+    # Worst 5-day rolling drawdown
+    if len(dp) >= 5:
+        rolling_5d = dp['daily_pnl'].rolling(5).sum()
+        worst_5day_rolling_dd = float(rolling_5d.min())
+    else:
+        _total = dp['daily_pnl'].sum()
+        worst_5day_rolling_dd = float(_total) if _total < 0 else 0.0
+
+    # Threshold breach counts
+    max_daily_loss = thresholds.get('max_daily_loss_pct')
+    daily_pause = thresholds.get('daily_pause_pct')
+
+    days_breach_max = 0
+    if max_daily_loss is not None:
+        days_breach_max = int(((dp['pnl_pct'] < 0) & (dp['pnl_pct'].abs() >= max_daily_loss)).sum())
+
+    days_breach_pause = 0
+    if daily_pause is not None:
+        days_breach_pause = int(((dp['pnl_pct'] < 0) & (dp['pnl_pct'].abs() >= daily_pause)).sum())
+
+    # Top 5 worst days
+    worst_5 = dp.nsmallest(5, 'daily_pnl')
+    top_5 = []
+    for _, row in worst_5.iterrows():
+        breach = "None"
+        abs_pct = abs(row['pnl_pct'])
+        if max_daily_loss is not None and abs_pct >= max_daily_loss:
+            breach = "Max Daily Loss"
+        elif daily_pause is not None and abs_pct >= daily_pause:
+            breach = "Daily Pause"
+        top_5.append({
+            'date': row['date'],
+            'pnl_dollars': float(row['daily_pnl']),
+            'pnl_pct': float(row['pnl_pct']),
+            'cumulative_dd_pct': float(row['dd_pct']),
+            'breach_status': breach,
+        })
+
+    return {
+        'worst_day_dollars': float(worst_day_dollars),
+        'worst_day_pct': float(worst_day_pct),
+        'worst_day_date': worst_day_date,
+        'worst_streak_days': worst_streak_days,
+        'worst_streak_dollars': float(worst_streak_dollars),
+        'worst_5day_rolling_dd': float(worst_5day_rolling_dd),
+        'days_breach_daily_pause': days_breach_pause,
+        'days_breach_max_daily_loss': days_breach_max,
+        'top_5_worst_days': top_5,
+    }
+
+
+def compute_capital_utilization(
+    combined_trades: pd.DataFrame,
+    starting_balance: float,
+) -> dict | None:
+    """
+    Compute capital utilization timeline showing buying power over time.
+
+    For each trade, calculates position size (quantity * entry_price) and
+    tracks when capital is tied up in open positions vs available.
+
+    Returns dict with timeline DataFrame and summary metrics, or None if
+    the required columns (entry_price, risk) are not available.
+    """
+    required = {'entry_price', 'risk', 'scaled_risk', 'entry_time', 'exit_time', 'dollar_pnl'}
+    if len(combined_trades) == 0 or not required.issubset(combined_trades.columns):
+        return None
+
+    events = []
+    for _, trade in combined_trades.iterrows():
+        risk = trade['risk']
+        scaled = trade['scaled_risk']
+        entry_px = trade['entry_price']
+        if pd.isna(risk) or pd.isna(scaled) or pd.isna(entry_px) or risk <= 0 or scaled <= 0:
+            continue
+        quantity = int(scaled / risk)
+        if quantity <= 0:
+            continue
+        capital = quantity * entry_px
+
+        events.append({
+            'time': trade['entry_time'],
+            'capital_change': capital,
+            'positions_change': 1,
+            'pnl': 0.0,
+        })
+        events.append({
+            'time': trade['exit_time'],
+            'capital_change': -capital,
+            'positions_change': -1,
+            'pnl': trade['dollar_pnl'],
+        })
+
+    if not events:
+        return None
+
+    tl = pd.DataFrame(events).sort_values('time').reset_index(drop=True)
+    tl['capital_deployed'] = tl['capital_change'].cumsum()
+    tl['concurrent_positions'] = tl['positions_change'].cumsum()
+    tl['realized_pnl'] = tl['pnl'].cumsum()
+    tl['available_buying_power'] = starting_balance + tl['realized_pnl'] - tl['capital_deployed']
+
+    peak_capital = float(tl['capital_deployed'].max())
+    min_bp = float(tl['available_buying_power'].min())
+
+    # Count transitions to insufficient capital (buying power ≤ 0)
+    bp_negative = tl['available_buying_power'] <= 0
+    insufficient_events = int((bp_negative & ~bp_negative.shift(fill_value=False)).sum())
+
+    # Time-weighted average concurrent positions
+    if len(tl) >= 2:
+        durations = tl['time'].diff().dt.total_seconds().fillna(0)
+        total_time = durations.sum()
+        if total_time > 0:
+            avg_conc = float((tl['concurrent_positions'].shift(fill_value=0) * durations).sum() / total_time)
+        else:
+            avg_conc = float(tl['concurrent_positions'].mean())
+    else:
+        avg_conc = float(tl['concurrent_positions'].mean())
+
+    return {
+        'timeline': tl[['time', 'capital_deployed', 'concurrent_positions', 'available_buying_power']],
+        'peak_capital_deployed': peak_capital,
+        'peak_capital_pct': peak_capital / starting_balance * 100 if starting_balance > 0 else 0,
+        'min_buying_power': min_bp,
+        'min_buying_power_pct': min_bp / starting_balance * 100 if starting_balance > 0 else 0,
+        'max_concurrent_positions': int(tl['concurrent_positions'].max()),
+        'avg_concurrent_positions': round(avg_conc, 1),
+        'insufficient_capital_events': insufficient_events,
+    }
+
+
+def run_monte_carlo(
+    combined_trades: pd.DataFrame,
+    daily_pnl: pd.DataFrame,
+    starting_balance: float,
+    thresholds: dict,
+    n_simulations: int = 1000,
+    shuffle_mode: str = 'daily',
+) -> dict:
+    """
+    Run Monte Carlo simulation by shuffling historical trade data.
+
+    Shuffle modes:
+        - 'daily': shuffle order of entire trading days (preserves intraday correlation)
+        - 'weekly': shuffle order of entire weeks
+        - 'individual': shuffle individual trade P&Ls (breaks all time correlation)
+
+    Returns dict with bust/pause probabilities, DD distributions, equity percentile bands.
+    """
+    max_total_dd = thresholds.get('max_total_drawdown_pct')
+    max_daily_loss = thresholds.get('max_daily_loss_pct')
+    daily_pause = thresholds.get('daily_pause_pct')
+
+    rng = np.random.default_rng()
+
+    if shuffle_mode == 'individual':
+        trade_pnls = combined_trades['dollar_pnl'].values.copy()
+        n_trades = len(trade_pnls)
+        if n_trades == 0:
+            return _empty_mc_result(n_simulations, shuffle_mode)
+
+        all_equity = np.zeros((n_simulations, n_trades))
+        max_dd_values = np.zeros(n_simulations)
+        worst_day_values = np.zeros(n_simulations)
+        bust_count = 0
+        pause_count = 0
+        max_loss_count = 0
+
+        for i in range(n_simulations):
+            shuffled = rng.permutation(trade_pnls)
+            cumulative = np.cumsum(shuffled)
+            all_equity[i] = cumulative
+
+            balance = cumulative + starting_balance
+            peak = np.maximum.accumulate(balance)
+            dd_pct = (balance - peak) / peak * 100
+            max_dd_values[i] = dd_pct.min()
+
+            # For individual trade mode, use worst single trade as proxy for worst day
+            worst_trade_pct = (shuffled.min() / starting_balance) * 100
+            worst_day_values[i] = worst_trade_pct
+
+            if max_total_dd is not None and abs(dd_pct.min()) >= max_total_dd:
+                bust_count += 1
+            if daily_pause is not None and abs(worst_trade_pct) >= daily_pause:
+                pause_count += 1
+            if max_daily_loss is not None and abs(worst_trade_pct) >= max_daily_loss:
+                max_loss_count += 1
+
+    else:
+        # Block-based shuffle (daily or weekly)
+        dp = daily_pnl.copy()
+        dp['date'] = pd.to_datetime(dp['date'])
+
+        if shuffle_mode == 'weekly':
+            iso = dp['date'].dt.isocalendar()
+            dp['block_key'] = iso.year.astype(str) + '_W' + iso.week.astype(str)
+        else:  # daily (default)
+            dp['block_key'] = dp['date'].astype(str)
+
+        # Group P&L into blocks
+        blocks = []
+        for _, group in dp.groupby('block_key', sort=False):
+            blocks.append(group['daily_pnl'].values)
+
+        n_blocks = len(blocks)
+        if n_blocks == 0:
+            return _empty_mc_result(n_simulations, shuffle_mode)
+
+        block_indices = np.arange(n_blocks)
+        total_days = sum(len(b) for b in blocks)
+
+        all_equity = np.zeros((n_simulations, total_days))
+        max_dd_values = np.zeros(n_simulations)
+        worst_day_values = np.zeros(n_simulations)
+        bust_count = 0
+        pause_count = 0
+        max_loss_count = 0
+
+        for i in range(n_simulations):
+            shuffled_indices = rng.permutation(block_indices)
+            daily_sequence = np.concatenate([blocks[idx] for idx in shuffled_indices])
+            cumulative = np.cumsum(daily_sequence)
+            all_equity[i] = cumulative
+
+            balance = cumulative + starting_balance
+            peak = np.maximum.accumulate(balance)
+            dd_pct = (balance - peak) / peak * 100
+            max_dd_values[i] = dd_pct.min()
+
+            worst_day_pct = (daily_sequence.min() / starting_balance) * 100
+            worst_day_values[i] = worst_day_pct
+
+            if max_total_dd is not None and abs(dd_pct.min()) >= max_total_dd:
+                bust_count += 1
+            if daily_pause is not None and abs(worst_day_pct) >= daily_pause:
+                pause_count += 1
+            if max_daily_loss is not None and abs(worst_day_pct) >= max_daily_loss:
+                max_loss_count += 1
+
+    # Percentile bands for equity curves
+    percentiles = {}
+    for p in [5, 25, 50, 75, 95]:
+        percentiles[str(p)] = np.percentile(all_equity, p, axis=0)
+
+    return {
+        'bust_probability': bust_count / n_simulations * 100,
+        'daily_pause_probability': pause_count / n_simulations * 100,
+        'max_daily_loss_probability': max_loss_count / n_simulations * 100,
+        'max_dd_values': max_dd_values,
+        'worst_day_values': worst_day_values,
+        'equity_percentiles': percentiles,
+        'median_max_dd': float(np.median(max_dd_values)),
+        'p95_max_dd': float(np.percentile(max_dd_values, 5)),  # 5th percentile = worst case
+        'expected_worst_day': float(np.median(worst_day_values)),
+        'n_simulations': n_simulations,
+        'shuffle_mode': shuffle_mode,
+    }
+
+
+def _empty_mc_result(n_simulations: int, shuffle_mode: str) -> dict:
+    """Return empty Monte Carlo result when no data available."""
+    return {
+        'bust_probability': 0.0,
+        'daily_pause_probability': 0.0,
+        'max_daily_loss_probability': 0.0,
+        'max_dd_values': np.zeros(0),
+        'worst_day_values': np.zeros(0),
+        'equity_percentiles': {str(p): np.zeros(0) for p in [5, 25, 50, 75, 95]},
+        'median_max_dd': 0.0,
+        'p95_max_dd': 0.0,
+        'expected_worst_day': 0.0,
+        'n_simulations': n_simulations,
+        'shuffle_mode': shuffle_mode,
     }
 
 
