@@ -2,6 +2,6862 @@
   {
     "type": "entry_signal",
     "level": "strategy",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "strategy_name": "Test: SPY LONG - Xtreme Vol + 4m Exit",
+    "strategy_id": 18,
+    "price": 689.36,
+    "stop_price": 688.42,
+    "atr": 0.63,
+    "quantity": 106,
+    "trigger": "test_trigger",
+    "confluence_met": [
+      "TEST-CONDITION"
+    ],
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "timestamp": "2026-02-23T18:42:12.380711+00:00",
+    "acknowledged": false,
+    "webhook_sent": false,
+    "portfolio_context": [],
+    "webhook_deliveries": [],
+    "id": 1167
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-24 00:55:00+00:00",
+    "price": 682.9799,
+    "stop_price": null,
+    "atr": 6.829799,
+    "entry_price": 683.19,
+    "entry_stop_price": 683.0087,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1324,
+    "timestamp": "2026-02-23T17:56:04.594131",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:56:05.142467",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:54:15.248126+00:00",
+    "price": 683.19,
+    "stop_price": 683.0087,
+    "atr": 6.831900000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 683.1749904258235,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1323,
+    "timestamp": "2026-02-23T17:54:14.722777",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:54:15.076156",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S+",
+      "1M-RVOL-MINIMAL",
+      "1M-MACD_HISTOGRAM-H+up",
+      "1M-VWAP->+2\u03c3",
+      "1M-UTBOT-BULL",
+      "1M-EMA_PRICE_POSITION-PSML",
+      "1M-EMA_STACK-SML"
+    ],
+    "bar_time": "2026-02-24 00:50:00+00:00",
+    "price": 683.27,
+    "stop_price": null,
+    "atr": 0.10788354511829595,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.5507,
+    "entry_stop_price": 682.44,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1322,
+    "timestamp": "2026-02-23T17:51:02.573307",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:51:03.089285",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:33:26.577985+00:00",
+    "price": 682.5507,
+    "stop_price": 682.44,
+    "atr": 6.825507,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.5406865101975,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1321,
+    "timestamp": "2026-02-23T17:33:25.783919",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:33:26.104728",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-24 00:27:00+00:00",
+    "price": 682.57,
+    "stop_price": null,
+    "atr": 6.8257,
+    "entry_price": 682.56,
+    "entry_stop_price": 682.5,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1320,
+    "timestamp": "2026-02-23T17:28:00.120825",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:28:01.355594",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:27:10.316693+00:00",
+    "price": 682.56,
+    "stop_price": 682.5,
+    "atr": 6.8256,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.5543529777007,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1319,
+    "timestamp": "2026-02-23T17:27:10.033473",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:27:10.377520",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-24 00:22:00+00:00",
+    "price": 682.789,
+    "stop_price": null,
+    "atr": 6.82789,
+    "entry_price": 683.055,
+    "entry_stop_price": 682.7900000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1318,
+    "timestamp": "2026-02-23T17:23:01.333268",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:23:01.595945",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:21:49.470911+00:00",
+    "price": 683.055,
+    "stop_price": 682.7900000000001,
+    "atr": 6.83055,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 683.0315197286232,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1317,
+    "timestamp": "2026-02-23T17:21:49.067500",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:21:49.533536",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-RVOL-NORMAL",
+      "1M-MACD_HISTOGRAM-H-up",
+      "1M-MACD_LINE-M<S-",
+      "1M-EMA_STACK-LMS",
+      "1M-UTBOT-BULL",
+      "1M-EMA_PRICE_POSITION-LMPS",
+      "1M-VWAP-<-1\u03c3"
+    ],
+    "bar_time": "2026-02-24 00:11:00+00:00",
+    "price": 682.8115,
+    "stop_price": null,
+    "atr": 0.19406652975198985,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.74,
+    "entry_stop_price": 682.5787,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1316,
+    "timestamp": "2026-02-23T17:12:01.050342",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:12:01.363961",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:10:03.407849+00:00",
+    "price": 682.74,
+    "stop_price": 682.5787,
+    "atr": 6.8274,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.7205566550352,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1315,
+    "timestamp": "2026-02-23T17:10:03.635387",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:10:03.980190",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-24 00:08:00+00:00",
+    "price": 682.63,
+    "stop_price": null,
+    "atr": 6.8263,
+    "entry_price": 682.94,
+    "entry_stop_price": 682.719,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1314,
+    "timestamp": "2026-02-23T17:09:01.649241",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:09:02.066699",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:07:00.864339+00:00",
+    "price": 682.94,
+    "stop_price": 682.719,
+    "atr": 6.829400000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.93853951001,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1313,
+    "timestamp": "2026-02-23T17:07:01.095492",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:07:01.423828",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-MACD_LINE-M>S-",
+      "1M-MACD_HISTOGRAM-H+up",
+      "1M-EMA_STACK-MLS",
+      "1M-EMA_PRICE_POSITION-MPLS",
+      "1M-VWAP-@V",
+      "1M-UTBOT-BEAR",
+      "1M-RVOL-LOW"
+    ],
+    "bar_time": "2026-02-24 00:05:00+00:00",
+    "price": 682.92,
+    "stop_price": null,
+    "atr": 0.17200438365308715,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.94,
+    "entry_stop_price": 682.58,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1312,
+    "timestamp": "2026-02-23T17:06:01.184793",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:06:01.465352",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:03:03.641244+00:00",
+    "price": 682.94,
+    "stop_price": 682.58,
+    "atr": 6.829400000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.93853951001,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1311,
+    "timestamp": "2026-02-23T17:03:03.847068",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:03:04.322606",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-24 00:00:00+00:00",
+    "price": 682.9605,
+    "stop_price": null,
+    "atr": 6.829605000000001,
+    "entry_price": 682.861,
+    "entry_stop_price": 682.765,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1310,
+    "timestamp": "2026-02-23T17:01:01.284076",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:01:01.639608",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-24T00:00:51.505326+00:00",
+    "price": 682.861,
+    "stop_price": 682.765,
+    "atr": 6.82861,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.8526419890397,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1309,
+    "timestamp": "2026-02-23T17:00:51.716234",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:00:51.912078",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:59:00+00:00",
+    "price": 682.74,
+    "stop_price": null,
+    "atr": 6.8274,
+    "entry_price": 682.9,
+    "entry_stop_price": 682.74,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1308,
+    "timestamp": "2026-02-23T17:00:00.539725",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T17:00:00.930824",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:57:32.998002+00:00",
+    "price": 682.9,
+    "stop_price": 682.74,
+    "atr": 6.829,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.899218853766,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1307,
+    "timestamp": "2026-02-23T16:57:33.246910",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:57:33.885647",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-RVOL-NORMAL",
+      "1M-EMA_PRICE_POSITION-MSLP",
+      "1M-MACD_HISTOGRAM-H-up",
+      "1M-MACD_LINE-M<S-",
+      "1M-EMA_STACK-MSL",
+      "1M-UTBOT-BULL",
+      "1M-VWAP-@V"
+    ],
+    "bar_time": "2026-02-23 23:56:00+00:00",
+    "price": 682.9082,
+    "stop_price": null,
+    "atr": 0.11265856818689048,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.9082,
+    "entry_stop_price": 682.74,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1306,
+    "timestamp": "2026-02-23T16:57:01.703732",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:57:02.165344",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:56:52.985862+00:00",
+    "price": 682.9082,
+    "stop_price": 682.74,
+    "atr": 6.829082,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.899218853766,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1305,
+    "timestamp": "2026-02-23T16:56:53.231644",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:56:53.808722",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-RVOL-NORMAL",
+      "1M-EMA_PRICE_POSITION-MPSL",
+      "1M-MACD_HISTOGRAM-H-up",
+      "1M-MACD_LINE-M<S-",
+      "1M-EMA_STACK-MSL",
+      "1M-UTBOT-BULL",
+      "1M-VWAP->+1\u03c3"
+    ],
+    "bar_time": "2026-02-23 23:54:00+00:00",
+    "price": 683.015,
+    "stop_price": null,
+    "atr": 0.11300105231982338,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.9712,
+    "entry_stop_price": 682.8151,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1304,
+    "timestamp": "2026-02-23T16:55:01.686106",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:55:02.444749",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:52:33.236576+00:00",
+    "price": 682.9712,
+    "stop_price": 682.8151,
+    "atr": 6.829712,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.962971394011,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1303,
+    "timestamp": "2026-02-23T16:52:33.433528",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:52:33.833999",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:48:00+00:00",
+    "price": 682.91,
+    "stop_price": null,
+    "atr": 6.8290999999999995,
+    "entry_price": 683.19,
+    "entry_stop_price": 682.95,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1302,
+    "timestamp": "2026-02-23T16:49:06.407783",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:49:06.768916",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:46:07.598905+00:00",
+    "price": 683.19,
+    "stop_price": 682.95,
+    "atr": 6.831900000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 683.1622802686804,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1301,
+    "timestamp": "2026-02-23T16:46:07.794286",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:46:08.163847",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:44:00+00:00",
+    "price": 683.12,
+    "stop_price": null,
+    "atr": 6.8312,
+    "entry_price": 683.17,
+    "entry_stop_price": 683.09,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1300,
+    "timestamp": "2026-02-23T16:45:01.706355",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:45:01.975452",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:44:34.295690+00:00",
+    "price": 683.17,
+    "stop_price": 683.09,
+    "atr": 6.8317,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 683.1622802686804,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1299,
+    "timestamp": "2026-02-23T16:44:34.487966",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:44:35.301726",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:38:00+00:00",
+    "price": 683.24,
+    "stop_price": null,
+    "atr": 6.8324,
+    "entry_price": 683.21,
+    "entry_stop_price": 683.2387,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1298,
+    "timestamp": "2026-02-23T16:39:00.933642",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:39:01.163287",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:38:11.839575+00:00",
+    "price": 683.21,
+    "stop_price": 683.2387,
+    "atr": 6.8321000000000005,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 683.1978045374108,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1297,
+    "timestamp": "2026-02-23T16:38:12.030369",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:38:12.355062",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:30:00+00:00",
+    "price": 683.191,
+    "stop_price": null,
+    "atr": 6.831910000000001,
+    "entry_price": 683.04,
+    "entry_stop_price": 682.6862,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1296,
+    "timestamp": "2026-02-23T16:31:01.507621",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:31:01.869495",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:30:01.163698+00:00",
+    "price": 683.04,
+    "stop_price": 682.6862,
+    "atr": 6.8304,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.9157237352173,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1295,
+    "timestamp": "2026-02-23T16:30:01.340893",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:30:01.748650",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "rvol_fade",
+    "confluence_met": [
+      "1M-MACD_LINE-M<S+",
+      "1M-RVOL-MINIMAL",
+      "1M-MACD_HISTOGRAM-H-up",
+      "1M-EMA_STACK-MSL",
+      "1M-UTBOT-BULL",
+      "1M-VWAP-@V",
+      "1M-EMA_PRICE_POSITION-PMSL"
+    ],
+    "bar_time": "2026-02-23 23:27:00+00:00",
+    "price": 682.84,
+    "stop_price": null,
+    "atr": 0.11458851078271884,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "entry_price": 682.825,
+    "entry_stop_price": 682.61,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1294,
+    "timestamp": "2026-02-23T16:28:00.678749",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:28:01.037565",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:24:48.261502+00:00",
+    "price": 682.825,
+    "stop_price": 682.61,
+    "atr": 6.828250000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.8230396737249,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1293,
+    "timestamp": "2026-02-23T16:24:48.443174",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:24:48.742068",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T23:23:15.725812+00:00",
+    "price": 23.66,
+    "stop_price": 23.599999999999998,
+    "atr": 0.2366,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.652654114060862,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1292,
+    "timestamp": "2026-02-23T16:23:16.097294",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T16:23:16.604770",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 166}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:13:00+00:00",
+    "price": 23.64,
+    "stop_price": null,
+    "atr": 0.2364,
+    "entry_price": 23.656,
+    "entry_stop_price": 23.599999999999998,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1291,
+    "timestamp": "2026-02-23T16:16:17.838311",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_aa0591",
+        "webhook_name": "ttp sell",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T16:16:18.244934",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"sell\", \"quantity\": 178}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:05:00+00:00",
+    "price": 683.0012,
+    "stop_price": null,
+    "atr": 6.830012000000001,
+    "entry_price": 682.9,
+    "entry_stop_price": 682.6,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1290,
+    "timestamp": "2026-02-23T16:06:01.415208",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:06:01.661234",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:05:58.993430+00:00",
+    "price": 682.9,
+    "stop_price": 682.6,
+    "atr": 6.829,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.8916576738826,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1289,
+    "timestamp": "2026-02-23T16:05:59.169696",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:05:59.358826",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T23:05:06.460040+00:00",
+    "price": 23.656,
+    "stop_price": 23.599999999999998,
+    "atr": 0.23656,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.64470480586611,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1288,
+    "timestamp": "2026-02-23T16:05:06.784314",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T16:05:07.161386",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 178}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:59:00+00:00",
+    "price": 23.64,
+    "stop_price": null,
+    "atr": 0.2364,
+    "entry_price": 23.65,
+    "entry_stop_price": 23.599999999999998,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1287,
+    "timestamp": "2026-02-23T16:04:07.760166",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_aa0591",
+        "webhook_name": "ttp sell",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T16:04:08.003763",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"sell\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 23:03:00+00:00",
+    "price": 682.655,
+    "stop_price": null,
+    "atr": 6.82655,
+    "entry_price": 682.76,
+    "entry_stop_price": 682.671,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1286,
+    "timestamp": "2026-02-23T16:04:00.954901",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:04:01.147058",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T23:03:07.353906+00:00",
+    "price": 682.76,
+    "stop_price": 682.671,
+    "atr": 6.8276,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.7448248067972,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1285,
+    "timestamp": "2026-02-23T16:03:07.523146",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:03:07.802632",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:59:00+00:00",
+    "price": 682.76,
+    "stop_price": null,
+    "atr": 6.8276,
+    "entry_price": 682.65,
+    "entry_stop_price": 682.02,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1284,
+    "timestamp": "2026-02-23T16:00:00.577888",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T16:00:01.159313",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:57:22.959690+00:00",
+    "price": 399.815,
+    "stop_price": 373.4497,
+    "atr": 3.99815,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.7265493136584,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1283,
+    "timestamp": "2026-02-23T15:57:23.264241",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:57:23.901273",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 3}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T22:56:01.869352+00:00",
+    "price": 682.65,
+    "stop_price": 682.02,
+    "atr": 6.8265,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.5109826407345,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1282,
+    "timestamp": "2026-02-23T15:56:02.386308",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:56:02.783840",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T22:55:58.919655+00:00",
+    "price": 23.65,
+    "stop_price": 23.599999999999998,
+    "atr": 0.2365,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.64528595889195,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1281,
+    "timestamp": "2026-02-23T15:55:59.111223",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:55:59.575585",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:54:00+00:00",
+    "price": 399.9,
+    "stop_price": null,
+    "atr": 3.9989999999999997,
+    "entry_price": 399.68,
+    "entry_stop_price": 399.51000000000005,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1280,
+    "timestamp": "2026-02-23T15:55:00.812956",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2c82f4",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:55:01.466138",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"sell\", \"quantity\": 588}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:52:00+00:00",
+    "price": 23.64,
+    "stop_price": null,
+    "atr": 0.2364,
+    "entry_price": 23.66,
+    "entry_stop_price": 23.61,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1279,
+    "timestamp": "2026-02-23T15:53:35.414848",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_aa0591",
+        "webhook_name": "ttp sell",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:53:35.898452",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"sell\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:50:00+00:00",
+    "price": 682.7521,
+    "stop_price": null,
+    "atr": 6.827521000000001,
+    "entry_price": 682.51,
+    "entry_stop_price": 682.52,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1278,
+    "timestamp": "2026-02-23T15:51:00.560080",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:51:01.115563",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T22:50:16.271341+00:00",
+    "price": 682.51,
+    "stop_price": 682.52,
+    "atr": 6.8251,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.4506843311906,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1277,
+    "timestamp": "2026-02-23T15:50:16.432672",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:50:16.741629",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T22:49:17.209022+00:00",
+    "price": 23.66,
+    "stop_price": 23.61,
+    "atr": 0.2366,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.650117422813672,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1276,
+    "timestamp": "2026-02-23T15:49:17.365205",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:49:17.495577",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:48:00+00:00",
+    "price": 23.65,
+    "stop_price": null,
+    "atr": 0.2365,
+    "entry_price": 23.66,
+    "entry_stop_price": 23.61,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1275,
+    "timestamp": "2026-02-23T15:49:16.235013",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_aa0591",
+        "webhook_name": "ttp sell",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:49:16.615114",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"sell\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T22:45:55.877211+00:00",
+    "price": 23.66,
+    "stop_price": 23.61,
+    "atr": 0.2366,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.651160763887106,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1274,
+    "timestamp": "2026-02-23T15:45:56.216168",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:45:56.514549",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:44:47.929052+00:00",
+    "price": 399.68,
+    "stop_price": 399.51000000000005,
+    "atr": 3.9968000000000004,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.67568525190313,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1273,
+    "timestamp": "2026-02-23T15:44:48.086321",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:44:48.351970",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 588}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:43:00+00:00",
+    "price": 399.6514,
+    "stop_price": null,
+    "atr": 3.9965140000000003,
+    "entry_price": 399.7,
+    "entry_stop_price": 399.52000000000004,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1272,
+    "timestamp": "2026-02-23T15:44:06.655040",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2c82f4",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:44:06.922194",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"sell\", \"quantity\": 555}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:41:31.115702+00:00",
+    "price": 399.7,
+    "stop_price": 399.52000000000004,
+    "atr": 3.997,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.6993852576232,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1271,
+    "timestamp": "2026-02-23T15:41:31.273348",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:41:32.064306",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 555}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:36:00+00:00",
+    "price": 399.8,
+    "stop_price": null,
+    "atr": 3.998,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1270,
+    "timestamp": "2026-02-23T15:37:02.121696",
+    "acknowledged": false
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "bar_count_exit",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:31:00+00:00",
+    "price": 23.665,
+    "stop_price": null,
+    "atr": 0.23665,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1269,
+    "timestamp": "2026-02-23T15:33:07.136315",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_aa0591",
+        "webhook_name": "ttp sell",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:33:07.787597",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"sell\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:32:00+00:00",
+    "price": 682.73,
+    "stop_price": null,
+    "atr": 6.8273,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1268,
+    "timestamp": "2026-02-23T15:33:06.170585",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_a122ea",
+        "webhook_name": "Signal Stack Test Sell",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:33:06.704960",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"sell\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T22:32:26.712210+00:00",
+    "price": 682.69,
+    "stop_price": 682.57,
+    "atr": 6.826900000000001,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.5458604372118,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1267,
+    "timestamp": "2026-02-23T15:32:26.929399",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:32:27.454075",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:30:35.168901+00:00",
+    "price": 399.75,
+    "stop_price": 399.57000000000005,
+    "atr": 3.9975,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.7289240522953,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1266,
+    "timestamp": "2026-02-23T15:30:35.317253",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:30:35.579816",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 555}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:29:00+00:00",
+    "price": 399.79,
+    "stop_price": null,
+    "atr": 3.9979000000000005,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1265,
+    "timestamp": "2026-02-23T15:30:02.959725",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2c82f4",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:30:03.424174",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"sell\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T22:27:09.849913+00:00",
+    "price": 23.66,
+    "stop_price": 23.61,
+    "atr": 0.2366,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.658541417074368,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1264,
+    "timestamp": "2026-02-23T15:27:10.142149",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T15:27:10.375245",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 199}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:26:22.331629+00:00",
+    "price": 399.75,
+    "stop_price": 399.5896,
+    "atr": 3.9975,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.723851299549,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1263,
+    "timestamp": "2026-02-23T15:26:22.473880",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:26:22.751988",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 623}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "exit_signal",
+    "trigger": "stop_loss",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:25:00+00:00",
+    "price": 399.7894,
+    "stop_price": null,
+    "atr": 3.997894,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1262,
+    "timestamp": "2026-02-23T15:26:01.540711",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2c82f4",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:26:01.895914",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"sell\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T22:25:42.012951+00:00",
+    "price": 399.75,
+    "stop_price": 399.63000000000005,
+    "atr": 3.9975,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.74981412443617,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1261,
+    "timestamp": "2026-02-23T15:25:42.164051",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:25:42.547045",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 833}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:05:00+00:00",
+    "price": 399.7522,
+    "stop_price": 399.53000000000003,
+    "atr": 0.6034499010617791,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1260,
+    "timestamp": "2026-02-23T15:06:02.086800",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:06:02.476486",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 450}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:02:00+00:00",
+    "price": 399.64,
+    "stop_price": 399.53000000000003,
+    "atr": 0.8287332799651954,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1259,
+    "timestamp": "2026-02-23T15:03:02.089516",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:03:02.709936",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 909}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T22:01:34.182440+00:00",
+    "price": 682.81,
+    "stop_price": 682.6800000000001,
+    "atr": 6.828099999999999,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.7507408843637,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1258,
+    "timestamp": "2026-02-23T15:01:34.309536",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T15:01:34.547241",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 22:00:00+00:00",
+    "price": 399.64,
+    "stop_price": 399.46000000000004,
+    "atr": 1.0735206390069252,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1257,
+    "timestamp": "2026-02-23T15:01:03.639439",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T15:01:04.004424",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 555}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 21:56:00+00:00",
+    "price": 399.68,
+    "stop_price": 399.0,
+    "atr": 0.18364057104883286,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1256,
+    "timestamp": "2026-02-23T14:57:03.507071",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T14:57:03.955433",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 147}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 21:47:00+00:00",
+    "price": 399.67,
+    "stop_price": 399.57000000000005,
+    "atr": 0.11094010111399286,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1255,
+    "timestamp": "2026-02-23T14:48:01.003342",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T14:48:01.374831",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 1000}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 21:41:00+00:00",
+    "price": 399.69,
+    "stop_price": 399.44000000000005,
+    "atr": 0.1624031589506935,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1254,
+    "timestamp": "2026-02-23T14:42:01.428694",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T14:42:01.671416",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 400}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 21:37:00+00:00",
+    "price": 399.69,
+    "stop_price": 399.57000000000005,
+    "atr": 0.13305573761000586,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1253,
+    "timestamp": "2026-02-23T14:38:00.350697",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T14:38:00.763205",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 833}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T21:37:27.998382+00:00",
+    "price": 23.6794,
+    "stop_price": 23.619999999999997,
+    "atr": 0.236794,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.65739562379347,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1252,
+    "timestamp": "2026-02-23T14:37:28.260408",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T14:37:28.668361",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 168}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T21:35:40.084239+00:00",
+    "price": 399.6981,
+    "stop_price": 399.39000000000004,
+    "atr": 3.9969810000000003,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 399.6695868013859,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1251,
+    "timestamp": "2026-02-23T14:35:40.208310",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T14:35:40.546298",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 324}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T21:23:39.539947+00:00",
+    "price": 682.72,
+    "stop_price": 682.36,
+    "atr": 6.8272,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 682.5203373254906,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1250,
+    "timestamp": "2026-02-23T14:23:39.662578",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T14:23:40.073706",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:51:00+00:00",
+    "price": 43.46,
+    "stop_price": 43.32,
+    "atr": 0.08432403226014881,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1249,
+    "timestamp": "2026-02-23T13:52:00.731361",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:52:00.972619",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 71}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "rvol_extreme",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:50:00+00:00",
+    "price": 681.59,
+    "stop_price": 681.325,
+    "atr": 2.5385872215959324,
+    "level": "strategy",
+    "strategy_id": 18,
+    "strategy_name": "SPY LONG - Xtreme Vol + 4m Exit",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 6,
+        "portfolio_name": "spy xtreme 4 candles",
+        "position_risk": 100.0
+      },
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1248,
+    "timestamp": "2026-02-23T13:51:00.779153",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:51:01.125685",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:49:00+00:00",
+    "price": 396.458,
+    "stop_price": 395.72,
+    "atr": 0.49130260082102484,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1247,
+    "timestamp": "2026-02-23T13:50:00.790581",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:50:01.123152",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 135}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:47:00+00:00",
+    "price": 396.18,
+    "stop_price": 395.72,
+    "atr": 0.49455435020550786,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1246,
+    "timestamp": "2026-02-23T13:48:00.438426",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:48:00.811251",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 217}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:43:00+00:00",
+    "price": 43.384,
+    "stop_price": 43.29,
+    "atr": 0.0856136739679502,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1245,
+    "timestamp": "2026-02-23T13:44:00.630230",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:44:01.001936",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 106}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:39:58.372931+00:00",
+    "price": 681.59,
+    "stop_price": 681.46,
+    "atr": 6.8159,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.5830969864259,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1244,
+    "timestamp": "2026-02-23T13:39:58.472971",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:39:58.765981",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:39:31.322735+00:00",
+    "price": 23.605,
+    "stop_price": 23.549999999999997,
+    "atr": 0.23605,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.604931579529225,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1243,
+    "timestamp": "2026-02-23T13:39:31.405551",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:39:31.679896",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 181}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:38:50.835728+00:00",
+    "price": 395.91,
+    "stop_price": 395.61,
+    "atr": 3.9591000000000003,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.8671966757158,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1242,
+    "timestamp": "2026-02-23T13:38:50.929531",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:38:51.273953",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 333}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:32:24.887605+00:00",
+    "price": 23.6197,
+    "stop_price": 23.54,
+    "atr": 0.23619700000000002,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.610028487794086,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1241,
+    "timestamp": "2026-02-23T13:32:25.053629",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:32:25.478779",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": 125}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "rvol_extreme",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:31:00+00:00",
+    "price": 681.815,
+    "stop_price": 680.9173000000001,
+    "atr": 0.39807875026235817,
+    "level": "strategy",
+    "strategy_id": 18,
+    "strategy_name": "SPY LONG - Xtreme Vol + 4m Exit",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 6,
+        "portfolio_name": "spy xtreme 4 candles",
+        "position_risk": 100.0
+      },
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1240,
+    "timestamp": "2026-02-23T13:32:00.959252",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:32:01.626158",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:26:00+00:00",
+    "price": 43.305,
+    "stop_price": 43.15,
+    "atr": 0.05567969946981988,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1239,
+    "timestamp": "2026-02-23T13:27:00.686197",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:27:01.070443",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 64}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:25:08.206172+00:00",
+    "price": 395.0616,
+    "stop_price": 394.59000000000003,
+    "atr": 3.950616,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.93662330308024,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1238,
+    "timestamp": "2026-02-23T13:25:08.628535",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:25:08.934782",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 212}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:25:07.611553+00:00",
+    "price": 681.06,
+    "stop_price": 680.73,
+    "atr": 6.8106,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 680.8995320869305,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1237,
+    "timestamp": "2026-02-23T13:25:08.265727",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:25:08.973068",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:21:02.011192+00:00",
+    "price": 395.052,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.02664661563165,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1236,
+    "timestamp": "2026-02-23T13:21:02.086350",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:21:02.604067",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:20:00.110160+00:00",
+    "price": 395.0257,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.0033832695395,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1235,
+    "timestamp": "2026-02-23T13:20:00.722678",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:20:01.257439",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:19:07.510916+00:00",
+    "price": 23.65,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.64456773447994,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1234,
+    "timestamp": "2026-02-23T13:19:07.592070",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:19:08.001910",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:19:01.516489+00:00",
+    "price": 395.28,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.9292290869243,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1233,
+    "timestamp": "2026-02-23T13:19:01.596913",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:19:02.267071",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:18:00.801144+00:00",
+    "price": 395.015,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.90778635865536,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1232,
+    "timestamp": "2026-02-23T13:18:00.905353",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:18:01.477657",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:17:00+00:00",
+    "price": 43.245,
+    "stop_price": 43.19,
+    "atr": 0.05547847597472339,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1231,
+    "timestamp": "2026-02-23T13:18:00.324711",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:18:00.743484",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 181}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:17:00.954642+00:00",
+    "price": 395.0522,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.8759829483192,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1230,
+    "timestamp": "2026-02-23T13:17:01.047287",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:17:01.480279",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:16:00+00:00",
+    "price": 395.035,
+    "stop_price": 394.39000000000004,
+    "atr": 0.49339721007503895,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1229,
+    "timestamp": "2026-02-23T13:17:00.338462",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:17:00.734609",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 155}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:16:25.687752+00:00",
+    "price": 23.6549,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.645300458820223,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1228,
+    "timestamp": "2026-02-23T13:16:25.770266",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:16:26.096360",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:16:13.998300+00:00",
+    "price": 394.92,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.91122868539895,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1227,
+    "timestamp": "2026-02-23T13:16:14.098442",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:16:14.500814",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:15:00+00:00",
+    "price": 43.275,
+    "stop_price": 43.19,
+    "atr": 0.05866661002551872,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1226,
+    "timestamp": "2026-02-23T13:16:01.287552",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:16:01.555099",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 117}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:15:29.525980+00:00",
+    "price": 681.19,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1830079757937,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1225,
+    "timestamp": "2026-02-23T13:15:29.686757",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:15:30.073594",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:15:17.203417+00:00",
+    "price": 395.0088,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.0027858567487,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1224,
+    "timestamp": "2026-02-23T13:15:17.449282",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:15:18.084822",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:14:21.899703+00:00",
+    "price": 23.654,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.645300458820223,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1223,
+    "timestamp": "2026-02-23T13:14:21.977660",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:14:22.471531",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:13:09.238649+00:00",
+    "price": 23.5986,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.595888379088642,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1222,
+    "timestamp": "2026-02-23T13:13:09.374070",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:13:10.057571",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:12:00+00:00",
+    "price": 43.293,
+    "stop_price": 43.24,
+    "atr": 0.054713795555813724,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1221,
+    "timestamp": "2026-02-23T13:13:01.296342",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:13:01.682688",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 188}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:12:32.801095+00:00",
+    "price": 23.642,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.593506692851363,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1220,
+    "timestamp": "2026-02-23T13:12:32.971823",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:12:33.769922",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:12:00.421297+00:00",
+    "price": 395.2413,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.1988536264622,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1219,
+    "timestamp": "2026-02-23T13:12:01.163433",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:12:01.684134",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:11:13.638860+00:00",
+    "price": 395.3384,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.2732670330777,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1218,
+    "timestamp": "2026-02-23T13:11:13.783728",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:11:14.476635",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:10:13.942395+00:00",
+    "price": 395.3869,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.31158379134706,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1217,
+    "timestamp": "2026-02-23T13:10:14.019640",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:10:14.404390",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:09:00+00:00",
+    "price": 43.301,
+    "stop_price": 43.24,
+    "atr": 0.058122467000850775,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1216,
+    "timestamp": "2026-02-23T13:10:00.450059",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:10:00.798179",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 163}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:09:23.314963+00:00",
+    "price": 689.2673,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1830079757937,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1215,
+    "timestamp": "2026-02-23T13:09:23.726577",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:09:24.640122",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:09:12.858640+00:00",
+    "price": 395.31,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.3072047391838,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1214,
+    "timestamp": "2026-02-23T13:09:12.998675",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:09:13.343874",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:08:00+00:00",
+    "price": 395.3291,
+    "stop_price": 395.08000000000004,
+    "atr": 0.3707925648768945,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1213,
+    "timestamp": "2026-02-23T13:09:00.441481",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:09:00.720833",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 401}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:08:15.669421+00:00",
+    "price": 23.6686,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.63162136685017,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1212,
+    "timestamp": "2026-02-23T13:08:16.183618",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:08:17.208466",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:08:01.022231+00:00",
+    "price": 395.3419,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.32720592397976,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1211,
+    "timestamp": "2026-02-23T13:08:01.104380",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:08:01.483419",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:07:23.032289+00:00",
+    "price": 23.66,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.65564613191379,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1210,
+    "timestamp": "2026-02-23T13:07:23.107779",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:07:23.541143",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:07:01.119201+00:00",
+    "price": 395.3914,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.3665074049747,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1209,
+    "timestamp": "2026-02-23T13:07:01.197263",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:07:01.719029",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:06:01.202677+00:00",
+    "price": 395.3951,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.39438425621836,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1208,
+    "timestamp": "2026-02-23T13:06:01.331644",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:06:01.819357",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:05:20.465307+00:00",
+    "price": 395.5188,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.3742303202729,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1207,
+    "timestamp": "2026-02-23T13:05:20.542237",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:05:20.935481",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:05:09.070484+00:00",
+    "price": 681.33,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.3214261703438,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1206,
+    "timestamp": "2026-02-23T13:05:09.191086",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:05:09.457977",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:05:01.872374+00:00",
+    "price": 23.6366,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.60732080670262,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1205,
+    "timestamp": "2026-02-23T13:05:01.959216",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:05:02.273820",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:04:00+00:00",
+    "price": 395.475,
+    "stop_price": 395.09000000000003,
+    "atr": 0.3706160917647316,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1204,
+    "timestamp": "2026-02-23T13:05:00.630237",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:05:00.938462",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 259}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:04:12.325036+00:00",
+    "price": 23.6256,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.60732080670262,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1203,
+    "timestamp": "2026-02-23T13:04:12.495355",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:04:13.136969",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:04:01.513307+00:00",
+    "price": 395.4205,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.4102879003411,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1202,
+    "timestamp": "2026-02-23T13:04:01.684555",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:04:02.372588",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:02:59.929236+00:00",
+    "price": 395.38,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.37071721516276,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1201,
+    "timestamp": "2026-02-23T13:03:00.027552",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:03:00.588219",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:02:46.467388+00:00",
+    "price": 681.09,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.081938125636,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1200,
+    "timestamp": "2026-02-23T13:02:46.641460",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:02:46.950738",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 20:00:00+00:00",
+    "price": 43.41,
+    "stop_price": 43.2681,
+    "atr": 0.06582638156684313,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1199,
+    "timestamp": "2026-02-23T13:01:00.367434",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T13:01:00.716323",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 70}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T20:00:42.435385+00:00",
+    "price": 681.35,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.3400687492933,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1198,
+    "timestamp": "2026-02-23T13:00:42.541494",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T13:00:42.738960",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T20:00:05.197606+00:00",
+    "price": 23.5037,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.48854894710779,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1197,
+    "timestamp": "2026-02-23T13:00:05.264399",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T13:00:05.568399",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T20:00:00.071121+00:00",
+    "price": 395.275,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 395.26517064869176,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1196,
+    "timestamp": "2026-02-23T13:00:00.685428",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T13:00:01.227778",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T19:59:02.706327+00:00",
+    "price": 681.1998,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1714561738088,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1195,
+    "timestamp": "2026-02-23T12:59:02.834855",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:59:03.440290",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T19:58:07.504406+00:00",
+    "price": 681.18,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1714561738088,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1194,
+    "timestamp": "2026-02-23T12:58:07.697722",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:58:07.990224",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T19:56:39.440079+00:00",
+    "price": 23.5299,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.529720430672477,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1193,
+    "timestamp": "2026-02-23T12:56:39.631614",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T12:56:40.422601",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T19:56:01.742537+00:00",
+    "price": 681.1971,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1284055372275,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1192,
+    "timestamp": "2026-02-23T12:56:01.811391",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:56:02.050891",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T19:56:00.388333+00:00",
+    "price": 395.3088,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.7967877165323,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1191,
+    "timestamp": "2026-02-23T12:56:00.616798",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:56:01.074099",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T19:55:21.700764+00:00",
+    "price": 395.11,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.7309846456654,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1190,
+    "timestamp": "2026-02-23T12:55:21.766672",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:55:22.170589",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T19:55:00.176957+00:00",
+    "price": 681.13,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1284055372275,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1189,
+    "timestamp": "2026-02-23T12:55:01.148459",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:55:01.375784",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "bar_time": "2026-02-23T19:54:29.481664+00:00",
+    "price": 394.98,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 394.6707308070817,
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1188,
+    "timestamp": "2026-02-23T12:54:29.563907",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:54:30.289380",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "bar_time": "2026-02-23T19:54:02.851331+00:00",
+    "price": 23.5,
+    "level": "strategy",
+    "strategy_id": 29,
+    "strategy_name": "gme  - utbot",
+    "symbol": "GME",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 23.493666188141695,
+    "portfolio_context": [
+      {
+        "portfolio_id": 11,
+        "portfolio_name": "gme alert test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1187,
+    "timestamp": "2026-02-23T12:54:03.085443",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "ttp buy",
+        "portfolio_id": 11,
+        "sent_at": "2026-02-23T12:54:03.393014",
+        "success": false,
+        "status_code": 400,
+        "payload_sent": "{\"symbol\": \"GME\", \"action\": \"buy\", \"quantity\": \"\"}",
+        "error": "HTTP 400"
+      }
+    ],
+    "webhook_sent": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_buy_ib",
+    "bar_time": "2026-02-23T19:54:01.858379+00:00",
+    "price": 681.235,
+    "level": "strategy",
+    "strategy_id": 24,
+    "strategy_name": "SPY 1m crazy results (Copy)",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "intra_bar",
+    "intrabar_level": 681.1284055372275,
+    "portfolio_context": [
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1186,
+    "timestamp": "2026-02-23T12:54:01.936976",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:54:02.164065",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:53:00+00:00",
+    "price": 43.3186,
+    "stop_price": 43.19,
+    "atr": 0.047428762920761376,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1185,
+    "timestamp": "2026-02-23T12:54:00.596483",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:54:00.987646",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 77}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:48:00+00:00",
+    "price": 43.2906,
+    "stop_price": 43.214999999999996,
+    "atr": 0.06589253187638712,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1184,
+    "timestamp": "2026-02-23T12:49:01.193958",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:49:01.400655",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 132}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:48:00+00:00",
+    "price": 394.6696,
+    "stop_price": 394.01000000000005,
+    "atr": 0.3624817844256642,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1183,
+    "timestamp": "2026-02-23T12:49:00.331479",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:49:00.671709",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 151}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:46:00+00:00",
+    "price": 43.2899,
+    "stop_price": 43.22,
+    "atr": 0.06494094480584037,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1182,
+    "timestamp": "2026-02-23T12:47:01.363398",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:47:01.887082",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 143}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:35:00+00:00",
+    "price": 394.66,
+    "stop_price": 394.15000000000003,
+    "atr": 0.4128722542421155,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1181,
+    "timestamp": "2026-02-23T12:36:00.314954",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:36:00.737779",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 196}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:30:00+00:00",
+    "price": 43.3799,
+    "stop_price": 43.29,
+    "atr": 0.08164547818103582,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1180,
+    "timestamp": "2026-02-23T12:31:01.856270",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:31:02.332885",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 111}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "rvol_extreme",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:29:00+00:00",
+    "price": 681.27,
+    "stop_price": 681.48,
+    "atr": 0.40901583366356165,
+    "level": "strategy",
+    "strategy_id": 18,
+    "strategy_name": "SPY LONG - Xtreme Vol + 4m Exit",
+    "symbol": "SPY",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 6,
+        "portfolio_name": "spy xtreme 4 candles",
+        "position_risk": 100.0
+      },
+      {
+        "portfolio_id": 9,
+        "portfolio_name": "Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1179,
+    "timestamp": "2026-02-23T12:30:00.084427",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_2809d7",
+        "webhook_name": "Signal Stack Test Buy",
+        "portfolio_id": 9,
+        "sent_at": "2026-02-23T12:30:00.526511",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"SPY\", \"action\": \"buy\", \"quantity\": 1}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:15:00+00:00",
+    "price": 43.3667,
+    "stop_price": 43.25,
+    "atr": 0.09162758772154003,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1178,
+    "timestamp": "2026-02-23T12:28:44.579656",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:28:45.028638",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 85}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:15:00+00:00",
+    "price": 395.15,
+    "stop_price": 394.76030000000003,
+    "atr": 0.6387224476963292,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1177,
+    "timestamp": "2026-02-23T12:28:44.097658",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:28:44.745933",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 256}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:12:00+00:00",
+    "price": 43.37,
+    "stop_price": 43.25,
+    "atr": 0.11761197476567889,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1176,
+    "timestamp": "2026-02-23T12:12:59.488857",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:12:59.732827",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 83}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:12:00+00:00",
+    "price": 395.225,
+    "stop_price": 394.6234,
+    "atr": 0.8229625220642437,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1175,
+    "timestamp": "2026-02-23T12:12:59.381975",
+    "acknowledged": false
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:08:00+00:00",
+    "price": 395.15,
+    "stop_price": 394.46000000000004,
+    "atr": 1.1490682286860454,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1174,
+    "timestamp": "2026-02-23T12:08:59.346953",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:08:59.706721",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 144}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:04:00+00:00",
+    "price": 394.72,
+    "stop_price": 394.21000000000004,
+    "atr": 1.478945158686008,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1173,
+    "timestamp": "2026-02-23T12:04:59.981300",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:05:00.456697",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 196}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:00:00+00:00",
+    "price": 43.2872,
+    "stop_price": 43.21,
+    "atr": 0.3405263016940679,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1172,
+    "timestamp": "2026-02-23T12:01:00.070049",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T12:01:00.361739",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 129}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 19:00:00+00:00",
+    "price": 394.8,
+    "stop_price": 394.13000000000005,
+    "atr": 2.343362209253164,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1171,
+    "timestamp": "2026-02-23T12:00:59.770926",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-02-23T12:01:00.092722",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 149}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:58:00+00:00",
+    "price": 43.3422,
+    "stop_price": 43.269999999999996,
+    "atr": 0.41677643716665796,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1170,
+    "timestamp": "2026-02-23T11:58:59.972125",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:59:00.378229",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 138}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:56:00+00:00",
+    "price": 43.4416,
+    "stop_price": 43.32,
+    "atr": 0.506769812795846,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1169,
+    "timestamp": "2026-02-23T11:56:59.729513",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:57:00.040119",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 82}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:52:00+00:00",
+    "price": 43.5211,
+    "stop_price": 43.46,
+    "atr": 0.04911385360420554,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1168,
+    "timestamp": "2026-02-23T11:52:59.716301",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:53:00.212737",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 163}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:33:00+00:00",
+    "price": 43.565,
+    "stop_price": 43.47,
+    "atr": 0.044497457067648655,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1166,
+    "timestamp": "2026-02-23T11:34:00.055592",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:34:00.580018",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 105}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:28:00+00:00",
+    "price": 43.5955,
+    "stop_price": 43.51,
+    "atr": 0.041052360428948435,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1165,
+    "timestamp": "2026-02-23T11:28:59.860428",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:29:00.246658",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 116}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:22:00+00:00",
+    "price": 43.565,
+    "stop_price": 43.449999999999996,
+    "atr": 0.05792066816298638,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1164,
+    "timestamp": "2026-02-23T11:22:59.491664",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:22:59.855692",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 86}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:19:00+00:00",
+    "price": 43.5559,
+    "stop_price": 43.48,
+    "atr": 0.05443043015479378,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1163,
+    "timestamp": "2026-02-23T11:19:59.826789",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:20:00.218625",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 131}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:14:00+00:00",
+    "price": 43.545,
+    "stop_price": 43.449999999999996,
+    "atr": 0.09916965369393849,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1162,
+    "timestamp": "2026-02-23T11:14:59.643353",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:15:00.102582",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 105}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:07:00+00:00",
+    "price": 43.565,
+    "stop_price": 43.4527,
+    "atr": 0.08656157221552875,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1161,
+    "timestamp": "2026-02-23T11:08:00.562555",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:08:00.892882",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 89}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 18:05:00+00:00",
+    "price": 43.565,
+    "stop_price": 43.42,
+    "atr": 0.08853582099700665,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1160,
+    "timestamp": "2026-02-23T11:05:59.952403",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T11:06:00.394218",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 68}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 17:58:00+00:00",
+    "price": 43.56,
+    "stop_price": 43.24,
+    "atr": 0.13472978173588654,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1159,
+    "timestamp": "2026-02-23T10:58:59.228138",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T10:58:59.639802",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 31}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "macd_hist_momentum_shift_up",
+    "confluence_met": [],
+    "bar_time": "2026-02-23 17:50:00+00:00",
+    "price": 43.374,
+    "stop_price": 43.24,
+    "atr": 0.07754139561847369,
+    "level": "strategy",
+    "strategy_id": 30,
+    "strategy_name": "INTC - Max Trades Per Day",
+    "symbol": "INTC",
+    "direction": "LONG",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "streaming",
+    "portfolio_context": [
+      {
+        "portfolio_id": 12,
+        "portfolio_name": "INTC Test",
+        "position_risk": 10.0
+      }
+    ],
+    "id": 1158,
+    "timestamp": "2026-02-23T10:50:59.581392",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_3e344c",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 12,
+        "sent_at": "2026-02-23T10:51:00.015333",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"INTC\", \"action\": \"buy\", \"quantity\": 74}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
+    "symbol": "TEST",
+    "direction": "LONG",
+    "strategy_name": "Test Alert (E2E Verification)",
+    "strategy_id": 0,
+    "price": 100.0,
+    "stop_price": 98.5,
+    "atr": 1.5,
+    "trigger": "test_trigger",
+    "confluence_met": [
+      "TEST-CONDITION"
+    ],
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "timestamp": "2026-02-23T09:28:14.989256",
+    "acknowledged": false,
+    "webhook_sent": false,
+    "portfolio_context": [],
+    "webhook_deliveries": [],
+    "id": 1157
+  },
+  {
+    "type": "entry_signal",
+    "level": "strategy",
     "symbol": "TEST",
     "direction": "LONG",
     "strategy_name": "Test Alert (E2E Verification)",

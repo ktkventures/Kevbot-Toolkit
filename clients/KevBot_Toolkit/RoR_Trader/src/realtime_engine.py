@@ -376,6 +376,8 @@ class SymbolHub:
         self._confluence_met: Dict[int, bool] = {}       # strategy_id → confluence ok?
         self._intrabar_fired: Dict[str, set] = {}        # "strat_id:tf" → {trigger_bases}
         self._ib_cooldown = AlertCooldown()               # separate cooldown for intra-bar
+        self._position_state: Dict[int, bool] = {}       # strategy_id → True if in position
+        self._position_entry: Dict[int, dict] = {}      # strategy_id → entry details when in position
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
 
@@ -389,6 +391,88 @@ class SymbolHub:
     def add_strategy(self, strategy: dict):
         """Register a strategy on this symbol."""
         self.strategies.append(strategy)
+
+    def _init_position_state(self):
+        """Initialize position state and trigger cache from warmup history.
+
+        Runs the pipeline once per strategy to determine position state
+        (via generate_trades) and seed the trigger cache for intra-bar triggers.
+        """
+        from alerts import _run_pipeline, _get_base_trigger_id
+        from indicators import run_indicators_for_group
+        from confluence_groups import get_enabled_groups
+        from triggers import generate_trades
+
+        enabled_groups = get_enabled_groups()
+
+        for strat in self.strategies:
+            strat_id = strat['id']
+            strat_tf = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
+            builder = self.builders.get(strat_tf)
+            if not builder or len(builder.history) < 10:
+                self._position_state[strat_id] = False
+                continue
+
+            try:
+                # Run pipeline once and reuse for both position state + trigger cache
+                df_pipeline = _run_pipeline(builder.history.copy())
+                for group in enabled_groups:
+                    df_pipeline = run_indicators_for_group(df_pipeline, group)
+
+                # Resolve trigger names
+                entry_trigger = strat.get('entry_trigger') or ''
+                if strat.get('entry_trigger_confluence_id'):
+                    entry_trigger = _get_base_trigger_id(strat['entry_trigger_confluence_id'])
+                exit_trigger = strat.get('exit_trigger') or ''
+                if strat.get('exit_trigger_confluence_id'):
+                    exit_trigger = _get_base_trigger_id(strat['exit_trigger_confluence_id'])
+                exit_triggers_list = None
+                if strat.get('exit_trigger_confluence_ids'):
+                    exit_triggers_list = [_get_base_trigger_id(t) for t in strat['exit_trigger_confluence_ids'] if t]
+                elif strat.get('exit_triggers'):
+                    exit_triggers_list = [et for et in strat['exit_triggers'] if et]
+
+                confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+                trades = generate_trades(
+                    df_pipeline,
+                    direction=strat.get('direction', 'LONG'),
+                    entry_trigger=entry_trigger,
+                    exit_trigger=exit_trigger,
+                    exit_triggers=exit_triggers_list,
+                    confluence_required=confluence_set,
+                    risk_per_trade=strat.get('risk_per_trade', 100.0),
+                    stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                    stop_config=strat.get('stop_config'),
+                    target_config=strat.get('target_config'),
+                    bar_count_exit=strat.get('bar_count_exit'),
+                )
+                in_position = False
+                if len(trades) > 0:
+                    last_trade = trades.iloc[-1]
+                    if pd.isna(last_trade.get('exit_time')):
+                        in_position = True
+                self._position_state[strat_id] = in_position
+                if in_position and len(trades) > 0:
+                    last_trade = trades.iloc[-1]
+                    self._position_entry[strat_id] = {
+                        'entry_price': float(last_trade.get('entry_price', 0)),
+                        'stop_price': float(last_trade['stop_price']) if pd.notna(last_trade.get('stop_price')) else None,
+                        'entry_bar_count': len(builder.history),
+                        'direction': strat.get('direction', 'LONG'),
+                    }
+                logger.info("Position state for %s: %s",
+                            strat.get('name'), 'IN_POSITION' if in_position else 'FLAT')
+
+                # Seed trigger cache (reuse same df_pipeline)
+                ib_bases = self._get_intrabar_trigger_bases(strat)
+                for trigger_base in ib_bases:
+                    group_params = self._get_group_params_for_trigger(trigger_base)
+                    self._trigger_cache.update_from_indicators(
+                        strat_id, trigger_base, df_pipeline, group_params)
+
+            except Exception as e:
+                logger.error("Failed to init position state for %s: %s", strat.get('name'), e)
+                self._position_state[strat_id] = False
 
     def on_tick(self, price: float, volume: int, timestamp: datetime):
         """Route a tick to all bar builders; run pipeline on bar close."""
@@ -404,23 +488,22 @@ class SymbolHub:
     # -- private --------------------------------------------------------
 
     def _get_intrabar_trigger_bases(self, strat: dict) -> List[str]:
-        """Return base trigger names for intra-bar triggers in this strategy."""
-        try:
-            from confluence_groups import get_all_triggers
-            all_triggers = get_all_triggers()
-            bases = []
-            trigger_ids = [strat.get('entry_trigger_confluence_id', '')]
-            trigger_ids.extend(strat.get('exit_trigger_confluence_ids', []))
-            if strat.get('exit_trigger_confluence_id'):
-                trigger_ids.append(strat['exit_trigger_confluence_id'])
-            for tid in trigger_ids:
-                if tid and tid in all_triggers:
-                    tdef = all_triggers[tid]
-                    if tdef.execution == 'intra_bar':
-                        bases.append(tdef.base_trigger)
-            return bases
-        except Exception:
-            return []
+        """Return trigger names for intra-bar triggers in this strategy.
+
+        Uses the strategy's own trigger fields (e.g. ``utbot_v2_buy_ib``)
+        which map directly to INTRABAR_LEVEL_MAP keys after removing ``_ib``.
+        """
+        bases = []
+        entry = strat.get('entry_trigger') or ''
+        if entry.endswith('_ib'):
+            bases.append(entry)
+        for et in (strat.get('exit_triggers') or []):
+            if et and et.endswith('_ib'):
+                bases.append(et)
+        exit_t = strat.get('exit_trigger') or ''
+        if exit_t and exit_t.endswith('_ib'):
+            bases.append(exit_t)
+        return bases
 
     def _get_group_params_for_trigger(self, trigger_base: str) -> Optional[dict]:
         """Look up the group parameters for a trigger base (needed for EMA dynamic columns)."""
@@ -428,7 +511,9 @@ class SymbolHub:
             from confluence_groups import get_enabled_groups, get_group_triggers
             for group in get_enabled_groups():
                 for trig in get_group_triggers(group):
-                    if trig.base_trigger == trigger_base:
+                    # Match either short base ("buy_ib") or full name ("utbot_v2_buy_ib")
+                    full_name = f"{group.base_template}_{trig.base_trigger}"
+                    if trig.base_trigger == trigger_base or full_name == trigger_base:
                         return group.parameters
         except Exception:
             pass
@@ -437,6 +522,7 @@ class SymbolHub:
     def _check_intrabar_triggers(self, price: float, timestamp: datetime):
         """Evaluate intra-bar triggers against cached levels on every tick."""
         from alerts import save_alert, enrich_signal_with_portfolio_context, load_alert_config
+        from triggers import calculate_stop_price
 
         for strat in self.strategies:
             strat_id = strat['id']
@@ -473,22 +559,75 @@ class SymbolHub:
                                                       cooldown_seconds=cooldown_secs):
                         continue
 
+                    # Determine signal type based on trigger direction
+                    entry_trigger = strat.get('entry_trigger') or ''
+                    sig_type = 'entry_signal' if trigger_base == entry_trigger else 'exit_signal'
+
+                    # Position gate: only fire entry when flat, exit when in position
+                    in_pos = self._position_state.get(strat_id, False)
+                    if sig_type == 'entry_signal' and in_pos:
+                        continue
+                    if sig_type == 'exit_signal' and not in_pos:
+                        continue
+
                     # Mark as fired for dedup
                     if dedup_key not in self._intrabar_fired:
                         self._intrabar_fired[dedup_key] = set()
                     self._intrabar_fired[dedup_key].add(base_no_ib)
 
-                    # Determine signal type based on trigger direction
-                    entry_cid = strat.get('entry_trigger_confluence_id', '')
-                    sig_type = 'entry_signal' if entry_cid.endswith(trigger_base) else 'exit_signal'
+                    # Capture entry details BEFORE clearing (needed for exit quantity)
+                    prior_entry = self._position_entry.get(strat_id)
+
+                    # Update position state and entry tracking
+                    if sig_type == 'entry_signal':
+                        self._position_state[strat_id] = True
+                    elif sig_type == 'exit_signal':
+                        self._position_state[strat_id] = False
+                        self._position_entry.pop(strat_id, None)
 
                     level = self._trigger_cache.get_level(cache_key)
+
+                    # Calculate stop price and ATR for quantity derivation
+                    stop_price = None
+                    atr_val = None
+                    if sig_type == 'entry_signal':
+                        builder = self.builders.get(strat_tf)
+                        if builder and len(builder.history) > 0:
+                            last_bar = builder.history.iloc[-1]
+                            atr_val = last_bar.get('atr', price * 0.01)
+                            if pd.isna(atr_val) or atr_val <= 0:
+                                atr_val = price * 0.01
+                            direction = strat.get('direction', 'LONG')
+                            stop_cfg = strat.get('stop_config') or {
+                                "method": "atr",
+                                "atr_mult": strat.get("stop_atr_mult", 1.5),
+                            }
+                            try:
+                                stop_price = calculate_stop_price(
+                                    price, direction, last_bar,
+                                    builder.history, len(builder.history) - 1,
+                                    stop_cfg,
+                                )
+                            except Exception:
+                                pass
+
+                    # Track entry details for managed exit monitoring
+                    if sig_type == 'entry_signal':
+                        entry_builder = self.builders.get(strat_tf)
+                        self._position_entry[strat_id] = {
+                            'entry_price': price,
+                            'stop_price': float(stop_price) if stop_price is not None else None,
+                            'entry_bar_count': len(entry_builder.history) if entry_builder else 0,
+                            'direction': strat.get('direction', 'LONG'),
+                        }
 
                     sig = {
                         'type': sig_type,
                         'trigger': trigger_base,
                         'bar_time': timestamp.isoformat(),
                         'price': price,
+                        'stop_price': float(stop_price) if stop_price is not None else None,
+                        'atr': float(atr_val) if atr_val is not None else None,
                         'level': 'strategy',
                         'strategy_id': strat_id,
                         'strategy_name': strat.get('name', f"Strategy {strat_id}"),
@@ -500,6 +639,12 @@ class SymbolHub:
                         'source': 'intra_bar',
                         'intrabar_level': float(level) if level is not None else None,
                     }
+
+                    # For exit signals, attach entry parameters so webhook
+                    # quantity matches the entry size
+                    if sig_type == 'exit_signal' and prior_entry:
+                        sig['entry_price'] = prior_entry.get('entry_price')
+                        sig['entry_stop_price'] = prior_entry.get('stop_price')
 
                     sig = enrich_signal_with_portfolio_context(sig, strat_id)
                     config = load_alert_config()
@@ -513,20 +658,36 @@ class SymbolHub:
                         self._alert_callback(alert, config)
 
     def _on_bar_close(self, tf_seconds: int, builder: BarBuilder, timestamp: datetime):
-        """Run full pipeline and evaluate signals for all matching strategies."""
+        """Run full pipeline and evaluate signals for all matching strategies.
+
+        Uses _position_state as the single source of truth for position tracking,
+        rather than re-running generate_trades() each bar (which can't see
+        intra-bar entries or streaming-only position changes).
+        """
         from alerts import (
             detect_signals,
             save_alert,
             enrich_signal_with_portfolio_context,
             load_alert_config,
+            _run_pipeline,
         )
         from data_loader import get_required_tfs_from_confluence, get_tf_from_label, get_tf_label
+        from indicators import run_indicators_for_group
+        from confluence_groups import get_enabled_groups
 
         df = builder.history
         if len(df) < 10:
             return  # Not enough data for reliable signals
 
         config = load_alert_config()
+
+        # Build enriched DataFrame with group-specific indicators (e.g. utbot_stop_prev).
+        # These must be present BEFORE detect_signals → _run_pipeline → detect_all_triggers
+        # so that group trigger columns (trig_utbot_v2_buy, etc.) get created.
+        enabled_groups = get_enabled_groups()
+        df_enriched = _run_pipeline(df.copy())
+        for group in enabled_groups:
+            df_enriched = run_indicators_for_group(df_enriched, group)
 
         for strat in self.strategies:
             strat_tf = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
@@ -554,8 +715,11 @@ class SymbolHub:
                             if len(sec_history) > 0:
                                 secondary_tf_dfs[lbl] = sec_history.copy()
 
-                signals = detect_signals(strat, df=df.copy(),
-                                         secondary_tf_dfs=secondary_tf_dfs)
+                # Use _position_state as authoritative position tracker
+                in_pos = self._position_state.get(strat_id, False)
+                signals = detect_signals(strat, df=df_enriched.copy(),
+                                         secondary_tf_dfs=secondary_tf_dfs,
+                                         override_in_position=in_pos)
 
                 # Track confluence state for intra-bar gating
                 confluence_set = set(strat.get('confluence', []))
@@ -569,18 +733,27 @@ class SymbolHub:
                 else:
                     self._confluence_met[strat_id] = True
 
-                # Update trigger cache for intra-bar triggers
+                # Update trigger cache for intra-bar triggers (reuse enriched df)
                 ib_bases = self._get_intrabar_trigger_bases(strat)
-                for trigger_base in ib_bases:
-                    group_params = self._get_group_params_for_trigger(trigger_base)
-                    self._trigger_cache.update_from_indicators(
-                        strat_id, trigger_base, df, group_params)
+                if ib_bases:
+                    for trigger_base in ib_bases:
+                        group_params = self._get_group_params_for_trigger(trigger_base)
+                        self._trigger_cache.update_from_indicators(
+                            strat_id, trigger_base, df_enriched, group_params)
+
+                # Evaluate stop/bar-count exits for strategies without
+                # explicit exit triggers (managed by the engine)
+                if in_pos and not signals:
+                    exit_sig = self._check_managed_exits(strat, builder, timestamp)
+                    if exit_sig:
+                        signals.append(exit_sig)
+
+                # Get fired intra-bar trigger bases for dedup at bar-close
+                # (must read BEFORE clearing for next bar period)
+                fired_ib = self._intrabar_fired.get(dedup_key, set()).copy()
 
                 # Clear intra-bar dedup set for this strategy/TF (new bar period)
                 self._intrabar_fired.pop(dedup_key, None)
-
-                # Get fired intra-bar trigger bases for dedup at bar-close
-                fired_ib = self._intrabar_fired.get(dedup_key, set())
 
                 for sig in signals:
                     # Enrich — mirrors alert_monitor.py poll_strategies() pattern
@@ -594,6 +767,27 @@ class SymbolHub:
                     sig['strategy_alerts_visible'] = True
                     sig['source'] = 'streaming'
 
+                    sig_type = sig.get('type', '')
+
+                    # For exit signals, attach entry parameters so webhook
+                    # quantity matches the entry size (risk / stop-distance)
+                    if sig_type == 'exit_signal':
+                        entry = self._position_entry.get(strat_id)
+                        if entry:
+                            sig['entry_price'] = entry.get('entry_price')
+                            sig['entry_stop_price'] = entry.get('stop_price')
+
+                    # Position gate (safety net — detect_signals uses override,
+                    # but guard against edge cases)
+                    if sig_type == 'entry_signal' and self._position_state.get(strat_id, False):
+                        logger.debug("Bar-close entry suppressed (already in position): %s",
+                                     strat.get('name'))
+                        continue
+                    if sig_type == 'exit_signal' and not self._position_state.get(strat_id, False):
+                        logger.debug("Bar-close exit suppressed (not in position): %s",
+                                     strat.get('name'))
+                        continue
+
                     # Dedup: suppress bar-close if trigger already fired intra-bar
                     trigger_name = sig.get('trigger', '')
                     if trigger_name.removesuffix('_ib') in fired_ib:
@@ -603,15 +797,28 @@ class SymbolHub:
                     sig = enrich_signal_with_portfolio_context(sig, strat_id)
 
                     # Cooldown — prevents re-firing the same signal type within one bar
-                    cooldown_key = f"{strat_id}:{sig.get('type', 'unknown')}"
+                    cooldown_key = f"{strat_id}:{sig_type}"
                     if not self._cooldown.can_fire(cooldown_key, timestamp,
                                                    cooldown_seconds=float(tf_seconds)):
                         logger.debug("Alert suppressed by cooldown: %s", cooldown_key)
                         continue
 
+                    # Update position state and entry tracking AFTER all gates pass
+                    if sig_type == 'entry_signal':
+                        self._position_state[strat_id] = True
+                        self._position_entry[strat_id] = {
+                            'entry_price': sig.get('price'),
+                            'stop_price': sig.get('stop_price'),
+                            'entry_bar_count': len(builder.history),
+                            'direction': strat.get('direction', 'LONG'),
+                        }
+                    elif sig_type == 'exit_signal':
+                        self._position_state[strat_id] = False
+                        self._position_entry.pop(strat_id, None)
+
                     alert = save_alert(sig)
                     logger.info("Streaming alert: %s for %s (%s)",
-                                sig.get('type'), strat.get('name'), self.symbol)
+                                sig_type, strat.get('name'), self.symbol)
 
                     if self._alert_callback:
                         self._alert_callback(alert, config)
@@ -619,6 +826,74 @@ class SymbolHub:
             except Exception as e:
                 logger.error("Error evaluating %s on %s: %s",
                              strat.get('name', strat['id']), self.symbol, e)
+
+    def _check_managed_exits(self, strat: dict, builder: BarBuilder,
+                             timestamp: datetime) -> Optional[dict]:
+        """Evaluate stop-loss and bar-count exits for positions tracked by the engine.
+
+        Called when _position_state says we're in position but detect_signals()
+        returned no signals (typically because the strategy has no explicit exit
+        triggers — exits are managed by stop/target/bar-count instead).
+
+        Returns an exit signal dict if exit conditions are met, else None.
+        """
+        strat_id = strat['id']
+        entry = self._position_entry.get(strat_id)
+        if not entry:
+            return None
+
+        last_bar = builder.history.iloc[-1]
+        direction = entry.get('direction', 'LONG')
+        stop_price = entry.get('stop_price')
+        close_price = float(last_bar['close'])
+
+        atr_val = last_bar.get('atr', close_price * 0.01)
+        if pd.isna(atr_val) or atr_val <= 0:
+            atr_val = close_price * 0.01
+
+        bar_time = str(last_bar.name) if hasattr(last_bar, 'name') else timestamp.isoformat()
+
+        # Check stop-loss
+        if stop_price is not None:
+            stopped = False
+            if direction == 'LONG' and float(last_bar['low']) <= float(stop_price):
+                stopped = True
+            elif direction == 'SHORT' and float(last_bar['high']) >= float(stop_price):
+                stopped = True
+            if stopped:
+                logger.info("Managed exit: stop hit for %s (%s)", strat.get('name'), self.symbol)
+                return {
+                    "type": "exit_signal",
+                    "trigger": "stop_loss",
+                    "confluence_met": [],
+                    "bar_time": bar_time,
+                    "price": close_price,
+                    "stop_price": None,
+                    "atr": float(atr_val),
+                    "entry_price": entry.get('entry_price'),
+                    "entry_stop_price": entry.get('stop_price'),
+                }
+
+        # Check bar-count exit
+        bar_count_exit = strat.get('bar_count_exit')
+        if bar_count_exit:
+            bars_held = len(builder.history) - entry.get('entry_bar_count', len(builder.history))
+            if bars_held >= int(bar_count_exit):
+                logger.info("Managed exit: bar count (%d >= %d) for %s (%s)",
+                            bars_held, int(bar_count_exit), strat.get('name'), self.symbol)
+                return {
+                    "type": "exit_signal",
+                    "trigger": "bar_count_exit",
+                    "confluence_met": [],
+                    "bar_time": bar_time,
+                    "price": close_price,
+                    "stop_price": None,
+                    "atr": float(atr_val),
+                    "entry_price": entry.get('entry_price'),
+                    "entry_stop_price": entry.get('stop_price'),
+                }
+
+        return None
 
 
 # =============================================================================
@@ -730,6 +1005,9 @@ class UnifiedStreamingEngine:
                         logger.error("Warmup load failed for %s/%s: %s", sym, reg_tf_str, e)
                         warmup_df = pd.DataFrame()
                     hub.add_timeframe(reg_tf_sec, warmup_df)
+
+            # Initialize position state and trigger cache from warmup data
+            hub._init_position_state()
 
             self.hubs[sym] = hub
 

@@ -14,7 +14,7 @@ Usage:
 
 import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -194,7 +194,7 @@ def load_from_mock(
         start = start_date
         end = end_date
     else:
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+        end = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
         start = end - timedelta(days=days)
 
     # Vary seed by symbol for different price patterns

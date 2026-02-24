@@ -311,6 +311,7 @@ def generate_trades(
         DataFrame with trade records
     """
     trades = []
+    entry_trigger = entry_trigger or ''
     entry_col = f"trig_{entry_trigger}"
 
     # _ib triggers share the boolean column with their bar-close base
@@ -334,7 +335,7 @@ def generate_trades(
     # Build effective exit triggers list (backward compat)
     effective_exit_triggers = []
     if exit_triggers is not None:
-        effective_exit_triggers = list(exit_triggers)
+        effective_exit_triggers = [et for et in exit_triggers if et]
     elif exit_trigger is not None:
         # Legacy single exit_trigger — wrap in list if it's a signal trigger
         if exit_trigger not in EXIT_TYPES:

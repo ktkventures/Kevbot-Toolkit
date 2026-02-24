@@ -11,7 +11,7 @@ Run with: streamlit run src/app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from itertools import combinations
 import plotly.graph_objects as go
 import plotly.express as px
@@ -668,8 +668,9 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
 
     # Start before forward_test_start to have backtest data + indicator warmup
     start_date = forward_test_start_dt - timedelta(days=data_days * 2)
-    # Round end_date to market close today for cache-friendly behavior
-    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+    # Round end_date to end-of-day UTC for cache-friendly behavior
+    # (23:59 UTC covers all US market sessions including extended hours)
+    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
 
     strat_timeframe = strat.get('timeframe', '1Min')
     # Determine required secondary TFs from strategy's confluence conditions
@@ -795,7 +796,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         since_as_dt = since_as_dt.replace(tzinfo=None)
 
     start_date = since_as_dt - timedelta(days=warmup_days)
-    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
 
     from data_loader import get_required_tfs_from_confluence, get_tf_from_label
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
@@ -1221,9 +1222,10 @@ def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
 
     if boundary_dt is not None:
         # Match timezone
-        boundary_ts = boundary_dt
+        boundary_ts = pd.Timestamp(boundary_dt)
         if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
-            boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity["exit_time"].dtype.tz)
+            target_tz = equity["exit_time"].dtype.tz
+            boundary_ts = boundary_ts.tz_convert(target_tz) if boundary_ts.tzinfo else boundary_ts.tz_localize(target_tz)
 
         bt_mask = equity["exit_time"] < boundary_ts
         fw_mask = equity["exit_time"] >= boundary_ts
@@ -1289,7 +1291,8 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
     if boundary_dt is not None:
         boundary_ts = pd.Timestamp(boundary_dt)
         if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
-            boundary_ts = boundary_ts.tz_localize(equity["exit_time"].dtype.tz)
+            target_tz = equity["exit_time"].dtype.tz
+            boundary_ts = boundary_ts.tz_convert(target_tz) if boundary_ts.tzinfo else boundary_ts.tz_localize(target_tz)
         fw_mask = equity["exit_time"] >= boundary_ts
         if fw_mask.any():
             boundary_index = int(fw_mask.idxmax())
@@ -2395,7 +2398,30 @@ def apply_confluence_filters(df: pd.DataFrame, filters: dict, search_query: str,
 # CHART RENDERING
 # =============================================================================
 
+def _days_since(dt: datetime) -> int:
+    """Return days elapsed since *dt*, handling tz-aware and naive datetimes."""
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return (now - dt).days
+
+
 CANDLE_PRESET_OPTIONS = ["Default", "50", "100", "200", "400", "All"]
+
+def _do_chart_refresh():
+    """Full data refresh: re-fetch market data, recompute trades, clear all caches."""
+    strategy_id = st.session_state.get('viewing_strategy_id')
+    if strategy_id is not None:
+        # refresh_strategy_data is defined later in the file; safe at call time
+        refresh_strategy_data(strategy_id)
+        if 'strategy_trades_cache' in st.session_state:
+            st.session_state.strategy_trades_cache.pop(strategy_id, None)
+        st.session_state.pop(f"bt_trades_{strategy_id}", None)
+        st.session_state.pop(f"ft_data_{strategy_id}", None)
+        for _k in [k for k in list(st.session_state)
+                   if k.startswith(f"bt_ext_{strategy_id}_")
+                   or k.startswith(f"ft_ext_{strategy_id}_")]:
+            st.session_state.pop(_k, None)
+    prepare_data_with_indicators.clear()
+
 
 def render_candle_selector(chart_key: str) -> int:
     """Render a compact visible-candles selector and return the selected value.
@@ -2403,8 +2429,12 @@ def render_candle_selector(chart_key: str) -> int:
     Returns the number of visible candles (0 = All).
     "Default" uses the global sidebar preset (returns None → caller passes None to render_price_chart).
     """
-    _, right = st.columns([5, 1])
-    with right:
+    _, col_refresh, col_candles = st.columns([5, 0.6, 1])
+    with col_refresh:
+        if st.button("Refresh", key=f"refresh_chart_{chart_key}"):
+            _do_chart_refresh()
+            st.rerun(scope="app")
+    with col_candles:
         choice = st.selectbox(
             "Candles",
             CANDLE_PRESET_OPTIONS,
@@ -2523,11 +2553,18 @@ def render_price_chart(
     # Create entry/exit markers from trades (only within visible window)
     markers = []
     direction = config.get('direction', 'LONG')
+    target_entry_data = []
+    target_exit_data = []
 
     if len(trades) > 0:
-        for _, trade in trades.iterrows():
-            entry_time = int(pd.to_datetime(trade['entry_time']).timestamp())
-            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
+        # Vectorized timestamp conversion — avoid per-row pd.to_datetime
+        _entry_ts = pd.to_datetime(trades['entry_time']).astype(int) // 10**9
+        _exit_ts = pd.to_datetime(trades['exit_time']).astype(int) // 10**9
+        _has_prices = 'entry_price' in trades.columns and 'exit_price' in trades.columns
+
+        for i, (_, trade) in enumerate(trades.iterrows()):
+            entry_time = int(_entry_ts.iloc[i])
+            exit_time = int(_exit_ts.iloc[i])
 
             # Skip trades entirely outside the visible window
             if exit_time < min_time:
@@ -2542,6 +2579,11 @@ def render_price_chart(
                     'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
                     'text': 'Entry'
                 })
+                if _has_prices:
+                    target_entry_data.append({
+                        "time": entry_time,
+                        "value": float(trade['entry_price']),
+                    })
 
             # Exit marker
             is_win = trade.get('win', trade.get('pnl', 0) > 0)
@@ -2552,26 +2594,14 @@ def render_price_chart(
                 'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
                 'text': f"{trade['r_multiple']:+.1f}R"
             })
-
-    # Build target-price markers (left ▸) — entry/exit prices on candle bodies
-    target_entry_data = []
-    target_exit_data = []
-    if len(trades) > 0:
-        for _, trade in trades.iterrows():
-            entry_time = int(pd.to_datetime(trade['entry_time']).timestamp())
-            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
-            if entry_time >= min_time:
-                target_entry_data.append({
-                    "time": entry_time,
-                    "value": float(trade['entry_price']),
-                })
-            if exit_time >= min_time:
+            if _has_prices and exit_time >= min_time:
                 target_exit_data.append({
                     "time": exit_time,
                     "value": float(trade['exit_price']),
                 })
 
     # Build alert-price markers (right ◂) — only when real alerts exist
+    # Pre-parse alert timestamps once and index by type for O(n) matching
     alert_entry_data = []
     alert_exit_data = []
     strategy_id = config.get('id')
@@ -2583,36 +2613,42 @@ def render_price_chart(
                             if a.get('strategy_id') == strategy_id
                             and a.get('price') is not None]
             if strat_alerts:
+                from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC
+                tf_sec = _TF_SEC.get(config.get('timeframe', '1Min'), 60)
+                # Pre-parse timestamps once
+                entry_alerts_parsed = []
+                exit_alerts_parsed = []
+                for alert in strat_alerts:
+                    try:
+                        a_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
+                    except Exception:
+                        continue
+                    a_price = alert.get('price')
+                    if a_price is None:
+                        continue
+                    if alert.get('type') == 'entry_signal':
+                        entry_alerts_parsed.append((a_ts, float(a_price)))
+                    elif alert.get('type') == 'exit_signal':
+                        exit_alerts_parsed.append((a_ts, float(a_price)))
+
+                # Only match trades within visible window
                 for _, trade in trades.iterrows():
                     entry_ts = pd.to_datetime(trade['entry_time']).timestamp()
                     exit_ts = pd.to_datetime(trade['exit_time']).timestamp()
-                    # Match entry alert: within 2 bars of entry_time
-                    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC
-                    tf_sec = _TF_SEC.get(config.get('timeframe', '1Min'), 60)
-                    for alert in strat_alerts:
-                        alert_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
-                        alert_price = alert.get('price')
-                        if alert_price is None:
-                            continue
-                        if alert.get('type') == 'entry_signal' and abs(alert_ts - entry_ts) <= tf_sec * 2:
-                            if int(alert_ts) >= min_time:
-                                alert_entry_data.append({
-                                    "time": int(entry_ts),
-                                    "value": float(alert_price),
-                                })
-                            break
-                    for alert in strat_alerts:
-                        alert_ts = pd.to_datetime(alert.get('bar_time', alert.get('timestamp', ''))).timestamp()
-                        alert_price = alert.get('price')
-                        if alert_price is None:
-                            continue
-                        if alert.get('type') == 'exit_signal' and abs(alert_ts - exit_ts) <= tf_sec * 2:
-                            if int(alert_ts) >= min_time:
-                                alert_exit_data.append({
-                                    "time": int(exit_ts),
-                                    "value": float(alert_price),
-                                })
-                            break
+                    if exit_ts < min_time:
+                        continue
+                    # Match entry alert
+                    if entry_ts >= min_time:
+                        for a_ts, a_price in entry_alerts_parsed:
+                            if abs(a_ts - entry_ts) <= tf_sec * 2:
+                                alert_entry_data.append({"time": int(entry_ts), "value": a_price})
+                                break
+                    # Match exit alert
+                    if exit_ts >= min_time:
+                        for a_ts, a_price in exit_alerts_parsed:
+                            if abs(a_ts - exit_ts) <= tf_sec * 2:
+                                alert_exit_data.append({"time": int(exit_ts), "value": a_price})
+                                break
         except Exception:
             pass  # Alerts not available — skip alert-price markers
 
@@ -2747,14 +2783,11 @@ def render_price_chart(
     if show_indicators:
         for ind_id in show_indicators:
             if ind_id in candles.columns:
-                # Prepare indicator data
-                ind_data = []
-                for _, row in candles.iterrows():
-                    if pd.notna(row.get(ind_id)):
-                        ind_data.append({
-                            "time": int(row['time']),
-                            "value": float(row[ind_id])
-                        })
+                # Prepare indicator data (vectorized)
+                _mask = candles[ind_id].notna()
+                _filtered = candles.loc[_mask, ['time', ind_id]]
+                ind_data = [{"time": int(t), "value": float(v)}
+                            for t, v in zip(_filtered['time'], _filtered[ind_id])]
 
                 if ind_data:
                     # Get color for this indicator (prefer confluence group colors, fallback to defaults)
@@ -2881,7 +2914,7 @@ def save_strategy(strategy: dict):
 
     # Forward testing is always on
     strategy['forward_testing'] = True
-    strategy['forward_test_start'] = strategy['created_at']
+    strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
 
     # Convert set to list for JSON serialization
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
@@ -2953,12 +2986,12 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
 
         if optimizable_changed:
             # Trade-affecting change: reset forward test
-            updated_strategy['forward_test_start'] = datetime.now().isoformat()
+            updated_strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
             result = 'reset'
         else:
             # Non-trade-affecting: preserve forward test data from old strategy
             updated_strategy['forward_test_start'] = strat.get(
-                'forward_test_start', datetime.now().isoformat())
+                'forward_test_start', datetime.now(timezone.utc).isoformat())
             updated_strategy['stored_trades'] = strat.get('stored_trades', [])
             updated_strategy['equity_curve_data'] = strat.get('equity_curve_data')
             updated_strategy['data_refreshed_at'] = strat.get('data_refreshed_at')
@@ -3091,7 +3124,7 @@ def refresh_strategy_data(strategy_id: int) -> bool:
                                    if e.get('type') == 'exit' and e.get('matched_trade_index') is not None]
                 if _new_exit_execs:
                     from portfolios import get_portfolio_alert_context, add_ledger_entry as _add_ledger
-                    _port_contexts = get_portfolio_alert_context(sid)
+                    _port_contexts = get_portfolio_alert_context(strategy_id)
                     for _pctx in _port_contexts:
                         _pid = _pctx['portfolio_id']
                         _risk = _pctx.get('risk_per_trade', 100.0)
@@ -3591,7 +3624,7 @@ def _is_within_days(timestamp_str: str, days: int) -> bool:
     """Check if an ISO timestamp string is within the last N days."""
     try:
         dt = datetime.fromisoformat(timestamp_str)
-        return (datetime.now() - dt).days <= days
+        return _days_since(dt) <= days
     except (ValueError, TypeError):
         return False
 
@@ -3624,7 +3657,7 @@ def render_strategy_builder():
             _eb1, _eb2 = st.columns([5, 1])
             _ft_start = editing_strat.get('forward_test_start')
             if _ft_start:
-                _ft_days = (datetime.now() - datetime.fromisoformat(_ft_start)).days
+                _ft_days = _days_since(datetime.fromisoformat(_ft_start))
                 _eb1.info(f"Editing: **{editing_strat['name']}** (forward test: {_ft_days}d)")
             else:
                 _eb1.info(f"Editing: **{editing_strat['name']}**")
@@ -5345,8 +5378,8 @@ def render_strategy_builder():
                 'general_confluences': [c for c in selected if c.startswith("GEN-")],
             }
             if _has_optimizable_changes(_original_strat, _pending_config):
-                _ft_days = (datetime.now() - datetime.fromisoformat(
-                    _original_strat['forward_test_start'])).days
+                _ft_days = _days_since(datetime.fromisoformat(
+                    _original_strat['forward_test_start']))
                 st.warning(
                     f"Trade-affecting parameters have changed. Saving will "
                     f"reset your forward test ({_ft_days}d of data)."
@@ -5670,7 +5703,7 @@ def render_strategy_list():
                 # Fwd days
                 if strat.get('forward_test_start'):
                     _ft_start = datetime.fromisoformat(strat['forward_test_start'])
-                    _ft_days = (datetime.now() - _ft_start).days
+                    _ft_days = _days_since(_ft_start)
                     _caption_parts.append(f'<span style="color:#FF9800">Fwd {_ft_days}d</span>')
                 # Live days
                 _live_execs = strat.get('live_executions', [])
@@ -5678,7 +5711,7 @@ def render_strategy_list():
                     _live_timestamps = [e.get('alert_timestamp', '') for e in _live_execs if e.get('alert_timestamp')]
                     if _live_timestamps:
                         _live_start = datetime.fromisoformat(min(_live_timestamps))
-                        _live_days = (datetime.now() - _live_start).days
+                        _live_days = _days_since(_live_start)
                         _caption_parts.append(f'<span style="color:#4CAF50">Live {_live_days}d</span>')
                 # Monitor badge
                 if sid in _monitored_ids:
@@ -5888,7 +5921,7 @@ def render_strategy_detail(strategy_id: int):
     with action_cols[4]:
         if strat.get('forward_testing') and strat.get('forward_test_start'):
             ft_start = datetime.fromisoformat(strat['forward_test_start'])
-            ft_days = (datetime.now() - ft_start).days
+            ft_days = _days_since(ft_start)
             status = f"🟢 Forward Testing ({ft_days}d)"
         elif strat.get('forward_testing'):
             status = "🟢 Forward Testing"
@@ -6426,8 +6459,8 @@ def render_live_backtest(strat: dict):
     confluence_set = confluence_set if confluence_set else None
     extended_data_days = strat.get('extended_data_days', 365)
 
-    # Tab layout — conditionally include Alert Analysis
-    _bt_has_alert_analysis = strat.get('alert_tracking_enabled') and (strat.get('live_executions') or strat.get('discrepancies'))
+    # Tab layout — include Alert Analysis when tracking is enabled
+    _bt_has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
     _bt_tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
@@ -6830,7 +6863,7 @@ def render_forward_test_view(strat: dict):
     """Render the forward test view for a strategy with forward testing enabled."""
     forward_start_str = strat.get('forward_test_start', '')
     forward_start_dt = datetime.fromisoformat(forward_start_str)
-    duration_days = (datetime.now() - forward_start_dt).days
+    duration_days = _days_since(forward_start_dt)
 
     st.markdown(
         f"**Forward Testing since {forward_start_str[:10]}** "
@@ -6876,8 +6909,8 @@ def render_forward_test_view(strat: dict):
         f"Boundary: {boundary_dt.strftime('%Y-%m-%d')}"
     )
 
-    # Tab layout — conditionally include Alert Analysis
-    _has_alert_analysis = strat.get('alert_tracking_enabled') and (strat.get('live_executions') or strat.get('discrepancies'))
+    # Tab layout — include Alert Analysis when tracking is enabled
+    _has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
     _tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
         "Trade History", "Confluence Analysis", "Configuration", "Alerts"
@@ -7069,14 +7102,181 @@ def render_forward_test_view(strat: dict):
             render_alert_analysis_tab(strat)
 
 
-def render_alert_analysis_tab(strat: dict):
-    """Render Alert Analysis tab: FT vs Live comparison, trade-by-trade detail, discrepancies."""
+def _compute_alert_analysis(strat: dict) -> dict:
+    """Compute all alert analysis data. Results are cached in session state."""
     live_execs = strat.get('live_executions', [])
     stored = strat.get('stored_trades', [])
     discrepancies = strat.get('discrepancies', [])
+    direction = strat.get('direction', 'LONG')
+
+    ft_start_str = strat.get('forward_test_start', '')
+    ft_start_dt = datetime.fromisoformat(ft_start_str) if ft_start_str else None
+    if ft_start_dt and ft_start_dt.tzinfo:
+        ft_start_dt = ft_start_dt.replace(tzinfo=None)
+
+    def _is_ft(t):
+        try:
+            dt = datetime.fromisoformat(t['entry_time'])
+            if dt.tzinfo:
+                dt = dt.replace(tzinfo=None)
+            return ft_start_dt and dt >= ft_start_dt
+        except (ValueError, KeyError):
+            return False
+
+    ft_trades = [t for t in stored if _is_ft(t)] if ft_start_dt else stored
+
+    # Build maps from live executions
+    matched_indices = set()
+    entry_execs = {}
+    exit_execs = {}
+    for ex in live_execs:
+        tidx = ex.get('matched_trade_index')
+        if tidx is not None:
+            matched_indices.add(tidx)
+            if ex.get('type') == 'entry':
+                entry_execs[tidx] = ex
+            elif ex.get('type') == 'exit':
+                exit_execs[tidx] = ex
+
+    # Forward test KPIs
+    ft_r = [t.get('r_multiple', 0) for t in ft_trades]
+    ft_wins = [r for r in ft_r if r > 0]
+    ft_losses = [r for r in ft_r if r < 0]
+    ft_total = len(ft_r)
+    ft_wr = (len(ft_wins) / ft_total * 100) if ft_total > 0 else 0
+    ft_pf = (sum(ft_wins) / abs(sum(ft_losses))) if ft_losses else float('inf')
+    ft_avg_r = (sum(ft_r) / ft_total) if ft_total > 0 else 0
+    ft_total_r = sum(ft_r)
+
+    # Live KPIs
+    live_r = []
+    for idx in sorted(matched_indices):
+        if idx < len(stored):
+            entry_slip = entry_execs.get(idx, {}).get('slippage_r', 0)
+            exit_slip = exit_execs.get(idx, {}).get('slippage_r', 0)
+            adj_r = stored[idx].get('r_multiple', 0) - entry_slip - exit_slip
+            live_r.append(adj_r)
+    live_wins = [r for r in live_r if r > 0]
+    live_losses = [r for r in live_r if r < 0]
+    live_total = len(live_r)
+    live_wr = (len(live_wins) / live_total * 100) if live_total > 0 else 0
+    live_pf = (sum(live_wins) / abs(sum(live_losses))) if live_losses else float('inf')
+    live_avg_r = (sum(live_r) / live_total) if live_total > 0 else 0
+    live_total_r = sum(live_r)
+
+    all_slippages = [ex.get('slippage_r', 0) for ex in live_execs]
+    avg_slippage = (sum(all_slippages) / len(all_slippages)) if all_slippages else 0
+    webhook_success = sum(1 for ex in live_execs if ex.get('webhook_delivered'))
+    webhook_rate = (webhook_success / len(live_execs) * 100) if live_execs else 0
+    missed_count = sum(1 for d in discrepancies if d.get('type') == 'missed_alert')
+    phantom_count = sum(1 for d in discrepancies if d.get('type') == 'phantom_alert')
+
+    # ft_start_idx
+    ft_start_idx = 0
+    if ft_start_dt:
+        for i, t in enumerate(stored):
+            try:
+                dt = datetime.fromisoformat(t['entry_time'])
+                if dt.tzinfo:
+                    dt = dt.replace(tzinfo=None)
+                if dt >= ft_start_dt:
+                    ft_start_idx = i
+                    break
+            except (ValueError, KeyError):
+                pass
+
+    # Timing rows
+    from datetime import timezone as _tz2
+    def _to_utc(s):
+        dt = datetime.fromisoformat(s)
+        return dt.astimezone(_tz2.utc).replace(tzinfo=None)
+
+    timing_rows = []
+    for ex in live_execs:
+        tidx = ex.get('matched_trade_index')
+        trade = stored[tidx] if tidx is not None and tidx < len(stored) else {}
+        if ex.get('type') == 'entry':
+            theo_time_raw = trade.get('entry_time', '')
+        else:
+            theo_time_raw = trade.get('exit_time', '')
+        alert_time_raw = ex.get('alert_timestamp', '')
+        time_delta_s = None
+        try:
+            if theo_time_raw and alert_time_raw:
+                theo_dt = _to_utc(theo_time_raw)
+                alert_dt = _to_utc(alert_time_raw)
+                time_delta_s = (alert_dt - theo_dt).total_seconds()
+        except (ValueError, TypeError):
+            pass
+        theo_price = ex.get('theoretical_price', 0)
+        alert_price = ex.get('alert_price', 0)
+        price_delta = alert_price - theo_price if alert_price and theo_price else None
+        timing_rows.append({
+            "Trade #": (tidx - ft_start_idx + 1) if tidx is not None else "?",
+            "Type": ex.get('type', '').title(),
+            "Source": ex.get('source', 'unknown').replace('_', ' ').title(),
+            "Theo Time": theo_time_raw[:19].replace('T', ' ') if theo_time_raw else "\u2014",
+            "Alert Time": alert_time_raw[:19].replace('T', ' ') if alert_time_raw else "\u2014",
+            "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
+            "Theo Price": f"${theo_price:.2f}" if theo_price else "\u2014",
+            "Alert Price": f"${alert_price:.2f}" if alert_price else "\u2014",
+            "Price \u0394": f"${price_delta:+.2f}" if price_delta is not None else "\u2014",
+            "Slip (R)": f"{ex.get('slippage_r', 0):+.4f}",
+        })
+
+    entry_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'entry']
+    exit_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'exit']
+    time_deltas = [r["Time \u0394 (s)"] for r in timing_rows if r["Time \u0394 (s)"] != "\u2014"]
+    time_vals = [float(t) for t in time_deltas] if time_deltas else []
+
+    # Trade-by-trade rows
+    tbt_rows = []
+    for trade_num, idx in enumerate(range(ft_start_idx, len(stored))):
+        t = stored[idx]
+        entry_ex = entry_execs.get(idx)
+        exit_ex = exit_execs.get(idx)
+        ft_r_val = t.get('r_multiple', 0)
+        entry_slip = entry_ex.get('slippage_r', 0) if entry_ex else None
+        exit_slip = exit_ex.get('slippage_r', 0) if exit_ex else None
+        total_slip = (entry_slip or 0) + (exit_slip or 0)
+        live_r_val = ft_r_val - total_slip if idx in matched_indices else None
+        entry_time_str = t.get('entry_time', '')[:16].replace('T', ' ')
+        exit_time_str = t.get('exit_time', '')[:16].replace('T', ' ')
+        tbt_rows.append({
+            "Trade #": trade_num + 1,
+            "Entry": entry_time_str,
+            "Exit": exit_time_str,
+            "FT R": round(ft_r_val, 3),
+            "Live R": round(live_r_val, 3) if live_r_val is not None else "\u2014",
+            "Delta R": round(ft_r_val - live_r_val, 3) if live_r_val is not None else "\u2014",
+            "Entry Slip": f"{entry_slip:+.4f}" if entry_slip is not None else "\u2014",
+            "Exit Slip": f"{exit_slip:+.4f}" if exit_slip is not None else "\u2014",
+            "Webhook": "\u2705" if (entry_ex or exit_ex) and (entry_ex or {}).get('webhook_delivered', False) else ("\u274c" if idx in matched_indices else "\u2014"),
+        })
+
+    return {
+        'ft_trades': ft_trades, 'ft_total': ft_total, 'ft_wr': ft_wr, 'ft_pf': ft_pf,
+        'ft_avg_r': ft_avg_r, 'ft_total_r': ft_total_r,
+        'live_total': live_total, 'live_wr': live_wr, 'live_pf': live_pf,
+        'live_avg_r': live_avg_r, 'live_total_r': live_total_r,
+        'avg_slippage': avg_slippage, 'webhook_success': webhook_success,
+        'webhook_rate': webhook_rate, 'missed_count': missed_count, 'phantom_count': phantom_count,
+        'matched_indices': matched_indices, 'timing_rows': timing_rows,
+        'entry_slips': entry_slips, 'exit_slips': exit_slips, 'time_vals': time_vals,
+        'tbt_rows': tbt_rows, 'ft_start_idx': ft_start_idx,
+    }
+
+
+def render_alert_analysis_tab(strat: dict):
+    """Render Alert Analysis tab: FT vs Live comparison, trade-by-trade detail, discrepancies."""
+    live_execs = strat.get('live_executions', [])
+    discrepancies = strat.get('discrepancies', [])
 
     if not live_execs and not discrepancies:
-        st.info("No live execution data or discrepancies available for analysis.")
+        st.info(
+            "No live execution data or discrepancies available yet. "
+            "Click **Refresh** (on the price chart or action bar) to match recent alerts against forward test trades."
+        )
         return
 
     if not live_execs and discrepancies:
@@ -7109,72 +7309,27 @@ def render_alert_analysis_tab(strat: dict):
         st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
         return
 
-    ft_start_str = strat.get('forward_test_start', '')
-    ft_start_dt = datetime.fromisoformat(ft_start_str) if ft_start_str else None
-    if ft_start_dt and ft_start_dt.tzinfo:
-        ft_start_dt = ft_start_dt.replace(tzinfo=None)
+    # Use cached analysis data (recomputed only after refresh)
+    _aa_cache_key = f"alert_analysis_{strat['id']}"
+    _aa_refreshed = strat.get('data_refreshed_at', '')
+    if _aa_cache_key not in st.session_state or st.session_state.get(f"{_aa_cache_key}_ts") != _aa_refreshed:
+        st.session_state[_aa_cache_key] = _compute_alert_analysis(strat)
+        st.session_state[f"{_aa_cache_key}_ts"] = _aa_refreshed
 
-    # Identify forward test trades from stored_trades
-    def _is_ft(t):
-        try:
-            dt = datetime.fromisoformat(t['entry_time'])
-            if dt.tzinfo:
-                dt = dt.replace(tzinfo=None)
-            return ft_start_dt and dt >= ft_start_dt
-        except (ValueError, KeyError):
-            return False
+    aa = st.session_state[_aa_cache_key]
 
-    ft_trades = [t for t in stored if _is_ft(t)] if ft_start_dt else stored
-
-    # Build maps from live executions
-    matched_indices = set()
-    entry_execs = {}  # trade_index -> exec
-    exit_execs = {}   # trade_index -> exec
-    for ex in live_execs:
-        tidx = ex.get('matched_trade_index')
-        if tidx is not None:
-            matched_indices.add(tidx)
-            if ex.get('type') == 'entry':
-                entry_execs[tidx] = ex
-            elif ex.get('type') == 'exit':
-                exit_execs[tidx] = ex
+    ft_trades = aa['ft_trades']
+    ft_total = aa['ft_total']; ft_wr = aa['ft_wr']; ft_pf = aa['ft_pf']
+    ft_avg_r = aa['ft_avg_r']; ft_total_r = aa['ft_total_r']
+    live_total = aa['live_total']; live_wr = aa['live_wr']; live_pf = aa['live_pf']
+    live_avg_r = aa['live_avg_r']; live_total_r = aa['live_total_r']
+    avg_slippage = aa['avg_slippage']
+    webhook_success = aa['webhook_success']; webhook_rate = aa['webhook_rate']
+    missed_count = aa['missed_count']; phantom_count = aa['phantom_count']
+    matched_indices = aa['matched_indices']
 
     # ── Section A: Summary Metrics ──
     st.markdown("### Summary Metrics")
-
-    # Forward test KPIs
-    ft_r = [t.get('r_multiple', 0) for t in ft_trades]
-    ft_wins = [r for r in ft_r if r > 0]
-    ft_losses = [r for r in ft_r if r < 0]
-    ft_total = len(ft_r)
-    ft_wr = (len(ft_wins) / ft_total * 100) if ft_total > 0 else 0
-    ft_pf = (sum(ft_wins) / abs(sum(ft_losses))) if ft_losses else float('inf')
-    ft_avg_r = (sum(ft_r) / ft_total) if ft_total > 0 else 0
-    ft_total_r = sum(ft_r)
-
-    # Live KPIs (adjust R by slippage for matched trades)
-    live_r = []
-    for idx in sorted(matched_indices):
-        if idx < len(stored):
-            entry_slip = entry_execs.get(idx, {}).get('slippage_r', 0)
-            exit_slip = exit_execs.get(idx, {}).get('slippage_r', 0)
-            adj_r = stored[idx].get('r_multiple', 0) - entry_slip - exit_slip
-            live_r.append(adj_r)
-    live_wins = [r for r in live_r if r > 0]
-    live_losses = [r for r in live_r if r < 0]
-    live_total = len(live_r)
-    live_wr = (len(live_wins) / live_total * 100) if live_total > 0 else 0
-    live_pf = (sum(live_wins) / abs(sum(live_losses))) if live_losses else float('inf')
-    live_avg_r = (sum(live_r) / live_total) if live_total > 0 else 0
-    live_total_r = sum(live_r)
-
-    # Slippage & webhook stats
-    all_slippages = [ex.get('slippage_r', 0) for ex in live_execs]
-    avg_slippage = (sum(all_slippages) / len(all_slippages)) if all_slippages else 0
-    webhook_success = sum(1 for ex in live_execs if ex.get('webhook_delivered'))
-    webhook_rate = (webhook_success / len(live_execs) * 100) if live_execs else 0
-    missed_count = sum(1 for d in discrepancies if d.get('type') == 'missed_alert')
-    phantom_count = sum(1 for d in discrepancies if d.get('type') == 'phantom_alert')
 
     def _delta_html(fwd_val, live_val, fmt=".2f", pct=False):
         diff = live_val - fwd_val
@@ -7211,49 +7366,29 @@ def render_alert_analysis_tab(strat: dict):
         if delta:
             _r[3].markdown(delta, unsafe_allow_html=True)
 
-    # ── Section B: Trade-by-Trade Comparison ──
-    with st.expander("Trade-by-Trade Comparison", expanded=True):
-        tbt_rows = []
-        ft_start_idx = 0
-        if ft_start_dt:
-            for i, t in enumerate(stored):
-                try:
-                    dt = datetime.fromisoformat(t['entry_time'])
-                    if dt.tzinfo:
-                        dt = dt.replace(tzinfo=None)
-                    if dt >= ft_start_dt:
-                        ft_start_idx = i
-                        break
-                except (ValueError, KeyError):
-                    pass
+    # ── Section B: Trigger Timing Analysis ──
+    timing_rows = aa['timing_rows']
+    with st.expander("Trigger Timing Analysis", expanded=True):
+        if timing_rows:
+            timing_df = pd.DataFrame(timing_rows)
+            st.dataframe(timing_df, use_container_width=True, hide_index=True)
 
-        for trade_num, idx in enumerate(range(ft_start_idx, len(stored))):
-            t = stored[idx]
-            entry_ex = entry_execs.get(idx)
-            exit_ex = exit_execs.get(idx)
-            ft_r_val = t.get('r_multiple', 0)
+            entry_slips = aa['entry_slips']
+            exit_slips = aa['exit_slips']
+            time_vals = aa['time_vals']
+            cols = st.columns(3)
+            if entry_slips:
+                cols[0].metric("Avg Entry Slippage", f"{sum(entry_slips)/len(entry_slips):+.4f}R")
+            if exit_slips:
+                cols[1].metric("Avg Exit Slippage", f"{sum(exit_slips)/len(exit_slips):+.4f}R")
+            if time_vals:
+                cols[2].metric("Avg Time Delta", f"{sum(time_vals)/len(time_vals):+.1f}s")
+        else:
+            st.info("No matched executions to analyze trigger timing.")
 
-            entry_slip = entry_ex.get('slippage_r', 0) if entry_ex else None
-            exit_slip = exit_ex.get('slippage_r', 0) if exit_ex else None
-            total_slip = (entry_slip or 0) + (exit_slip or 0)
-            live_r_val = ft_r_val - total_slip if idx in matched_indices else None
-
-            entry_time_str = t.get('entry_time', '')[:16].replace('T', ' ')
-            exit_time_str = t.get('exit_time', '')[:16].replace('T', ' ')
-
-            row = {
-                "Trade #": trade_num + 1,
-                "Entry": entry_time_str,
-                "Exit": exit_time_str,
-                "FT R": round(ft_r_val, 3),
-                "Live R": round(live_r_val, 3) if live_r_val is not None else "\u2014",
-                "Delta R": round(ft_r_val - live_r_val, 3) if live_r_val is not None else "\u2014",
-                "Entry Slip": f"{entry_slip:+.4f}" if entry_slip is not None else "\u2014",
-                "Exit Slip": f"{exit_slip:+.4f}" if exit_slip is not None else "\u2014",
-                "Webhook": "\u2705" if (entry_ex or exit_ex) and (entry_ex or {}).get('webhook_delivered', False) else ("\u274c" if idx in matched_indices else "\u2014"),
-            }
-            tbt_rows.append(row)
-
+    # ── Section C: Trade-by-Trade Comparison ──
+    tbt_rows = aa['tbt_rows']
+    with st.expander("Trade-by-Trade Comparison", expanded=False):
         if tbt_rows:
             tbt_df = pd.DataFrame(tbt_rows)
             st.dataframe(tbt_df, use_container_width=True, hide_index=True)
@@ -7262,7 +7397,7 @@ def render_alert_analysis_tab(strat: dict):
         else:
             st.info("No forward test trades to compare.")
 
-    # ── Section C: Discrepancy Detail ──
+    # ── Section D: Discrepancy Detail ──
     if discrepancies:
         with st.expander(f"Discrepancies ({len(discrepancies)})", expanded=False):
             missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
@@ -7286,8 +7421,11 @@ def render_alert_analysis_tab(strat: dict):
                 for d in phantom:
                     phantom_data.append({
                         "Alert ID": d.get('alert_id', '?'),
-                        "Timestamp": d.get('alert_timestamp', '')[:16].replace('T', ' '),
-                        "Trigger": d.get('trigger', '\u2014'),
+                        "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
+                        "Timestamp": str(d.get('alert_timestamp', ''))[:19].replace('T', ' '),
+                        "Bar Time": str(d.get('bar_time', ''))[:19].replace('T', ' ') if d.get('bar_time') else "\u2014",
+                        "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
+                        "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
                         "Status": "No matching trade",
                     })
                 st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
@@ -7674,9 +7812,13 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
     equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
 
     # Match timezone awareness for comparison
-    boundary_ts = boundary_dt
+    boundary_ts = pd.Timestamp(boundary_dt)
     if hasattr(equity_df["exit_time"].dtype, 'tz') and equity_df["exit_time"].dtype.tz is not None:
-        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity_df["exit_time"].dtype.tz)
+        target_tz = equity_df["exit_time"].dtype.tz
+        if boundary_ts.tzinfo is not None:
+            boundary_ts = boundary_ts.tz_convert(target_tz)
+        else:
+            boundary_ts = boundary_ts.tz_localize(target_tz)
 
     # Split into backtest and forward portions
     bt_mask = equity_df["exit_time"] < boundary_ts
@@ -9221,21 +9363,67 @@ def _render_send_test_alert(config: dict):
         return
 
     if st.button("Send Test Alert", use_container_width=True):
+        # Build a realistic test alert from the first portfolio's first strategy
+        test_symbol = "TEST"
+        test_direction = "LONG"
+        test_price = 100.00
+        test_stop = 98.50
+        test_atr = 1.50
+        test_risk = 100.0
+        test_strat_name = "Test Alert (E2E Verification)"
+        test_strat_id = 0
+        test_timeframe = "1Min"
+
+        # Try to populate from real portfolio/strategy data
+        try:
+            portfolios = load_portfolios()
+            for port in portfolios:
+                pid = str(port.get('id', ''))
+                pcfg = config.get('portfolios', {}).get(pid, {})
+                port_whs = [wh for wh in pcfg.get('webhooks', []) if wh.get('enabled', True)]
+                if port_whs and port.get('strategies'):
+                    alloc = port['strategies'][0]
+                    strat = get_strategy_by_id(alloc.get('strategy_id'))
+                    if strat:
+                        test_symbol = strat.get('symbol', test_symbol)
+                        test_direction = strat.get('direction', test_direction)
+                        test_risk = alloc.get('risk_per_trade', strat.get('risk_per_trade', test_risk))
+                        test_strat_name = f"Test: {strat.get('name', 'Unknown')}"
+                        test_strat_id = strat.get('id', 0)
+                        test_timeframe = strat.get('timeframe', test_timeframe)
+                        # Use last trade data if available for realistic price/stop
+                        trades = get_strategy_trades(strat)
+                        if len(trades) > 0:
+                            last_trade = trades.iloc[-1]
+                            if 'entry_price' in last_trade and pd.notna(last_trade.get('entry_price')):
+                                test_price = round(float(last_trade['entry_price']), 2)
+                            if 'stop_price' in last_trade and pd.notna(last_trade.get('stop_price')):
+                                test_stop = round(float(last_trade['stop_price']), 2)
+                            test_atr = round(abs(test_price - test_stop) / max(strat.get('stop_atr_mult', 1.5), 0.01), 2)
+                    break
+        except Exception:
+            pass  # Fall back to defaults
+
+        # Calculate quantity from risk and stop distance
+        stop_distance = abs(test_price - test_stop)
+        test_qty = int(test_risk / stop_distance) if stop_distance > 0 else 1
+
         test_alert = {
             "type": "entry_signal",
             "level": "strategy",
-            "symbol": "TEST",
-            "direction": "LONG",
-            "strategy_name": "Test Alert (E2E Verification)",
-            "strategy_id": 0,
-            "price": 100.00,
-            "stop_price": 98.50,
-            "atr": 1.50,
+            "symbol": test_symbol,
+            "direction": test_direction,
+            "strategy_name": test_strat_name,
+            "strategy_id": test_strat_id,
+            "price": test_price,
+            "stop_price": test_stop,
+            "atr": test_atr,
+            "quantity": test_qty,
             "trigger": "test_trigger",
             "confluence_met": ["TEST-CONDITION"],
-            "risk_per_trade": 100.0,
-            "timeframe": "1Min",
-            "timestamp": datetime.now().isoformat(),
+            "risk_per_trade": test_risk,
+            "timeframe": test_timeframe,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "acknowledged": False,
             "webhook_sent": False,
             "portfolio_context": [],

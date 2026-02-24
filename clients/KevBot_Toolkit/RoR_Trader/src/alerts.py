@@ -136,10 +136,20 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
     if not position_risk:
         position_risk = alert.get("risk_per_trade")
 
+    # For exit signals, use entry parameters so exit quantity matches entry size
+    qty_price = price
+    qty_stop = stop_price
+    if alert_type == "exit_signal":
+        entry_price = alert.get("entry_price")
+        entry_stop = alert.get("entry_stop_price")
+        if entry_price and entry_stop:
+            qty_price = entry_price
+            qty_stop = entry_stop
+
     quantity = ""
-    if price and stop_price and position_risk:
+    if qty_price and qty_stop and position_risk:
         try:
-            stop_distance = abs(float(price) - float(stop_price))
+            stop_distance = abs(float(qty_price) - float(qty_stop))
             if stop_distance > 0:
                 quantity = str(int(float(position_risk) / stop_distance))
         except (ValueError, TypeError, ZeroDivisionError):
@@ -592,7 +602,8 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
 
 
 def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
-                   secondary_tf_dfs: dict = None) -> list:
+                   secondary_tf_dfs: dict = None,
+                   override_in_position: bool = None) -> list:
     """
     Run the full pipeline on recent data and check for entry/exit signals.
 
@@ -644,8 +655,8 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
                 pass
 
     # Get trigger IDs
-    entry_trigger = strategy.get('entry_trigger', '')
-    exit_trigger = strategy.get('exit_trigger', '')
+    entry_trigger = strategy.get('entry_trigger') or ''
+    exit_trigger = strategy.get('exit_trigger') or ''
 
     # Map confluence trigger IDs to base trigger IDs if available
     if strategy.get('entry_trigger_confluence_id'):
@@ -656,26 +667,36 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
     # Build exit triggers list (new multi-exit format or legacy single)
     exit_triggers_list = None
     if strategy.get('exit_trigger_confluence_ids'):
-        exit_triggers_list = [_get_base_trigger_id(tid) for tid in strategy['exit_trigger_confluence_ids']]
+        exit_triggers_list = [_get_base_trigger_id(tid) for tid in strategy['exit_trigger_confluence_ids'] if tid]
     elif strategy.get('exit_triggers'):
-        exit_triggers_list = strategy['exit_triggers']
+        exit_triggers_list = [et for et in strategy['exit_triggers'] if et]
 
-    # Determine position state via generate_trades on recent bars
+    # Determine position state
     confluence_set = set(strategy.get('confluence', [])) if strategy.get('confluence') else None
-    trades = generate_trades(
-        df,
-        direction=strategy.get('direction', 'LONG'),
-        entry_trigger=entry_trigger,
-        exit_trigger=exit_trigger,
-        exit_triggers=exit_triggers_list,
-        confluence_required=confluence_set,
-        risk_per_trade=strategy.get('risk_per_trade', 100.0),
-        stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
-        stop_config=strategy.get('stop_config'),
-        target_config=strategy.get('target_config'),
-        bar_count_exit=strategy.get('bar_count_exit'),
-        secondary_tf_map=secondary_tf_map if secondary_tf_map else None,
-    )
+
+    if override_in_position is not None:
+        # Caller (e.g. streaming engine) knows authoritative position state
+        in_position = override_in_position
+    else:
+        trades = generate_trades(
+            df,
+            direction=strategy.get('direction', 'LONG'),
+            entry_trigger=entry_trigger,
+            exit_trigger=exit_trigger,
+            exit_triggers=exit_triggers_list,
+            confluence_required=confluence_set,
+            risk_per_trade=strategy.get('risk_per_trade', 100.0),
+            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+            stop_config=strategy.get('stop_config'),
+            target_config=strategy.get('target_config'),
+            bar_count_exit=strategy.get('bar_count_exit'),
+            secondary_tf_map=secondary_tf_map if secondary_tf_map else None,
+        )
+        in_position = False
+        if len(trades) > 0:
+            last_trade = trades.iloc[-1]
+            if pd.isna(last_trade.get('exit_time')):
+                in_position = True
 
     signals = []
     last_bar = df.iloc[-1]
@@ -705,14 +726,6 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
         if ec not in df.columns and exit_trigger.endswith('_ib'):
             ec = f"trig_{exit_trigger[:-3]}"
         exit_cols = [ec]
-
-    # Determine if currently in position
-    in_position = False
-    if len(trades) > 0:
-        last_trade = trades.iloc[-1]
-        # If last trade has no exit_time or exit_time is NaT, we're in position
-        if pd.isna(last_trade.get('exit_time')):
-            in_position = True
 
     atr_val = last_bar.get('atr', last_bar.get('close', 100) * 0.01)
     if pd.isna(atr_val) or atr_val <= 0:
@@ -1032,26 +1045,46 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
     if not ft_start or not strategy_id:
         return {'live_executions': [], 'discrepancies': []}
 
-    ft_start_dt = datetime.fromisoformat(ft_start)
+    # Normalize all timestamps to UTC-naive for safe comparison.
+    # Alert timestamps are local (no tz), trade times are UTC (+00:00).
+    from datetime import timezone as _tz
+    def _utc_naive(dt):
+        """Convert any datetime to UTC-naive (naive local → UTC, tz-aware → UTC)."""
+        return dt.astimezone(_tz.utc).replace(tzinfo=None)
+
+    ft_start_dt = _utc_naive(datetime.fromisoformat(ft_start))
 
     # Get only forward test trades (after ft_start)
     ft_trades = []
     for idx, t in enumerate(stored_trades):
         try:
-            entry_dt = datetime.fromisoformat(t['entry_time'])
-            if entry_dt.tzinfo:
-                entry_dt = entry_dt.replace(tzinfo=None)
+            entry_dt = _utc_naive(datetime.fromisoformat(t['entry_time']))
             if entry_dt >= ft_start_dt:
                 ft_trades.append((idx, t, entry_dt))
         except (ValueError, KeyError):
             continue
 
-    # Get alerts for this strategy (entry and exit signals only)
-    strategy_alerts = [
-        a for a in alerts
-        if a.get('strategy_id') == strategy_id
-        and a.get('type') in ('entry_signal', 'exit_signal')
-    ]
+    # Get alerts for this strategy, pre-parse timestamps once (avoid O(n²) parsing)
+    entry_alerts = []  # (parsed_dt, alert)
+    exit_alerts = []
+    for a in alerts:
+        if a.get('strategy_id') != strategy_id:
+            continue
+        a_type = a.get('type')
+        if a_type not in ('entry_signal', 'exit_signal'):
+            continue
+        try:
+            a_dt = _utc_naive(datetime.fromisoformat(a['timestamp']))
+        except (ValueError, KeyError):
+            continue
+        if a_type == 'entry_signal':
+            entry_alerts.append((a_dt, a))
+        else:
+            exit_alerts.append((a_dt, a))
+
+    # Sort by time for faster matching
+    entry_alerts.sort(key=lambda x: x[0])
+    exit_alerts.sort(key=lambda x: x[0])
 
     MATCH_WINDOW_SECONDS = 300  # ±5 minutes
 
@@ -1062,50 +1095,32 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
     for trade_idx, trade, trade_entry_dt in ft_trades:
         trade_exit_dt = None
         try:
-            trade_exit_dt = datetime.fromisoformat(trade['exit_time'])
-            if trade_exit_dt.tzinfo:
-                trade_exit_dt = trade_exit_dt.replace(tzinfo=None)
+            trade_exit_dt = _utc_naive(datetime.fromisoformat(trade['exit_time']))
         except (ValueError, KeyError):
             pass
 
         # Find closest entry alert match
         entry_match = None
         best_entry_delta = float('inf')
-        for alert in strategy_alerts:
+        for a_dt, alert in entry_alerts:
             if alert['id'] in matched_alert_ids:
                 continue
-            if alert.get('type') != 'entry_signal':
-                continue
-            try:
-                alert_time = datetime.fromisoformat(alert['timestamp'])
-                if alert_time.tzinfo:
-                    alert_time = alert_time.replace(tzinfo=None)
-                delta = abs((alert_time - trade_entry_dt).total_seconds())
-                if delta < MATCH_WINDOW_SECONDS and delta < best_entry_delta:
-                    entry_match = alert
-                    best_entry_delta = delta
-            except (ValueError, KeyError):
-                continue
+            delta = abs((a_dt - trade_entry_dt).total_seconds())
+            if delta < MATCH_WINDOW_SECONDS and delta < best_entry_delta:
+                entry_match = alert
+                best_entry_delta = delta
 
         # Find closest exit alert match
         exit_match = None
         if trade_exit_dt:
             best_exit_delta = float('inf')
-            for alert in strategy_alerts:
+            for a_dt, alert in exit_alerts:
                 if alert['id'] in matched_alert_ids:
                     continue
-                if alert.get('type') != 'exit_signal':
-                    continue
-                try:
-                    alert_time = datetime.fromisoformat(alert['timestamp'])
-                    if alert_time.tzinfo:
-                        alert_time = alert_time.replace(tzinfo=None)
-                    delta = abs((alert_time - trade_exit_dt).total_seconds())
-                    if delta < MATCH_WINDOW_SECONDS and delta < best_exit_delta:
-                        exit_match = alert
-                        best_exit_delta = delta
-                except (ValueError, KeyError):
-                    continue
+                delta = abs((a_dt - trade_exit_dt).total_seconds())
+                if delta < MATCH_WINDOW_SECONDS and delta < best_exit_delta:
+                    exit_match = alert
+                    best_exit_delta = delta
 
         if entry_match:
             matched_alert_ids.add(entry_match['id'])
@@ -1123,6 +1138,8 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
                 'alert_id': entry_match['id'],
                 'type': 'entry',
                 'alert_timestamp': entry_match.get('timestamp'),
+                'bar_time': entry_match.get('bar_time'),
+                'source': entry_match.get('source', 'unknown'),
                 'alert_price': alert_price,
                 'theoretical_price': theoretical_price,
                 'slippage_r': round((alert_price - theoretical_price) / risk, 4) if risk > 0 else 0,
@@ -1141,6 +1158,8 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
                     'alert_id': exit_match['id'],
                     'type': 'exit',
                     'alert_timestamp': exit_match.get('timestamp'),
+                    'bar_time': exit_match.get('bar_time'),
+                    'source': exit_match.get('source', 'unknown'),
                     'alert_price': exit_alert_price,
                     'theoretical_price': exit_theoretical,
                     'slippage_r': round((exit_alert_price - exit_theoretical) / risk, 4) if risk > 0 else 0,
@@ -1165,21 +1184,19 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
             })
 
     # Phantom alerts: alerts that fired but no matching forward test trade
-    for alert in strategy_alerts:
+    all_parsed_alerts = entry_alerts + exit_alerts
+    for a_dt, alert in all_parsed_alerts:
         if alert['id'] not in matched_alert_ids:
-            # Only flag alerts after forward test start
-            try:
-                alert_time = datetime.fromisoformat(alert['timestamp'])
-                if alert_time.tzinfo:
-                    alert_time = alert_time.replace(tzinfo=None)
-                if alert_time >= ft_start_dt:
-                    discrepancies.append({
-                        'type': 'phantom_alert',
-                        'alert_id': alert['id'],
-                        'alert_timestamp': alert.get('timestamp'),
-                        'detected_at': now_iso,
-                    })
-            except (ValueError, KeyError):
-                continue
+            if a_dt >= ft_start_dt:
+                discrepancies.append({
+                    'type': 'phantom_alert',
+                    'alert_id': alert['id'],
+                    'alert_type': alert.get('type'),
+                    'alert_timestamp': alert.get('timestamp'),
+                    'bar_time': alert.get('bar_time'),
+                    'source': alert.get('source', 'unknown'),
+                    'price': alert.get('price'),
+                    'detected_at': now_iso,
+                })
 
     return {'live_executions': executions, 'discrepancies': discrepancies}

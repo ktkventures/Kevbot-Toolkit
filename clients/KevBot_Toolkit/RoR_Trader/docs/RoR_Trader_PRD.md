@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.45
-**Date:** February 19, 2026
+**Version:** 0.46
+**Date:** February 23, 2026
 **Author:** Kevin Johnson
-**Status:** Gap-aware stop/target fills implemented (Phase 23 partial). Phase 19 COMPLETE. Phases 17A–D, 18A–C, 11–16 complete
+**Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A done, 21C/21E done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
 
 ---
 
@@ -1571,7 +1571,65 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 **Deferred for future phases:**
 - Partial profit taking, pyramiding, dynamic position sizing, event calendar API, GP triggers as entry/exit triggers, new GP templates, RM intra-bar exits
 
-### Phase 21: Scanner Strategy Origin
+### Phase 21: Alert & Execution Fidelity — "Alerts Match Backtest"
+*Ensure streaming alerts (both bar-close and intra-bar) fire with the same timing, direction, and pricing that the backtest logic produces. Provide reliable, real-time validation tools so discrepancies between alert execution and backtest expectations are immediately visible and actionable. This is a critical quality gate before expanding to new strategies or live capital.*
+
+**Why this phase exists:**
+The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and 19. Each phase added capability (webhooks, streaming engine, intra-bar triggers) but integration bugs have surfaced at each layer boundary — trigger name mismatches, missing indicator columns, duplicate signals, empty webhook fields. This phase consolidates all alert-related fixes and adds the validation infrastructure to confirm correctness with confidence.
+
+**21A: Intra-Bar Alert Reliability — DONE**
+- [x] Fix INTRABAR_LEVEL_MAP key mismatch — `_get_intrabar_trigger_bases` now returns full trigger names (e.g., `utbot_v2_buy_ib`) that map correctly after `removesuffix("_ib")`
+- [x] Fix missing group-specific indicator columns — `_on_bar_close` trigger cache enrichment now runs `run_indicators_for_group()` for all enabled confluence groups after `_run_pipeline()`, producing columns like `utbot_stop_prev` and `utbot_stop`
+- [x] Fix intra-bar/bar-close dedup ordering — `fired_ib` set is now read before clearing, so bar-close signals are properly suppressed when the same trigger already fired intra-bar
+- [x] Position state tracking — `_position_state` dict tracks whether each strategy is in a position; entry signals suppressed when already in position, exit signals suppressed when flat
+- [x] Position state initialization — `_init_position_state()` runs `generate_trades()` on warmup data at engine startup to determine current position state, preventing false entry on first tick
+- [x] Trigger cache seeding — intra-bar trigger levels pre-cached from warmup data so crossing detection works from tick one
+- [x] Stop price & quantity in intra-bar webhooks — `calculate_stop_price()` called for intra-bar entry signals so `{{quantity}}` placeholder resolves to a valid number (was empty string, causing SignalStack "invalid values quantity" errors)
+- [x] Fix duplicate entry alerts — entry signals now suppressed when position state is already LONG/SHORT, preventing re-entry alerts on continued level crossing
+- [x] Fix exit triggers not firing — exit signal evaluation was blocked by stale trigger cache; exits now properly evaluate on each bar close and level crossing
+- [x] Fix empty quantity on exit webhooks — exit signal path now resolves `{{quantity}}` from position state instead of recalculating (was producing empty string for exits)
+- [ ] Monitor for edge cases: engine restart mid-position, session boundary crossings, confluence state changes between bars
+
+**21B: Real-Time Price Chart Refresh**
+- [x] "Refresh" button added to every price chart via `render_candle_selector` (same row as candle count dropdown)
+- [ ] Verify chart refresh actually shows data up to the current minute — investigate if `prepare_data_with_indicators` cache, data loader staleness, or Alpaca API delay is causing stale charts even after refresh
+- [ ] Ensure trade history markers update on refresh to reflect the most recent entries/exits
+- [ ] Goal: after clicking Refresh, the price chart and trade markers should reflect data no more than ~1 minute old
+
+**21C: Alert-vs-Backtest Validation — DONE**
+- [x] Trigger Timing Analysis table — shows theoretical trigger time vs actual alert time for each matched execution, with Time Delta (seconds), theoretical vs alert price, and slippage in R-multiples
+- [x] Summary metrics — average entry slippage, average exit slippage, average time delta across all matched executions
+- [x] Enriched execution records — `bar_time` and `source` fields added to entry/exit execution records in `match_alerts_to_trades()` for timing analysis
+- [x] Enriched phantom alert discrepancies — now include `alert_type`, `bar_time`, `source`, and `price` fields for better debugging
+- [x] Alert analysis caching — heavy computation extracted into `_compute_alert_analysis()` with session state cache keyed by `data_refreshed_at` timestamp, eliminating recomputation on tab switches
+- [x] Alert matching performance — pre-parsed timestamps split by entry/exit type before nested loops, sorted for efficient matching (eliminated O(n²) datetime parsing)
+- [x] Trade-by-trade comparison — side-by-side FT vs Live trade comparison with entry/exit price, R-multiple, and win rate comparison
+- [x] Discrepancy detection — missed alerts (FT trades without matching alerts) and phantom alerts (alerts without matching FT trades) surfaced with full context
+
+**21D: Webhook Payload Reliability**
+- [x] Fix empty `{{quantity}}` on exit webhooks — exit signal path now resolves quantity from position state
+- [ ] Audit all webhook placeholder values for both bar-close and intra-bar signal paths — ensure `{{stop_price}}`, `{{order_price}}`, `{{market_position}}`, and `{{order_action}}` always resolve to valid values
+- [ ] Template validation — warn user at webhook creation time if template contains placeholders that may produce invalid JSON
+- [ ] Webhook delivery confirmation — log HTTP response status from SignalStack/other endpoints; surface delivery failures in the Alerts UI
+- [ ] Retry logic for transient webhook failures (timeout, 5xx) with exponential backoff
+
+**21E: Strategy Detail Rendering Performance — DONE**
+- [x] Vectorized price chart timestamps — replaced per-row `pd.to_datetime().timestamp()` with single vectorized conversion on entire Series; reduced Price Chart tab from ~100s to ~7s for strategies with 3000+ trades
+- [x] Merged chart marker loops — entry/exit markers and target price lines now built in a single pass over trades instead of three separate loops
+- [x] Pre-parsed alert timestamps for chart matching — alert timestamps parsed once before trade matching loop with early-skip for out-of-window trades
+- [x] Vectorized indicator overlay — replaced `iterrows()` with column mask + zip for indicator data point extraction
+- [x] Total page render time reduced from 2+ minutes to ~13 seconds (14.6x improvement)
+- [x] All changes purely in rendering/display code — trade generation pipeline and backtest logic completely untouched
+
+**Definition of Done:**
+- Intra-bar and bar-close alerts fire with timing and pricing consistent with backtest logic
+- Price charts refresh to within ~1 minute of current time on demand
+- Webhook payloads always contain valid values for all placeholders
+- No duplicate entry alerts for the same position
+- A clear validation workflow exists to compare alert execution against backtest expectations
+- Strategy detail pages load in under 15 seconds even for strategies with 3000+ trades
+
+### Phase 22: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
 
 - [ ] Add "Scanner" option to Strategy Origin selectbox
@@ -1581,7 +1639,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
-### Phase 22: Sub-Minute Historical Data & HFT Backtesting
+### Phase 23: Sub-Minute Historical Data & HFT Backtesting
 *Build our own sub-minute historical data by recording tick streams for priority tickers, and/or integrate alternative data providers (Databento, Polygon.io, etc.) to enable backtesting on sub-minute timeframes (5s, 10s, 15s, 30s).*
 
 **Problem Statement:**
@@ -1614,7 +1672,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 - Hybrid approach likely best: use a provider for historical backfill, self-record going forward for zero ongoing cost.
 - Sub-minute bars have significantly more noise — strategies built on these timeframes need robust confluence filtering.
 
-### Phase 23: Execution Realism — Spread, Slippage & Order Types
+### Phase 24: Execution Realism — Spread, Slippage & Order Types
 *Improving backtest accuracy and live execution to reflect real-world trading costs. Needs discussion before committing to a direction.*
 
 **Gap-Aware Stop/Target Fills (DONE):**
@@ -1642,7 +1700,7 @@ Track B — Fork work (vendored wrapper with LWC v4.2+):
 
 > **Note:** The gap-fill fix is implemented. The remaining items need discussion to decide overall direction — whether to tackle spread/slippage as a single unified "execution cost" model or as separate independent features, and how order types interact with the existing alert pipeline.
 
-### Phase 24: Low-Priority Cleanup & Enhancements
+### Phase 25: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**

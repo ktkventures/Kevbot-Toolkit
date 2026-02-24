@@ -44,6 +44,31 @@
       "alerts_enabled": true,
       "alert_on_entry": true,
       "alert_on_exit": true
+    },
+    "21": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
+    },
+    "26": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
+    },
+    "28": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
+    },
+    "29": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
+    },
+    "30": {
+      "alerts_enabled": true,
+      "alert_on_entry": true,
+      "alert_on_exit": true
     }
   },
   "portfolios": {
@@ -55,7 +80,7 @@
         {
           "name": "Actual Test",
           "url": "https://webhook.site/80f3c796-5c90-4851-add7-68808f7a0532",
-          "enabled": true,
+          "enabled": false,
           "events": {
             "entry_long": true,
             "entry_short": true,
@@ -97,7 +122,7 @@
         {
           "name": "Demo Webhook AAPL",
           "url": "https://webhook.site/demo-webhook",
-          "enabled": true,
+          "enabled": false,
           "events": {
             "entry_long": true,
             "entry_short": true,
@@ -116,7 +141,7 @@
       "alert_on_compliance_breach": true,
       "webhooks": [
         {
-          "name": "New Webhook",
+          "name": "Signal Stack Test Buy",
           "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
           "enabled": true,
           "events": {
@@ -126,7 +151,7 @@
             "exit_short": false,
             "compliance_breach": false
           },
-          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": 1\n}",
           "id": "wh_2809d7"
         },
         {
@@ -140,8 +165,113 @@
             "exit_short": false,
             "compliance_breach": false
           },
-          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}",
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": 1\n}",
           "id": "wh_a122ea"
+        }
+      ]
+    },
+    "11": {
+      "alerts_enabled": false,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "ttp buy",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": false,
+            "exit_long": false,
+            "exit_short": false,
+            "compliance_breach": false
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_3e344c"
+        },
+        {
+          "name": "ttp sell",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": false,
+            "entry_short": false,
+            "exit_long": true,
+            "exit_short": false,
+            "compliance_breach": false
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_aa0591"
+        }
+      ]
+    },
+    "12": {
+      "alerts_enabled": false,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "New Webhook",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": false,
+            "exit_long": false,
+            "exit_short": false,
+            "compliance_breach": false
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_3e344c"
+        },
+        {
+          "name": "New Webhook",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": false,
+            "entry_short": false,
+            "exit_long": true,
+            "exit_short": false,
+            "compliance_breach": false
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_cb20fd"
+        }
+      ]
+    },
+    "10": {
+      "alerts_enabled": false,
+      "alert_on_signal": true,
+      "alert_on_compliance_breach": true,
+      "webhooks": [
+        {
+          "name": "New Webhook",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": true,
+            "entry_short": false,
+            "exit_long": false,
+            "exit_short": false,
+            "compliance_breach": true
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_99f644"
+        },
+        {
+          "name": "New Webhook",
+          "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+          "enabled": true,
+          "events": {
+            "entry_long": false,
+            "entry_short": false,
+            "exit_long": true,
+            "exit_short": false,
+            "compliance_breach": false
+          },
+          "payload_template": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}",
+          "id": "wh_2c82f4"
         }
       ]
     }
