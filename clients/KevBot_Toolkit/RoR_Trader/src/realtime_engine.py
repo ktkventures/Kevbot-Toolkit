@@ -37,6 +37,13 @@ if not logger.handlers:
     logger.addHandler(_fh)
     logger.setLevel(logging.DEBUG)
 
+# Route alpaca-py WebSocket logger to the same file so connection errors
+# (e.g. "connection limit exceeded") appear in streaming_engine.log.
+_alpaca_ws_logger = logging.getLogger("alpaca.data.live.websocket")
+if not _alpaca_ws_logger.handlers:
+    _alpaca_ws_logger.addHandler(_fh)
+    _alpaca_ws_logger.setLevel(logging.DEBUG)
+
 # Maximum rolling bars kept per (symbol, timeframe) — covers EMA-200 warmup
 MAX_HISTORY = 500
 
@@ -1114,10 +1121,18 @@ class UnifiedStreamingEngine:
             try:
                 stream = StockDataStream(api_key, secret_key, feed=DataFeed.SIP)
                 self._stream_ref = stream
+                _ws_confirmed = False
 
                 async def on_trade(trade):
+                    nonlocal _ws_confirmed, backoff
                     if not self._running:
                         return
+                    if not _ws_confirmed:
+                        _ws_confirmed = True
+                        self._connected = True
+                        self._set_streaming_status(True)
+                        backoff = 5
+                        logger.info("WebSocket confirmed — receiving trades for %d symbols", len(symbols))
                     hub = self.hubs.get(trade.symbol)
                     if hub:
                         hub.on_tick(
@@ -1128,10 +1143,7 @@ class UnifiedStreamingEngine:
 
                 stream.subscribe_trades(on_trade, *symbols)
 
-                self._connected = True
-                self._set_streaming_status(True)
-                backoff = 5  # reset on successful connect
-                logger.info("WebSocket connected — streaming %d symbols", len(symbols))
+                logger.info("Connecting to Alpaca stream for %d symbols …", len(symbols))
 
                 await stream._run_forever()
 
