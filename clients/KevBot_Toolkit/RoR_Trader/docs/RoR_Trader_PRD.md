@@ -1591,15 +1591,15 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] Fix empty quantity on exit webhooks — exit signal path now resolves `{{quantity}}` from position state instead of recalculating (was producing empty string for exits)
 - [ ] Monitor for edge cases: engine restart mid-position, session boundary crossings, confluence state changes between bars
 
-**21B: Real-Time Price Chart Refresh**
+**21B: Real-Time Price Chart Refresh — DONE**
 - [x] "Refresh" button added to every price chart via `render_candle_selector` (same row as candle count dropdown)
-- [ ] Verify chart refresh actually shows data up to the current minute — investigate if `prepare_data_with_indicators` cache, data loader staleness, or Alpaca API delay is causing stale charts even after refresh
-- [ ] Ensure trade history markers update on refresh to reflect the most recent entries/exits
-- [ ] Goal: after clicking Refresh, the price chart and trade markers should reflect data no more than ~1 minute old
+- [x] Verify chart refresh actually shows data up to the current minute — investigate if `prepare_data_with_indicators` cache, data loader staleness, or Alpaca API delay is causing stale charts even after refresh
+- [x] Ensure trade history markers update on refresh to reflect the most recent entries/exits
+- [x] Goal: after clicking Refresh, the price chart and trade markers should reflect data no more than ~1 minute old
 
 **21C: Alert-vs-Backtest Validation — DONE**
 - [x] Trigger Timing Analysis table — shows theoretical trigger time vs actual alert time for each matched execution, with Time Delta (seconds), theoretical vs alert price, and slippage in R-multiples
-- [x] Timezone normalization — both Theo Time and Alert Time now display in user-configurable display timezone (was showing UTC vs local, causing visual 7-hour gap confusion); superseded by app-wide Display Timezone setting (see Phase 25)
+- [x] Timezone normalization — both Theo Time and Alert Time now display in user-configurable display timezone (was showing UTC vs local, causing visual 7-hour gap confusion); superseded by app-wide Display Timezone setting (see Phase 26)
 - [x] Split time delta metrics — "Bar-Close Time Delta" computed only from bar-close actions (meaningful); intra-bar count shown separately since intra-bar timing delta vs bar boundary is not meaningful (the alert IS the trigger)
 - [x] Summary metrics — 4-column layout: FT (All), FT (Alerts-Enabled), Alert Actual, Delta. Delta compares FT (Alerts-Enabled) vs Alert Actual for apples-to-apples execution fidelity measurement
 - [x] FT (Alerts-Enabled) column — FT KPIs computed only from trades during the alert-enabled window (first alert onward), isolating execution quality from strategy quality
@@ -1610,7 +1610,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] Alert analysis caching — heavy computation extracted into `_compute_alert_analysis()` with session state cache keyed by `data_refreshed_at` timestamp, eliminating recomputation on tab switches
 - [x] Alert matching performance — pre-parsed timestamps split by entry/exit type before nested loops, sorted for efficient matching (eliminated O(n²) datetime parsing)
 - [x] Discrepancy detection — missed alerts (FT trades without matching alerts) and phantom alerts (alerts without matching FT trades) surfaced with full context
-- [x] Discrepancy management — Reset Alert Tracking, Dismiss Discrepancies, and Date Filter on Alert Analysis tab (see Phase 25)
+- [x] Discrepancy management — Reset Alert Tracking, Dismiss Discrepancies, and Date Filter on Alert Analysis tab (see Phase 26)
 
 **21D: Webhook Payload Reliability**
 - [x] Fix empty `{{quantity}}` on exit webhooks — exit signal path now resolves quantity from position state
@@ -1653,7 +1653,92 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - New strategies are picked up by the running monitor within 5 minutes without restart
 - Alert chart markers (+ and x) align vertically with backtest trade markers for stop-loss exits
 
-### Phase 22: Scanner Strategy Origin
+### Phase 22: Web Deployment & Multi-User Infrastructure
+*Deploy the application to production hosting so the alert monitor runs reliably in the cloud without requiring a local machine. Add user authentication and migrate from JSON file storage to a proper database for multi-user support. Full spec: `docs/Implementation_Spec_Phase_22.md`.*
+
+**Why this phase exists:**
+The application is currently a local Streamlit app with JSON file storage, no authentication, and background processes managed via subprocess PID files. To use it for actual trading, the monitor must run reliably in the cloud, data must be safe in a database, and the app must be accessible from any device with proper auth. This is the critical infrastructure phase that transitions RoR Trader from a local development tool to a production-ready web application.
+
+**Hosting Stack:**
+- **Railway** — App hosting (web service + background worker). Usage-based pricing (~$8-13/month). Git push-to-deploy.
+- **Supabase** — PostgreSQL database + authentication. Free tier for 5-10 users ($0-25/month). Row Level Security for multi-user data isolation.
+- **Namecheap** — Custom domain DNS pointed to Railway. Railway auto-provisions SSL.
+
+**22A: Supabase Setup & Database Schema**
+- [ ] Create Supabase project, configure email/password auth provider
+- [ ] Design PostgreSQL schema — tables for strategies, portfolios, requirement_sets, alerts, alert_config, webhook_templates, monitor_status, user_settings, confluence_groups, general_packs, risk_management_packs
+- [ ] Design principle: proper columns for queryable fields (id, user_id, name, symbol), JSONB for nested blobs (KPIs, equity curves, rules, stored_trades)
+- [ ] Row Level Security policies on all tables: `auth.uid() = user_id`
+- [ ] Built-in data (TTP/FTMO requirement sets, default webhook templates) stored with `user_id IS NULL`
+
+**22B: Data Access Layer**
+- [ ] New `src/db.py` module wrapping all Supabase/PostgreSQL operations — `get_client()`, `get_admin_client()`, user context management
+- [ ] `USE_DB` environment flag for incremental development (toggle JSON ↔ database)
+- [ ] Transformation layer (`_row_to_strategy()` / `_strategy_to_row()`) so rest of app sees same dict shapes — minimizes downstream code changes
+- [ ] Rewire strategy CRUD in app.py: `load_strategies()`, `save_strategy()`, `get_strategy_by_id()`, `update_strategy()`, `delete_strategy()`, `duplicate_strategy()`
+- [ ] Rewire portfolio + requirements CRUD in portfolios.py
+- [ ] Rewire alert system CRUD in alerts.py: alerts, alert_config, monitor_status, webhook templates
+- [ ] Rewire config/pack storage: confluence_groups.py, settings in app.py
+- [ ] Rewire alert_monitor.py and webhook_server.py data access
+
+**22C: Authentication**
+- [ ] New `src/auth.py` module with Supabase Auth integration (sign up, sign in, sign out, session refresh)
+- [ ] Login/signup page in Streamlit — email + password, optional OAuth (Google/GitHub)
+- [ ] Auth gate at top of app.py: unauthenticated users see login page, authenticated users see the app
+- [ ] JWT stored in `st.session_state`, auto-refresh on expiry, establishes RLS context for all database queries
+- [ ] New user onboarding: seed default confluence groups, packs, settings on first login
+- [ ] Pre-registration: simple email collection form on public landing page
+
+**22D: Worker Service**
+- [ ] New `src/worker.py` — standalone entry point replacing subprocess.Popen monitor spawning
+- [ ] Alert monitor + streaming engine run in the worker service (not Streamlit daemon threads)
+- [ ] Uses admin Supabase client (service role key) for cross-user monitoring
+- [ ] Monitor control via database: UI writes `desired_state: 'running'|'stopped'` to `monitor_status` table; worker reads and acts accordingly — no PID management
+- [ ] Hot-reload (already implemented, 5-min refresh) reads config from database instead of JSON files
+- [ ] Update app.py monitor controls: remove subprocess/PID code, replace with database reads/writes
+
+**22E: Containerization & Deployment**
+- [ ] `Dockerfile` for web service (Streamlit app + vendored LWC fork)
+- [ ] `Dockerfile.worker` for background worker service
+- [ ] `.streamlit/config.toml` for production configuration
+- [ ] Railway project setup: web service + worker service, shared environment variables
+- [ ] Environment variables: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+- [ ] Health checks: Streamlit `/_stcore/health` endpoint, worker heartbeat in database
+
+**22F: Data Migration & DNS**
+- [ ] Migration script (`src/migrate_json_to_db.py`): reads all JSON files, transforms, inserts into Supabase
+- [ ] Execution order respects foreign keys (requirement_sets → strategies → portfolios → alerts)
+- [ ] Verification: row count comparison, spot-check specific records
+- [ ] `.gitignore` update: exclude runtime JSON files, .env, logs
+- [ ] Namecheap DNS CNAME → Railway custom domain
+- [ ] Railway auto-provisions SSL via Let's Encrypt
+
+**Git Workflow:**
+- `main` — Production (auto-deploys to Railway web + worker services)
+- `dev` — Active development
+- `staging` — Optional Railway staging environment (auto-deploys from dev)
+- Feature branches off dev for each sub-phase
+
+**Design Decisions (Phase 22):**
+- Railway chosen over Render for usage-based billing (monitor only costs money during market hours) and simpler multi-service projects
+- Supabase chosen for combined database + auth in one service with excellent Python client and Row Level Security
+- Firebase rejected: Cloud Run's scale-to-zero fights Streamlit's stateful WebSocket model; Firestore NoSQL is a worse fit for relational data; higher cost
+- Database migration done upfront (not deferred) to avoid JSON file locking issues with multiple users and to enable RLS-based data isolation
+- Design/aesthetics deferred to a separate phase — focus this phase on infrastructure, auth, and reliability
+- Config tables (settings, confluence_groups, packs) use single JSONB column per user since they're always loaded/saved as whole documents — preserves current load/save pattern
+- Worker service always runs on Railway; monitor start/stop controlled via database flag (not PID/signal management) — simpler, more reliable, works across services
+- `USE_DB` toggle flag enables incremental development — each CRUD module can be switched independently
+
+**Definition of Done:**
+- App accessible via custom domain with HTTPS and user authentication
+- All data persisted in Supabase PostgreSQL (no JSON file dependencies)
+- Alert monitor runs reliably as a Railway background worker
+- Multiple users can log in with isolated data (strategies, portfolios, alerts)
+- Monitor start/stop controllable from the web UI
+- Existing strategies, portfolios, and alerts successfully migrated from JSON
+- Git push to main triggers automatic deployment
+
+### Phase 23: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
 
 - [ ] Add "Scanner" option to Strategy Origin selectbox
@@ -1663,7 +1748,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
 - [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
 
-### Phase 23: Sub-Minute Historical Data & HFT Backtesting
+### Phase 24: Sub-Minute Historical Data & HFT Backtesting
 *Build our own sub-minute historical data by recording tick streams for priority tickers, and/or integrate alternative data providers (Databento, Polygon.io, etc.) to enable backtesting on sub-minute timeframes (5s, 10s, 15s, 30s).*
 
 **Problem Statement:**
@@ -1696,7 +1781,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - Hybrid approach likely best: use a provider for historical backfill, self-record going forward for zero ongoing cost.
 - Sub-minute bars have significantly more noise — strategies built on these timeframes need robust confluence filtering.
 
-### Phase 24: Execution Realism — Spread, Slippage & Order Types
+### Phase 25: Execution Realism — Spread, Slippage & Order Types
 *Improving backtest accuracy and live execution to reflect real-world trading costs. Needs discussion before committing to a direction.*
 
 **Gap-Aware Stop/Target Fills (DONE):**
@@ -1724,45 +1809,45 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 
 > **Note:** The gap-fill fix is implemented. The remaining items need discussion to decide overall direction — whether to tackle spread/slippage as a single unified "execution cost" model or as separate independent features, and how order types interact with the existing alert pipeline.
 
-### Phase 26: Portfolio Risk Intelligence & Balance-Aware Execution
-*Enhanced portfolio analytics, balance-aware quantity sizing, and compliance-driven position management. Full spec: `docs/Implementation_Spec_Phase_26.md`.*
+### Phase 27: Portfolio Risk Intelligence & Balance-Aware Execution
+*Enhanced portfolio analytics, balance-aware quantity sizing, and compliance-driven position management. Full spec: `docs/Implementation_Spec_Phase_26.md` (authored as Phase 26; renumbered).*
 
-**26A: Enhanced Risk Analytics**
+**27A: Enhanced Risk Analytics**
 - [ ] Daily Drawdown Chart — bar chart of daily P&L % with `max_daily_loss_pct` and `daily_pause_pct` threshold overlay lines from requirement set; highlight breach days
 - [ ] New rule type `daily_pause_pct` — soft limit (pause, resume next day) distinct from `max_daily_loss_pct` (hard limit); add to TTP template and evaluation engine
 - [ ] Historical Worst-Case Analysis — worst single day, worst losing streak, top 5 worst days table with breach status per rule
 - [ ] Monte Carlo Simulation — shuffle trade order (daily blocks/weekly blocks/individual trades), 500–5,000 runs; output bust probability, daily pause probability, max DD distribution histogram, equity curve confidence bands (5th/25th/50th/75th/95th percentiles)
 - [ ] Profit Target Progress — progress bar on Prop Firm Check tab showing current P&L % vs `min_profit_pct` target with estimated days remaining
 
-**26B: Balance-Aware Quantity Sizing**
+**27B: Balance-Aware Quantity Sizing**
 - [ ] `get_available_balance()` — compute buying power from ledger (deposits - withdrawals + trading P&L - estimated open position capital)
 - [ ] Optional `auto_adjust_sizing` toggle per portfolio — when enabled, cap webhook quantity at `min(risk_quantity, buying_power / entry_price)`
 - [ ] Insufficient balance handling — quantity >= 1: fire with reduced quantity + `adjusted_quantity` flag; quantity < 1: skip webhook + `skipped_reason: "insufficient_balance"`
 - [ ] Warning banners on Performance/Deploy tabs when risk-per-trade exceeds available balance
 - [ ] Concurrent entry tie-break: first-come-first-served, profit factor as tie-breaker
 
-**26C: Portfolio-Specific Compliance Actions**
+**27C: Portfolio-Specific Compliance Actions**
 - [ ] Portfolio-scoped webhook suppression — `compliance_paused` flag per portfolio; suppresses entry webhooks only (exits always fire); other portfolios with same strategies unaffected
 - [ ] Real-time compliance check on each exit — evaluate `max_daily_loss_pct`, `daily_pause_pct`, `max_total_drawdown_pct` from ledger P&L after each exit delivery
 - [ ] Auto-close on breach — fire per-strategy close alerts for all open positions in the breached portfolio, plus portfolio-level compliance breach alert
 - [ ] Auto-resume for daily pause (next market open); manual resume required for max DD breach
 - [ ] Compliance pause UI — banner on Deploy tab, "Resume Trading" button, "Paused" badge on portfolio cards, breach annotation on equity curve
 
-**26D: Future — Advanced Prop Firm Rules (deferred)**
+**27D: Future — Advanced Prop Firm Rules (deferred)**
 - [ ] Min trade duration (`min_trade_duration_sec`) — post-trade validation; TTP requires 10 seconds
 - [ ] Min profit per share (`min_profit_per_share`) — TTP requires $0.10/share for profit to count; trades below don't count toward profit target
 - [ ] Position sizing limits (`max_position_shares`, `max_position_dollars`, `max_position_pct`)
 - [ ] Alpaca API integration — real-time balance, positions, order history; reconcile with ledger
 - [ ] Multi-account portfolio architecture — portfolio maps to specific trading account with its own balance/rules/endpoints
 
-**Design Decisions (Phase 26):**
+**Design Decisions (Phase 27):**
 - Account balance from existing ledger system, not broker API — users may be on different platforms; API integration deferred to 26D
 - Compliance evaluation uses ledger P&L (webhook exits), not backtest KPIs — closer to actual account state including real slippage
 - Monte Carlo default: shuffle daily blocks to preserve intraday correlation (time-of-day matters); user can switch to weekly blocks or individual trades
 - On compliance breach: close ALL open positions in portfolio regardless of which strategy caused the loss — prop firms treat the account as one unit of risk
 - Concurrent entry buying power: first-come-first-served to avoid adding latency; profit factor tie-break for truly simultaneous triggers
 
-### Phase 25: Low-Priority Cleanup & Enhancements
+### Phase 26: Low-Priority Cleanup & Enhancements
 *Deferred items and nice-to-haves — polish, performance, and convenience improvements.*
 
 **Expanded Backtest Range:**
