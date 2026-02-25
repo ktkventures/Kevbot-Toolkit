@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
@@ -482,6 +483,83 @@ class SymbolHub:
                 logger.error("Failed to init position state for %s: %s", strat.get('name'), e)
                 self._position_state[strat_id] = False
 
+    def _init_position_state_for(self, strat: dict):
+        """Initialize position state and trigger cache for a single strategy.
+
+        Used by hot-reload to set up a newly-added strategy without
+        re-running the full _init_position_state() loop.
+        """
+        from alerts import _run_pipeline, _get_base_trigger_id
+        from indicators import run_indicators_for_group
+        from confluence_groups import get_enabled_groups
+        from triggers import generate_trades
+
+        strat_id = strat['id']
+        strat_tf = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
+        builder = self.builders.get(strat_tf)
+        if not builder or len(builder.history) < 10:
+            self._position_state[strat_id] = False
+            return
+
+        try:
+            enabled_groups = get_enabled_groups()
+            df_pipeline = _run_pipeline(builder.history.copy())
+            for group in enabled_groups:
+                df_pipeline = run_indicators_for_group(df_pipeline, group)
+
+            entry_trigger = strat.get('entry_trigger') or ''
+            if strat.get('entry_trigger_confluence_id'):
+                entry_trigger = _get_base_trigger_id(strat['entry_trigger_confluence_id'])
+            exit_trigger = strat.get('exit_trigger') or ''
+            if strat.get('exit_trigger_confluence_id'):
+                exit_trigger = _get_base_trigger_id(strat['exit_trigger_confluence_id'])
+            exit_triggers_list = None
+            if strat.get('exit_trigger_confluence_ids'):
+                exit_triggers_list = [_get_base_trigger_id(t) for t in strat['exit_trigger_confluence_ids'] if t]
+            elif strat.get('exit_triggers'):
+                exit_triggers_list = [et for et in strat['exit_triggers'] if et]
+
+            confluence_set = set(strat.get('confluence', [])) if strat.get('confluence') else None
+            trades = generate_trades(
+                df_pipeline,
+                direction=strat.get('direction', 'LONG'),
+                entry_trigger=entry_trigger,
+                exit_trigger=exit_trigger,
+                exit_triggers=exit_triggers_list,
+                confluence_required=confluence_set,
+                risk_per_trade=strat.get('risk_per_trade', 100.0),
+                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                stop_config=strat.get('stop_config'),
+                target_config=strat.get('target_config'),
+                bar_count_exit=strat.get('bar_count_exit'),
+            )
+            in_position = False
+            if len(trades) > 0:
+                last_trade = trades.iloc[-1]
+                if pd.isna(last_trade.get('exit_time')):
+                    in_position = True
+            self._position_state[strat_id] = in_position
+            if in_position and len(trades) > 0:
+                last_trade = trades.iloc[-1]
+                self._position_entry[strat_id] = {
+                    'entry_price': float(last_trade.get('entry_price', 0)),
+                    'stop_price': float(last_trade['stop_price']) if pd.notna(last_trade.get('stop_price')) else None,
+                    'entry_bar_count': builder._bar_count,
+                    'direction': strat.get('direction', 'LONG'),
+                }
+            logger.info("Position state for %s: %s",
+                        strat.get('name'), 'IN_POSITION' if in_position else 'FLAT')
+
+            ib_bases = self._get_intrabar_trigger_bases(strat)
+            for trigger_base in ib_bases:
+                group_params = self._get_group_params_for_trigger(trigger_base)
+                self._trigger_cache.update_from_indicators(
+                    strat_id, trigger_base, df_pipeline, group_params)
+
+        except Exception as e:
+            logger.error("Failed to init position state for %s: %s", strat.get('name'), e)
+            self._position_state[strat_id] = False
+
     def on_tick(self, price: float, volume: int, timestamp: datetime):
         """Route a tick to all bar builders; run pipeline on bar close."""
         self.tick_count += 1
@@ -874,18 +952,22 @@ class SymbolHub:
         # Check stop-loss
         if stop_price is not None:
             stopped = False
+            open_price = float(last_bar['open'])
             if direction == 'LONG' and float(last_bar['low']) <= float(stop_price):
                 stopped = True
+                fill_price = min(float(stop_price), open_price)
             elif direction == 'SHORT' and float(last_bar['high']) >= float(stop_price):
                 stopped = True
+                fill_price = max(float(stop_price), open_price)
             if stopped:
-                logger.info("Managed exit: stop hit for %s (%s)", strat.get('name'), self.symbol)
+                logger.info("Managed exit: stop hit for %s (%s) fill=%.2f",
+                            strat.get('name'), self.symbol, fill_price)
                 return {
                     "type": "exit_signal",
                     "trigger": "stop_loss",
                     "confluence_met": [],
                     "bar_time": bar_time,
-                    "price": close_price,
+                    "price": fill_price,
                     "stop_price": None,
                     "atr": float(atr_val),
                     "entry_price": entry.get('entry_price'),
@@ -1085,6 +1167,93 @@ class UnifiedStreamingEngine:
             'started_at': self._start_time,
         }
 
+    STRATEGY_REFRESH_INTERVAL = 300  # 5 minutes
+
+    def _refresh_strategies(self):
+        """Hot-reload strategies from disk without disrupting the WebSocket.
+
+        Handles new strategies on already-subscribed symbols instantly.
+        New symbols require a manual restart (logged as warning).
+        """
+        try:
+            from alert_monitor import get_monitored_strategies
+            from alerts import load_alert_config, compute_signal_detection_bars
+            from data_loader import load_latest_bars
+
+            config = load_alert_config()
+            fresh = get_monitored_strategies(config)
+        except Exception as e:
+            logger.error("Strategy refresh failed to load: %s", e)
+            return
+
+        current_ids = {s['id'] for s in self.strategies}
+        fresh_ids = {s['id'] for s in fresh}
+        added_ids = fresh_ids - current_ids
+        removed_ids = current_ids - fresh_ids
+
+        if not added_ids and not removed_ids:
+            return
+
+        # Remove strategies that are no longer monitored
+        for rid in removed_ids:
+            for hub in self.hubs.values():
+                hub.strategies = [s for s in hub.strategies if s['id'] != rid]
+            self.strategies = [s for s in self.strategies if s['id'] != rid]
+            logger.info("Strategy refresh: removed strategy %d", rid)
+
+        # Add new strategies
+        new_symbols_needed = set()
+        for strat in fresh:
+            if strat['id'] not in added_ids:
+                continue
+            sym = strat.get('symbol', 'SPY')
+            hub = self.hubs.get(sym)
+            if hub is None:
+                new_symbols_needed.add(sym)
+                continue
+
+            # Add to existing hub
+            hub.add_strategy(strat)
+            self.strategies.append(strat)
+
+            # Register timeframes if needed
+            from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+            tf_str = strat.get('timeframe', '1Min')
+            tf_sec = TIMEFRAME_SECONDS.get(tf_str, 60)
+            session = strat.get('trading_session', 'RTH')
+
+            tfs_to_check = [(tf_str, tf_sec)]
+            req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+            for lbl in req_labels:
+                sec_tf_str = get_tf_from_label(lbl)
+                sec_tf_sec = TIMEFRAME_SECONDS.get(sec_tf_str)
+                if sec_tf_sec is not None:
+                    tfs_to_check.append((sec_tf_str, sec_tf_sec))
+
+            for reg_tf_str, reg_tf_sec in tfs_to_check:
+                if reg_tf_sec not in hub.builders:
+                    bars_needed = max(compute_signal_detection_bars(reg_tf_str, session), MAX_HISTORY)
+                    try:
+                        warmup_df = load_latest_bars(
+                            sym, bars=bars_needed, timeframe=reg_tf_str,
+                            seed=strat.get('data_seed', 42), feed='sip',
+                            session=session,
+                        )
+                    except Exception as e:
+                        logger.error("Warmup load for new strategy %s/%s: %s", sym, reg_tf_str, e)
+                        warmup_df = pd.DataFrame()
+                    hub.add_timeframe(reg_tf_sec, warmup_df)
+
+            # Initialize position state for the new strategy
+            hub._init_position_state_for(strat)
+
+            logger.info("Strategy refresh: added '%s' (%s) to live monitoring",
+                        strat.get('name'), sym)
+
+        if new_symbols_needed:
+            logger.warning("Strategy refresh: new symbols %s require monitor restart",
+                           new_symbols_needed)
+
     # -- private --------------------------------------------------------
 
     def _run_loop(self):
@@ -1122,9 +1291,10 @@ class UnifiedStreamingEngine:
                 stream = StockDataStream(api_key, secret_key, feed=DataFeed.SIP)
                 self._stream_ref = stream
                 _ws_confirmed = False
+                _last_refresh = time.monotonic()
 
                 async def on_trade(trade):
-                    nonlocal _ws_confirmed, backoff
+                    nonlocal _ws_confirmed, backoff, _last_refresh
                     if not self._running:
                         return
                     if not _ws_confirmed:
@@ -1133,6 +1303,13 @@ class UnifiedStreamingEngine:
                         self._set_streaming_status(True)
                         backoff = 5
                         logger.info("WebSocket confirmed — receiving trades for %d symbols", len(symbols))
+
+                    # Periodic strategy hot-reload
+                    now = time.monotonic()
+                    if now - _last_refresh >= self.STRATEGY_REFRESH_INTERVAL:
+                        _last_refresh = now
+                        self._refresh_strategies()
+
                     hub = self.hubs.get(trade.symbol)
                     if hub:
                         hub.on_tick(

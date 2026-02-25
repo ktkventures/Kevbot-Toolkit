@@ -1093,7 +1093,9 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
     entry_alerts.sort(key=lambda x: x[0])
     exit_alerts.sort(key=lambda x: x[0])
 
-    MATCH_WINDOW_SECONDS = 300  # ±5 minutes
+    from realtime_engine import TIMEFRAME_SECONDS as _TFS
+    _bar_period = _TFS.get(strategy.get('timeframe', '1Min'), 60)
+    MATCH_WINDOW_SECONDS = _bar_period * 2  # ±2 bar periods
 
     executions = []
     matched_alert_ids = set()

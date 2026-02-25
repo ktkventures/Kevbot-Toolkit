@@ -1627,6 +1627,21 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - [x] Total page render time reduced from 2+ minutes to ~13 seconds (14.6x improvement)
 - [x] All changes purely in rendering/display code — trade generation pipeline and backtest logic completely untouched
 
+**21F: Streaming Engine Reliability — DONE**
+- [x] Fix premature `streaming_connected` flag — was set to `true` before `_run_forever()` authenticated; alpaca-py catches "connection limit exceeded" internally and retries forever without re-raising, so the flag never reset. Moved flag-set into the `on_trade` callback — only marks `streaming_connected=true` on first confirmed tick
+- [x] Route alpaca-py WebSocket logger (`alpaca.data.live.websocket`) to `streaming_engine.log` — connection errors (e.g., "connection limit exceeded") were only visible in Streamlit stderr, invisible in the engine log
+- [x] Strategy hot-reload — `_refresh_strategies()` auto-refreshes monitored strategies every 5 minutes from `alert_config.json` without disrupting the WebSocket connection; adds new strategies to existing SymbolHubs with warmup data and position state initialization; removes de-monitored strategies; logs warning when new symbols require a manual restart
+- [x] Per-strategy position init — `_init_position_state_for(strat)` on SymbolHub initializes position state and trigger cache for a single hot-loaded strategy without re-running the full startup loop
+
+**21G: Alert Display & Pricing Fidelity — DONE**
+- [x] Alert timestamps show seconds — changed format from `'%m/%d %H:%M'` to `'%m/%d %H:%M:%S'` in strategy detail alerts, `_render_alert_row()`, and portfolio alerts tabs
+- [x] Trigger reason displayed on alerts — `_TRIGGER_LABELS` dict maps trigger IDs (e.g., `stop_loss`, `bar_count_exit`, `opposite_signal`) to human-readable labels; shown alongside alert price in strategy detail and alert row rendering
+- [x] Gap-aware stop-loss exit price — streaming engine `_check_managed_exits()` now computes `min(stop_price, open)` for LONG and `max(stop_price, open)` for SHORT stop exits, matching the backtest fill logic in `triggers.py`. Previously used `close_price`, causing vertical gap between chart entry (+) and exit (x) markers
+
+**21H: Alert Analysis Matching Accuracy — DONE**
+- [x] Dynamic match window — `match_alerts_to_trades()` window changed from fixed 300s to `2 * bar_period_seconds` (derived from strategy timeframe). Prevents cross-matching wrong trades on short timeframes while remaining generous on longer ones
+- [x] Consistent timezone normalization in alert analysis — `_is_ft()` and FT alerts-enabled window computation now use `_to_utc()` consistently instead of `.replace(tzinfo=None)` (which stripped timezone without converting, causing comparison errors between UTC-aware and naive timestamps)
+
 **Definition of Done:**
 - Intra-bar and bar-close alerts fire with timing and pricing consistent with backtest logic
 - Price charts refresh to within ~1 minute of current time on demand
@@ -1634,6 +1649,9 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - No duplicate entry alerts for the same position
 - A clear validation workflow exists to compare alert execution against backtest expectations
 - Strategy detail pages load in under 15 seconds even for strategies with 3000+ trades
+- Streaming engine reliably connects and self-reports connection status accurately
+- New strategies are picked up by the running monitor within 5 minutes without restart
+- Alert chart markers (+ and x) align vertically with backtest trade markers for stop-loss exits
 
 ### Phase 22: Scanner Strategy Origin
 *Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*

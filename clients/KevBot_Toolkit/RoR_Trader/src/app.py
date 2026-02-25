@@ -7317,16 +7317,17 @@ def _compute_alert_analysis(strat: dict) -> dict:
     discrepancies = strat.get('discrepancies', [])
     direction = strat.get('direction', 'LONG')
 
+    from datetime import timezone as _tz2
+    def _to_utc(s):
+        dt = datetime.fromisoformat(s)
+        return dt.astimezone(_tz2.utc).replace(tzinfo=None)
+
     ft_start_str = strat.get('forward_test_start', '')
-    ft_start_dt = datetime.fromisoformat(ft_start_str) if ft_start_str else None
-    if ft_start_dt and ft_start_dt.tzinfo:
-        ft_start_dt = ft_start_dt.replace(tzinfo=None)
+    ft_start_dt = _to_utc(ft_start_str) if ft_start_str else None
 
     def _is_ft(t):
         try:
-            dt = datetime.fromisoformat(t['entry_time'])
-            if dt.tzinfo:
-                dt = dt.replace(tzinfo=None)
+            dt = _to_utc(t['entry_time'])
             return ft_start_dt and dt >= ft_start_dt
         except (ValueError, KeyError):
             return False
@@ -7393,12 +7394,7 @@ def _compute_alert_analysis(strat: dict) -> dict:
             except (ValueError, KeyError):
                 pass
 
-    # Timing rows — normalize all display timestamps to local timezone
-    from datetime import timezone as _tz2
-    def _to_utc(s):
-        dt = datetime.fromisoformat(s)
-        return dt.astimezone(_tz2.utc).replace(tzinfo=None)
-
+    # Timing rows
     timing_rows = []
     barclose_time_deltas = []   # time deltas for bar-close only
     intrabar_time_deltas = []   # time deltas for intra-bar only
@@ -7483,9 +7479,7 @@ def _compute_alert_analysis(strat: dict) -> dict:
     if first_alert_dt:
         for t in ft_trades:
             try:
-                entry_dt = datetime.fromisoformat(t['entry_time'])
-                if entry_dt.tzinfo:
-                    entry_dt = entry_dt.astimezone(_tz2.utc).replace(tzinfo=None)
+                entry_dt = _to_utc(t['entry_time'])
                 if entry_dt >= first_alert_dt:
                     ft_ae_trades.append(t)
             except (ValueError, KeyError):
@@ -7871,14 +7865,18 @@ def render_strategy_alerts_tab(strat: dict):
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
                 ts = alert.get('timestamp', '')
-                st.caption(format_display_ts(ts, '%m/%d %H:%M'))
+                st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
             with col_b:
                 st.markdown(badge)
             with col_d:
                 price = alert.get('price')
-                st.markdown(
-                    f"@ ${price:.2f}" if price else "Signal detected"
-                )
+                trigger = _trigger_label(alert.get('trigger', ''))
+                parts = []
+                if price:
+                    parts.append(f"@ ${price:.2f}")
+                if trigger:
+                    parts.append(f"*{trigger}*")
+                st.markdown(" | ".join(parts) if parts else "Signal detected")
 
 
 def _fmt_pf(val):
@@ -10245,6 +10243,21 @@ def _render_active_alerts_management(config: dict):
         st.rerun()
 
 
+_TRIGGER_LABELS = {
+    "stop_loss": "Stop Loss",
+    "bar_count_exit": "Bar Count Exit",
+    "opposite_signal": "Opposite Signal",
+    "signal_exit": "Signal Exit",
+}
+
+
+def _trigger_label(trigger: str) -> str:
+    """Human-readable label for an alert trigger name."""
+    if not trigger:
+        return ""
+    return _TRIGGER_LABELS.get(trigger, trigger.replace("_", " ").title())
+
+
 def _render_alert_row(alert: dict, prefix: str = ""):
     """Shared helper to render a single alert row."""
     alert_type = alert.get('type', 'unknown')
@@ -10265,7 +10278,7 @@ def _render_alert_row(alert: dict, prefix: str = ""):
 
         with col_time:
             ts = alert.get('timestamp', '')
-            st.caption(format_display_ts(ts, '%m/%d %H:%M'))
+            st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
 
         with col_badge:
             st.markdown(badge)
@@ -10275,6 +10288,7 @@ def _render_alert_row(alert: dict, prefix: str = ""):
             direction = alert.get('direction', '')
             strategy_name = alert.get('strategy_name', '')
             price = alert.get('price')
+            trigger = _trigger_label(alert.get('trigger', ''))
 
             detail_parts = []
             if strategy_name:
@@ -10283,6 +10297,8 @@ def _render_alert_row(alert: dict, prefix: str = ""):
                 detail_parts.append(f"{symbol} {direction}")
             if price:
                 detail_parts.append(f"@ ${price:.2f}")
+            if trigger:
+                detail_parts.append(f"*{trigger}*")
 
             if alert_type == 'compliance_breach':
                 port_name = alert.get('portfolio_name', '')
@@ -10386,7 +10402,7 @@ def _render_portfolio_alerts_tab():
                     col_t, col_b, col_d = st.columns([2, 1, 6])
                     with col_t:
                         ts = alert.get('timestamp', '')
-                        st.caption(format_display_ts(ts, '%m/%d %H:%M'))
+                        st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
                     with col_b:
                         st.markdown(badge + ib_badge)
                     with col_d:
