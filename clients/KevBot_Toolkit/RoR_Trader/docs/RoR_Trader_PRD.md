@@ -1945,13 +1945,24 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - [x] Backtest and forward test Price Chart tabs now use `_get_strategy_relevant_groups(strat)` instead of `get_enabled_groups()` — only shows indicators used in entry, exit, or confluence conditions
 - [x] `_get_strategy_relevant_groups()` updated to check `exit_trigger_confluence_ids` (plural list) and `general_confluences` in addition to singular exit ID and TF confluence
 
+**Phase 27B: `generate_trades()` as Single Source of Truth (IN PROGRESS):**
+- [ ] `TradeListTracker` class — replaces `TriggerStateTracker` with trade-list diffing; runs `generate_trades()` on each eval, diffs against previous result, fires entry/exit alerts on new events
+- [ ] Single code path — chart entries/exits AND alert detection derive from the SAME `generate_trades()` call; eliminates parallel logic, drift, and phantom alerts from partial bar reversals
+- [ ] Confluence fix — passes both `confluence` AND `general_confluences` (Time of Day, Day of Week) to `generate_trades()`; the TriggerStateTracker approach only checked `strat.get('confluence')`
+- [ ] Live chart uses `generate_trades()` directly on live pickle data (replaces passing parent backtest trades)
+- [ ] Managed exits dedup — `_fired_exits` set prevents duplicate exit alerts when `_check_managed_exits()` fires before `generate_trades()` catches up at bar close
+
+**Data Quality Standard:**
+- The Price Chart tab closely matches TradingView for the same symbol/timeframe — this is the quality benchmark
+- The Live Chart tab should converge toward the same standard; known divergences (warmup depth, tick-vs-API bar aggregation) are documented below and are non-blocking for alert accuracy
+
 **Known Divergence — Live Chart vs Price Chart (cosmetic, non-blocking):**
 - Candle bodies may differ slightly: live chart builds candles from real-time tick aggregation (BarBuilder, 500ms updates including partial bars), price chart loads completed pre-aggregated bars from Alpaca API
 - Indicator lines (especially longer EMAs) may diverge: streaming engine warms up with ~500 bars (~1 trading day), price chart uses ~11,700 bars (30 days) — different initialization windows cause EMA convergence differences
 - **Trigger logic is identical** — both paths use the same `generate_trades()` pipeline with the same strategy config; entry/exit fidelity is preserved
 - **Future fix (low priority):** increase streaming engine warmup window to match backtest data_days; would align indicators at the cost of more memory and slower startup
 
-**Performance:** ~20-35ms per evaluation at 500ms cadence (4-7% CPU) — less than the previous approach which ran `TriggerLevelCache.check()` on every tick.
+**Performance:** ~50-65ms per evaluation at 500ms cadence (10-13% CPU) — includes `generate_trades()` per strategy (~28ms) on top of pipeline cost (~25ms). For 5 strategies on same symbol: ~165ms (33% utilization).
 
 ---
 

@@ -2580,23 +2580,19 @@ def render_candle_selector(chart_key: str) -> int:
 
 @st.fragment(run_every=2)
 def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
-                          chart_key: str = 'live_chart',
-                          trades: pd.DataFrame = None):
+                          chart_key: str = 'live_chart'):
     """Auto-refreshing live chart that reads enriched data from the streaming engine.
 
     Reads ``live_data_{symbol}_{tf}.pkl`` written by the streaming engine's
     throttled pipeline evaluator.  Re-renders every 2 seconds via
     ``@st.fragment(run_every=2)``.
 
-    Args:
-        trades: Pre-computed trades from the parent backtest/forward-test pipeline.
-            Passed through to ``render_price_chart()`` which filters to the visible
-            time window automatically.
+    Runs ``generate_trades()`` on the live data to produce trade markers —
+    this is the SAME function used by the streaming engine for alert detection,
+    guaranteeing chart entries/exits = alert fires (Phase 27B single source of truth).
     """
     import pickle
-
-    if trades is None:
-        trades = pd.DataFrame()
+    from triggers import generate_trades as _gt
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
     pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
@@ -2615,6 +2611,47 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     if df_live is None or len(df_live) == 0:
         st.info("No live data available yet.")
         return
+
+    # Run generate_trades() on live data — same function used by streaming engine alerts
+    trades = pd.DataFrame()
+    try:
+        entry_trigger = strat.get('entry_trigger') or ''
+        if strat.get('entry_trigger_confluence_id'):
+            entry_trigger = get_base_trigger_id(strat['entry_trigger_confluence_id'])
+
+        exit_trigger = strat.get('exit_trigger') or ''
+        if strat.get('exit_trigger_confluence_id'):
+            exit_trigger = get_base_trigger_id(strat['exit_trigger_confluence_id'])
+
+        exit_triggers_list = None
+        if strat.get('exit_trigger_confluence_ids'):
+            exit_triggers_list = [get_base_trigger_id(t) for t in strat['exit_trigger_confluence_ids'] if t]
+        elif strat.get('exit_triggers'):
+            exit_triggers_list = [et for et in strat['exit_triggers'] if et]
+
+        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
+        confluence_set = confluence_set if confluence_set else None
+
+        general_cols = [c for c in df_live.columns if c.startswith("GP_")]
+        sec_tf_map = get_secondary_tf_map(df_live)
+
+        trades = _gt(
+            df_live,
+            direction=strat.get('direction', 'LONG'),
+            entry_trigger=entry_trigger,
+            exit_trigger=exit_trigger,
+            exit_triggers=exit_triggers_list,
+            confluence_required=confluence_set,
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+            stop_config=strat.get('stop_config'),
+            target_config=strat.get('target_config'),
+            bar_count_exit=strat.get('bar_count_exit'),
+            general_columns=general_cols if general_cols else None,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+        )
+    except Exception:
+        trades = pd.DataFrame()
 
     # Show last 100 candles (about 1.5 hours for 1-min bars)
     visible = min(100, len(df_live))
@@ -6986,7 +7023,7 @@ def render_live_backtest(strat: dict):
     # --- Live Chart tab (if streaming engine is active) ---
     if tab_live_chart_bt is not None:
         with tab_live_chart_bt:
-            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart', trades=trades)
+            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart')
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
@@ -7416,7 +7453,7 @@ def render_forward_test_view(strat: dict):
     # --- Live Chart tab (if streaming engine is active) ---
     if tab_live_chart_ft is not None:
         with tab_live_chart_ft:
-            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart', trades=all_trades)
+            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart')
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
