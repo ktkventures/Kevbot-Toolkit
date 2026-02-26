@@ -2578,6 +2578,98 @@ def render_candle_selector(chart_key: str) -> int:
     return int(choice)
 
 
+@st.fragment(run_every=2)
+def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict, chart_key: str = 'live_chart'):
+    """Auto-refreshing live chart that reads enriched data from the streaming engine.
+
+    Reads ``live_data_{symbol}_{tf}.pkl`` written by the streaming engine's
+    throttled pipeline evaluator.  Re-renders every 2 seconds via
+    ``@st.fragment(run_every=2)``.
+    """
+    import pickle
+
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
+
+    if not os.path.exists(pkl_path):
+        st.info("Waiting for live data from streaming engine...")
+        return
+
+    try:
+        with open(pkl_path, 'rb') as f:
+            df_live = pickle.load(f)
+    except Exception as e:
+        st.warning(f"Could not read live data: {e}")
+        return
+
+    if df_live is None or len(df_live) == 0:
+        st.info("No live data available yet.")
+        return
+
+    # Show last 100 candles (about 1.5 hours for 1-min bars)
+    visible = min(100, len(df_live))
+    df_display = df_live.tail(visible)
+
+    # Resolve indicators from enabled groups
+    enabled_groups = get_enabled_groups()
+    overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
+    show_indicators = []
+    indicator_colors = {}
+    band_fills = []
+    indicator_line_styles = {}
+    for group in overlay_groups:
+        show_indicators.extend(get_overlay_indicators_for_group(group))
+        indicator_colors.update(get_overlay_colors_for_group(group))
+        band_fills.extend(get_band_fills_for_group(group))
+        indicator_line_styles.update(get_line_styles_for_group(group))
+
+    osc_panes = build_secondary_panes(df_display, enabled_groups)
+
+    # Build trigger markers from trig_* columns
+    trig_cols = [c for c in df_display.columns if c.startswith('trig_')]
+    extra_markers = []
+    for _, row in df_display.iterrows():
+        ts = int(row.name.timestamp()) if hasattr(row.name, 'timestamp') else 0
+        for col in trig_cols:
+            if row.get(col, False):
+                trigger_name = col.replace('trig_', '')
+                is_buy = any(kw in trigger_name for kw in ('buy', 'above', 'bull', 'cross_short_up', 'cross_mid_up'))
+                extra_markers.append({
+                    'time': ts,
+                    'position': 'belowBar' if is_buy else 'aboveBar',
+                    'color': '#26a69a' if is_buy else '#ef5350',
+                    'shape': 'arrowUp' if is_buy else 'arrowDown',
+                    'text': trigger_name[:12],
+                })
+
+    # Status bar
+    last_ts = df_display.index[-1]
+    last_close = float(df_display.iloc[-1]['close'])
+    file_mtime = datetime.fromtimestamp(os.path.getmtime(pkl_path), tz=timezone.utc)
+    age_sec = (datetime.now(timezone.utc) - file_mtime).total_seconds()
+
+    cols = st.columns([2, 2, 2, 1])
+    cols[0].caption(f"Last bar: {last_ts}")
+    cols[1].caption(f"Close: ${last_close:,.2f}")
+    cols[2].caption(f"Bars: {len(df_live)}")
+    if age_sec < 5:
+        cols[3].caption("Live")
+    else:
+        cols[3].caption(f"Data age: {age_sec:.0f}s")
+
+    render_price_chart(
+        df_display, pd.DataFrame(), strat,
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors,
+        chart_key=chart_key,
+        secondary_panes=osc_panes if osc_panes else None,
+        visible_candles=visible,
+        extra_markers=extra_markers if extra_markers else None,
+        band_fills=band_fills if band_fills else None,
+        indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
+    )
+
+
 @st.fragment
 def render_chart_with_candle_selector(
     df, trades, config, show_indicators=None, indicator_colors=None,
@@ -6697,16 +6789,40 @@ def render_live_backtest(strat: dict):
     confluence_set = confluence_set if confluence_set else None
     extended_data_days = strat.get('extended_data_days', 365)
 
-    # Tab layout — include Alert Analysis when tracking is enabled
+    # Tab layout — include Live Chart when streaming engine is active, Alert Analysis when tracking
     _bt_has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
+    _bt_has_live_chart = False
+    _bt_symbol = strat.get('symbol', 'SPY')
+    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC_BT
+    _bt_tf_sec = _TF_SEC_BT.get(strat.get('timeframe', '1Min'), 60)
+    _bt_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_bt_symbol}_{_bt_tf_sec}.pkl")
+    try:
+        _bt_mon_status = load_monitor_status()
+        if _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
+            _bt_has_live_chart = True
+    except Exception:
+        pass
+
     _bt_tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
-        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
     ]
+    if _bt_has_live_chart:
+        _bt_tab_names.append("Live Chart")
+    _bt_tab_names.extend(["Trade History", "Confluence Analysis", "Configuration", "Alerts"])
     if _bt_has_alert_analysis:
         _bt_tab_names.append("Alert Analysis")
     _bt_tabs = st.tabs(_bt_tab_names)
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence, tab_config, tab_alerts = _bt_tabs[:7]
+
+    # Destructure tabs dynamically based on which optional tabs are present
+    _bt_idx = 3
+    tab_kpi, tab_kpi_ext, tab_price = _bt_tabs[0], _bt_tabs[1], _bt_tabs[2]
+    tab_live_chart_bt = _bt_tabs[_bt_idx] if _bt_has_live_chart else None
+    if _bt_has_live_chart:
+        _bt_idx += 1
+    tab_trades = _bt_tabs[_bt_idx]
+    tab_confluence = _bt_tabs[_bt_idx + 1]
+    tab_config = _bt_tabs[_bt_idx + 2]
+    tab_alerts = _bt_tabs[_bt_idx + 3]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
@@ -6871,6 +6987,11 @@ def render_live_backtest(strat: dict):
 
         render_backtest_trade_table(trades)
 
+    # --- Live Chart tab (if streaming engine is active) ---
+    if tab_live_chart_bt is not None:
+        with tab_live_chart_bt:
+            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart')
+
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
         render_chart_with_candle_selector(
@@ -6937,7 +7058,7 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 8: Alert Analysis (conditional) ---
     if _bt_has_alert_analysis:
-        with _bt_tabs[7]:
+        with _bt_tabs[-1]:
             render_alert_analysis_tab(strat)
 
 
@@ -7150,16 +7271,39 @@ def render_forward_test_view(strat: dict):
         f"Boundary: {format_display_ts(boundary_dt, date_only=True)}"
     )
 
-    # Tab layout — include Alert Analysis when tracking is enabled
+    # Tab layout — include Live Chart when streaming active, Alert Analysis when tracking
     _has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
+    _ft_has_live_chart = False
+    _ft_symbol = strat.get('symbol', 'SPY')
+    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC_FT
+    _ft_tf_sec = _TF_SEC_FT.get(strat.get('timeframe', '1Min'), 60)
+    _ft_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_ft_symbol}_{_ft_tf_sec}.pkl")
+    try:
+        _ft_mon_status = load_monitor_status()
+        if _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
+            _ft_has_live_chart = True
+    except Exception:
+        pass
+
     _tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
-        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
     ]
+    if _ft_has_live_chart:
+        _tab_names.append("Live Chart")
+    _tab_names.extend(["Trade History", "Confluence Analysis", "Configuration", "Alerts"])
     if _has_alert_analysis:
         _tab_names.append("Alert Analysis")
     _tabs = st.tabs(_tab_names)
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = _tabs[:7]
+
+    _ft_idx = 3
+    tab_kpi, tab_kpi_ext, tab_price = _tabs[0], _tabs[1], _tabs[2]
+    tab_live_chart_ft = _tabs[_ft_idx] if _ft_has_live_chart else None
+    if _ft_has_live_chart:
+        _ft_idx += 1
+    tab_trades = _tabs[_ft_idx]
+    tab_confluence_ft = _tabs[_ft_idx + 1]
+    tab_config = _tabs[_ft_idx + 2]
+    tab_alerts = _tabs[_ft_idx + 3]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
@@ -7268,6 +7412,11 @@ def render_forward_test_view(strat: dict):
 
         render_split_trade_history(backtest_trades, forward_trades)
 
+    # --- Live Chart tab (if streaming engine is active) ---
+    if tab_live_chart_ft is not None:
+        with tab_live_chart_ft:
+            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart')
+
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
         if len(df) > 0:
@@ -7341,7 +7490,7 @@ def render_forward_test_view(strat: dict):
 
     # --- Tab 8: Alert Analysis (conditional) ---
     if _has_alert_analysis:
-        with _tabs[7]:
+        with _tabs[-1]:
             render_alert_analysis_tab(strat)
 
 

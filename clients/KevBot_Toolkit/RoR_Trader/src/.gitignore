@@ -1,0 +1,5 @@
+# Runtime data files (not committed)
+live_data_*.pkl
+streaming_engine.log
+monitor_status.json
+__pycache__/
