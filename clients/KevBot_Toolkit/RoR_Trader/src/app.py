@@ -7813,7 +7813,7 @@ def render_alert_analysis_tab(strat: dict):
         )
         return
 
-    if not live_execs and discrepancies:
+    if discrepancies:
         st.subheader("Alert Discrepancies")
         missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
         phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
@@ -7890,8 +7890,9 @@ def render_alert_analysis_tab(strat: dict):
                     st.session_state.pop(_k, None)
                 st.toast("Discrepancies and live executions deleted.")
                 st.rerun()
-        st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
-        return
+        if not live_execs:
+            st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
+            return
 
     # Use cached analysis data (recomputed only after refresh or filter change)
     _aa_cache_key = f"alert_analysis_{strategy_id}_{_selected_filter}"

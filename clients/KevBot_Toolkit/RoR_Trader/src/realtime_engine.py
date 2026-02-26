@@ -20,7 +20,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 import pandas as pd
@@ -153,7 +153,22 @@ class BarBuilder:
 
         if period_start > self._partial.bar_start:
             # New period → close the old bar, start a new one
+            fill_close = self._partial.close
+            old_bar_end = self._partial.bar_start + timedelta(seconds=self.tf_seconds)
             completed = self._close_bar()
+
+            # Fill any gap bars for skipped periods (e.g. WebSocket lag)
+            gap_ts = old_bar_end
+            while gap_ts < period_start:
+                self._append_to_history({
+                    'timestamp': gap_ts.isoformat(),
+                    'open': fill_close, 'high': fill_close,
+                    'low': fill_close, 'close': fill_close,
+                    'volume': 0,
+                })
+                self._bar_count += 1
+                gap_ts += timedelta(seconds=self.tf_seconds)
+
             self._partial = PartialBar(price, period_start, self.tf_seconds)
             self._partial.update(price, volume)
             return completed
@@ -474,61 +489,80 @@ class TradeListTracker:
     def _diff_trades(self, strategy_id: int, prev: pd.DataFrame,
                      current: pd.DataFrame, strat: dict,
                      df_enriched: pd.DataFrame) -> List[dict]:
-        """Compare two trade DataFrames and return signals for new events."""
+        """Compare trade lists using stable count+tail approach.
+
+        Instead of diffing ALL trades by entry_time (which is unstable when
+        partial bar data shifts indicator values), we track:
+        1. Trade count — when it grows, a new entry happened
+        2. Last trade open/closed status — when it changes, an exit happened
+
+        This prevents phantom alerts from historical trades shifting entry
+        times across evaluations due to partial bar recalculation.
+        """
         signals = []
 
         if len(current) == 0:
             return signals
 
-        # Build set of previous entry times for O(1) lookup
-        prev_entry_times = set()
-        prev_open_entries = set()  # entry_times of previously-open trades
-        if len(prev) > 0:
-            for _, t in prev.iterrows():
-                et_str = str(t['entry_time'])
-                prev_entry_times.add(et_str)
-                if pd.isna(t.get('exit_time')):
-                    prev_open_entries.add(et_str)
+        prev_count = len(prev)
+        curr_count = len(current)
 
         last_row = df_enriched.iloc[-1]
-        close_price = float(last_row['close'])
-        bar_time = str(last_row.name) if hasattr(last_row, 'name') else ''
-        atr_val = last_row.get('atr', close_price * 0.01)
+        atr_val = last_row.get('atr', float(last_row['close']) * 0.01)
         if pd.isna(atr_val) or atr_val <= 0:
-            atr_val = close_price * 0.01
+            atr_val = float(last_row['close']) * 0.01
 
-        for _, trade in current.iterrows():
-            et_str = str(trade['entry_time'])
+        # Case 1: Trade count increased — new entry (fire for the LAST new trade only)
+        if curr_count > prev_count:
+            # The newest trade is at the end of the list
+            new_trade = current.iloc[-1]
+            et_str = str(new_trade['entry_time'])
 
-            # New trade (entry alert)
-            if et_str not in prev_entry_times:
+            signals.append({
+                'type': 'entry_signal',
+                'trigger': new_trade.get('entry_trigger', strat.get('entry_trigger', '')),
+                'bar_time': str(new_trade['entry_time']),
+                'price': float(new_trade['entry_price']),
+                'stop_price': float(new_trade['stop_price']) if pd.notna(new_trade.get('stop_price')) else None,
+                'atr': float(atr_val),
+            })
+
+            # If the new trade is already closed (entered and exited within
+            # the same eval cycle), also fire the exit
+            if pd.notna(new_trade.get('exit_time')):
                 signals.append({
-                    'type': 'entry_signal',
-                    'trigger': trade.get('entry_trigger', strat.get('entry_trigger', '')),
-                    'bar_time': str(trade['entry_time']),
-                    'price': float(trade['entry_price']),
-                    'stop_price': float(trade['stop_price']) if pd.notna(trade.get('stop_price')) else None,
+                    'type': 'exit_signal',
+                    'trigger': new_trade.get('exit_reason', 'signal_exit'),
+                    'bar_time': str(new_trade['exit_time']),
+                    'price': float(new_trade['exit_price']),
+                    'stop_price': None,
                     'atr': float(atr_val),
+                    'entry_price': float(new_trade['entry_price']),
+                    'entry_stop_price': float(new_trade['stop_price']) if pd.notna(new_trade.get('stop_price')) else None,
                 })
-                continue
 
-            # Previously-open trade that now has an exit (exit alert)
-            if et_str in prev_open_entries and pd.notna(trade.get('exit_time')):
+        # Case 2: Same count, but last trade was open and now has an exit
+        elif curr_count == prev_count and prev_count > 0:
+            prev_last = prev.iloc[-1]
+            curr_last = current.iloc[-1]
+
+            if pd.isna(prev_last.get('exit_time')) and pd.notna(curr_last.get('exit_time')):
+                et_str = str(curr_last['entry_time'])
+
                 # Check dedup — managed exits may have already fired this
                 if (strategy_id, et_str) in self._fired_exits:
                     self._fired_exits.discard((strategy_id, et_str))
-                    continue
-
-                signals.append({
-                    'type': 'exit_signal',
-                    'trigger': trade.get('exit_reason', 'signal_exit'),
-                    'bar_time': str(trade['exit_time']),
-                    'price': float(trade['exit_price']),
-                    'stop_price': None,
-                    'atr': float(atr_val),
-                    'entry_price': float(trade['entry_price']),
-                    'entry_stop_price': float(trade['stop_price']) if pd.notna(trade.get('stop_price')) else None,
-                })
+                else:
+                    signals.append({
+                        'type': 'exit_signal',
+                        'trigger': curr_last.get('exit_reason', 'signal_exit'),
+                        'bar_time': str(curr_last['exit_time']),
+                        'price': float(curr_last['exit_price']),
+                        'stop_price': None,
+                        'atr': float(atr_val),
+                        'entry_price': float(curr_last['entry_price']),
+                        'entry_stop_price': float(curr_last['stop_price']) if pd.notna(curr_last.get('stop_price')) else None,
+                    })
 
         return signals
 
@@ -742,6 +776,7 @@ class SymbolHub:
         """
         from alerts import _run_pipeline
         from indicators import run_indicators_for_group
+        from interpreters import detect_all_triggers as _detect_triggers
         from confluence_groups import get_enabled_groups
 
         enabled_groups = get_enabled_groups()
@@ -763,6 +798,8 @@ class SymbolHub:
                     df_pipeline = _run_pipeline(builder.history.copy())
                     for group in enabled_groups:
                         df_pipeline = run_indicators_for_group(df_pipeline, group)
+                    # Re-run trigger detection after group indicators
+                    df_pipeline = _detect_triggers(df_pipeline)
                     _warmup_enriched[strat_tf] = df_pipeline
 
                 # Seed TradeListTracker — runs generate_trades() internally
@@ -814,6 +851,7 @@ class SymbolHub:
         """
         from alerts import _run_pipeline
         from indicators import run_indicators_for_group
+        from interpreters import detect_all_triggers as _detect_triggers
         from confluence_groups import get_enabled_groups
 
         strat_id = strat['id']
@@ -828,6 +866,7 @@ class SymbolHub:
             df_pipeline = _run_pipeline(builder.history.copy())
             for group in enabled_groups:
                 df_pipeline = run_indicators_for_group(df_pipeline, group)
+            df_pipeline = _detect_triggers(df_pipeline)
 
             # Seed TradeListTracker — runs generate_trades() internally
             trades = self._trade_tracker.seed(strat_id, df_pipeline, strat)
@@ -923,6 +962,7 @@ class SymbolHub:
             save_alert, enrich_signal_with_portfolio_context, load_alert_config,
         )
         from indicators import run_indicators_for_group
+        from interpreters import detect_all_triggers as _detect_triggers
         from confluence_groups import get_enabled_groups
 
         enabled_groups = get_enabled_groups()
@@ -938,6 +978,11 @@ class SymbolHub:
                 df_enriched = _run_pipeline(df)
                 for group in enabled_groups:
                     df_enriched = run_indicators_for_group(df_enriched, group)
+                # Re-run trigger detection AFTER group indicators so that
+                # group-specific triggers (UT Bot, etc.) get created.
+                # _run_pipeline() calls detect_all_triggers() before group
+                # indicators add columns like utbot_stop/utbot_direction.
+                df_enriched = _detect_triggers(df_enriched)
                 enriched_dfs[tf_seconds] = df_enriched
                 self._last_enriched_df[tf_seconds] = df_enriched
             except Exception as e:
