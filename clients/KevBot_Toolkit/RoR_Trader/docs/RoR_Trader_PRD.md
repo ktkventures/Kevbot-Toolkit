@@ -1945,7 +1945,7 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - [x] Backtest and forward test Price Chart tabs now use `_get_strategy_relevant_groups(strat)` instead of `get_enabled_groups()` — only shows indicators used in entry, exit, or confluence conditions
 - [x] `_get_strategy_relevant_groups()` updated to check `exit_trigger_confluence_ids` (plural list) and `general_confluences` in addition to singular exit ID and TF confluence
 
-**Phase 27B: `generate_trades()` as Single Source of Truth (IN PROGRESS):**
+**Phase 27B: `generate_trades()` as Single Source of Truth (COMPLETE):**
 - [ ] `TradeListTracker` class — replaces `TriggerStateTracker` with trade-list diffing; runs `generate_trades()` on each eval, diffs against previous result, fires entry/exit alerts on new events
 - [ ] Single code path — chart entries/exits AND alert detection derive from the SAME `generate_trades()` call; eliminates parallel logic, drift, and phantom alerts from partial bar reversals
 - [ ] Confluence fix — passes both `confluence` AND `general_confluences` (Time of Day, Day of Week) to `generate_trades()`; the TriggerStateTracker approach only checked `strat.get('confluence')`
@@ -1963,6 +1963,17 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - **Future fix (low priority):** increase streaming engine warmup window to match backtest data_days; would align indicators at the cost of more memory and slower startup
 
 **Performance:** ~50-65ms per evaluation at 500ms cadence (10-13% CPU) — includes `generate_trades()` per strategy (~28ms) on top of pipeline cost (~25ms). For 5 strategies on same symbol: ~165ms (33% utilization).
+
+**Phase 27C: Alpaca Bar Backfill for Gap Integrity (PLANNED):**
+
+*Motivation:* The streaming engine's BarBuilder fills skipped periods (caused by WebSocket lag or brief disconnects) with the previous bar's close and zero volume. While this keeps the DataFrame continuous and prevents indicator crashes, zero-volume bars degrade volume-dependent indicators (RVOL, VWAP) and introduce a systematic divergence from the backtest/forward test pipeline which uses complete Alpaca pre-aggregated bars. Data integrity between all three pipelines (backtest, forward test, live) is paramount.
+
+- [ ] Background gap fixer task — periodically scans `builder.history` for 0-volume bars (gap fills) and batch-fetches the real OHLCV data from Alpaca REST API
+- [ ] Batch fetch — collect all gap timestamps across all symbols/timeframes, issue one `get_bars()` call per symbol covering the full gap range, then splice real bars into history
+- [ ] Non-blocking design — runs on a separate thread or async task, never blocks `process_tick()` or `_evaluate_pipeline_throttled()`; the tick handler continues using the 0-volume placeholder until the real bar arrives
+- [ ] Graceful fallback — if the Alpaca API call fails (rate limit, network), the 0-volume fill remains in place; retry on next scan cycle
+- [ ] Pipeline re-evaluation — after splicing real bars, mark the affected timeframes as dirty so the next `_evaluate_pipeline_throttled()` cycle recalculates indicators with correct volume data
+- [ ] Scan frequency — run every 30-60 seconds (not every eval cycle); gap fills are rare and the correction doesn't need to be instantaneous
 
 ---
 
