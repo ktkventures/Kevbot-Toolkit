@@ -776,7 +776,7 @@ class SymbolHub:
         """
         from alerts import _run_pipeline
         from indicators import run_indicators_for_group
-        from interpreters import detect_all_triggers as _detect_triggers
+        from interpreters import detect_all_triggers as _detect_triggers, run_all_interpreters as _run_interpreters
         from confluence_groups import get_enabled_groups
 
         enabled_groups = get_enabled_groups()
@@ -798,7 +798,9 @@ class SymbolHub:
                     df_pipeline = _run_pipeline(builder.history.copy())
                     for group in enabled_groups:
                         df_pipeline = run_indicators_for_group(df_pipeline, group)
-                    # Re-run trigger detection after group indicators
+                    # Re-run interpreters + triggers after group indicators
+                    # so group-dependent interpreters (UTBOT) get classified
+                    df_pipeline = _run_interpreters(df_pipeline)
                     df_pipeline = _detect_triggers(df_pipeline)
                     _warmup_enriched[strat_tf] = df_pipeline
 
@@ -851,7 +853,7 @@ class SymbolHub:
         """
         from alerts import _run_pipeline
         from indicators import run_indicators_for_group
-        from interpreters import detect_all_triggers as _detect_triggers
+        from interpreters import detect_all_triggers as _detect_triggers, run_all_interpreters as _run_interpreters
         from confluence_groups import get_enabled_groups
 
         strat_id = strat['id']
@@ -866,6 +868,7 @@ class SymbolHub:
             df_pipeline = _run_pipeline(builder.history.copy())
             for group in enabled_groups:
                 df_pipeline = run_indicators_for_group(df_pipeline, group)
+            df_pipeline = _run_interpreters(df_pipeline)
             df_pipeline = _detect_triggers(df_pipeline)
 
             # Seed TradeListTracker — runs generate_trades() internally
@@ -962,7 +965,7 @@ class SymbolHub:
             save_alert, enrich_signal_with_portfolio_context, load_alert_config,
         )
         from indicators import run_indicators_for_group
-        from interpreters import detect_all_triggers as _detect_triggers
+        from interpreters import detect_all_triggers as _detect_triggers, run_all_interpreters as _run_interpreters
         from confluence_groups import get_enabled_groups
 
         enabled_groups = get_enabled_groups()
@@ -978,10 +981,11 @@ class SymbolHub:
                 df_enriched = _run_pipeline(df)
                 for group in enabled_groups:
                     df_enriched = run_indicators_for_group(df_enriched, group)
-                # Re-run trigger detection AFTER group indicators so that
-                # group-specific triggers (UT Bot, etc.) get created.
-                # _run_pipeline() calls detect_all_triggers() before group
-                # indicators add columns like utbot_stop/utbot_direction.
+                # Re-run interpreters + triggers AFTER group indicators so that
+                # group-specific interpreters (UTBOT state) and triggers
+                # (utbot_buy, etc.) get created.  _run_pipeline() calls these
+                # before group indicators add columns like utbot_stop/utbot_direction.
+                df_enriched = _run_interpreters(df_enriched)
                 df_enriched = _detect_triggers(df_enriched)
                 enriched_dfs[tf_seconds] = df_enriched
                 self._last_enriched_df[tf_seconds] = df_enriched
