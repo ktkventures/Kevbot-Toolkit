@@ -277,10 +277,15 @@ INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
 class TriggerLevelCache:
     """Cache of trigger levels for O(1) intra-bar price comparisons.
 
-    On each bar close, ``update_from_indicators()`` extracts the latest
-    indicator value for each active intra-bar trigger.  Between bar closes,
-    ``check()`` compares tick prices against cached levels with crossing-
-    direction tracking.
+    On each bar close, ``update_from_indicators()`` seeds ``_prev_side``
+    from the bar-close price.  Between bar closes, ``check()`` detects the
+    first crossing relative to that bar-close reference.
+
+    "Once Per Bar" semantics: ``_prev_side`` is updated only at bar close
+    and on the first detected crossing — NOT on every tick.  This mirrors
+    TradingView's "Once Per Bar" alert mode and the backtest's transition-
+    based trigger logic, preventing tick-level noise from causing rapid
+    entry/exit cycling that diverges from the chart.
     """
 
     def __init__(self):
@@ -325,7 +330,14 @@ class TriggerLevelCache:
         self._prev_side[key] = "above" if close > level else "below" if close < level else None
 
     def check(self, key: str, price: float) -> bool:
-        """O(1) crossing detection.  Returns True on first crossing in the required direction.
+        """O(1) crossing detection — "Once Per Bar" semantics.
+
+        Returns True the first time the tick price crosses the cached level
+        in the required direction since the last bar close.  After a crossing
+        is detected, ``_prev_side`` is locked to the new side so no further
+        crossings register until the next ``update_from_indicators()`` call
+        resets it.  This is trigger-agnostic — works for UT Bot, EMA crosses,
+        VWAP, or any future indicator in INTRABAR_LEVEL_MAP.
 
         Args:
             key: ``"strategy_id:trigger_base"`` string.
@@ -338,14 +350,17 @@ class TriggerLevelCache:
         cross_dir = self._cross_dir.get(key)
         current_side = "above" if price > level else "below" if price < level else None
         prev = self._prev_side.get(key)
-        self._prev_side[key] = current_side
+        # Do NOT update _prev_side on every tick — only on crossing detection.
+        # _prev_side is seeded at bar close by update_from_indicators().
 
         if prev is None or current_side is None:
             return False
 
         if cross_dir == "above" and prev == "below" and current_side == "above":
+            self._prev_side[key] = current_side  # lock to new side
             return True
         if cross_dir == "below" and prev == "above" and current_side == "below":
+            self._prev_side[key] = current_side  # lock to new side
             return True
 
         return False

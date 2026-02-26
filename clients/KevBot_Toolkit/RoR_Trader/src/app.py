@@ -5612,9 +5612,15 @@ def render_my_strategies():
 
 def render_strategy_list():
     """Render the strategy list view with sorting and filtering."""
-    col_header, col_update, col_new = st.columns([3, 1, 1])
+    col_header, col_reset, col_update, col_new = st.columns([3, 1, 1, 1])
     with col_header:
         st.header("My Strategies")
+    with col_reset:
+        st.write("")  # vertical spacing to align with header
+        if st.button("Reset All Alerts",
+                      help="Clear all alert history, executions, and discrepancies for every strategy"):
+            st.session_state._confirm_reset_all_alerts = True
+            st.rerun()
     with col_update:
         st.write("")  # vertical spacing to align with header
         if st.button("Update Data",
@@ -5631,6 +5637,33 @@ def render_strategy_list():
             st.session_state.editing_strategy_id = None
             st.session_state.pop('sb_additional_exits', None)
             st.rerun()
+
+    # --- Reset All Alerts confirmation ---
+    if st.session_state.get('_confirm_reset_all_alerts', False):
+        st.warning("This will clear **all** alert history, live executions, and discrepancies for **every** strategy.")
+        _ra_cols = st.columns([1, 1, 6])
+        with _ra_cols[0]:
+            if st.button("Yes, Reset All", key="confirm_reset_all_alerts", type="primary"):
+                st.session_state._confirm_reset_all_alerts = False
+                _all_strats = load_strategies()
+                _reset_ts = datetime.now(timezone.utc).isoformat()
+                for _s in _all_strats:
+                    _s['live_executions'] = []
+                    _s['discrepancies'] = []
+                    _s.pop('discrepancies_dismissed_at', None)
+                    _s['alert_tracking_reset_at'] = _reset_ts
+                    update_strategy(_s['id'], _s)
+                from alerts import delete_alerts_for_strategy, load_alerts, _save_all_alerts
+                _save_all_alerts([])  # clear all alerts at once
+                # Clear analysis caches
+                for _k in [k for k in list(st.session_state) if k.startswith("alert_analysis_")]:
+                    st.session_state.pop(_k, None)
+                st.toast("All alert tracking data has been reset.")
+                st.rerun()
+        with _ra_cols[1]:
+            if st.button("Cancel", key="cancel_reset_all_alerts"):
+                st.session_state._confirm_reset_all_alerts = False
+                st.rerun()
 
     # --- Bulk data refresh handler ---
     if st.session_state.get('_trigger_bulk_update', False):
@@ -6114,6 +6147,7 @@ def render_strategy_detail(strategy_id: int):
                 strat['live_executions'] = []
                 strat['discrepancies'] = []
                 strat.pop('discrepancies_dismissed_at', None)
+                strat['alert_tracking_reset_at'] = datetime.now(timezone.utc).isoformat()
             update_strategy(strategy_id, strat)
             # Auto-sync alert_config.json
             set_strategy_alert_config(strategy_id, {
@@ -6152,6 +6186,7 @@ def render_strategy_detail(strategy_id: int):
                 strat['live_executions'] = []
                 strat['discrepancies'] = []
                 strat.pop('discrepancies_dismissed_at', None)
+                strat['alert_tracking_reset_at'] = datetime.now(timezone.utc).isoformat()
                 update_strategy(strategy_id, strat)
                 from alerts import delete_alerts_for_strategy
                 delete_alerts_for_strategy(strategy_id)
@@ -7547,7 +7582,8 @@ def _compute_alert_analysis(strat: dict) -> dict:
         'live_avg_r': live_avg_r, 'live_total_r': live_total_r,
         'avg_slippage': avg_slippage, 'webhook_success': webhook_success,
         'webhook_rate': webhook_rate, 'missed_count': missed_count, 'phantom_count': phantom_count,
-        'matched_indices': matched_indices, 'timing_rows': timing_rows,
+        'matched_indices': matched_indices, 'entry_execs': entry_execs, 'exit_execs': exit_execs,
+        'timing_rows': timing_rows,
         'entry_slips': entry_slips, 'exit_slips': exit_slips,
         'entry_dollar_slips': entry_dollar_slips, 'exit_dollar_slips': exit_dollar_slips,
         'barclose_time_deltas': barclose_time_deltas, 'intrabar_time_deltas': intrabar_time_deltas,
@@ -7599,30 +7635,74 @@ def render_alert_analysis_tab(strat: dict):
                 f"**{len(missed)} forward test trade(s) had no matching alert** (missed alerts). "
                 "This typically means alert generation was not enabled when these trades occurred."
             )
+            # Determine first alert timestamp for monitor-active column
+            _first_alert_ts_e = None
+            _all_alerts_e = get_alerts_for_strategy(strat['id'])
+            for _a in _all_alerts_e:
+                _ats = _a.get('timestamp')
+                if _ats:
+                    try:
+                        _adt = datetime.fromisoformat(_ats)
+                        if _first_alert_ts_e is None or _adt < _first_alert_ts_e:
+                            _first_alert_ts_e = _adt
+                    except (ValueError, TypeError):
+                        pass
+            _first_naive_e = _first_alert_ts_e.astimezone(timezone.utc).replace(tzinfo=None) if _first_alert_ts_e else None
+
             missed_data = []
             for d in missed:
+                _entry_str = d.get('trade_entry_time', '')
+                _monitor_active = "\u2014"
+                if _entry_str and _first_naive_e:
+                    try:
+                        _edt = datetime.fromisoformat(_entry_str)
+                        if _edt.tzinfo:
+                            _edt = _edt.astimezone(timezone.utc).replace(tzinfo=None)
+                        _monitor_active = "Yes" if _edt >= _first_naive_e else "No"
+                    except (ValueError, TypeError):
+                        pass
                 missed_data.append({
                     "Trade #": d.get('trade_index', '?'),
-                    "Entry Time": format_display_ts(d.get('trade_entry_time', ''), '%Y-%m-%d %H:%M'),
+                    "Entry Time": format_display_ts(_entry_str, '%Y-%m-%d %H:%M:%S'),
+                    "Monitor Active": _monitor_active,
                     "Status": "No alert fired",
                 })
             st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+            if _first_alert_ts_e:
+                st.caption(f"Monitor Active = based on first alert at {format_display_ts(_first_alert_ts_e.isoformat(), '%Y-%m-%d %H:%M:%S')}")
         if phantom:
             st.warning(f"**{len(phantom)} phantom alert(s)** (alert fired with no matching forward test trade)")
             phantom_data = []
             for d in phantom:
                 phantom_data.append({
                     "Alert ID": d.get('alert_id', '?'),
-                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M'),
+                    "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
+                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M:%S'),
+                    "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
+                    "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
                     "Status": "No matching trade",
                 })
             st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
-        if st.button("Dismiss Discrepancies", key=f"dismiss_disc_early_{strat['id']}",
-                     help="Acknowledge current discrepancies and clear the badge on the strategy card"):
-            strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
-            update_strategy(strat['id'], strat)
-            st.toast("Discrepancies dismissed.")
-            st.rerun()
+        _disc_c1e, _disc_c2e = st.columns(2)
+        with _disc_c1e:
+            if st.button("Dismiss Discrepancies", key=f"dismiss_disc_early_{strat['id']}",
+                         help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+                strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+                update_strategy(strat['id'], strat)
+                st.toast("Discrepancies dismissed.")
+                st.rerun()
+        with _disc_c2e:
+            if st.button("Delete Discrepancies", key=f"delete_disc_early_{strat['id']}",
+                         type="secondary",
+                         help="Permanently delete all discrepancies and live execution records for a fresh start"):
+                strat['discrepancies'] = []
+                strat['live_executions'] = []
+                strat['discrepancies_dismissed_at'] = ''
+                update_strategy(strat['id'], strat)
+                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                    st.session_state.pop(_k, None)
+                st.toast("Discrepancies and live executions deleted.")
+                st.rerun()
         st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
         return
 
@@ -7759,47 +7839,147 @@ def render_alert_analysis_tab(strat: dict):
         else:
             st.info("No forward test trades to compare.")
 
-    # ── Section D: Discrepancy Detail ──
-    if discrepancies:
-        with st.expander(f"Discrepancies ({len(discrepancies)})", expanded=False):
-            missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
-            phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
+    # ── Section D: Alert Matching Detail ──
+    _n_matched = len(matched_indices)
+    _n_disc = len(discrepancies)
+    _match_label = f"Alert Matching Detail — {_n_matched} matched"
+    if _n_disc:
+        _match_label += f", {_n_disc} discrepancies"
+    with st.expander(_match_label, expanded=False):
+        # -- Matched Trades (successful alerts) --
+        if matched_indices:
+            st.markdown(f"**Matched Trades ({_n_matched})** — alert fired and matched to forward test trade")
+            _entry_execs = aa['entry_execs']
+            _exit_execs = aa['exit_execs']
+            _ft_si = aa['ft_start_idx']
+            _stored = strat.get('stored_trades', [])
+            matched_rows = []
+            for idx in sorted(matched_indices):
+                _t = _stored[idx] if idx < len(_stored) else {}
+                _en_ex = _entry_execs.get(idx)
+                _ex_ex = _exit_execs.get(idx)
+                _entry_src = (_en_ex.get('source', '') or '').replace('_', ' ').title() if _en_ex else "\u2014"
+                _exit_src = (_ex_ex.get('source', '') or '').replace('_', ' ').title() if _ex_ex else "\u2014"
+                _entry_delta = ""
+                if _en_ex:
+                    try:
+                        _theo = datetime.fromisoformat(_t.get('entry_time', ''))
+                        _actual = datetime.fromisoformat(_en_ex.get('alert_timestamp', ''))
+                        _ed = (_actual - _theo).total_seconds()
+                        _entry_delta = f"{_ed:+.0f}s"
+                    except (ValueError, TypeError):
+                        pass
+                _exit_delta = ""
+                if _ex_ex:
+                    try:
+                        _theo = datetime.fromisoformat(_t.get('exit_time', ''))
+                        _actual = datetime.fromisoformat(_ex_ex.get('alert_timestamp', ''))
+                        _ed = (_actual - _theo).total_seconds()
+                        _exit_delta = f"{_ed:+.0f}s"
+                    except (ValueError, TypeError):
+                        pass
+                _en_alert_ts = format_display_ts(_en_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _en_ex and _en_ex.get('alert_timestamp') else "\u2014"
+                _ex_alert_ts = format_display_ts(_ex_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _ex_ex and _ex_ex.get('alert_timestamp') else "\u2014"
+                matched_rows.append({
+                    "Trade #": idx - _ft_si + 1,
+                    "Entry Candle": format_display_ts(_t.get('entry_time', ''), '%m/%d %H:%M:%S'),
+                    "Entry Alert Time": _en_alert_ts,
+                    "Entry \u0394": _entry_delta or "\u2014",
+                    "Exit Candle": format_display_ts(_t.get('exit_time', ''), '%m/%d %H:%M:%S') if _t.get('exit_time') else "\u2014",
+                    "Exit Alert Time": _ex_alert_ts,
+                    "Exit \u0394": _exit_delta or "\u2014",
+                    "R": f"{_t.get('r_multiple', 0):+.2f}" if _t.get('r_multiple') is not None else "\u2014",
+                })
+            st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
+            st.caption("Entry/Exit Candle = bar time from backtest. Alert Time = when the monitor actually fired. "
+                       "\u0394 = seconds between candle and alert (positive = alert fired after candle).")
+        else:
+            st.info("No matched trades yet.")
 
-            if missed:
-                st.markdown("**Missed Alerts** (forward test trade with no matching alert)")
-                missed_data = []
-                for d in missed:
-                    missed_data.append({
-                        "Trade #": d.get('trade_index', '?'),
-                        "Entry Time": format_display_ts(d.get('trade_entry_time', ''), '%Y-%m-%d %H:%M'),
-                        "Expected Trigger": d.get('expected_trigger', '\u2014'),
-                        "Status": "No alert fired",
-                    })
-                st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+        missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
+        phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
 
-            if phantom:
-                st.markdown("**Phantom Alerts** (alert fired with no matching forward test trade)")
-                phantom_data = []
-                for d in phantom:
-                    phantom_data.append({
-                        "Alert ID": d.get('alert_id', '?'),
-                        "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
-                        "Timestamp": format_display_ts(d.get('alert_timestamp', '')),
-                        "Bar Time": format_display_ts(d.get('bar_time', '')) if d.get('bar_time') else "\u2014",
-                        "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
-                        "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
-                        "Status": "No matching trade",
-                    })
-                st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+        if missed:
+            st.markdown("---")
+            st.markdown(f"**Missed Alerts ({len(missed)})** — forward test trade with no matching alert")
+            # Determine first alert timestamp for monitor-active column
+            _first_alert_ts = None
+            _all_alerts = get_alerts_for_strategy(strat['id'])
+            for _a in _all_alerts:
+                _ats = _a.get('timestamp')
+                if _ats:
+                    try:
+                        _adt = datetime.fromisoformat(_ats)
+                        if _first_alert_ts is None or _adt < _first_alert_ts:
+                            _first_alert_ts = _adt
+                    except (ValueError, TypeError):
+                        pass
+            _first_alert_naive = _first_alert_ts.astimezone(timezone.utc).replace(tzinfo=None) if _first_alert_ts else None
 
-            if st.button("Dismiss Discrepancies", key=f"dismiss_disc_{strat['id']}",
-                         help="Acknowledge current discrepancies and clear the badge on the strategy card"):
-                strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
-                update_strategy(strat['id'], strat)
-                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
-                    st.session_state.pop(_k, None)
-                st.toast("Discrepancies dismissed.")
-                st.rerun()
+            missed_data = []
+            for d in missed:
+                _entry_str = d.get('trade_entry_time', '')
+                _monitor_active = "\u2014"
+                if _entry_str and _first_alert_naive:
+                    try:
+                        _edt = datetime.fromisoformat(_entry_str)
+                        if _edt.tzinfo:
+                            _edt = _edt.astimezone(timezone.utc).replace(tzinfo=None)
+                        _monitor_active = "Yes" if _edt >= _first_alert_naive else "No"
+                    except (ValueError, TypeError):
+                        pass
+                missed_data.append({
+                    "Trade #": d.get('trade_index', '?'),
+                    "Entry Time": format_display_ts(_entry_str, '%Y-%m-%d %H:%M:%S'),
+                    "Exit Time": format_display_ts(d.get('trade_exit_time', ''), '%Y-%m-%d %H:%M:%S') if d.get('trade_exit_time') else "\u2014",
+                    "Monitor Active": _monitor_active,
+                    "Status": "No alert fired",
+                })
+            st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+            if _first_alert_ts:
+                st.caption(f"Monitor Active = based on first alert at {format_display_ts(_first_alert_ts.isoformat(), '%Y-%m-%d %H:%M:%S')}")
+
+        if phantom:
+            st.markdown("---")
+            st.markdown(f"**Phantom Alerts ({len(phantom)})** — alert fired with no matching forward test trade")
+            phantom_data = []
+            for d in phantom:
+                phantom_data.append({
+                    "Alert ID": d.get('alert_id', '?'),
+                    "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
+                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M:%S'),
+                    "Bar Time": format_display_ts(d.get('bar_time', '')) if d.get('bar_time') else "\u2014",
+                    "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
+                    "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
+                    "Trigger": _trigger_label(d.get('trigger', '')) if d.get('trigger') else "\u2014",
+                    "Status": "No matching trade",
+                })
+            st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+
+        if discrepancies:
+            st.markdown("---")
+            _disc_c1, _disc_c2 = st.columns(2)
+            with _disc_c1:
+                if st.button("Dismiss Discrepancies", key=f"dismiss_disc_{strat['id']}",
+                             help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+                    strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+                    update_strategy(strat['id'], strat)
+                    for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                        st.session_state.pop(_k, None)
+                    st.toast("Discrepancies dismissed.")
+                    st.rerun()
+            with _disc_c2:
+                if st.button("Delete Discrepancies", key=f"delete_disc_{strat['id']}",
+                             type="secondary",
+                             help="Permanently delete all discrepancies and live execution records for a fresh start"):
+                    strat['discrepancies'] = []
+                    strat['live_executions'] = []
+                    strat['discrepancies_dismissed_at'] = ''
+                    update_strategy(strat['id'], strat)
+                    for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                        st.session_state.pop(_k, None)
+                    st.toast("Discrepancies and live executions deleted.")
+                    st.rerun()
 
 
 def render_strategy_alerts_tab(strat: dict):

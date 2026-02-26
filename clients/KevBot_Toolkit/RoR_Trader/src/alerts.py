@@ -1061,7 +1061,17 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
 
     ft_start_dt = _utc_naive(datetime.fromisoformat(ft_start))
 
-    # Get only forward test trades (after ft_start)
+    # Parse reset timestamp (used later to filter discrepancies, NOT trades)
+    _reset_dt = None
+    _reset_at = strategy.get('alert_tracking_reset_at')
+    if _reset_at:
+        try:
+            _reset_dt = _utc_naive(datetime.fromisoformat(_reset_at))
+        except (ValueError, TypeError):
+            pass
+
+    # Get ALL forward test trades for matching (don't filter by reset —
+    # new alerts may legitimately match older trades)
     ft_trades = []
     for idx, t in enumerate(stored_trades):
         try:
@@ -1095,7 +1105,7 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
 
     from realtime_engine import TIMEFRAME_SECONDS as _TFS
     _bar_period = _TFS.get(strategy.get('timeframe', '1Min'), 60)
-    MATCH_WINDOW_SECONDS = _bar_period * 2  # ±2 bar periods
+    MATCH_WINDOW_SECONDS = max(300, _bar_period * 5)  # ±5 bar periods, min 5 minutes
 
     executions = []
     matched_alert_ids = set()
@@ -1183,20 +1193,25 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Missed alerts: forward test trades with no matching alert
-    for trade_idx, trade, _ in ft_trades:
+    # Skip trades before reset — their alerts were intentionally deleted
+    for trade_idx, trade, trade_entry_dt in ft_trades:
         if trade_idx not in matched_trade_indices:
+            if _reset_dt and trade_entry_dt < _reset_dt:
+                continue  # trade predates reset, alerts were cleared
             discrepancies.append({
                 'type': 'missed_alert',
                 'trade_index': trade_idx,
                 'trade_entry_time': trade.get('entry_time'),
+                'trade_exit_time': trade.get('exit_time'),
                 'detected_at': now_iso,
             })
 
     # Phantom alerts: alerts that fired but no matching forward test trade
+    # Skip alerts before reset (shouldn't exist since we deleted them, but guard)
     all_parsed_alerts = entry_alerts + exit_alerts
     for a_dt, alert in all_parsed_alerts:
         if alert['id'] not in matched_alert_ids:
-            if a_dt >= ft_start_dt:
+            if a_dt >= ft_start_dt and (not _reset_dt or a_dt >= _reset_dt):
                 discrepancies.append({
                     'type': 'phantom_alert',
                     'alert_id': alert['id'],
@@ -1205,6 +1220,7 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
                     'bar_time': alert.get('bar_time'),
                     'source': alert.get('source', 'unknown'),
                     'price': alert.get('price'),
+                    'trigger': alert.get('trigger', ''),
                     'detected_at': now_iso,
                 })
 
