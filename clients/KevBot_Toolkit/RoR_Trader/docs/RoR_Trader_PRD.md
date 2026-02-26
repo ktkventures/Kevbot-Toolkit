@@ -1918,6 +1918,29 @@ The application is currently a local Streamlit app with JSON file storage, no au
 **UX Polish:**
 - [ ] Utility buttons on Portfolios page — "Portfolio Requirements" and "Webhook Templates" links next to "New Portfolio" button
 
+### Phase 27: Unified Pipeline Alert System + Live Chart
+*Replaced dual alert paths (bar-close pipeline + TriggerLevelCache intra-bar crossing) with a single throttled pipeline evaluator. Alerts now fire from the same code that produces the chart — trigger-agnostic, eliminates phantom alerts. Full spec: `docs/Implementation_Spec_Phase_27.md`.*
+
+**Problem:** The streaming engine had two parallel alert paths that diverged — bar-close ran `_run_pipeline()` (transition-based, matched chart), while intra-bar used `TriggerLevelCache` (price-vs-level crossing, fundamentally different computation). Result: 5:1 alert-to-trade ratio, phantom alerts, alerts firing before entry candles.
+
+**Unified Pipeline Evaluator (DONE):**
+- [x] `TriggerStateTracker` class — tracks `trig_*` boolean column values per strategy across evaluations; fires on `False→True` transition; trigger-agnostic (works for UT Bot, EMA, VWAP, MACD, any future pack)
+- [x] `BarBuilder.get_df_with_partial()` — returns history + current partial bar as a single DataFrame for sub-bar-close evaluation
+- [x] `_evaluate_pipeline_throttled()` on SymbolHub — runs full indicator→interpreter→trigger pipeline every 500ms; replaces both `_check_intrabar_triggers()` and bar-close `detect_signals()` signal processing
+- [x] Pipeline runs once per timeframe, shared across all strategies on that timeframe (e.g., 5 SPY strategies = 1 pipeline run)
+- [x] `_on_bar_close()` simplified to housekeeping — sets `_first_bar_closed` flag + evaluates managed exits (stop loss, bar count) only
+- [x] TriggerLevelCache usage removed from SymbolHub (class + `INTRABAR_LEVEL_MAP` preserved for `triggers.py` backtest fill pricing)
+- [x] Warmup seeding — `TriggerStateTracker.seed()` prevents false fires on first evaluation; warmup enriched data written to pickle for immediate Live Chart availability
+
+**Live Chart Tab (DONE):**
+- [x] `render_live_chart_tab()` — `@st.fragment(run_every=2)` auto-refreshing chart using existing TradingView LC `render_price_chart()` machinery
+- [x] Reads `live_data_{symbol}_{tf}.pkl` written by streaming engine via atomic `os.replace()`
+- [x] Shows all enabled overlay indicators, oscillator panes, and trigger markers (`trig_*` True columns rendered as arrows)
+- [x] Conditionally appears in both backtest and forward test views when streaming engine is active or pickle data exists
+- [x] Status bar: last bar timestamp, close price, bar count, data freshness indicator
+
+**Performance:** ~20-35ms per evaluation at 500ms cadence (4-7% CPU) — less than the previous approach which ran `TriggerLevelCache.check()` on every tick.
+
 ---
 
 ## Appendix A: Interpreter Examples

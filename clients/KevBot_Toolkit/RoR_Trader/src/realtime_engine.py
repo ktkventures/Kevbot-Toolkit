@@ -518,6 +518,7 @@ class SymbolHub:
         from triggers import generate_trades
 
         enabled_groups = get_enabled_groups()
+        _warmup_enriched: Dict[int, pd.DataFrame] = {}  # tf_seconds → enriched df
 
         for strat in self.strategies:
             strat_id = strat['id']
@@ -528,9 +529,14 @@ class SymbolHub:
                 continue
 
             try:
-                df_pipeline = _run_pipeline(builder.history.copy())
-                for group in enabled_groups:
-                    df_pipeline = run_indicators_for_group(df_pipeline, group)
+                # Reuse enriched df across strategies on the same timeframe
+                if strat_tf in _warmup_enriched:
+                    df_pipeline = _warmup_enriched[strat_tf]
+                else:
+                    df_pipeline = _run_pipeline(builder.history.copy())
+                    for group in enabled_groups:
+                        df_pipeline = run_indicators_for_group(df_pipeline, group)
+                    _warmup_enriched[strat_tf] = df_pipeline
 
                 # Resolve trigger names
                 entry_trigger = strat.get('entry_trigger') or ''
@@ -606,6 +612,22 @@ class SymbolHub:
             except Exception as e:
                 logger.error("Failed to init position state for %s: %s", strat.get('name'), e)
                 self._position_state[strat_id] = False
+
+        # Write warmup enriched data to pickle so Live Chart tab is immediately visible
+        if _warmup_enriched:
+            import pickle
+            src_dir = os.path.dirname(os.path.abspath(__file__))
+            for tf_sec, df_e in _warmup_enriched.items():
+                self._last_enriched_df[tf_sec] = df_e
+                pkl_path = os.path.join(src_dir, f"live_data_{self.symbol}_{tf_sec}.pkl")
+                tmp_path = pkl_path + ".tmp"
+                try:
+                    with open(tmp_path, 'wb') as f:
+                        pickle.dump(df_e, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    os.replace(tmp_path, pkl_path)
+                    logger.info("Warmup data written to %s (%d bars)", pkl_path, len(df_e))
+                except Exception as e:
+                    logger.error("Failed to write warmup pickle: %s", e)
 
     def _init_position_state_for(self, strat: dict):
         """Initialize position state and trigger tracker for a single strategy.
