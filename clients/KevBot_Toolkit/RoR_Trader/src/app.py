@@ -2579,14 +2579,24 @@ def render_candle_selector(chart_key: str) -> int:
 
 
 @st.fragment(run_every=2)
-def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict, chart_key: str = 'live_chart'):
+def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
+                          chart_key: str = 'live_chart',
+                          trades: pd.DataFrame = None):
     """Auto-refreshing live chart that reads enriched data from the streaming engine.
 
     Reads ``live_data_{symbol}_{tf}.pkl`` written by the streaming engine's
     throttled pipeline evaluator.  Re-renders every 2 seconds via
     ``@st.fragment(run_every=2)``.
+
+    Args:
+        trades: Pre-computed trades from the parent backtest/forward-test pipeline.
+            Passed through to ``render_price_chart()`` which filters to the visible
+            time window automatically.
     """
     import pickle
+
+    if trades is None:
+        trades = pd.DataFrame()
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
     pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
@@ -2610,9 +2620,9 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict, chart_key: 
     visible = min(100, len(df_live))
     df_display = df_live.tail(visible)
 
-    # Resolve indicators from enabled groups
-    enabled_groups = get_enabled_groups()
-    overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
+    # Resolve indicators from strategy-relevant groups only
+    relevant_groups = _get_strategy_relevant_groups(strat)
+    overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
     show_indicators = []
     indicator_colors = {}
     band_fills = []
@@ -2623,24 +2633,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict, chart_key: 
         band_fills.extend(get_band_fills_for_group(group))
         indicator_line_styles.update(get_line_styles_for_group(group))
 
-    osc_panes = build_secondary_panes(df_display, enabled_groups)
-
-    # Build trigger markers from trig_* columns
-    trig_cols = [c for c in df_display.columns if c.startswith('trig_')]
-    extra_markers = []
-    for _, row in df_display.iterrows():
-        ts = int(row.name.timestamp()) if hasattr(row.name, 'timestamp') else 0
-        for col in trig_cols:
-            if row.get(col, False):
-                trigger_name = col.replace('trig_', '')
-                is_buy = any(kw in trigger_name for kw in ('buy', 'above', 'bull', 'cross_short_up', 'cross_mid_up'))
-                extra_markers.append({
-                    'time': ts,
-                    'position': 'belowBar' if is_buy else 'aboveBar',
-                    'color': '#26a69a' if is_buy else '#ef5350',
-                    'shape': 'arrowUp' if is_buy else 'arrowDown',
-                    'text': trigger_name[:12],
-                })
+    osc_panes = build_secondary_panes(df_display, relevant_groups)
 
     # Status bar
     last_ts = df_display.index[-1]
@@ -2658,16 +2651,19 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict, chart_key: 
         cols[3].caption(f"Data age: {age_sec:.0f}s")
 
     render_price_chart(
-        df_display, pd.DataFrame(), strat,
+        df_display, trades, strat,
         show_indicators=show_indicators,
         indicator_colors=indicator_colors,
         chart_key=chart_key,
         secondary_panes=osc_panes if osc_panes else None,
         visible_candles=visible,
-        extra_markers=extra_markers if extra_markers else None,
         band_fills=band_fills if band_fills else None,
         indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
     )
+
+    # Trade table below chart (same as price chart tab)
+    if len(trades) > 0:
+        render_backtest_trade_table(trades)
 
 
 @st.fragment
@@ -6962,8 +6958,8 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
-        enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
+        relevant_groups = _get_strategy_relevant_groups(strat)
+        overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
         show_indicators = []
         indicator_colors = {}
         band_fills = []
@@ -6974,7 +6970,7 @@ def render_live_backtest(strat: dict):
             band_fills.extend(get_band_fills_for_group(group))
             indicator_line_styles.update(get_line_styles_for_group(group))
 
-        osc_panes = build_secondary_panes(df, enabled_groups)
+        osc_panes = build_secondary_panes(df, relevant_groups)
         render_chart_with_candle_selector(
             df, trades, strat,
             show_indicators=show_indicators,
@@ -6990,7 +6986,7 @@ def render_live_backtest(strat: dict):
     # --- Live Chart tab (if streaming engine is active) ---
     if tab_live_chart_bt is not None:
         with tab_live_chart_bt:
-            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart')
+            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart', trades=trades)
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
@@ -7080,7 +7076,8 @@ def _get_strategy_relevant_groups(strat: dict) -> list:
 
     entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
     exit_conf_id = strat.get('exit_trigger_confluence_id') or ''
-    confluence_records = strat.get('confluence', [])
+    exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
+    confluence_records = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
 
     # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
     confluence_interpreters = set()
@@ -7092,7 +7089,11 @@ def _get_strategy_relevant_groups(strat: dict) -> list:
     relevant = []
     for group in enabled_groups:
         # Check if group owns the entry or exit trigger
-        if entry_conf_id.startswith(group.id + "_") or exit_conf_id.startswith(group.id + "_"):
+        gid_prefix = group.id + "_"
+        if entry_conf_id.startswith(gid_prefix) or exit_conf_id.startswith(gid_prefix):
+            relevant.append(group)
+            continue
+        if any(cid.startswith(gid_prefix) for cid in exit_conf_ids):
             relevant.append(group)
             continue
 
@@ -7385,8 +7386,8 @@ def render_forward_test_view(strat: dict):
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
         if len(df) > 0:
-            enabled_groups = get_enabled_groups()
-            overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
+            relevant_groups = _get_strategy_relevant_groups(strat)
+            overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
             show_indicators = []
             indicator_colors = {}
             band_fills = []
@@ -7397,7 +7398,7 @@ def render_forward_test_view(strat: dict):
                 band_fills.extend(get_band_fills_for_group(group))
                 indicator_line_styles.update(get_line_styles_for_group(group))
 
-            osc_panes = build_secondary_panes(df, enabled_groups)
+            osc_panes = build_secondary_panes(df, relevant_groups)
             render_chart_with_candle_selector(
                 df, all_trades, strat,
                 show_indicators=show_indicators,
@@ -7415,7 +7416,7 @@ def render_forward_test_view(strat: dict):
     # --- Live Chart tab (if streaming engine is active) ---
     if tab_live_chart_ft is not None:
         with tab_live_chart_ft:
-            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart')
+            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart', trades=all_trades)
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:

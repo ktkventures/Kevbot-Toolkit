@@ -1935,9 +1935,21 @@ The application is currently a local Streamlit app with JSON file storage, no au
 **Live Chart Tab (DONE):**
 - [x] `render_live_chart_tab()` — `@st.fragment(run_every=2)` auto-refreshing chart using existing TradingView LC `render_price_chart()` machinery
 - [x] Reads `live_data_{symbol}_{tf}.pkl` written by streaming engine via atomic `os.replace()`
-- [x] Shows all enabled overlay indicators, oscillator panes, and trigger markers (`trig_*` True columns rendered as arrows)
+- [x] Indicator filtering — shows only strategy-relevant overlay indicators and oscillator panes (via `_get_strategy_relevant_groups(strat)`), not all enabled groups
+- [x] Trade markers — receives pre-computed trades from parent backtest/forward-test pipeline; `render_price_chart()` filters to visible window and renders entry/exit arrows, +markers, R-multiple labels
+- [x] Trade table below chart — `render_backtest_trade_table(trades)` matches price chart tab layout
 - [x] Conditionally appears in both backtest and forward test views when streaming engine is active or pickle data exists
 - [x] Status bar: last bar timestamp, close price, bar count, data freshness indicator
+
+**Price Chart Indicator Filtering (DONE):**
+- [x] Backtest and forward test Price Chart tabs now use `_get_strategy_relevant_groups(strat)` instead of `get_enabled_groups()` — only shows indicators used in entry, exit, or confluence conditions
+- [x] `_get_strategy_relevant_groups()` updated to check `exit_trigger_confluence_ids` (plural list) and `general_confluences` in addition to singular exit ID and TF confluence
+
+**Known Divergence — Live Chart vs Price Chart (cosmetic, non-blocking):**
+- Candle bodies may differ slightly: live chart builds candles from real-time tick aggregation (BarBuilder, 500ms updates including partial bars), price chart loads completed pre-aggregated bars from Alpaca API
+- Indicator lines (especially longer EMAs) may diverge: streaming engine warms up with ~500 bars (~1 trading day), price chart uses ~11,700 bars (30 days) — different initialization windows cause EMA convergence differences
+- **Trigger logic is identical** — both paths use the same `generate_trades()` pipeline with the same strategy config; entry/exit fidelity is preserved
+- **Future fix (low priority):** increase streaming engine warmup window to match backtest data_days; would align indicators at the cost of more memory and slower startup
 
 **Performance:** ~20-35ms per evaluation at 500ms cadence (4-7% CPU) — less than the previous approach which ran `TriggerLevelCache.check()` on every tick.
 
