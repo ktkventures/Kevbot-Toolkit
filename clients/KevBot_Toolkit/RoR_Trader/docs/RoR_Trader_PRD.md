@@ -1964,19 +1964,28 @@ The application is currently a local Streamlit app with JSON file storage, no au
 
 **Performance:** ~50-65ms per evaluation at 500ms cadence (10-13% CPU) — includes `generate_trades()` per strategy (~28ms) on top of pipeline cost (~25ms). For 5 strategies on same symbol: ~165ms (33% utilization).
 
-**Phase 27C: Alpaca REST Bar Backfill (IN PROGRESS):**
+**Phase 27C: Alpaca REST Bar Backfill (IMPLEMENTED — VERIFYING):**
 
 *Motivation:* Tick-aggregated streaming bars differ from Alpaca REST bars in low-liquidity periods (after-hours OHLC diffs up to $0.23 for SPY). Zero-volume gap fills and OHLCV tick-aggregation differences cascade through cumulative indicators like UTBOT trailing stop ($0.65 divergence for SPY). Data integrity between all four pipelines (backtest, forward test, live chart, alert detection) is paramount.
 
 *Scope expanded:* Originally planned as gap-fill replacement only. Now replaces ALL streaming bars (not just zero-volume) with canonical Alpaca REST data, matching the exact data source used by the price chart and backtest. Only the most recent 2 bars remain from streaming (too new for REST finalization).
 
-- [ ] `_backfill_from_rest()` method on SymbolHub — every 60s, fetches Alpaca REST bars from streaming start to now minus 2-bar grace period, replaces OHLCV in builder.history for matching timestamps
-- [ ] Non-blocking — runs on existing ThreadPoolExecutor, never blocks `process_tick()` or pipeline eval
-- [ ] Timeframe-aware grace period — 2 bars (not minutes), scaling with TF: 1Min=2min, 5Min=10min, 1Hour=2hr
-- [ ] Sub-minute TF support — gracefully skips timeframes not available in REST API (e.g., 10-second bars); streaming data remains source of truth for sub-minute
-- [ ] Alerts untouched — backfill only corrects underlying candle OHLCV; fired alerts and their chart markers (X symbols) are stored separately in alerts.json and are never overwritten
-- [ ] Graceful fallback — if API call fails, streaming data remains; retry on next cycle
-- [ ] No explicit dirty flag — next `_evaluate_pipeline_throttled()` cycle (within 500ms) automatically recalculates indicators with corrected data
+- [x] `_backfill_from_rest()` method on SymbolHub — every 60s, fetches Alpaca REST bars from streaming start to now minus 2-bar grace period, replaces OHLCV in builder.history for matching timestamps
+- [x] Non-blocking — runs on existing ThreadPoolExecutor, never blocks `process_tick()` or pipeline eval
+- [x] Timeframe-aware grace period — 2 bars (not minutes), scaling with TF: 1Min=2min, 5Min=10min, 1Hour=2hr
+- [x] Sub-minute TF support — gracefully skips timeframes not available in REST API (e.g., 10-second bars); streaming data remains source of truth for sub-minute
+- [x] Alerts untouched — backfill only corrects underlying candle OHLCV; fired alerts and their chart markers (X symbols) are stored separately in alerts.json and are never overwritten
+- [x] Graceful fallback — if API call fails, streaming data remains; retry on next cycle
+- [x] No explicit dirty flag — next `_evaluate_pipeline_throttled()` cycle (within 500ms) automatically recalculates indicators with corrected data
+- [x] Executor wired from `UnifiedStreamingEngine.start()` to each `SymbolHub` instance
+
+*Verification (next session — requires market hours):*
+1. Restart the app during market hours (RTH or extended)
+2. Wait 60+ seconds for first backfill cycle
+3. Check logs for `Backfill SPY/60: replaced N bars` messages confirming REST data is being applied
+4. Compare live chart vs price chart — after-hours bars should now match
+5. Confirm indicator values (especially UTBOT trailing stop) converge with backtest/forward test
+6. Verify alert markers (X symbols) are unaffected by backfill cycles
 
 ---
 
