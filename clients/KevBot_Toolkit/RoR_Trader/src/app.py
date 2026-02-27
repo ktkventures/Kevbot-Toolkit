@@ -253,7 +253,6 @@ SETTINGS_DEFAULTS = {
     "default_target_config": None,
     "global_data_seed": 42,
     "data_feed": "sip",
-    "realtime_engine_enabled": False,
     "enabled_timeframes": ["1Min"],
     "candle_theme": "neutral",
     "display_timezone": "US/Eastern",
@@ -3651,6 +3650,7 @@ def main():
                 _acfg_needs_save = True
         if _acfg_needs_save:
             save_alert_config(_acfg)
+            _signal_ralph_reload()
 
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
@@ -10341,6 +10341,17 @@ def _read_ralph_status() -> dict:
         return {}
 
 
+def _signal_ralph_reload():
+    """Write engine_reload.flag to signal the Ralph engine to hot-reload."""
+    flag_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "engine_reload.flag")
+    try:
+        with open(flag_path, 'w') as f:
+            f.write('reload')
+    except Exception:
+        pass
+
+
 def _render_monitor_status_bar(status: dict, config: dict):
     """Render the monitor status bar with start/stop controls."""
     is_running = status.get('running', False)
@@ -10625,6 +10636,7 @@ def _render_active_alerts_management(config: dict):
             'enabled': enabled,
         }
         save_alert_config(config)
+        _signal_ralph_reload()
         st.toast("Global settings saved")
         st.rerun()
 
@@ -11614,7 +11626,6 @@ def render_settings():
             else:
                 st.caption("Engine will start when you click Start Monitor on the Alerts page.")
         else:
-            st.session_state['realtime_engine_enabled'] = False
             st.caption("Real-time engine requires SIP data feed.")
 
     # --- Save Settings ---

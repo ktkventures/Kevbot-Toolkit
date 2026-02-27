@@ -41,6 +41,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _ENGINE_STATUS_FILE = _SCRIPT_DIR / "engine_status.json"
 _ENGINE_STATE_FILE = _SCRIPT_DIR / "engine_state.json"
 _ENGINE_AUDIT_FILE = _SCRIPT_DIR / "engine_audit.jsonl"
+_ENGINE_RELOAD_FLAG = _SCRIPT_DIR / "engine_reload.flag"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1541,8 +1542,12 @@ class StrategyMonitor:
         self.indicators.warmup(df)
 
     def on_bar_close(self, bar: dict,
-                     bar_count: int) -> List[dict]:
-        """Process a completed bar. Returns list of signals."""
+                     bar_count: int) -> Tuple[List[dict], dict]:
+        """Process a completed bar.
+
+        Returns:
+            (signals, audit_data) — signals list and dict for fidelity logging.
+        """
         signals = []
 
         # 1. Update indicators (O(1))
@@ -1581,7 +1586,15 @@ class StrategyMonitor:
         if entry_sig:
             signals.append(entry_sig)
 
-        return signals
+        # 6. Audit data for fidelity logger
+        audit_data = {
+            'indicator_values': current,
+            'trigger_booleans': trigger_bools,
+            'interpreter_states': interps,
+            'position_state': self.position.state.state,
+        }
+
+        return signals, audit_data
 
     def on_tick(self, price: float, timestamp: str,
                 bar_count: int) -> List[dict]:
@@ -1638,12 +1651,24 @@ class AlertDispatcher:
         """Build, enrich, save, and deliver an alert.
 
         Returns the saved alert dict (with id and timestamp).
+        Webhook delivery is offloaded to a thread pool to avoid blocking
+        the async event loop.
         """
         from alerts import (save_alert, enrich_signal_with_portfolio_context,
                             load_alert_config)
 
+        # Derive order_action: buy/sell for entries, close for exits
+        direction = strategy.get('direction', 'LONG')
+        sig_type = signal['type']
+        if sig_type == 'exit_signal':
+            order_action = 'close'
+        elif direction == 'LONG':
+            order_action = 'buy'
+        else:
+            order_action = 'sell'
+
         alert = {
-            'type': signal['type'],
+            'type': sig_type,
             'trigger': signal.get('trigger', ''),
             'price': signal.get('price', 0),
             'bar_time': signal.get('bar_time', ''),
@@ -1653,7 +1678,8 @@ class AlertDispatcher:
             'strategy_id': strategy['id'],
             'strategy_name': strategy.get('name', ''),
             'symbol': strategy.get('symbol', '?'),
-            'direction': strategy.get('direction', 'LONG'),
+            'direction': direction,
+            'order_action': order_action,
             'risk_per_trade': strategy.get('risk_per_trade', 100.0),
             'timeframe': strategy.get('timeframe', '1Min'),
             'strategy_alerts_visible': True,
@@ -1671,14 +1697,28 @@ class AlertDispatcher:
                      signal['type'], strategy.get('name'), strategy.get('symbol'),
                      signal.get('trigger'), signal.get('price', 0))
 
-        # Webhook delivery
+        # Webhook delivery — offloaded to thread pool (non-blocking)
         if self._deliver_alert_fn:
-            try:
-                self._deliver_alert_fn(alert, config)
-            except Exception as e:
-                logger.error("Webhook delivery failed: %s", e)
+            self._schedule_webhook(alert, config)
 
         return alert
+
+    def _schedule_webhook(self, alert: dict, config: dict):
+        """Fire webhook in a background thread to avoid blocking the event loop."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(
+                None, self._deliver_webhook_sync, alert, config)
+        except RuntimeError:
+            # No running event loop — fall back to synchronous
+            self._deliver_webhook_sync(alert, config)
+
+    def _deliver_webhook_sync(self, alert: dict, config: dict):
+        """Synchronous webhook delivery (runs in thread pool)."""
+        try:
+            self._deliver_alert_fn(alert, config)
+        except Exception as e:
+            logger.error("Webhook delivery failed: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1775,7 +1815,8 @@ class SymbolHub:
             builder.seed_history(df)
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
-                alert_callback: Callable = None, config: dict = None):
+                alert_callback: Callable = None, config: dict = None,
+                auditor: 'FidelityAuditor' = None):
         """Route tick to bar builders and strategy monitors."""
         self.tick_count += 1
         self.last_tick_time = timestamp
@@ -1786,17 +1827,38 @@ class SymbolHub:
 
             if completed is not None:
                 # Bar close — run all monitors for this timeframe
+                # Collect audit data keyed by strategy id
+                bar_audit_positions = {}
+
                 for monitor in self.monitors.values():
                     if monitor.tf_seconds != tf_seconds:
                         continue
                     if not _is_in_session(timestamp, monitor.session):
                         continue
 
-                    signals = monitor.on_bar_close(
+                    signals, audit_data = monitor.on_bar_close(
                         completed, builder._bar_count)
                     if signals and alert_callback:
                         for sig in signals:
                             alert_callback(sig, monitor.strategy, config)
+
+                    # Collect per-strategy position state for audit
+                    bar_audit_positions[monitor.strat_id] = (
+                        audit_data.get('position_state', 'FLAT'))
+
+                    # Log fidelity audit for this monitor's bar close
+                    if auditor:
+                        auditor.log_bar_close(
+                            symbol=self.symbol,
+                            tf_seconds=tf_seconds,
+                            bar=completed,
+                            indicator_values=audit_data['indicator_values'],
+                            trigger_booleans=audit_data['trigger_booleans'],
+                            interpreter_states=audit_data[
+                                'interpreter_states'],
+                            positions={monitor.strat_id:
+                                       audit_data['position_state']},
+                        )
 
             # Intra-bar tick checks for all monitors on this timeframe
             for monitor in self.monitors.values():
@@ -1893,6 +1955,18 @@ class RalphEngine:
         # Load warmup data and initialize indicators
         self._warmup_all()
 
+        # For strategies with no saved position state, attempt to
+        # determine current position by running generate_trades() on
+        # the warmup data. This handles first-ever startup where
+        # engine_state.json doesn't exist yet.
+        if saved_positions:
+            strats_needing_sync = [
+                s for s in strategies if s['id'] not in saved_positions]
+        else:
+            strats_needing_sync = strategies
+        if strats_needing_sync:
+            self._sync_initial_positions(strats_needing_sync)
+
         # Write PID and status
         self._write_status(running=True)
         self._start_time = datetime.now(timezone.utc).isoformat()
@@ -1962,6 +2036,72 @@ class RalphEngine:
 
         logger.info("Warmup complete for %d symbols", len(self.hubs))
 
+    def _sync_initial_positions(self, strategies: List[dict]):
+        """Determine initial position state for strategies with no saved state.
+
+        Runs generate_trades() on the warmup bars for each strategy to check
+        if the last trade is still open. If so, sets the PositionStateMachine
+        to IN_POSITION with the appropriate entry details.
+        """
+        try:
+            from triggers import generate_trades
+            from indicators import run_all_indicators
+            from interpreters import detect_all_triggers
+        except ImportError as e:
+            logger.warning("Cannot sync initial positions: %s", e)
+            return
+
+        for strat in strategies:
+            sid = strat['id']
+            monitor = self.monitors.get(sid)
+            if not monitor:
+                continue
+
+            sym = strat.get('symbol', 'SPY')
+            hub = self.hubs.get(sym)
+            if not hub:
+                continue
+
+            builder = hub.builders.get(monitor.tf_seconds)
+            if not builder or len(builder.history) < 10:
+                continue
+
+            try:
+                # Run the batch pipeline on warmup bars
+                df = builder.history.copy()
+                df = run_all_indicators(df)
+                df = detect_all_triggers(df)
+                trades = generate_trades(df, strat)
+
+                if trades and len(trades) > 0:
+                    last_trade = trades[-1]
+                    # Check if last trade is still open (no exit)
+                    if (last_trade.get('exit_price') is None
+                            and last_trade.get('exit_bar_index') is None):
+                        entry_price = last_trade.get('entry_price', 0)
+                        stop_price = last_trade.get('stop_price')
+                        entry_bar = last_trade.get('entry_bar_index', 0)
+
+                        monitor.position.state.state = 'IN_POSITION'
+                        monitor.position.state.entry_price = entry_price
+                        monitor.position.state.stop_price = stop_price
+                        monitor.position.state.entry_bar = entry_bar
+                        monitor.position.state.bars_held = (
+                            len(df) - entry_bar)
+                        logger.info(
+                            "  Synced S%d (%s): IN_POSITION @ %.2f "
+                            "stop=%.4f",
+                            sid, strat.get('name'), entry_price,
+                            stop_price or 0)
+                    else:
+                        logger.debug("  S%d (%s): FLAT (last trade closed)",
+                                    sid, strat.get('name'))
+                else:
+                    logger.debug("  S%d (%s): FLAT (no trades)",
+                                sid, strat.get('name'))
+            except Exception as e:
+                logger.warning("Position sync failed for S%d: %s", sid, e)
+
     def _on_alert(self, signal: dict, strategy: dict, config: dict):
         """Callback when a strategy monitor fires a signal."""
         alert = self.dispatcher.dispatch(signal, strategy, config or self._config)
@@ -1969,7 +2109,7 @@ class RalphEngine:
             self._save_all_positions()
 
     async def _stream_data(self):
-        """Subscribe to Alpaca real-time trade data."""
+        """Subscribe to Alpaca real-time trade data + run periodic tasks."""
         from dotenv import load_dotenv
         load_dotenv(_SCRIPT_DIR / '.env')
 
@@ -1986,83 +2126,138 @@ class RalphEngine:
             logger.error("alpaca-py not installed")
             return
 
+        # Launch independent periodic task loop (not tick-driven)
+        periodic_task = asyncio.ensure_future(self._periodic_tasks_loop())
+
         symbols = list(self.hubs.keys())
         backoff = 5
         max_backoff = 120
 
-        while self._running:
-            try:
-                stream = StockDataStream(
-                    api_key, secret_key, feed=DataFeed.SIP,
-                    websocket_params={
-                        'ping_interval': 10,
-                        'ping_timeout': 180,
-                        'max_queue': 1024,
-                    })
-                self._stream_ref = stream
-                ws_confirmed = False
+        try:
+            while self._running:
+                try:
+                    stream = StockDataStream(
+                        api_key, secret_key, feed=DataFeed.SIP,
+                        websocket_params={
+                            'ping_interval': 10,
+                            'ping_timeout': 180,
+                            'max_queue': 1024,
+                        })
+                    self._stream_ref = stream
+                    ws_confirmed = False
 
-                async def on_trade(trade):
-                    nonlocal ws_confirmed, backoff
+                    async def on_trade(trade):
+                        nonlocal ws_confirmed, backoff
+                        if not self._running:
+                            return
+                        if not ws_confirmed:
+                            ws_confirmed = True
+                            backoff = 5
+                            self._write_status(running=True, connected=True)
+                            logger.info("WebSocket confirmed — receiving "
+                                        "trades for %d symbols", len(symbols))
+
+                        hub = self.hubs.get(trade.symbol)
+                        if hub:
+                            hub.on_tick(
+                                price=float(trade.price),
+                                volume=int(trade.size)
+                                if hasattr(trade, 'size') else 1,
+                                timestamp=trade.timestamp,
+                                alert_callback=self._on_alert,
+                                config=self._config,
+                                auditor=self.auditor,
+                            )
+
+                    stream.subscribe_trades(on_trade, *symbols)
+                    logger.info("Connecting to Alpaca stream for %d symbols "
+                                "(backoff=%ds)…", len(symbols), backoff)
+
+                    await stream._run_forever()
+
+                except ValueError as e:
+                    self._write_status(running=True, connected=False)
                     if not self._running:
-                        return
-                    if not ws_confirmed:
-                        ws_confirmed = True
-                        backoff = 5
-                        self._write_status(running=True, connected=True)
-                        logger.info("WebSocket confirmed — receiving "
-                                    "trades for %d symbols", len(symbols))
+                        break
+                    logger.warning("Connection limit exceeded — another "
+                                   "stream may be active. Retrying in %ds",
+                                   backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
 
-                    hub = self.hubs.get(trade.symbol)
-                    if hub:
-                        hub.on_tick(
-                            price=float(trade.price),
-                            volume=int(trade.size)
-                            if hasattr(trade, 'size') else 1,
-                            timestamp=trade.timestamp,
-                            alert_callback=self._on_alert,
-                            config=self._config,
-                        )
+                except Exception as e:
+                    self._write_status(running=True, connected=False)
+                    if not self._running:
+                        break
+                    logger.warning("Stream disconnected: %s — reconnect "
+                                   "in %ds", e, backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+        finally:
+            periodic_task.cancel()
+            try:
+                await periodic_task
+            except asyncio.CancelledError:
+                pass
 
-                    # Periodic tasks
-                    now = time.monotonic()
-                    if now - self._last_pickle_write >= PICKLE_WRITE_INTERVAL:
-                        self._last_pickle_write = now
-                        self._write_chart_pickles()
-                    if now - self._last_reconcile >= RECONCILE_INTERVAL:
-                        self._last_reconcile = now
-                        self._reconcile_bars()
-                    if now - self._last_strategy_refresh >= STRATEGY_REFRESH_INTERVAL:
-                        self._last_strategy_refresh = now
+    async def _periodic_tasks_loop(self):
+        """Independent timer-driven loop for pickle writes, reconciliation,
+        and strategy hot-reload. Runs regardless of tick arrival.
+
+        Heavy I/O work (pickle writes, reconciliation) is offloaded to
+        the default thread pool to avoid blocking the event loop.
+        """
+        logger.info("Periodic tasks loop started")
+        loop = asyncio.get_running_loop()
+        try:
+            while self._running:
+                await asyncio.sleep(PICKLE_WRITE_INTERVAL)
+                if not self._running:
+                    break
+
+                now = time.monotonic()
+
+                # Pickle writes — offloaded to thread pool
+                try:
+                    await loop.run_in_executor(
+                        None, self._write_chart_pickles)
+                except Exception as e:
+                    logger.debug("Pickle write error: %s", e)
+
+                # Reconciliation — offloaded to thread pool
+                if now - self._last_reconcile >= RECONCILE_INTERVAL:
+                    self._last_reconcile = now
+                    try:
+                        await loop.run_in_executor(
+                            None, self._reconcile_bars)
+                    except Exception as e:
+                        logger.debug("Reconcile error: %s", e)
+
+                # Strategy hot-reload (every STRATEGY_REFRESH_INTERVAL
+                # or immediately on engine_reload.flag IPC)
+                reload_flag = _ENGINE_RELOAD_FLAG.exists()
+                if reload_flag or now - self._last_strategy_refresh >= (
+                        STRATEGY_REFRESH_INTERVAL):
+                    self._last_strategy_refresh = now
+                    if reload_flag:
+                        try:
+                            _ENGINE_RELOAD_FLAG.unlink()
+                        except OSError:
+                            pass
+                        logger.info("Reload flag detected — refreshing "
+                                    "strategies")
+                    try:
                         self._hot_reload_strategies()
+                    except Exception as e:
+                        logger.debug("Hot-reload error: %s", e)
 
-                stream.subscribe_trades(on_trade, *symbols)
-                logger.info("Connecting to Alpaca stream for %d symbols "
-                            "(backoff=%ds)…", len(symbols), backoff)
-
-                # Use the public run() method. If it raises due to auth/
-                # connection issues, we handle it in the except block
-                # with exponential backoff.
-                await stream._run_forever()
-
-            except ValueError as e:
-                # "connection limit exceeded" — another connection is active
-                self._write_status(running=True, connected=False)
-                if not self._running:
-                    break
-                logger.warning("Connection limit exceeded — another stream "
-                               "may be active. Retrying in %ds", backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, max_backoff)
-
-            except Exception as e:
-                self._write_status(running=True, connected=False)
-                if not self._running:
-                    break
-                logger.warning("Stream disconnected: %s — reconnect in %ds",
-                               e, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, max_backoff)
+                # Status file update
+                self._write_status(
+                    running=True,
+                    connected=self._stream_ref is not None)
+        except asyncio.CancelledError:
+            pass
+        logger.info("Periodic tasks loop stopped")
 
     def _write_chart_pickles(self):
         """Write enriched DataFrames to pickle for live chart consumption.

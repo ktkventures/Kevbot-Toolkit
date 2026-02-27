@@ -1,5 +1,10 @@
 # Runtime data files (not committed)
 live_data_*.pkl
 streaming_engine.log
+ralph_engine.log
 monitor_status.json
+engine_status.json
+engine_state.json
+engine_audit.jsonl
+engine_reload.flag
 __pycache__/
