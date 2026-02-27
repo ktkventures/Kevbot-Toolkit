@@ -1381,6 +1381,11 @@ class UnifiedStreamingEngine:
             logger.warning("Streaming engine already running")
             return
 
+        # Set _running immediately to prevent concurrent start() calls.
+        # Streamlit reruns during warmup can trigger additional start() calls;
+        # the flag must be True BEFORE the slow warmup phase begins.
+        self._running = True
+
         from alerts import compute_signal_detection_bars
         from data_loader import load_latest_bars
 
@@ -1398,6 +1403,7 @@ class UnifiedStreamingEngine:
         self.strategies = strategies
         if not strategies:
             logger.info("No strategies to monitor — engine not started")
+            self._running = False
             return
 
         # Group strategies by symbol
@@ -1465,7 +1471,6 @@ class UnifiedStreamingEngine:
         for hub in self.hubs.values():
             hub._backfill_executor = self._executor
 
-        self._running = True
         self._start_time = datetime.now(timezone.utc).isoformat()
 
         self._thread = threading.Thread(
