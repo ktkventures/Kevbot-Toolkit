@@ -1964,16 +1964,19 @@ The application is currently a local Streamlit app with JSON file storage, no au
 
 **Performance:** ~50-65ms per evaluation at 500ms cadence (10-13% CPU) — includes `generate_trades()` per strategy (~28ms) on top of pipeline cost (~25ms). For 5 strategies on same symbol: ~165ms (33% utilization).
 
-**Phase 27C: Alpaca Bar Backfill for Gap Integrity (PLANNED):**
+**Phase 27C: Alpaca REST Bar Backfill (IN PROGRESS):**
 
-*Motivation:* The streaming engine's BarBuilder fills skipped periods (caused by WebSocket lag or brief disconnects) with the previous bar's close and zero volume. While this keeps the DataFrame continuous and prevents indicator crashes, zero-volume bars degrade volume-dependent indicators (RVOL, VWAP) and introduce a systematic divergence from the backtest/forward test pipeline which uses complete Alpaca pre-aggregated bars. Data integrity between all three pipelines (backtest, forward test, live) is paramount.
+*Motivation:* Tick-aggregated streaming bars differ from Alpaca REST bars in low-liquidity periods (after-hours OHLC diffs up to $0.23 for SPY). Zero-volume gap fills and OHLCV tick-aggregation differences cascade through cumulative indicators like UTBOT trailing stop ($0.65 divergence for SPY). Data integrity between all four pipelines (backtest, forward test, live chart, alert detection) is paramount.
 
-- [ ] Background gap fixer task — periodically scans `builder.history` for 0-volume bars (gap fills) and batch-fetches the real OHLCV data from Alpaca REST API
-- [ ] Batch fetch — collect all gap timestamps across all symbols/timeframes, issue one `get_bars()` call per symbol covering the full gap range, then splice real bars into history
-- [ ] Non-blocking design — runs on a separate thread or async task, never blocks `process_tick()` or `_evaluate_pipeline_throttled()`; the tick handler continues using the 0-volume placeholder until the real bar arrives
-- [ ] Graceful fallback — if the Alpaca API call fails (rate limit, network), the 0-volume fill remains in place; retry on next scan cycle
-- [ ] Pipeline re-evaluation — after splicing real bars, mark the affected timeframes as dirty so the next `_evaluate_pipeline_throttled()` cycle recalculates indicators with correct volume data
-- [ ] Scan frequency — run every 30-60 seconds (not every eval cycle); gap fills are rare and the correction doesn't need to be instantaneous
+*Scope expanded:* Originally planned as gap-fill replacement only. Now replaces ALL streaming bars (not just zero-volume) with canonical Alpaca REST data, matching the exact data source used by the price chart and backtest. Only the most recent 2 bars remain from streaming (too new for REST finalization).
+
+- [ ] `_backfill_from_rest()` method on SymbolHub — every 60s, fetches Alpaca REST bars from streaming start to now minus 2-bar grace period, replaces OHLCV in builder.history for matching timestamps
+- [ ] Non-blocking — runs on existing ThreadPoolExecutor, never blocks `process_tick()` or pipeline eval
+- [ ] Timeframe-aware grace period — 2 bars (not minutes), scaling with TF: 1Min=2min, 5Min=10min, 1Hour=2hr
+- [ ] Sub-minute TF support — gracefully skips timeframes not available in REST API (e.g., 10-second bars); streaming data remains source of truth for sub-minute
+- [ ] Alerts untouched — backfill only corrects underlying candle OHLCV; fired alerts and their chart markers (X symbols) are stored separately in alerts.json and are never overwritten
+- [ ] Graceful fallback — if API call fails, streaming data remains; retry on next cycle
+- [ ] No explicit dirty flag — next `_evaluate_pipeline_throttled()` cycle (within 500ms) automatically recalculates indicators with corrected data
 
 ---
 
