@@ -1103,7 +1103,7 @@ def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
     entry_alerts.sort(key=lambda x: x[0])
     exit_alerts.sort(key=lambda x: x[0])
 
-    from realtime_engine import TIMEFRAME_SECONDS as _TFS
+    from ralph_engine import TIMEFRAME_SECONDS as _TFS
     _bar_period = _TFS.get(strategy.get('timeframe', '1Min'), 60)
     MATCH_WINDOW_SECONDS = max(300, _bar_period * 5)  # ±5 bar periods, min 5 minutes
 

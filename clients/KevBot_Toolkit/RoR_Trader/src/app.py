@@ -2581,15 +2581,13 @@ def render_candle_selector(chart_key: str) -> int:
 @st.fragment(run_every=5)
 def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
                           chart_key: str = 'live_chart'):
-    """Auto-refreshing live chart that reads enriched data from the streaming engine.
+    """Auto-refreshing live chart that reads data from the Ralph alert engine.
 
-    Reads ``live_data_{symbol}_{tf}.pkl`` written by the streaming engine's
-    throttled pipeline evaluator.  Re-renders every 5 seconds via
-    ``@st.fragment(run_every=5)``.
+    Reads ``live_data_{symbol}_{tf}.pkl`` written by the Ralph engine's
+    bar builder.  Re-renders every 5 seconds via ``@st.fragment(run_every=5)``.
 
     Runs ``generate_trades()`` on recent bars (last 2000) to produce trade
-    markers — same function as the streaming engine uses for alert detection,
-    guaranteeing chart entries/exits = alert fires (Phase 27B single source of truth).
+    markers for visual display.
     """
     import pickle
     from triggers import generate_trades as _gt
@@ -2598,7 +2596,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
 
     if not os.path.exists(pkl_path):
-        st.info("Waiting for live data from streaming engine...")
+        st.info("Waiting for live data from Ralph engine...")
         return
 
     try:
@@ -2872,7 +2870,7 @@ def render_price_chart(
                             if a.get('strategy_id') == strategy_id
                             and a.get('price') is not None]
             if strat_alerts:
-                from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC
+                from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC
                 tf_sec = _TF_SEC.get(config.get('timeframe', '1Min'), 60)
                 # Pre-parse timestamps once
                 entry_alerts_parsed = []
@@ -3882,17 +3880,24 @@ def render_dashboard():
         else:
             st.markdown(":orange[Mock Data] — Configure Alpaca for live data")
 
-        # Alert monitor
-        monitor = load_monitor_status()
-        if monitor.get('running'):
-            last_poll = monitor.get('last_poll', '')
-            poll_time = ''
-            if last_poll:
-                poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
-            strats_mon = monitor.get('strategies_monitored', 0)
-            st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+        # Alert engine status
+        _dash_ralph = _read_ralph_status()
+        if _dash_ralph.get('running'):
+            _dash_syms = ", ".join(_dash_ralph.get('symbols', []))
+            _dash_ticks = _dash_ralph.get('tick_count', 0)
+            _dash_mode = "Streaming" if _dash_ralph.get('connected') else "Connecting"
+            st.markdown(f":green[Ralph Engine {_dash_mode}] — {_dash_syms} | {_dash_ticks:,} ticks")
         else:
-            st.markdown(":gray[Alert Monitor Stopped]")
+            monitor = load_monitor_status()
+            if monitor.get('running'):
+                last_poll = monitor.get('last_poll', '')
+                poll_time = ''
+                if last_poll:
+                    poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
+                strats_mon = monitor.get('strategies_monitored', 0)
+                st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+            else:
+                st.markdown(":gray[Alert Engine Stopped]")
 
         # Forward tests
         st.markdown(f"**{len(forward_testing)}** strategies in forward testing")
@@ -6831,12 +6836,13 @@ def render_live_backtest(strat: dict):
     _bt_has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
     _bt_has_live_chart = False
     _bt_symbol = strat.get('symbol', 'SPY')
-    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC_BT
+    from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_BT
     _bt_tf_sec = _TF_SEC_BT.get(strat.get('timeframe', '1Min'), 60)
     _bt_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_bt_symbol}_{_bt_tf_sec}.pkl")
     try:
+        _bt_ralph_status = _read_ralph_status()
         _bt_mon_status = load_monitor_status()
-        if _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
+        if _bt_ralph_status.get('running') or _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
             _bt_has_live_chart = True
     except Exception:
         pass
@@ -7318,12 +7324,13 @@ def render_forward_test_view(strat: dict):
     _has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
     _ft_has_live_chart = False
     _ft_symbol = strat.get('symbol', 'SPY')
-    from realtime_engine import TIMEFRAME_SECONDS as _TF_SEC_FT
+    from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_FT
     _ft_tf_sec = _TF_SEC_FT.get(strat.get('timeframe', '1Min'), 60)
     _ft_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_ft_symbol}_{_ft_tf_sec}.pkl")
     try:
+        _ft_ralph_status = _read_ralph_status()
         _ft_mon_status = load_monitor_status()
-        if _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
+        if _ft_ralph_status.get('running') or _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
             _ft_has_live_chart = True
     except Exception:
         pass
@@ -7629,7 +7636,7 @@ def _compute_alert_analysis(strat: dict) -> dict:
     # triggers actually fire at bar START + period.  Offset the theoretical
     # time by the bar duration so the delta reflects real latency from the
     # bar close, not from the bar start.
-    from realtime_engine import TIMEFRAME_SECONDS as _TFS
+    from ralph_engine import TIMEFRAME_SECONDS as _TFS
     _bar_period_s = _TFS.get(strat.get('timeframe', '1Min'), 60)
     for ex in live_execs:
         tidx = ex.get('matched_trade_index')
@@ -10314,6 +10321,26 @@ def render_alerts_page():
         _render_inbound_webhooks_tab()
 
 
+def _read_ralph_status() -> dict:
+    """Read Ralph engine status from engine_status.json."""
+    status_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_status.json")
+    if not os.path.exists(status_path):
+        return {}
+    try:
+        with open(status_path) as f:
+            info = json.load(f)
+        # Verify PID is alive
+        pid = info.get('pid', 0)
+        if info.get('running') and pid:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                info['running'] = False
+        return info
+    except Exception:
+        return {}
+
+
 def _render_monitor_status_bar(status: dict, config: dict):
     """Render the monitor status bar with start/stop controls."""
     is_running = status.get('running', False)
@@ -10329,19 +10356,12 @@ def _render_monitor_status_bar(status: dict, config: dict):
 
     col_status, col_info, col_action = st.columns([2, 4, 2])
 
-    with col_status:
-        streaming = status.get('streaming_connected', False)
-        # Also check engine singleton (streaming_connected only updates after WS connects)
-        _engine_running = False
-        _engine_info = {}
-        try:
-            from realtime_engine import engine_status as _rt_stat
-            _engine_info = _rt_stat()
-            _engine_running = _engine_info.get('running', False)
-        except Exception:
-            pass
+    # Check Ralph engine status (separate process via engine_status.json)
+    _engine_info = _read_ralph_status()
+    _engine_running = _engine_info.get('running', False)
 
-        if streaming or _engine_info.get('connected', False):
+    with col_status:
+        if _engine_info.get('connected', False):
             st.success("Engine: Streaming")
         elif _engine_running:
             st.warning("Engine: Connecting...")
@@ -10378,15 +10398,14 @@ def _render_monitor_status_bar(status: dict, config: dict):
                 st.caption("Monitor is not running. Click Start to begin polling.")
 
     with col_action:
-        if is_running or _engine_running or status.get('streaming_connected', False):
+        if is_running or _engine_running:
             if st.button("Stop Monitor", type="secondary", use_container_width=True):
-                # Stop streaming engine if active
-                try:
-                    from realtime_engine import stop_engine, engine_status as rt_status
-                    if rt_status().get('running'):
-                        stop_engine()
-                except Exception:
-                    pass
+                # Stop Ralph engine if active
+                if _engine_running and _engine_info.get('pid'):
+                    try:
+                        os.kill(_engine_info['pid'], signal_module.SIGTERM)
+                    except (OSError, ProcessLookupError):
+                        pass
                 # Stop poller subprocess
                 pid = status.get('pid')
                 if pid:
@@ -10402,28 +10421,22 @@ def _render_monitor_status_bar(status: dict, config: dict):
             can_start = config.get('global', {}).get('enabled', False)
             if st.button("Start Monitor", type="primary", disabled=not can_start,
                          use_container_width=True):
-                if st.session_state.get('realtime_engine_enabled', False):
-                    # Start the streaming engine instead of the poller
-                    try:
-                        from realtime_engine import start_engine
-                        from alert_monitor import get_monitored_strategies
-                        strategies = get_monitored_strategies(config)
-                        start_engine(strategies, config)
-                        st.toast("Streaming engine starting...")
-                    except Exception as e:
-                        st.error(f"Failed to start streaming engine: {e}")
-                else:
-                    # Launch alert_monitor.py as a background process
-                    monitor_script = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)), "alert_monitor.py"
-                    )
-                    subprocess.Popen(
-                        ["python", monitor_script],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                    st.toast("Monitor starting...")
+                # Launch Ralph engine as a background subprocess
+                ralph_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "ralph_engine.py"
+                )
+                venv_python = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..", ".venv", "bin", "python"
+                )
+                python_cmd = venv_python if os.path.exists(venv_python) else "python"
+                subprocess.Popen(
+                    [python_cmd, ralph_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                st.toast("Ralph engine starting...")
                 import time
                 time.sleep(1)  # brief delay for status file to be written
                 st.rerun()
@@ -11592,23 +11605,14 @@ def render_settings():
         st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
 
         if st.session_state['data_feed'] == 'sip':
-            _rt_enabled = st.toggle("Real-Time Engine", value=st.session_state.get('realtime_engine_enabled', False),
-                                    key="settings_rt_engine",
-                                    help="Enable WebSocket streaming for intra-bar [I] triggers")
-            st.session_state['realtime_engine_enabled'] = _rt_enabled
-            if _rt_enabled:
-                try:
-                    from realtime_engine import engine_status as rt_status
-                    es = rt_status()
-                    if es.get('running'):
-                        sym_count = len(es.get('symbols', []))
-                        ticks = es.get('tick_count', 0)
-                        mode = "Connected" if es.get('connected') else "Reconnecting"
-                        st.success(f"Streaming: {mode} | {sym_count} symbols | {ticks:,} ticks")
-                    else:
-                        st.caption("Engine will start when you click Start Monitor on the Alerts page.")
-                except Exception:
-                    st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+            es = _read_ralph_status()
+            if es.get('running'):
+                sym_count = len(es.get('symbols', []))
+                ticks = es.get('tick_count', 0)
+                mode = "Connected" if es.get('connected') else "Reconnecting"
+                st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
+            else:
+                st.caption("Engine will start when you click Start Monitor on the Alerts page.")
         else:
             st.session_state['realtime_engine_enabled'] = False
             st.caption("Real-time engine requires SIP data feed.")

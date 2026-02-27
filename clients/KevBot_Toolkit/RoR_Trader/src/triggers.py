@@ -357,7 +357,7 @@ def generate_trades(
     _entry_is_ib = entry_trigger.endswith('_ib')
     _entry_level_spec = None
     if _entry_is_ib:
-        from realtime_engine import INTRABAR_LEVEL_MAP
+        from ralph_engine import INTRABAR_LEVEL_MAP
         _entry_base = entry_trigger.removesuffix('_ib')
         # Strip the trigger prefix to get the map key (e.g., "vwap_cross_above")
         _entry_level_spec = INTRABAR_LEVEL_MAP.get(_entry_base)
@@ -365,7 +365,7 @@ def generate_trades(
     # Resolve intra-bar level-fill for exit triggers
     _exit_ib_specs: Dict[str, dict] = {}  # exit_trigger → level_spec
     if _entry_is_ib or any(et.endswith('_ib') for et in effective_exit_triggers):
-        from realtime_engine import INTRABAR_LEVEL_MAP as _ILM
+        from ralph_engine import INTRABAR_LEVEL_MAP as _ILM
         for et in effective_exit_triggers:
             if et.endswith('_ib'):
                 _exit_base = et.removesuffix('_ib')

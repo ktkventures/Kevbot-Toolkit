@@ -1301,6 +1301,43 @@ class PositionStateMachine:
 # STRATEGY RESOLVER — maps strategy config to required indicators/triggers
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Intra-bar level map — used by triggers.py for backtest fill-price resolution
+INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
+    # VWAP
+    "vwap_cross_above":          {"column": "vwap",            "cross": "above"},
+    "vwap_cross_below":          {"column": "vwap",            "cross": "below"},
+    "vwap_enter_upper_extreme":  {"column": "vwap_sd2_upper",  "cross": "above"},
+    "vwap_enter_lower_extreme":  {"column": "vwap_sd2_lower",  "cross": "below"},
+    # UT Bot
+    "utbot_buy":                 {"column": "utbot_stop",      "cross": "above"},
+    "utbot_sell":                {"column": "utbot_stop",      "cross": "below"},
+    # SuperTrend (user pack)
+    "st_bull_flip":              {"column": "st_line",         "cross": "above"},
+    "st_bear_flip":              {"column": "st_line",         "cross": "below"},
+    # Bollinger Bands (user pack)
+    "bb_cross_upper":            {"column": "bb_upper",        "cross": "above"},
+    "bb_cross_lower":            {"column": "bb_lower",        "cross": "below"},
+    "bb_cross_basis_up":         {"column": "bb_basis",        "cross": "above"},
+    "bb_cross_basis_down":       {"column": "bb_basis",        "cross": "below"},
+    # SR Channels (user pack)
+    "src_resistance_broken":     {"column": "src_nearest_top", "cross": "above"},
+    "src_support_broken":        {"column": "src_nearest_bot", "cross": "below"},
+    # EMA Price Position — column is dynamic based on group parameters
+    "ema_pp_cross_short_up":     {"column": "ema_9",  "cross": "above", "param_key": "short_period"},
+    "ema_pp_cross_short_down":   {"column": "ema_9",  "cross": "below", "param_key": "short_period"},
+    "ema_pp_cross_mid_up":       {"column": "ema_21", "cross": "above", "param_key": "mid_period"},
+    "ema_pp_cross_mid_down":     {"column": "ema_21", "cross": "below", "param_key": "mid_period"},
+    # UT Bot (Confirmed) — fill at PREVIOUS bar's trailing stop
+    "utbot_v2_buy":              {"column": "utbot_stop_prev", "cross": "above"},
+    "utbot_v2_sell":             {"column": "utbot_stop_prev", "cross": "below"},
+    # EMA Price Position (Confirmed) — fill at PREVIOUS bar's EMA level
+    "ema_pp_v2_cross_short_up":  {"column": "ema_9_prev",  "cross": "above", "param_key": "short_period"},
+    "ema_pp_v2_cross_short_down": {"column": "ema_9_prev",  "cross": "below", "param_key": "short_period"},
+    "ema_pp_v2_cross_mid_up":    {"column": "ema_21_prev", "cross": "above", "param_key": "mid_period"},
+    "ema_pp_v2_cross_mid_down":  {"column": "ema_21_prev", "cross": "below", "param_key": "mid_period"},
+}
+
+
 # Template key → required indicator set and interpreter key
 TEMPLATE_REQUIREMENTS = {
     'ema_stack': ({'ema'}, 'EMA_STACK'),
