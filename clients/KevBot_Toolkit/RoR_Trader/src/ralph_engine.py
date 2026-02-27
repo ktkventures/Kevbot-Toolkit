@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import logging
+import logging.handlers
 import math
 import os
 import signal
@@ -28,7 +29,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -52,17 +53,21 @@ _LOG_DATE_FMT = "%H:%M:%S"
 logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATE_FMT)
 logger = logging.getLogger("ralph")
 
-# Add file handler with rotation (5 MB max, keep 3 backups)
-try:
-    from logging.handlers import RotatingFileHandler
-    _log_file = Path(__file__).resolve().parent / "ralph_engine.log"
-    _fh = RotatingFileHandler(
-        str(_log_file), maxBytes=5 * 1024 * 1024, backupCount=3)
-    _fh.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FMT))
-    _fh.setLevel(logging.DEBUG)
-    logger.addHandler(_fh)
-except Exception:
-    pass  # Non-critical — console logging still works
+# Add file handler with rotation (5 MB max, keep 3 backups).
+# Guard: this module runs both as __main__ and via `from ralph_engine import X`
+# (separate sys.modules entries), so getLogger("ralph") would accumulate
+# duplicate handlers without this check.
+if not any(isinstance(h, logging.handlers.RotatingFileHandler)
+           for h in logger.handlers):
+    try:
+        _log_file = Path(__file__).resolve().parent / "ralph_engine.log"
+        _fh = logging.handlers.RotatingFileHandler(
+            str(_log_file), maxBytes=5 * 1024 * 1024, backupCount=3)
+        _fh.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FMT))
+        _fh.setLevel(logging.DEBUG)
+        logger.addHandler(_fh)
+    except Exception:
+        pass  # Non-critical — console logging still works
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -94,15 +99,82 @@ STRATEGY_REFRESH_INTERVAL = 300  # seconds
 # Partial bar pickle write interval
 PICKLE_WRITE_INTERVAL = 2.0  # seconds
 
-# Warmup bar count
-WARMUP_BARS = 250  # enough for EMA-200 convergence + margin
-
 # Session gap threshold for VWAP reset
 VWAP_SESSION_GAP_SECONDS = 30 * 60  # 30 minutes
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BAR BUILDER (copied from realtime_engine.py — standalone, no dependencies)
+# GENERAL PACK SCALAR EVALUATORS (no-DataFrame, single-timestamp checks)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_GP_SESSION_WINDOWS = {
+    "pre_market": (4, 0, 9, 30),
+    "regular": (9, 30, 16, 0),
+    "after_hours": (16, 0, 20, 0),
+    "extended": (4, 0, 20, 0),
+}
+
+
+def _eval_gp_scalar(pack, ts: datetime) -> Optional[str]:
+    """Evaluate a GeneralPack against a single timestamp. Returns state label."""
+    try:
+        from general_packs import TEMPLATES
+    except ImportError:
+        return None
+    logic = TEMPLATES.get(pack.base_template, {}).get("condition_logic")
+    params = pack.parameters
+    if logic == "time_window":
+        start = params.get("start_hour", 9) * 60 + params.get("start_minute", 30)
+        end = params.get("end_hour", 12) * 60 + params.get("end_minute", 0)
+        bar_min = ts.hour * 60 + ts.minute
+        return "IN_WINDOW" if start <= bar_min < end else "OUT_OF_WINDOW"
+    elif logic == "session_filter":
+        session = params.get("session", "regular")
+        sh, sm, eh, em = _GP_SESSION_WINDOWS.get(
+            session, _GP_SESSION_WINDOWS["regular"])
+        start = sh * 60 + sm
+        end = eh * 60 + em
+        bar_min = ts.hour * 60 + ts.minute
+        return "IN_SESSION" if start <= bar_min < end else "OUT_OF_SESSION"
+    elif logic == "day_filter":
+        day_map = {0: "monday", 1: "tuesday", 2: "wednesday",
+                   3: "thursday", 4: "friday"}
+        day_name = day_map.get(ts.weekday())
+        if day_name is None:
+            return "BLOCKED_DAY"
+        return "ALLOWED_DAY" if params.get(day_name, True) else "BLOCKED_DAY"
+    elif logic == "calendar_filter":
+        if params.get("avoid_fomc", True) and ts.weekday() == 2 and ts.day <= 7:
+            return "BLOCKED"
+        if params.get("avoid_nfp", True) and ts.weekday() == 4 and ts.day <= 7:
+            return "BLOCKED"
+        if params.get("avoid_opex", False) and ts.weekday() == 4 and 15 <= ts.day <= 21:
+            return "BLOCKED"
+        return "CLEAR"
+    return None
+
+
+def _load_enabled_general_packs() -> list:
+    """Load and return enabled GeneralPack objects."""
+    try:
+        from general_packs import load_general_packs, get_enabled_general_packs
+        return get_enabled_general_packs(load_general_packs())
+    except Exception:
+        return []
+
+
+def _evaluate_general_packs(packs: list, ts: datetime) -> Set[str]:
+    """Evaluate all packs against a single timestamp, return GEN- records."""
+    records = set()
+    for pack in packs:
+        state = _eval_gp_scalar(pack, ts)
+        if state:
+            records.add(f"GEN-{pack.id.upper()}-{state}")
+    return records
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BAR BUILDER — standalone OHLCV bar assembly from tick data (no dependencies)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PartialBar:
@@ -1035,7 +1107,20 @@ class PositionStateMachine:
             self.exit_triggers = set(strategy['exit_triggers'])
         elif strategy.get('exit_trigger'):
             et = strategy['exit_trigger']
-            if et and et not in ('opposite_signal',):
+            if et == 'opposite_signal':
+                # Resolve opposite of entry trigger as actual exit trigger
+                try:
+                    from triggers import get_opposite_trigger
+                    opp = get_opposite_trigger(self.entry_trigger)
+                    if opp:
+                        self.exit_triggers = {opp}
+                    else:
+                        logger.warning("No opposite trigger for %s "
+                                      "(opposite_signal exit won't fire)",
+                                      self.entry_trigger)
+                except ImportError:
+                    pass
+            elif et:
                 self.exit_triggers = {et}
 
         self.bar_count_exit = strategy.get('bar_count_exit')
@@ -1475,8 +1560,18 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
         _process_trigger_id(et)
     if not exit_triggers:
         exit_single = _resolve_trigger_id(strategy, 'exit_trigger')
-        if exit_single:
+        if exit_single and exit_single != 'opposite_signal':
             _process_trigger_id(exit_single)
+        elif exit_single == 'opposite_signal' or \
+                strategy.get('exit_trigger') == 'opposite_signal':
+            # Register opposite trigger's requirements
+            try:
+                from triggers import get_opposite_trigger
+                opp = get_opposite_trigger(entry)
+                if opp:
+                    _process_trigger_id(opp)
+            except ImportError:
+                pass
 
     # Process confluences
     for conf in strategy.get('confluence', []):
@@ -1484,9 +1579,37 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
     for conf in strategy.get('general_confluences', []):
         _process_confluence_record(conf)
 
-    # Build params from strategy config
-    # Default EMA periods — could be overridden by group params
-    params['ema_periods'] = [8, 21, 50]
+    # Resolve EMA periods from confluence group params (not hardcoded)
+    ema_periods = [8, 21, 50]  # fallback defaults
+    if 'ema' in indicators:
+        try:
+            from confluence_groups import get_enabled_groups, get_all_triggers
+            groups = get_enabled_groups()
+            # Find group via entry or exit confluence trigger IDs
+            cid = (strategy.get('entry_trigger_confluence_id') or '')
+            exit_cids = strategy.get('exit_trigger_confluence_ids', [])
+            all_cids = ([cid] if cid else []) + (exit_cids or [])
+            all_triggers = get_all_triggers()
+            for c in all_cids:
+                if not c or c not in all_triggers:
+                    continue
+                for g in groups:
+                    p = g.parameters
+                    if 'short_period' in p and 'mid_period' in p:
+                        # Check if this group owns the trigger
+                        base_t = all_triggers[c].base_trigger
+                        if g.get_trigger_id(base_t) == c:
+                            ema_periods = [
+                                p.get('short_period', 9),
+                                p.get('mid_period', 21),
+                                p.get('long_period', 200)]
+                            break
+                else:
+                    continue
+                break
+        except Exception:
+            pass
+    params['ema_periods'] = ema_periods
 
     return indicators, interpreters, triggers, params
 
@@ -1499,7 +1622,8 @@ class StrategyMonitor:
     """Monitors one strategy: indicators → triggers → position state."""
 
     def __init__(self, strategy: dict,
-                 position_state: Optional[PositionState] = None):
+                 position_state: Optional[PositionState] = None,
+                 general_packs: Optional[list] = None):
         self.strategy = strategy
         self.strat_id = strategy['id']
         self.strat_name = strategy.get('name', f'Strategy {self.strat_id}')
@@ -1531,6 +1655,18 @@ class StrategyMonitor:
         # Confluence records for current bar
         self._current_confluence: Set[str] = set()
         self._interp_keys = list(req_interp)
+
+        # General Pack references (for GEN- confluence records)
+        # Only keep packs referenced by this strategy's general_confluences
+        gp_ids_needed = set()
+        for rec in strategy.get('general_confluences', []):
+            parts = rec.split('-', 2)
+            if len(parts) >= 2:
+                gp_ids_needed.add(parts[1].lower())
+        self._general_packs = [
+            p for p in (general_packs or [])
+            if p.id in gp_ids_needed
+        ] if gp_ids_needed else []
 
         logger.info("StrategyMonitor: %s (%s/%ds) — indicators=%s, "
                      "triggers=%d, interpreters=%d",
@@ -1567,6 +1703,13 @@ class StrategyMonitor:
         for ikey, state_val in interps.items():
             self._current_confluence.add(
                 f'{short_label}-{ikey}-{state_val}')
+
+        # 3b. Evaluate General Pack conditions (time/calendar filters)
+        if self._general_packs:
+            bar_ts = bar.get('timestamp')
+            if isinstance(bar_ts, datetime):
+                self._current_confluence |= _evaluate_general_packs(
+                    self._general_packs, bar_ts)
 
         bar_time = bar.get('timestamp', '')
         if isinstance(bar_time, datetime):
@@ -1673,6 +1816,7 @@ class AlertDispatcher:
             'price': signal.get('price', 0),
             'bar_time': signal.get('bar_time', ''),
             'stop_price': signal.get('stop_price'),
+            'target_price': signal.get('target_price'),
             'atr': signal.get('atr', 0),
             'level': 'strategy',
             'strategy_id': strategy['id'],
@@ -1880,21 +2024,25 @@ class SymbolHub:
 # SESSION CHECK
 # ═══════════════════════════════════════════════════════════════════════════
 
+_SESSION_HOURS = {
+    "RTH": (9, 30, 16, 0),
+    "Pre-Market": (4, 0, 9, 30),
+    "After Hours": (16, 0, 20, 0),
+    "Extended Hours": (4, 0, 20, 0),
+}
+try:
+    import pytz as _pytz
+    _ET_TZ = _pytz.timezone("America/New_York")
+except ImportError:
+    _ET_TZ = timezone(timedelta(hours=-5))  # fallback EST
+
+
 def _is_in_session(timestamp: datetime, session: str) -> bool:
     """Check if a UTC timestamp falls within the given trading session (ET)."""
-    import pytz
-    import datetime as dt_mod
-
-    SESSION_HOURS = {
-        "RTH": (9, 30, 16, 0),
-        "Pre-Market": (4, 0, 9, 30),
-        "After Hours": (16, 0, 20, 0),
-        "Extended Hours": (4, 0, 20, 0),
-    }
-    et = pytz.timezone("America/New_York")
-    et_time = timestamp.astimezone(et).time()
-    sh, sm, eh, em = SESSION_HOURS.get(session, (9, 30, 16, 0))
-    return dt_mod.time(sh, sm) <= et_time < dt_mod.time(eh, em)
+    from datetime import time as _time
+    et_time = timestamp.astimezone(_ET_TZ).time()
+    sh, sm, eh, em = _SESSION_HOURS.get(session, (9, 30, 16, 0))
+    return _time(sh, sm) <= et_time < _time(eh, em)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1933,6 +2081,9 @@ class RalphEngine:
         # Load saved position state
         saved_positions = load_engine_state()
 
+        # Load enabled general packs for GEN- confluence evaluation
+        self._general_packs = _load_enabled_general_packs()
+
         # Group strategies by symbol
         by_symbol: Dict[str, List[dict]] = {}
         for strat in strategies:
@@ -1947,7 +2098,8 @@ class RalphEngine:
                 strat_id = strat['id']
                 pos_state = saved_positions.get(strat_id)
 
-                monitor = StrategyMonitor(strat, pos_state)
+                monitor = StrategyMonitor(
+                    strat, pos_state, general_packs=self._general_packs)
                 hub.add_monitor(monitor)
                 self.monitors[strat_id] = monitor
 
@@ -1969,8 +2121,8 @@ class RalphEngine:
             self._sync_initial_positions(strats_needing_sync)
 
         # Write PID and status
-        self._write_status(running=True)
         self._start_time = datetime.now(timezone.utc).isoformat()
+        self._write_status(running=True)
 
         logger.info("Ralph engine starting: %d strategies, %d symbols",
                      len(strategies), len(self.hubs))
@@ -2388,6 +2540,9 @@ class RalphEngine:
             for tf_seconds, builder in hub.builders.items():
                 if len(builder.history) == 0:
                     continue
+                # Sub-minute TFs not available via REST API — skip gracefully
+                if tf_seconds < 60:
+                    continue
                 tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
                 session = 'RTH'
                 for m in hub.monitors.values():
@@ -2405,8 +2560,11 @@ class RalphEngine:
                     continue
 
                 # Only correct bars BEFORE the grace window (don't touch
-                # the last N bars which may still be forming)
-                hist = builder.history
+                # the last N bars which may still be forming).
+                # Take a snapshot reference — if _append_to_history runs
+                # concurrently and reassigns builder.history via pd.concat,
+                # we work on the copy and reassign atomically at the end.
+                hist = builder.history.copy()
                 if len(hist) < RECONCILE_GRACE_BARS + 1:
                     continue
 
@@ -2424,6 +2582,7 @@ class RalphEngine:
                                     corrections += 1
 
                 if corrections > 0:
+                    builder.history = hist
                     logger.debug("Reconciled %d values for %s/%s",
                                 corrections, sym, tf_str)
 
@@ -2438,6 +2597,9 @@ class RalphEngine:
         except Exception as e:
             logger.warning("Strategy hot-reload failed: %s", e)
             return
+
+        # Refresh general packs (user may have enabled/disabled packs)
+        self._general_packs = _load_enabled_general_packs()
 
         new_ids = {s['id'] for s in strategies}
         current_ids = set(self.monitors.keys())
@@ -2468,7 +2630,8 @@ class RalphEngine:
                 self.hubs[sym] = SymbolHub(sym)
 
             hub = self.hubs[sym]
-            monitor = StrategyMonitor(strat)
+            monitor = StrategyMonitor(
+                strat, general_packs=self._general_packs)
             hub.add_monitor(monitor)
             self.monitors[sid] = monitor
 
@@ -2718,6 +2881,7 @@ def cmd_dry_run():
     engine.strategies = strategies
     engine._config = config
     engine._running = True
+    engine._general_packs = _load_enabled_general_packs()
 
     # Group by symbol, create hubs/monitors
     by_symbol: Dict[str, List[dict]] = {}
@@ -2731,7 +2895,8 @@ def cmd_dry_run():
         hub = SymbolHub(sym)
         for strat in strats:
             pos_state = saved_positions.get(strat['id'])
-            monitor = StrategyMonitor(strat, pos_state)
+            monitor = StrategyMonitor(
+                strat, pos_state, general_packs=engine._general_packs)
             hub.add_monitor(monitor)
             engine.monitors[strat['id']] = monitor
         engine.hubs[sym] = hub
