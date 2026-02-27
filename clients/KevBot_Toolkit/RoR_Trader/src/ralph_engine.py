@@ -1993,7 +1993,9 @@ class RalphEngine:
         self._running = False
         if self._stream_ref:
             try:
-                self._stream_ref.close()
+                # Mark the stream as should-not-run so the patched
+                # _run_forever exits cleanly on next iteration
+                self._stream_ref._should_run = False
             except Exception:
                 pass
 
@@ -2147,6 +2149,54 @@ class RalphEngine:
             logger.error("alpaca-py not installed")
             return
 
+        # Patch the Alpaca SDK's _run_forever to propagate "connection
+        # limit exceeded" errors instead of spinning in a tight retry
+        # loop. The SDK catches ValueError internally but only breaks
+        # for "insufficient subscription" — all others just log and
+        # retry with sleep(0), which floods the server with requests.
+        async def _patched_run_forever(stream_instance):
+            """Wrapper that re-raises connection limit errors."""
+            import websockets
+            stream_instance._loop = asyncio.get_running_loop()
+            while not any(
+                v for k, v in stream_instance._handlers.items()
+                if k not in ("cancelErrors", "corrections")
+            ):
+                if not stream_instance._stop_stream_queue.empty():
+                    stream_instance._stop_stream_queue.get(timeout=1)
+                    return
+                await asyncio.sleep(0)
+            stream_instance._should_run = True
+            stream_instance._running = False
+            while True:
+                try:
+                    if not stream_instance._should_run:
+                        return
+                    if not stream_instance._running:
+                        await stream_instance._start_ws()
+                        await stream_instance._send_subscribe_msg()
+                        stream_instance._running = True
+                    await stream_instance._consume()
+                except websockets.WebSocketException as wse:
+                    await stream_instance.close()
+                    stream_instance._running = False
+                    logger.warning("WebSocket error: %s", wse)
+                except ValueError as ve:
+                    msg = str(ve)
+                    if "connection limit" in msg.lower():
+                        await stream_instance.close()
+                        stream_instance._running = False
+                        raise  # Let outer handler apply backoff
+                    if "insufficient subscription" in msg:
+                        await stream_instance.close()
+                        stream_instance._running = False
+                        return
+                    logger.warning("Stream ValueError: %s", ve)
+                except Exception as e:
+                    logger.warning("Stream error: %s", e)
+                finally:
+                    await asyncio.sleep(0)
+
         # Launch independent periodic task loop (not tick-driven)
         periodic_task = asyncio.ensure_future(self._periodic_tasks_loop())
 
@@ -2198,7 +2248,9 @@ class RalphEngine:
                     logger.info("Connecting to Alpaca stream for %d symbols "
                                 "(backoff=%ds)…", len(symbols), backoff)
 
-                    await stream._run_forever()
+                    # Use patched _run_forever that properly
+                    # propagates connection limit errors
+                    await _patched_run_forever(stream)
 
                 except ValueError as e:
                     self._write_status(running=True, connected=False)
