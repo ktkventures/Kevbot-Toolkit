@@ -55,6 +55,13 @@ MAX_HISTORY = 25_000
 # trade generation only needs recent bars since strategies are intraday.
 GENERATE_TRADES_WINDOW = 2000
 
+# Phase 27C: Alpaca REST bar backfill
+BACKFILL_INTERVAL = 60   # seconds between backfill cycles
+BACKFILL_GRACE_BARS = 2  # don't touch the last N bars (REST API finalization delay)
+
+# Reverse mapping: tf_seconds → timeframe string for REST API calls
+SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
+
 
 def _is_in_session(timestamp: datetime, session: str) -> bool:
     """Check if a UTC timestamp falls within the given trading session (ET)."""
@@ -769,6 +776,10 @@ class SymbolHub:
         self._last_enriched_df: Dict[int, pd.DataFrame] = {}  # tf_seconds → last enriched df
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
+        # Phase 27C: Alpaca REST bar backfill
+        self._last_backfill_time: float = 0.0
+        self._streaming_start_ts: Optional[datetime] = None
+        self._backfill_executor: Optional[object] = None  # set by UnifiedStreamingEngine
 
     def add_timeframe(self, tf_seconds: int, warmup_df: pd.DataFrame):
         """Register a timeframe with historical warmup data."""
@@ -921,6 +932,8 @@ class SymbolHub:
                 self._on_bar_close(tf_seconds, builder, timestamp)
         # Throttled pipeline evaluation (runs every 500ms, not every tick)
         self._evaluate_pipeline_throttled(price, timestamp)
+        # Phase 27C: periodically replace streaming bars with canonical REST bars
+        self._maybe_backfill()
 
     # -- private --------------------------------------------------------
 
@@ -1117,6 +1130,7 @@ class SymbolHub:
         # Mark warmup complete — throttled evaluator is now safe to run
         if not self._first_bar_closed:
             self._first_bar_closed = True
+            self._streaming_start_ts = timestamp
             logger.info("First real bar closed for %s — pipeline evaluator enabled", self.symbol)
 
         # Evaluate managed exits (stop/bar-count) for strategies in position
@@ -1177,6 +1191,82 @@ class SymbolHub:
             except Exception as e:
                 logger.error("Error checking managed exits for %s: %s",
                              strat.get('name', strat['id']), e)
+
+    # ── Phase 27C: Alpaca REST bar backfill ──────────────────────────
+
+    def _maybe_backfill(self):
+        """Submit a REST backfill cycle if enough time has elapsed."""
+        now = time.monotonic()
+        if now - self._last_backfill_time < BACKFILL_INTERVAL:
+            return
+        if self._streaming_start_ts is None:
+            return
+        self._last_backfill_time = now
+        if self._backfill_executor:
+            self._backfill_executor.submit(self._backfill_from_rest)
+
+    def _backfill_from_rest(self):
+        """Replace streaming bars with canonical Alpaca REST bars.
+
+        Runs on the ThreadPoolExecutor (non-blocking).  Fetches bars from
+        ``_streaming_start_ts`` to ``now - grace`` and overwrites OHLCV in
+        ``builder.history`` for matching timestamps.  The next pipeline eval
+        cycle (within 500ms) will recalculate indicators with corrected data.
+        """
+        try:
+            from data_loader import load_from_alpaca
+        except ImportError:
+            return
+
+        start_ts = self._streaming_start_ts
+
+        # Use the most permissive session across all strategies on this symbol
+        sessions = [s.get('trading_session', 'RTH') for s in self.strategies]
+        session = 'Extended Hours' if 'Extended Hours' in sessions else (
+            sessions[0] if sessions else 'RTH')
+
+        for tf_seconds, builder in self.builders.items():
+            if len(builder.history) == 0:
+                continue
+
+            tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds)
+            if not tf_str:
+                continue  # Sub-minute TFs not available via REST — skip
+
+            # Grace period scales with timeframe (2 bars worth)
+            grace_seconds = BACKFILL_GRACE_BARS * tf_seconds
+            end_ts = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+
+            if start_ts >= end_ts:
+                continue  # Not enough time has passed for this TF
+
+            try:
+                rest_df = load_from_alpaca(
+                    self.symbol,
+                    start_date=start_ts,
+                    end_date=end_ts,
+                    timeframe=tf_str,
+                    feed='sip',
+                    session=session,
+                )
+            except Exception as e:
+                logger.warning("Backfill fetch failed for %s/%s: %s",
+                               self.symbol, tf_str, e)
+                continue
+
+            if rest_df is None or len(rest_df) == 0:
+                continue
+
+            # Replace OHLCV for matching timestamps
+            common_idx = builder.history.index.intersection(rest_df.index)
+            if len(common_idx) > 0:
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    if col in rest_df.columns:
+                        builder.history.loc[common_idx, col] = rest_df.loc[common_idx, col]
+
+            logger.info("Backfill %s/%ds: replaced %d bars (%s to %s)",
+                        self.symbol, tf_seconds, len(common_idx),
+                        start_ts.strftime('%H:%M'), end_ts.strftime('%H:%M'))
 
     def _check_managed_exits(self, strat: dict, builder: BarBuilder,
                              timestamp: datetime) -> Optional[dict]:
@@ -1370,6 +1460,10 @@ class UnifiedStreamingEngine:
         # Thread pool for non-blocking webhook delivery
         self._executor = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="alert-delivery")
+
+        # Wire executor to each hub for REST backfill (Phase 27C)
+        for hub in self.hubs.values():
+            hub._backfill_executor = self._executor
 
         self._running = True
         self._start_time = datetime.now(timezone.utc).isoformat()
