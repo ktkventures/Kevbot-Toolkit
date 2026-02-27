@@ -2578,17 +2578,17 @@ def render_candle_selector(chart_key: str) -> int:
     return int(choice)
 
 
-@st.fragment(run_every=2)
+@st.fragment(run_every=5)
 def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
                           chart_key: str = 'live_chart'):
     """Auto-refreshing live chart that reads enriched data from the streaming engine.
 
     Reads ``live_data_{symbol}_{tf}.pkl`` written by the streaming engine's
-    throttled pipeline evaluator.  Re-renders every 2 seconds via
-    ``@st.fragment(run_every=2)``.
+    throttled pipeline evaluator.  Re-renders every 5 seconds via
+    ``@st.fragment(run_every=5)``.
 
-    Runs ``generate_trades()`` on the live data to produce trade markers —
-    this is the SAME function used by the streaming engine for alert detection,
+    Runs ``generate_trades()`` on recent bars (last 2000) to produce trade
+    markers — same function as the streaming engine uses for alert detection,
     guaranteeing chart entries/exits = alert fires (Phase 27B single source of truth).
     """
     import pickle
@@ -2612,7 +2612,12 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         st.info("No live data available yet.")
         return
 
-    # Run generate_trades() on live data — same function used by streaming engine alerts
+    # Slice to recent bars for generate_trades() performance.
+    # Full DataFrame can be 20K+ rows; only need recent bars for trade markers.
+    TRADE_WINDOW = 2000
+    df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
+
+    # Run generate_trades() on recent data — same function used by streaming engine alerts
     trades = pd.DataFrame()
     try:
         entry_trigger = strat.get('entry_trigger') or ''
@@ -2632,11 +2637,11 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
         confluence_set = confluence_set if confluence_set else None
 
-        general_cols = [c for c in df_live.columns if c.startswith("GP_")]
-        sec_tf_map = get_secondary_tf_map(df_live)
+        general_cols = [c for c in df_for_trades.columns if c.startswith("GP_")]
+        sec_tf_map = get_secondary_tf_map(df_for_trades)
 
         trades = _gt(
-            df_live,
+            df_for_trades,
             direction=strat.get('direction', 'LONG'),
             entry_trigger=entry_trigger,
             exit_trigger=exit_trigger,

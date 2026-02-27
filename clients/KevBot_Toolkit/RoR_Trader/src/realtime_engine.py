@@ -774,6 +774,7 @@ class SymbolHub:
         self._first_bar_closed = False                   # True after first real bar close (not warmup)
         self._last_eval_time: float = 0.0                # monotonic time of last pipeline eval
         self._last_enriched_df: Dict[int, pd.DataFrame] = {}  # tf_seconds → last enriched df
+        self._bar_closed_pending = False                 # True when a bar closed since last full pipeline
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
         # Phase 27C: Alpaca REST bar backfill
@@ -970,22 +971,31 @@ class SymbolHub:
     def _evaluate_pipeline_throttled(self, price: float, timestamp: datetime):
         """Unified pipeline evaluator (Phase 27B) — generate_trades() as single source of truth.
 
-        Runs the full indicator → interpreter → trigger pipeline every 500ms on
-        ``history + partial bar``.  Then runs ``generate_trades()`` per strategy via
-        ``TradeListTracker`` and diffs against the previous result.  New entries/exits
-        in the trade list fire alerts — this is identical to what the chart shows.
+        **Full pipeline** runs only on bar close (once per minute for 1-min bars):
+        indicators → interpreters → triggers → generate_trades() → alert detection.
 
-        The pipeline runs once per timeframe and is shared across all strategies
-        on that timeframe.
+        **Lightweight path** runs every 2s between bar closes: updates the partial
+        bar's OHLCV in the cached enriched DataFrame and writes pickle so the live
+        chart shows real-time price movement without blocking the event loop.
         """
-        # Throttle: skip if <500ms since last eval
-        now = time.monotonic()
-        if now - self._last_eval_time < 0.5:
-            return
-        self._last_eval_time = now
-
         # Gate: skip until first real bar has closed (need warmup data)
         if not self._first_bar_closed:
+            return
+
+        now = time.monotonic()
+        run_full = self._bar_closed_pending
+
+        if run_full:
+            # Full pipeline — triggered by bar close
+            self._bar_closed_pending = False
+            self._last_eval_time = now
+        else:
+            # Lightweight partial-bar update — throttle to every 2s
+            if now - self._last_eval_time < 2.0:
+                return
+            self._last_eval_time = now
+            # Update partial bar OHLCV in cached enriched DataFrames and write pickle
+            self._update_partial_bar_pickle(price, timestamp)
             return
 
         from alerts import (
@@ -1104,6 +1114,10 @@ class SymbolHub:
                              strat.get('name', strat['id']), self.symbol, e)
 
         # ── Phase 3: Write enriched data for live chart ──
+        self._write_enriched_pickles(enriched_dfs)
+
+    def _write_enriched_pickles(self, enriched_dfs: Dict[int, pd.DataFrame]):
+        """Write enriched DataFrames to pickle files for live chart consumption."""
         try:
             import pickle
             src_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1115,6 +1129,54 @@ class SymbolHub:
                 os.replace(tmp_path, pkl_path)
         except Exception as e:
             logger.debug("Failed to write live chart data: %s", e)
+
+    def _update_partial_bar_pickle(self, price: float, timestamp: datetime):
+        """Lightweight path: update partial bar OHLCV in cached enriched DataFrame.
+
+        Runs every 2s between bar closes.  Only updates the last row (partial bar)
+        with current OHLCV from the bar builder, then writes the pickle.  No indicator
+        recalculation — keeps the event loop free for tick processing.
+        """
+        if not self._last_enriched_df:
+            return
+
+        updated: Dict[int, pd.DataFrame] = {}
+        for tf_seconds, cached_df in self._last_enriched_df.items():
+            builder = self.builders.get(tf_seconds)
+            if builder is None or builder._partial is None:
+                continue
+            if len(cached_df) == 0:
+                continue
+
+            try:
+                partial = builder._partial
+                partial_ts = pd.Timestamp(partial.bar_start)
+
+                # If the cached df's last row matches the partial bar's timestamp,
+                # update OHLCV in place.  Otherwise append a new row.
+                if cached_df.index[-1] == partial_ts:
+                    cached_df.iloc[-1, cached_df.columns.get_loc('open')] = partial.open
+                    cached_df.iloc[-1, cached_df.columns.get_loc('high')] = partial.high
+                    cached_df.iloc[-1, cached_df.columns.get_loc('low')] = partial.low
+                    cached_df.iloc[-1, cached_df.columns.get_loc('close')] = partial.close
+                    cached_df.iloc[-1, cached_df.columns.get_loc('volume')] = partial.volume
+                else:
+                    # New partial bar period — append a minimal row
+                    new_row = pd.DataFrame(
+                        [{'open': partial.open, 'high': partial.high,
+                          'low': partial.low, 'close': partial.close,
+                          'volume': partial.volume}],
+                        index=pd.DatetimeIndex([partial_ts], name='timestamp'),
+                    )
+                    cached_df = pd.concat([cached_df, new_row])
+                    self._last_enriched_df[tf_seconds] = cached_df
+
+                updated[tf_seconds] = cached_df
+            except Exception:
+                pass
+
+        if updated:
+            self._write_enriched_pickles(updated)
 
     def _on_bar_close(self, tf_seconds: int, builder: BarBuilder, timestamp: datetime):
         """Housekeeping on bar close — enables pipeline and evaluates managed exits.
@@ -1132,6 +1194,9 @@ class SymbolHub:
             self._first_bar_closed = True
             self._streaming_start_ts = timestamp
             logger.info("First real bar closed for %s — pipeline evaluator enabled", self.symbol)
+
+        # Signal that a bar closed — next eval cycle should run the full pipeline
+        self._bar_closed_pending = True
 
         # Evaluate managed exits (stop/bar-count) for strategies in position
         from alerts import save_alert, enrich_signal_with_portfolio_context, load_alert_config
