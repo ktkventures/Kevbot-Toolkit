@@ -45,8 +45,15 @@ if not _alpaca_ws_logger.handlers:
     _alpaca_ws_logger.addHandler(_fh)
     _alpaca_ws_logger.setLevel(logging.DEBUG)
 
-# Maximum rolling bars kept per (symbol, timeframe) — covers EMA-200 warmup
-MAX_HISTORY = 500
+# Maximum rolling bars kept per (symbol, timeframe).
+# Must be large enough to match the price chart's data_days (default 30) so that
+# indicators (EMA-200, VWAP, MACD) warm up identically to the backtest pipeline.
+MAX_HISTORY = 25_000
+
+# Window of recent bars passed to generate_trades() for performance.
+# The full DataFrame is used for indicator calculation (proper warmup), but
+# trade generation only needs recent bars since strategies are intraday.
+GENERATE_TRADES_WINDOW = 2000
 
 
 def _is_in_session(timestamp: datetime, session: str) -> bool:
@@ -394,9 +401,14 @@ class TradeListTracker:
         # Secondary TF map for MTF confluence
         sec_tf_map = self._get_secondary_tf_map(df_enriched)
 
+        # Slice to recent bars for generate_trades() performance.
+        # Indicators are already computed on the full DataFrame (proper warmup),
+        # but row-by-row trade generation only needs recent bars.
+        df_trades = df_enriched.iloc[-GENERATE_TRADES_WINDOW:] if len(df_enriched) > GENERATE_TRADES_WINDOW else df_enriched
+
         try:
             new_trades = generate_trades(
-                df_enriched,
+                df_trades,
                 direction=strat.get('direction', 'LONG'),
                 entry_trigger=entry_trigger,
                 exit_trigger=exit_trigger,
@@ -449,9 +461,12 @@ class TradeListTracker:
         general_cols = [c for c in df_enriched.columns if c.startswith("GP_")]
         sec_tf_map = self._get_secondary_tf_map(df_enriched)
 
+        # Slice to recent bars for performance (same as evaluate)
+        df_trades = df_enriched.iloc[-GENERATE_TRADES_WINDOW:] if len(df_enriched) > GENERATE_TRADES_WINDOW else df_enriched
+
         try:
             trades = generate_trades(
-                df_enriched,
+                df_trades,
                 direction=strat.get('direction', 'LONG'),
                 entry_trigger=entry_trigger,
                 exit_trigger=exit_trigger,
@@ -1332,10 +1347,13 @@ class UnifiedStreamingEngine:
                         continue
                     seen_tf.add(tf_key)
 
-                    bars_needed = max(compute_signal_detection_bars(reg_tf_str, session), MAX_HISTORY)
+                    # Match price chart warmup depth: use data_days from strategy
+                    # config so indicators initialize identically to the backtest.
+                    from data_loader import load_market_data as _load_market_data
+                    data_days = strat.get('data_days', 30)
                     try:
-                        warmup_df = load_latest_bars(
-                            sym, bars=bars_needed, timeframe=reg_tf_str,
+                        warmup_df = _load_market_data(
+                            sym, days=data_days, timeframe=reg_tf_str,
                             seed=strat.get('data_seed', 42), feed='sip',
                             session=session,
                         )
@@ -1469,10 +1487,11 @@ class UnifiedStreamingEngine:
 
             for reg_tf_str, reg_tf_sec in tfs_to_check:
                 if reg_tf_sec not in hub.builders:
-                    bars_needed = max(compute_signal_detection_bars(reg_tf_str, session), MAX_HISTORY)
+                    from data_loader import load_market_data as _load_market_data
+                    data_days = strat.get('data_days', 30)
                     try:
-                        warmup_df = load_latest_bars(
-                            sym, bars=bars_needed, timeframe=reg_tf_str,
+                        warmup_df = _load_market_data(
+                            sym, days=data_days, timeframe=reg_tf_str,
                             seed=strat.get('data_seed', 42), feed='sip',
                             session=session,
                         )
