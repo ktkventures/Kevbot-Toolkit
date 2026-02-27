@@ -1591,7 +1591,7 @@ class StrategyMonitor:
             'indicator_values': current,
             'trigger_booleans': trigger_bools,
             'interpreter_states': interps,
-            'position_state': self.position.state.state,
+            'position_state': self.position.state.status,
         }
 
         return signals, audit_data
@@ -1917,6 +1917,7 @@ class RalphEngine:
         self._last_reconcile = 0.0
         self._last_pickle_write = 0.0
         self._last_strategy_refresh = 0.0
+        self._subscribed_symbols: List[str] = []
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
@@ -2071,23 +2072,43 @@ class RalphEngine:
                 df = builder.history.copy()
                 df = run_all_indicators(df)
                 df = detect_all_triggers(df)
-                trades = generate_trades(df, strat)
 
-                if trades and len(trades) > 0:
-                    last_trade = trades[-1]
-                    # Check if last trade is still open (no exit)
-                    if (last_trade.get('exit_price') is None
-                            and last_trade.get('exit_bar_index') is None):
-                        entry_price = last_trade.get('entry_price', 0)
+                # Use resolved trigger IDs from the monitor
+                entry_trigger = monitor.position.entry_trigger
+                exit_triggers = list(monitor.position.exit_triggers)
+                trades = generate_trades(
+                    df,
+                    direction=strat.get('direction', 'LONG'),
+                    entry_trigger=entry_trigger,
+                    exit_triggers=exit_triggers or None,
+                    risk_per_trade=strat.get('risk_per_trade', 100.0),
+                    stop_atr_mult=strat.get('stop_atr_mult', 1.5),
+                    stop_config=strat.get('stop_config'),
+                    target_config=strat.get('target_config'),
+                    bar_count_exit=strat.get('bar_count_exit'),
+                )
+
+                if isinstance(trades, pd.DataFrame) and len(trades) > 0:
+                    last_trade = trades.iloc[-1]
+                    # An open trade has NaN exit_price
+                    has_exit = (
+                        'exit_price' in last_trade.index
+                        and pd.notna(last_trade.get('exit_price')))
+                    if not has_exit:
+                        entry_price = float(
+                            last_trade.get('entry_price', 0) or 0)
                         stop_price = last_trade.get('stop_price')
-                        entry_bar = last_trade.get('entry_bar_index', 0)
+                        if pd.notna(stop_price):
+                            stop_price = float(stop_price)
+                        else:
+                            stop_price = 0.0
+                        entry_bar = int(
+                            last_trade.get('entry_bar_index', 0) or 0)
 
-                        monitor.position.state.state = 'IN_POSITION'
+                        monitor.position.state.status = 'IN_POSITION'
                         monitor.position.state.entry_price = entry_price
                         monitor.position.state.stop_price = stop_price
-                        monitor.position.state.entry_bar = entry_bar
-                        monitor.position.state.bars_held = (
-                            len(df) - entry_bar)
+                        monitor.position.state.entry_bar_count = entry_bar
                         logger.info(
                             "  Synced S%d (%s): IN_POSITION @ %.2f "
                             "stop=%.4f",
@@ -2129,12 +2150,16 @@ class RalphEngine:
         # Launch independent periodic task loop (not tick-driven)
         periodic_task = asyncio.ensure_future(self._periodic_tasks_loop())
 
-        symbols = list(self.hubs.keys())
         backoff = 5
         max_backoff = 120
 
         try:
             while self._running:
+                # Re-read symbols on each reconnect (may have changed
+                # via hot-reload)
+                symbols = list(self.hubs.keys())
+                self._subscribed_symbols = symbols
+
                 try:
                     stream = StockDataStream(
                         api_key, secret_key, feed=DataFeed.SIP,
@@ -2418,14 +2443,26 @@ class RalphEngine:
             logger.info("Hot-reload: added strategy %d (%s / %s)",
                        sid, strat.get('name'), sym)
 
-            # If this is a new symbol, we need to re-subscribe
-            # (handled on next stream reconnect)
-
         if added or removed:
             self._config = config
             self.strategies = strategies
             logger.info("Hot-reload complete: %d strategies active",
                        len(self.monitors))
+
+            # Check if new symbols need stream subscription — if so,
+            # close the current stream to trigger a reconnect with the
+            # updated symbol list.
+            new_symbols = {
+                s.get('symbol', 'SPY') for s in strategies
+                if s['id'] in added
+            } - set(self._subscribed_symbols or [])
+            if new_symbols and self._stream_ref:
+                logger.info("New symbols detected (%s) — forcing "
+                            "stream reconnect", ', '.join(new_symbols))
+                try:
+                    self._stream_ref.close()
+                except Exception:
+                    pass
 
     def _save_all_positions(self):
         """Persist all position states."""
@@ -2559,6 +2596,23 @@ def cmd_status():
         print(f"  Strategies: {status.get('strategies', 0)}")
         print(f"  Ticks: {status.get('tick_count', 0):,}")
         print(f"  Started: {status.get('started_at', 'unknown')}")
+
+        # Show position states if engine_state.json exists
+        if _ENGINE_STATE_FILE.exists():
+            try:
+                positions = load_engine_state()
+                if positions:
+                    print("  Positions:")
+                    for sid, ps in positions.items():
+                        state_str = ps.state if hasattr(ps, 'state') else str(ps)
+                        extra = ""
+                        if hasattr(ps, 'entry_price') and ps.entry_price:
+                            extra = f" @ {ps.entry_price:.2f}"
+                        if hasattr(ps, 'stop_price') and ps.stop_price:
+                            extra += f" stop={ps.stop_price:.4f}"
+                        print(f"    S{sid}: {state_str}{extra}")
+            except Exception:
+                pass
     else:
         print(f"Engine status: STOPPED (PID {pid} not alive)")
 
@@ -2588,6 +2642,80 @@ def cmd_stop():
         print(f"Failed to signal PID {pid}: {e}")
 
 
+def cmd_dry_run():
+    """Load config, resolve strategies, warmup, and print diagnostics.
+
+    Does NOT connect to the live stream. Useful for verifying that
+    strategy resolution, indicator warmup, and position sync all work
+    before starting the real engine.
+    """
+    config, strategies = _load_config_and_strategies()
+    if not strategies:
+        print("No strategies to monitor.")
+        return
+
+    print(f"Resolved {len(strategies)} strategies:")
+    for s in strategies:
+        print(f"  S{s['id']}: {s.get('name')} ({s.get('symbol')} / "
+              f"{s.get('timeframe')})")
+
+    symbols = {s.get('symbol') for s in strategies}
+    print(f"\nSymbols: {sorted(symbols)}")
+
+    engine = RalphEngine()
+    engine.strategies = strategies
+    engine._config = config
+    engine._running = True
+
+    # Group by symbol, create hubs/monitors
+    by_symbol: Dict[str, List[dict]] = {}
+    for strat in strategies:
+        sym = strat.get('symbol', 'SPY')
+        by_symbol.setdefault(sym, []).append(strat)
+
+    saved_positions = load_engine_state()
+
+    for sym, strats in by_symbol.items():
+        hub = SymbolHub(sym)
+        for strat in strats:
+            pos_state = saved_positions.get(strat['id'])
+            monitor = StrategyMonitor(strat, pos_state)
+            hub.add_monitor(monitor)
+            engine.monitors[strat['id']] = monitor
+        engine.hubs[sym] = hub
+
+    print("\nRunning warmup...")
+    engine._warmup_all()
+    print("Warmup complete.")
+
+    # Position sync
+    if saved_positions:
+        strats_needing_sync = [
+            s for s in strategies if s['id'] not in saved_positions]
+    else:
+        strats_needing_sync = strategies
+    if strats_needing_sync:
+        print(f"\nSyncing initial positions for {len(strats_needing_sync)} "
+              f"strategies...")
+        engine._sync_initial_positions(strats_needing_sync)
+
+    # Print final state
+    print("\nFinal monitor states:")
+    for sid, m in sorted(engine.monitors.items()):
+        pos = m.position.state.status
+        indicators = list(m.indicators.required)
+        entry = m.position.state.entry_price
+        stop = m.position.state.stop_price
+        extra = ""
+        if pos == 'IN_POSITION':
+            extra = f" entry={entry:.2f} stop={stop:.4f}"
+        print(f"  S{sid} ({m.strat_name}): {pos}{extra} | "
+              f"indicators={sorted(indicators)}")
+
+    engine._running = False
+    print("\nDry run complete — no live connection was made.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Ralph Wiggum Alert Engine")
@@ -2595,6 +2723,9 @@ def main():
                         help='Print engine status')
     parser.add_argument('--stop', action='store_true',
                         help='Stop the running engine')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Load, warmup, and print diagnostics without '
+                             'connecting to the live stream')
     args = parser.parse_args()
 
     # Ensure we're in the right directory
@@ -2604,6 +2735,8 @@ def main():
         cmd_status()
     elif args.stop:
         cmd_stop()
+    elif args.dry_run:
+        cmd_dry_run()
     else:
         cmd_start()
 
