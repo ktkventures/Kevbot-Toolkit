@@ -59,6 +59,11 @@ GENERATE_TRADES_WINDOW = 2000
 BACKFILL_INTERVAL = 60   # seconds between backfill cycles
 BACKFILL_GRACE_BARS = 2  # don't touch the last N bars (REST API finalization delay)
 
+# Sliding window pipeline evaluation
+SLIDING_WINDOW = 1000       # Recent bars for 500ms inter-bar pipeline (EMA-200 converges well within this)
+CHART_PICKLE_BARS = 300     # Bars written to pickle for live chart display
+EVAL_INTERVAL = 0.5         # Seconds between pipeline evaluations (intra-bar alert detection)
+
 
 def _is_in_session(timestamp: datetime, session: str) -> bool:
     """Check if a UTC timestamp falls within the given trading session (ET)."""
@@ -969,34 +974,36 @@ class SymbolHub:
                                     df_enriched.index, method='ffill')
 
     def _evaluate_pipeline_throttled(self, price: float, timestamp: datetime):
-        """Unified pipeline evaluator (Phase 27B) — generate_trades() as single source of truth.
+        """Unified pipeline evaluator — runs every EVAL_INTERVAL (500ms).
 
-        **Full pipeline** runs only on bar close (once per minute for 1-min bars):
-        indicators → interpreters → triggers → generate_trades() → alert detection.
+        Two modes, both running the full indicator → interpreter → trigger →
+        generate_trades() → alert detection chain:
 
-        **Lightweight path** runs every 2s between bar closes: updates the partial
-        bar's OHLCV in the cached enriched DataFrame and writes pickle so the live
-        chart shows real-time price movement without blocking the event loop.
+        **Bar close** (is_bar_close=True): Full pipeline on ALL bars.
+        Establishes proper indicator warmup baseline and caches the enriched df.
+
+        **Between bar closes** (is_bar_close=False): Sliding window of
+        SLIDING_WINDOW (1000) recent bars.  ~50ms per eval — fast enough to
+        detect intra-bar trigger crossings (price crossing UT Bot stop, VWAP,
+        EMA levels) without blocking the event loop.
+
+        Only the last CHART_PICKLE_BARS (300) rows are written to pickle,
+        keeping chart I/O at ~20ms.
         """
         # Gate: skip until first real bar has closed (need warmup data)
         if not self._first_bar_closed:
             return
 
         now = time.monotonic()
-        run_full = self._bar_closed_pending
+        is_bar_close = self._bar_closed_pending
 
-        if run_full:
-            # Full pipeline — triggered by bar close
+        if is_bar_close:
             self._bar_closed_pending = False
             self._last_eval_time = now
         else:
-            # Lightweight partial-bar update — throttle to every 2s
-            if now - self._last_eval_time < 2.0:
+            if now - self._last_eval_time < EVAL_INTERVAL:
                 return
             self._last_eval_time = now
-            # Update partial bar OHLCV in cached enriched DataFrames and write pickle
-            self._update_partial_bar_pickle(price, timestamp)
-            return
 
         from alerts import (
             _run_pipeline,
@@ -1009,34 +1016,38 @@ class SymbolHub:
         enabled_groups = get_enabled_groups()
         config = load_alert_config()
 
-        # ── Phase 1: Run pipeline once per timeframe ──
+        # ── Phase 1: Run pipeline per timeframe ──
         enriched_dfs: Dict[int, pd.DataFrame] = {}
         for tf_seconds, builder in self.builders.items():
             df = builder.get_df_with_partial()
             if len(df) < 10:
                 continue
+
+            # Between bar closes: sliding window for speed (~50ms vs ~500ms+)
+            if not is_bar_close and len(df) > SLIDING_WINDOW:
+                df = df.iloc[-SLIDING_WINDOW:]
+
             try:
                 df_enriched = _run_pipeline(df)
                 for group in enabled_groups:
                     df_enriched = run_indicators_for_group(df_enriched, group)
                 # Re-run interpreters + triggers AFTER group indicators so that
                 # group-specific interpreters (UTBOT state) and triggers
-                # (utbot_buy, etc.) get created.  _run_pipeline() calls these
-                # before group indicators add columns like utbot_stop/utbot_direction.
+                # (utbot_buy, etc.) get created.
                 df_enriched = _run_interpreters(df_enriched)
                 df_enriched = _detect_triggers(df_enriched)
                 enriched_dfs[tf_seconds] = df_enriched
-                self._last_enriched_df[tf_seconds] = df_enriched
+
+                # Cache full enriched df on bar close (used by _init_position_state)
+                if is_bar_close:
+                    self._last_enriched_df[tf_seconds] = df_enriched
             except Exception as e:
                 logger.error("Pipeline error for %s/%ds: %s", self.symbol, tf_seconds, e)
 
         if not enriched_dfs:
             return
 
-        # ── Phase 2: Evaluate each strategy via TradeListTracker (Phase 27B) ──
-        # generate_trades() handles ALL entry/exit logic internally:
-        # trigger resolution, confluence gating, position tracking, stop/target.
-        # We just diff the trade list and fire alerts on new events.
+        # ── Phase 2: Evaluate each strategy via TradeListTracker ──
         for strat in self.strategies:
             strat_id = strat['id']
             strat_tf = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
@@ -1113,19 +1124,24 @@ class SymbolHub:
                 logger.error("Error in throttled eval for %s on %s: %s",
                              strat.get('name', strat['id']), self.symbol, e)
 
-        # ── Phase 3: Write enriched data for live chart ──
+        # ── Phase 3: Write enriched data for live chart (trimmed) ──
         self._write_enriched_pickles(enriched_dfs)
 
     def _write_enriched_pickles(self, enriched_dfs: Dict[int, pd.DataFrame]):
-        """Write enriched DataFrames to pickle files for live chart consumption."""
+        """Write enriched DataFrames to pickle files for live chart consumption.
+
+        Only writes the last CHART_PICKLE_BARS rows to keep pickle I/O fast
+        (~20ms read vs ~1s for the full 25K DataFrame).
+        """
         try:
             import pickle
             src_dir = os.path.dirname(os.path.abspath(__file__))
             for tf_seconds, df_e in enriched_dfs.items():
                 pkl_path = os.path.join(src_dir, f"live_data_{self.symbol}_{tf_seconds}.pkl")
                 tmp_path = pkl_path + ".tmp"
+                df_out = df_e.iloc[-CHART_PICKLE_BARS:] if len(df_e) > CHART_PICKLE_BARS else df_e
                 with open(tmp_path, 'wb') as f:
-                    pickle.dump(df_e, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    pickle.dump(df_out, f, protocol=pickle.HIGHEST_PROTOCOL)
                 os.replace(tmp_path, pkl_path)
         except Exception as e:
             logger.debug("Failed to write live chart data: %s", e)
