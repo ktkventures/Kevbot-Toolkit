@@ -59,9 +59,6 @@ GENERATE_TRADES_WINDOW = 2000
 BACKFILL_INTERVAL = 60   # seconds between backfill cycles
 BACKFILL_GRACE_BARS = 2  # don't touch the last N bars (REST API finalization delay)
 
-# Reverse mapping: tf_seconds → timeframe string for REST API calls
-SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
-
 
 def _is_in_session(timestamp: datetime, session: str) -> bool:
     """Check if a UTC timestamp falls within the given trading session (ET)."""
@@ -88,6 +85,9 @@ TIMEFRAME_SECONDS = {
     "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,
     "1Day": 86400, "1Week": 604800, "1Month": 2592000,
 }
+
+# Reverse mapping: tf_seconds → timeframe string for REST API calls (Phase 27C)
+SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
 
 
 class PartialBar:
