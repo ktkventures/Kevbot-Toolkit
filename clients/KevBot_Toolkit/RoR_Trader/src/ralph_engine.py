@@ -45,12 +45,23 @@ _ENGINE_AUDIT_FILE = _SCRIPT_DIR / "engine_audit.jsonl"
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+_LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s  %(message)s"
+_LOG_DATE_FMT = "%H:%M:%S"
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATE_FMT)
 logger = logging.getLogger("ralph")
+
+# Add file handler with rotation (5 MB max, keep 3 backups)
+try:
+    from logging.handlers import RotatingFileHandler
+    _log_file = Path(__file__).resolve().parent / "ralph_engine.log"
+    _fh = RotatingFileHandler(
+        str(_log_file), maxBytes=5 * 1024 * 1024, backupCount=3)
+    _fh.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FMT))
+    _fh.setLevel(logging.DEBUG)
+    logger.addHandler(_fh)
+except Exception:
+    pass  # Non-critical — console logging still works
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -2013,6 +2024,12 @@ class RalphEngine:
                     if now - self._last_pickle_write >= PICKLE_WRITE_INTERVAL:
                         self._last_pickle_write = now
                         self._write_chart_pickles()
+                    if now - self._last_reconcile >= RECONCILE_INTERVAL:
+                        self._last_reconcile = now
+                        self._reconcile_bars()
+                    if now - self._last_strategy_refresh >= STRATEGY_REFRESH_INTERVAL:
+                        self._last_strategy_refresh = now
+                        self._hot_reload_strategies()
 
                 stream.subscribe_trades(on_trade, *symbols)
                 logger.info("Connecting to Alpaca stream for %d symbols…",
@@ -2029,8 +2046,19 @@ class RalphEngine:
                 backoff = min(backoff * 2, max_backoff)
 
     def _write_chart_pickles(self):
-        """Write enriched DataFrames to pickle for live chart consumption."""
+        """Write enriched DataFrames to pickle for live chart consumption.
+
+        Every write includes batch indicator enrichment so the live chart
+        can render indicator overlays and generate_trades() can produce
+        trade markers.  This runs on a 2-second throttle which is fast
+        enough for the chart's 5-second refresh cycle.
+
+        The batch pipeline runs on the chart slice (typically 300 bars) —
+        not the full history — so it completes in <50ms per symbol.
+        """
         import pickle
+        from indicators import run_all_indicators
+        from interpreters import detect_all_triggers
 
         for sym, hub in self.hubs.items():
             for tf_seconds, builder in hub.builders.items():
@@ -2041,6 +2069,13 @@ class RalphEngine:
                 max_bars = CHART_BAR_COUNTS.get(tf_seconds, DEFAULT_CHART_BARS)
                 df_out = df.iloc[-max_bars:] if len(df) > max_bars else df
 
+                # Enrich with indicators + triggers for chart display
+                try:
+                    df_out = run_all_indicators(df_out)
+                    df_out = detect_all_triggers(df_out)
+                except Exception:
+                    pass  # Write un-enriched data if enrichment fails
+
                 pkl_path = _SCRIPT_DIR / f"live_data_{sym}_{tf_seconds}.pkl"
                 tmp_path = str(pkl_path) + ".tmp"
                 try:
@@ -2050,6 +2085,133 @@ class RalphEngine:
                     os.replace(tmp_path, str(pkl_path))
                 except Exception:
                     pass
+
+    def _reconcile_bars(self):
+        """Fetch recent bars from REST API to correct tick-built bar drift."""
+        try:
+            from data_loader import load_market_data
+        except ImportError:
+            return
+
+        for sym, hub in self.hubs.items():
+            for tf_seconds, builder in hub.builders.items():
+                if len(builder.history) == 0:
+                    continue
+                tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
+                session = 'RTH'
+                for m in hub.monitors.values():
+                    if m.tf_seconds == tf_seconds:
+                        session = m.session
+                        break
+                try:
+                    df_rest = load_market_data(
+                        sym, days=1, timeframe=tf_str,
+                        feed='sip', session=session)
+                except Exception:
+                    continue
+
+                if df_rest is None or len(df_rest) == 0:
+                    continue
+
+                # Only correct bars BEFORE the grace window (don't touch
+                # the last N bars which may still be forming)
+                hist = builder.history
+                if len(hist) < RECONCILE_GRACE_BARS + 1:
+                    continue
+
+                correctable = hist.iloc[:-RECONCILE_GRACE_BARS]
+                corrections = 0
+                for ts in correctable.index:
+                    if ts in df_rest.index:
+                        rest_row = df_rest.loc[ts]
+                        for col in ('open', 'high', 'low', 'close', 'volume'):
+                            if col in rest_row and col in hist.columns:
+                                old_val = hist.at[ts, col]
+                                new_val = rest_row[col]
+                                if abs(float(old_val) - float(new_val)) > 1e-6:
+                                    hist.at[ts, col] = new_val
+                                    corrections += 1
+
+                if corrections > 0:
+                    logger.debug("Reconciled %d values for %s/%s",
+                                corrections, sym, tf_str)
+
+    def _hot_reload_strategies(self):
+        """Check for new/removed strategies and update monitors."""
+        try:
+            from alerts import load_alert_config
+            from alert_monitor import get_monitored_strategies
+
+            config = load_alert_config()
+            strategies = get_monitored_strategies(config)
+        except Exception as e:
+            logger.warning("Strategy hot-reload failed: %s", e)
+            return
+
+        new_ids = {s['id'] for s in strategies}
+        current_ids = set(self.monitors.keys())
+
+        # Remove strategies no longer monitored
+        removed = current_ids - new_ids
+        for sid in removed:
+            monitor = self.monitors.pop(sid, None)
+            if monitor:
+                # Remove from hub
+                hub = self.hubs.get(monitor.symbol)
+                if hub:
+                    hub.monitors.pop(sid, None)
+                logger.info("Hot-reload: removed strategy %d (%s)",
+                           sid, monitor.strat_name)
+
+        # Add new strategies
+        added = new_ids - current_ids
+        for strat in strategies:
+            if strat['id'] not in added:
+                continue
+
+            sid = strat['id']
+            sym = strat.get('symbol', 'SPY')
+
+            # Ensure hub exists
+            if sym not in self.hubs:
+                self.hubs[sym] = SymbolHub(sym)
+
+            hub = self.hubs[sym]
+            monitor = StrategyMonitor(strat)
+            hub.add_monitor(monitor)
+            self.monitors[sid] = monitor
+
+            # Warmup the new monitor
+            tf_seconds = monitor.tf_seconds
+            builder = hub.builders.get(tf_seconds)
+            if builder and len(builder.history) > 0:
+                monitor.warmup(builder.history)
+            else:
+                # Load historical data for warmup
+                try:
+                    from data_loader import load_market_data
+                    tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
+                    df = load_market_data(
+                        sym, days=7, timeframe=tf_str,
+                        feed='sip', session=monitor.session)
+                    if df is not None and len(df) > 0:
+                        hub.seed_history(tf_seconds, df)
+                        monitor.warmup(df)
+                except Exception as e:
+                    logger.error("Warmup failed for new strategy %d: %s",
+                                sid, e)
+
+            logger.info("Hot-reload: added strategy %d (%s / %s)",
+                       sid, strat.get('name'), sym)
+
+            # If this is a new symbol, we need to re-subscribe
+            # (handled on next stream reconnect)
+
+        if added or removed:
+            self._config = config
+            self.strategies = strategies
+            logger.info("Hot-reload complete: %d strategies active",
+                       len(self.monitors))
 
     def _save_all_positions(self):
         """Persist all position states."""
