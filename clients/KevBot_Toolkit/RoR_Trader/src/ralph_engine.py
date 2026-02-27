@@ -2061,6 +2061,7 @@ class RalphEngine:
         self._running = False
         self._config: dict = {}
         self._stream_ref = None
+        self._ws_confirmed = False  # True only after first trade received
         self._start_time: Optional[str] = None
         self._last_reconcile = 0.0
         self._last_pickle_write = 0.0
@@ -2371,14 +2372,14 @@ class RalphEngine:
                             'max_queue': 1024,
                         })
                     self._stream_ref = stream
-                    ws_confirmed = False
+                    self._ws_confirmed = False
 
                     async def on_trade(trade):
-                        nonlocal ws_confirmed, backoff
+                        nonlocal backoff
                         if not self._running:
                             return
-                        if not ws_confirmed:
-                            ws_confirmed = True
+                        if not self._ws_confirmed:
+                            self._ws_confirmed = True
                             backoff = 5
                             self._write_status(running=True, connected=True)
                             logger.info("WebSocket confirmed — receiving "
@@ -2405,6 +2406,7 @@ class RalphEngine:
                     await _patched_run_forever(stream)
 
                 except ValueError as e:
+                    self._ws_confirmed = False
                     self._write_status(running=True, connected=False)
                     if not self._running:
                         break
@@ -2415,6 +2417,7 @@ class RalphEngine:
                     backoff = min(backoff * 2, max_backoff)
 
                 except Exception as e:
+                    self._ws_confirmed = False
                     self._write_status(running=True, connected=False)
                     if not self._running:
                         break
@@ -2483,7 +2486,7 @@ class RalphEngine:
                 # Status file update
                 self._write_status(
                     running=True,
-                    connected=self._stream_ref is not None)
+                    connected=self._ws_confirmed)
         except asyncio.CancelledError:
             pass
         logger.info("Periodic tasks loop stopped")
