@@ -1988,12 +1988,17 @@ class RalphEngine:
 
         symbols = list(self.hubs.keys())
         backoff = 5
-        max_backoff = 60
+        max_backoff = 120
 
         while self._running:
             try:
-                stream = StockDataStream(api_key, secret_key,
-                                         feed=DataFeed.SIP)
+                stream = StockDataStream(
+                    api_key, secret_key, feed=DataFeed.SIP,
+                    websocket_params={
+                        'ping_interval': 10,
+                        'ping_timeout': 180,
+                        'max_queue': 1024,
+                    })
                 self._stream_ref = stream
                 ws_confirmed = False
 
@@ -2032,9 +2037,23 @@ class RalphEngine:
                         self._hot_reload_strategies()
 
                 stream.subscribe_trades(on_trade, *symbols)
-                logger.info("Connecting to Alpaca stream for %d symbols…",
-                            len(symbols))
+                logger.info("Connecting to Alpaca stream for %d symbols "
+                            "(backoff=%ds)…", len(symbols), backoff)
+
+                # Use the public run() method. If it raises due to auth/
+                # connection issues, we handle it in the except block
+                # with exponential backoff.
                 await stream._run_forever()
+
+            except ValueError as e:
+                # "connection limit exceeded" — another connection is active
+                self._write_status(running=True, connected=False)
+                if not self._running:
+                    break
+                logger.warning("Connection limit exceeded — another stream "
+                               "may be active. Retrying in %ds", backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
             except Exception as e:
                 self._write_status(running=True, connected=False)
