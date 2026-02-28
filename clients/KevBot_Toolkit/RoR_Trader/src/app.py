@@ -10329,11 +10329,20 @@ def _read_ralph_status() -> dict:
     try:
         with open(status_path) as f:
             info = json.load(f)
-        # Verify PID is alive
+        # Verify PID is alive (not just existing — zombies pass os.kill check)
         pid = info.get('pid', 0)
         if info.get('running') and pid:
             try:
                 os.kill(pid, 0)
+                # Also check for zombie state (defunct process)
+                try:
+                    with open(f'/proc/{pid}/status') as pf:
+                        for line in pf:
+                            if line.startswith('State:') and 'zombie' in line.lower():
+                                info['running'] = False
+                                break
+                except (FileNotFoundError, PermissionError):
+                    pass
             except OSError:
                 info['running'] = False
         return info
