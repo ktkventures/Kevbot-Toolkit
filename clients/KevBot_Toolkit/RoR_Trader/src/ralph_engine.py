@@ -2333,22 +2333,18 @@ class RalphEngine:
                 except websockets.WebSocketException as wse:
                     await stream_instance.close()
                     stream_instance._running = False
-                    logger.warning("WebSocket error: %s", wse)
+                    raise  # Let outer handler apply backoff
                 except ValueError as ve:
+                    await stream_instance.close()
+                    stream_instance._running = False
                     msg = str(ve)
-                    if "connection limit" in msg.lower():
-                        await stream_instance.close()
-                        stream_instance._running = False
-                        raise  # Let outer handler apply backoff
                     if "insufficient subscription" in msg:
-                        await stream_instance.close()
-                        stream_instance._running = False
-                        return
-                    logger.warning("Stream ValueError: %s", ve)
+                        return  # Unrecoverable — don't retry
+                    raise  # All other ValueErrors get backoff
                 except Exception as e:
-                    logger.warning("Stream error: %s", e)
-                finally:
-                    await asyncio.sleep(0)
+                    await stream_instance.close()
+                    stream_instance._running = False
+                    raise  # Let outer handler apply backoff
 
         # Launch independent periodic task loop (not tick-driven)
         periodic_task = asyncio.ensure_future(self._periodic_tasks_loop())
@@ -2410,9 +2406,17 @@ class RalphEngine:
                     self._write_status(running=True, connected=False)
                     if not self._running:
                         break
-                    logger.warning("Connection limit exceeded — another "
-                                   "stream may be active. Retrying in %ds",
-                                   backoff)
+                    msg = str(e).lower()
+                    if "auth failed" in msg:
+                        logger.error("Alpaca auth failed — check API keys "
+                                     "in .env. Retrying in %ds", backoff)
+                    elif "connection limit" in msg:
+                        logger.warning("Connection limit exceeded — "
+                                       "another stream may be active. "
+                                       "Retrying in %ds", backoff)
+                    else:
+                        logger.warning("Stream error: %s — retrying in "
+                                       "%ds", e, backoff)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, max_backoff)
 
