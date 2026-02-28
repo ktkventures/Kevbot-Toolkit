@@ -2287,7 +2287,7 @@ class RalphEngine:
     async def _stream_data(self):
         """Subscribe to Alpaca real-time trade data + run periodic tasks."""
         from dotenv import load_dotenv
-        load_dotenv(_SCRIPT_DIR / '.env')
+        load_dotenv(_SCRIPT_DIR / '.env', override=True)
 
         api_key = os.getenv("ALPACA_API_KEY")
         secret_key = os.getenv("ALPACA_SECRET_KEY")
@@ -2301,6 +2301,11 @@ class RalphEngine:
         except ImportError:
             logger.error("alpaca-py not installed")
             return
+
+        # Feed selection: ALPACA_DATA_FEED env var (default: sip)
+        feed_name = os.getenv("ALPACA_DATA_FEED", "sip").lower()
+        data_feed = DataFeed.IEX if feed_name == "iex" else DataFeed.SIP
+        logger.info("Using %s data feed", data_feed.value)
 
         # Patch the Alpaca SDK's _run_forever to propagate "connection
         # limit exceeded" errors instead of spinning in a tight retry
@@ -2361,7 +2366,7 @@ class RalphEngine:
 
                 try:
                     stream = StockDataStream(
-                        api_key, secret_key, feed=DataFeed.SIP,
+                        api_key, secret_key, feed=data_feed,
                         websocket_params={
                             'ping_interval': 10,
                             'ping_timeout': 180,
