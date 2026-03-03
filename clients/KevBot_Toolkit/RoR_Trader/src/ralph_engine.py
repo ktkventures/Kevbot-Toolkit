@@ -102,6 +102,31 @@ PICKLE_WRITE_INTERVAL = 2.0  # seconds
 # Session gap threshold for VWAP reset
 VWAP_SESSION_GAP_SECONDS = 30 * 60  # 30 minutes
 
+# Trade condition codes excluded from OHLCV bar building.
+# These match the standard CTA/UTP exclusions that Alpaca applies
+# to their historical bar aggregation.  Form T ('T') is intentionally
+# included because strategies trade extended hours sessions.
+EXCLUDED_TRADE_CONDITIONS = {
+    'B',  # Average Price Trade (CTA)
+    'W',  # Average Price Trade (UTP)
+    'C',  # Cash Trade
+    'G',  # Bunched Sold Trade
+    'H',  # Price Variation Trade
+    'I',  # Odd Lot Trade
+    'L',  # Sold Last
+    'M',  # Market Center Official Close
+    'N',  # Next Day
+    'P',  # Prior Reference Price
+    'Q',  # Market Center Official Open
+    'R',  # Seller
+    'U',  # Extended Hours (Out of Sequence)
+    'V',  # Contingent Trade
+    'Z',  # Sold (Out of Sequence)
+    '4',  # Derivatively Priced
+    '7',  # Qualified Contingent Trade (QCT)
+    '9',  # Corrected Consolidated Close
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GENERAL PACK SCALAR EVALUATORS (no-DataFrame, single-timestamp checks)
@@ -2393,6 +2418,14 @@ class RalphEngine:
                             self._write_status(running=True, connected=True)
                             logger.info("WebSocket confirmed — receiving "
                                         "trades for %d symbols", len(symbols))
+
+                        # Filter out trades with excluded condition codes
+                        # (odd lots, average price, out-of-sequence, etc.)
+                        # to match Alpaca's historical bar aggregation.
+                        conditions = getattr(trade, 'conditions', None) or []
+                        if conditions and EXCLUDED_TRADE_CONDITIONS.intersection(
+                                conditions):
+                            return
 
                         hub = self.hubs.get(trade.symbol)
                         if hub:
