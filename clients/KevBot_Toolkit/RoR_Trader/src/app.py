@@ -8517,26 +8517,47 @@ def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
     if not strat_alerts:
         return
 
-    # Filter to entry/exit signals and sort oldest-first
-    signals = [a for a in strat_alerts
-               if a.get('type') in ('entry_signal', 'exit_signal')]
-    signals.sort(key=lambda a: a.get('timestamp', ''))
+    # Separate entries and exits, sort oldest-first
+    entries = sorted(
+        [a for a in strat_alerts if a.get('type') == 'entry_signal'],
+        key=lambda a: a.get('timestamp', ''))
+    exits = sorted(
+        [a for a in strat_alerts if a.get('type') == 'exit_signal'],
+        key=lambda a: a.get('timestamp', ''))
 
-    # Pair entries with exits into trade rows
+    # Pair entries with exits using the exit's entry_price field for matching.
+    # Ralph exit alerts include entry_price — match to the entry alert whose
+    # price is closest.  Falls back to chronological order when field is absent.
+    used_exit_ids = set()
     trades_list = []
-    open_entry = None
-    for sig in signals:
-        if sig['type'] == 'entry_signal':
-            # If there's already an open entry without exit, close it as orphan
-            if open_entry is not None:
-                trades_list.append({'entry': open_entry, 'exit': None})
-            open_entry = sig
-        elif sig['type'] == 'exit_signal' and open_entry is not None:
-            trades_list.append({'entry': open_entry, 'exit': sig})
-            open_entry = None
-    # Append still-open position
-    if open_entry is not None:
-        trades_list.append({'entry': open_entry, 'exit': None})
+    for entry_a in entries:
+        ep = entry_a.get('price', 0)
+        entry_ts = entry_a.get('timestamp', '')
+        best_exit = None
+        for ex in exits:
+            if ex.get('id') in used_exit_ids:
+                continue
+            # Exit must be after entry
+            if ex.get('timestamp', '') <= entry_ts:
+                continue
+            # Match by entry_price field on the exit alert (within $0.01)
+            ex_ep = ex.get('entry_price')
+            if ex_ep is not None and abs(float(ex_ep) - ep) < 0.01:
+                best_exit = ex
+                break
+        # Fallback: next chronological exit after this entry
+        if best_exit is None:
+            for ex in exits:
+                if ex.get('id') in used_exit_ids:
+                    continue
+                if ex.get('timestamp', '') > entry_ts:
+                    best_exit = ex
+                    break
+        if best_exit:
+            used_exit_ids.add(best_exit.get('id'))
+            trades_list.append({'entry': entry_a, 'exit': best_exit})
+        else:
+            trades_list.append({'entry': entry_a, 'exit': None})
 
     if not trades_list:
         return
