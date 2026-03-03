@@ -2700,7 +2700,10 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
     )
 
-    # Trade table below chart (same as price chart tab)
+    # Alert-based trade history (real executions from alerts.json)
+    render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
+
+    # Theoretical trade history from generate_trades()
     if len(trades) > 0:
         render_backtest_trade_table(trades)
 
@@ -8498,6 +8501,108 @@ def render_backtest_r_distribution(trades: pd.DataFrame, key_suffix: str = ""):
         showlegend=False,
     )
     st.plotly_chart(fig_hist, use_container_width=True, key=f"bt_r_dist_{key_suffix}" if key_suffix else None)
+
+
+def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
+    """Render a live-updating trade table built from fired alerts.
+
+    Pairs entry_signal and exit_signal alerts chronologically to build
+    trade rows.  Open positions (entry with no exit yet) display as "Open".
+    Timestamps include seconds so the user can gauge alert latency.
+    """
+    from alerts import get_alerts_for_strategy
+
+    strat_alerts = get_alerts_for_strategy(strategy_id, limit=200)
+    if not strat_alerts:
+        return
+
+    # Filter to entry/exit signals and sort oldest-first
+    signals = [a for a in strat_alerts
+               if a.get('type') in ('entry_signal', 'exit_signal')]
+    signals.sort(key=lambda a: a.get('timestamp', ''))
+
+    # Pair entries with exits into trade rows
+    trades_list = []
+    open_entry = None
+    for sig in signals:
+        if sig['type'] == 'entry_signal':
+            # If there's already an open entry without exit, close it as orphan
+            if open_entry is not None:
+                trades_list.append({'entry': open_entry, 'exit': None})
+            open_entry = sig
+        elif sig['type'] == 'exit_signal' and open_entry is not None:
+            trades_list.append({'entry': open_entry, 'exit': sig})
+            open_entry = None
+    # Append still-open position
+    if open_entry is not None:
+        trades_list.append({'entry': open_entry, 'exit': None})
+
+    if not trades_list:
+        return
+
+    st.subheader("Alert History")
+
+    rows = []
+    for t in trades_list:
+        entry_a = t['entry']
+        exit_a = t['exit']
+
+        entry_price = entry_a.get('price', 0)
+        stop_price = entry_a.get('stop_price', 0)
+        entry_ts = format_display_ts(
+            entry_a.get('bar_time') or entry_a.get('timestamp'), '%m/%d %H:%M:%S')
+
+        if exit_a:
+            exit_price = exit_a.get('price', 0)
+            exit_ts = format_display_ts(
+                exit_a.get('bar_time') or exit_a.get('timestamp'), '%m/%d %H:%M:%S')
+            exit_reason = exit_a.get('trigger', '')
+
+            # Compute R-multiple
+            risk = abs(entry_price - stop_price) if stop_price else 0
+            if risk > 0:
+                pnl = (exit_price - entry_price) if direction == 'LONG' else (entry_price - exit_price)
+                r_mult = pnl / risk
+            else:
+                r_mult = 0.0
+
+            rows.append({
+                'entry': entry_ts,
+                'exit': exit_ts,
+                'entry_px': f"${entry_price:.2f}",
+                'exit_px': f"${exit_price:.2f}",
+                'exit_reason': exit_reason,
+                'R': f"{r_mult:+.2f}",
+                'result': 'Win' if r_mult > 0 else 'Loss',
+            })
+        else:
+            rows.append({
+                'entry': entry_ts,
+                'exit': 'Open',
+                'entry_px': f"${entry_price:.2f}",
+                'exit_px': '\u2014',
+                'exit_reason': '',
+                'R': '\u2014',
+                'result': 'Open',
+            })
+
+    display = pd.DataFrame(list(reversed(rows)))  # newest first
+    cols = ['entry', 'exit', 'entry_px', 'exit_px', 'exit_reason', 'R', 'result']
+    col_config = {
+        'entry': 'Entry Time',
+        'exit': 'Exit Time',
+        'entry_px': 'Entry Price',
+        'exit_px': 'Exit Price',
+        'exit_reason': 'Exit Reason',
+        'R': 'R-Multiple',
+        'result': 'Result',
+    }
+    st.dataframe(
+        display[cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config=col_config,
+    )
 
 
 def render_backtest_trade_table(trades: pd.DataFrame):
