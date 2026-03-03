@@ -10421,10 +10421,36 @@ def _render_monitor_status_bar(status: dict, config: dict):
         if is_running or _engine_running:
             if st.button("Stop Monitor", type="secondary", use_container_width=True):
                 # Stop Ralph engine if active
-                if _engine_running and _engine_info.get('pid'):
+                engine_pid = _engine_info.get('pid') if _engine_running else None
+                if engine_pid:
                     try:
-                        os.kill(_engine_info['pid'], signal_module.SIGTERM)
+                        os.kill(engine_pid, signal_module.SIGTERM)
                     except (OSError, ProcessLookupError):
+                        engine_pid = None
+                    # Wait briefly for graceful shutdown, then escalate
+                    if engine_pid:
+                        import time
+                        for _ in range(10):  # up to ~1s
+                            time.sleep(0.1)
+                            try:
+                                os.kill(engine_pid, 0)
+                            except OSError:
+                                break  # process exited
+                        else:
+                            # Still alive after 1s — force kill
+                            try:
+                                os.kill(engine_pid, signal_module.SIGKILL)
+                            except (OSError, ProcessLookupError):
+                                pass
+                    # Mark engine_status.json as stopped so UI updates
+                    # immediately (engine may not have written it)
+                    engine_status_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "engine_status.json")
+                    try:
+                        with open(engine_status_path, 'w') as f:
+                            json.dump({'running': False, 'pid': 0}, f)
+                    except Exception:
                         pass
                 # Stop poller subprocess
                 pid = status.get('pid')

@@ -2144,11 +2144,19 @@ class RalphEngine:
     def stop(self):
         """Signal the engine to stop."""
         self._running = False
-        if self._stream_ref:
+        stream = self._stream_ref
+        if stream:
             try:
-                # Mark the stream as should-not-run so the patched
-                # _run_forever exits cleanly on next iteration
-                self._stream_ref._should_run = False
+                stream._should_run = False
+            except Exception:
+                pass
+            # Force-close the WebSocket to unblock the blocking _consume()
+            # await. Without this, the engine hangs until ping_timeout (180s).
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.call_soon_threadsafe(
+                        loop.create_task, stream.close())
             except Exception:
                 pass
 

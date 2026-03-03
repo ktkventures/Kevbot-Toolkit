@@ -1987,6 +1987,61 @@ The application is currently a local Streamlit app with JSON file storage, no au
 5. Confirm indicator values (especially UTBOT trailing stop) converge with backtest/forward test
 6. Verify alert markers (X symbols) are unaffected by backfill cycles
 
+### Phase 28: Ralph Wiggum Alert Engine (Branch: `ralph-wiggum`)
+*Complete rewrite of the alert detection engine — replaces O(N×M) batch pipeline re-runs with O(1) incremental indicator updates per tick. Self-contained in `ralph_engine.py` (~2,900 lines).*
+
+**Problem:** The existing `realtime_engine.py` (Phases 27/27B/27C) re-ran the full indicator → interpreter → trigger pipeline on every 500ms evaluation cycle, scaling as O(N×M) where N = number of bars and M = number of strategies. For multi-symbol/multi-timeframe monitoring, this became a CPU bottleneck and introduced latency between tick arrival and alert dispatch.
+
+**Architecture — O(1) Incremental Engine (Phases 1–5):**
+- [x] `BarBuilder` — aggregates ticks into OHLCV candles per timeframe; emits bar-close events; maintains rolling history window (1,000 bars)
+- [x] `IncrementalIndicatorEngine` — updates EMA, MACD, VWAP, RVOL, ATR incrementally from single new bar (O(1) per indicator); no DataFrame recomputation
+- [x] `TriggerEvaluator` — evaluates trigger conditions (UTBot, EMA Stack, MACD Cross, VWAP Zone, etc.) from latest indicator values; returns boolean per trigger
+- [x] `PositionStateMachine` — tracks FLAT → IN_POSITION → FLAT lifecycle per strategy; handles entry/exit/opposite-signal transitions
+- [x] `StrategyMonitor` — orchestrates per-strategy evaluation: builds confluence records, checks entry/exit triggers against required confluence, manages position state
+- [x] `AlertDispatcher` — fires alerts via webhook (Discord/Slack-compatible embeds); enriches payload with portfolio context, position sizing, target price
+- [x] `FidelityAuditor` — periodic batch pipeline comparison (every 120s); logs drift between incremental and batch indicator values to `engine_audit.jsonl`
+- [x] `SymbolHub` — per-symbol coordinator: owns BarBuilders (one per timeframe), routes ticks, coordinates bar-close evaluation, manages REST backfill and pickle writes
+- [x] `RalphEngine` — top-level orchestrator: Alpaca WebSocket connection, strategy loading, hot-reload, graceful shutdown, status IPC
+
+**Phase 6: Gap Analysis Fixes (COMPLETE):**
+- [x] General Pack scalar evaluators — time-of-day, day-of-week, trading session, calendar filter checks evaluated at bar-close; `GEN-{pack_id}-{state}` records added to confluence set
+- [x] EMA period resolution from confluence group parameters — replaces hardcoded [8, 21, 50] with actual short_period/mid_period/long_period from strategy's confluence group
+- [x] `opposite_signal` exit handling — resolves via `get_opposite_trigger()` from triggers.py using suffix-based pair matching (_buy↔_sell, _bull↔_bear, etc.)
+- [x] `target_price` added to alert dispatch payload
+- [x] Sub-minute timeframe guard in REST reconciliation (skip tf_seconds < 60)
+- [x] Thread-safe reconciliation with `copy()` on shared state
+- [x] Removed dead imports and cached pytz timezone at module level
+- [x] Fixed `_start_time` ordering (set before first `_write_status()`)
+
+**Runtime Bug Fixes (COMPLETE):**
+- [x] Duplicate logging guard — `__main__` + `ralph_engine` double-import caused duplicate RotatingFileHandlers; guard checks for existing handler before adding
+- [x] False-positive "Engine Streaming" status — `_ws_confirmed` flag replaces unreliable `_stream_ref is not None` check; only True when first trade actually arrives
+- [x] Zombie process detection in app.py — `os.kill(pid, 0)` returns success for zombies; added `/proc/{pid}/status` check for zombie state
+- [x] Retry storm fix — Alpaca SDK's `_run_forever()` catches ValueError/WebSocketException internally and retries with sleep(0); `_patched_run_forever` now propagates ALL errors to outer handler's exponential backoff (5s → 120s max)
+- [x] `dotenv` override — `load_dotenv(override=True)` ensures env changes picked up on engine restart
+- [x] Configurable data feed — `ALPACA_DATA_FEED` env var (default "sip"); supports SIP and IEX via Alpaca `DataFeed` enum
+
+**IPC Files (runtime, gitignored):**
+- `engine_status.json` — running/connected/tick_count/PID for Streamlit UI polling
+- `engine_state.json` — position states per strategy for persistence across restarts
+- `engine_audit.jsonl` — fidelity audit log (incremental vs batch drift)
+- `engine_reload.flag` — touched by UI to trigger hot-reload of strategies.json
+- `live_data_{symbol}_{tf_seconds}.pkl` — enriched DataFrames for Live Chart tab
+
+**CLI Interface:**
+- `python ralph_engine.py` — start engine (foreground)
+- `python ralph_engine.py --status` — print current engine status
+- `python ralph_engine.py --stop` — send SIGTERM to running engine
+- `python ralph_engine.py --dry-run` — validate config without connecting
+
+**Verification (pending — requires market hours):**
+1. Start engine during RTH or extended hours with SIP feed
+2. Confirm WebSocket connects and ticks arrive (tick_count > 0 in status)
+3. Watch bar building and indicator updates in log
+4. Verify alerts fire on trigger transitions with correct confluence matching
+5. Confirm Live Chart tab renders from pickle data
+6. Check fidelity audit log for acceptable drift levels
+
 ---
 
 ## Appendix A: Interpreter Examples

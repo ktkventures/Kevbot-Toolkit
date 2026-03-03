@@ -13944,7 +13944,7 @@
     },
     "id": 9,
     "created_at": "2026-02-20T16:41:47.494168",
-    "updated_at": "2026-02-24T14:58:48.565907",
+    "updated_at": "2026-03-02T06:24:25.135679",
     "account": {
       "starting_balance": 100000.0,
       "ledger": [
@@ -14026,6 +14026,22 @@
           "type": "trading_pnl",
           "amount": 140.21,
           "note": "SPY 1m crazy results (Copy) trade #1549",
+          "auto": true
+        },
+        {
+          "id": 11,
+          "date": "2026-02-27",
+          "type": "trading_pnl",
+          "amount": -126.47,
+          "note": "SPY 1m crazy results (Copy) trade #1775",
+          "auto": true
+        },
+        {
+          "id": 12,
+          "date": "2026-02-27",
+          "type": "trading_pnl",
+          "amount": 46.02,
+          "note": "SPY 1m crazy results (Copy) trade #1776",
           "auto": true
         }
       ],
@@ -19488,12 +19504,60 @@
           "amount": 26.28,
           "note": "TSLA LONG - v2 S Cross trade #3284",
           "auto": true
+        },
+        {
+          "id": 3,
+          "date": "2026-02-27",
+          "type": "trading_pnl",
+          "amount": 116.77,
+          "note": "TSLA LONG - v2 S Cross trade #3562",
+          "auto": true
+        },
+        {
+          "id": 4,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": 567.85,
+          "note": "TSLA LONG - v2 S Cross trade #3588",
+          "auto": true
+        },
+        {
+          "id": 5,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": -105.0,
+          "note": "TSLA LONG - v2 S Cross trade #3636",
+          "auto": true
+        },
+        {
+          "id": 6,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": 178.57,
+          "note": "TSLA LONG - v2 S Cross trade #3637",
+          "auto": true
+        },
+        {
+          "id": 7,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": 60.28,
+          "note": "TSLA LONG - v2 S Cross trade #3638",
+          "auto": true
+        },
+        {
+          "id": 8,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": 188.08,
+          "note": "TSLA LONG - v2 S Cross trade #3639",
+          "auto": true
         }
       ],
       "notes": "",
       "notes_updated_at": null
     },
-    "updated_at": "2026-02-24T15:08:27.881005"
+    "updated_at": "2026-03-02T15:16:11.557582"
   },
   {
     "name": "gme alert test",
@@ -21702,12 +21766,20 @@
           "amount": -4.07,
           "note": "gme  - utbot trade #961",
           "auto": true
+        },
+        {
+          "id": 2,
+          "date": "2026-03-02",
+          "type": "trading_pnl",
+          "amount": 7.49,
+          "note": "gme  - utbot trade #1166",
+          "auto": true
         }
       ],
       "notes": "",
       "notes_updated_at": null
     },
-    "updated_at": "2026-02-23T17:31:11.212512"
+    "updated_at": "2026-03-02T15:25:32.225757"
   },
   {
     "name": "INTC Test",

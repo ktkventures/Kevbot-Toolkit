@@ -1,1 +1,86 @@
-[]
+[
+  {
+    "type": "entry_signal",
+    "trigger": "utbot_v2_buy_ib",
+    "price": 180.34479309690317,
+    "bar_time": "2026-03-03T19:04:24.832070+00:00",
+    "stop_price": 179.88893753944072,
+    "target_price": null,
+    "atr": 0.3039037049749629,
+    "level": "strategy",
+    "strategy_id": 31,
+    "strategy_name": "NVDA [I] Alert Test",
+    "symbol": "NVDA",
+    "direction": "LONG",
+    "order_action": "buy",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "ralph",
+    "portfolio_context": [
+      {
+        "portfolio_id": 13,
+        "portfolio_name": "NVDA Alert Test",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 2,
+    "timestamp": "2026-03-03T19:04:22.860206+00:00",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_32bc90",
+        "webhook_name": "buy alert",
+        "portfolio_id": 13,
+        "sent_at": "2026-03-03T12:04:23.034664",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"NVDA\", \"action\": \"buy\", \"quantity\": 219}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  },
+  {
+    "type": "entry_signal",
+    "trigger": "ema_pp_v2_cross_short_up_ib",
+    "price": 392.96436844032866,
+    "bar_time": "2026-03-03T19:04:15.094352+00:00",
+    "stop_price": 391.9652116039737,
+    "target_price": null,
+    "atr": 0.6661045575699334,
+    "level": "strategy",
+    "strategy_id": 28,
+    "strategy_name": "TSLA LONG - v2 S Cross",
+    "symbol": "TSLA",
+    "direction": "LONG",
+    "order_action": "buy",
+    "risk_per_trade": 100.0,
+    "timeframe": "1Min",
+    "strategy_alerts_visible": true,
+    "source": "ralph",
+    "portfolio_context": [
+      {
+        "portfolio_id": 10,
+        "portfolio_name": "1m V2 S Cross",
+        "position_risk": 100.0
+      }
+    ],
+    "id": 1,
+    "timestamp": "2026-03-03T19:04:14.121917+00:00",
+    "acknowledged": false,
+    "webhook_deliveries": [
+      {
+        "webhook_id": "wh_99f644",
+        "webhook_name": "New Webhook",
+        "portfolio_id": 10,
+        "sent_at": "2026-03-03T12:04:14.406852",
+        "success": true,
+        "status_code": 202,
+        "payload_sent": "{\"symbol\": \"TSLA\", \"action\": \"buy\", \"quantity\": 100}",
+        "error": null
+      }
+    ],
+    "webhook_sent": true
+  }
+]
