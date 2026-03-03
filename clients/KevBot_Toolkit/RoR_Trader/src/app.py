@@ -2922,6 +2922,7 @@ def render_price_chart(
         "borderColor": "#2B2B2B",
         "timeVisible": True,
         "secondsVisible": False,
+        "rightOffset": 10,
     }
 
     # Chart configuration
