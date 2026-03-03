@@ -429,9 +429,11 @@ def load_alerts(limit: int = 100) -> list:
 
 
 def _save_all_alerts(alerts: list):
-    """Save full alerts list to file."""
-    with open(ALERTS_FILE, 'w') as f:
+    """Save full alerts list to file (atomic write to prevent partial reads)."""
+    tmp_path = ALERTS_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(alerts, f, indent=2, default=str)
+    os.replace(tmp_path, ALERTS_FILE)
 
 
 def save_alert(alert: dict) -> dict:
