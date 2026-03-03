@@ -2021,6 +2021,27 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - [x] `dotenv` override — `load_dotenv(override=True)` ensures env changes picked up on engine restart
 - [x] Configurable data feed — `ALPACA_DATA_FEED` env var (default "sip"); supports SIP and IEX via Alpaca `DataFeed` enum
 
+**Live Chart & Data Quality Fixes (COMPLETE):**
+- [x] Pickle enrichment pipeline — `_write_chart_pickles()` now runs the full indicator pipeline matching backtest's `prepare_data_with_indicators()`: `run_all_indicators()` → `run_indicators_for_group()` per enabled group → `run_all_interpreters()` → `detect_all_triggers()` → general pack evaluation. Previously only ran `run_all_indicators()` and `detect_all_triggers()`, causing custom EMAs, utbot_stop, and interpreter overlays to be missing from the live chart.
+- [x] Trade condition filtering — `EXCLUDED_TRADE_CONDITIONS` set (18 CTA/UTP codes) filters odd-lot, average-price, out-of-sequence, and other non-standard trades in the `on_trade` WebSocket handler. Matches Alpaca's server-side filtering on historical bar aggregation, eliminating false price spikes on live candles.
+- [x] Alert History table — `render_alert_trade_table()` in app.py displays real-time alert-based trade history on the Live Chart tab (above the theoretical trade table). Pairs entry/exit alerts into trade rows with HH:MM:SS timestamps; shows "Open" for entries awaiting exits.
+- [x] Alert entry/exit pairing — Pairing logic uses exit alert's `entry_price` field for matching ($0.01 tolerance) instead of sequential order, preventing mismatches when orphaned alerts from previous sessions exist.
+- [x] Atomic alerts.json writes — `_save_all_alerts()` in alerts.py uses tmp file + `os.replace()` to prevent partial reads during concurrent Streamlit UI access.
+- [x] Live chart right offset — 10-candle buffer on the right side of price charts for indicator label clearance (`rightOffset: 10` in timeScale config).
+- [x] Graceful shutdown — `RalphEngine.stop()` uses SIGTERM → wait → SIGKILL escalation with force WebSocket close to prevent orphaned connections holding the Alpaca single-connection-per-key limit.
+
+**Backtest–Live Trigger Parity (IN PROGRESS):**
+
+The backtest pipeline and Ralph's live engine must evaluate triggers identically — any divergence means live alerts fire on conditions that backtests never tested, undermining strategy validity.
+
+- [x] UT Bot (v1 & v2) — Bar-close direction flip now gates intra-bar level crossing. Previously Ralph fired intra-bar entries on any tick crossing the UT Bot stop level without confirming that the direction had actually flipped on the previous completed bar. Backtest always required both conditions. Fixed by storing `evaluate_bar_close()` trigger results and checking them in `check_intrabar()` via `_IB_BAR_CLOSE_GATE`.
+- [ ] **Audit all other confluence group triggers** — Review every trigger type that has both a bar-close boolean and an intra-bar level crossing variant to verify the bar-close condition properly gates the intra-bar fill. Candidates to evaluate:
+  - EMA Price Position (v1 & v2) — does the bar-close cross confirmation gate the intra-bar level crossing?
+  - VWAP crosses — are intra-bar VWAP crossings consistent with bar-close VWAP trigger logic?
+  - RVOL triggers — intra-bar vs bar-close evaluation differences?
+  - Any future trigger types added to `_get_ib_checks()` IB_MAP
+- [ ] **Document parity contract** — Formalize the rule that any new trigger added to Ralph must match the backtest evaluation path in `interpreters.py` / `triggers.py`. Add to developer guidelines.
+
 **IPC Files (runtime, gitignored):**
 - `engine_status.json` — running/connected/tick_count/PID for Streamlit UI polling
 - `engine_state.json` — position states per strategy for persistence across restarts
@@ -2034,13 +2055,16 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - `python ralph_engine.py --stop` — send SIGTERM to running engine
 - `python ralph_engine.py --dry-run` — validate config without connecting
 
-**Verification (pending — requires market hours):**
-1. Start engine during RTH or extended hours with SIP feed
-2. Confirm WebSocket connects and ticks arrive (tick_count > 0 in status)
-3. Watch bar building and indicator updates in log
-4. Verify alerts fire on trigger transitions with correct confluence matching
-5. Confirm Live Chart tab renders from pickle data
-6. Check fidelity audit log for acceptable drift levels
+**Verification (in progress — live market testing started 2026-03-03):**
+1. [x] Start engine during RTH or extended hours with SIP feed
+2. [x] Confirm WebSocket connects and ticks arrive (tick_count > 0 in status)
+3. [x] Watch bar building and indicator updates in log
+4. [x] Verify alerts fire on trigger transitions with correct confluence matching
+5. [x] Confirm Live Chart tab renders from pickle data with full indicator overlay
+6. [ ] Check fidelity audit log for acceptable drift levels
+7. [ ] Verify UT Bot intra-bar triggers only fire after bar-close direction flip confirmation
+8. [ ] Compare live chart candle ranges to backtest — confirm trade condition filtering eliminates false spikes
+9. [ ] End-to-end alert lifecycle: entry alert → position tracking → exit alert → paired in Alert History table
 
 ---
 

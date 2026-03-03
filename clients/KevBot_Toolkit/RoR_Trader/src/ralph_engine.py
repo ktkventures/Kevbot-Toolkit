@@ -704,6 +704,9 @@ class TriggerEvaluator:
         # Intra-bar state: once-per-bar firing
         self._ib_fired: Dict[str, bool] = {}
         self._cached_levels: Dict[str, float] = {}
+        # Bar-close trigger results — gates intra-bar triggers that
+        # require bar-close confirmation (e.g. UT Bot direction flip).
+        self._bar_close_triggers: Dict[str, bool] = {}
 
     def evaluate_bar_close(self, current: Dict[str, float],
                            prev: Dict[str, float],
@@ -938,6 +941,8 @@ class TriggerEvaluator:
                 current.get('utbot_direction', 0) == -1
                 and prev.get('utbot_direction', 0) != -1)
 
+        # Store bar-close trigger results for intra-bar gating
+        self._bar_close_triggers = dict(triggers)
         # Update cached levels for intra-bar detection
         self._update_cached_levels(current)
         # Reset intra-bar fired flags on bar close
@@ -945,14 +950,32 @@ class TriggerEvaluator:
 
         return interps, triggers
 
+    # Intra-bar triggers that require bar-close confirmation before
+    # the level crossing is allowed to fire.  Maps ib trigger → base
+    # trigger whose bar-close boolean must be True.
+    _IB_BAR_CLOSE_GATE = {
+        'utbot_buy_ib': 'utbot_buy',
+        'utbot_sell_ib': 'utbot_sell',
+        'utbot_v2_buy_ib': 'utbot_v2_buy',
+        'utbot_v2_sell_ib': 'utbot_v2_sell',
+    }
+
     def check_intrabar(self, price: float) -> Optional[Tuple[str, float]]:
         """Check if tick price crosses any cached level (O(1) per level).
 
         Returns (trigger_id, fill_price) if a crossing is detected,
         or None.  Each trigger fires at most once per bar.
+
+        Triggers listed in _IB_BAR_CLOSE_GATE are only allowed to fire
+        if the corresponding bar-close trigger confirmed on the
+        previous completed bar (e.g. UT Bot direction flip).
         """
         for trigger_id, (level, direction) in self._get_ib_checks():
             if self._ib_fired.get(trigger_id, False):
+                continue
+            # Gate: require bar-close confirmation for applicable triggers
+            gate = self._IB_BAR_CLOSE_GATE.get(trigger_id)
+            if gate and not self._bar_close_triggers.get(gate, False):
                 continue
             if direction == 'above' and price > level:
                 self._ib_fired[trigger_id] = True
