@@ -2520,8 +2520,22 @@ class RalphEngine:
         not the full history — so it completes in <50ms per symbol.
         """
         import pickle
-        from indicators import run_all_indicators
-        from interpreters import detect_all_triggers
+        from indicators import run_all_indicators, run_indicators_for_group
+        from interpreters import run_all_interpreters, detect_all_triggers
+        from confluence_groups import get_enabled_groups
+        import general_packs as gp_module
+
+        # Cache group + pack configs once per write cycle (avoid repeated
+        # disk reads across the symbol/timeframe loop iterations).
+        try:
+            enabled_groups = get_enabled_groups()
+        except Exception:
+            enabled_groups = []
+        try:
+            gen_packs = gp_module.load_general_packs()
+            enabled_gen = gp_module.get_enabled_general_packs(gen_packs)
+        except Exception:
+            enabled_gen = []
 
         for sym, hub in self.hubs.items():
             for tf_seconds, builder in hub.builders.items():
@@ -2532,12 +2546,21 @@ class RalphEngine:
                 max_bars = CHART_BAR_COUNTS.get(tf_seconds, DEFAULT_CHART_BARS)
                 df_out = df.iloc[-max_bars:] if len(df) > max_bars else df
 
-                # Enrich with indicators + triggers for chart display
+                # Full enrichment pipeline matching prepare_data_with_indicators()
+                # so the live chart renders identical indicators and trade markers.
                 try:
                     df_out = run_all_indicators(df_out)
+                    for group in enabled_groups:
+                        df_out = run_indicators_for_group(df_out, group)
+                    df_out = run_all_interpreters(df_out)
                     df_out = detect_all_triggers(df_out)
-                except Exception:
-                    pass  # Write un-enriched data if enrichment fails
+                    for gpack in enabled_gen:
+                        col_name = gpack.get_condition_column()
+                        df_out[col_name] = gp_module.evaluate_condition(
+                            df_out, gpack)
+                except Exception as e:
+                    logger.debug("Pickle enrichment error for %s/%s: %s",
+                                 sym, tf_seconds, e)
 
                 pkl_path = _SCRIPT_DIR / f"live_data_{sym}_{tf_seconds}.pkl"
                 tmp_path = str(pkl_path) + ".tmp"
