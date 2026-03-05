@@ -1950,6 +1950,7 @@ def run_unified_backtest(
     strategy: dict,
     general_packs: list = None,
     secondary_tf_map: dict = None,
+    include_open_position: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run unified backtest on historical OHLCV data.
 
@@ -1960,6 +1961,9 @@ def run_unified_backtest(
         general_packs: Optional list of GeneralPack objects
         secondary_tf_map: Optional {tf_label: [suffixed_col_names]} for MTF
             confluence.  Column names have the form ``{INTERP}__{tf_label}``.
+        include_open_position: If True, append a synthetic row for any
+            open position at the end of the data (exit_time/exit_price=None).
+            Useful for chart rendering to show entry markers immediately.
 
     Returns:
         (trades_df, enriched_df)
@@ -2006,6 +2010,35 @@ def run_unified_backtest(
         indicator_rows.append(ind_vals)
         interp_rows.append(interp_states)
         trigger_rows.append(trig_bools)
+
+    # If position is still open, append a synthetic open-trade row so charts
+    # can plot the entry marker immediately (before the trade closes).
+    if include_open_position and strat.position.state.status == 'IN_POSITION':
+        pos = strat.position.state
+        last_close = float(df.iloc[-1]['close'])
+        direction = pos.direction
+        entry_price = pos.entry_price
+        initial_stop = pos.initial_stop_price
+        risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price * 0.01)
+        if risk <= 0:
+            risk = entry_price * 0.01
+        unrealized_pnl = (last_close - entry_price) if direction == 'LONG' else (entry_price - last_close)
+        trades.append({
+            'entry_time': pos.entry_time,
+            'exit_time': None,
+            'entry_price': entry_price,
+            'exit_price': None,
+            'stop_price': pos.stop_price,
+            'initial_stop_price': initial_stop,
+            'target_price': pos.target_price,
+            'pnl': unrealized_pnl,
+            'risk': risk,
+            'r_multiple': unrealized_pnl / risk,
+            'win': unrealized_pnl > 0,
+            'exit_reason': 'open',
+            'entry_trigger': pos.entry_trigger,
+            'exec_type': pos.exec_type,
+        })
 
     # Build trades DataFrame
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()

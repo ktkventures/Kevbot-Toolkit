@@ -2290,6 +2290,13 @@ Every trigger is classified into one of four execution types. The type is intrin
 - [x] Fallback: insufficient history degrades to ATR * 1.5 for stops, returns None for targets
 - [x] 6 new tests: 5 swing stop/target tests + 1 MTF confluence gating test (27 total unified tests)
 
+##### Phase 30F: Live Chart Parity + Open Position Markers — COMPLETED 2026-03-05
+- [x] Migrated `render_live_chart_tab()` from `generate_trades()` to `_unified_trades()` — all charts now use the unified engine, eliminating divergence risk
+- [x] Open-position entry markers: `run_unified_backtest(include_open_position=True)` appends synthetic trade row with `exit_time=None` when position is open at end of data
+- [x] Chart renders orange "Open" arrow at entry point immediately (before trade closes), distinct from blue "Entry" arrows on closed trades
+- [x] `calculate_kpis()` filters out `exit_reason='open'` rows to prevent KPI contamination
+- [x] Trade history table shows "Open" result for open-position rows
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
@@ -2297,8 +2304,9 @@ Every trigger is classified into one of four execution types. The type is intrin
 3. **Phase 30C** ✅ refactored ralph_engine.py to import from unified_engine.py — 1400 lines deduped (6 live tests + 14 ralph fidelity tests)
 4. **Phase 30D** ✅ trade generation converged to unified engine — batch pipeline retained for chart overlays only
 5. **Phase 30E** ✅ MTF support + swing stops — all strategy types handled natively by unified engine (6 tests)
-6. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
-7. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
+6. **Phase 30F** ✅ live chart migrated to unified engine + open-position entry markers
+7. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
+8. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
 
 ---
 

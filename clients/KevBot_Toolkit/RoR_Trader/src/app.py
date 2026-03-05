@@ -720,13 +720,16 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
     return tf_map
 
 
-def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
+def _unified_trades(df: pd.DataFrame, strategy: dict,
+                    include_open_position: bool = True) -> pd.DataFrame:
     """Trade generation via unified engine with MTF support.
 
     Args:
         df: Enriched DataFrame from prepare_data_with_indicators().
             May contain pre-computed MTF columns (e.g. EMA_STACK__5m).
         strategy: Strategy config dict (saved format OR builder format).
+        include_open_position: If True, include a synthetic row for any
+            open position at end of data (for chart entry markers).
 
     Returns:
         trades_df matching generate_trades() schema.
@@ -743,7 +746,8 @@ def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
         from unified_engine import run_unified_backtest
         trades_df, _ = run_unified_backtest(
             df, strategy, general_packs=enabled_gen,
-            secondary_tf_map=sec_tf_map if sec_tf_map else None)
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+            include_open_position=include_open_position)
     except Exception as exc:
         _logger.warning("unified engine failed (%s), falling back", exc)
         confluence_set = (
@@ -1666,6 +1670,16 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
             not just days with trades). When provided, Daily R = total_r / total_trading_days.
             When None, falls back to counting unique exit dates.
     """
+    if len(trades_df) == 0:
+        return {
+            "total_trades": 0, "win_rate": 0, "profit_factor": 0,
+            "avg_r": 0, "total_r": 0, "daily_r": 0, "r_squared": 0.0,
+            "max_r_drawdown": 0, "final_balance": starting_balance, "total_pnl": 0
+        }
+
+    # Exclude open-position rows (from include_open_position=True)
+    if 'exit_reason' in trades_df.columns:
+        trades_df = trades_df[trades_df['exit_reason'] != 'open']
     if len(trades_df) == 0:
         return {
             "total_trades": 0, "win_rate": 0, "profit_factor": 0,
@@ -2775,46 +2789,56 @@ def render_price_chart(
     if len(trades) > 0:
         # Vectorized timestamp conversion — avoid per-row pd.to_datetime
         _entry_ts = _to_chart_unix(trades['entry_time'])
-        _exit_ts = _to_chart_unix(trades['exit_time'])
         _has_prices = 'entry_price' in trades.columns and 'exit_price' in trades.columns
+
+        # Separate closed vs open trades (open trades have exit_time=None)
+        _closed_mask = trades['exit_time'].notna() if 'exit_time' in trades.columns else pd.Series(True, index=trades.index)
+        _exit_ts = pd.Series(0, index=trades.index, dtype='int64')
+        if _closed_mask.any():
+            _exit_ts.loc[_closed_mask] = _to_chart_unix(trades.loc[_closed_mask, 'exit_time'])
 
         for i, (_, trade) in enumerate(trades.iterrows()):
             entry_time = int(_entry_ts.iloc[i])
-            exit_time = int(_exit_ts.iloc[i])
+            is_open = not _closed_mask.iloc[i]
 
-            # Skip trades entirely outside the visible window
-            if exit_time < min_time:
-                continue
+            if not is_open:
+                exit_time = int(_exit_ts.iloc[i])
+                # Skip closed trades entirely outside the visible window
+                if exit_time < min_time:
+                    continue
 
             # Entry marker
             if entry_time >= min_time:
+                entry_label = 'Open' if is_open else 'Entry'
+                entry_color = '#FF9800' if is_open else '#2196F3'
                 markers.append({
                     'time': entry_time,
                     'position': 'belowBar' if direction == 'LONG' else 'aboveBar',
-                    'color': '#2196F3',
+                    'color': entry_color,
                     'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
-                    'text': 'Entry'
+                    'text': entry_label
                 })
-                if _has_prices:
+                if _has_prices and pd.notna(trade.get('entry_price')):
                     target_entry_data.append({
                         "time": entry_time,
                         "value": float(trade['entry_price']),
                     })
 
-            # Exit marker
-            is_win = trade.get('win', trade.get('pnl', 0) > 0)
-            markers.append({
-                'time': exit_time,
-                'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
-                'color': '#4CAF50' if is_win else '#f44336',
-                'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
-                'text': f"{trade['r_multiple']:+.1f}R"
-            })
-            if _has_prices and exit_time >= min_time:
-                target_exit_data.append({
-                    "time": exit_time,
-                    "value": float(trade['exit_price']),
+            # Exit marker (only for closed trades)
+            if not is_open:
+                is_win = trade.get('win', trade.get('pnl', 0) > 0)
+                markers.append({
+                    'time': exit_time,
+                    'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
+                    'color': '#4CAF50' if is_win else '#f44336',
+                    'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
+                    'text': f"{trade['r_multiple']:+.1f}R"
                 })
+                if _has_prices and exit_time >= min_time and pd.notna(trade.get('exit_price')):
+                    target_exit_data.append({
+                        "time": exit_time,
+                        "value": float(trade['exit_price']),
+                    })
 
     # Build alert-price markers (right ◂) — only when real alerts exist
     # Pre-parse alert timestamps once and index by type for O(n) matching
@@ -8543,7 +8567,12 @@ def render_backtest_trade_table(trades: pd.DataFrame):
     display['entry'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
     display['exit'] = display['exit_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
     display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
-    display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+    if 'exit_reason' in display.columns:
+        display['result'] = display.apply(
+            lambda r: "Open" if r.get('exit_reason') == 'open'
+            else ("Win" if r['win'] else "Loss"), axis=1)
+    else:
+        display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
     has_exit_reason = 'exit_reason' in display.columns
     has_prices = 'entry_price' in display.columns and 'exit_price' in display.columns
     cols = ['entry', 'exit']
