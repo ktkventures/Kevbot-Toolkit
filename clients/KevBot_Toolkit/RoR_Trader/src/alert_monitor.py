@@ -365,14 +365,12 @@ def deliver_alert(alert: dict, config: dict):
     alert["webhook_deliveries"] = deliveries
     alert["webhook_sent"] = any(d["success"] for d in deliveries) if deliveries else False
 
-    # Re-save the alert with delivery info
-    from alerts import load_alerts, _save_all_alerts
-    all_alerts = load_alerts(limit=10000)
-    for i, a in enumerate(all_alerts):
-        if a.get("id") == alert.get("id"):
-            all_alerts[i] = alert
-            _save_all_alerts(all_alerts)
-            break
+    # Re-save the alert with delivery info (thread-safe)
+    from alerts import update_alert
+    update_alert(alert.get("id"), {
+        "webhook_deliveries": deliveries,
+        "webhook_sent": alert["webhook_sent"],
+    })
 
 
 def check_portfolio_compliance(portfolio_id: int, config: dict):

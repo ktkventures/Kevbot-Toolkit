@@ -720,6 +720,97 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
     return tf_map
 
 
+def _has_mtf_confluence(strategy: dict) -> bool:
+    """Return True if strategy has multi-timeframe confluence records.
+
+    The unified engine processes only the primary timeframe.  Strategies with
+    MTF records (e.g., '5M-EMA_STACK-FULL_BULL_STACK') must fall back to
+    generate_trades() which reads pre-computed MTF columns from the enriched df.
+    """
+    from data_loader import get_required_tfs_from_confluence
+    return len(get_required_tfs_from_confluence(strategy.get('confluence', []))) > 0
+
+
+def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
+    """Trade generation via unified engine with MTF fallback.
+
+    Args:
+        df: Enriched DataFrame from prepare_data_with_indicators().
+        strategy: Strategy config dict (saved format OR builder format).
+
+    Returns:
+        trades_df matching generate_trades() schema.
+    """
+    import logging
+    _logger = logging.getLogger('ror_trader')
+
+    # ── MTF fallback ──────────────────────────────────────────────────────
+    if _has_mtf_confluence(strategy):
+        confluence_set = (
+            set(strategy.get('confluence', []))
+            | set(strategy.get('general_confluences', []))
+        )
+        confluence_set = confluence_set if confluence_set else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
+        sec_tf_map = get_secondary_tf_map(df)
+        return generate_trades(
+            df,
+            direction=strategy['direction'],
+            entry_trigger=strategy['entry_trigger'],
+            exit_trigger=strategy.get('exit_trigger'),
+            exit_triggers=strategy.get('exit_triggers'),
+            confluence_required=confluence_set,
+            risk_per_trade=strategy.get('risk_per_trade', 100.0),
+            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+            stop_config=strategy.get('stop_config'),
+            target_config=strategy.get('target_config'),
+            bar_count_exit=strategy.get('bar_count_exit'),
+            general_columns=general_cols if general_cols else None,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+        )
+
+    # ── Unified engine path ───────────────────────────────────────────────
+    ohlcv_cols = [c for c in ('open', 'high', 'low', 'close', 'volume')
+                  if c in df.columns]
+    raw_df = df[ohlcv_cols].copy()
+
+    enabled_gen = gp_module.get_enabled_general_packs(
+        gp_module.load_general_packs())
+
+    try:
+        from unified_engine import run_unified_backtest
+        trades_df, _ = run_unified_backtest(raw_df, strategy,
+                                            general_packs=enabled_gen)
+    except Exception as exc:
+        _logger.warning("unified engine failed (%s), falling back", exc)
+        confluence_set = (
+            set(strategy.get('confluence', []))
+            | set(strategy.get('general_confluences', []))
+        )
+        confluence_set = confluence_set if confluence_set else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
+        sec_tf_map = get_secondary_tf_map(df)
+        return generate_trades(
+            df,
+            direction=strategy['direction'],
+            entry_trigger=strategy['entry_trigger'],
+            exit_trigger=strategy.get('exit_trigger'),
+            exit_triggers=strategy.get('exit_triggers'),
+            confluence_required=confluence_set,
+            risk_per_trade=strategy.get('risk_per_trade', 100.0),
+            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+            stop_config=strategy.get('stop_config'),
+            target_config=strategy.get('target_config'),
+            bar_count_exit=strategy.get('bar_count_exit'),
+            general_columns=general_cols if general_cols else None,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+        )
+
+    if not isinstance(trades_df, pd.DataFrame):
+        trades_df = pd.DataFrame()
+    return trades_df
+
+
 def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     """
     Load continuous data from before forward_test_start to now,
@@ -770,26 +861,7 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
         empty = pd.DataFrame()
         return df, empty, empty, forward_test_start_dt
 
-    confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-    confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
-    sec_tf_map = get_secondary_tf_map(df)
-
-    trades = generate_trades(
-        df,
-        direction=strat['direction'],
-        entry_trigger=strat['entry_trigger'],
-        exit_trigger=strat.get('exit_trigger'),
-        exit_triggers=strat.get('exit_triggers'),
-        confluence_required=confluence_set,
-        risk_per_trade=strat.get('risk_per_trade', 100.0),
-        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-        stop_config=strat.get('stop_config'),
-        target_config=strat.get('target_config'),
-        bar_count_exit=strat.get('bar_count_exit'),
-        general_columns=general_cols,
-        secondary_tf_map=sec_tf_map if sec_tf_map else None,
-    )
+    trades = _unified_trades(df, strat)
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
     return df, backtest_trades, forward_trades, forward_test_start_dt
@@ -829,25 +901,7 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
                                           secondary_tfs=sec_tfs)
         if len(df) == 0:
             return pd.DataFrame()
-        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-        confluence_set = confluence_set if confluence_set else None
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
-        sec_tf_map = get_secondary_tf_map(df)
-        return generate_trades(
-            df,
-            direction=strat['direction'],
-            entry_trigger=strat['entry_trigger'],
-            exit_trigger=strat.get('exit_trigger'),
-            exit_triggers=strat.get('exit_triggers'),
-            confluence_required=confluence_set,
-            risk_per_trade=strat.get('risk_per_trade', 100.0),
-            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-            stop_config=strat.get('stop_config'),
-            target_config=strat.get('target_config'),
-            bar_count_exit=strat.get('bar_count_exit'),
-            general_columns=general_cols,
-            secondary_tf_map=sec_tf_map if sec_tf_map else None,
-        )
+        return _unified_trades(df, strat)
 
 
 def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
@@ -893,27 +947,7 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     if len(df) == 0:
         return pd.DataFrame()
 
-    confluence_set = set(strat.get('confluence', []))
-    confluence_set |= set(strat.get('general_confluences', []))
-    confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
-    sec_tf_map = get_secondary_tf_map(df)
-
-    trades = generate_trades(
-        df,
-        direction=strat['direction'],
-        entry_trigger=strat['entry_trigger'],
-        exit_trigger=strat.get('exit_trigger'),
-        exit_triggers=strat.get('exit_triggers'),
-        confluence_required=confluence_set,
-        risk_per_trade=strat.get('risk_per_trade', 100.0),
-        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-        stop_config=strat.get('stop_config'),
-        target_config=strat.get('target_config'),
-        bar_count_exit=strat.get('bar_count_exit'),
-        general_columns=general_cols,
-        secondary_tf_map=sec_tf_map if sec_tf_map else None,
-    )
+    trades = _unified_trades(df, strat)
 
     if len(trades) == 0:
         return pd.DataFrame()
@@ -4638,24 +4672,7 @@ def render_strategy_builder():
                 return
 
             st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
-            general_cols = get_enabled_gp_columns(df.columns)
-            sec_tf_map = get_secondary_tf_map(df)
-            trades = generate_trades(
-                df,
-                direction=direction,
-                entry_trigger=config['entry_trigger'],
-                exit_trigger=config.get('exit_trigger'),
-                exit_triggers=config.get('exit_triggers'),
-                confluence_required=None,
-                risk_per_trade=risk_per_trade,
-                stop_atr_mult=stop_atr_mult,
-                stop_config=stop_config_dict,
-                target_config=target_config_dict,
-                bar_count_exit=config.get('bar_count_exit'),
-                general_columns=general_cols,
-                enabled_interpreter_keys=get_enabled_interpreter_keys(),
-                secondary_tf_map=sec_tf_map if sec_tf_map else None,
-            )
+            trades = _unified_trades(df, config)
 
         # Apply confluence filter
         selected = st.session_state.selected_confluences
@@ -6807,26 +6824,7 @@ def render_live_backtest(strat: dict):
     bt_cache_key = f"bt_trades_{strat['id']}"
     if bt_cache_key not in st.session_state:
         with st.spinner("Running backtest with current data..."):
-            confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-            confluence_set = confluence_set if confluence_set else None
-            general_cols = [c for c in df.columns if c.startswith("GP_")]
-            _stf_map = get_secondary_tf_map(df)
-
-            st.session_state[bt_cache_key] = generate_trades(
-                df,
-                direction=strat['direction'],
-                entry_trigger=strat['entry_trigger'],
-                exit_trigger=strat.get('exit_trigger'),
-                exit_triggers=strat.get('exit_triggers'),
-                confluence_required=confluence_set,
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                stop_config=strat.get('stop_config'),
-                target_config=strat.get('target_config'),
-                bar_count_exit=strat.get('bar_count_exit'),
-                general_columns=general_cols,
-                secondary_tf_map=_stf_map if _stf_map else None,
-            )
+            st.session_state[bt_cache_key] = _unified_trades(df, strat)
     trades = st.session_state[bt_cache_key]
 
     if len(trades) == 0:
@@ -6955,23 +6953,7 @@ def render_live_backtest(strat: dict):
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
-                        _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
-                        _ext_stf = get_secondary_tf_map(_ext_df)
-                        _ext_trades = generate_trades(
-                            _ext_df,
-                            direction=strat['direction'],
-                            entry_trigger=strat['entry_trigger'],
-                            exit_trigger=strat.get('exit_trigger'),
-                            exit_triggers=strat.get('exit_triggers'),
-                            confluence_required=confluence_set,
-                            risk_per_trade=strat.get('risk_per_trade', 100.0),
-                            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                            stop_config=strat.get('stop_config'),
-                            target_config=strat.get('target_config'),
-                            bar_count_exit=strat.get('bar_count_exit'),
-                            general_columns=_ext_gc,
-                            secondary_tf_map=_ext_stf if _ext_stf else None,
-                        )
+                        _ext_trades = _unified_trades(_ext_df, strat)
                         _ext_kpis = calculate_kpis(
                             _ext_trades,
                             starting_balance=strat.get('starting_balance', 10000.0),
@@ -8572,12 +8554,12 @@ def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
         entry_price = entry_a.get('price', 0)
         stop_price = entry_a.get('stop_price', 0)
         entry_ts = format_display_ts(
-            entry_a.get('bar_time') or entry_a.get('timestamp'), '%m/%d %H:%M:%S')
+            entry_a.get('timestamp') or entry_a.get('bar_time'), '%m/%d %H:%M:%S')
 
         if exit_a:
             exit_price = exit_a.get('price', 0)
             exit_ts = format_display_ts(
-                exit_a.get('bar_time') or exit_a.get('timestamp'), '%m/%d %H:%M:%S')
+                exit_a.get('timestamp') or exit_a.get('bar_time'), '%m/%d %H:%M:%S')
             exit_reason = exit_a.get('trigger', '')
 
             # Compute R-multiple

@@ -487,7 +487,7 @@ def test_position_state_machine_flat_to_entry():
     interps = {'EMA_STACK': 'SML'}
     current = {'close': 150.0, 'atr': 2.5, 'ema_8': 151, 'ema_21': 149}
 
-    sig = psm.check_entry(trigger_bools, interps, current, bar_count=100,
+    sig = psm.check_entry(trigger_bools, current, bar_count=100,
                            bar_time='2026-01-01T10:00:00',
                            confluence_records=set())
 

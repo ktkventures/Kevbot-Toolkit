@@ -1,7 +1,7 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.48
-**Date:** February 23, 2026
+**Version:** 0.51
+**Date:** March 4, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A/C/E/F done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
 
@@ -2034,13 +2034,27 @@ The application is currently a local Streamlit app with JSON file storage, no au
 
 The backtest pipeline and Ralph's live engine must evaluate triggers identically — any divergence means live alerts fire on conditions that backtests never tested, undermining strategy validity.
 
-- [x] UT Bot (v1 & v2) — Bar-close direction flip now gates intra-bar level crossing. Previously Ralph fired intra-bar entries on any tick crossing the UT Bot stop level without confirming that the direction had actually flipped on the previous completed bar. Backtest always required both conditions. Fixed by storing `evaluate_bar_close()` trigger results and checking them in `check_intrabar()` via `_IB_BAR_CLOSE_GATE`.
-- [ ] **Audit all other confluence group triggers** — Review every trigger type that has both a bar-close boolean and an intra-bar level crossing variant to verify the bar-close condition properly gates the intra-bar fill. Candidates to evaluate:
-  - EMA Price Position (v1 & v2) — does the bar-close cross confirmation gate the intra-bar level crossing?
-  - VWAP crosses — are intra-bar VWAP crossings consistent with bar-close VWAP trigger logic?
-  - RVOL triggers — intra-bar vs bar-close evaluation differences?
-  - Any future trigger types added to `_get_ib_checks()` IB_MAP
-- [ ] **Document parity contract** — Formalize the rule that any new trigger added to Ralph must match the backtest evaluation path in `interpreters.py` / `triggers.py`. Add to developer guidelines.
+**Core discovery (2026-03-04):** All `_ib` (intra-bar) triggers in `check_intrabar()` check only whether the current tick price is above/below a cached indicator level. They do **not** verify the transition condition (e.g., "previous bar closed on the opposite side") that the backtest's `detect_*_triggers()` functions require. This means any `_ib` trigger fires as a **condition** ("are we above the level?") rather than a **crossover** ("did we just cross the level?"), producing phantom entries whenever price is trending above/below the level for multiple bars.
+
+**Example (observed live 2026-03-04):** TSLA LONG V2 S-Cross strategy using `ema_pp_v2_cross_short_up_ib` re-entered immediately after every `bar_count_exit` because price was above the 9 EMA — the intra-bar trigger fired on the first tick of every bar since `price > ema_8_prev` was always true while trending up. The backtest correctly required a transition (`prev_close <= prev_ema AND current_close > ema`) and would not have re-entered.
+
+**Fix (two-tier gating):** L-type and H-type `_ib` triggers require different gate logic to match the backtest while preserving intra-bar speed:
+
+- **L-type triggers** (EMA Price Position v1/v2, VWAP crosses): Gate is "prev-bar-close-opposite-side" — the just-closed bar's close must be on the opposite side of the indicator level from the cross direction (e.g., `close <= ema` for an "above" cross). Computed in `_compute_ib_gates()` at bar close, consumed by `check_intrabar()` on the next bar's ticks via `_ib_gate_open`. This matches the backtest's crossover condition (`prev_close <= prev_ema`) and fires immediately when the tick crosses the level — no bar-close delay.
+- **H-type triggers** (UT Bot v1/v2): Gate is "bar-close-trigger-fired" — the bar-close boolean (direction flip) must have evaluated True on the previous completed bar. Uses existing `_bar_close_triggers` dict.
+
+Additionally, v2 `_prev` cached levels (EMA and UT Bot) were corrected to cache the just-closed bar's indicator value (matching the backtest's `.shift(1)` semantics) instead of the bar-before-that's value.
+
+- [x] UT Bot (v1 & v2) — Bar-close direction flip gates intra-bar level crossing via `_bar_close_triggers`
+- [x] UT Bot `_ib` trigger registration — `_process_trigger_id()` registers base trigger alongside `_ib` variant
+- [x] **L-type prev-bar-close-opposite-side gate** — EMA PP (v1 & v2), VWAP crosses use `_ib_gate_open` dict populated by `_compute_ib_gates()` at bar close; `_IB_L_TYPE_TRIGGERS` frozenset dispatches gate type in `check_intrabar()`
+- [x] **v2 `_prev` level correction** — `_update_cached_levels()` now caches the just-closed bar's indicator value for `_prev` keys, fixing off-by-one vs backtest `.shift(1)`
+- [ ] **Document parity contract** — Formalize the rule that any new trigger added to Ralph must match the backtest evaluation path. New `_ib` triggers MUST declare their type (L or H) and have corresponding gate logic.
+
+**Additional fixes (2026-03-04):**
+- [x] Alert history table timing — switched from `bar_time` (candle open) to `timestamp` (actual dispatch time) so times match the Alerts tab
+- [x] Bar-close signal timestamps — `on_bar_close()` now reports `bar_start + timeframe - 1s` as `bar_time` so bar-close events reflect when the bar actually closed, not when it opened
+- [x] Alerts.json race condition — added `threading.Lock` around all read-modify-write cycles in `alerts.py`; tmp files use unique names (`{pid}.{thread_id}`); `deliver_alert()` in `alert_monitor.py` uses new `update_alert()` helper instead of raw load/modify/save
 
 **IPC Files (runtime, gitignored):**
 - `engine_status.json` — running/connected/tick_count/PID for Streamlit UI polling
@@ -2065,6 +2079,217 @@ The backtest pipeline and Ralph's live engine must evaluate triggers identically
 7. [ ] Verify UT Bot intra-bar triggers only fire after bar-close direction flip confirmation
 8. [ ] Compare live chart candle ranges to backtest — confirm trade condition filtering eliminates false spikes
 9. [ ] End-to-end alert lifecycle: entry alert → position tracking → exit alert → paired in Alert History table
+
+---
+
+### Phase 29: Trigger Classification & Backtest-Live Consistency
+
+*Establish a formal trigger execution type system, ensure backtest and live behavior match for every trigger type, and surface reliability warnings to users.*
+
+**Motivation:** Live market testing (Phase 28) revealed that intra-bar triggers fire on conditions rather than crossovers, producing phantom entries inconsistent with backtest results. Additionally, hybrid triggers (e.g., UT Bot) have inherent flicker risk where the indicator toggles buy/sell within a candle but the backtest only sees the final state. Users need transparency about which triggers are reliable for live execution and which carry caveats.
+
+#### Trigger Execution Types
+
+Every trigger is classified into one of three execution types:
+
+| Type | Label | Description | Flicker Risk | Backtest Reliability |
+|------|-------|-------------|-------------|---------------------|
+| **C** | Bar Close | Fires only at bar close. No intra-bar variant. | None | High — backtest = live |
+| **L** | Level Cross | Fires intra-bar when price crosses a level, once per bar. | None (once gated) | High after Phase B adjustment |
+| **H** | Hybrid | Requires internal state flip at bar close + level cross intra-bar. | Yes — state can toggle within candle | Medium — backtest sees only final state |
+
+**Trigger classification:**
+- **C triggers:** EMA Stack crosses (`ema_cross_bull/bear`, `ema_mid_cross_bull/bear`), MACD crosses (`macd_cross_bull/bear`, `macd_zero_cross_up/down`), MACD Histogram flips/momentum shifts, RVOL triggers
+- **L triggers:** VWAP crosses, EMA Price Position (v1 & v2)
+- **H triggers:** UT Bot (v1 & v2)
+
+#### Phase A: Trigger Classification Metadata & UI Warnings
+- [ ] Add `execution_type: "C" | "L" | "H"` field to confluence group TEMPLATES dict
+- [ ] Display execution type badge next to trigger name in Strategy Builder and Strategy Detail page
+- [ ] For H triggers: show warning icon with tooltip explaining flicker risk and that backtest results may differ from live execution
+- [ ] Add execution type to confluence pack builder spec so user-created packs self-declare their characteristics
+- [ ] Ensure ALL trigger types (including C / bar-close only) produce alerts and appear in the Live Chart alert history table
+
+#### Phase B: Backtest-Live Consistency for L Triggers
+- [x] L-type triggers now use prev-bar-close-opposite-side gating in Ralph (Phase 28 fix), matching the backtest's crossover boolean. No backtest adjustment needed — the prev-bar-close gate IS the backtest's crossover condition evaluated one bar earlier, and the `_ib` fill is at the indicator level (not close), matching `INTRABAR_LEVEL_MAP`.
+- [ ] Consider whether backtest `detect_*_triggers()` should also support a "level-fill-only" mode (fire when bar's price range touches the level, regardless of crossover) as an alternative to crossover-based triggering. This would be a new trigger variant, not a replacement.
+- [ ] For H triggers (UT Bot): consider adding a third trigger variant (L-type) that fires purely on stop level cross with backtest adjusted to match, giving users the choice between C, L, and H behavior per trigger
+
+#### Phase C: Optional Strategy Safeguards
+- [ ] Add `re_entry_cooldown_bars` as an optional strategy parameter — prevents re-entry for N bars after an exit
+- [ ] Not a substitute for correct trigger logic, but useful for strategy tuning and noise reduction
+- [ ] Consider default of 0 (no cooldown) with explicit opt-in
+
+#### Phase D: Advanced Execution Modes (Future)
+- [ ] **Sub-timeframe candle confirmation** — Evaluate triggers on smaller timeframe bars (e.g., 10-second) while using higher timeframes for context via existing MTF confluence infrastructure. Requires data provider upgrade (Databento or Polygon for sub-minute historical data).
+- [ ] **Flicker guard** — Probationary entry with tight intra-candle stop at the cross level; if price wicks back below before bar close, exit at small loss. After bar close confirms, move to real strategy stop. Complex — touches webhooks, position tracking, and alert lifecycle.
+- [ ] **Data provider upgrade** — Replace or supplement Alpaca with Polygon/Massiv for tick-level and sub-minute historical data to support sub-timeframe confirmation and more accurate backtest fills.
+
+#### Long-Term Architecture: Unified Chart/Engine Convergence
+
+The current architecture maintains two separate computation paths: the batch pipeline (indicators.py → interpreters.py → triggers.py) for backtesting/charting, and the incremental pipeline (ralph_engine.py) for live execution. Every trigger must be implemented identically in both paths, and any divergence produces incorrect live behavior (as demonstrated by the _ib gate and _prev level bugs).
+
+The long-term direction is to converge on a **single unified engine** (TradingView model) where:
+1. One computation path handles both historical and live data
+2. Indicators, interpreters, and triggers are defined once and evaluated identically
+3. The bar-by-bar state machine processes historical bars for backtesting and live bars for alerting
+4. Charting reads from the same computed state regardless of whether data is historical or live
+
+This eliminates the parity problem entirely: if there is only one engine, backtest and live behavior are identical by construction. The Polygon/Massiv migration is a natural inflection point for this convergence. The batch pipeline would still handle rapid backtesting over long history, but the forward/live portion would be unified under one engine.
+
+---
+
+### Phase 30: Unified Chart Engine (Implementation Spec)
+
+**Goal:** Replace the dual-pipeline architecture with a single bar-by-bar engine that evaluates all trigger types identically for backtesting and live execution, eliminating parity bugs by construction.
+
+#### Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  Unified Engine                       │
+│                                                      │
+│  Historical bars ──┐                                 │
+│                    ├──► Bar-by-bar state machine      │
+│  Live bars ────────┘    (indicators → triggers →     │
+│                          position tracking)           │
+│                                                      │
+│  Outputs:                                            │
+│    - Trade log (backtest results)                    │
+│    - Chart data (indicator overlays, signals)        │
+│    - Live alerts (webhook dispatch)                  │
+│    - Position state (entry/exit tracking)            │
+└──────────────────────────────────────────────────────┘
+```
+
+The engine processes bars sequentially regardless of source. Historical bars replay at full speed; live bars arrive from the WebSocket feed. The same code path evaluates indicators, checks triggers, and manages positions in both cases.
+
+#### Trigger Execution Types
+
+Every trigger is classified into one of four execution types. The type is intrinsic to the trigger definition and appears as a distinct trigger variant in the strategy builder. Because each execution type produces its own backtest KPIs, the builder naturally surfaces which execution mode is optimal for a given indicator cross — a user comparing triggers will see C-type, L-type, HM-type, and HL-type variants side by side with their respective profit factors, win rates, and drawdowns.
+
+##### C-Type (Bar Close)
+- **Evaluation:** At bar close only
+- **Fill price:** Bar close price
+- **Examples:** EMA stack state changes, MACD line cross, MACD histogram flip, bar count exit
+- **Backtest:** `entry_price = close` on the bar where the boolean fires
+- **Live:** Evaluated in `evaluate_bar_close()`, fill at close price
+
+##### L-Type (Level Cross)
+- **Evaluation:** Intra-bar (on every tick during live; simulated via high/low reachability in backtest)
+- **Fill price:** The indicator level being crossed
+- **Gate:** Previous bar's close must be on the **opposite side** of the level from the cross direction (prevents phantom entries on bars where price is already on the correct side)
+- **Examples:** EMA Price Position v1/v2 crosses, VWAP crosses, VWAP extreme zone entries
+- **Backtest:**
+  - Boolean: `(prev_close <= level.shift(1))` for "above" crosses (no `close > level` requirement)
+  - Reachability: `high >= level_prev` (confirms intra-bar price reached the level)
+  - Fill: `entry_price = level_prev` (the indicator level, not close)
+- **Live:**
+  - Gate computed at bar close: `close <= level` opens the gate for "above" crosses on the next bar
+  - First tick crossing the cached level fires entry immediately at the level price
+  - One-shot per bar (no re-fire after first trigger)
+
+##### HM-Type (Hybrid — Level Cross with Market Exit on Non-Confirmation)
+- **Evaluation:** Intra-bar for entry (same as L-type), bar close for confirmation
+- **Fill price:** The indicator level being crossed (same as L-type)
+- **Gate:** Same as L-type — previous bar's close on the opposite side
+- **Entry behavior:** Identical to L-type — enters immediately when price crosses the cached indicator level
+- **Confirmation check:** After entry, the engine monitors the bar close. If the bar closes and the indicator state does NOT confirm the direction of the trade, the position exits immediately.
+- **Unconfirmed exit:** Close position at the next bar's open (or next available tick in live). This is the conservative approach — limits exposure to one bar of unconfirmed price action.
+- **Examples:** UT Bot ATR trailing stop crosses (conservative)
+- **Backtest simulation:**
+  - Entry: Same as L-type (level cross on the bar, fill at level)
+  - Confirmation: Check if the entry bar's close confirms the indicator state
+  - If unconfirmed: exit at next bar's open price
+  - If confirmed: position continues under normal exit rules
+- **Live simulation:**
+  - Entry: Same as L-type (tick crosses cached level, enter at level)
+  - At bar close: evaluate indicator state
+  - If confirmed: position continues under normal exit rules
+  - If unconfirmed: dispatch exit alert, close at market on next tick
+
+##### HL-Type (Hybrid — Level Cross with Limit Exit on Non-Confirmation)
+- **Evaluation:** Intra-bar for entry (same as L-type), bar close for confirmation
+- **Fill price:** The indicator level being crossed (same as L-type)
+- **Gate:** Same as L-type — previous bar's close on the opposite side
+- **Entry behavior:** Identical to L-type — enters immediately when price crosses the cached indicator level
+- **Confirmation check:** Same as HM-type — monitors bar close for indicator state confirmation
+- **Unconfirmed exit:** Place a virtual limit order at the entry price (break-even exit). If price returns to the entry level, exit at no loss. If price never returns, fall through to normal exit triggers (stop loss, opposite signal, bar count). This is the optimistic approach — gives the trade room to recover while capping downside to the original entry level.
+- **Examples:** UT Bot ATR trailing stop crosses (optimistic)
+- **Backtest simulation:**
+  - Entry: Same as L-type (level cross on the bar, fill at level)
+  - Confirmation: Check if the entry bar's close confirms the indicator state
+  - If unconfirmed: scan subsequent bars for `low <= entry_price` (longs) or `high >= entry_price` (shorts); if reached, exit at entry price; otherwise, fall through to normal exits
+  - If confirmed: position continues under normal exit rules
+- **Live simulation:**
+  - Entry: Same as L-type (tick crosses cached level, enter at level)
+  - At bar close: evaluate indicator state
+  - If confirmed: position continues under normal exit rules
+  - If unconfirmed: set virtual limit at entry price; exit if price returns to that level; otherwise, normal exit rules apply
+
+> **Design rationale — HM vs HL as separate execution types:** Rather than making the unconfirmed exit mode a post-hoc configuration, HM and HL are first-class trigger variants that appear in the strategy builder alongside C-type and L-type. This leverages the existing builder infrastructure that surfaces optimal triggers by backtest KPIs. A user evaluating an EMA 9 short cross will see all four variants — C, L, HM, HL — with their respective profit factors, win rates, and max drawdowns. The builder naturally recommends the execution mode that performs best for that specific indicator and timeframe combination, without requiring the user to manually A/B test configurations.
+
+#### Data Flow
+
+1. **Bar arrives** (historical or live close)
+2. **Indicators update** — EMA, MACD, VWAP, RVOL, ATR, UT Bot (O(1) incremental)
+3. **Trigger evaluation:**
+   - C-type: Evaluate boolean at close
+   - L-type: Evaluate level cross (backtest: reachability check; live: already fired intra-bar or fall back to close)
+   - HM/HL-type: Same as L-type for entry
+4. **Position state machine** — Check entries, exits, stop losses
+5. **Confirmation check** — For any HM/HL-type position entered this bar, check indicator state at close
+6. **Output** — Append to trade log, update chart state, dispatch alerts (live only)
+7. **Gate update** — Cache indicator levels and compute L-type/HM/HL-type gates for next bar
+8. **Intra-bar loop** (live only): Between bar closes, check L-type and HM/HL-type level crosses on each tick
+
+#### Implementation Phases
+
+##### Phase 30A: Unified Engine Core — COMPLETED 2026-03-03
+- [x] Create `unified_engine.py` with bar-by-bar state machine
+- [x] Port incremental indicator calculations from `ralph_engine.py`
+- [x] Implement C-type trigger evaluation (bar close only)
+- [x] Implement L-type trigger evaluation with reachability simulation for backtest
+- [x] Add L-type prev-bar-close gate (same logic as current `_compute_ib_gates`)
+- [x] Position state machine with entry/exit tracking
+- [x] Trade log output matching current `generate_trades()` DataFrame format
+- [x] Verify backtest parity: unified engine produces identical trades to current batch pipeline on historical data
+
+##### Phase 30B: HM/HL-Type Confirmation Protocol — COMPLETED 2026-03-03
+- [x] Implement HM-type entry (same path as L-type) with bar-close confirmation check
+- [x] Implement HM-type unconfirmed exit (market exit at next bar open)
+- [x] Implement HL-type entry (same path as L-type) with bar-close confirmation check
+- [x] Implement HL-type unconfirmed exit (limit exit at entry price, fallback to normal exits)
+- [x] Register HM and HL trigger variants in confluence group templates
+- [x] Backtest simulation of confirmation and unconfirmed exits for both modes
+- [x] Verify backtest produces expected results for UT Bot strategies under HM and HL
+
+##### Phase 30C: Live Integration — COMPLETED 2026-03-04
+- [x] Refactor `ralph_engine.py` to import shared components from `unified_engine.py` (3079 → 1680 lines)
+- [x] Add live-tick methods to unified PSM: `check_entry_intrabar()`, `check_exit_tick()`, `check_exit_intrabar()`, `check_exit_bar_close()`
+- [x] Add `check_intrabar()` to TriggerEvaluator with HM/HL gate support
+- [x] Add `PositionState.from_dict()` for state persistence, `_signal_exit()` for live signal dicts
+- [x] Intra-bar tick processing for L-type and HM/HL-type level crosses
+- [x] HM/HL live confirmation flow: entry on tick → confirmation at bar close → pending exit on next tick
+- [x] Position state persistence (engine_state.json) via unified `PositionState.to_dict()`/`from_dict()`
+- [x] Hot-reload, status reporting, fidelity auditing (retained from ralph_engine)
+- [x] **Live market verification** — passed 2026-03-05 (6,986 audit entries, 0 errors, 898/898 entries/exits balanced)
+
+##### Phase 30D: Chart Convergence — COMPLETED 2026-03-05
+- [x] Replace `generate_trades()` with `run_unified_backtest()` at 6 strategy-level call sites via `_unified_trades()` helper
+- [x] MTF fallback: strategies with multi-timeframe confluence records fall back to `generate_trades()` automatically
+- [x] Error fallback: unified engine failures degrade gracefully to `generate_trades()` with log warning
+- [x] Live chart tab (`render_live_chart_tab`) retained on `generate_trades()` — reads pre-enriched pickle data, no recomputation needed
+- [x] Batch pipeline (`indicators.py → interpreters.py → triggers.py`) retained for chart indicator overlays only — not for trade generation
+
+#### Migration Path
+
+1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
+2. **Phase 30B** ✅ adds HM/HL-type without affecting existing strategies — new strategies can opt in (7 tests)
+3. **Phase 30C** ✅ refactored ralph_engine.py to import from unified_engine.py — 1400 lines deduped (6 live tests + 14 ralph fidelity tests)
+4. **Phase 30D** ✅ trade generation converged to unified engine — batch pipeline retained for chart overlays only
+5. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
+6. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
 
 ---
 

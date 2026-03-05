@@ -14,10 +14,14 @@ import json
 import os
 import math
 import secrets
+import threading
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 from typing import Optional
+
+# Lock to prevent concurrent read-modify-write races on alerts.json
+_alerts_lock = threading.Lock()
 
 from data_loader import load_latest_bars
 from indicators import run_all_indicators
@@ -429,42 +433,67 @@ def load_alerts(limit: int = 100) -> list:
 
 
 def _save_all_alerts(alerts: list):
-    """Save full alerts list to file (atomic write to prevent partial reads)."""
-    tmp_path = ALERTS_FILE + ".tmp"
-    with open(tmp_path, 'w') as f:
-        json.dump(alerts, f, indent=2, default=str)
-    os.replace(tmp_path, ALERTS_FILE)
+    """Save full alerts list to file (atomic write to prevent partial reads).
+
+    Caller MUST hold _alerts_lock when calling this function.
+    """
+    tmp_path = ALERTS_FILE + f".tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(tmp_path, 'w') as f:
+            json.dump(alerts, f, indent=2, default=str)
+        os.replace(tmp_path, ALERTS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def save_alert(alert: dict) -> dict:
     """Save a new alert, auto-assigning ID and timestamp."""
-    alerts = load_alerts(limit=10000)  # load all
-    max_id = max((a.get('id', 0) for a in alerts), default=0)
-    alert['id'] = max_id + 1
-    if 'timestamp' not in alert:
-        alert['timestamp'] = datetime.now(timezone.utc).isoformat()
-    if 'acknowledged' not in alert:
-        alert['acknowledged'] = False
-    alerts.insert(0, alert)  # prepend (most recent first)
-    # Keep last 500 alerts
-    _save_all_alerts(alerts[:500])
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)  # load all
+        max_id = max((a.get('id', 0) for a in alerts), default=0)
+        alert['id'] = max_id + 1
+        if 'timestamp' not in alert:
+            alert['timestamp'] = datetime.now(timezone.utc).isoformat()
+        if 'acknowledged' not in alert:
+            alert['acknowledged'] = False
+        alerts.insert(0, alert)  # prepend (most recent first)
+        # Keep last 500 alerts
+        _save_all_alerts(alerts[:500])
     return alert
+
+
+def update_alert(alert_id: int, updates: dict):
+    """Update an existing alert by ID (thread-safe)."""
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        for i, a in enumerate(alerts):
+            if a.get('id') == alert_id:
+                alerts[i].update(updates)
+                _save_all_alerts(alerts)
+                return alerts[i]
+    return None
 
 
 def acknowledge_alert(alert_id: int) -> bool:
     """Mark an alert as acknowledged."""
-    alerts = load_alerts(limit=10000)
-    for alert in alerts:
-        if alert.get('id') == alert_id:
-            alert['acknowledged'] = True
-            _save_all_alerts(alerts)
-            return True
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        for alert in alerts:
+            if alert.get('id') == alert_id:
+                alert['acknowledged'] = True
+                _save_all_alerts(alerts)
+                return True
     return False
 
 
 def clear_alerts():
     """Remove all alert history."""
-    _save_all_alerts([])
+    with _alerts_lock:
+        _save_all_alerts([])
 
 
 def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
@@ -476,9 +505,10 @@ def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
 
 def delete_alerts_for_strategy(strategy_id: int):
     """Remove all alerts for a strategy from alerts.json."""
-    alerts = load_alerts(limit=10000)
-    filtered = [a for a in alerts if a.get('strategy_id') != strategy_id]
-    _save_all_alerts(filtered)
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        filtered = [a for a in alerts if a.get('strategy_id') != strategy_id]
+        _save_all_alerts(filtered)
 
 
 def get_alerts_for_portfolio(portfolio_id: int, limit: int = 50) -> list:
