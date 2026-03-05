@@ -2581,11 +2581,10 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     Reads ``live_data_{symbol}_{tf}.pkl`` written by the Ralph engine's
     bar builder.  Re-renders every 5 seconds via ``@st.fragment(run_every=5)``.
 
-    Runs ``generate_trades()`` on recent bars (last 2000) to produce trade
+    Runs unified engine on recent bars (last 2000) to produce trade
     markers for visual display.
     """
     import pickle
-    from triggers import generate_trades as _gt
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
     pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
@@ -2605,51 +2604,13 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         st.info("No live data available yet.")
         return
 
-    # Slice to recent bars for generate_trades() performance.
+    # Slice to recent bars for performance.
     # Full DataFrame can be 20K+ rows; only need recent bars for trade markers.
     TRADE_WINDOW = 2000
     df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
 
-    # Run generate_trades() on recent data — same function used by streaming engine alerts
-    trades = pd.DataFrame()
-    try:
-        entry_trigger = strat.get('entry_trigger') or ''
-        if strat.get('entry_trigger_confluence_id'):
-            entry_trigger = get_base_trigger_id(strat['entry_trigger_confluence_id'])
-
-        exit_trigger = strat.get('exit_trigger') or ''
-        if strat.get('exit_trigger_confluence_id'):
-            exit_trigger = get_base_trigger_id(strat['exit_trigger_confluence_id'])
-
-        exit_triggers_list = None
-        if strat.get('exit_trigger_confluence_ids'):
-            exit_triggers_list = [get_base_trigger_id(t) for t in strat['exit_trigger_confluence_ids'] if t]
-        elif strat.get('exit_triggers'):
-            exit_triggers_list = [et for et in strat['exit_triggers'] if et]
-
-        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-        confluence_set = confluence_set if confluence_set else None
-
-        general_cols = [c for c in df_for_trades.columns if c.startswith("GP_")]
-        sec_tf_map = get_secondary_tf_map(df_for_trades)
-
-        trades = _gt(
-            df_for_trades,
-            direction=strat.get('direction', 'LONG'),
-            entry_trigger=entry_trigger,
-            exit_trigger=exit_trigger,
-            exit_triggers=exit_triggers_list,
-            confluence_required=confluence_set,
-            risk_per_trade=strat.get('risk_per_trade', 100.0),
-            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-            stop_config=strat.get('stop_config'),
-            target_config=strat.get('target_config'),
-            bar_count_exit=strat.get('bar_count_exit'),
-            general_columns=general_cols if general_cols else None,
-            secondary_tf_map=sec_tf_map if sec_tf_map else None,
-        )
-    except Exception:
-        trades = pd.DataFrame()
+    # Run unified engine on recent data — same engine used by all other charts
+    trades = _unified_trades(df_for_trades, strat)
 
     # Show last 100 candles (about 1.5 hours for 1-min bars)
     visible = min(100, len(df_live))
@@ -2699,7 +2660,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     # Alert-based trade history (real executions from alerts.json)
     render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
 
-    # Theoretical trade history from generate_trades()
+    # Theoretical trade history from unified engine
     if len(trades) > 0:
         render_backtest_trade_table(trades)
 
