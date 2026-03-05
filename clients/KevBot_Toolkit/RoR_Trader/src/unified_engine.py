@@ -90,6 +90,7 @@ INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
 }
 
 # L-type triggers: prev-bar-close-opposite-side gating
+# (as opposed to H-type gating which requires bar-close C-type trigger to fire)
 _IB_L_TYPE_TRIGGERS = frozenset({
     'vwap_cross_above', 'vwap_cross_below',
     'vwap_enter_upper_extreme', 'vwap_enter_lower_extreme',
@@ -97,20 +98,26 @@ _IB_L_TYPE_TRIGGERS = frozenset({
     'ema_pp_cross_mid_up', 'ema_pp_cross_mid_down',
     'ema_pp_v2_cross_short_up', 'ema_pp_v2_cross_short_down',
     'ema_pp_v2_cross_mid_up', 'ema_pp_v2_cross_mid_down',
+    'utbot_v2_buy', 'utbot_v2_sell',
 })
 
 # Trigger execution type classification
-# C = Bar Close, L = Level Cross (intra-bar)
-# HM/HL reserved for Phase 30B
-TRIGGER_EXEC_TYPE: Dict[str, str] = {}
-# Populated dynamically: _ib suffix -> L, everything else -> C
-# See get_trigger_exec_type()
+# C  = Bar Close
+# L0 = Level Cross, current bar's indicator level
+# L1 = Level Cross, previous bar's indicator level (fixed reference)
+# HM = Hybrid Market (L1 cross + bar-close confirmation → market order)
+# HL = Hybrid Limit  (L1 cross + bar-close confirmation → limit order)
+_L_TYPES = frozenset({'L0', 'L1'})
 
 
 def get_trigger_exec_type(trigger_id: str) -> str:
     """Get execution type for a trigger.
 
-    Returns: 'C' (bar close), 'L' (level cross), 'HM' (hybrid market),
+    Handles both template-prefixed IDs (e.g. ``utbot_v2_buy_ib``) and
+    group-prefixed IDs (e.g. ``utbot_v2_default_buy_ib``).
+
+    Returns: 'C' (bar close), 'L0' (level cross, current bar),
+             'L1' (level cross, previous bar), 'HM' (hybrid market),
              or 'HL' (hybrid limit).
     """
     if trigger_id.endswith('_hm'):
@@ -118,7 +125,25 @@ def get_trigger_exec_type(trigger_id: str) -> str:
     if trigger_id.endswith('_hl'):
         return 'HL'
     if trigger_id.endswith('_ib'):
-        return 'L'
+        base = trigger_id[:-3]
+        level_spec = INTRABAR_LEVEL_MAP.get(base)
+        if level_spec is None:
+            # Group-prefixed ID: find the template prefix in the trigger_id,
+            # then match the base trigger suffix against INTRABAR_LEVEL_MAP.
+            _sorted_prefixes = sorted(
+                TRIGGER_PREFIX_TO_TEMPLATE, key=len, reverse=True)
+            for tp in _sorted_prefixes:
+                if base.startswith(tp + '_'):
+                    base_suffix = base[len(tp) + 1:]  # e.g. "default_buy"
+                    for mk, spec in INTRABAR_LEVEL_MAP.items():
+                        if mk.startswith(tp + '_'):
+                            mk_suffix = mk[len(tp) + 1:]  # e.g. "buy"
+                            if base_suffix.endswith(mk_suffix):
+                                level_spec = spec
+                                break
+                    break
+        col = level_spec.get('column', '') if level_spec else ''
+        return 'L1' if col.endswith('_prev') else 'L0'
     return 'C'
 
 
@@ -934,11 +959,23 @@ class TriggerEvaluator:
 
         Returns:
             (interpreter_states, c_type_triggers, l_type_fills)
-            l_type_fills: {trigger_id: fill_price} for L-type triggers
+            l_type_fills: {trigger_id: fill_price} for L0/L1-type triggers
                 that passed both gate and reachability checks.
         """
         interps, c_triggers = self.evaluate_bar_close(
             current, prev, prev2_macd_hist)
+
+        # Fix: _update_cached_levels (called by evaluate_bar_close) stores the
+        # current bar's indicator values in _prev cache keys for live mode's
+        # next-bar usage.  In backtest we need the actual previous bar's values
+        # for THIS bar's L-type reachability and fill price.  The indicator
+        # engine already provides correct _prev values in `current`.
+        if 'utbot_stop_prev' in current:
+            self._cached_levels['utbot_stop_prev'] = current['utbot_stop_prev']
+        for period in self.ema_periods:
+            prev_key = f'ema_{period}_prev'
+            if prev_key in current:
+                self._cached_levels[prev_key] = current[prev_key]
 
         l_fills: Dict[str, float] = {}
 
@@ -956,7 +993,7 @@ class TriggerEvaluator:
                 if not self._ib_gate_open.get(trigger_id, False):
                     continue
             else:
-                # UT Bot _ib: bar-close trigger must have fired
+                # Legacy UT Bot V1 _ib: bar-close trigger must have fired
                 if not self._bar_close_triggers.get(base_trigger, False):
                     continue
 
@@ -976,9 +1013,10 @@ class TriggerEvaluator:
 
         Gate logic:
         - L-type (_ib) + HM/HL with base in _IB_L_TYPE_TRIGGERS: use _ib_gate_open
+          (prev-close-opposite-side check).  Includes VWAP, EMA, EMA V2, UT Bot V2.
         - HM/HL with base NOT in _IB_L_TYPE_TRIGGERS: use _ib_gate_open
           (HM/HL always use L-type gate, per Phase 30B design)
-        - H-type (_ib with UT Bot): use _bar_close_triggers
+        - H-type (legacy UT Bot V1 _ib only): use _bar_close_triggers
         """
         for trigger_id, (level, direction) in self._get_ib_checks():
             if self._ib_fired.get(trigger_id, False):
@@ -991,7 +1029,7 @@ class TriggerEvaluator:
                 if not self._ib_gate_open.get(trigger_id, False):
                     continue
             else:
-                # H-type (UT Bot _ib): bar-close trigger must have fired
+                # H-type (legacy UT Bot V1 _ib): bar-close trigger must have fired
                 if not self._bar_close_triggers.get(base_trigger, False):
                     continue
 
@@ -1215,7 +1253,7 @@ class PositionState:
     direction: str = 'LONG'
     entry_trigger: str = ''
     confluence_records: Optional[set] = None
-    exec_type: str = 'C'            # C, L, HM, HL
+    exec_type: str = 'C'            # C, L0, L1, HM, HL
     pending_hm_exit: bool = False    # Exit at next bar open (HM unconfirmed)
     pending_hl_limit: bool = False   # Limit exit at entry_price (HL unconfirmed)
 
@@ -1319,7 +1357,7 @@ class PositionStateMachine:
         # Determine if trigger fired and fill price
         fill_price = None
 
-        if exec_type in ('L', 'HM', 'HL') and l_type_fills:
+        if exec_type in (_L_TYPES | {'HM', 'HL'}) and l_type_fills:
             if trigger_id in l_type_fills:
                 fill_price = l_type_fills[trigger_id]
         if fill_price is None:

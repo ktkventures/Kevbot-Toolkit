@@ -139,75 +139,6 @@ TEMPLATES: Dict[str, Dict] = {
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
 
-    "ema_price_position": {
-        "name": "EMA Price Position",
-        "category": "Moving Averages",
-        "description": "Price position within the EMA stack — 4-char ordering of Price, Short, Mid, Long",
-        "interpreters": ["EMA_PRICE_POSITION"],
-        "trigger_prefix": "ema_pp",
-        "parameters_schema": {
-            "short_period": {"type": "int", "default": 9, "min": 1, "max": 200, "label": "Short Period"},
-            "mid_period": {"type": "int", "default": 21, "min": 1, "max": 200, "label": "Mid Period"},
-            "long_period": {"type": "int", "default": 200, "min": 1, "max": 500, "label": "Long Period"},
-        },
-        "plot_schema": {
-            "short_color": {"type": "color", "default": "#22c55e", "label": "Short EMA Color"},
-            "mid_color": {"type": "color", "default": "#eab308", "label": "Mid EMA Color"},
-            "long_color": {"type": "color", "default": "#ef4444", "label": "Long EMA Color"},
-        },
-        "outputs": [
-            "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
-            "SPML", "SPLM", "MPSL", "MPLS", "LPSM", "LPMS",
-            "SMPL", "MSPL", "SLPM", "LSPM", "MLPS", "LMPS",
-            "SMLP", "SLMP", "MSLP", "MLSP", "LSMP", "LMSP",
-        ],
-        "output_descriptions": {
-            "PSML": "Price leading, full bull (P > S > M > L)",
-            "PSLM": "Price leading, mid dipped (P > S > L > M)",
-            "PMSL": "Price above mid, short fell (P > M > S > L)",
-            "PMLS": "Price above mid only (P > M > L > S)",
-            "PLSM": "Price above long only (P > L > S > M)",
-            "PLMS": "Price above long, bear EMAs (P > L > M > S)",
-            "SPML": "Below short, bull EMAs (S > P > M > L)",
-            "SPLM": "Below short, mid dipped (S > P > L > M)",
-            "MPSL": "Below mid, mid leading (M > P > S > L)",
-            "MPLS": "Below mid (M > P > L > S)",
-            "LPSM": "Below long (L > P > S > M)",
-            "LPMS": "Below long (L > P > M > S)",
-            "SMPL": "Between mid and long, bull (S > M > P > L)",
-            "MSPL": "Between mid and long (M > S > P > L)",
-            "SLPM": "Between long and mid (S > L > P > M)",
-            "LSPM": "Between long and mid (L > S > P > M)",
-            "MLPS": "Between long and short (M > L > P > S)",
-            "LMPS": "Between long and short (L > M > P > S)",
-            "SMLP": "Below all, bull EMAs (S > M > L > P)",
-            "SLMP": "Below all (S > L > M > P)",
-            "MSLP": "Below all (M > S > L > P)",
-            "MLSP": "Below all (M > L > S > P)",
-            "LSMP": "Below all (L > S > M > P)",
-            "LMSP": "Below all, bear EMAs (L > M > S > P)",
-        },
-        "triggers": [
-            {"base": "cross_short_up", "name": "Price > Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "cross_short_up_ib", "name": "Price > Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_up"},
-            {"base": "cross_short_down", "name": "Price < Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "cross_short_down_ib", "name": "Price < Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_down"},
-            {"base": "cross_mid_up", "name": "Price > Mid EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "cross_mid_up_ib", "name": "Price > Mid EMA", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down", "name": "Price < Mid EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "cross_mid_down_ib", "name": "Price < Mid EMA", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_down"},
-            {"base": "cross_short_up_hm", "name": "Price > Short EMA (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_up"},
-            {"base": "cross_short_up_hl", "name": "Price > Short EMA (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_up"},
-            {"base": "cross_short_down_hm", "name": "Price < Short EMA (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_down"},
-            {"base": "cross_short_down_hl", "name": "Price < Short EMA (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_down"},
-            {"base": "cross_mid_up_hm", "name": "Price > Mid EMA (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_up_hl", "name": "Price > Mid EMA (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down_hm", "name": "Price < Mid EMA (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_down"},
-            {"base": "cross_mid_down_hl", "name": "Price < Mid EMA (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_down"},
-        ],
-        "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
-    },
-
     "macd_line": {
         "name": "MACD Line",
         "category": "Momentum",
@@ -349,38 +280,6 @@ TEMPLATES: Dict[str, Dict] = {
         "indicator_columns": ["vol_sma", "rvol"],
     },
 
-    "utbot": {
-        "name": "UT Bot",
-        "category": "Trend",
-        "description": "UT Bot trend-following alerts based on ATR trailing stop",
-        "interpreters": ["UTBOT"],
-        "trigger_prefix": "utbot",
-        "parameters_schema": {
-            "atr_period": {"type": "int", "default": 10, "min": 1, "max": 50, "label": "ATR Period"},
-            "atr_multiplier": {"type": "float", "default": 1.0, "min": 0.5, "max": 5.0, "label": "ATR Multiplier"},
-        },
-        "plot_schema": {
-            "buy_color": {"type": "color", "default": "#22c55e", "label": "Buy Signal Color"},
-            "sell_color": {"type": "color", "default": "#ef4444", "label": "Sell Signal Color"},
-            "trail_color": {"type": "color", "default": "#64748b", "label": "Trailing Stop Color"},
-        },
-        "outputs": ["BULL", "BEAR"],
-        "output_descriptions": {
-            "BULL": "Price above trailing stop (bullish)",
-            "BEAR": "Price below trailing stop (bearish)",
-        },
-        "triggers": [
-            {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "buy_ib", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy"},
-            {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "sell_ib", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "sell"},
-            {"base": "buy_hm", "name": "Buy Signal (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "buy"},
-            {"base": "buy_hl", "name": "Buy Signal (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "buy"},
-            {"base": "sell_hm", "name": "Sell Signal (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "sell"},
-            {"base": "sell_hl", "name": "Sell Signal (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "sell"},
-        ],
-        "indicator_columns": ["utbot_stop"],
-    },
     "utbot_v2": {
         "name": "UT Bot (Confirmed)",
         "category": "Trend",
@@ -582,31 +481,6 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
             )
             groups.append(group)
 
-        # Migration: add ema_price_position_default if no such group exists
-        if not any(g.base_template == "ema_price_position" for g in groups):
-            groups.append(ConfluenceGroup(
-                id="ema_price_position_default",
-                base_template="ema_price_position",
-                version="Default",
-                description="Price position within the EMA stack (P, S, M, L ordering)",
-                enabled=True,
-                is_default=True,
-                parameters={
-                    "short_period": 9,
-                    "mid_period": 21,
-                    "long_period": 200,
-                },
-                plot_settings=PlotSettings(
-                    colors={
-                        "short_color": "#22c55e",
-                        "mid_color": "#eab308",
-                        "long_color": "#ef4444",
-                    },
-                    line_width=1,
-                    visible=True,
-                ),
-            ))
-
         # Migration: add bar_count_default if no bar_count group exists
         if not any(g.base_template == "bar_count" for g in groups):
             groups.append(ConfluenceGroup(
@@ -683,28 +557,6 @@ def create_default_groups() -> List[ConfluenceGroup]:
             base_template="ema_stack",
             version="Default",
             description="Standard EMA stack with 9/21/200 periods",
-            enabled=True,
-            is_default=True,
-            parameters={
-                "short_period": 9,
-                "mid_period": 21,
-                "long_period": 200,
-            },
-            plot_settings=PlotSettings(
-                colors={
-                    "short_color": "#22c55e",
-                    "mid_color": "#eab308",
-                    "long_color": "#ef4444",
-                },
-                line_width=1,
-                visible=True,
-            ),
-        ),
-        ConfluenceGroup(
-            id="ema_price_position_default",
-            base_template="ema_price_position",
-            version="Default",
-            description="Price position within the EMA stack (P, S, M, L ordering)",
             enabled=True,
             is_default=True,
             parameters={
@@ -802,27 +654,6 @@ def create_default_groups() -> List[ConfluenceGroup]:
                     "bar_color": "#64748b",
                     "high_color": "#f59e0b",
                     "extreme_color": "#ef4444",
-                },
-                line_width=1,
-                visible=True,
-            ),
-        ),
-        ConfluenceGroup(
-            id="utbot_default",
-            base_template="utbot",
-            version="Default",
-            description="UT Bot with ATR period 10, multiplier 1.0",
-            enabled=True,
-            is_default=True,
-            parameters={
-                "atr_period": 10,
-                "atr_multiplier": 1.0,
-            },
-            plot_settings=PlotSettings(
-                colors={
-                    "buy_color": "#22c55e",
-                    "sell_color": "#ef4444",
-                    "trail_color": "#64748b",
                 },
                 line_width=1,
                 visible=True,

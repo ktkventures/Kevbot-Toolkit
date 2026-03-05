@@ -645,12 +645,20 @@ def test_exec_type_classification():
 
     assert get_trigger_exec_type('ema_cross_bull') == 'C'
     assert get_trigger_exec_type('utbot_buy') == 'C'
-    assert get_trigger_exec_type('utbot_buy_ib') == 'L'
-    assert get_trigger_exec_type('vwap_cross_above_ib') == 'L'
+    assert get_trigger_exec_type('utbot_buy_ib') == 'L0'       # utbot_stop (current bar)
+    assert get_trigger_exec_type('vwap_cross_above_ib') == 'L0' # vwap (current bar)
+    assert get_trigger_exec_type('utbot_v2_buy_ib') == 'L1'     # utbot_stop_prev
+    assert get_trigger_exec_type('ema_pp_v2_cross_short_up_ib') == 'L1'  # ema_9_prev
     assert get_trigger_exec_type('utbot_buy_hm') == 'HM'
     assert get_trigger_exec_type('ema_pp_cross_short_up_hm') == 'HM'
     assert get_trigger_exec_type('utbot_buy_hl') == 'HL'
     assert get_trigger_exec_type('vwap_cross_above_hl') == 'HL'
+
+    # Group-prefixed IDs (e.g. from confluence groups page)
+    assert get_trigger_exec_type('utbot_v2_default_buy_ib') == 'L1'
+    assert get_trigger_exec_type('utbot_v2_custom_1_sell_ib') == 'L1'
+    assert get_trigger_exec_type('vwap_default_cross_above_ib') == 'L0'
+    assert get_trigger_exec_type('ema_pp_v2_custom_1_cross_short_up_ib') == 'L1'
 
     assert _strip_exec_suffix('utbot_buy_ib') == 'utbot_buy'
     assert _strip_exec_suffix('utbot_buy_hm') == 'utbot_buy'

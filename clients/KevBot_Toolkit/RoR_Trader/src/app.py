@@ -1614,7 +1614,7 @@ def format_exit_triggers_display(strat: dict, trigger_defs: dict = None) -> str:
                 cid = cids[idx] if idx < len(cids) else None
                 tdef = trigger_defs.get(cid or '') if cid else None
                 tag = _execution_tag(
-                    tdef.base_trigger if tdef else '',
+                    cid or '',
                     tdef.execution if tdef else 'bar_close'
                 )
                 parts.append(f"{tag} {name}")
@@ -1628,7 +1628,7 @@ def format_exit_triggers_display(strat: dict, trigger_defs: dict = None) -> str:
                 cid = strat.get('exit_trigger_confluence_id')
                 tdef = trigger_defs.get(cid or '') if cid else None
                 tag = _execution_tag(
-                    tdef.base_trigger if tdef else '',
+                    cid or '',
                     tdef.execution if tdef else 'bar_close'
                 )
                 parts.append(f"{tag} {name}")
@@ -2587,6 +2587,52 @@ def render_candle_selector(chart_key: str) -> int:
     return int(choice)
 
 
+def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list):
+    """Show current interpreter states for strategy's confluence packs."""
+    if not relevant_groups:
+        return
+
+    last_row = df.iloc[-1]
+
+    # Determine TF label for confluence record matching
+    tf_map = {
+        '1Min': '1M', '2Min': '2M', '3Min': '3M', '5Min': '5M',
+        '10Min': '10M', '15Min': '15M', '30Min': '30M',
+        '1Hour': '1H', '2Hour': '2H', '4Hour': '4H',
+        '1Day': '1D', '1Week': '1W',
+    }
+    tf_label = tf_map.get(strat.get('timeframe', '1Min'), '1M')
+    required_confs = set(strat.get('confluence', []))
+
+    rows = []
+    for group in relevant_groups:
+        template = get_template(group.base_template)
+        if not template:
+            continue
+        for interp_key in template.get("interpreters", []):
+            val = last_row.get(interp_key)
+            if pd.notna(val):
+                record = f"{tf_label}-{interp_key}-{val}"
+                # Check if this interpreter has a required confluence
+                prefix = f"{tf_label}-{interp_key}-"
+                matching_reqs = [r for r in required_confs if r.startswith(prefix)]
+                if matching_reqs:
+                    met = record in matching_reqs
+                    status = "Met" if met else "Not met"
+                else:
+                    status = ""
+                rows.append({
+                    "Pack": group.name,
+                    "Interpreter": interp_key.replace("_", " ").title(),
+                    "State": str(val),
+                    "Confluence": status,
+                })
+
+    if rows:
+        st.markdown("**Current Conditions**")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 @st.fragment(run_every=5)
 def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
                           chart_key: str = 'live_chart'):
@@ -2670,6 +2716,9 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         band_fills=band_fills if band_fills else None,
         indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
     )
+
+    # Current condition states
+    _render_live_conditions(df_live, strat, relevant_groups)
 
     # Alert-based trade history (real executions from alerts.json)
     render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
@@ -3514,7 +3563,7 @@ def get_trigger_display_name(strat: dict, trigger_key: str, trigger_defs: dict =
         cid = strat.get(conf_id_key)
         tdef = trigger_defs.get(cid or '') if cid else None
         tag = _execution_tag(
-            tdef.base_trigger if tdef else '',
+            cid or '',
             tdef.execution if tdef else 'bar_close'
         )
         return f"{tag} {name}"
@@ -4151,7 +4200,8 @@ def render_strategy_builder():
                     for tid in entry_trigger_options:
                         name = entry_triggers[tid]
                         tdef = all_trigger_defs.get(tid)
-                        exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
+                        from unified_engine import get_trigger_exec_type as _get_et
+                        exec_tag = _get_et(tid) if tdef else "C"
                         entry_trigger_labels.append(f"{name} [{exec_tag}]")
                     saved_entry = edit_config.get('entry_trigger_confluence_id', '')
                     if saved_entry in entry_trigger_options:
@@ -7169,11 +7219,17 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
             # Build overlay data
             cond_primitives = []
             if show_conditions and selected_interp:
-                cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+                try:
+                    cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+                except Exception as e:
+                    st.warning(f"Could not build condition overlay: {e}")
 
             trig_markers = []
             if show_triggers:
-                trig_markers = _build_trigger_overlay(df, group, template)
+                try:
+                    trig_markers = _build_trigger_overlay(df, group, template)
+                except Exception as e:
+                    st.warning(f"Could not build trigger overlay: {e}")
 
             render_chart_with_candle_selector(
                 df,
@@ -12236,11 +12292,17 @@ def render_preview_tab(group: ConfluenceGroup):
     # Build overlay data
     cond_primitives = []
     if show_conditions and selected_interp:
-        cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+        try:
+            cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+        except Exception as e:
+            st.warning(f"Could not build condition overlay: {e}")
 
     trig_markers = []
     if show_triggers:
-        trig_markers = _build_trigger_overlay(df, group, template)
+        try:
+            trig_markers = _build_trigger_overlay(df, group, template)
+        except Exception as e:
+            st.warning(f"Could not build trigger overlay: {e}")
 
     render_chart_with_candle_selector(
         df,
@@ -12615,18 +12677,27 @@ _TRIGGER_DIRECTION_STYLE = {
 _INTRABAR_CANDIDATE_TRIGGERS: set = set()
 
 
-def _execution_tag(trigger_base: str, execution: str = "bar_close") -> str:
+def _execution_tag(trigger_id: str, execution: str = "bar_close") -> str:
     """Return a display tag for the trigger's execution mode.
 
     Returns one of:
-      ``[I]``  — actually evaluated intra-bar
-      ``[I?]`` — currently bar-close but *could* be intra-bar
+      ``[L0]`` — level-cross, current bar's indicator level
+      ``[L1]`` — level-cross, previous bar's indicator level (fixed reference)
+      ``[HM]`` — hybrid market (L1 cross + bar-close confirmation)
+      ``[HL]`` — hybrid limit (L1 cross + limit fill at entry price)
       ``[C]``  — bar-close only (needs completed candle)
     """
     if execution == "intra_bar":
-        return "`[I]`"
-    if trigger_base in _INTRABAR_CANDIDATE_TRIGGERS:
-        return "`[I?]`"
+        from unified_engine import get_trigger_exec_type
+        lookup = trigger_id if trigger_id.endswith(('_ib', '_hm', '_hl')) else trigger_id + '_ib'
+        et = get_trigger_exec_type(lookup)
+        return f"`[{et}]`"
+    if execution == "hybrid_market":
+        return "`[HM]`"
+    if execution == "hybrid_limit":
+        return "`[HL]`"
+    if trigger_id in _INTRABAR_CANDIDATE_TRIGGERS:
+        return "`[L?]`"
     return "`[C]`"
 
 
@@ -12974,7 +13045,7 @@ def render_group_details(group_id: str, all_groups: list):
             for trigger in triggers:
                 direction_icon = "LONG" if trigger.direction == "LONG" else "SHORT" if trigger.direction == "SHORT" else "BOTH"
                 type_icon = "ENTRY" if trigger.trigger_type == "ENTRY" else "EXIT"
-                tag = _execution_tag(trigger.base_trigger, trigger.execution)
+                tag = _execution_tag(trigger.id, trigger.execution)
                 st.markdown(f"- {tag} **{trigger.name}**")
                 st.caption(f"  {direction_icon} {type_icon} | ID: `{trigger.id}`")
 

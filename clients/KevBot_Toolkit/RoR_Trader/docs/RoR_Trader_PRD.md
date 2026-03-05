@@ -2297,6 +2297,28 @@ Every trigger is classified into one of four execution types. The type is intrin
 - [x] `calculate_kpis()` filters out `exit_reason='open'` rows to prevent KPI contamination
 - [x] Trade history table shows "Open" result for open-position rows
 
+##### Phase 30G: Execution Type Naming Convention + L-type Bugfix — COMPLETED 2026-03-05
+- [x] Fixed `evaluate_bar_for_backtest()` bug: `_update_cached_levels()` was overwriting `_prev` values before L-type reachability checks, causing V2 triggers to use current bar's level instead of previous bar's
+- [x] Split single `L` execution type into `L0` (current-bar level) and `L1` (previous-bar level):
+  - `L0`: VWAP triggers — cross level updates continuously during bar (fill = current bar's indicator)
+  - `L1`: V2 EMA/UT Bot triggers — cross level fixed from previous bar's close (fill = previous bar's indicator)
+- [x] `get_trigger_exec_type()` derives L0/L1 from `INTRABAR_LEVEL_MAP` column: `_prev` suffix → L1, else L0
+- [x] UI tags updated: `[L0]`, `[L1]` replace `[L]` throughout Strategy Builder and detail views
+- [x] Deleted legacy strategies (IDs 23, 24, 25) using deprecated non-V2 triggers
+- [x] Removed outdated default templates (`ema_price_position`, `utbot`) from TEMPLATES dict
+
+#### Execution Type Naming Convention
+
+| Tag | Name | Level Source | Fill Price | Gate Logic |
+|-----|------|-------------|-----------|------------|
+| `C` | Bar Close | Close detection | Close price | N/A |
+| `L0` | Level Cross (current) | Current bar's indicator | Indicator level | Prev close on opposite side |
+| `L1` | Level Cross (previous) | Previous bar's indicator | Previous bar's level | Prev close on opposite side |
+| `HM` | Hybrid Market | L1 cross + bar-close confirmation | Market at confirmation | Same as L1 |
+| `HL` | Hybrid Limit | L1 cross + bar-close confirmation | Limit at level | Same as L1 |
+
+> **Future: Order Type Extensions (CM/CL)** — Exploring market vs limit order semantics for bar-close triggers. CM (close + market order at next open) vs CL (close + limit order at close price). Requires unfilled-order logic and next-bar fill verification. Not yet prioritized.
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
@@ -2305,8 +2327,9 @@ Every trigger is classified into one of four execution types. The type is intrin
 4. **Phase 30D** ✅ trade generation converged to unified engine — batch pipeline retained for chart overlays only
 5. **Phase 30E** ✅ MTF support + swing stops — all strategy types handled natively by unified engine (6 tests)
 6. **Phase 30F** ✅ live chart migrated to unified engine + open-position entry markers
-7. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
-8. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
+7. **Phase 30G** ✅ L0/L1 naming + _prev level bugfix — backtest fill prices now correct for V2 triggers
+8. Existing C-type strategies migrate automatically (trigger classification is additive)
+9. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 
 ---
 
