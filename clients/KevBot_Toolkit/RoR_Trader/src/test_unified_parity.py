@@ -1071,6 +1071,206 @@ def test_check_intrabar_hm_hl_triggers():
     assert fill_price == 100.0  # fills at level
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 30E — Swing Stops + MTF Confluence
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_swing_stop_long():
+    """Swing stop for LONG: min(lows in lookback) - padding."""
+    print("  [22] Swing stop (LONG) ...", end=" ")
+
+    strategy = {
+        'id': 'test_swing', 'direction': 'LONG',
+        'entry_trigger': 'ema_cross_short_up',
+        'exit_trigger': 'opposite_signal',
+        'stop_config': {'method': 'swing', 'lookback': 3, 'padding': 0.10},
+        'confluence': [],
+    }
+
+    psm = PositionStateMachine(strategy)
+
+    # Feed several bars with known highs/lows
+    bars_hl = [(102, 98), (104, 99), (103, 97), (105, 100), (106, 101)]
+    for h, l in bars_hl:
+        psm.update_high_low(h, l)
+
+    # Simulate entry at close 106, ATR=2
+    entry_price = 106.0
+    atr = 2.0
+    stop = psm._compute_stop(entry_price, atr, {'close': 106})
+
+    # Lookback window (excluding current bar): last 3 of [:-1]
+    # Buffer[:-1] = [(102,98),(104,99),(103,97),(105,100)]
+    # Last 3: [(104,99),(103,97),(105,100)]
+    # min(lows) = 97, stop = 97 - 0.10 = 96.90
+    assert abs(stop - 96.90) < 0.001, f"Expected 96.90, got {stop}"
+    print("PASSED")
+
+
+def test_swing_stop_short():
+    """Swing stop for SHORT: max(highs in lookback) + padding."""
+    print("  [23] Swing stop (SHORT) ...", end=" ")
+
+    strategy = {
+        'id': 'test_swing_short', 'direction': 'SHORT',
+        'entry_trigger': 'ema_cross_short_down',
+        'exit_trigger': 'opposite_signal',
+        'stop_config': {'method': 'swing', 'lookback': 3, 'padding': 0.05},
+        'confluence': [],
+    }
+
+    psm = PositionStateMachine(strategy)
+
+    bars_hl = [(102, 98), (104, 99), (103, 97), (105, 100), (101, 96)]
+    for h, l in bars_hl:
+        psm.update_high_low(h, l)
+
+    stop = psm._compute_stop(96.0, 2.0, {'close': 96})
+
+    # Buffer[:-1] = [(102,98),(104,99),(103,97),(105,100)]
+    # Last 3: [(104,99),(103,97),(105,100)]
+    # max(highs) = 105, stop = 105 + 0.05 = 105.05
+    assert abs(stop - 105.05) < 0.001, f"Expected 105.05, got {stop}"
+    print("PASSED")
+
+
+def test_swing_target_long():
+    """Swing target for LONG: max(highs in lookback) + padding."""
+    print("  [24] Swing target (LONG) ...", end=" ")
+
+    strategy = {
+        'id': 'test_swing_tgt', 'direction': 'LONG',
+        'entry_trigger': 'ema_cross_short_up',
+        'exit_trigger': 'opposite_signal',
+        'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+        'target_config': {'method': 'swing', 'lookback': 3, 'padding': 0.10},
+        'confluence': [],
+    }
+
+    psm = PositionStateMachine(strategy)
+
+    bars_hl = [(102, 98), (104, 99), (103, 97), (105, 100), (106, 101)]
+    for h, l in bars_hl:
+        psm.update_high_low(h, l)
+
+    # entry=101, stop=98 (arbitrary), atr=2
+    target = psm._compute_target(101.0, 98.0, 2.0, {'close': 101})
+
+    # Buffer[:-1] = [(102,98),(104,99),(103,97),(105,100)]
+    # Last 3: [(104,99),(103,97),(105,100)]
+    # max(highs) = 105, target = 105 + 0.10 = 105.10
+    assert abs(target - 105.10) < 0.001, f"Expected 105.10, got {target}"
+    print("PASSED")
+
+
+def test_swing_target_short():
+    """Swing target for SHORT: min(lows in lookback) - padding."""
+    print("  [25] Swing target (SHORT) ...", end=" ")
+
+    strategy = {
+        'id': 'test_swing_tgt_short', 'direction': 'SHORT',
+        'entry_trigger': 'ema_cross_short_down',
+        'exit_trigger': 'opposite_signal',
+        'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+        'target_config': {'method': 'swing', 'lookback': 3, 'padding': 0.05},
+        'confluence': [],
+    }
+
+    psm = PositionStateMachine(strategy)
+
+    bars_hl = [(102, 98), (104, 99), (103, 97), (105, 100), (101, 96)]
+    for h, l in bars_hl:
+        psm.update_high_low(h, l)
+
+    target = psm._compute_target(101.0, 105.0, 2.0, {'close': 101})
+
+    # Buffer[:-1] = [(102,98),(104,99),(103,97),(105,100)]
+    # Last 3: [(104,99),(103,97),(105,100)]
+    # min(lows) = 97, target = 97 - 0.05 = 96.95
+    assert abs(target - 96.95) < 0.001, f"Expected 96.95, got {target}"
+    print("PASSED")
+
+
+def test_swing_stop_not_enough_history():
+    """Swing stop falls back to ATR when buffer has insufficient history."""
+    print("  [26] Swing stop (not enough history) ...", end=" ")
+
+    strategy = {
+        'id': 'test_swing_fallback', 'direction': 'LONG',
+        'entry_trigger': 'ema_cross_short_up',
+        'exit_trigger': 'opposite_signal',
+        'stop_config': {'method': 'swing', 'lookback': 5, 'padding': 0.0},
+        'confluence': [],
+    }
+
+    psm = PositionStateMachine(strategy)
+    # Only 1 bar — after excluding current, window is empty
+    psm.update_high_low(105, 100)
+
+    stop = psm._compute_stop(100.0, 2.0, {'close': 100})
+
+    # Fallback: ATR * 1.5 = 3.0, LONG: 100 - 3 = 97
+    assert abs(stop - 97.0) < 0.001, f"Expected 97.0, got {stop}"
+    print("PASSED")
+
+
+def test_mtf_confluence_gating():
+    """MTF confluence records gate entries when strategy requires them."""
+    print("  [27] MTF confluence gating ...", end=" ")
+
+    # Use 500 bars, seed=77 (known to produce ema_cross_bull triggers)
+    df = generate_test_data(500, seed=77)
+
+    # Add a fake MTF column: EMA_STACK__5m — always set to FULL_BULL_STACK
+    df["EMA_STACK__5m"] = "FULL_BULL_STACK"
+
+    strategy_base = {
+        'id': 'test_mtf', 'direction': 'LONG',
+        'entry_trigger': 'ema_cross_bull',
+        'exit_triggers': ['ema_cross_bear'],
+        'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+    }
+
+    # Baseline: no confluence requirement — should produce trades
+    trades_baseline, _ = run_unified_backtest(df, strategy_base)
+    baseline_count = len(trades_baseline)
+    assert baseline_count > 0, \
+        f"Expected baseline trades, got {baseline_count}"
+
+    # Add confluence requirement
+    strategy_conf = {**strategy_base,
+                     'confluence': ['5m-EMA_STACK-FULL_BULL_STACK']}
+
+    # WITHOUT MTF map — engine never produces 5m-* record → 0 trades
+    trades_no_mtf, _ = run_unified_backtest(df, strategy_conf)
+    assert len(trades_no_mtf) == 0, \
+        f"Expected 0 trades without MTF, got {len(trades_no_mtf)}"
+
+    # WITH MTF map — confluence is always met → should match baseline
+    sec_tf_map = {'5m': ['EMA_STACK__5m']}
+    trades_with_mtf, _ = run_unified_backtest(
+        df, strategy_conf, secondary_tf_map=sec_tf_map)
+    assert len(trades_with_mtf) == baseline_count, \
+        f"Expected {baseline_count} trades with MTF, got {len(trades_with_mtf)}"
+
+    # Gating test: set MTF column to None for first 250 bars
+    df2 = df.copy()
+    df2.loc[df2.index[:250], "EMA_STACK__5m"] = None
+    trades_partial, _ = run_unified_backtest(
+        df2, strategy_conf, secondary_tf_map=sec_tf_map)
+
+    # All entries should be in the second half (bars 250+)
+    if len(trades_partial) > 0 and 'entry_time' in trades_partial.columns:
+        for _, trade in trades_partial.iterrows():
+            entry_idx = df2.index.get_loc(trade['entry_time'])
+            assert entry_idx >= 250, \
+                f"Trade entered at bar {entry_idx}, expected >= 250"
+
+    print(f"PASSED (baseline={baseline_count}, no_mtf={len(trades_no_mtf)}, "
+          f"with_mtf={len(trades_with_mtf)}, partial={len(trades_partial)})")
+
+
 def main():
     print("=" * 60)
     print("Unified Engine Parity Tests")
@@ -1098,6 +1298,12 @@ def main():
         test_check_exit_tick_pending_hl_stop_priority,
         test_check_entry_intrabar_exec_type,
         test_check_intrabar_hm_hl_triggers,
+        test_swing_stop_long,
+        test_swing_stop_short,
+        test_swing_target_long,
+        test_swing_target_short,
+        test_swing_stop_not_enough_history,
+        test_mtf_confluence_gating,
     ]
 
     passed = 0

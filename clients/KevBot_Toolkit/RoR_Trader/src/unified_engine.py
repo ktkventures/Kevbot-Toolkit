@@ -1290,6 +1290,13 @@ class PositionStateMachine:
             strategy.get('general_confluences', []))
         self.confluence_set = self.confluence_set or None
 
+        # Rolling buffer for swing stop/target lookback
+        self._high_low_buffer: deque = deque(maxlen=50)
+
+    def update_high_low(self, high: float, low: float):
+        """Append a (high, low) pair to the rolling buffer for swing lookback."""
+        self._high_low_buffer.append((high, low))
+
     def check_entry(self, trigger_booleans: Dict[str, bool],
                     current_values: Dict[str, float],
                     bar_count: int, bar_time: str,
@@ -1728,7 +1735,17 @@ class PositionStateMachine:
             pct = self.stop_config.get('percentage', 0.5)
             distance = entry_price * (pct / 100.0)
         elif method == 'swing':
-            distance = atr * 1.5  # ATR fallback
+            lookback = self.stop_config.get('lookback', 5)
+            padding = self.stop_config.get('padding', 0.0)
+            # Exclude current bar (last entry in buffer)
+            buf = list(self._high_low_buffer)[:-1]
+            window = buf[-lookback:] if len(buf) >= lookback else buf
+            if not window:
+                distance = atr * 1.5  # Fallback if not enough history
+            elif direction == 'LONG':
+                return min(low for _, low in window) - padding
+            else:
+                return max(high for high, _ in window) + padding
         else:
             distance = atr * 1.5
 
@@ -1760,6 +1777,17 @@ class PositionStateMachine:
         elif method == 'percentage':
             pct = self.target_config.get('percentage', 1.0)
             distance = entry_price * (pct / 100.0)
+        elif method == 'swing':
+            lookback = self.target_config.get('lookback', 5)
+            padding = self.target_config.get('padding', 0.0)
+            buf = list(self._high_low_buffer)[:-1]
+            window = buf[-lookback:] if len(buf) >= lookback else buf
+            if not window:
+                return None
+            elif direction == 'LONG':
+                return max(high for high, _ in window) + padding
+            else:
+                return min(low for _, low in window) - padding
         else:
             return None
 
@@ -1813,12 +1841,15 @@ class UnifiedStrategy:
         # Interpreter keys needed for confluence records
         self._interpreter_keys = list(req_interp)
 
-    def process_bar(self, bar: dict) -> Tuple[List[dict], Dict[str, float],
-                                               Dict[str, str], Dict[str, bool]]:
+    def process_bar(self, bar: dict, mtf_records: Set[str] = None,
+                    ) -> Tuple[List[dict], Dict[str, float],
+                               Dict[str, str], Dict[str, bool]]:
         """Process one completed bar.
 
         Args:
             bar: {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
+            mtf_records: Optional set of multi-timeframe confluence records
+                from pre-computed columns (e.g. '5m-EMA_STACK-FULL_BULL_STACK').
 
         Returns:
             (trade_records, indicator_values, interpreter_states, trigger_bools)
@@ -1834,6 +1865,9 @@ class UnifiedStrategy:
         current = self.indicators.update_bar(bar)
         prev = self.indicators.get_prev_values()
 
+        # 1b. Feed high/low into position buffer (for swing stops/targets)
+        self.position.update_high_low(bar['high'], bar['low'])
+
         # 2. Evaluate triggers (C-type + L-type)
         interps, c_triggers, l_fills = self.trigger_eval.evaluate_bar_for_backtest(
             current, prev, self.indicators.state.prev2_macd_hist)
@@ -1844,6 +1878,10 @@ class UnifiedStrategy:
         for interp_key, state_val in interps.items():
             confluence_records.add(
                 f"{self.tf_label}-{interp_key}-{state_val}")
+
+        # MTF confluence records (from pre-computed columns)
+        if mtf_records:
+            confluence_records |= mtf_records
 
         # General packs
         if self.general_packs:
@@ -1911,14 +1949,17 @@ def run_unified_backtest(
     df: pd.DataFrame,
     strategy: dict,
     general_packs: list = None,
+    secondary_tf_map: dict = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run unified backtest on historical OHLCV data.
 
     Args:
-        df: Raw OHLCV DataFrame (timestamp-indexed, columns:
-            open, high, low, close, volume)
+        df: DataFrame (timestamp-indexed). Must contain OHLCV columns.
+            May also contain pre-computed MTF columns (e.g. EMA_STACK__5m).
         strategy: Strategy config dict (same format as strategies.json)
         general_packs: Optional list of GeneralPack objects
+        secondary_tf_map: Optional {tf_label: [suffixed_col_names]} for MTF
+            confluence.  Column names have the form ``{INTERP}__{tf_label}``.
 
     Returns:
         (trades_df, enriched_df)
@@ -1946,7 +1987,21 @@ def run_unified_backtest(
             'timestamp': df.index[i],
         }
 
-        bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(bar)
+        # Build MTF confluence records from pre-computed columns
+        mtf_records = None
+        if secondary_tf_map:
+            mtf_set = set()
+            for tf_label, cols in secondary_tf_map.items():
+                for col in cols:
+                    val = row.get(col)
+                    if val is not None and pd.notna(val):
+                        base_interp = col.rsplit('__', 1)[0]
+                        mtf_set.add(f"{tf_label}-{base_interp}-{val}")
+            if mtf_set:
+                mtf_records = mtf_set
+
+        bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(
+            bar, mtf_records=mtf_records)
         trades.extend(bar_trades)
         indicator_rows.append(ind_vals)
         interp_rows.append(interp_states)

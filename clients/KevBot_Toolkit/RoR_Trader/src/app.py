@@ -720,22 +720,12 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
     return tf_map
 
 
-def _has_mtf_confluence(strategy: dict) -> bool:
-    """Return True if strategy has multi-timeframe confluence records.
-
-    The unified engine processes only the primary timeframe.  Strategies with
-    MTF records (e.g., '5M-EMA_STACK-FULL_BULL_STACK') must fall back to
-    generate_trades() which reads pre-computed MTF columns from the enriched df.
-    """
-    from data_loader import get_required_tfs_from_confluence
-    return len(get_required_tfs_from_confluence(strategy.get('confluence', []))) > 0
-
-
 def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
-    """Trade generation via unified engine with MTF fallback.
+    """Trade generation via unified engine with MTF support.
 
     Args:
         df: Enriched DataFrame from prepare_data_with_indicators().
+            May contain pre-computed MTF columns (e.g. EMA_STACK__5m).
         strategy: Strategy config dict (saved format OR builder format).
 
     Returns:
@@ -744,43 +734,16 @@ def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
     import logging
     _logger = logging.getLogger('ror_trader')
 
-    # ── MTF fallback ──────────────────────────────────────────────────────
-    if _has_mtf_confluence(strategy):
-        confluence_set = (
-            set(strategy.get('confluence', []))
-            | set(strategy.get('general_confluences', []))
-        )
-        confluence_set = confluence_set if confluence_set else None
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
-        sec_tf_map = get_secondary_tf_map(df)
-        return generate_trades(
-            df,
-            direction=strategy['direction'],
-            entry_trigger=strategy['entry_trigger'],
-            exit_trigger=strategy.get('exit_trigger'),
-            exit_triggers=strategy.get('exit_triggers'),
-            confluence_required=confluence_set,
-            risk_per_trade=strategy.get('risk_per_trade', 100.0),
-            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
-            stop_config=strategy.get('stop_config'),
-            target_config=strategy.get('target_config'),
-            bar_count_exit=strategy.get('bar_count_exit'),
-            general_columns=general_cols if general_cols else None,
-            secondary_tf_map=sec_tf_map if sec_tf_map else None,
-        )
-
-    # ── Unified engine path ───────────────────────────────────────────────
-    ohlcv_cols = [c for c in ('open', 'high', 'low', 'close', 'volume')
-                  if c in df.columns]
-    raw_df = df[ohlcv_cols].copy()
+    sec_tf_map = get_secondary_tf_map(df)
 
     enabled_gen = gp_module.get_enabled_general_packs(
         gp_module.load_general_packs())
 
     try:
         from unified_engine import run_unified_backtest
-        trades_df, _ = run_unified_backtest(raw_df, strategy,
-                                            general_packs=enabled_gen)
+        trades_df, _ = run_unified_backtest(
+            df, strategy, general_packs=enabled_gen,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None)
     except Exception as exc:
         _logger.warning("unified engine failed (%s), falling back", exc)
         confluence_set = (
@@ -789,7 +752,6 @@ def _unified_trades(df: pd.DataFrame, strategy: dict) -> pd.DataFrame:
         )
         confluence_set = confluence_set if confluence_set else None
         general_cols = [c for c in df.columns if c.startswith("GP_")]
-        sec_tf_map = get_secondary_tf_map(df)
         return generate_trades(
             df,
             direction=strategy['direction'],

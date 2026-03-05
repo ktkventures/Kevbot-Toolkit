@@ -2282,14 +2282,23 @@ Every trigger is classified into one of four execution types. The type is intrin
 - [x] Live chart tab (`render_live_chart_tab`) retained on `generate_trades()` — reads pre-enriched pickle data, no recomputation needed
 - [x] Batch pipeline (`indicators.py → interpreters.py → triggers.py`) retained for chart indicator overlays only — not for trade generation
 
+##### Phase 30E: MTF Support + Swing Stops — COMPLETED 2026-03-05
+- [x] MTF support: `run_unified_backtest()` accepts `secondary_tf_map` parameter, reads pre-computed `{INTERP}__{tf_label}` columns and merges into confluence records
+- [x] MTF fallback removed: `_has_mtf_confluence()` guard eliminated — unified engine handles all strategies including MTF
+- [x] Swing stops: `PositionStateMachine` maintains rolling `_high_low_buffer` (deque, maxlen=50) for lookback-based min/max stop and target calculation
+- [x] Swing targets: `_compute_target(method='swing')` uses same lookback buffer — max(highs) + padding for LONG, min(lows) - padding for SHORT
+- [x] Fallback: insufficient history degrades to ATR * 1.5 for stops, returns None for targets
+- [x] 6 new tests: 5 swing stop/target tests + 1 MTF confluence gating test (27 total unified tests)
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
 2. **Phase 30B** ✅ adds HM/HL-type without affecting existing strategies — new strategies can opt in (7 tests)
 3. **Phase 30C** ✅ refactored ralph_engine.py to import from unified_engine.py — 1400 lines deduped (6 live tests + 14 ralph fidelity tests)
 4. **Phase 30D** ✅ trade generation converged to unified engine — batch pipeline retained for chart overlays only
-5. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
-6. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
+5. **Phase 30E** ✅ MTF support + swing stops — all strategy types handled natively by unified engine (6 tests)
+6. Existing C-type and L-type strategies migrate automatically (trigger classification is additive)
+7. HM/HL-type is opt-in: existing UT Bot strategies remain L-type unless user explicitly changes execution type
 
 ---
 
