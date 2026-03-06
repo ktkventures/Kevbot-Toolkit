@@ -2319,6 +2319,16 @@ Every trigger is classified into one of four execution types. The type is intrin
 
 > **Future: Order Type Extensions (CM/CL)** — Exploring market vs limit order semantics for bar-close triggers. CM (close + market order at next open) vs CL (close + limit order at close price). Requires unfilled-order logic and next-bar fill verification. Not yet prioritized.
 
+##### Phase 30H: L-type Gate Timing Fix — COMPLETED 2026-03-05
+- [x] Fixed gate/crossing level mismatch: `_compute_ib_gates()` gate_map for V2 triggers used `utbot_stop_prev` (bar N-2's stop) while crossing checked `_cached_levels['utbot_stop_prev']` (bar N-1's stop) — during direction changes these diverge, causing false entries in the wrong direction
+- [x] Fix: V2 gate_map entries now reference `utbot_stop` (same bar's stop as the crossing level), matching TradingView's `ta.crossover(close, trail)` semantics where gate and crossing reference the same bar
+- [x] Fixed backtest same-bar timing: `evaluate_bar_for_backtest()` was computing gate from bar N then running L-type reachability on bar N (same bar), causing entries on nearly every bar where `close <= stop AND high > stop`
+- [x] Fix: Save `prev_gates` and `prev_cached` before `evaluate_bar_close()` overwrites them, use saved values for L-type reachability checks — matches live timing where gate is set at bar N-1's close and crossings happen during bar N
+- [x] UT Bot V2 triggers (`utbot_v2_buy`, `utbot_v2_sell`) confirmed working as L-type with correct buy/sell direction discrimination
+- [x] Backtest selectivity improved: test strategies went from 68 entries (24 level-filled) to 61 entries (all level-filled)
+
+> **Future: Minimum Gate Bars Parameter** — Adding a `min_gate_bars` parameter to L-type triggers that requires price to remain on the opposite side of the level for N consecutive bars before the gate opens. This filters out "flash" crosses where price briefly dips below/above the level for a single bar before reverting. Default of 1 preserves current behavior. Requires counter tracking in TriggerEvaluator + Strategy Builder UI field.
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
@@ -2328,7 +2338,8 @@ Every trigger is classified into one of four execution types. The type is intrin
 5. **Phase 30E** ✅ MTF support + swing stops — all strategy types handled natively by unified engine (6 tests)
 6. **Phase 30F** ✅ live chart migrated to unified engine + open-position entry markers
 7. **Phase 30G** ✅ L0/L1 naming + _prev level bugfix — backtest fill prices now correct for V2 triggers
-8. Existing C-type strategies migrate automatically (trigger classification is additive)
+8. **Phase 30H** ✅ L-type gate timing fix — correct crossover semantics for UT Bot V2 and EMA V2 triggers
+9. Existing C-type strategies migrate automatically (trigger classification is additive)
 9. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 
 ---

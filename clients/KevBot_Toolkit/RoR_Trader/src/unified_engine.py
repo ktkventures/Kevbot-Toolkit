@@ -957,25 +957,26 @@ class TriggerEvaluator:
         Calls evaluate_bar_close() for C-type triggers and interpreters,
         then simulates L-type triggers via gate check + reachability.
 
+        Timing: In live mode, gates are set at bar N-1's close and
+        crossings are checked during bar N (different bars).  To match
+        this, the backtest saves bar N-1's gate and cached levels and
+        uses them for bar N's reachability checks.  H-type triggers
+        (which require a C-type trigger on the same bar) still use the
+        current bar's bar_close_triggers.
+
         Returns:
             (interpreter_states, c_type_triggers, l_type_fills)
             l_type_fills: {trigger_id: fill_price} for L0/L1-type triggers
                 that passed both gate and reachability checks.
         """
+        # Save previous bar's L-type state before evaluate_bar_close
+        # overwrites it.  This matches live timing where the gate is
+        # set at bar N-1's close and crossings happen during bar N.
+        prev_gates = dict(self._ib_gate_open)
+        prev_cached = dict(self._cached_levels)
+
         interps, c_triggers = self.evaluate_bar_close(
             current, prev, prev2_macd_hist)
-
-        # Fix: _update_cached_levels (called by evaluate_bar_close) stores the
-        # current bar's indicator values in _prev cache keys for live mode's
-        # next-bar usage.  In backtest we need the actual previous bar's values
-        # for THIS bar's L-type reachability and fill price.  The indicator
-        # engine already provides correct _prev values in `current`.
-        if 'utbot_stop_prev' in current:
-            self._cached_levels['utbot_stop_prev'] = current['utbot_stop_prev']
-        for period in self.ema_periods:
-            prev_key = f'ema_{period}_prev'
-            if prev_key in current:
-                self._cached_levels[prev_key] = current[prev_key]
 
         l_fills: Dict[str, float] = {}
 
@@ -983,17 +984,23 @@ class TriggerEvaluator:
         high = current.get('high', 0)
         low = current.get('low', 0)
 
+        # Temporarily swap to previous bar's cached levels for crossing
+        # checks (matches live mode where levels are cached at bar N-1
+        # close and used during bar N).
+        current_cached = self._cached_levels
+        self._cached_levels = prev_cached
+
         for trigger_id, (level, direction) in self._get_ib_checks():
             base_trigger = _strip_exec_suffix(trigger_id)
             exec_type = get_trigger_exec_type(trigger_id)
 
-            # Gate check (already computed by evaluate_bar_close)
+            # L-type gate: use PREVIOUS bar's gate (matches live timing)
             if exec_type in ('HM', 'HL') or base_trigger in _IB_L_TYPE_TRIGGERS:
-                # HM/HL always use L-type gate; L-type triggers use L-type gate
-                if not self._ib_gate_open.get(trigger_id, False):
+                if not prev_gates.get(trigger_id, False):
                     continue
             else:
-                # Legacy UT Bot V1 _ib: bar-close trigger must have fired
+                # H-type (legacy UT Bot V1 _ib): bar-close trigger on
+                # THIS bar must have fired
                 if not self._bar_close_triggers.get(base_trigger, False):
                     continue
 
@@ -1002,6 +1009,9 @@ class TriggerEvaluator:
                 l_fills[trigger_id] = level
             elif direction == 'below' and low <= level:
                 l_fills[trigger_id] = level
+
+        # Restore current bar's cached levels for live-mode compatibility
+        self._cached_levels = current_cached
 
         return interps, c_triggers, l_fills
 
@@ -1110,8 +1120,8 @@ class TriggerEvaluator:
             'vwap_enter_lower_extreme':  ('vwap_sd2_lower', 'below'),
             'utbot_buy':                 ('utbot_stop', 'above'),
             'utbot_sell':                ('utbot_stop', 'below'),
-            'utbot_v2_buy':              ('utbot_stop_prev', 'above'),
-            'utbot_v2_sell':             ('utbot_stop_prev', 'below'),
+            'utbot_v2_buy':              ('utbot_stop', 'above'),
+            'utbot_v2_sell':             ('utbot_stop', 'below'),
             'ema_pp_cross_short_up':     (f'ema_{sp}', 'above'),
             'ema_pp_cross_short_down':   (f'ema_{sp}', 'below'),
             'ema_pp_cross_mid_up':       (f'ema_{mp}', 'above'),
