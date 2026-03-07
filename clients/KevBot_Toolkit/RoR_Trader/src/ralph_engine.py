@@ -328,6 +328,9 @@ class StrategyMonitor:
         current = self.indicators.update_bar(bar)
         prev = self.indicators.get_prev_values()
 
+        # 1b. Feed high/low into position buffer (for swing stops/targets)
+        self.position.update_high_low(bar['high'], bar['low'])
+
         # 2. Evaluate triggers
         interps, trigger_bools = self.trigger_eval.evaluate_bar_close(
             current, prev, self.indicators.state.prev2_macd_hist)
@@ -349,15 +352,13 @@ class StrategyMonitor:
                 self._current_confluence |= _evaluate_general_packs(
                     self._general_packs, bar_ts)
 
-        # Use bar_end (bar_start + timeframe - 1s) for bar-close signals
-        # so the timestamp reflects when the bar actually closed.
+        # Use bar_start timestamp for bar-close signals — matches backtest
+        # convention (df.index = bar-start) and chart candle positioning.
         raw_ts = bar.get('timestamp', '')
         if isinstance(raw_ts, str) and raw_ts:
-            bar_end = (datetime.fromisoformat(raw_ts)
-                       + timedelta(seconds=self.tf_seconds - 1))
-            bar_time = bar_end.isoformat()
+            bar_time = raw_ts
         elif isinstance(raw_ts, datetime):
-            bar_time = (raw_ts + timedelta(seconds=self.tf_seconds - 1)).isoformat()
+            bar_time = raw_ts.isoformat()
         else:
             bar_time = ''
 
@@ -365,7 +366,7 @@ class StrategyMonitor:
         if self.position.state.pending_hm_exit:
             exit_sig = self.position._signal_exit(
                 'unconfirmed_hm', bar.get('open', current.get('open', 0)),
-                bar_time)
+                bar_time, bar_count)
             exit_sig['atr'] = current.get('atr', 0)
             signals.append(exit_sig)
 
@@ -415,6 +416,7 @@ class StrategyMonitor:
         exit_sig = self.position.check_exit_tick(price, timestamp)
         if exit_sig:
             exit_sig['atr'] = self.indicators.state.current.get('atr', 0)
+            self.position.state.last_exit_bar_count = bar_count
             signals.append(exit_sig)
             return signals
 
@@ -427,6 +429,7 @@ class StrategyMonitor:
                 ib_trigger, fill_price, timestamp)
             if exit_sig:
                 exit_sig['atr'] = self.indicators.state.current.get('atr', 0)
+                self.position.state.last_exit_bar_count = bar_count
                 signals.append(exit_sig)
             else:
                 # Check if it's an entry trigger
@@ -775,6 +778,23 @@ class RalphEngine:
 
         # Load warmup data and initialize indicators
         self._warmup_all()
+
+        # Rebase entry_bar_count for restored positions.  After restart
+        # the bar_count counter starts fresh from warmup length, so the
+        # old session's entry_bar_count is meaningless.  Reset it to the
+        # current bar_count so bar_count_exit counts from now.
+        for sym, hub in self.hubs.items():
+            for tf_seconds, builder in hub.builders.items():
+                cur_bc = builder._bar_count
+                for monitor in hub.monitors.values():
+                    if (monitor.tf_seconds == tf_seconds and
+                            monitor.position.state.status == 'IN_POSITION'):
+                        old_ebc = monitor.position.state.entry_bar_count
+                        if old_ebc > cur_bc:
+                            monitor.position.state.entry_bar_count = cur_bc
+                            logger.info(
+                                "Rebased entry_bar_count for %s: %d → %d",
+                                monitor.strat_name, old_ebc, cur_bc)
 
         # For strategies with no saved position state, attempt to
         # determine current position by running generate_trades() on

@@ -721,7 +721,8 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
 
 
 def _unified_trades(df: pd.DataFrame, strategy: dict,
-                    include_open_position: bool = True) -> pd.DataFrame:
+                    include_open_position: bool = True,
+                    last_bar_partial: bool = False) -> pd.DataFrame:
     """Trade generation via unified engine with MTF support.
 
     Args:
@@ -730,6 +731,9 @@ def _unified_trades(df: pd.DataFrame, strategy: dict,
         strategy: Strategy config dict (saved format OR builder format).
         include_open_position: If True, include a synthetic row for any
             open position at end of data (for chart entry markers).
+        last_bar_partial: If True, the last bar in df is still forming.
+            Entry/exit signals are suppressed on that bar to prevent
+            premature chart markers.
 
     Returns:
         trades_df matching generate_trades() schema.
@@ -747,7 +751,8 @@ def _unified_trades(df: pd.DataFrame, strategy: dict,
         trades_df, _ = run_unified_backtest(
             df, strategy, general_packs=enabled_gen,
             secondary_tf_map=sec_tf_map if sec_tf_map else None,
-            include_open_position=include_open_position)
+            include_open_position=include_open_position,
+            last_bar_partial=last_bar_partial)
     except Exception as exc:
         _logger.warning("unified engine failed (%s), falling back", exc)
         confluence_set = (
@@ -2144,6 +2149,7 @@ def analyze_entry_triggers(
     target_config: dict = None, confluence_required: set = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """For each available entry trigger, generate trades with current strategy config and compute KPIs."""
     entry_triggers = get_confluence_entry_triggers(direction, groups)
@@ -2155,24 +2161,25 @@ def analyze_entry_triggers(
     if not effective_exit_triggers and effective_bar_count is None:
         effective_bar_count = 4  # fallback default
 
-    enabled_interp_keys = get_enabled_interpreter_keys(groups)
-    _stf = get_secondary_tf_map(df) or None
-
     results = []
     for trig_cid, trig_name in entry_triggers.items():
         base_id = get_base_trigger_id(trig_cid)
         tdef = all_trigger_defs.get(trig_cid)
-        trades = generate_trades(
-            df, direction=direction, entry_trigger=base_id,
-            exit_triggers=effective_exit_triggers,
-            bar_count_exit=effective_bar_count,
-            confluence_required=confluence_required,
-            risk_per_trade=risk_per_trade, stop_config=stop_config,
-            target_config=target_config,
-            general_columns=general_columns,
-            enabled_interpreter_keys=enabled_interp_keys,
-            secondary_tf_map=_stf,
-        )
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_id,
+            'entry_trigger_confluence_id': trig_cid,
+            'exit_triggers': effective_exit_triggers,
+            'bar_count_exit': effective_bar_count,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': stop_config,
+            'target_config': target_config,
+        })
+        if confluence_required:
+            synth['confluence'] = list(confluence_required)
+        trades = _unified_trades(df, synth, include_open_position=False)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -2201,13 +2208,12 @@ def analyze_exit_triggers(
     stop_config: dict = None, target_config: dict = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """For each available exit trigger, generate trades with current entry and compute KPIs."""
     exit_triggers = get_confluence_exit_triggers(groups)
     all_trigger_defs = get_all_triggers(groups)
     base_entry = get_base_trigger_id(entry_trigger_confluence_id)
-    enabled_interp_keys = get_enabled_interpreter_keys(groups)
-    _stf = get_secondary_tf_map(df) or None
     results = []
 
     for trig_cid, trig_name in exit_triggers.items():
@@ -2222,27 +2228,26 @@ def analyze_exit_triggers(
                 is_bar_count = True
                 break
 
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_entry,
+            'entry_trigger_confluence_id': entry_trigger_confluence_id,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': stop_config,
+            'target_config': target_config,
+        })
+
         if is_bar_count:
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=[], bar_count_exit=bar_count_val,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config,
-                general_columns=general_columns,
-                enabled_interpreter_keys=enabled_interp_keys,
-                secondary_tf_map=_stf,
-            )
+            synth['exit_triggers'] = []
+            synth['bar_count_exit'] = bar_count_val
         else:
             base_exit = get_base_trigger_id(trig_cid)
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=[base_exit], bar_count_exit=None,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config,
-                general_columns=general_columns,
-                enabled_interpreter_keys=enabled_interp_keys,
-                secondary_tf_map=_stf,
-            )
+            synth['exit_triggers'] = [base_exit]
+            synth['bar_count_exit'] = None
+
+        trades = _unified_trades(df, synth, include_open_position=False)
 
         if len(trades) == 0:
             continue
@@ -2272,6 +2277,7 @@ def find_best_exit_combinations(
     risk_per_trade: float = 100.0, stop_config: dict = None,
     target_config: dict = None, starting_balance: float = 10000.0,
     total_trading_days: int = None, general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """Find the best exit trigger combinations (1-3 triggers) automatically."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -2299,9 +2305,6 @@ def find_best_exit_combinations(
                           'name': exit_triggers[cid],
                           'name_with_badge': f"{_badge} {exit_triggers[cid]}"}
 
-    enabled_interp_keys = get_enabled_interpreter_keys(groups)
-    _stf = get_secondary_tf_map(df) or None
-
     results = []
     for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
         for combo in combinations(all_cids, depth):
@@ -2315,14 +2318,20 @@ def find_best_exit_combinations(
             bar_count_exit_val = exit_info[bar_count_exits[0]]['bar_count_val'] if bar_count_exits else None
             signal_base_ids = [get_base_trigger_id(c) for c in signal_exits]
 
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=signal_base_ids, bar_count_exit=bar_count_exit_val,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config, general_columns=general_columns,
-                enabled_interpreter_keys=enabled_interp_keys,
-                secondary_tf_map=_stf,
-            )
+            # Build synthetic strategy dict for unified engine
+            synth = dict(base_strategy) if base_strategy else {}
+            synth.update({
+                'direction': direction,
+                'entry_trigger': base_entry,
+                'entry_trigger_confluence_id': entry_trigger_confluence_id,
+                'exit_triggers': signal_base_ids,
+                'bar_count_exit': bar_count_exit_val,
+                'risk_per_trade': risk_per_trade,
+                'stop_config': stop_config,
+                'target_config': target_config,
+            })
+
+            trades = _unified_trades(df, synth, include_open_position=False)
 
             if len(trades) < min_trades:
                 continue
@@ -2355,6 +2364,7 @@ def analyze_risk_management(
     mode: str = "stop",
     base_stop_config: dict = None, base_target_config: dict = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """
     For each enabled Risk Management Pack, generate trades varying either
@@ -2385,9 +2395,6 @@ def analyze_risk_management(
     if bar_count_exit and bar_count_val is None:
         bar_count_val = bar_count_exit
 
-    enabled_interp_keys = get_enabled_interpreter_keys(groups)
-    _stf = get_secondary_tf_map(df) or None
-
     results = []
 
     for pack in enabled_packs:
@@ -2398,16 +2405,22 @@ def analyze_risk_management(
             sc = base_stop_config
             tc = pack.get_target_config()
 
-        trades = generate_trades(
-            df, direction=direction, entry_trigger=base_entry,
-            exit_triggers=base_exits if base_exits else None,
-            bar_count_exit=bar_count_val,
-            risk_per_trade=risk_per_trade, stop_config=sc,
-            target_config=tc, confluence_required=confluence_required,
-            general_columns=general_columns,
-            enabled_interpreter_keys=enabled_interp_keys,
-            secondary_tf_map=_stf,
-        )
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_entry,
+            'entry_trigger_confluence_id': entry_trigger,
+            'exit_triggers': base_exits if base_exits else [],
+            'bar_count_exit': bar_count_val,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': sc,
+            'target_config': tc,
+        })
+        if confluence_required:
+            synth['confluence'] = list(confluence_required)
+
+        trades = _unified_trades(df, synth, include_open_position=False)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -2670,7 +2683,9 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
 
     # Run unified engine on recent data — same engine used by all other charts
-    trades = _unified_trades(df_for_trades, strat)
+    # last_bar_partial=True suppresses bar-close signals on the current
+    # forming candle so markers don't appear prematurely.
+    trades = _unified_trades(df_for_trades, strat, last_bar_partial=True)
 
     # Show last 100 candles (about 1.5 hours for 1-min bars)
     visible = min(100, len(df_live))
@@ -2923,8 +2938,10 @@ def render_price_chart(
                 # Only match trades within visible window
                 for _, trade in trades.iterrows():
                     entry_ts = _to_chart_unix(trade['entry_time'])
-                    exit_ts = _to_chart_unix(trade['exit_time'])
-                    if exit_ts < min_time:
+                    is_open = pd.isna(trade.get('exit_time'))
+                    exit_ts = 0 if is_open else _to_chart_unix(trade['exit_time'])
+                    # Skip closed trades entirely before visible window
+                    if not is_open and exit_ts < min_time:
                         continue
                     # Match entry alert
                     if entry_ts >= min_time:
@@ -2932,8 +2949,8 @@ def render_price_chart(
                             if abs(a_ts - entry_ts) <= tf_sec * 2:
                                 alert_entry_data.append({"time": int(entry_ts), "value": a_price})
                                 break
-                    # Match exit alert
-                    if exit_ts >= min_time:
+                    # Match exit alert (closed trades only)
+                    if not is_open and exit_ts >= min_time:
                         for a_ts, a_price in exit_alerts_parsed:
                             if abs(a_ts - exit_ts) <= tf_sec * 2:
                                 alert_exit_data.append({"time": int(exit_ts), "value": a_price})
@@ -4671,6 +4688,8 @@ def render_strategy_builder():
             st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
             trades = _unified_trades(df, config)
 
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+
         # Apply confluence filter
         selected = st.session_state.selected_confluences
         if len(selected) > 0 and len(trades) > 0:
@@ -5053,7 +5072,7 @@ def render_strategy_builder():
                         confluence_required=confluence_set,
                         starting_balance=starting_balance,
                         total_trading_days=period_trading_days,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.entry_trigger_results = entry_results
 
@@ -5169,7 +5188,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
-                            general_columns=general_cols,
+                            base_strategy=config,
                         )
                     st.session_state.exit_trigger_results = exit_results
 
@@ -5228,7 +5247,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
-                            general_columns=general_cols,
+                            base_strategy=config,
                         )
                     if len(best_exits) > 0:
                         st.session_state.auto_exit_results = best_exits
@@ -5523,7 +5542,7 @@ def render_strategy_builder():
                         mode="stop",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.sl_results = sl_results
 
@@ -5603,7 +5622,7 @@ def render_strategy_builder():
                         mode="target",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.tp_results = tp_results
 

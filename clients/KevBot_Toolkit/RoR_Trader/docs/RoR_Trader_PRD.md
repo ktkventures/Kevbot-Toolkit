@@ -2053,7 +2053,7 @@ Additionally, v2 `_prev` cached levels (EMA and UT Bot) were corrected to cache 
 
 **Additional fixes (2026-03-04):**
 - [x] Alert history table timing — switched from `bar_time` (candle open) to `timestamp` (actual dispatch time) so times match the Alerts tab
-- [x] Bar-close signal timestamps — `on_bar_close()` now reports `bar_start + timeframe - 1s` as `bar_time` so bar-close events reflect when the bar actually closed, not when it opened
+- [x] Bar-close signal timestamps — `on_bar_close()` now uses raw `bar_start` timestamp (matching backtest's `df.index = bar-start` convention and chart candle positioning). Originally set to `bar_start + timeframe - 1s` but reverted in Phase 30I QA to eliminate timestamp offset between alert markers and backtest markers.
 - [x] Alerts.json race condition — added `threading.Lock` around all read-modify-write cycles in `alerts.py`; tmp files use unique names (`{pid}.{thread_id}`); `deliver_alert()` in `alert_monitor.py` uses new `update_alert()` helper instead of raw load/modify/save
 
 **IPC Files (runtime, gitignored):**
@@ -2069,16 +2069,17 @@ Additionally, v2 `_prev` cached levels (EMA and UT Bot) were corrected to cache 
 - `python ralph_engine.py --stop` — send SIGTERM to running engine
 - `python ralph_engine.py --dry-run` — validate config without connecting
 
-**Verification (in progress — live market testing started 2026-03-03):**
+**Verification (live market testing — started 2026-03-03, QA session 2026-03-06):**
 1. [x] Start engine during RTH or extended hours with SIP feed
 2. [x] Confirm WebSocket connects and ticks arrive (tick_count > 0 in status)
 3. [x] Watch bar building and indicator updates in log
 4. [x] Verify alerts fire on trigger transitions with correct confluence matching
 5. [x] Confirm Live Chart tab renders from pickle data with full indicator overlay
-6. [ ] Check fidelity audit log for acceptable drift levels
-7. [ ] Verify UT Bot intra-bar triggers only fire after bar-close direction flip confirmation
-8. [ ] Compare live chart candle ranges to backtest — confirm trade condition filtering eliminates false spikes
-9. [ ] End-to-end alert lifecycle: entry alert → position tracking → exit alert → paired in Alert History table
+6. [x] End-to-end alert lifecycle: entry alert → position tracking → exit alert → paired in Alert History table (verified 2026-03-06)
+7. [x] L-type entry markers (× and +) align within acceptable tolerance — verified 2026-03-06
+8. [ ] Check fidelity audit log for acceptable drift levels
+9. [ ] Compare live chart candle ranges to backtest — confirm trade condition filtering eliminates false spikes
+10. [x] Bar-count exit markers show expected slippage from WebSocket vs REST close price drift (see Phase 30I analysis)
 
 ---
 
@@ -2121,9 +2122,9 @@ Every trigger is classified into one of three execution types:
 - [ ] Consider default of 0 (no cooldown) with explicit opt-in
 
 #### Phase D: Advanced Execution Modes (Future)
-- [ ] **Sub-timeframe candle confirmation** — Evaluate triggers on smaller timeframe bars (e.g., 10-second) while using higher timeframes for context via existing MTF confluence infrastructure. Requires data provider upgrade (Databento or Polygon for sub-minute historical data).
+- [ ] **Sub-timeframe candle confirmation** — Evaluate triggers on smaller timeframe bars (e.g., 10-second) while using higher timeframes for context via existing MTF confluence infrastructure. Requires data provider upgrade (Polygon/Massive for sub-minute historical data).
 - [ ] **Flicker guard** — Probationary entry with tight intra-candle stop at the cross level; if price wicks back below before bar close, exit at small loss. After bar close confirms, move to real strategy stop. Complex — touches webhooks, position tracking, and alert lifecycle.
-- [ ] **Data provider upgrade** — Replace or supplement Alpaca with Polygon/Massiv for tick-level and sub-minute historical data to support sub-timeframe confirmation and more accurate backtest fills.
+- [x] **Data provider upgrade decision (2026-03-06)** — Decided to migrate from Alpaca market data to Polygon.io/Massive for pre-aggregated WebSocket bars. See Phase 31 for implementation plan.
 
 #### Long-Term Architecture: Unified Chart/Engine Convergence
 
@@ -2329,6 +2330,33 @@ Every trigger is classified into one of four execution types. The type is intrin
 
 > **Future: Minimum Gate Bars Parameter** — Adding a `min_gate_bars` parameter to L-type triggers that requires price to remain on the opposite side of the level for N consecutive bars before the gate opens. This filters out "flash" crosses where price briefly dips below/above the level for a single bar before reverting. Default of 1 preserves current behavior. Requires counter tracking in TriggerEvaluator + Strategy Builder UI field.
 
+##### Phase 30I: Live QA Hardening — COMPLETED 2026-03-06
+Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-bar count exit, 5-bar swing stop) uncovered and fixed multiple backtest–live parity issues:
+
+- [x] **Alert timestamp alignment** — `on_bar_close()` in ralph_engine was using `bar_start + tf_seconds - 1` (bar-end) for alert timestamps; backtest uses `bar_start` (bar-open). Fixed: alerts now use raw bar_start timestamp, matching backtest convention and chart candle positioning.
+- [x] **Swing stop buffer population** — `update_high_low()` was called in backtest `process_bar()` but never in ralph_engine's `on_bar_close()`, causing swing stops to fall back to ATR × 1.5 in live. Fixed: added `update_high_low(bar['high'], bar['low'])` call after `update_bar()`.
+- [x] **Entry bar count rebase** — After engine restart, `_bar_count` resets from warmup length (~200) but restored `entry_bar_count` from old session (e.g., 4764) made bar_count_exit impossible. Fixed: after warmup, rebases any restored position's `entry_bar_count` to current `_bar_count` if the old value exceeds it.
+- [x] **Open trade alert matching** — `_to_chart_unix(None)` for open trades (exit_time=None) caused them to be skipped in the alert marker matching loop. Fixed with `is_open` guard.
+- [x] **Partial bar suppression (C-type only)** — Live chart runs backtest on pickle data including a still-forming candle. Originally suppressed ALL signals on partial bars; corrected to only suppress C-type triggers and bar_count_exit. L-type signals still fire on partial bars since they represent real intra-bar level crosses.
+- [x] **Same-bar L-type stop/target guard** — Bar-close exit check uses full bar OHLC, but for L-type entries mid-bar, the bar's open/low from BEFORE entry creates false stop triggers with incorrect gap-aware fills. Fixed: `same_bar_ltype` guard skips OHLC-based stop/target checks on the entry bar for L-type entries (both backtest `check_exit()` and live `check_exit_bar_close()`).
+- [x] **1-bar cooldown** — Prevents re-entry on the same bar as exit, reducing whipsaw trades from rapid exit→re-entry sequences. Added `last_exit_bar_count` field to `PositionState`; both `check_entry()` and `check_entry_intrabar()` skip if `last_exit_bar_count >= bar_count`. Preserved across `_reset_position()`.
+- [x] **L-type entry ATR parity** — Backtest was using current bar's ATR for L-type entry stop computation; live only has previous bar's ATR since current bar hasn't closed. Fixed: backtest uses `prev_values` for L-type stop/target computation, matching live behaviour.
+- [x] **`last_exit_bar_count` propagation in live path** — `_signal_exit()` accepts optional `bar_count` parameter; `check_exit_bar_close()` passes it for all exit types. Tick-level exits (`check_exit_tick()`, `check_exit_intrabar()`) record via caller (`on_tick()` in ralph_engine).
+
+**Live QA findings — alert vs backtest exit price drift:**
+- L-type entry markers (× and +) align closely because both systems price off computed indicator levels
+- C-type exit markers (bar_count_exit) show sporadic price drift (~$0.05–$0.20) because:
+  - Alert × uses WebSocket-aggregated close (real-time, from BarBuilder)
+  - Backtest + uses REST API-reconciled close (retrospective, from `_reconcile_bars()` every 60s)
+  - These are fundamentally different data sources for the bar's close price
+- This is inherent to tick-stream bar building and cannot be fully eliminated without switching to pre-aggregated bars
+- **Decision: Migrate to Polygon.io/Massive** for pre-aggregated WebSocket bars (per-second and per-minute), eliminating the bar-building parity problem entirely. See Phase 31.
+
+**Strategy Builder analyzer migration (2026-03-06):**
+- [x] Migrated all 4 strategy builder analyzer functions from `generate_trades()` (batch pipeline) to `_unified_trades()` (unified engine): `analyze_entry_triggers()`, `analyze_exit_triggers()`, `find_best_exit_combinations()`, `analyze_risk_management()`
+- [x] Each analyzer builds a synthetic strategy dict with the varied parameter and delegates to `_unified_trades()`, ensuring Entry/Exit/Stop Loss/Take Profit card KPIs match the top-level strategy KPIs exactly
+- [x] Fixed `UnboundLocalError` for `general_cols` in non-webhook strategy builder path
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
@@ -2339,8 +2367,41 @@ Every trigger is classified into one of four execution types. The type is intrin
 6. **Phase 30F** ✅ live chart migrated to unified engine + open-position entry markers
 7. **Phase 30G** ✅ L0/L1 naming + _prev level bugfix — backtest fill prices now correct for V2 triggers
 8. **Phase 30H** ✅ L-type gate timing fix — correct crossover semantics for UT Bot V2 and EMA V2 triggers
-9. Existing C-type strategies migrate automatically (trigger classification is additive)
-9. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
+9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity
+10. Existing C-type strategies migrate automatically (trigger classification is additive)
+11. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
+
+---
+
+### Phase 31: Data Provider Migration — Polygon.io/Massive
+
+**Goal:** Replace Alpaca's tick-level WebSocket feed with Polygon.io's pre-aggregated bar WebSocket, eliminating bar-building parity issues and unlocking sub-minute historical data for backtesting.
+
+**Motivation (2026-03-06):** Live QA (Phase 30I) confirmed that building OHLCV bars from raw WebSocket ticks produces close prices that drift from official bar data. This causes visible slippage between alert markers (real-time WebSocket close) and backtest markers (REST API-reconciled close) on bar-close exits. The drift is inherent to tick-stream bar building and cannot be fully eliminated with filtering alone. Polygon.io streams pre-aggregated bars computed server-side with proper CTA/UTP rules, guaranteeing WebSocket/REST parity.
+
+**Key Benefits:**
+- **WebSocket/REST bar parity** — Pre-aggregated bars from the WebSocket match historical REST API bars exactly (same aggregation engine), eliminating the close-price drift observed with tick-built bars
+- **Per-second bars** — WebSocket streams per-second and per-minute aggregated OHLCV, enabling sub-minute granularity for L-type trigger detection without raw tick processing
+- **Sub-minute historical data** — REST API supports custom aggregate windows (e.g., 10-second, 30-second bars historically), enabling more precise backtesting of L-type strategies
+- **Simplified BarBuilder** — No longer need to aggregate ticks into bars; receive complete OHLCV bars directly. Eliminates `EXCLUDED_TRADE_CONDITIONS` filtering, `_reconcile_bars()`, and associated drift
+- **CTA/UTP compliance by construction** — Polygon applies the full 3-tier update rules (update all / update H/L+V only / update V only) server-side; current implementation uses binary include/exclude which misses partial-update conditions
+
+**Architecture:**
+- Alpaca remains the **broker** for order execution (no change to trading infrastructure)
+- Polygon.io becomes the **market data provider** for both live WebSocket bars and historical REST API data
+- `data_loader.py` — Replace Alpaca REST calls with Polygon REST calls for historical bars; add sub-minute timeframe support
+- `ralph_engine.py` — Replace Alpaca WebSocket trade subscription + BarBuilder with Polygon WebSocket bar subscription; `on_bar_close()` receives completed bars directly
+- `BarBuilder` — Simplified to buffer incoming bar events (no tick aggregation); gap-filling logic retained for missing bars
+- Tick-level processing retained optionally for L-type intra-bar detection via Polygon's trade WebSocket (if per-second bars prove insufficient for trigger precision)
+
+**Pricing:** Polygon.io Advanced plan ($199/mo) includes WebSocket streaming + unlimited REST API. Starter ($29/mo) may suffice for REST-only historical data during development.
+
+**Implementation Phases (not yet started):**
+- [ ] **31A:** Polygon REST integration in `data_loader.py` — historical bars with sub-minute support; parallel to existing Alpaca calls for validation
+- [ ] **31B:** Polygon WebSocket integration in `ralph_engine.py` — replace Alpaca trade stream + BarBuilder with Polygon per-minute bar stream
+- [ ] **31C:** Per-second bar support — subscribe to Polygon per-second bars for L-type intra-bar trigger detection; evaluate whether this replaces tick-level processing
+- [ ] **31D:** Remove Alpaca market data dependencies — drop `alpaca-py` data subscriptions, `EXCLUDED_TRADE_CONDITIONS`, `_reconcile_bars()`, tick-based BarBuilder logic
+- [ ] **31E:** Sub-minute backtesting — expose 10-second/30-second timeframes in Strategy Builder; update unified engine to handle sub-minute bar data
 
 ---
 

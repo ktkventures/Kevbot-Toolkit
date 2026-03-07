@@ -1260,6 +1260,7 @@ class PositionState:
     initial_stop_price: float = 0.0
     target_price: Optional[float] = None
     entry_bar_count: int = 0
+    last_exit_bar_count: int = 0
     direction: str = 'LONG'
     entry_trigger: str = ''
     confluence_records: Optional[set] = None
@@ -1276,6 +1277,7 @@ class PositionState:
             'initial_stop_price': self.initial_stop_price,
             'target_price': self.target_price,
             'entry_bar_count': self.entry_bar_count,
+            'last_exit_bar_count': self.last_exit_bar_count,
             'direction': self.direction,
             'entry_trigger': self.entry_trigger,
             'exec_type': self.exec_type,
@@ -1293,6 +1295,7 @@ class PositionState:
             initial_stop_price=d.get('initial_stop_price', 0.0),
             target_price=d.get('target_price'),
             entry_bar_count=d.get('entry_bar_count', 0),
+            last_exit_bar_count=d.get('last_exit_bar_count', 0),
             direction=d.get('direction', 'LONG'),
             entry_trigger=d.get('entry_trigger', ''),
             exec_type=d.get('exec_type', 'C'),
@@ -1350,15 +1353,23 @@ class PositionStateMachine:
                     bar_count: int, bar_time: str,
                     confluence_records: Set[str] = None,
                     l_type_fills: Dict[str, float] = None,
+                    prev_values: Dict[str, float] = None,
                     ) -> Optional[dict]:
         """Check for entry signal (C-type or L-type).
 
         For L-type triggers, checks l_type_fills dict.
         For C-type triggers, checks trigger_booleans dict.
+        prev_values: Previous bar's indicator values.  Used for L-type
+            stop/target computation to match live behaviour (intra-bar
+            entries don't have the current bar's indicators yet).
 
         Returns signal dict or None.
         """
         if self.state.status != 'FLAT':
+            return None
+
+        # 1-bar cooldown: don't re-enter on the same bar we exited
+        if self.state.last_exit_bar_count >= bar_count:
             return None
 
         trigger_id = self.entry_trigger
@@ -1366,10 +1377,12 @@ class PositionStateMachine:
 
         # Determine if trigger fired and fill price
         fill_price = None
+        is_ltype = False
 
         if exec_type in (_L_TYPES | {'HM', 'HL'}) and l_type_fills:
             if trigger_id in l_type_fills:
                 fill_price = l_type_fills[trigger_id]
+                is_ltype = True
         if fill_price is None:
             # C-type check (or L-type bar-close fallback)
             base_trigger = _strip_exec_suffix(trigger_id)
@@ -1385,13 +1398,18 @@ class PositionStateMachine:
             if not self.confluence_set.issubset(confluence_records):
                 return None
 
-        atr = current_values.get('atr', fill_price * 0.01)
+        # For L-type entries, use previous bar's indicator values for
+        # stop/target computation — matches live engine behaviour where
+        # the current bar hasn't closed yet at time of intra-bar entry.
+        vals_for_stop = (prev_values if is_ltype and prev_values
+                         else current_values)
+        atr = vals_for_stop.get('atr', fill_price * 0.01)
         if not atr or atr <= 0:
             atr = fill_price * 0.01
 
-        stop_price = self._compute_stop(fill_price, atr, current_values)
+        stop_price = self._compute_stop(fill_price, atr, vals_for_stop)
         target_price = self._compute_target(fill_price, stop_price, atr,
-                                            current_values)
+                                            vals_for_stop)
 
         self.state.status = 'IN_POSITION'
         self.state.entry_price = fill_price
@@ -1418,10 +1436,12 @@ class PositionStateMachine:
                    current_values: Dict[str, float],
                    bar_count: int, bar_time: str,
                    l_type_fills: Dict[str, float] = None,
+                   suppress_bar_count: bool = False,
                    ) -> Optional[dict]:
         """Check for exit on bar close. Returns signal dict or None.
 
         Priority: stop > target > signal exit (C-type + L-type) > bar count.
+        suppress_bar_count: If True, skip bar_count_exit (partial bar).
         """
         if self.state.status != 'IN_POSITION':
             return None
@@ -1432,33 +1452,48 @@ class PositionStateMachine:
         bar_open = current_values.get('open', close)
         direction = self.state.direction
 
+        # For L-type entries on the same bar, skip OHLC-based stop/target
+        # checks.  The bar's low/high includes price action from before
+        # the entry, which would create false triggers.  In live, tick-
+        # level checks handle intra-bar stops correctly.
+        same_bar_ltype = (
+            self.state.entry_bar_count == bar_count and
+            self.state.exec_type in _L_TYPES)
+
         # Update trailing/breakeven stop before checking
         self._update_stop(current_values)
 
         # Priority 1: Stop loss (gap-aware)
-        if self.state.stop_price:
+        # Skipped on entry bar for L-type (pre-entry OHLC is unreliable)
+        if self.state.stop_price and not same_bar_ltype:
             if direction == 'LONG' and low <= self.state.stop_price:
                 fill = min(self.state.stop_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('stop_loss', fill, bar_time)
             elif direction == 'SHORT' and high >= self.state.stop_price:
                 fill = max(self.state.stop_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('stop_loss', fill, bar_time)
 
         # Priority 2: HL limit exit at entry price (unconfirmed HL trade)
         if self.state.pending_hl_limit:
             ep = self.state.entry_price
             if direction == 'LONG' and high >= ep:
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('unconfirmed_hl', ep, bar_time)
             elif direction == 'SHORT' and low <= ep:
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('unconfirmed_hl', ep, bar_time)
 
-        # Priority 3: Target
-        if self.state.target_price:
+        # Priority 3: Target (also skipped on entry bar for L-type)
+        if self.state.target_price and not same_bar_ltype:
             if direction == 'LONG' and high >= self.state.target_price:
                 fill = max(self.state.target_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('target', fill, bar_time)
             elif direction == 'SHORT' and low <= self.state.target_price:
                 fill = min(self.state.target_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('target', fill, bar_time)
 
         # Priority 3: Signal exit (C-type booleans + L-type fills)
@@ -1466,16 +1501,19 @@ class PositionStateMachine:
             base_et = _strip_exec_suffix(et)
             # L-type exit
             if l_type_fills and et in l_type_fills:
+                self.state.last_exit_bar_count = bar_count
                 return self._exit(et, l_type_fills[et], bar_time)
             # C-type exit
             if trigger_booleans.get(et, False) or \
                trigger_booleans.get(base_et, False):
+                self.state.last_exit_bar_count = bar_count
                 return self._exit(et, close, bar_time)
 
-        # Priority 4: Bar count exit
-        if self.bar_count_exit is not None:
+        # Priority 4: Bar count exit (suppressed on partial bars)
+        if self.bar_count_exit is not None and not suppress_bar_count:
             bars_held = bar_count - self.state.entry_bar_count
             if bars_held >= self.bar_count_exit:
+                self.state.last_exit_bar_count = bar_count
                 return self._exit('bar_count_exit', close, bar_time)
 
         return None
@@ -1516,7 +1554,10 @@ class PositionStateMachine:
         }
 
     def _reset_position(self):
-        """Reset all position state fields to FLAT defaults."""
+        """Reset all position state fields to FLAT defaults.
+
+        Preserves last_exit_bar_count for 1-bar cooldown enforcement.
+        """
         self.state.status = 'FLAT'
         self.state.entry_price = 0.0
         self.state.entry_time = None
@@ -1527,6 +1568,7 @@ class PositionStateMachine:
         self.state.exec_type = 'C'
         self.state.pending_hm_exit = False
         self.state.pending_hl_limit = False
+        # last_exit_bar_count intentionally preserved for cooldown
 
     def _exit(self, reason: str, price: float, bar_time) -> dict:
         """Execute exit transition and return trade record (backtest path)."""
@@ -1535,8 +1577,10 @@ class PositionStateMachine:
         return record
 
     def _signal_exit(self, reason: str, price: float,
-                     timestamp: str) -> dict:
+                     timestamp: str, bar_count: int = None) -> dict:
         """Build signal dict for live alert dispatch and reset state."""
+        if bar_count is not None:
+            self.state.last_exit_bar_count = bar_count
         sig = {
             'type': 'exit_signal',
             'trigger': reason,
@@ -1560,6 +1604,10 @@ class PositionStateMachine:
         if self.state.status != 'FLAT':
             return None
         if trigger_id != self.entry_trigger:
+            return None
+
+        # 1-bar cooldown: don't re-enter on the same bar we exited
+        if self.state.last_exit_bar_count >= bar_count:
             return None
 
         # Confluence check
@@ -1661,46 +1709,61 @@ class PositionStateMachine:
         bar_open = current_values.get('open', close)
         direction = self.state.direction
 
+        # For L-type entries on the same bar, skip OHLC-based stop/target
+        # checks.  The bar's low/high includes price action from before
+        # the entry, which would create false triggers.
+        same_bar_ltype = (
+            self.state.entry_bar_count == bar_count and
+            self.state.exec_type in _L_TYPES)
+
         self._update_stop(current_values)
 
         # Priority 1: Stop loss (gap-aware)
-        if self.state.stop_price:
+        # Skipped on entry bar for L-type (pre-entry OHLC is unreliable)
+        if self.state.stop_price and not same_bar_ltype:
             if direction == 'LONG' and low <= self.state.stop_price:
                 fill = min(self.state.stop_price, bar_open)
-                return self._signal_exit('stop_loss', fill, bar_time)
+                return self._signal_exit(
+                    'stop_loss', fill, bar_time, bar_count)
             elif direction == 'SHORT' and high >= self.state.stop_price:
                 fill = max(self.state.stop_price, bar_open)
-                return self._signal_exit('stop_loss', fill, bar_time)
+                return self._signal_exit(
+                    'stop_loss', fill, bar_time, bar_count)
 
         # Priority 2: HL limit exit at entry price
         if self.state.pending_hl_limit:
             ep = self.state.entry_price
             if direction == 'LONG' and high >= ep:
-                return self._signal_exit('unconfirmed_hl', ep, bar_time)
+                return self._signal_exit(
+                    'unconfirmed_hl', ep, bar_time, bar_count)
             elif direction == 'SHORT' and low <= ep:
-                return self._signal_exit('unconfirmed_hl', ep, bar_time)
+                return self._signal_exit(
+                    'unconfirmed_hl', ep, bar_time, bar_count)
 
-        # Priority 3: Target
-        if self.state.target_price:
+        # Priority 3: Target (also skipped on entry bar for L-type)
+        if self.state.target_price and not same_bar_ltype:
             if direction == 'LONG' and high >= self.state.target_price:
                 fill = max(self.state.target_price, bar_open)
-                return self._signal_exit('target', fill, bar_time)
+                return self._signal_exit(
+                    'target', fill, bar_time, bar_count)
             elif direction == 'SHORT' and low <= self.state.target_price:
                 fill = min(self.state.target_price, bar_open)
-                return self._signal_exit('target', fill, bar_time)
+                return self._signal_exit(
+                    'target', fill, bar_time, bar_count)
 
         # Priority 4: Signal exit
         for et in self.exit_triggers:
             base_et = _strip_exec_suffix(et)
             if trigger_booleans.get(et, False) or \
                trigger_booleans.get(base_et, False):
-                return self._signal_exit(et, close, bar_time)
+                return self._signal_exit(et, close, bar_time, bar_count)
 
         # Priority 5: Bar count exit
         if self.bar_count_exit is not None:
             bars_held = bar_count - self.state.entry_bar_count
             if bars_held >= self.bar_count_exit:
-                return self._signal_exit('bar_count_exit', close, bar_time)
+                return self._signal_exit(
+                    'bar_count_exit', close, bar_time, bar_count)
 
         return None
 
@@ -1890,6 +1953,7 @@ class UnifiedStrategy:
         self._interpreter_keys = list(req_interp)
 
     def process_bar(self, bar: dict, mtf_records: Set[str] = None,
+                    partial: bool = False,
                     ) -> Tuple[List[dict], Dict[str, float],
                                Dict[str, str], Dict[str, bool]]:
         """Process one completed bar.
@@ -1898,6 +1962,9 @@ class UnifiedStrategy:
             bar: {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
             mtf_records: Optional set of multi-timeframe confluence records
                 from pre-computed columns (e.g. '5m-EMA_STACK-FULL_BULL_STACK').
+            partial: If True, this bar is still forming (live chart).
+                Only L-type (intra-bar) signals are evaluated; bar-close
+                entries/exits (C-type, bar_count_exit) are suppressed.
 
         Returns:
             (trade_records, indicator_values, interpreter_states, trigger_bools)
@@ -1941,8 +2008,14 @@ class UnifiedStrategy:
             gp_records = _evaluate_general_packs(self.general_packs, ts)
             confluence_records.update(gp_records)
 
+        # On partial (still-forming) bars, only L-type (intra-bar) signals
+        # fire.  C-type signals (bar-close triggers, bar_count_exit) are
+        # suppressed because the close price is not final.  Stops and
+        # targets still fire since they are intra-bar events.
+        c_trigs_for_eval = {} if partial else c_triggers
+
         # 4. Handle pending HM exit (unconfirmed on previous bar)
-        if self.position.state.pending_hm_exit:
+        if not partial and self.position.state.pending_hm_exit:
             exit_record = self.position._exit(
                 'unconfirmed_hm', bar['open'], bar_time)
             trades.append(exit_record)
@@ -1950,8 +2023,9 @@ class UnifiedStrategy:
         # 5. Check exit (includes HL limit check, stop, target, signal, bar count)
         if self.position.state.status == 'IN_POSITION':
             exit_record = self.position.check_exit(
-                c_triggers, current, self._bar_count,
-                bar_time, l_type_fills=l_fills)
+                c_trigs_for_eval, current, self._bar_count,
+                bar_time, l_type_fills=l_fills,
+                suppress_bar_count=partial)
             if exit_record:
                 trades.append(exit_record)
 
@@ -1959,9 +2033,10 @@ class UnifiedStrategy:
         # Entry signals are internal state changes, not trade records.
         # The trade record is produced on exit.
         self.position.check_entry(
-            c_triggers, current, self._bar_count,
+            c_trigs_for_eval, current, self._bar_count,
             bar_time, confluence_records=confluence_records,
-            l_type_fills=l_fills)
+            l_type_fills=l_fills,
+            prev_values=prev)
 
         # 7. Confirmation check for HM/HL entries made THIS bar
         if (self.position.state.status == 'IN_POSITION' and
@@ -1999,6 +2074,7 @@ def run_unified_backtest(
     general_packs: list = None,
     secondary_tf_map: dict = None,
     include_open_position: bool = False,
+    last_bar_partial: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run unified backtest on historical OHLCV data.
 
@@ -2012,6 +2088,9 @@ def run_unified_backtest(
         include_open_position: If True, append a synthetic row for any
             open position at the end of the data (exit_time/exit_price=None).
             Useful for chart rendering to show entry markers immediately.
+        last_bar_partial: If True, treat the last bar as still forming.
+            Indicators are updated but entry/exit signals are suppressed
+            on that bar, preventing premature markers on live charts.
 
     Returns:
         (trades_df, enriched_df)
@@ -2052,8 +2131,9 @@ def run_unified_backtest(
             if mtf_set:
                 mtf_records = mtf_set
 
+        is_partial = last_bar_partial and (i == len(df) - 1)
         bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(
-            bar, mtf_records=mtf_records)
+            bar, mtf_records=mtf_records, partial=is_partial)
         trades.extend(bar_trades)
         indicator_rows.append(ind_vals)
         interp_rows.append(interp_states)
