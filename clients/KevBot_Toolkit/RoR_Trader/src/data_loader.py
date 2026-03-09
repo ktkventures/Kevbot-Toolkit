@@ -14,7 +14,7 @@ Usage:
 
 import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -32,12 +32,56 @@ def is_alpaca_configured() -> bool:
                 not ALPACA_API_KEY.startswith("your_"))
 
 
+def _filter_session(df: pd.DataFrame, session: str = "RTH") -> pd.DataFrame:
+    """Filter DataFrame to the specified trading session window.
+
+    Args:
+        df: OHLCV DataFrame with DatetimeIndex (tz-aware or naive/UTC).
+        session: One of TRADING_SESSIONS. "RTH" is the default.
+
+    Returns filtered DataFrame. If session is unrecognized, returns df unchanged.
+    """
+    if len(df) == 0:
+        return df
+
+    window = SESSION_HOURS.get(session)
+    if window is None:
+        return df
+
+    sh, sm, eh, em = window
+
+    try:
+        import pytz
+        import datetime as dt_mod
+        et = pytz.timezone("America/New_York")
+        idx = df.index
+        if idx.tz is not None:
+            et_times = idx.tz_convert(et)
+        else:
+            et_times = idx.tz_localize("UTC").tz_convert(et)
+
+        time_only = et_times.time
+        session_start = dt_mod.time(sh, sm)
+        session_end = dt_mod.time(eh, em)
+        mask = [(t >= session_start and t < session_end) for t in time_only]
+        return df.loc[mask]
+    except Exception:
+        return df
+
+
+def _filter_rth(df: pd.DataFrame) -> pd.DataFrame:
+    """Legacy alias — filters to Regular Trading Hours."""
+    return _filter_session(df, "RTH")
+
+
 def load_from_alpaca(
     symbol: str,
     days: int = 30,
     timeframe: str = "1Min",
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    feed: str = "sip",
+    session: str = "RTH",
 ) -> Optional[pd.DataFrame]:
     """
     Load historical bar data from Alpaca API.
@@ -48,6 +92,8 @@ def load_from_alpaca(
         timeframe: Bar timeframe ("1Min", "5Min", "15Min", "1Hour", "1Day")
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
+        feed: Data feed — "sip" (consolidated, all exchanges) or "iex" (IEX only)
+        session: Trading session filter — "RTH", "Pre-Market", "After Hours", "Extended Hours"
 
     Returns:
         DataFrame with OHLCV data, or None if fetch fails
@@ -58,6 +104,7 @@ def load_from_alpaca(
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.enums import DataFeed
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
         # Initialize client
@@ -81,17 +128,21 @@ def load_from_alpaca(
         }
         tf = tf_map.get(timeframe, TimeFrame.Minute)
 
-        # Calculate date range
+        # Calculate date range (must be timezone-aware UTC for Alpaca)
         if start_date is None or end_date is None:
-            end_date = datetime.now()
+            from datetime import timezone
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=days)
 
-        # Fetch bars
+        # Select data feed
+        data_feed = DataFeed.SIP if feed == "sip" else DataFeed.IEX
+
         request = StockBarsRequest(
             symbol_or_symbols=[symbol],
             timeframe=tf,
             start=start_date,
-            end=end_date
+            end=end_date,
+            feed=data_feed,
         )
 
         bars = client.get_stock_bars(request)
@@ -104,7 +155,12 @@ def load_from_alpaca(
         if symbol in df.index.get_level_values(0):
             df = df.loc[symbol]
 
-        return df
+        # Filter to the requested trading session.
+        # Alpaca returns extended-hours bars by default; session filtering
+        # keeps only bars within the strategy's active session window.
+        df = _filter_session(df, session)
+
+        return df if len(df) > 0 else None
 
     except Exception as e:
         print(f"Alpaca fetch failed: {e}")
@@ -138,7 +194,7 @@ def load_from_mock(
         start = start_date
         end = end_date
     else:
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+        end = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
         start = end - timedelta(days=days)
 
     # Vary seed by symbol for different price patterns
@@ -152,6 +208,10 @@ def load_from_mock(
     return pd.DataFrame()
 
 
+# Tracks what source was actually used on the last load_market_data call
+_last_actual_source: str = "Unknown"
+
+
 def load_market_data(
     symbol: str,
     days: int = 30,
@@ -160,6 +220,8 @@ def load_market_data(
     force_mock: bool = False,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    feed: str = "sip",
+    session: str = "RTH",
 ) -> pd.DataFrame:
     """
     Load market data, preferring Alpaca if configured.
@@ -172,33 +234,149 @@ def load_market_data(
         force_mock: If True, skip Alpaca and use mock data
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
+        feed: Data feed — "sip" (consolidated) or "iex" (IEX only)
+        session: Trading session filter — "RTH", "Pre-Market", "After Hours", "Extended Hours"
 
     Returns:
         DataFrame with OHLCV data (columns: open, high, low, close, volume, trade_count, vwap)
     """
+    global _last_actual_source
+
     # Try Alpaca first (unless forced to use mock)
     if not force_mock and is_alpaca_configured():
-        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date, end_date=end_date)
+        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date,
+                              end_date=end_date, feed=feed, session=session)
         if df is not None and len(df) > 0:
+            feed_label = "SIP" if feed == "sip" else "IEX"
+            _last_actual_source = f"Alpaca {feed_label}"
             return df
 
     # Fall back to mock data
+    _last_actual_source = "Mock Data"
     return load_from_mock(symbol, days, seed, start_date=start_date, end_date=end_date, timeframe=timeframe)
 
 
-def get_data_source() -> str:
-    """Get the current data source being used."""
-    if is_alpaca_configured():
-        return "Alpaca API"
-    return "Mock Data"
+def get_data_source(feed: str = "sip") -> str:
+    """Get the actual data source used on the last load."""
+    return _last_actual_source
+
+
+# =============================================================================
+# TIMEFRAME LABEL MAPPING (for Multi-Timeframe Confluence)
+# =============================================================================
+
+TF_LABELS = {
+    "5Sec": "5s", "10Sec": "10s", "15Sec": "15s", "30Sec": "30s",
+    "1Min": "1m", "2Min": "2m", "3Min": "3m", "5Min": "5m",
+    "10Min": "10m", "15Min": "15m", "30Min": "30m",
+    "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
+    "1Day": "1d", "1Week": "1w", "1Month": "1mo",
+}
+TF_FROM_LABEL = {v: k for k, v in TF_LABELS.items()}
+
+# All timeframes available for MTF confluence selection
+MTF_AVAILABLE_TIMEFRAMES = [
+    "5Sec", "10Sec", "15Sec", "30Sec",
+    "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
+    "1Hour", "2Hour", "4Hour", "1Day",
+]
+
+# Sub-minute timeframes that require streaming engine (no REST API / backtest support)
+SUB_MINUTE_TIMEFRAMES = {"5Sec", "10Sec", "15Sec", "30Sec"}
+
+
+def get_tf_label(timeframe: str) -> str:
+    """Convert canonical timeframe (e.g. '5Min') to short label (e.g. '5m')."""
+    return TF_LABELS.get(timeframe, timeframe.lower())
+
+
+def get_tf_from_label(label: str) -> str:
+    """Convert short label (e.g. '5m') to canonical timeframe (e.g. '5Min')."""
+    return TF_FROM_LABEL.get(label, label)
+
+
+def get_required_tfs_from_confluence(confluence_records) -> set:
+    """
+    Extract unique secondary TF labels from confluence record prefixes.
+
+    Records like '5m-EMA_STACK_DEFAULT-SML' → {'5m'}.
+    Ignores 'GEN-' prefixed records and '1M' (primary TF).
+    """
+    tfs = set()
+    for record in (confluence_records or []):
+        if record.startswith("GEN-"):
+            continue
+        tf_label = record.split("-")[0]
+        if tf_label != "1M":
+            tfs.add(tf_label)
+    return tfs
+
+
+# =============================================================================
+# RESAMPLING (Multi-Timeframe)
+# =============================================================================
+
+# Mapping from canonical timeframe strings to pandas resample rules
+_RESAMPLE_RULES = {
+    "2Min": "2min", "3Min": "3min", "5Min": "5min",
+    "10Min": "10min", "15Min": "15min", "30Min": "30min",
+    "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
+    "1Day": "1D",
+}
+
+
+def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
+    """Resample OHLCV data from a finer timeframe to a coarser one.
+
+    Args:
+        df: OHLCV DataFrame with DatetimeIndex (must be finer than target_tf).
+        target_tf: Canonical target timeframe (e.g., "5Min", "15Min", "1Hour").
+
+    Returns:
+        Resampled DataFrame with OHLCV columns. Rows where open is NaN are dropped.
+    """
+    rule = _RESAMPLE_RULES.get(target_tf)
+    if rule is None:
+        raise ValueError(f"Cannot resample to timeframe '{target_tf}'. "
+                         f"Supported: {list(_RESAMPLE_RULES.keys())}")
+
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if "volume" in df.columns:
+        agg["volume"] = "sum"
+    if "trade_count" in df.columns:
+        agg["trade_count"] = "sum"
+    if "vwap" in df.columns:
+        # VWAP must be recomputed on the resampled data — skip here
+        pass
+
+    resampled = df.resample(rule).agg(agg)
+    return resampled.dropna(subset=["open"])
 
 
 # =============================================================================
 # BAR ESTIMATION HELPERS
 # =============================================================================
 
-# Approximate trading bars per day by timeframe (6.5 market hours)
+# =============================================================================
+# TRADING SESSION DEFINITIONS
+# =============================================================================
+
+TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours"]
+
+SESSION_HOURS = {
+    "RTH":            (9, 30, 16, 0),    # 6.5 hours
+    "Pre-Market":     (4, 0,  9, 30),    # 5.5 hours
+    "After Hours":    (16, 0, 20, 0),    # 4.0 hours
+    "Extended Hours": (4, 0,  20, 0),    # 16.0 hours
+}
+
+SESSION_MARKET_HOURS = {
+    "RTH": 6.5, "Pre-Market": 5.5, "After Hours": 4.0, "Extended Hours": 16.0,
+}
+
+# Approximate trading bars per day by timeframe (6.5 RTH market hours)
 BARS_PER_DAY = {
+    "5Sec": 4680, "10Sec": 2340, "15Sec": 1560, "30Sec": 780,  # Sub-minute (streaming engine only)
     "1Min": 390, "2Min": 195, "3Min": 130, "5Min": 78,
     "10Min": 39, "15Min": 26, "30Min": 13,
     "1Hour": 7, "2Hour": 4, "4Hour": 2,
@@ -206,23 +384,27 @@ BARS_PER_DAY = {
 }
 
 
-def _bars_per_day(timeframe: str) -> float:
-    """Return approximate trading bars per day for a timeframe."""
-    return BARS_PER_DAY.get(timeframe, 390)
+def _bars_per_day(timeframe: str, session: str = "RTH") -> float:
+    """Return approximate trading bars per day for a timeframe and session."""
+    rth_bpd = BARS_PER_DAY.get(timeframe, 390)
+    if session == "RTH":
+        return rth_bpd
+    session_hours = SESSION_MARKET_HOURS.get(session, 6.5)
+    return rth_bpd * (session_hours / 6.5)
 
 
-def estimate_bar_count(days: int, timeframe: str) -> int:
+def estimate_bar_count(days: int, timeframe: str, session: str = "RTH") -> int:
     """Estimate total bar count for a given number of calendar days and timeframe.
     Assumes ~252 trading days per 365 calendar days (~69%).
     """
     trading_days = int(days * 252 / 365)
-    return max(1, int(trading_days * _bars_per_day(timeframe)))
+    return max(1, int(trading_days * _bars_per_day(timeframe, session)))
 
 
-def days_from_bar_count(bars: int, timeframe: str) -> int:
+def days_from_bar_count(bars: int, timeframe: str, session: str = "RTH") -> int:
     """Convert a desired bar count to approximate calendar days."""
     import math
-    bpd = _bars_per_day(timeframe)
+    bpd = _bars_per_day(timeframe, session)
     trading_days = math.ceil(bars / bpd)
     return max(1, int(math.ceil(trading_days * 365 / 252)))
 
@@ -236,17 +418,20 @@ def load_latest_bars(
     bars: int = 200,
     timeframe: str = "1Min",
     seed: int = 42,
+    feed: str = "sip",
+    session: str = "RTH",
 ) -> pd.DataFrame:
     """
     Load the most recent N bars for a symbol.
 
     Calculates the minimum number of days needed to cover `bars` rows
-    based on the timeframe's bars-per-day rate.
+    based on the timeframe's bars-per-day rate and trading session.
     """
     import math
-    bpd = _bars_per_day(timeframe)
+    bpd = _bars_per_day(timeframe, session)
     days = max(1, math.ceil(bars / bpd) + 1)  # +1 for safety margin
-    return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed)
+    return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed,
+                            feed=feed, session=session)
 
 
 # =============================================================================

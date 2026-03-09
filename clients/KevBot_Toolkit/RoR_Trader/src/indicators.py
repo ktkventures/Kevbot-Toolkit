@@ -14,7 +14,7 @@ Each indicator:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass
 
 
@@ -184,7 +184,8 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     """
     Calculate VWAP with dual standard deviation bands (7-zone system).
 
-    If VWAP already exists in df, use it. Otherwise calculate.
+    Computes cumulative session VWAP from scratch with session-aware reset
+    (cumulative sums reset at each market open, detected by >30min gaps).
 
     Args:
         df: DataFrame with OHLCV data
@@ -196,16 +197,33 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
     - vwap_sd1_upper/lower: Inner SD bands (±sd1_mult × rolling std)
     - vwap_sd2_upper/lower: Outer SD bands (±sd2_mult × rolling std)
     """
-    if 'vwap' in df.columns and df['vwap'].notna().any():
-        vwap = df['vwap']
-    else:
-        # Calculate VWAP (cumulative for the session)
-        typical_price = (df['high'] + df['low'] + df['close']) / 3
-        vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
-
-    # Calculate bands using rolling standard deviation
+    # Always compute cumulative session VWAP from scratch.
+    # NOTE: Alpaca's 'vwap' column is a per-bar VWAP (average within each
+    # 1-min bar), NOT a cumulative session VWAP.  Using it collapses the SD
+    # bands because (typical_price - per_bar_vwap) ≈ 0 for every bar.
     typical_price = (df['high'] + df['low'] + df['close']) / 3
-    rolling_std = typical_price.rolling(window=20, min_periods=5).std()
+    tp_vol = typical_price * df['volume']
+
+    # Detect session boundaries (gap > 30 min between bars)
+    if isinstance(df.index, pd.DatetimeIndex):
+        gaps = df.index.to_series().diff()
+        session_start = gaps > pd.Timedelta(minutes=30)
+        session_start.iloc[0] = True
+    else:
+        session_start = pd.Series(False, index=df.index)
+        session_start.iloc[0] = True
+
+    session_id = session_start.cumsum()
+    cum_tp_vol = tp_vol.groupby(session_id).cumsum()
+    cum_vol = df['volume'].groupby(session_id).cumsum()
+    vwap = cum_tp_vol / cum_vol
+
+    # Calculate bands using volume-weighted standard deviation, matching TradingView:
+    # stdev = sqrt( cumsum(Vol * (TP - VWAP)^2) / cumsum(Vol) )
+    sq_dev_vol = df['volume'] * (typical_price - vwap) ** 2
+    cum_sq_dev_vol = sq_dev_vol.groupby(session_id).cumsum()
+
+    rolling_std = np.sqrt(cum_sq_dev_vol / cum_vol)
 
     return {
         "vwap": vwap,
@@ -213,6 +231,72 @@ def calculate_vwap(df: pd.DataFrame, sd1_mult: float = 1.0, sd2_mult: float = 2.
         "vwap_sd1_lower": vwap - (sd1_mult * rolling_std),
         "vwap_sd2_upper": vwap + (sd2_mult * rolling_std),
         "vwap_sd2_lower": vwap - (sd2_mult * rolling_std),
+    }
+
+
+def calculate_utbot(
+    df: pd.DataFrame,
+    atr_period: int = 10,
+    atr_multiplier: float = 1.0
+) -> Dict[str, pd.Series]:
+    """
+    Calculate UT Bot trailing stop and direction.
+
+    Based on the UT Bot Alerts Pine Script indicator:
+    - ATR-based trailing stop that ratchets in the trend direction
+    - Direction flips when price crosses the trailing stop
+
+    Returns dict with:
+    - utbot_stop: Trailing stop level
+    - utbot_direction: 1 for bullish, -1 for bearish
+    """
+    close = df['close'].values
+    high = df['high'].values
+    low = df['low'].values
+    n = len(close)
+
+    # True Range
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    tr = np.maximum(high - low,
+                    np.maximum(np.abs(high - prev_close),
+                               np.abs(low - prev_close)))
+
+    # ATR via Wilder smoothing (alpha = 1/period), matching Pine v4 atr()
+    atr = np.zeros(n)
+    atr[0] = tr[0]
+    alpha = 1.0 / atr_period
+    for i in range(1, n):
+        atr[i] = atr[i - 1] + alpha * (tr[i] - atr[i - 1])
+
+    n_loss = atr_multiplier * atr
+
+    # Trailing stop: ratchets up in uptrend, ratchets down in downtrend
+    trail_stop = np.zeros(n)
+    trail_stop[0] = close[0] - n_loss[0]
+    for i in range(1, n):
+        if close[i] > trail_stop[i - 1] and close[i - 1] > trail_stop[i - 1]:
+            trail_stop[i] = max(trail_stop[i - 1], close[i] - n_loss[i])
+        elif close[i] < trail_stop[i - 1] and close[i - 1] < trail_stop[i - 1]:
+            trail_stop[i] = min(trail_stop[i - 1], close[i] + n_loss[i])
+        elif close[i] > trail_stop[i - 1]:
+            trail_stop[i] = close[i] - n_loss[i]
+        else:
+            trail_stop[i] = close[i] + n_loss[i]
+
+    # Direction: 1=bull, -1=bear
+    direction = np.zeros(n)
+    for i in range(1, n):
+        if close[i - 1] < trail_stop[i - 1] and close[i] > trail_stop[i - 1]:
+            direction[i] = 1
+        elif close[i - 1] > trail_stop[i - 1] and close[i] < trail_stop[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+
+    return {
+        "utbot_stop": pd.Series(trail_stop, index=df.index),
+        "utbot_direction": pd.Series(direction, index=df.index),
     }
 
 
@@ -356,6 +440,124 @@ def get_available_overlay_indicators() -> List[str]:
     ]
 
 
+# =============================================================================
+# GROUP INDICATOR FUNCTION REGISTRY
+# =============================================================================
+# Mutable dispatch registry: base_template -> callable(df, group) -> DataFrame.
+# Built-in functions registered below; user packs register via
+# register_group_indicator().
+
+def _run_ema_stack_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run EMA indicators for an ema_stack group."""
+    result = df
+    for period_key in ["short_period", "mid_period", "long_period"]:
+        period = group.parameters.get(period_key)
+        if period:
+            col_name = f"ema_{period}"
+            if col_name not in result.columns:
+                result = result.copy() if result is df else result
+                result[col_name] = calculate_ema(result, period)
+    return result
+
+
+def _run_macd_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run MACD indicators for macd_line or macd_histogram groups."""
+    result = df
+    if "macd_line" not in result.columns:
+        fast = group.parameters.get("fast_period", 12)
+        slow = group.parameters.get("slow_period", 26)
+        signal = group.parameters.get("signal_period", 9)
+        result = result.copy() if result is df else result
+        macd_result = calculate_macd(result, fast, slow, signal)
+        for col, values in macd_result.items():
+            result[col] = values
+    return result
+
+
+def _run_vwap_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run VWAP indicators for a vwap group."""
+    result = df
+    if "vwap_sd1_upper" not in result.columns:
+        sd1_mult = group.parameters.get("sd1_mult", 1.0)
+        sd2_mult = group.parameters.get("sd2_mult", 2.0)
+        result = result.copy() if result is df else result
+        vwap_result = calculate_vwap(result, sd1_mult=sd1_mult, sd2_mult=sd2_mult)
+        for col, values in vwap_result.items():
+            result[col] = values
+    return result
+
+
+def _run_rvol_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run RVOL indicators for an rvol group."""
+    result = df
+    if "vol_sma" not in result.columns:
+        period = group.parameters.get("sma_period", 20)
+        result = result.copy() if result is df else result
+        vol_result = calculate_volume_sma(result, period)
+        for col, values in vol_result.items():
+            result[col] = values
+    return result
+
+
+def _run_utbot_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run UT Bot indicators for a utbot group."""
+    result = df
+    if "utbot_stop" not in result.columns:
+        atr_period = group.parameters.get("atr_period", 10)
+        atr_multiplier = group.parameters.get("atr_multiplier", 1.0)
+        result = result.copy() if result is df else result
+        utbot_result = calculate_utbot(result, atr_period, atr_multiplier)
+        for col, values in utbot_result.items():
+            result[col] = values
+    return result
+
+
+def _run_utbot_v2_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run UT Bot indicators + previous-bar trailing stop for confirmed fills."""
+    result = _run_utbot_indicators(df, group)
+    if "utbot_stop" in result.columns and "utbot_stop_prev" not in result.columns:
+        result = result.copy() if result is df else result
+        result["utbot_stop_prev"] = result["utbot_stop"].shift(1)
+    return result
+
+
+def _run_ema_price_position_v2_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run EMA indicators + previous-bar EMA levels for confirmed fills."""
+    result = _run_ema_stack_indicators(df, group)
+    for period_key in ["short_period", "mid_period"]:
+        period = group.parameters.get(period_key)
+        if period:
+            col = f"ema_{period}"
+            prev_col = f"ema_{period}_prev"
+            if col in result.columns and prev_col not in result.columns:
+                result = result.copy() if result is df else result
+                result[prev_col] = result[col].shift(1)
+    return result
+
+
+GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
+    "ema_stack": _run_ema_stack_indicators,
+    "ema_price_position": _run_ema_stack_indicators,
+    "macd_line": _run_macd_indicators,
+    "macd_histogram": _run_macd_indicators,
+    "vwap": _run_vwap_indicators,
+    "rvol": _run_rvol_indicators,
+    "utbot": _run_utbot_indicators,
+    "utbot_v2": lambda df, group: _run_utbot_v2_indicators(df, group),
+    "ema_price_position_v2": lambda df, group: _run_ema_price_position_v2_indicators(df, group),
+}
+
+
+def register_group_indicator(template_id: str, func: Callable) -> None:
+    """Register an indicator function for a template type."""
+    GROUP_INDICATOR_FUNCS[template_id] = func
+
+
+def unregister_group_indicator(template_id: str) -> None:
+    """Remove an indicator function for a template type."""
+    GROUP_INDICATOR_FUNCS.pop(template_id, None)
+
+
 def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
     """
     Run indicators for a specific confluence group using its parameters.
@@ -370,45 +572,9 @@ def run_indicators_for_group(df: pd.DataFrame, group) -> pd.DataFrame:
     Returns:
         DataFrame with additional indicator columns for this group's parameters
     """
-    result = df
-
-    if group.base_template == "ema_stack":
-        for period_key in ["short_period", "mid_period", "long_period"]:
-            period = group.parameters.get(period_key)
-            if period:
-                col_name = f"ema_{period}"
-                if col_name not in result.columns:
-                    result = result.copy() if result is df else result
-                    result[col_name] = calculate_ema(result, period)
-
-    elif group.base_template in ("macd_line", "macd_histogram"):
-        if "macd_line" not in result.columns:
-            fast = group.parameters.get("fast_period", 12)
-            slow = group.parameters.get("slow_period", 26)
-            signal = group.parameters.get("signal_period", 9)
-            result = result.copy() if result is df else result
-            macd_result = calculate_macd(result, fast, slow, signal)
-            for col, values in macd_result.items():
-                result[col] = values
-
-    elif group.base_template == "vwap":
-        if "vwap_sd1_upper" not in result.columns:
-            sd1_mult = group.parameters.get("sd1_mult", 1.0)
-            sd2_mult = group.parameters.get("sd2_mult", 2.0)
-            result = result.copy() if result is df else result
-            vwap_result = calculate_vwap(result, sd1_mult=sd1_mult, sd2_mult=sd2_mult)
-            for col, values in vwap_result.items():
-                result[col] = values
-
-    elif group.base_template == "rvol":
-        if "vol_sma" not in result.columns:
-            period = group.parameters.get("sma_period", 20)
-            result = result.copy() if result is df else result
-            vol_result = calculate_volume_sma(result, period)
-            for col, values in vol_result.items():
-                result[col] = values
-
-    return result
+    if group.base_template in GROUP_INDICATOR_FUNCS:
+        return GROUP_INDICATOR_FUNCS[group.base_template](df, group)
+    return df
 
 
 # =============================================================================

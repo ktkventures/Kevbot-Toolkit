@@ -16,7 +16,7 @@ interpreters classify states.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 from dataclasses import dataclass
 
 
@@ -35,10 +35,23 @@ class InterpreterConfig:
 # INTERPRETER DEFINITIONS
 # =============================================================================
 
+# All 24 possible orderings of Price (P), Short (S), Mid (M), Long (L)
+# grouped by price position: 1st (most bullish) → 4th (most bearish)
+_EMA_PP_OUTPUTS = [
+    # P above all EMAs (bullish)
+    "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
+    # P second (above two EMAs)
+    "SPML", "SPLM", "MPSL", "MPLS", "LPSM", "LPMS",
+    # P third (above one EMA)
+    "SMPL", "MSPL", "SLPM", "LSPM", "MLPS", "LMPS",
+    # P below all EMAs (bearish)
+    "SMLP", "SLMP", "MSLP", "MLSP", "LSMP", "LMSP",
+]
+
 INTERPRETERS: Dict[str, InterpreterConfig] = {
     "EMA_STACK": InterpreterConfig(
         name="EMA Stack",
-        description="Analyzes EMA alignment (8, 21, 50) relative to price",
+        description="Analyzes EMA alignment (8, 21, 50) — pure EMA ordering without price",
         category="Moving Averages",
         requires_indicators=["ema_8", "ema_21", "ema_50"],
         outputs=["SML", "SLM", "MSL", "MLS", "LSM", "LMS"],
@@ -76,6 +89,23 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
         outputs=["EXTREME", "HIGH", "NORMAL", "LOW", "MINIMAL"],
         triggers=["rvol_spike", "rvol_extreme", "rvol_fade"]
     ),
+    "UTBOT": InterpreterConfig(
+        name="UT Bot",
+        description="ATR trailing stop direction",
+        category="Trend",
+        requires_indicators=["utbot_stop", "utbot_direction"],
+        outputs=["BULL", "BEAR"],
+        triggers=["utbot_buy", "utbot_sell"]
+    ),
+    "EMA_PRICE_POSITION": InterpreterConfig(
+        name="EMA Price Position",
+        description="Price position within the EMA stack (4-char ordering: P, S, M, L)",
+        category="Moving Averages",
+        requires_indicators=["ema_8", "ema_21", "ema_50"],
+        outputs=_EMA_PP_OUTPUTS,
+        triggers=["ema_pp_cross_short_up", "ema_pp_cross_short_down",
+                   "ema_pp_cross_mid_up", "ema_pp_cross_mid_down"]
+    ),
 }
 
 
@@ -85,20 +115,22 @@ INTERPRETERS: Dict[str, InterpreterConfig] = {
 
 def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
     """
-    Interpret EMA Stack alignment.
+    Interpret EMA Stack alignment — pure EMA ordering (no price).
+
+    Compares the three EMA lines relative to each other. Price is NOT
+    included; see EMA_PRICE_POSITION for price-inclusive ordering.
 
     Requires: ema_8, ema_21, ema_50 columns
 
-    Outputs:
-    - SML: Price > Short > Mid > Long (Full Bull Stack)
-    - SLM: Short > Price > Mid > Long (Price below short)
-    - MSL: Short > Mid > Price > Long (Price in middle)
-    - MLS: Short > Mid > Long > Price (Price below all, bull order)
-    - LSM: Long > Short > Mid or other transitional
-    - LMS: Price < Short < Mid < Long (Full Bear Stack)
+    Outputs (Short=ema_8, Mid=ema_21, Long=ema_50):
+    - SML: Short > Mid > Long (Full Bull Stack — trending up)
+    - SLM: Short > Long > Mid (Short leading, mid dipped below long)
+    - MSL: Mid > Short > Long (Short pulling back under mid)
+    - MLS: Mid > Long > Short (Mid leading, bearish short)
+    - LSM: Long > Short > Mid (Long on top, transitional)
+    - LMS: Long > Mid > Short (Full Bear Stack — trending down)
     """
     def interpret(row):
-        p = row['close']
         s = row.get('ema_8', np.nan)
         m = row.get('ema_21', np.nan)
         l = row.get('ema_50', np.nan)
@@ -106,24 +138,20 @@ def interpret_ema_stack(df: pd.DataFrame) -> pd.Series:
         if pd.isna(s) or pd.isna(m) or pd.isna(l):
             return None
 
-        # Full bull stack: Price > Short > Mid > Long
-        if p > s > m > l:
+        if s > m > l:
             return "SML"
-        # Bull but price below short EMA
-        elif s > p > m > l:
+        elif s > l > m:
             return "SLM"
-        # Price between mid and long
-        elif s > m > p > l:
+        elif m > s > l:
             return "MSL"
-        # Price below all EMAs but EMAs still bullish order
-        elif s > m > l > p:
+        elif m > l > s:
             return "MLS"
-        # Full bear stack: Price < Short < Mid < Long
-        elif p < s < m < l:
-            return "LMS"
-        # Various transitional states
-        else:
+        elif l > s > m:
             return "LSM"
+        elif l > m > s:
+            return "LMS"
+        else:
+            return "SML"  # fallback for exact equality
 
     return df.apply(interpret, axis=1)
 
@@ -158,6 +186,74 @@ def detect_ema_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
     triggers['ema_mid_cross_bear'] = (
         (df['ema_21'] < df['ema_50']) &
         (df['ema_21'].shift(1) >= df['ema_50'].shift(1))
+    )
+
+    return triggers
+
+
+# =============================================================================
+# EMA PRICE POSITION INTERPRETER
+# =============================================================================
+
+def interpret_ema_price_position(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret price position within the EMA stack.
+
+    Generates a 4-character code showing the ordering of Price (P),
+    Short EMA (S), Mid EMA (M), and Long EMA (L) from highest to lowest.
+
+    Example states:
+    - PSML: Price > Short > Mid > Long (full bull, price leading)
+    - SPML: Short > Price > Mid > Long (bull EMAs, price dipped below short)
+    - SMLP: Short > Mid > Long > Price (bull EMAs, price below all)
+    - LMSP: Long > Mid > Short > Price (full bear, price trailing)
+
+    Requires: ema_8, ema_21, ema_50 columns
+    """
+    def interpret(row):
+        p = row['close']
+        s = row.get('ema_8', np.nan)
+        m = row.get('ema_21', np.nan)
+        l = row.get('ema_50', np.nan)
+
+        if pd.isna(s) or pd.isna(m) or pd.isna(l):
+            return None
+
+        items = [('P', p), ('S', s), ('M', m), ('L', l)]
+        items.sort(key=lambda x: -x[1])  # sort descending by value
+        return ''.join(item[0] for item in items)
+
+    return df.apply(interpret, axis=1)
+
+
+def detect_ema_price_position_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """
+    Detect price-vs-EMA crossover triggers.
+
+    Triggers:
+    - ema_pp_cross_short_up: Price crosses above Short EMA
+    - ema_pp_cross_short_down: Price crosses below Short EMA
+    - ema_pp_cross_mid_up: Price crosses above Mid EMA
+    - ema_pp_cross_mid_down: Price crosses below Mid EMA
+    """
+    triggers = {}
+    close = df['close']
+    prev_close = close.shift(1)
+
+    # Price crosses above/below Short EMA
+    triggers['ema_pp_cross_short_up'] = (
+        (close > df['ema_8']) & (prev_close <= df['ema_8'].shift(1))
+    )
+    triggers['ema_pp_cross_short_down'] = (
+        (close < df['ema_8']) & (prev_close >= df['ema_8'].shift(1))
+    )
+
+    # Price crosses above/below Mid EMA
+    triggers['ema_pp_cross_mid_up'] = (
+        (close > df['ema_21']) & (prev_close <= df['ema_21'].shift(1))
+    )
+    triggers['ema_pp_cross_mid_down'] = (
+        (close < df['ema_21']) & (prev_close >= df['ema_21'].shift(1))
     )
 
     return triggers
@@ -489,6 +585,155 @@ def detect_rvol_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
 
 
 # =============================================================================
+# UT BOT INTERPRETER
+# =============================================================================
+
+def interpret_utbot(df: pd.DataFrame) -> pd.Series:
+    """
+    Interpret UT Bot direction.
+
+    Requires: utbot_direction column
+
+    Outputs:
+    - BULL: Price above trailing stop (bullish trend)
+    - BEAR: Price below trailing stop (bearish trend)
+    """
+    def interpret(row):
+        d = row.get('utbot_direction', np.nan)
+        if pd.isna(d) or d == 0:
+            return None
+        return "BULL" if d == 1 else "BEAR"
+
+    return df.apply(interpret, axis=1)
+
+
+def detect_utbot_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect UT Bot buy/sell triggers (direction flips)."""
+    triggers = {}
+
+    d = df['utbot_direction']
+    d_prev = d.shift(1)
+
+    # Buy signal: direction flips to bullish
+    triggers['utbot_buy'] = (d == 1) & (d_prev != 1)
+
+    # Sell signal: direction flips to bearish
+    triggers['utbot_sell'] = (d == -1) & (d_prev != -1)
+
+    return triggers
+
+
+def detect_utbot_confirmed_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect UT Bot buy/sell triggers (same candle, confirmed entry price).
+
+    Fires on the same candle as v1 (when direction flips), but the companion
+    intra-bar trigger fills at the PREVIOUS bar's trailing stop level — the
+    level price actually had to cross to flip direction — rather than the
+    current bar's recalculated stop.
+    """
+    triggers = {}
+
+    d = df['utbot_direction']
+    d_prev = d.shift(1)
+
+    # Buy signal: direction flips to bullish (same timing as v1)
+    triggers['utbot_v2_buy'] = (d == 1) & (d_prev != 1)
+
+    # Sell signal: direction flips to bearish (same timing as v1)
+    triggers['utbot_v2_sell'] = (d == -1) & (d_prev != -1)
+
+    return triggers
+
+
+def detect_ema_price_position_confirmed_triggers(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Detect price-vs-EMA crossover triggers (same candle, confirmed entry price).
+
+    Fires on the same candle as v1 (when price crosses the EMA), but the
+    companion intra-bar trigger fills at the PREVIOUS bar's EMA level — the
+    level price actually had to cross — rather than the current bar's EMA
+    which has already shifted.
+
+    Triggers:
+    - ema_pp_v2_cross_short_up: Price crosses above Short EMA
+    - ema_pp_v2_cross_short_down: Price crosses below Short EMA
+    - ema_pp_v2_cross_mid_up: Price crosses above Mid EMA
+    - ema_pp_v2_cross_mid_down: Price crosses below Mid EMA
+    """
+    triggers = {}
+    close = df['close']
+    prev_close = close.shift(1)
+
+    # Same-candle crossover detection (identical to v1)
+    triggers['ema_pp_v2_cross_short_up'] = (
+        (close > df['ema_8']) & (prev_close <= df['ema_8'].shift(1))
+    )
+    triggers['ema_pp_v2_cross_short_down'] = (
+        (close < df['ema_8']) & (prev_close >= df['ema_8'].shift(1))
+    )
+
+    triggers['ema_pp_v2_cross_mid_up'] = (
+        (close > df['ema_21']) & (prev_close <= df['ema_21'].shift(1))
+    )
+    triggers['ema_pp_v2_cross_mid_down'] = (
+        (close < df['ema_21']) & (prev_close >= df['ema_21'].shift(1))
+    )
+
+    return triggers
+
+
+# =============================================================================
+# INTERPRETER & TRIGGER FUNCTION REGISTRIES
+# =============================================================================
+# Mutable dispatch registries. Built-in functions are registered below;
+# user packs register via register_interpreter() / register_trigger_detector().
+
+INTERPRETER_FUNCS: Dict[str, Callable] = {}
+TRIGGER_FUNCS: Dict[str, Callable] = {}
+
+# Register built-in interpreter functions
+INTERPRETER_FUNCS["EMA_STACK"] = interpret_ema_stack
+INTERPRETER_FUNCS["MACD_LINE"] = interpret_macd_line
+INTERPRETER_FUNCS["MACD_HISTOGRAM"] = interpret_macd_histogram
+INTERPRETER_FUNCS["VWAP"] = interpret_vwap
+INTERPRETER_FUNCS["RVOL"] = interpret_rvol
+INTERPRETER_FUNCS["UTBOT"] = interpret_utbot
+INTERPRETER_FUNCS["UTBOT_V2"] = interpret_utbot
+INTERPRETER_FUNCS["EMA_PRICE_POSITION"] = interpret_ema_price_position
+INTERPRETER_FUNCS["EMA_PRICE_POSITION_V2"] = interpret_ema_price_position
+
+# Register built-in trigger detection functions
+TRIGGER_FUNCS["EMA_STACK"] = detect_ema_triggers
+TRIGGER_FUNCS["EMA_PRICE_POSITION"] = detect_ema_price_position_triggers
+TRIGGER_FUNCS["MACD_LINE"] = detect_macd_triggers
+TRIGGER_FUNCS["MACD_HISTOGRAM"] = detect_macd_hist_triggers
+TRIGGER_FUNCS["VWAP"] = detect_vwap_triggers
+TRIGGER_FUNCS["RVOL"] = detect_rvol_triggers
+TRIGGER_FUNCS["UTBOT"] = detect_utbot_triggers
+TRIGGER_FUNCS["UTBOT_V2"] = detect_utbot_confirmed_triggers
+TRIGGER_FUNCS["EMA_PRICE_POSITION_V2"] = detect_ema_price_position_confirmed_triggers
+
+
+def register_interpreter(key: str, func: Callable) -> None:
+    """Register an interpreter function for a given key."""
+    INTERPRETER_FUNCS[key] = func
+
+
+def register_trigger_detector(key: str, func: Callable) -> None:
+    """Register a trigger detection function for a given key."""
+    TRIGGER_FUNCS[key] = func
+
+
+def unregister_interpreter(key: str) -> None:
+    """Remove an interpreter function."""
+    INTERPRETER_FUNCS.pop(key, None)
+
+
+def unregister_trigger_detector(key: str) -> None:
+    """Remove a trigger detection function."""
+    TRIGGER_FUNCS.pop(key, None)
+
+
+# =============================================================================
 # MAIN INTERPRETER ENGINE
 # =============================================================================
 
@@ -513,17 +758,13 @@ def run_all_interpreters(
 
     result = df.copy()
 
-    interpreter_funcs = {
-        "EMA_STACK": interpret_ema_stack,
-        "MACD_LINE": interpret_macd_line,
-        "MACD_HISTOGRAM": interpret_macd_histogram,
-        "VWAP": interpret_vwap,
-        "RVOL": interpret_rvol,
-    }
-
     for interp_key in enabled_interpreters:
-        if interp_key in interpreter_funcs:
-            result[interp_key] = interpreter_funcs[interp_key](df)
+        if interp_key in INTERPRETER_FUNCS:
+            try:
+                result[interp_key] = INTERPRETER_FUNCS[interp_key](df)
+            except KeyError:
+                # Missing indicator columns — skip this interpreter
+                pass
 
     return result
 
@@ -540,25 +781,16 @@ def detect_all_triggers(df: pd.DataFrame) -> pd.DataFrame:
     """
     result = df.copy()
 
-    # Collect all triggers
+    # Collect all triggers from registered detectors
     all_triggers = {}
 
-    # EMA triggers (only if columns exist)
-    if all(col in df.columns for col in ['ema_8', 'ema_21', 'ema_50']):
-        all_triggers.update(detect_ema_triggers(df))
-
-    # MACD triggers
-    if all(col in df.columns for col in ['macd_line', 'macd_signal', 'macd_hist']):
-        all_triggers.update(detect_macd_triggers(df))
-        all_triggers.update(detect_macd_hist_triggers(df))
-
-    # VWAP triggers
-    if 'vwap' in df.columns:
-        all_triggers.update(detect_vwap_triggers(df))
-
-    # RVOL triggers
-    if 'rvol' in df.columns:
-        all_triggers.update(detect_rvol_triggers(df))
+    for interp_key, trigger_func in TRIGGER_FUNCS.items():
+        try:
+            triggers = trigger_func(df)
+            all_triggers.update(triggers)
+        except KeyError:
+            # Missing indicator columns — skip this trigger set
+            pass
 
     # Add trigger columns
     for trigger_id, trigger_series in all_triggers.items():
@@ -587,6 +819,43 @@ def get_confluence_records(row: pd.Series, timeframe: str, interpreters: List[st
             if col in row.index and pd.notna(row[col]):
                 pack_id = col[3:]  # Strip "GP_" prefix
                 records.add(f"GEN-{pack_id}-{row[col]}")
+
+    return records
+
+
+def get_mtf_confluence_records(
+    row: pd.Series,
+    primary_interpreters: List[str],
+    secondary_tf_map: Optional[Dict[str, List[str]]] = None,
+    general_columns: Optional[List[str]] = None,
+) -> Set[str]:
+    """
+    Build confluence records for primary TF + all secondary TFs.
+
+    Primary TF records use the "1M" prefix.  Secondary TF records use lowercase
+    labels ("5m", "15m", etc.) derived from the column suffix ``__{tf_label}``.
+
+    Args:
+        row: A single DataFrame row (with primary + forward-filled secondary cols).
+        primary_interpreters: Interpreter column names on the primary TF.
+        secondary_tf_map: ``{tf_label: [suffixed_col_names]}`` for each secondary TF.
+            Column names have the form ``{INTERP}__{tf_label}``.
+        general_columns: GP_* columns (not timeframe-specific).
+
+    Returns:
+        Combined set of confluence record strings.
+    """
+    # Primary TF records (prefix "1M")
+    records = get_confluence_records(row, "1M", primary_interpreters, general_columns)
+
+    # Secondary TF records
+    if secondary_tf_map:
+        for tf_label, suffixed_cols in secondary_tf_map.items():
+            for col in suffixed_cols:
+                if col in row.index and pd.notna(row[col]):
+                    # Strip __{tf_label} suffix to get the base interpreter name
+                    base_interp = col.rsplit("__", 1)[0]
+                    records.add(f"{tf_label}-{base_interp}-{row[col]}")
 
     return records
 

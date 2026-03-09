@@ -11,7 +11,7 @@ Run with: streamlit run src/app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from itertools import combinations
 import plotly.graph_objects as go
 import plotly.express as px
@@ -22,6 +22,7 @@ import copy
 import subprocess
 import signal as signal_module
 import inspect
+import pytz
 
 from data_loader import load_market_data, get_data_source, is_alpaca_configured, estimate_bar_count, days_from_bar_count
 from indicators import (
@@ -36,6 +37,7 @@ from indicators import (
     calculate_vwap,
     calculate_volume_sma,
     calculate_atr,
+    calculate_utbot,
 )
 from interpreters import (
     INTERPRETERS,
@@ -44,15 +46,19 @@ from interpreters import (
     get_confluence_records,
     get_available_triggers,
     interpret_ema_stack,
+    interpret_ema_price_position,
     interpret_macd_line,
     interpret_macd_histogram,
     interpret_vwap,
     interpret_rvol,
+    interpret_utbot,
     detect_ema_triggers,
+    detect_ema_price_position_triggers,
     detect_macd_triggers,
     detect_macd_hist_triggers,
     detect_vwap_triggers,
     detect_rvol_triggers,
+    detect_utbot_triggers,
 )
 from triggers import (
     generate_trades,
@@ -77,6 +83,15 @@ from portfolios import (
     delete_requirement_set,
     duplicate_requirement_set,
     compute_strategy_recommendations,
+    get_daily_limit_thresholds,
+    compute_worst_case_analysis,
+    compute_capital_utilization,
+    run_monte_carlo,
+    get_account,
+    compute_account_balance,
+    add_ledger_entry,
+    remove_ledger_entry,
+    get_balance_history,
 )
 from alerts import (
     load_alert_config,
@@ -109,6 +124,14 @@ from alerts import (
     update_webhook_template,
     delete_webhook_template,
 )
+from analytics import (
+    compute_rolling_metrics,
+    compute_markov_transitions,
+    compute_streaks,
+    compute_edge_scores,
+    detect_market_regimes,
+    generate_markov_insights,
+)
 from confluence_groups import (
     load_confluence_groups,
     save_confluence_groups,
@@ -128,9 +151,12 @@ from confluence_groups import (
     get_output_descriptions,
     ConfluenceGroup,
     PlotSettings,
+    get_enabled_interpreter_keys,
 )
 import general_packs as gp_module
 import risk_management_packs as rmp_module
+import pack_registry
+import pack_builder
 
 
 # =============================================================================
@@ -139,13 +165,19 @@ import risk_management_packs as rmp_module
 
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
 TIMEFRAMES = [
+    "5Sec", "10Sec", "15Sec", "30Sec",
     "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
     "1Hour", "2Hour", "4Hour",
     "1Day", "1Week", "1Month",
 ]
 DIRECTIONS = ["LONG", "SHORT"]
+TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours"]
 
 TIMEFRAME_GUIDANCE = {
+    "5Sec":   "~4680 bars/day \u00b7 streaming engine only",
+    "10Sec":  "~2340 bars/day \u00b7 streaming engine only",
+    "15Sec":  "~1560 bars/day \u00b7 streaming engine only",
+    "30Sec":  "~780 bars/day \u00b7 streaming engine only",
     "1Min":   "~390 bars/day \u00b7 recommended \u226490 days",
     "2Min":   "~195 bars/day \u00b7 recommended \u22646 months",
     "3Min":   "~130 bars/day \u00b7 recommended \u22646 months",
@@ -164,19 +196,41 @@ TIMEFRAME_GUIDANCE = {
 ALPACA_DATA_FLOOR = date(2016, 1, 1)
 
 LOOKBACK_MODES = ["Days", "Bars/Candles", "Date Range"]
-OVERLAY_COMPATIBLE_TEMPLATES = ["ema_stack", "vwap", "utbot"]
+BUILTIN_OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
+BUILTIN_OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
+
+
+def is_overlay_template(base_template: str) -> bool:
+    """Check if a template should render as overlay lines on the price chart."""
+    if base_template in BUILTIN_OVERLAY_TEMPLATES:
+        return True
+    template = get_template(base_template)
+    if template:
+        return template.get("display_type") == "overlay"
+    return False
+
+
+def is_oscillator_template(base_template: str) -> bool:
+    """Check if a template should render as a secondary oscillator pane."""
+    if base_template in BUILTIN_OSCILLATOR_TEMPLATES:
+        return True
+    template = get_template(base_template)
+    if template:
+        return template.get("display_type") == "oscillator"
+    return False
 
 # Strategy parameters that affect trade generation — changing any of these
 # invalidates forward test data and requires a forward test reset.
 # Note: risk_per_trade is in generate_trades() signature but unused in the body;
 # it only affects calculate_kpis() dollar values, so it's excluded here.
 OPTIMIZABLE_PARAMS = frozenset({
-    'symbol', 'direction', 'timeframe',
+    'symbol', 'direction', 'timeframe', 'trading_session',
     'entry_trigger', 'entry_trigger_confluence_id',
     'exit_trigger', 'exit_triggers', 'exit_trigger_confluence_ids',
     'stop_config', 'stop_atr_mult', 'target_config', 'bar_count_exit',
     'confluence', 'general_confluences',
     'data_seed',
+    'webhook_config',  # webhook signal mapping affects trade generation
     # Note: date range params (data_days, lookback_mode, bar_count,
     # lookback_start_date, lookback_end_date) are excluded — they only affect
     # the backtest window, not forward test behavior. Changing them preserves
@@ -198,7 +252,105 @@ SETTINGS_DEFAULTS = {
     "default_stop_config": {"method": "atr", "atr_mult": 1.5},
     "default_target_config": None,
     "global_data_seed": 42,
+    "data_feed": "sip",
+    "enabled_timeframes": ["1Min"],
+    "candle_theme": "neutral",
+    "display_timezone": "US/Eastern",
 }
+
+# Candlestick color themes — keys match the candle_theme setting
+CANDLE_THEMES = {
+    "classic": {
+        "upColor": "#26a69a", "downColor": "#ef5350",
+        "borderUpColor": "#26a69a", "borderDownColor": "#ef5350",
+        "wickUpColor": "#26a69a", "wickDownColor": "#ef5350",
+    },
+    "neutral": {
+        "upColor": "#FFFFFF", "downColor": "#787B86",
+        "borderUpColor": "#FFFFFF", "borderDownColor": "#787B86",
+        "wickUpColor": "#FFFFFF", "wickDownColor": "#787B86",
+    },
+    "neutral_hollow": {
+        "upColor": "transparent", "downColor": "#787B86",
+        "borderUpColor": "#FFFFFF", "borderDownColor": "#787B86",
+        "wickUpColor": "#FFFFFF", "wickDownColor": "#787B86",
+    },
+}
+
+# Timezone options for the Settings dropdown
+DISPLAY_TIMEZONE_OPTIONS = {
+    "US/Eastern":  "US/Eastern",
+    "US/Central":  "US/Central",
+    "US/Mountain": "US/Mountain",
+    "US/Pacific":  "US/Pacific",
+    "UTC":         "UTC",
+}
+
+
+def format_display_ts(ts, fmt='%Y-%m-%d %H:%M:%S', date_only=False):
+    """Convert any timestamp to the user's chosen display timezone.
+
+    Args:
+        ts: str (ISO), datetime, or pd.Timestamp
+        fmt: strftime format (ignored if date_only=True)
+        date_only: if True, returns YYYY-MM-DD only
+    Returns:
+        Formatted string, or em-dash on failure
+    """
+    if not ts:
+        return "\u2014"
+    try:
+        tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+        target_tz = pytz.timezone(tz_name)
+
+        if isinstance(ts, str):
+            dt = datetime.fromisoformat(ts)
+        elif isinstance(ts, pd.Timestamp):
+            dt = ts.to_pydatetime()
+        else:
+            dt = ts
+
+        # Make aware: if naive, assume UTC
+        if dt.tzinfo is None:
+            dt = pytz.utc.localize(dt)
+
+        local_dt = dt.astimezone(target_tz)
+        if date_only:
+            return local_dt.strftime('%Y-%m-%d')
+        return local_dt.strftime(fmt)
+    except Exception:
+        if isinstance(ts, str):
+            return ts[:19].replace('T', ' ') if ts else "\u2014"
+        return "\u2014"
+
+
+def _to_chart_unix(ts):
+    """Convert UTC timestamp(s) to Unix seconds in the user's display timezone.
+
+    Lightweight-charts renders Unix timestamps as-is (no TZ support).
+    By shifting to the display timezone first, chart axis labels show
+    local time while all calculations remain in UTC.
+
+    Args:
+        ts: pd.Series, pd.Timestamp, datetime, or ISO string
+    Returns:
+        pd.Series of int64 (for Series input) or int (for scalar input)
+    """
+    tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+    try:
+        if isinstance(ts, pd.Series):
+            s = pd.to_datetime(ts, utc=True)
+            return s.dt.tz_convert(tz_name).dt.tz_localize(None).astype(int) // 10**9
+        # Scalar
+        dt = pd.Timestamp(ts)
+        if dt.tzinfo is None:
+            dt = dt.tz_localize('UTC')
+        return int(dt.tz_convert(tz_name).tz_localize(None).value // 10**9)
+    except Exception:
+        # Fallback: return raw UTC conversion
+        if isinstance(ts, pd.Series):
+            return pd.to_datetime(ts).astype(int) // 10**9
+        return int(pd.Timestamp(ts).value // 10**9)
 
 
 # =============================================================================
@@ -237,6 +389,35 @@ def get_base_trigger_id(confluence_trigger_id: str) -> str:
 # =============================================================================
 # CONFLUENCE RECORD FORMATTING
 # =============================================================================
+
+def _get_data_feed() -> str:
+    """Return the active data feed setting ('sip' or 'iex') from session state."""
+    return st.session_state.get('data_feed', 'sip')
+
+
+def _get_secondary_tfs(primary_tf: str) -> tuple:
+    """Return enabled secondary timeframes (excluding primary and sub-minute).
+
+    Sub-minute TFs are excluded because they cannot be resampled from REST data.
+    Returns a tuple for Streamlit cache hashability.
+    """
+    from data_loader import SUB_MINUTE_TIMEFRAMES
+    settings = load_settings()
+    enabled = set(settings.get("enabled_timeframes", ["1Min"]))
+    # Remove the primary TF and any sub-minute TFs (streaming-only)
+    secondary = enabled - {primary_tf} - SUB_MINUTE_TIMEFRAMES
+    return tuple(sorted(secondary))
+
+
+def get_enabled_gp_columns(df_columns) -> list:
+    """Filter GP_ columns to only include those for currently enabled general packs.
+
+    This is needed because prepare_data_with_indicators() is cached and may
+    contain GP_ columns for packs that have since been disabled.
+    """
+    enabled_ids = {p.id.upper() for p in gp_module.get_enabled_general_packs(gp_module.load_general_packs())}
+    return [c for c in df_columns if c.startswith("GP_") and c[3:] in enabled_ids]
+
 
 def build_interpreter_to_template() -> dict:
     """Build mapping from interpreter keys to template IDs from TEMPLATES data."""
@@ -293,10 +474,15 @@ def format_confluence_record(record: str, groups: list = None) -> str:
     # Find the first enabled group with this template
     for group in groups:
         if group.base_template == template_id:
+            # Show TF prefix for non-primary timeframes
+            if timeframe != "1M":
+                return f"{timeframe}: {group.name}: {state}"
             return f"{group.name}: {state}"
 
     # Fallback: just clean up the interpreter name
     interpreter_name = interpreter.replace("_", " ").title()
+    if timeframe != "1M":
+        return f"{timeframe}: {interpreter_name}: {state}"
     return f"{interpreter_name}: {state}"
 
 
@@ -320,14 +506,63 @@ def get_overlay_indicators_for_group(group: ConfluenceGroup) -> list:
     if not template:
         return []
 
-    if group.base_template == "ema_stack":
+    if group.base_template in ("ema_stack", "ema_price_position", "ema_price_position_v2"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
         return [f"ema_{short}", f"ema_{mid}", f"ema_{long}"]
 
+    if group.base_template in ("utbot", "utbot_v2"):
+        return ["utbot_stop"]
+
+    # For user packs with column_color_map, only return the mapped (plottable) columns
+    ccm = template.get("column_color_map", {})
+    if ccm:
+        return list(ccm.keys())
+
     # Other templates have indicator_columns that match actual DataFrame names
     return template.get("indicator_columns", [])
+
+
+def get_band_fills_for_group(group: ConfluenceGroup) -> list:
+    """
+    Get band fill definitions from a group's template plot_config.
+
+    Returns list of dicts: [{"upper_column": str, "lower_column": str, "fill_color": str}]
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return []
+
+    plot_config = template.get("plot_config", {})
+    band_fills = plot_config.get("band_fills", [])
+    if not band_fills:
+        return []
+
+    plot_schema = template.get("plot_schema", {})
+    result = []
+    for bf in band_fills:
+        fill_color_key = bf.get("fill_color_key", "")
+        default_color = plot_schema.get(fill_color_key, {}).get("default", "rgba(128,128,128,0.1)")
+        fill_color = group.plot_settings.colors.get(fill_color_key, default_color)
+        result.append({
+            "upper_column": bf["upper_column"],
+            "lower_column": bf["lower_column"],
+            "fill_color": fill_color,
+        })
+    return result
+
+
+def get_line_styles_for_group(group: ConfluenceGroup) -> dict:
+    """
+    Get per-column line style overrides from a group's template plot_config.
+
+    Returns dict mapping column_name -> lineStyle int (0=Solid, 1=Dotted, 2=Dashed, etc.)
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return {}
+    return template.get("plot_config", {}).get("line_styles", {})
 
 
 def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
@@ -342,7 +577,7 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 
     colors = {}
 
-    if group.base_template == "ema_stack":
+    if group.base_template in ("ema_stack", "ema_price_position", "ema_price_position_v2"):
         short = group.parameters.get("short_period", 9)
         mid = group.parameters.get("mid_period", 21)
         long = group.parameters.get("long_period", 200)
@@ -355,8 +590,26 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
         colors["vwap_sd1_lower"] = group.plot_settings.colors.get("sd1_band_color", "#c4b5fd")
         colors["vwap_sd2_upper"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
         colors["vwap_sd2_lower"] = group.plot_settings.colors.get("sd2_band_color", "#ddd6fe")
-    elif group.base_template == "utbot":
+    elif group.base_template in ("utbot", "utbot_v2"):
         colors["utbot_stop"] = group.plot_settings.colors.get("trail_color", "#64748b")
+    else:
+        # Generic fallback for user packs: use column_color_map + plot_schema
+        ccm = template.get("column_color_map", {})
+        plot_schema = template.get("plot_schema", {})
+        if ccm:
+            for col_name, color_key in ccm.items():
+                # Look up the color from group's plot_settings, fall back to plot_schema default
+                default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                colors[col_name] = group.plot_settings.colors.get(color_key, default_color)
+        else:
+            # No column_color_map: try 1:1 match of indicator_columns to plot_schema keys
+            indicator_cols = template.get("indicator_columns", [])
+            color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+            for i, col in enumerate(indicator_cols):
+                if i < len(color_keys):
+                    key = color_keys[i]
+                    default_color = plot_schema[key].get("default", "#8b5cf6")
+                    colors[col] = group.plot_settings.colors.get(key, default_color)
 
     return colors
 
@@ -368,7 +621,10 @@ def get_overlay_colors_for_group(group: ConfluenceGroup) -> dict:
 @st.cache_data(ttl=3600)
 def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
                                   start_date=None, end_date=None,
-                                  timeframe: str = "1Min"):
+                                  timeframe: str = "1Min",
+                                  data_feed: str = "sip",
+                                  session: str = "RTH",
+                                  secondary_tfs: tuple = ()):
     """
     Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -381,13 +637,21 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
         timeframe: Bar timeframe (e.g., "1Min", "5Min", "1Hour")
+        data_feed: Alpaca data feed — "sip" or "iex" (also used as cache key)
+        session: Trading session — "RTH", "Pre-Market", "After Hours", "Extended Hours"
+        secondary_tfs: Tuple of secondary timeframes to compute for MTF confluence
+            (e.g., ("5Min", "15Min")).  Use tuple for Streamlit cache hashability.
 
     Returns DataFrame ready for trade generation and analysis.
+    Includes forward-filled ``{INTERP}__{tf_label}`` columns for secondary TFs.
     """
+    from data_loader import resample_to_timeframe, get_tf_label
+
     # Load raw bars (Alpaca if configured, mock otherwise)
     df = load_market_data(symbol, days=days, seed=seed,
                           start_date=start_date, end_date=end_date,
-                          timeframe=timeframe)
+                          timeframe=timeframe, feed=data_feed,
+                          session=session)
 
     if len(df) == 0:
         return df
@@ -413,7 +677,109 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
         col_name = gpack.get_condition_column()
         df[col_name] = gp_module.evaluate_condition(df, gpack)
 
+    # ── Multi-Timeframe: resample + run pipeline on secondary TFs ──────
+    if secondary_tfs and len(df) > 0:
+        interp_keys = list(INTERPRETERS.keys())
+        for sec_tf in secondary_tfs:
+            try:
+                sec_df = resample_to_timeframe(df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+                if len(sec_df) == 0:
+                    continue
+                # Run same indicator/interpreter pipeline on resampled data
+                sec_df = run_all_indicators(sec_df)
+                for group in get_enabled_groups(load_confluence_groups()):
+                    sec_df = run_indicators_for_group(sec_df, group)
+                sec_df = run_all_interpreters(sec_df)
+
+                # Forward-fill interpreter STATE columns to primary TF index
+                tf_label = get_tf_label(sec_tf)
+                for interp_col in interp_keys:
+                    if interp_col in sec_df.columns:
+                        suffixed = f"{interp_col}__{tf_label}"
+                        df[suffixed] = sec_df[interp_col].reindex(df.index, method='ffill')
+            except Exception:
+                # Skip this secondary TF if resampling fails
+                pass
+
     return df
+
+
+def get_secondary_tf_map(df: pd.DataFrame) -> dict:
+    """Extract the secondary TF map from column names containing '__'.
+
+    Returns ``{tf_label: [suffixed_col_names]}`` suitable for passing to
+    ``get_mtf_confluence_records()`` or ``generate_trades(secondary_tf_map=...)``.
+    """
+    tf_map: dict = {}
+    for col in df.columns:
+        if "__" in col:
+            parts = col.rsplit("__", 1)
+            if len(parts) == 2:
+                tf_label = parts[1]
+                tf_map.setdefault(tf_label, []).append(col)
+    return tf_map
+
+
+def _unified_trades(df: pd.DataFrame, strategy: dict,
+                    include_open_position: bool = True,
+                    last_bar_partial: bool = False) -> pd.DataFrame:
+    """Trade generation via unified engine with MTF support.
+
+    Args:
+        df: Enriched DataFrame from prepare_data_with_indicators().
+            May contain pre-computed MTF columns (e.g. EMA_STACK__5m).
+        strategy: Strategy config dict (saved format OR builder format).
+        include_open_position: If True, include a synthetic row for any
+            open position at end of data (for chart entry markers).
+        last_bar_partial: If True, the last bar in df is still forming.
+            Entry/exit signals are suppressed on that bar to prevent
+            premature chart markers.
+
+    Returns:
+        trades_df matching generate_trades() schema.
+    """
+    import logging
+    _logger = logging.getLogger('ror_trader')
+
+    sec_tf_map = get_secondary_tf_map(df)
+
+    enabled_gen = gp_module.get_enabled_general_packs(
+        gp_module.load_general_packs())
+
+    try:
+        from unified_engine import run_unified_backtest
+        trades_df, _ = run_unified_backtest(
+            df, strategy, general_packs=enabled_gen,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+            include_open_position=include_open_position,
+            last_bar_partial=last_bar_partial)
+    except Exception as exc:
+        _logger.warning("unified engine failed (%s), falling back", exc)
+        confluence_set = (
+            set(strategy.get('confluence', []))
+            | set(strategy.get('general_confluences', []))
+        )
+        confluence_set = confluence_set if confluence_set else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
+        return generate_trades(
+            df,
+            direction=strategy['direction'],
+            entry_trigger=strategy['entry_trigger'],
+            exit_trigger=strategy.get('exit_trigger'),
+            exit_triggers=strategy.get('exit_triggers'),
+            confluence_required=confluence_set,
+            risk_per_trade=strategy.get('risk_per_trade', 100.0),
+            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+            stop_config=strategy.get('stop_config'),
+            target_config=strategy.get('target_config'),
+            bar_count_exit=strategy.get('bar_count_exit'),
+            general_columns=general_cols if general_cols else None,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+        )
+
+    if not isinstance(trades_df, pd.DataFrame):
+        trades_df = pd.DataFrame()
+    return trades_df
 
 
 def prepare_forward_test_data(strat: dict, data_days_override: int = None):
@@ -429,43 +795,44 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
     """
     forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+
+    # Webhook origin: use stored trades directly (no trigger re-generation)
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        trades = _trades_df_from_stored(strat.get('stored_trades', []))
+        if len(trades) == 0:
+            empty = pd.DataFrame()
+            return pd.DataFrame(), empty, empty, forward_test_start_dt
+        backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+        return pd.DataFrame(), backtest_trades, forward_trades, forward_test_start_dt
+
     data_days = data_days_override if data_days_override is not None else strat.get('data_days', 30)
     data_seed = strat.get('data_seed', 42)
 
     # Start before forward_test_start to have backtest data + indicator warmup
     start_date = forward_test_start_dt - timedelta(days=data_days * 2)
-    # Round end_date to market close today for cache-friendly behavior
-    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+    # Round end_date to end-of-day UTC for cache-friendly behavior
+    # (23:59 UTC covers all US market sessions including extended hours)
+    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
 
     strat_timeframe = strat.get('timeframe', '1Min')
+    # Determine required secondary TFs from strategy's confluence conditions
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    required_tf_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in required_tf_labels))
+
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
-        timeframe=strat_timeframe
+        timeframe=strat_timeframe, data_feed=_get_data_feed(),
+        session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs,
     )
 
     if len(df) == 0:
         empty = pd.DataFrame()
         return df, empty, empty, forward_test_start_dt
 
-    confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-    confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
-
-    trades = generate_trades(
-        df,
-        direction=strat['direction'],
-        entry_trigger=strat['entry_trigger'],
-        exit_trigger=strat.get('exit_trigger'),
-        exit_triggers=strat.get('exit_triggers'),
-        confluence_required=confluence_set,
-        risk_per_trade=strat.get('risk_per_trade', 100.0),
-        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-        stop_config=strat.get('stop_config'),
-        target_config=strat.get('target_config'),
-        bar_count_exit=strat.get('bar_count_exit'),
-        general_columns=general_cols,
-    )
+    trades = _unified_trades(df, strat)
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
     return df, backtest_trades, forward_trades, forward_test_start_dt
@@ -476,6 +843,10 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
     Get trades for any modern strategy (backtest-only or forward-testing).
     Returns all trades as a single DataFrame. For legacy strategies, returns empty.
     """
+    # Webhook origin strategies use stored trades only (no trigger-based generation)
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        return _trades_df_from_stored(strat.get('stored_trades', []))
+
     if 'entry_trigger_confluence_id' not in strat:
         return pd.DataFrame()
 
@@ -490,28 +861,18 @@ def get_strategy_trades(strat: dict) -> pd.DataFrame:
         if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
             gst_start = datetime.fromisoformat(strat['lookback_start_date'])
             gst_end = datetime.fromisoformat(strat['lookback_end_date'])
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
         df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                           start_date=gst_start, end_date=gst_end,
-                                          timeframe=strat.get('timeframe', '1Min'))
+                                          timeframe=strat.get('timeframe', '1Min'),
+                                          data_feed=_get_data_feed(),
+                                          session=strat.get('trading_session', 'RTH'),
+                                          secondary_tfs=sec_tfs)
         if len(df) == 0:
             return pd.DataFrame()
-        confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-        confluence_set = confluence_set if confluence_set else None
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
-        return generate_trades(
-            df,
-            direction=strat['direction'],
-            entry_trigger=strat['entry_trigger'],
-            exit_trigger=strat.get('exit_trigger'),
-            exit_triggers=strat.get('exit_triggers'),
-            confluence_required=confluence_set,
-            risk_per_trade=strat.get('risk_per_trade', 100.0),
-            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-            stop_config=strat.get('stop_config'),
-            target_config=strat.get('target_config'),
-            bar_count_exit=strat.get('bar_count_exit'),
-            general_columns=general_cols,
-        )
+        return _unified_trades(df, strat)
 
 
 def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
@@ -540,36 +901,24 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
         since_as_dt = since_as_dt.replace(tzinfo=None)
 
     start_date = since_as_dt - timedelta(days=warmup_days)
-    end_date = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
+    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
+
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
     df = prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
-        timeframe=timeframe,
+        timeframe=timeframe, data_feed=_get_data_feed(),
+        session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs,
     )
 
     if len(df) == 0:
         return pd.DataFrame()
 
-    confluence_set = set(strat.get('confluence', []))
-    confluence_set |= set(strat.get('general_confluences', []))
-    confluence_set = confluence_set if confluence_set else None
-    general_cols = [c for c in df.columns if c.startswith("GP_")]
-
-    trades = generate_trades(
-        df,
-        direction=strat['direction'],
-        entry_trigger=strat['entry_trigger'],
-        exit_trigger=strat.get('exit_trigger'),
-        exit_triggers=strat.get('exit_triggers'),
-        confluence_required=confluence_set,
-        risk_per_trade=strat.get('risk_per_trade', 100.0),
-        stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-        stop_config=strat.get('stop_config'),
-        target_config=strat.get('target_config'),
-        bar_count_exit=strat.get('bar_count_exit'),
-        general_columns=general_cols,
-    )
+    trades = _unified_trades(df, strat)
 
     if len(trades) == 0:
         return pd.DataFrame()
@@ -579,6 +928,370 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     if trades['entry_time'].dt.tz is not None and since_ts.tz is None:
         since_ts = since_ts.tz_localize('UTC')
     return trades[trades['entry_time'] > since_ts]
+
+
+def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
+    """Process queued inbound webhook signals for a webhook-origin strategy.
+
+    Pairs new inbound signals into trades, applies stop/target logic,
+    and appends resulting trades to existing_stored (mutates in place).
+    """
+    from webhook_server import get_unprocessed_signals, mark_signals_processed
+
+    strategy_id = strat.get('id')
+    wh_config = strat.get('webhook_config', {})
+    unprocessed = get_unprocessed_signals(strategy_id)
+    if not unprocessed:
+        return
+
+    entry_long = wh_config.get('entry_long_value', 'buy').lower()
+    entry_short = wh_config.get('entry_short_value', 'sell').lower()
+    exit_val = wh_config.get('exit_value', 'close').lower()
+    json_path = wh_config.get('signal_json_path', 'action')
+    direction = strat.get('direction', 'LONG').lower()
+
+    # Extract signal values from payloads
+    parsed = []
+    for sig in unprocessed:
+        payload = sig.get('payload', {})
+        # Navigate JSON path (supports simple dot notation)
+        value = payload
+        for key in json_path.split('.'):
+            if isinstance(value, dict):
+                value = value.get(key)
+            else:
+                value = None
+                break
+        if value is None:
+            continue
+
+        value_lower = str(value).strip().lower()
+        ts = sig.get('received_at', datetime.now().isoformat())
+
+        if value_lower == entry_long:
+            parsed.append({'timestamp': ts, 'signal': 'entry_long',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+        elif value_lower == entry_short:
+            parsed.append({'timestamp': ts, 'signal': 'entry_short',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+        elif value_lower == exit_val:
+            parsed.append({'timestamp': ts, 'signal': 'exit',
+                           'price': payload.get('price'), 'signal_id': sig.get('id')})
+
+    if not parsed:
+        mark_signals_processed([s.get('id') for s in unprocessed])
+        return
+
+    # Generate trades from the parsed signals
+    trades_df, _ = _generate_webhook_backtest_trades(
+        parsed, strat['symbol'], strat.get('direction', 'LONG'),
+        strat.get('data_days', 30), strat.get('data_seed', 42),
+        None, None, strat.get('timeframe', '1Min'),
+        strat.get('risk_per_trade', 100.0),
+        strat.get('stop_atr_mult', 1.5),
+        strat.get('stop_config', {'method': 'atr', 'atr_mult': 1.5}),
+        strat.get('target_config'),
+    )
+
+    if len(trades_df) > 0:
+        new_records = _extract_minimal_trades(trades_df)
+        existing_stored.extend(new_records)
+
+    # Mark all signals as processed
+    mark_signals_processed([s.get('id') for s in unprocessed])
+
+
+def _process_webhook_builder_data(
+    config, symbol, direction, data_days, data_seed,
+    start_date, end_date, timeframe,
+    risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+):
+    """Process webhook inbound builder: CSV upload → signal parsing → backtest.
+
+    Returns (df, trades, filtered_trades) or (None, None, None) if no data.
+    """
+    wh_config = config.get('webhook_config', {})
+    signals = wh_config.get('backtest_signals', [])
+
+    # CSV upload section
+    st.subheader("Backtest Signal Data")
+    uploaded = st.file_uploader(
+        "Upload CSV with historical signals",
+        type=["csv"],
+        key="sb_wh_csv_upload",
+        help="CSV with columns: timestamp, signal (or action), and optionally price",
+    )
+
+    if uploaded is not None:
+        try:
+            import io
+            csv_df = pd.read_csv(io.StringIO(uploaded.getvalue().decode('utf-8')))
+            csv_df.columns = [c.strip().lower() for c in csv_df.columns]
+
+            # Auto-detect timestamp column
+            ts_col = None
+            for candidate in ['timestamp', 'time', 'datetime', 'date']:
+                if candidate in csv_df.columns:
+                    ts_col = candidate
+                    break
+            if ts_col is None:
+                st.error("CSV must have a 'timestamp' column.")
+                return None, None, None
+
+            # Auto-detect signal column
+            sig_col = None
+            for candidate in ['signal', 'action', 'side', 'order_action']:
+                if candidate in csv_df.columns:
+                    sig_col = candidate
+                    break
+            if sig_col is None:
+                st.error("CSV must have a 'signal' or 'action' column.")
+                return None, None, None
+
+            # Auto-detect price column
+            price_col = None
+            for candidate in ['price', 'close', 'fill_price']:
+                if candidate in csv_df.columns:
+                    price_col = candidate
+                    break
+
+            csv_df[ts_col] = pd.to_datetime(csv_df[ts_col], utc=True)
+            csv_df = csv_df.sort_values(ts_col).reset_index(drop=True)
+
+            # Map signals
+            entry_long = wh_config.get('entry_long_value', 'buy').lower()
+            entry_short = wh_config.get('entry_short_value', 'sell').lower()
+            exit_val = wh_config.get('exit_value', 'close').lower()
+
+            parsed_signals = []
+            for _, row in csv_df.iterrows():
+                sig = str(row[sig_col]).strip().lower()
+                ts = row[ts_col].isoformat()
+                price = float(row[price_col]) if price_col and pd.notna(row.get(price_col)) else None
+
+                if sig == entry_long:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'entry_long', 'price': price})
+                elif sig == entry_short:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'entry_short', 'price': price})
+                elif sig == exit_val:
+                    parsed_signals.append({'timestamp': ts, 'signal': 'exit', 'price': price})
+
+            # Store parsed signals in config
+            wh_config['backtest_signals'] = parsed_signals
+            st.success(f"Parsed {len(parsed_signals)} signals from CSV ({len(csv_df)} rows)")
+
+            # Preview
+            preview_df = pd.DataFrame(parsed_signals[:20])
+            if len(preview_df) > 0:
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                if len(parsed_signals) > 20:
+                    st.caption(f"Showing 20 of {len(parsed_signals)} signals")
+            signals = parsed_signals
+        except Exception as e:
+            st.error(f"CSV parse error: {e}")
+            return None, None, None
+
+    if not signals:
+        st.info("Upload a CSV file with historical entry/exit signals to backtest, or paste signal data.")
+        # Return an empty but valid result so the builder shows a blank state
+        empty_df = pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
+                                          "entry_price", "exit_price", "stop_price",
+                                          "pnl", "confluence_records"])
+        return pd.DataFrame(), empty_df, empty_df
+
+    # Process signals into trades
+    with st.spinner("Processing webhook signals..."):
+        trades, df_market = _generate_webhook_backtest_trades(
+            signals, symbol, direction, data_days, data_seed,
+            start_date, end_date, timeframe,
+            risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+        )
+
+    # Return market data so drill-down tabs (TF, General, Stop, TP) can work
+    df_out = df_market if df_market is not None and len(df_market) > 0 else pd.DataFrame()
+    return df_out, trades, trades
+
+
+def _generate_webhook_backtest_trades(
+    signals, symbol, direction, data_days, data_seed,
+    start_date, end_date, timeframe,
+    risk_per_trade, stop_atr_mult, stop_config, target_config,
+):
+    """Generate trades from webhook backtest signals.
+
+    Pairs entry/exit signals chronologically and applies stop/target logic.
+    Returns (trades_df, df_market) — trades DataFrame and the market data used.
+    """
+    # Pair entries with exits
+    pairs = []
+    pending_entry = None
+    dir_lower = direction.lower()
+
+    for sig in signals:
+        sig_type = sig['signal']
+        if pending_entry is None:
+            # Looking for an entry that matches direction
+            if (dir_lower == 'long' and sig_type == 'entry_long') or \
+               (dir_lower == 'short' and sig_type == 'entry_short'):
+                pending_entry = sig
+        else:
+            # Looking for an exit or opposite entry (acts as exit)
+            if sig_type == 'exit':
+                pairs.append((pending_entry, sig))
+                pending_entry = None
+            elif sig_type in ('entry_long', 'entry_short') and sig_type != pending_entry['signal']:
+                # Opposite entry acts as exit
+                pairs.append((pending_entry, sig))
+                pending_entry = None
+
+    if not pairs:
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win",
+                                      "entry_price", "exit_price", "stop_price",
+                                      "pnl", "confluence_records"]), None
+
+    # Try to load market data for stop/target evaluation
+    df_market = None
+    try:
+        if pairs:
+            earliest = pd.Timestamp(pairs[0][0]['timestamp'])
+            latest = pd.Timestamp(pairs[-1][1]['timestamp'])
+            _sd = earliest.to_pydatetime() - timedelta(days=5)
+            _ed = latest.to_pydatetime() + timedelta(days=5)
+            df_market = prepare_data_with_indicators(
+                symbol, seed=data_seed,
+                start_date=_sd, end_date=_ed,
+                timeframe=timeframe, data_feed=_get_data_feed(),
+                session=strat.get('trading_session', 'RTH'),
+            )
+            if len(df_market) == 0:
+                df_market = None
+    except Exception:
+        df_market = None
+
+    # Build trade records
+    records = []
+    for entry_sig, exit_sig in pairs:
+        entry_time = pd.Timestamp(entry_sig['timestamp'])
+        exit_time = pd.Timestamp(exit_sig['timestamp'])
+        entry_price = entry_sig.get('price')
+        exit_price = exit_sig.get('price')
+
+        # If prices not in signals, look up from market data
+        if entry_price is None and df_market is not None and len(df_market) > 0:
+            closest = df_market.iloc[(df_market.index - entry_time).abs().argsort()[:1]]
+            if len(closest) > 0:
+                entry_price = float(closest['close'].iloc[0])
+        if exit_price is None and df_market is not None and len(df_market) > 0:
+            closest = df_market.iloc[(df_market.index - exit_time).abs().argsort()[:1]]
+            if len(closest) > 0:
+                exit_price = float(closest['close'].iloc[0])
+
+        if entry_price is None or exit_price is None:
+            continue
+
+        # Compute ATR-based stop if market data available
+        atr_value = None
+        if df_market is not None and len(df_market) > 0:
+            bars_before = df_market[df_market.index <= entry_time]
+            if len(bars_before) >= 14:
+                atr_value = float(bars_before['atr'].iloc[-1]) if 'atr' in bars_before.columns else None
+
+        # Compute stop price
+        stop_method = stop_config.get('method', 'atr') if stop_config else 'atr'
+        if stop_method == 'atr' and atr_value:
+            mult = stop_config.get('atr_mult', stop_atr_mult) if stop_config else stop_atr_mult
+            if dir_lower == 'long':
+                stop_price = entry_price - atr_value * mult
+            else:
+                stop_price = entry_price + atr_value * mult
+        elif stop_method == 'fixed_dollar' and stop_config:
+            dollar = stop_config.get('dollar_amount', 1.0)
+            stop_price = entry_price - dollar if dir_lower == 'long' else entry_price + dollar
+        elif stop_method == 'percentage' and stop_config:
+            pct = stop_config.get('percentage', 0.5) / 100.0
+            stop_price = entry_price * (1 - pct) if dir_lower == 'long' else entry_price * (1 + pct)
+        else:
+            # Fallback: use 1.5 ATR if available, else 1% of price
+            if atr_value:
+                stop_price = entry_price - atr_value * 1.5 if dir_lower == 'long' else entry_price + atr_value * 1.5
+            else:
+                stop_price = entry_price * 0.99 if dir_lower == 'long' else entry_price * 1.01
+
+        risk = abs(entry_price - stop_price)
+        if risk <= 0:
+            risk = entry_price * 0.01
+
+        # Check if stop/target would have been hit using market data bars
+        actual_exit_price = exit_price
+        actual_exit_time = exit_time
+        if df_market is not None and len(df_market) > 0:
+            bars_between = df_market[(df_market.index > entry_time) & (df_market.index <= exit_time)]
+            for idx, bar in bars_between.iterrows():
+                # Check stop hit
+                if dir_lower == 'long' and bar['low'] <= stop_price:
+                    actual_exit_price = stop_price
+                    actual_exit_time = idx
+                    break
+                elif dir_lower == 'short' and bar['high'] >= stop_price:
+                    actual_exit_price = stop_price
+                    actual_exit_time = idx
+                    break
+                # Check target hit
+                if target_config and target_config.get('method') == 'risk_reward':
+                    rr = target_config.get('rr_ratio', 2.0)
+                    if dir_lower == 'long':
+                        target_price = entry_price + risk * rr
+                        if bar['high'] >= target_price:
+                            actual_exit_price = target_price
+                            actual_exit_time = idx
+                            break
+                    else:
+                        target_price = entry_price - risk * rr
+                        if bar['low'] <= target_price:
+                            actual_exit_price = target_price
+                            actual_exit_time = idx
+                            break
+
+        # Compute R-multiple
+        if dir_lower == 'long':
+            pnl = actual_exit_price - entry_price
+        else:
+            pnl = entry_price - actual_exit_price
+        r_multiple = pnl / risk if risk > 0 else 0.0
+
+        # Build confluence records from indicator states at entry bar
+        confluence = set()
+        if df_market is not None and len(df_market) > 0:
+            bars_at_entry = df_market[df_market.index <= entry_time]
+            if len(bars_at_entry) > 0:
+                entry_row = bars_at_entry.iloc[-1]
+                from interpreters import get_confluence_records
+                general_cols = [c for c in df_market.columns if c.startswith("GP_")]
+                from interpreters import INTERPRETERS
+                confluence = get_confluence_records(
+                    entry_row, "1M", list(INTERPRETERS.keys()),
+                    general_columns=general_cols,
+                )
+
+        records.append({
+            'entry_time': entry_time,
+            'exit_time': actual_exit_time,
+            'entry_price': entry_price,
+            'exit_price': actual_exit_price,
+            'stop_price': stop_price,
+            'r_multiple': round(r_multiple, 4),
+            'win': r_multiple > 0,
+            'pnl': round(pnl * (risk_per_trade / risk) if risk > 0 else 0, 2),
+            'confluence_records': confluence,
+        })
+
+    _empty_cols = ["entry_time", "exit_time", "r_multiple", "win",
+                   "entry_price", "exit_price", "stop_price",
+                   "pnl", "confluence_records"]
+    if not records:
+        return pd.DataFrame(columns=_empty_cols), df_market
+
+    return pd.DataFrame(records), df_market
 
 
 def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
@@ -594,9 +1307,10 @@ def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
 
     if boundary_dt is not None:
         # Match timezone
-        boundary_ts = boundary_dt
+        boundary_ts = pd.Timestamp(boundary_dt)
         if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
-            boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity["exit_time"].dtype.tz)
+            target_tz = equity["exit_time"].dtype.tz
+            boundary_ts = boundary_ts.tz_convert(target_tz) if boundary_ts.tzinfo else boundary_ts.tz_localize(target_tz)
 
         bt_mask = equity["exit_time"] < boundary_ts
         fw_mask = equity["exit_time"] >= boundary_ts
@@ -620,8 +1334,8 @@ def render_mini_equity_curve(trades: pd.DataFrame, key: str, boundary_dt=None):
                 fw_plot = fw_data
             fig.add_trace(go.Scatter(
                 x=fw_plot["exit_time"], y=fw_plot["cumulative_r"],
-                mode="lines", line=dict(color="#4CAF50", width=1.5),
-                fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+                mode="lines", line=dict(color="#FF9800", width=1.5),
+                fill="tozeroy", fillcolor="rgba(255, 152, 0, 0.08)",
                 showlegend=False
             ))
     else:
@@ -662,7 +1376,8 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
     if boundary_dt is not None:
         boundary_ts = pd.Timestamp(boundary_dt)
         if hasattr(equity["exit_time"].dtype, 'tz') and equity["exit_time"].dtype.tz is not None:
-            boundary_ts = boundary_ts.tz_localize(equity["exit_time"].dtype.tz)
+            target_tz = equity["exit_time"].dtype.tz
+            boundary_ts = boundary_ts.tz_convert(target_tz) if boundary_ts.tzinfo else boundary_ts.tz_localize(target_tz)
         fw_mask = equity["exit_time"] >= boundary_ts
         if fw_mask.any():
             boundary_index = int(fw_mask.idxmax())
@@ -675,23 +1390,24 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
 
 
 def _extract_minimal_trades(trades: pd.DataFrame) -> list:
-    """Extract minimal trade records for persistent storage.
-
-    Only stores the 4 fields needed for KPI and equity curve computation:
-    entry_time, exit_time, r_multiple, win.
-    """
+    """Extract minimal trade records for persistent storage."""
     if len(trades) == 0:
         return []
     records = []
     for _, row in trades.iterrows():
         et = row["entry_time"]
         xt = row["exit_time"]
-        records.append({
+        rec = {
             "entry_time": et.isoformat() if hasattr(et, 'isoformat') else str(et),
             "exit_time": xt.isoformat() if hasattr(xt, 'isoformat') else str(xt),
             "r_multiple": round(float(row["r_multiple"]), 4),
             "win": bool(row["win"]),
-        })
+        }
+        if "entry_price" in row and pd.notna(row["entry_price"]):
+            rec["entry_price"] = round(float(row["entry_price"]), 4)
+        if "exit_price" in row and pd.notna(row["exit_price"]):
+            rec["exit_price"] = round(float(row["exit_price"]), 4)
+        records.append(rec)
     return records
 
 
@@ -720,7 +1436,7 @@ def extract_portfolio_equity_curve_data(combined_trades: pd.DataFrame) -> dict:
     }
 
 
-def render_mini_equity_curve_from_data(eq_data: dict, key: str):
+def render_mini_equity_curve_from_data(eq_data: dict, key: str, strat: dict = None):
     """Render mini equity curve from persisted equity curve data dict."""
     exit_times = eq_data.get('exit_times', [])
     cumulative_r = eq_data.get('cumulative_r', [])
@@ -735,7 +1451,7 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
     fig = go.Figure()
 
     if boundary_index is not None and boundary_index < len(times):
-        # Backtest portion
+        # Backtest portion (blue)
         if boundary_index > 0:
             fig.add_trace(go.Scatter(
                 x=times[:boundary_index], y=cumulative_r[:boundary_index],
@@ -743,14 +1459,50 @@ def render_mini_equity_curve_from_data(eq_data: dict, key: str):
                 fill="tozeroy", fillcolor="rgba(33, 150, 243, 0.08)",
                 showlegend=False
             ))
-        # Forward portion (with bridge point from backtest)
+        # Forward portion (orange, with bridge point from backtest)
         fw_start = max(0, boundary_index - 1)
         fig.add_trace(go.Scatter(
             x=times[fw_start:], y=cumulative_r[fw_start:],
-            mode="lines", line=dict(color="#4CAF50", width=1.5),
-            fill="tozeroy", fillcolor="rgba(76, 175, 80, 0.08)",
+            mode="lines", line=dict(color="#FF9800", width=1.5),
+            fill="tozeroy", fillcolor="rgba(255, 152, 0, 0.08)",
             showlegend=False
         ))
+
+        # Live portion (green) — overlay from live_executions with slippage
+        if strat and strat.get('alert_tracking_enabled') and strat.get('live_executions'):
+            live_execs = strat['live_executions']
+            stored = strat.get('stored_trades', [])
+            live_trade_indices = set()
+            slippage_map = {}
+            for ex in live_execs:
+                tidx = ex.get('matched_trade_index')
+                if tidx is not None:
+                    live_trade_indices.add(tidx)
+                    if tidx not in slippage_map:
+                        slippage_map[tidx] = 0
+                    slippage_map[tidx] += ex.get('slippage_r', 0)
+
+            if live_trade_indices and len(stored) > 0:
+                bt_cumr = cumulative_r[boundary_index - 1] if boundary_index > 0 else 0
+                live_times = []
+                live_cumr = []
+                cumulative = bt_cumr
+                for idx in sorted(live_trade_indices):
+                    if idx < len(stored):
+                        t = stored[idx]
+                        adj_r = t.get('r_multiple', 0) - slippage_map.get(idx, 0)
+                        cumulative += adj_r
+                        try:
+                            live_times.append(pd.Timestamp(t['exit_time']))
+                            live_cumr.append(cumulative)
+                        except (ValueError, KeyError):
+                            pass
+                if live_times:
+                    fig.add_trace(go.Scatter(
+                        x=live_times, y=live_cumr,
+                        mode="lines", line=dict(color="#4CAF50", width=2),
+                        showlegend=False
+                    ))
     else:
         final_r = cumulative_r[-1]
         color = "#4CAF50" if final_r >= 0 else "#f44336"
@@ -776,12 +1528,19 @@ def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     if len(trades_df) == 0:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Match timezone awareness of the entry_time column
-    if hasattr(trades_df['entry_time'].dtype, 'tz') and trades_df['entry_time'].dtype.tz is not None:
-        boundary_dt = pd.Timestamp(boundary_dt).tz_localize(trades_df['entry_time'].dtype.tz)
+    boundary_ts = pd.Timestamp(boundary_dt)
+    col_tz = getattr(trades_df['entry_time'].dtype, 'tz', None)
 
-    backtest = trades_df[trades_df['entry_time'] < boundary_dt].copy()
-    forward = trades_df[trades_df['entry_time'] >= boundary_dt].copy()
+    # Normalize timezone awareness so comparison never fails
+    if col_tz is not None and boundary_ts.tzinfo is None:
+        boundary_ts = boundary_ts.tz_localize(col_tz)
+    elif col_tz is not None and boundary_ts.tzinfo is not None:
+        boundary_ts = boundary_ts.tz_convert(col_tz)
+    elif col_tz is None and boundary_ts.tzinfo is not None:
+        boundary_ts = boundary_ts.tz_localize(None)
+
+    backtest = trades_df[trades_df['entry_time'] < boundary_ts].copy()
+    forward = trades_df[trades_df['entry_time'] >= boundary_ts].copy()
     return backtest, forward
 
 
@@ -841,19 +1600,69 @@ def format_target_display(strat: dict) -> str:
     return "None"
 
 
-def format_exit_triggers_display(strat: dict) -> str:
-    """Format exit triggers for human-readable display."""
-    names = strat.get('exit_trigger_names')
+def format_exit_triggers_display(strat: dict, trigger_defs: dict = None) -> str:
+    """Format exit triggers for human-readable display.
+
+    Args:
+        strat: Strategy config dict.
+        trigger_defs: Optional dict mapping confluence_id -> TriggerDefinition.
+            When provided, each exit name is prefixed with [C]/[I] execution tag.
+    """
+    parts = []
+
+    # Signal-based exits (modern multi-exit)
+    names = strat.get('exit_trigger_names') or []
+    cids = strat.get('exit_trigger_confluence_ids') or []
     if names:
-        return ", ".join(names)
-    name = strat.get('exit_trigger_name')
-    if name:
-        return name
-    return strat.get('exit_trigger', 'Unknown')
+        for idx, name in enumerate(names):
+            if trigger_defs is not None:
+                cid = cids[idx] if idx < len(cids) else None
+                tdef = trigger_defs.get(cid or '') if cid else None
+                tag = _execution_tag(
+                    cid or '',
+                    tdef.execution if tdef else 'bar_close'
+                )
+                parts.append(f"{tag} {name}")
+            else:
+                parts.append(name)
+    else:
+        # Legacy fallback: single exit trigger name
+        name = strat.get('exit_trigger_name')
+        if name:
+            if trigger_defs is not None:
+                cid = strat.get('exit_trigger_confluence_id')
+                tdef = trigger_defs.get(cid or '') if cid else None
+                tag = _execution_tag(
+                    cid or '',
+                    tdef.execution if tdef else 'bar_close'
+                )
+                parts.append(f"{tag} {name}")
+            else:
+                parts.append(name)
+
+    # Bar count exit
+    bar_count = strat.get('bar_count_exit')
+    if bar_count:
+        label = f"{bar_count}-bar exit"
+        if trigger_defs is not None:
+            parts.append(f"`[C]` {label}")
+        else:
+            parts.append(label)
+
+    if parts:
+        return ", ".join(parts)
+
+    # Final fallback for very old legacy strategies
+    legacy = strat.get('exit_trigger')
+    if legacy:
+        return legacy
+    return "Unknown"
 
 
 def count_trading_days(df: pd.DataFrame) -> int:
     """Count unique trading days in a DataFrame with a DatetimeIndex."""
+    if len(df) == 0 or not hasattr(df.index, 'normalize'):
+        return 1
     return max(df.index.normalize().nunique(), 1)
 
 
@@ -866,6 +1675,16 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
             not just days with trades). When provided, Daily R = total_r / total_trading_days.
             When None, falls back to counting unique exit dates.
     """
+    if len(trades_df) == 0:
+        return {
+            "total_trades": 0, "win_rate": 0, "profit_factor": 0,
+            "avg_r": 0, "total_r": 0, "daily_r": 0, "r_squared": 0.0,
+            "max_r_drawdown": 0, "final_balance": starting_balance, "total_pnl": 0
+        }
+
+    # Exclude open-position rows (from include_open_position=True)
+    if 'exit_reason' in trades_df.columns:
+        trades_df = trades_df[trades_df['exit_reason'] != 'open']
     if len(trades_df) == 0:
         return {
             "total_trades": 0, "win_rate": 0, "profit_factor": 0,
@@ -919,27 +1738,46 @@ def calculate_kpis(trades_df: pd.DataFrame, starting_balance: float = 10000,
         "max_r_drawdown": max_r_drawdown,
         "final_balance": final_balance,
         "total_pnl": total_pnl,
+        # Context for secondary KPI calculations (underscore = not displayed)
+        "_risk_per_trade": risk_per_trade,
+        "_starting_balance": starting_balance,
     }
 
 
 def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
-    """Calculate secondary/extended KPIs from trade data (always computed live, not saved)."""
+    """Calculate secondary/extended KPIs from trade data (always computed live, not saved).
+
+    Includes basic trade stats, risk-adjusted ratios, distribution metrics,
+    and drawdown analytics.  Minimum-trade guards return None for metrics
+    that are statistically meaningless with too few trades.
+    """
+    _EMPTY = {
+        "win_count": 0, "loss_count": 0,
+        "best_trade_r": 0, "worst_trade_r": 0,
+        "avg_win_r": 0, "avg_loss_r": 0,
+        "max_consec_wins": 0, "max_consec_losses": 0,
+        "payoff_ratio": 0, "recovery_factor": 0,
+        "longest_dd_trades": 0,
+        # Phase 11 — advanced metrics (None = insufficient data)
+        "sharpe_ratio": None, "sortino_ratio": None, "calmar_ratio": None,
+        "kelly_criterion": None, "daily_var_95": None, "cvar_95": None,
+        "gain_pain_ratio": None, "common_sense_ratio": None,
+        "tail_ratio": None, "outlier_win_ratio": None, "outlier_loss_ratio": None,
+        "ulcer_index": None, "serenity_index": None,
+        "skewness": None, "kurtosis": None,
+        "expected_daily": None, "expected_monthly": None, "expected_yearly": None,
+        "volatility": None, "longest_dd_days": None,
+    }
     if len(trades_df) == 0:
-        return {
-            "win_count": 0, "loss_count": 0,
-            "best_trade_r": 0, "worst_trade_r": 0,
-            "avg_win_r": 0, "avg_loss_r": 0,
-            "max_consec_wins": 0, "max_consec_losses": 0,
-            "payoff_ratio": 0, "recovery_factor": 0,
-            "longest_dd_trades": 0,
-        }
+        return _EMPTY
 
     wins_mask = trades_df["win"].values
     r_mult = trades_df["r_multiple"].values
+    n = len(r_mult)
 
     # Win/loss counts
     win_count = int(wins_mask.sum())
-    loss_count = len(wins_mask) - win_count
+    loss_count = n - win_count
 
     # Best/worst trade
     best_trade_r = float(r_mult.max())
@@ -968,11 +1806,12 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
 
     # Recovery factor (Total R / abs(Max R DD))
     max_r_dd_abs = abs(kpis.get("max_r_drawdown", 0))
-    recovery_factor = kpis["total_r"] / max_r_dd_abs if max_r_dd_abs > 0 else float('inf')
+    total_r = kpis.get("total_r", 0)
+    recovery_factor = total_r / max_r_dd_abs if max_r_dd_abs > 0 else float('inf')
 
     # Longest drawdown in trades (consecutive trades from peak to recovery)
-    if len(r_mult) >= 2:
-        cumulative = np.cumsum(r_mult)
+    cumulative = np.cumsum(r_mult) if n >= 2 else np.array([0.0])
+    if n >= 2:
         running_max = np.maximum.accumulate(cumulative)
         in_dd = cumulative < running_max
         longest_dd = 0
@@ -986,6 +1825,173 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
     else:
         longest_dd = 0
 
+    # =========================================================================
+    # PHASE 11 — ADVANCED METRICS
+    # =========================================================================
+    risk_per_trade = kpis.get("_risk_per_trade", 100.0)
+    starting_balance = kpis.get("_starting_balance", 10000.0)
+
+    # --- Daily R series (group by exit date) ---
+    daily_r = None
+    if "exit_time" in trades_df.columns and n >= 5:
+        try:
+            daily_r = trades_df.groupby(trades_df["exit_time"].dt.date)["r_multiple"].sum().values
+        except Exception:
+            daily_r = None
+
+    # --- Sharpe Ratio (≥5 trades) ---
+    sharpe_ratio = None
+    if daily_r is not None and len(daily_r) >= 5:
+        dr_mean = np.mean(daily_r)
+        dr_std = np.std(daily_r, ddof=1)
+        if dr_std > 0:
+            sharpe_ratio = round(float(dr_mean / dr_std * np.sqrt(252)), 2)
+
+    # --- Sortino Ratio (≥5 trades) ---
+    sortino_ratio = None
+    if daily_r is not None and len(daily_r) >= 5:
+        dr_mean = np.mean(daily_r)
+        downside = daily_r[daily_r < 0]
+        if len(downside) > 0:
+            downside_std = np.std(downside, ddof=1)
+            if downside_std > 0:
+                sortino_ratio = round(float(dr_mean / downside_std * np.sqrt(252)), 2)
+
+    # --- Calmar Ratio (≥10 trades) ---
+    calmar_ratio = None
+    if n >= 10 and max_r_dd_abs > 0 and daily_r is not None and len(daily_r) >= 5:
+        trading_years = len(daily_r) / 252
+        if trading_years > 0:
+            annualized_return = (total_r * risk_per_trade / starting_balance) / trading_years
+            max_dd_pct = max_r_dd_abs * risk_per_trade / starting_balance
+            if max_dd_pct > 0:
+                calmar_ratio = round(float(annualized_return / max_dd_pct), 2)
+
+    # --- Kelly Criterion (≥5 trades) ---
+    kelly_criterion = None
+    if n >= 5 and win_count > 0 and loss_count > 0:
+        win_rate_frac = win_count / n
+        pr = avg_win_r / abs_avg_loss if abs_avg_loss > 0 else 0
+        if pr > 0:
+            kelly = win_rate_frac - (1 - win_rate_frac) / pr
+            kelly_criterion = round(float(max(0.0, min(1.0, kelly))), 3)
+
+    # --- Daily VaR 95% (≥10 trades) ---
+    daily_var_95 = None
+    if daily_r is not None and len(daily_r) >= 10:
+        var_r = float(np.percentile(daily_r, 5))
+        daily_var_95 = round(var_r * risk_per_trade, 2)
+
+    # --- CVaR / Expected Shortfall 95% (≥10 trades) ---
+    cvar_95 = None
+    if daily_r is not None and len(daily_r) >= 10:
+        var_threshold = np.percentile(daily_r, 5)
+        tail = daily_r[daily_r <= var_threshold]
+        if len(tail) > 0:
+            cvar_95 = round(float(np.mean(tail) * risk_per_trade), 2)
+
+    # --- Gain/Pain Ratio ---
+    gross_profit = float(r_mult[r_mult > 0].sum()) if np.any(r_mult > 0) else 0
+    gross_loss_abs = float(abs(r_mult[r_mult < 0].sum())) if np.any(r_mult < 0) else 0
+    gain_pain_ratio = round(gross_profit / gross_loss_abs, 2) if gross_loss_abs > 0 else None
+
+    # --- Common Sense Ratio (≥5 trades) ---
+    common_sense_ratio = None
+    if n >= 5:
+        pf = kpis.get("profit_factor", 0)
+        if pf != float('inf') and pf > 0:
+            common_sense_ratio = round(float(pf * (1 - 1 / n)), 2)
+
+    # --- Tail Ratio (≥10 trades) ---
+    tail_ratio = None
+    if n >= 10:
+        p95 = abs(float(np.percentile(r_mult, 95)))
+        p5 = abs(float(np.percentile(r_mult, 5)))
+        if p5 > 0:
+            tail_ratio = round(p95 / p5, 2)
+
+    # --- Outlier Win Ratio (≥5 trades) ---
+    outlier_win_ratio = None
+    if win_count >= 2 and avg_win_r > 0:
+        max_win = float(r_mult[wins_mask].max())
+        outlier_win_ratio = round(max_win / avg_win_r, 2)
+
+    # --- Outlier Loss Ratio (≥5 trades) ---
+    outlier_loss_ratio = None
+    if loss_count >= 2 and abs_avg_loss > 0:
+        max_loss_abs = float(abs(r_mult[~wins_mask].min()))
+        outlier_loss_ratio = round(max_loss_abs / abs_avg_loss, 2)
+
+    # --- Ulcer Index (≥5 trades) ---
+    ulcer_index = None
+    if n >= 5:
+        dd_series = cumulative - np.maximum.accumulate(cumulative)
+        ulcer_index = round(float(np.sqrt(np.mean(dd_series ** 2))), 3)
+
+    # --- Serenity Index (≥5 trades) ---
+    serenity_index = None
+    if ulcer_index is not None and ulcer_index > 0:
+        serenity_index = round(float(total_r / ulcer_index), 2)
+
+    # --- Skewness (manual, ≥5 trades) ---
+    skewness = None
+    if n >= 5:
+        m = np.mean(r_mult)
+        s = np.std(r_mult, ddof=1)
+        if s > 0:
+            skewness = round(float(np.mean(((r_mult - m) / s) ** 3) * n / max((n - 1) * (n - 2), 1) * n), 2)
+
+    # --- Kurtosis (excess, manual, ≥5 trades) ---
+    kurtosis = None
+    if n >= 5:
+        m = np.mean(r_mult)
+        s = np.std(r_mult, ddof=1)
+        if s > 0:
+            kurt_raw = float(np.mean(((r_mult - m) / s) ** 4))
+            kurtosis = round(kurt_raw - 3.0, 2)  # excess kurtosis
+
+    # --- Expected Daily / Monthly / Yearly (≥5 trades) ---
+    expected_daily = None
+    expected_monthly = None
+    expected_yearly = None
+    if daily_r is not None and len(daily_r) >= 5:
+        ed = float(np.mean(daily_r) * risk_per_trade)
+        expected_daily = round(ed, 2)
+        expected_monthly = round(ed * 21, 2)
+        expected_yearly = round(ed * 252, 2)
+
+    # --- Volatility (annualized %, ≥5 trades) ---
+    volatility = None
+    if daily_r is not None and len(daily_r) >= 5:
+        vol = float(np.std(daily_r, ddof=1) * np.sqrt(252) * 100)
+        volatility = round(vol, 1)
+
+    # --- Longest Drawdown Days (≥5 trades) ---
+    longest_dd_days = None
+    if n >= 5 and "exit_time" in trades_df.columns:
+        try:
+            _exit_times = pd.to_datetime(trades_df["exit_time"])
+            _cum = trades_df["r_multiple"].cumsum().values
+            _rm = np.maximum.accumulate(_cum)
+            _in_dd = _cum < _rm
+            _max_dd_dur = 0
+            _dd_start = None
+            for idx_i in range(len(_in_dd)):
+                if _in_dd[idx_i]:
+                    if _dd_start is None:
+                        _dd_start = _exit_times.iloc[idx_i]
+                else:
+                    if _dd_start is not None:
+                        dur = (_exit_times.iloc[idx_i] - _dd_start).days
+                        _max_dd_dur = max(_max_dd_dur, dur)
+                        _dd_start = None
+            if _dd_start is not None:
+                dur = (_exit_times.iloc[-1] - _dd_start).days
+                _max_dd_dur = max(_max_dd_dur, dur)
+            longest_dd_days = _max_dd_dur
+        except Exception:
+            longest_dd_days = None
+
     return {
         "win_count": win_count,
         "loss_count": loss_count,
@@ -998,6 +2004,27 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
         "payoff_ratio": round(payoff_ratio, 2) if payoff_ratio != float('inf') else float('inf'),
         "recovery_factor": round(recovery_factor, 1) if recovery_factor != float('inf') else float('inf'),
         "longest_dd_trades": longest_dd,
+        # Phase 11 — advanced metrics
+        "sharpe_ratio": sharpe_ratio,
+        "sortino_ratio": sortino_ratio,
+        "calmar_ratio": calmar_ratio,
+        "kelly_criterion": kelly_criterion,
+        "daily_var_95": daily_var_95,
+        "cvar_95": cvar_95,
+        "gain_pain_ratio": gain_pain_ratio,
+        "common_sense_ratio": common_sense_ratio,
+        "tail_ratio": tail_ratio,
+        "outlier_win_ratio": outlier_win_ratio,
+        "outlier_loss_ratio": outlier_loss_ratio,
+        "ulcer_index": ulcer_index,
+        "serenity_index": serenity_index,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
+        "expected_daily": expected_daily,
+        "expected_monthly": expected_monthly,
+        "expected_yearly": expected_yearly,
+        "volatility": volatility,
+        "longest_dd_days": longest_dd_days,
     }
 
 
@@ -1122,6 +2149,7 @@ def analyze_entry_triggers(
     target_config: dict = None, confluence_required: set = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """For each available entry trigger, generate trades with current strategy config and compute KPIs."""
     entry_triggers = get_confluence_entry_triggers(direction, groups)
@@ -1137,15 +2165,21 @@ def analyze_entry_triggers(
     for trig_cid, trig_name in entry_triggers.items():
         base_id = get_base_trigger_id(trig_cid)
         tdef = all_trigger_defs.get(trig_cid)
-        trades = generate_trades(
-            df, direction=direction, entry_trigger=base_id,
-            exit_triggers=effective_exit_triggers,
-            bar_count_exit=effective_bar_count,
-            confluence_required=confluence_required,
-            risk_per_trade=risk_per_trade, stop_config=stop_config,
-            target_config=target_config,
-            general_columns=general_columns,
-        )
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_id,
+            'entry_trigger_confluence_id': trig_cid,
+            'exit_triggers': effective_exit_triggers,
+            'bar_count_exit': effective_bar_count,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': stop_config,
+            'target_config': target_config,
+        })
+        if confluence_required:
+            synth['confluence'] = list(confluence_required)
+        trades = _unified_trades(df, synth, include_open_position=False)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -1174,6 +2208,7 @@ def analyze_exit_triggers(
     stop_config: dict = None, target_config: dict = None,
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """For each available exit trigger, generate trades with current entry and compute KPIs."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -1193,23 +2228,26 @@ def analyze_exit_triggers(
                 is_bar_count = True
                 break
 
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_entry,
+            'entry_trigger_confluence_id': entry_trigger_confluence_id,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': stop_config,
+            'target_config': target_config,
+        })
+
         if is_bar_count:
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=[], bar_count_exit=bar_count_val,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config,
-                general_columns=general_columns,
-            )
+            synth['exit_triggers'] = []
+            synth['bar_count_exit'] = bar_count_val
         else:
             base_exit = get_base_trigger_id(trig_cid)
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=[base_exit], bar_count_exit=None,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config,
-                general_columns=general_columns,
-            )
+            synth['exit_triggers'] = [base_exit]
+            synth['bar_count_exit'] = None
+
+        trades = _unified_trades(df, synth, include_open_position=False)
 
         if len(trades) == 0:
             continue
@@ -1239,6 +2277,7 @@ def find_best_exit_combinations(
     risk_per_trade: float = 100.0, stop_config: dict = None,
     target_config: dict = None, starting_balance: float = 10000.0,
     total_trading_days: int = None, general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """Find the best exit trigger combinations (1-3 triggers) automatically."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -1249,6 +2288,7 @@ def find_best_exit_combinations(
         return pd.DataFrame()
 
     # Pre-classify each exit trigger as bar_count or signal
+    all_trigger_defs = get_all_triggers(groups)
     exit_info = {}
     for cid in all_cids:
         is_bar_count = False
@@ -1258,8 +2298,12 @@ def find_best_exit_combinations(
                 bar_count_val = g.parameters.get("candle_count", 4)
                 is_bar_count = True
                 break
+        _tdef = all_trigger_defs.get(cid)
+        _exec = _tdef.execution if _tdef else 'bar_close'
+        _badge = "[C]" if _exec == 'bar_close' else "[I]"
         exit_info[cid] = {'is_bar_count': is_bar_count, 'bar_count_val': bar_count_val,
-                          'name': exit_triggers[cid]}
+                          'name': exit_triggers[cid],
+                          'name_with_badge': f"{_badge} {exit_triggers[cid]}"}
 
     results = []
     for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
@@ -1274,12 +2318,20 @@ def find_best_exit_combinations(
             bar_count_exit_val = exit_info[bar_count_exits[0]]['bar_count_val'] if bar_count_exits else None
             signal_base_ids = [get_base_trigger_id(c) for c in signal_exits]
 
-            trades = generate_trades(
-                df, direction=direction, entry_trigger=base_entry,
-                exit_triggers=signal_base_ids, bar_count_exit=bar_count_exit_val,
-                risk_per_trade=risk_per_trade, stop_config=stop_config,
-                target_config=target_config, general_columns=general_columns,
-            )
+            # Build synthetic strategy dict for unified engine
+            synth = dict(base_strategy) if base_strategy else {}
+            synth.update({
+                'direction': direction,
+                'entry_trigger': base_entry,
+                'entry_trigger_confluence_id': entry_trigger_confluence_id,
+                'exit_triggers': signal_base_ids,
+                'bar_count_exit': bar_count_exit_val,
+                'risk_per_trade': risk_per_trade,
+                'stop_config': stop_config,
+                'target_config': target_config,
+            })
+
+            trades = _unified_trades(df, synth, include_open_position=False)
 
             if len(trades) < min_trades:
                 continue
@@ -1287,7 +2339,7 @@ def find_best_exit_combinations(
             kpis = calculate_kpis(trades, starting_balance=starting_balance,
                                   risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
-            combo_names = [exit_info[c]['name'] for c in combo]
+            combo_names = [exit_info[c]['name_with_badge'] for c in combo]
             results.append({
                 'combination': set(combo),
                 'combo_str': " + ".join(sorted(combo_names)),
@@ -1312,6 +2364,7 @@ def analyze_risk_management(
     mode: str = "stop",
     base_stop_config: dict = None, base_target_config: dict = None,
     general_columns: list = None,
+    base_strategy: dict = None,
 ) -> pd.DataFrame:
     """
     For each enabled Risk Management Pack, generate trades varying either
@@ -1352,14 +2405,22 @@ def analyze_risk_management(
             sc = base_stop_config
             tc = pack.get_target_config()
 
-        trades = generate_trades(
-            df, direction=direction, entry_trigger=base_entry,
-            exit_triggers=base_exits if base_exits else None,
-            bar_count_exit=bar_count_val,
-            risk_per_trade=risk_per_trade, stop_config=sc,
-            target_config=tc, confluence_required=confluence_required,
-            general_columns=general_columns,
-        )
+        # Build synthetic strategy dict for unified engine
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_entry,
+            'entry_trigger_confluence_id': entry_trigger,
+            'exit_triggers': base_exits if base_exits else [],
+            'bar_count_exit': bar_count_val,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': sc,
+            'target_config': tc,
+        })
+        if confluence_required:
+            synth['confluence'] = list(confluence_required)
+
+        trades = _unified_trades(df, synth, include_open_position=False)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -1488,7 +2549,30 @@ def apply_confluence_filters(df: pd.DataFrame, filters: dict, search_query: str,
 # CHART RENDERING
 # =============================================================================
 
+def _days_since(dt: datetime) -> int:
+    """Return days elapsed since *dt*, handling tz-aware and naive datetimes."""
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return (now - dt).days
+
+
 CANDLE_PRESET_OPTIONS = ["Default", "50", "100", "200", "400", "All"]
+
+def _do_chart_refresh():
+    """Full data refresh: re-fetch market data, recompute trades, clear all caches."""
+    strategy_id = st.session_state.get('viewing_strategy_id')
+    if strategy_id is not None:
+        # refresh_strategy_data is defined later in the file; safe at call time
+        refresh_strategy_data(strategy_id)
+        if 'strategy_trades_cache' in st.session_state:
+            st.session_state.strategy_trades_cache.pop(strategy_id, None)
+        st.session_state.pop(f"bt_trades_{strategy_id}", None)
+        st.session_state.pop(f"ft_data_{strategy_id}", None)
+        for _k in [k for k in list(st.session_state)
+                   if k.startswith(f"bt_ext_{strategy_id}_")
+                   or k.startswith(f"ft_ext_{strategy_id}_")]:
+            st.session_state.pop(_k, None)
+    prepare_data_with_indicators.clear()
+
 
 def render_candle_selector(chart_key: str) -> int:
     """Render a compact visible-candles selector and return the selected value.
@@ -1496,8 +2580,12 @@ def render_candle_selector(chart_key: str) -> int:
     Returns the number of visible candles (0 = All).
     "Default" uses the global sidebar preset (returns None → caller passes None to render_price_chart).
     """
-    _, right = st.columns([5, 1])
-    with right:
+    _, col_refresh, col_candles = st.columns([5, 0.6, 1])
+    with col_refresh:
+        if st.button("Refresh", key=f"refresh_chart_{chart_key}"):
+            _do_chart_refresh()
+            st.rerun(scope="app")
+    with col_candles:
         choice = st.selectbox(
             "Candles",
             CANDLE_PRESET_OPTIONS,
@@ -1512,10 +2600,155 @@ def render_candle_selector(chart_key: str) -> int:
     return int(choice)
 
 
+def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list):
+    """Show current interpreter states for strategy's confluence packs."""
+    if not relevant_groups:
+        return
+
+    last_row = df.iloc[-1]
+
+    # Determine TF label for confluence record matching
+    tf_map = {
+        '1Min': '1M', '2Min': '2M', '3Min': '3M', '5Min': '5M',
+        '10Min': '10M', '15Min': '15M', '30Min': '30M',
+        '1Hour': '1H', '2Hour': '2H', '4Hour': '4H',
+        '1Day': '1D', '1Week': '1W',
+    }
+    tf_label = tf_map.get(strat.get('timeframe', '1Min'), '1M')
+    required_confs = set(strat.get('confluence', []))
+
+    rows = []
+    for group in relevant_groups:
+        template = get_template(group.base_template)
+        if not template:
+            continue
+        for interp_key in template.get("interpreters", []):
+            val = last_row.get(interp_key)
+            if pd.notna(val):
+                record = f"{tf_label}-{interp_key}-{val}"
+                # Check if this interpreter has a required confluence
+                prefix = f"{tf_label}-{interp_key}-"
+                matching_reqs = [r for r in required_confs if r.startswith(prefix)]
+                if matching_reqs:
+                    met = record in matching_reqs
+                    status = "Met" if met else "Not met"
+                else:
+                    status = ""
+                rows.append({
+                    "Pack": group.name,
+                    "Interpreter": interp_key.replace("_", " ").title(),
+                    "State": str(val),
+                    "Confluence": status,
+                })
+
+    if rows:
+        st.markdown("**Current Conditions**")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+@st.fragment(run_every=5)
+def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
+                          chart_key: str = 'live_chart'):
+    """Auto-refreshing live chart that reads data from the Ralph alert engine.
+
+    Reads ``live_data_{symbol}_{tf}.pkl`` written by the Ralph engine's
+    bar builder.  Re-renders every 5 seconds via ``@st.fragment(run_every=5)``.
+
+    Runs unified engine on recent bars (last 2000) to produce trade
+    markers for visual display.
+    """
+    import pickle
+
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
+
+    if not os.path.exists(pkl_path):
+        st.info("Waiting for live data from Ralph engine...")
+        return
+
+    try:
+        with open(pkl_path, 'rb') as f:
+            df_live = pickle.load(f)
+    except Exception as e:
+        st.warning(f"Could not read live data: {e}")
+        return
+
+    if df_live is None or len(df_live) == 0:
+        st.info("No live data available yet.")
+        return
+
+    # Slice to recent bars for performance.
+    # Full DataFrame can be 20K+ rows; only need recent bars for trade markers.
+    TRADE_WINDOW = 2000
+    df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
+
+    # Run unified engine on recent data — same engine used by all other charts
+    # last_bar_partial=True suppresses bar-close signals on the current
+    # forming candle so markers don't appear prematurely.
+    trades = _unified_trades(df_for_trades, strat, last_bar_partial=True)
+
+    # Show last 100 candles (about 1.5 hours for 1-min bars)
+    visible = min(100, len(df_live))
+    df_display = df_live.tail(visible)
+
+    # Resolve indicators from strategy-relevant groups only
+    relevant_groups = _get_strategy_relevant_groups(strat)
+    overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
+    show_indicators = []
+    indicator_colors = {}
+    band_fills = []
+    indicator_line_styles = {}
+    for group in overlay_groups:
+        show_indicators.extend(get_overlay_indicators_for_group(group))
+        indicator_colors.update(get_overlay_colors_for_group(group))
+        band_fills.extend(get_band_fills_for_group(group))
+        indicator_line_styles.update(get_line_styles_for_group(group))
+
+    osc_panes = build_secondary_panes(df_display, relevant_groups)
+
+    # Status bar
+    last_ts = df_display.index[-1]
+    last_close = float(df_display.iloc[-1]['close'])
+    file_mtime = datetime.fromtimestamp(os.path.getmtime(pkl_path), tz=timezone.utc)
+    age_sec = (datetime.now(timezone.utc) - file_mtime).total_seconds()
+
+    cols = st.columns([2, 2, 2, 1])
+    cols[0].caption(f"Last bar: {last_ts}")
+    cols[1].caption(f"Close: ${last_close:,.2f}")
+    cols[2].caption(f"Bars: {len(df_live)}")
+    if age_sec < 5:
+        cols[3].caption("Live")
+    else:
+        cols[3].caption(f"Data age: {age_sec:.0f}s")
+
+    render_price_chart(
+        df_display, trades, strat,
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors,
+        chart_key=chart_key,
+        secondary_panes=osc_panes if osc_panes else None,
+        visible_candles=visible,
+        band_fills=band_fills if band_fills else None,
+        indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
+    )
+
+    # Current condition states
+    _render_live_conditions(df_live, strat, relevant_groups)
+
+    # Alert-based trade history (real executions from alerts.json)
+    render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
+
+    # Theoretical trade history from unified engine
+    if len(trades) > 0:
+        render_backtest_trade_table(trades)
+
+
 @st.fragment
 def render_chart_with_candle_selector(
     df, trades, config, show_indicators=None, indicator_colors=None,
-    chart_key='price_chart', secondary_panes=None, extra_markers=None
+    chart_key='price_chart', secondary_panes=None, extra_markers=None,
+    candle_colors=None, indicator_line_styles=None, band_fills=None,
+    extra_primitives=None
 ):
     """Render a price chart with a per-chart candle count selector.
 
@@ -1531,6 +2764,10 @@ def render_chart_with_candle_selector(
         secondary_panes=secondary_panes,
         visible_candles=vc,
         extra_markers=extra_markers,
+        candle_colors=candle_colors,
+        indicator_line_styles=indicator_line_styles,
+        band_fills=band_fills,
+        extra_primitives=extra_primitives,
     )
 
 
@@ -1544,6 +2781,10 @@ def render_price_chart(
     secondary_panes: list = None,
     visible_candles: int = None,
     extra_markers: list = None,
+    candle_colors: dict = None,
+    indicator_line_styles: dict = None,
+    band_fills: list = None,
+    extra_primitives: list = None,
 ):
     """
     Render TradingView-style candlestick chart with trade markers and indicator overlays.
@@ -1559,6 +2800,13 @@ def render_price_chart(
         indicator_colors: Dict mapping column names to colors (from confluence group settings)
         secondary_panes: List of lightweight-charts pane config dicts to render below the price chart
         visible_candles: Override for number of visible candles (None = use global default from session state)
+        candle_colors: Dict mapping indicator column name to per-candle color column name in df,
+            or a DataFrame column name string. When present, per-candle color/wickColor/borderColor
+            are set from the column values. E.g., {'color': 'bar_color', 'wickColor': 'bar_wick_color'}
+        indicator_line_styles: Dict mapping indicator column names to LWC lineStyle int values
+            (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted). Default: 0 (Solid).
+        extra_primitives: List of primitive dicts to attach to the price chart series
+            (e.g., sessionHighlight, anchoredText). Merged with band_fills primitives.
     """
     if len(df) == 0:
         st.info("No data available for chart")
@@ -1571,7 +2819,7 @@ def render_price_chart(
     # Verify the expected column exists; fall back to positional if not
     if time_col not in candles.columns:
         time_col = candles.columns[0]
-    candles['time'] = pd.to_datetime(candles[time_col]).astype(int) // 10**9
+    candles['time'] = _to_chart_unix(candles[time_col])
 
     # Apply visible candles preset — trim to last N candles.
     # The lightweight-charts component always calls fitContent() on render,
@@ -1584,41 +2832,131 @@ def render_price_chart(
 
     candle_data = candles[['time', 'open', 'high', 'low', 'close']].to_dict('records')
 
+    # Apply per-candle dynamic coloring (e.g., Swing 123 bar colors, UT Bot bull/bear)
+    if candle_colors:
+        for prop, col_name in candle_colors.items():
+            if prop in ('color', 'wickColor', 'borderColor') and col_name in candles.columns:
+                for i, (_, row) in enumerate(candles.iterrows()):
+                    val = row.get(col_name)
+                    if pd.notna(val) and val:
+                        candle_data[i][prop] = str(val)
+
     # Time window for filtering markers and secondary pane data
     min_time = candles['time'].min() if len(candles) > 0 else 0
 
     # Create entry/exit markers from trades (only within visible window)
     markers = []
     direction = config.get('direction', 'LONG')
+    target_entry_data = []
+    target_exit_data = []
 
     if len(trades) > 0:
-        for _, trade in trades.iterrows():
-            entry_time = int(pd.to_datetime(trade['entry_time']).timestamp())
-            exit_time = int(pd.to_datetime(trade['exit_time']).timestamp())
+        # Vectorized timestamp conversion — avoid per-row pd.to_datetime
+        _entry_ts = _to_chart_unix(trades['entry_time'])
+        _has_prices = 'entry_price' in trades.columns and 'exit_price' in trades.columns
 
-            # Skip trades entirely outside the visible window
-            if exit_time < min_time:
-                continue
+        # Separate closed vs open trades (open trades have exit_time=None)
+        _closed_mask = trades['exit_time'].notna() if 'exit_time' in trades.columns else pd.Series(True, index=trades.index)
+        _exit_ts = pd.Series(0, index=trades.index, dtype='int64')
+        if _closed_mask.any():
+            _exit_ts.loc[_closed_mask] = _to_chart_unix(trades.loc[_closed_mask, 'exit_time'])
+
+        for i, (_, trade) in enumerate(trades.iterrows()):
+            entry_time = int(_entry_ts.iloc[i])
+            is_open = not _closed_mask.iloc[i]
+
+            if not is_open:
+                exit_time = int(_exit_ts.iloc[i])
+                # Skip closed trades entirely outside the visible window
+                if exit_time < min_time:
+                    continue
 
             # Entry marker
             if entry_time >= min_time:
+                entry_label = 'Open' if is_open else 'Entry'
+                entry_color = '#FF9800' if is_open else '#2196F3'
                 markers.append({
                     'time': entry_time,
                     'position': 'belowBar' if direction == 'LONG' else 'aboveBar',
-                    'color': '#2196F3',
+                    'color': entry_color,
                     'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
-                    'text': 'Entry'
+                    'text': entry_label
                 })
+                if _has_prices and pd.notna(trade.get('entry_price')):
+                    target_entry_data.append({
+                        "time": entry_time,
+                        "value": float(trade['entry_price']),
+                    })
 
-            # Exit marker
-            is_win = trade.get('win', trade.get('pnl', 0) > 0)
-            markers.append({
-                'time': exit_time,
-                'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
-                'color': '#4CAF50' if is_win else '#f44336',
-                'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
-                'text': f"{trade['r_multiple']:+.1f}R"
-            })
+            # Exit marker (only for closed trades)
+            if not is_open:
+                is_win = trade.get('win', trade.get('pnl', 0) > 0)
+                markers.append({
+                    'time': exit_time,
+                    'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
+                    'color': '#4CAF50' if is_win else '#f44336',
+                    'shape': 'arrowDown' if direction == 'LONG' else 'arrowUp',
+                    'text': f"{trade['r_multiple']:+.1f}R"
+                })
+                if _has_prices and exit_time >= min_time and pd.notna(trade.get('exit_price')):
+                    target_exit_data.append({
+                        "time": exit_time,
+                        "value": float(trade['exit_price']),
+                    })
+
+    # Build alert-price markers (right ◂) — only when real alerts exist
+    # Pre-parse alert timestamps once and index by type for O(n) matching
+    alert_entry_data = []
+    alert_exit_data = []
+    strategy_id = config.get('id')
+    if strategy_id is not None and len(trades) > 0:
+        try:
+            from alerts import load_alerts
+            all_alerts = load_alerts()
+            strat_alerts = [a for a in all_alerts
+                            if a.get('strategy_id') == strategy_id
+                            and a.get('price') is not None]
+            if strat_alerts:
+                from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC
+                tf_sec = _TF_SEC.get(config.get('timeframe', '1Min'), 60)
+                # Pre-parse timestamps once
+                entry_alerts_parsed = []
+                exit_alerts_parsed = []
+                for alert in strat_alerts:
+                    try:
+                        a_ts = _to_chart_unix(alert.get('bar_time', alert.get('timestamp', '')))
+                    except Exception:
+                        continue
+                    a_price = alert.get('price')
+                    if a_price is None:
+                        continue
+                    if alert.get('type') == 'entry_signal':
+                        entry_alerts_parsed.append((a_ts, float(a_price)))
+                    elif alert.get('type') == 'exit_signal':
+                        exit_alerts_parsed.append((a_ts, float(a_price)))
+
+                # Only match trades within visible window
+                for _, trade in trades.iterrows():
+                    entry_ts = _to_chart_unix(trade['entry_time'])
+                    is_open = pd.isna(trade.get('exit_time'))
+                    exit_ts = 0 if is_open else _to_chart_unix(trade['exit_time'])
+                    # Skip closed trades entirely before visible window
+                    if not is_open and exit_ts < min_time:
+                        continue
+                    # Match entry alert
+                    if entry_ts >= min_time:
+                        for a_ts, a_price in entry_alerts_parsed:
+                            if abs(a_ts - entry_ts) <= tf_sec * 2:
+                                alert_entry_data.append({"time": int(entry_ts), "value": a_price})
+                                break
+                    # Match exit alert (closed trades only)
+                    if not is_open and exit_ts >= min_time:
+                        for a_ts, a_price in exit_alerts_parsed:
+                            if abs(a_ts - exit_ts) <= tf_sec * 2:
+                                alert_exit_data.append({"time": int(exit_ts), "value": a_price})
+                                break
+        except Exception:
+            pass  # Alerts not available — skip alert-price markers
 
     # Append any extra markers (e.g., condition state changes)
     if extra_markers:
@@ -1631,6 +2969,7 @@ def render_price_chart(
         "borderColor": "#2B2B2B",
         "timeVisible": True,
         "secondsVisible": False,
+        "rightOffset": 10,
     }
 
     # Chart configuration
@@ -1653,33 +2992,109 @@ def render_price_chart(
         "height": 350 if secondary_panes else 450
     }
 
-    # Candlestick series with markers
+    # Candlestick series with markers — theme from settings
+    _candle_theme_key = st.session_state.get('candle_theme', 'neutral')
+    _candle_colors = CANDLE_THEMES.get(_candle_theme_key, CANDLE_THEMES['neutral'])
     series = [{
         "type": "Candlestick",
         "data": candle_data,
-        "options": {
-            "upColor": "#26a69a",
-            "downColor": "#ef5350",
-            "borderUpColor": "#26a69a",
-            "borderDownColor": "#ef5350",
-            "wickUpColor": "#26a69a",
-            "wickDownColor": "#ef5350"
-        },
+        "options": _candle_colors,
         "markers": markers
     }]
+
+    # Add target-price markers (+) — always shown when trades exist
+    if target_entry_data:
+        target_entry_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "cross",
+             "color": "#2196F3", "size": 1}
+            for d in target_entry_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": target_entry_data,
+            "options": {
+                "color": "#2196F3",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": target_entry_markers,
+        })
+    if target_exit_data:
+        target_exit_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "cross",
+             "color": "#4CAF50", "size": 1}
+            for d in target_exit_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": target_exit_data,
+            "options": {
+                "color": "#4CAF50",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": target_exit_markers,
+        })
+
+    # Add alert-price markers (×) — only with real recorded alerts
+    if alert_entry_data:
+        alert_entry_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "xcross",
+             "color": "rgba(33,150,243,0.8)", "size": 1}
+            for d in alert_entry_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": alert_entry_data,
+            "options": {
+                "color": "rgba(33,150,243,0.6)",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": alert_entry_markers,
+        })
+    if alert_exit_data:
+        alert_exit_markers = [
+            {"time": d["time"], "position": "inBar", "shape": "xcross",
+             "color": "rgba(76,175,80,0.8)", "size": 1}
+            for d in alert_exit_data
+        ]
+        series.append({
+            "type": "Line",
+            "data": alert_exit_data,
+            "options": {
+                "color": "rgba(76,175,80,0.6)",
+                "lineVisible": False,
+                "pointMarkersVisible": False,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            },
+            "markers": alert_exit_markers,
+        })
 
     # Add indicator overlays
     if show_indicators:
         for ind_id in show_indicators:
             if ind_id in candles.columns:
-                # Prepare indicator data
-                ind_data = []
-                for _, row in candles.iterrows():
-                    if pd.notna(row.get(ind_id)):
-                        ind_data.append({
-                            "time": int(row['time']),
-                            "value": float(row[ind_id])
-                        })
+                # Prepare indicator data (vectorized)
+                _mask = candles[ind_id].notna()
+                _filtered = candles.loc[_mask, ['time', ind_id]]
+                ind_data = [{"time": int(t), "value": float(v)}
+                            for t, v in zip(_filtered['time'], _filtered[ind_id])]
 
                 if ind_data:
                     # Get color for this indicator (prefer confluence group colors, fallback to defaults)
@@ -1688,20 +3103,61 @@ def render_price_chart(
                     else:
                         color = INDICATOR_COLORS.get(ind_id, "#FFFFFF")
 
+                    line_opts = {
+                        "color": color,
+                        "lineWidth": 2,
+                        "priceLineVisible": False,
+                        "crosshairMarkerVisible": True,
+                        "title": ind_id.upper().replace("_", " ")
+                    }
+                    # Apply line style (0=Solid, 1=Dotted, 2=Dashed, 3=LargeDashed, 4=SparseDotted)
+                    if indicator_line_styles and ind_id in indicator_line_styles:
+                        line_opts["lineStyle"] = indicator_line_styles[ind_id]
+
                     series.append({
                         "type": "Line",
                         "data": ind_data,
+                        "options": line_opts
+                    })
+
+    # Build primitives list (BandIndicator fills, etc.)
+    primitives = []
+    if band_fills:
+        for bf in band_fills:
+            upper_col = bf.get("upper_column")
+            lower_col = bf.get("lower_column")
+            fill_color = bf.get("fill_color", "rgba(128,128,128,0.1)")
+            if upper_col in candles.columns and lower_col in candles.columns:
+                band_data = []
+                for _, row in candles.iterrows():
+                    t = int(row['time'])
+                    upper_val = row.get(upper_col)
+                    lower_val = row.get(lower_col)
+                    if pd.notna(upper_val) and pd.notna(lower_val):
+                        band_data.append({
+                            "time": t,
+                            "upperValue": float(upper_val),
+                            "lowerValue": float(lower_val),
+                        })
+                if band_data:
+                    primitives.append({
+                        "type": "bandFill",
+                        "seriesIndex": 0,
                         "options": {
-                            "color": color,
-                            "lineWidth": 2,
-                            "priceLineVisible": False,
-                            "crosshairMarkerVisible": True,
-                            "title": ind_id.upper().replace("_", " ")
+                            "fillColor": fill_color,
+                            "data": band_data,
                         }
                     })
 
+    # Merge any extra primitives (e.g., condition overlay bands/labels)
+    if extra_primitives:
+        primitives.extend(extra_primitives)
+
     # Build chart pane list (price chart + optional synced secondary panes)
-    chart_panes = [{"chart": chart_options, "series": series}]
+    price_pane = {"chart": chart_options, "series": series}
+    if primitives:
+        price_pane["primitives"] = primitives
+    chart_panes = [price_pane]
     if secondary_panes:
         # Trim secondary pane data to match the visible candle window
         for pane in secondary_panes:
@@ -1761,11 +3217,11 @@ def save_strategy(strategy: dict):
 
     # Add timestamp and ID (max+1 is safe after deletions)
     strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
-    strategy['created_at'] = datetime.now().isoformat()
+    strategy['created_at'] = datetime.now(timezone.utc).isoformat()
 
     # Forward testing is always on
     strategy['forward_testing'] = True
-    strategy['forward_test_start'] = strategy['created_at']
+    strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
 
     # Convert set to list for JSON serialization
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
@@ -1827,7 +3283,7 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
 
         updated_strategy['id'] = strategy_id
         updated_strategy['created_at'] = strat['created_at']
-        updated_strategy['updated_at'] = datetime.now().isoformat()
+        updated_strategy['updated_at'] = datetime.now(timezone.utc).isoformat()
         updated_strategy['forward_testing'] = True
 
         if 'confluence' in updated_strategy and isinstance(updated_strategy['confluence'], set):
@@ -1837,12 +3293,12 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
 
         if optimizable_changed:
             # Trade-affecting change: reset forward test
-            updated_strategy['forward_test_start'] = datetime.now().isoformat()
+            updated_strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
             result = 'reset'
         else:
             # Non-trade-affecting: preserve forward test data from old strategy
             updated_strategy['forward_test_start'] = strat.get(
-                'forward_test_start', datetime.now().isoformat())
+                'forward_test_start', datetime.now(timezone.utc).isoformat())
             updated_strategy['stored_trades'] = strat.get('stored_trades', [])
             updated_strategy['equity_curve_data'] = strat.get('equity_curve_data')
             updated_strategy['data_refreshed_at'] = strat.get('data_refreshed_at')
@@ -1889,24 +3345,29 @@ def refresh_strategy_data(strategy_id: int) -> bool:
     for i, strat in enumerate(strategies):
         if strat.get('id') != strategy_id:
             continue
-        if 'entry_trigger_confluence_id' not in strat:
+        if strat.get('strategy_origin') != 'webhook_inbound' and 'entry_trigger_confluence_id' not in strat:
             return False  # legacy strategy
 
         existing_stored = strat.get('stored_trades')
 
         if existing_stored:
             # --- INCREMENTAL PATH ---
-            # Find the last known trade entry time
-            last_entry_dt = max(
-                pd.Timestamp(t['entry_time']) for t in existing_stored
-            )
+            if strat.get('strategy_origin') == 'webhook_inbound':
+                # Webhook origin: process queued inbound signals
+                _process_inbound_webhook_signals(strat, existing_stored)
+            else:
+                # Standard origin: generate new trades from market data
+                # Find the last known trade entry time
+                last_entry_dt = max(
+                    pd.Timestamp(t['entry_time']) for t in existing_stored
+                )
 
-            # Generate only new trades since last known entry
-            new_trades = _generate_incremental_trades(strat, last_entry_dt)
+                # Generate only new trades since last known entry
+                new_trades = _generate_incremental_trades(strat, last_entry_dt)
 
-            if len(new_trades) > 0:
-                new_records = _extract_minimal_trades(new_trades)
-                existing_stored.extend(new_records)
+                if len(new_trades) > 0:
+                    new_records = _extract_minimal_trades(new_trades)
+                    existing_stored.extend(new_records)
 
             # Recompute KPIs + equity curve from all stored trades
             all_trades_df = _trades_df_from_stored(existing_stored)
@@ -1955,7 +3416,60 @@ def refresh_strategy_data(strategy_id: int) -> bool:
             strat['kpis'] = kpis
             strat['equity_curve_data'] = eq_data
 
-        strat['data_refreshed_at'] = datetime.now().isoformat()
+        # Run alert matching if alert tracking is enabled
+        if strat.get('alert_tracking_enabled', False):
+            from alerts import match_alerts_to_trades
+            old_exec_count = len(strat.get('live_executions', []))
+            match_result = match_alerts_to_trades(strat)
+            new_execs = match_result.get('live_executions', [])
+            strat['live_executions'] = new_execs
+
+            # Preserve detected_at for previously-known discrepancies so dismiss stays valid
+            _old_disc = strat.get('discrepancies', [])
+            _new_disc = match_result.get('discrepancies', [])
+            _old_detected = {}
+            for _od in _old_disc:
+                if _od.get('type') == 'missed_alert':
+                    _old_detected[('missed', _od.get('trade_index'))] = _od.get('detected_at')
+                elif _od.get('type') == 'phantom_alert':
+                    _old_detected[('phantom', _od.get('alert_id'))] = _od.get('detected_at')
+            for _nd in _new_disc:
+                if _nd.get('type') == 'missed_alert':
+                    _key = ('missed', _nd.get('trade_index'))
+                elif _nd.get('type') == 'phantom_alert':
+                    _key = ('phantom', _nd.get('alert_id'))
+                else:
+                    continue
+                if _key in _old_detected:
+                    _nd['detected_at'] = _old_detected[_key]
+            strat['discrepancies'] = _new_disc
+
+            # Auto-generate trading P&L ledger entries for new exit executions
+            if len(new_execs) > old_exec_count:
+                _new_exit_execs = [e for e in new_execs[old_exec_count:]
+                                   if e.get('type') == 'exit' and e.get('matched_trade_index') is not None]
+                if _new_exit_execs:
+                    from portfolios import get_portfolio_alert_context, add_ledger_entry as _add_ledger
+                    _port_contexts = get_portfolio_alert_context(strategy_id)
+                    for _pctx in _port_contexts:
+                        _pid = _pctx['portfolio_id']
+                        _risk = _pctx.get('risk_per_trade', 100.0)
+                        _prt = get_portfolio_by_id(_pid)
+                        if _prt is None:
+                            continue
+                        for _ex in _new_exit_execs:
+                            _ti = _ex['matched_trade_index']
+                            _stored = strat.get('stored_trades', [])
+                            if _ti < len(_stored):
+                                _r_mult = _stored[_ti].get('r_multiple', 0) - _ex.get('slippage_r', 0)
+                                _dollar_pnl = _r_mult * _risk
+                                _add_ledger(_prt, 'trading_pnl', round(_dollar_pnl, 2),
+                                            note=f"{strat.get('name', '')} trade #{_ti}",
+                                            date=format_display_ts(_ex.get('alert_timestamp', ''), date_only=True),
+                                            auto=True)
+                        update_portfolio(_pid, _prt)
+
+        strat['data_refreshed_at'] = datetime.now(timezone.utc).isoformat()
         strategies[i] = strat
 
         with open(STRATEGIES_FILE, 'w') as f:
@@ -1975,7 +3489,8 @@ def bulk_refresh_all_strategies(progress_callback=None) -> dict:
     'total_processed'.
     """
     strategies = load_strategies()
-    processable = [s for s in strategies if 'entry_trigger_confluence_id' in s]
+    processable = [s for s in strategies
+                    if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
     skipped = len(strategies) - len(processable)
     success = 0
     failed = []
@@ -2031,7 +3546,7 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
 
     new_strategy = copy.deepcopy(source)
     new_strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
-    new_strategy['created_at'] = datetime.now().isoformat()
+    new_strategy['created_at'] = datetime.now(timezone.utc).isoformat()
     new_strategy['name'] = source['name'] + " (Copy)"
     new_strategy['forward_testing'] = False
     new_strategy.pop('forward_test_start', None)
@@ -2048,10 +3563,29 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
     return new_strategy
 
 
-def get_trigger_display_name(strat: dict, trigger_key: str) -> str:
-    """Get display name for a trigger, handling legacy strategies."""
+def get_trigger_display_name(strat: dict, trigger_key: str, trigger_defs: dict = None) -> str:
+    """Get display name for a trigger, handling legacy strategies.
+
+    Args:
+        strat: Strategy config dict.
+        trigger_key: Base key like 'entry_trigger'.
+        trigger_defs: Optional dict mapping confluence_id -> TriggerDefinition.
+            When provided, the name is prefixed with [C]/[I] execution tag.
+    """
     name_key = trigger_key + '_name'
-    return strat.get(name_key, strat.get(trigger_key, 'Unknown'))
+    name = strat.get(name_key, strat.get(trigger_key, 'Unknown'))
+
+    if trigger_defs is not None:
+        conf_id_key = trigger_key + '_confluence_id'
+        cid = strat.get(conf_id_key)
+        tdef = trigger_defs.get(cid or '') if cid else None
+        tag = _execution_tag(
+            cid or '',
+            tdef.execution if tdef else 'bar_close'
+        )
+        return f"{tag} {name}"
+
+    return name
 
 
 # =============================================================================
@@ -2087,8 +3621,12 @@ def main():
         st.session_state.editing_strategy_id = None
     if 'confirm_delete_id' not in st.session_state:
         st.session_state.confirm_delete_id = None
+    if 'confirm_delete_ledger_id' not in st.session_state:
+        st.session_state.confirm_delete_ledger_id = None
     if 'confirm_edit_id' not in st.session_state:
         st.session_state.confirm_edit_id = None
+    if 'confirm_reset_alerts_id' not in st.session_state:
+        st.session_state.confirm_reset_alerts_id = None
     if 'viewing_portfolio_id' not in st.session_state:
         st.session_state.viewing_portfolio_id = None
     if 'editing_portfolio_id' not in st.session_state:
@@ -2139,10 +3677,36 @@ def main():
     if 'tp_results' not in st.session_state:
         st.session_state.tp_results = None
 
+    # Load user packs on startup (once per session)
+    if 'user_packs_loaded' not in st.session_state:
+        pack_registry.scan_and_load_all()
+        st.session_state.user_packs_loaded = True
+
+    # Backfill alert_config for strategies with alert_tracking_enabled (once per session)
+    if not st.session_state.get('_alert_config_backfilled'):
+        st.session_state._alert_config_backfilled = True
+        _all_strats = load_strategies()
+        _acfg = load_alert_config()
+        _acfg_needs_save = False
+        for _s in _all_strats:
+            _sid_str = str(_s['id'])
+            if _s.get('alert_tracking_enabled') and _sid_str not in _acfg.get('strategies', {}):
+                if 'strategies' not in _acfg:
+                    _acfg['strategies'] = {}
+                _acfg['strategies'][_sid_str] = {
+                    'alerts_enabled': True,
+                    'alert_on_entry': True,
+                    'alert_on_exit': True,
+                }
+                _acfg_needs_save = True
+        if _acfg_needs_save:
+            save_alert_config(_acfg)
+            _signal_ralph_reload()
+
     # --- Top-level navigation ---
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
-        "Confluence Packs": ["TF Confluence", "General", "Risk Management"],
+        "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder", "Timeframes"],
         "Strategies": ["Strategy Builder", "My Strategies"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
@@ -2172,10 +3736,10 @@ def main():
         st.title("RoR Trader")
         st.caption("Return on Risk Trader")
 
-        data_source = get_data_source()
+        data_source = get_data_source(_get_data_feed())
         if is_alpaca_configured():
             st.success(f"{data_source}")
-            st.caption("Free plan: IEX data \u00b7 Paid plan: SIP (all exchanges)")
+            st.caption("IEX: single exchange \u00b7 SIP: consolidated (all exchanges)")
         else:
             st.warning(f"{data_source}")
 
@@ -2211,6 +3775,12 @@ def main():
             render_general_packs()
         elif sub == "Risk Management":
             render_risk_management_packs()
+        elif sub == "User Packs":
+            render_user_packs_page()
+        elif sub == "Pack Builder":
+            render_pack_builder_page()
+        elif sub == "Timeframes":
+            render_timeframes_page()
     elif section == "Strategies":
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
@@ -2361,21 +3931,24 @@ def render_dashboard():
         else:
             st.markdown(":orange[Mock Data] — Configure Alpaca for live data")
 
-        # Alert monitor
-        monitor = load_monitor_status()
-        if monitor.get('running'):
-            last_poll = monitor.get('last_poll', '')
-            poll_time = ''
-            if last_poll:
-                try:
-                    dt = datetime.fromisoformat(last_poll)
-                    poll_time = f" (last poll: {dt.strftime('%H:%M:%S')})"
-                except (ValueError, TypeError):
-                    pass
-            strats_mon = monitor.get('strategies_monitored', 0)
-            st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+        # Alert engine status
+        _dash_ralph = _read_ralph_status()
+        if _dash_ralph.get('running'):
+            _dash_syms = ", ".join(_dash_ralph.get('symbols', []))
+            _dash_ticks = _dash_ralph.get('tick_count', 0)
+            _dash_mode = "Streaming" if _dash_ralph.get('connected') else "Connecting"
+            st.markdown(f":green[Ralph Engine {_dash_mode}] — {_dash_syms} | {_dash_ticks:,} ticks")
         else:
-            st.markdown(":gray[Alert Monitor Stopped]")
+            monitor = load_monitor_status()
+            if monitor.get('running'):
+                last_poll = monitor.get('last_poll', '')
+                poll_time = ''
+                if last_poll:
+                    poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
+                strats_mon = monitor.get('strategies_monitored', 0)
+                st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+            else:
+                st.markdown(":gray[Alert Engine Stopped]")
 
         # Forward tests
         st.markdown(f"**{len(forward_testing)}** strategies in forward testing")
@@ -2402,7 +3975,7 @@ def _is_within_days(timestamp_str: str, days: int) -> bool:
     """Check if an ISO timestamp string is within the last N days."""
     try:
         dt = datetime.fromisoformat(timestamp_str)
-        return (datetime.now() - dt).days <= days
+        return _days_since(dt) <= days
     except (ValueError, TypeError):
         return False
 
@@ -2435,7 +4008,7 @@ def render_strategy_builder():
             _eb1, _eb2 = st.columns([5, 1])
             _ft_start = editing_strat.get('forward_test_start')
             if _ft_start:
-                _ft_days = (datetime.now() - datetime.fromisoformat(_ft_start)).days
+                _ft_days = _days_since(datetime.fromisoformat(_ft_start))
                 _eb1.info(f"Editing: **{editing_strat['name']}** (forward test: {_ft_days}d)")
             else:
                 _eb1.info(f"Editing: **{editing_strat['name']}**")
@@ -2448,20 +4021,25 @@ def render_strategy_builder():
                 st.rerun()
 
     # =========================================================================
-    # ROW 1: Method | Ticker | TF | Dir | Lookback | Params | Name | FT/AL | Load
+    # ROW 1: Method | Ticker | TF | Dir | Session | Lookback | Params | Name | FT/AL | Load
     # =========================================================================
-    r1c0, r1c1, r1c2, r1c3, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(
-        [0.6, 0.8, 0.8, 0.55, 0.7, 1.2, 1.4, 0.45, 0.5])
+    r1c0, r1c1, r1c2, r1c3, r1c3b, r1c4, r1c5, r1c6, r1c7, r1c8 = st.columns(
+        [0.6, 0.8, 0.8, 0.55, 0.7, 0.7, 1.1, 1.1, 0.45, 0.5])
 
     with r1c0:
+        _origin_options = ["Standard", "Webhook Inbound"]
+        _saved_origin = edit_config.get('strategy_origin', 'standard')
+        _origin_idx = 1 if _saved_origin == 'webhook_inbound' else 0
         strategy_origin = st.selectbox(
-            "Method", ["Standard"], index=0,
-            help="Strategy methodology (more methods coming soon)",
+            "Method", _origin_options, index=_origin_idx,
+            help="Standard: trigger-based entry/exit. Webhook Inbound: signals from external sources (TradingView, LuxAlgo, etc.)",
         )
 
     with r1c1:
-        symbol_idx = AVAILABLE_SYMBOLS.index(edit_config['symbol']) if edit_config.get('symbol') in AVAILABLE_SYMBOLS else 0
-        symbol = st.selectbox("Ticker", AVAILABLE_SYMBOLS, index=symbol_idx, key="sb_symbol")
+        symbol = st.text_input(
+            "Ticker", value=edit_config.get('symbol', 'SPY'),
+            key="sb_symbol", help="Any Alpaca-supported stock ticker (e.g. SPY, AAPL, PLTR)",
+        ).strip().upper()
 
     with r1c2:
         tf_idx = TIMEFRAMES.index(edit_config['timeframe']) if edit_config.get('timeframe') in TIMEFRAMES else 0
@@ -2470,6 +4048,12 @@ def render_strategy_builder():
     with r1c3:
         direction_idx = DIRECTIONS.index(edit_config['direction']) if edit_config.get('direction') in DIRECTIONS else 0
         direction = st.selectbox("Direction", DIRECTIONS, index=direction_idx, key="sb_direction")
+
+    with r1c3b:
+        _saved_sess = edit_config.get('trading_session', 'RTH')
+        _sess_idx = TRADING_SESSIONS.index(_saved_sess) if _saved_sess in TRADING_SESSIONS else 0
+        trading_session = st.selectbox("Session", TRADING_SESSIONS, index=_sess_idx, key="sb_session",
+            help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM")
 
     # Re-fetch entry triggers with actual selected direction
     entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
@@ -2492,7 +4076,7 @@ def render_strategy_builder():
             saved_bar_count = edit_config.get('bar_count', 1000)
             bar_count = st.number_input("Bars", min_value=100, max_value=500000,
                                          value=saved_bar_count, step=100, key="sb_bar_count")
-            data_days = days_from_bar_count(bar_count, timeframe)
+            data_days = days_from_bar_count(bar_count, timeframe, session=trading_session)
         elif lookback_mode == "Date Range":
             from datetime import time as dtime
             saved_start = edit_config.get('lookback_start_date')
@@ -2532,7 +4116,7 @@ def render_strategy_builder():
         load_clicked = st.button("Load Data", type="primary", use_container_width=True)
 
     # Bar estimate (computed now, rendered after validation via placeholder)
-    est_bars = estimate_bar_count(data_days, timeframe)
+    est_bars = estimate_bar_count(data_days, timeframe, session=trading_session)
     _status_placeholder = st.empty()
 
     # =========================================================================
@@ -2545,7 +4129,10 @@ def render_strategy_builder():
         edit_config['stop_config'] = pending_sc
         st.session_state.strategy_config = dict(edit_config)
         for k in ['sb_stop_method', 'sb_stop_atr', 'sb_stop_dollar',
-                  'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding']:
+                  'sb_stop_pct', 'sb_stop_lookback', 'sb_stop_padding',
+                  'sb_trail_enabled', 'sb_trail_method', 'sb_trail_atr',
+                  'sb_trail_dollar', 'sb_trail_pct', 'sb_trail_activation',
+                  'sb_be_enabled', 'sb_be_activation', 'sb_be_offset']:
             st.session_state.pop(k, None)
     if 'pending_target_config' in st.session_state:
         pending_tc = st.session_state.pop('pending_target_config')
@@ -2565,74 +4152,125 @@ def render_strategy_builder():
     else:
         _force_no_target = False
 
+    _is_webhook_origin = strategy_origin.lower().replace(' ', '_') == 'webhook_inbound'
+
     with st.expander("Strategy Config", expanded=False):
         r2c1, r2c2, r2c3, r2c4 = st.columns([1.3, 1.3, 1.3, 1.3])
 
-        # --- Entry Trigger ---
-        with r2c1:
-            if len(entry_triggers) == 0:
-                st.warning("No entry triggers")
-                entry_trigger = None
-                entry_trigger_name = None
-            else:
-                entry_trigger_options = list(entry_triggers.keys())
-                entry_trigger_labels = []
-                for tid in entry_trigger_options:
-                    name = entry_triggers[tid]
-                    tdef = all_trigger_defs.get(tid)
-                    exec_tag = "C" if not tdef or tdef.execution == "bar_close" else "I"
-                    entry_trigger_labels.append(f"{name} [{exec_tag}]")
-                saved_entry = edit_config.get('entry_trigger_confluence_id', '')
-                if saved_entry in entry_trigger_options:
-                    entry_default_idx = entry_trigger_options.index(saved_entry)
-                else:
-                    settings_default = st.session_state.get('default_entry_trigger', '')
-                    if settings_default in entry_trigger_options:
-                        entry_default_idx = entry_trigger_options.index(settings_default)
-                    else:
-                        entry_default_idx = 0
-                if _pending_entry_idx is not None and 0 <= _pending_entry_idx < len(entry_trigger_options):
-                    entry_default_idx = _pending_entry_idx
-                entry_trigger_idx = st.selectbox(
-                    "Entry Trigger",
-                    range(len(entry_trigger_options)),
-                    index=entry_default_idx,
-                    format_func=lambda i: entry_trigger_labels[i],
-                    key="sb_entry_trigger",
-                )
-                entry_trigger = entry_trigger_options[entry_trigger_idx]
-                entry_trigger_name = entry_triggers[entry_trigger]
+        if _is_webhook_origin:
+            # --- Webhook Inbound Config (replaces entry/exit triggers) ---
+            _saved_wh = edit_config.get('webhook_config', {})
 
-        # --- Exit Trigger (primary) ---
-        with r2c2:
-            exit_options = list(exit_trigger_display.keys())
-            exit_labels = list(exit_trigger_display.values())
-            has_exit_triggers = len(exit_options) > 0
+            with r2c1:
+                import uuid as _uuid_mod
+                _wh_secret = _saved_wh.get('secret', f"whsec_{_uuid_mod.uuid4().hex[:12]}")
+                st.text_input("Webhook Secret", value=_wh_secret,
+                              key="sb_wh_secret", disabled=True,
+                              help="Auto-generated secret. Include as X-Webhook-Secret header.")
+                _wh_port = st.session_state.get('webhook_server_port', 8501)
+                st.caption(f"Endpoint: `POST http://localhost:{_wh_port}/webhook/inbound/{{id}}`")
 
-            if not has_exit_triggers:
-                st.warning("No exit triggers")
-            else:
-                saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
-                if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
-                    saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
-                saved_primary = saved_exit_cids[0] if saved_exit_cids else ''
-                if saved_primary in exit_options:
-                    exit_default_idx = exit_options.index(saved_primary)
-                else:
-                    settings_exit_default = st.session_state.get('default_exit_trigger', '')
-                    if settings_exit_default in exit_options:
-                        exit_default_idx = exit_options.index(settings_exit_default)
-                    else:
-                        exit_default_idx = 0
-                primary_exit_idx = st.selectbox(
-                    "Exit Trigger",
-                    range(len(exit_options)),
-                    index=exit_default_idx,
-                    format_func=lambda i, _labels=exit_labels: _labels[i],
-                    key="sb_exit_trigger_0",
+                _wh_json_path = st.text_input(
+                    "Signal JSON Path", value=_saved_wh.get('signal_json_path', 'action'),
+                    key="sb_wh_json_path",
+                    help="JSON key in payload that contains the signal value (e.g., 'action', 'signal', 'order.side')",
                 )
-                primary_exit_cid = exit_options[primary_exit_idx]
-                primary_exit_name = all_trigger_map[primary_exit_cid].name if primary_exit_cid in all_trigger_map else ""
+
+            with r2c2:
+                _wh_entry_long = st.text_input(
+                    "Long Entry Value", value=_saved_wh.get('entry_long_value', 'buy'),
+                    key="sb_wh_entry_long",
+                    help="Payload value that triggers a long entry",
+                )
+                _wh_entry_short = st.text_input(
+                    "Short Entry Value", value=_saved_wh.get('entry_short_value', 'sell'),
+                    key="sb_wh_entry_short",
+                    help="Payload value that triggers a short entry",
+                )
+                _wh_exit_val = st.text_input(
+                    "Exit Value", value=_saved_wh.get('exit_value', 'close'),
+                    key="sb_wh_exit_val",
+                    help="Payload value that triggers an exit",
+                )
+                _wh_layer_conf = st.checkbox(
+                    "Layer confluence on signals",
+                    value=_saved_wh.get('layer_confluence', False),
+                    key="sb_wh_layer_conf",
+                    help="Require confluence conditions to be met at signal time for entry to count",
+                )
+
+            # Set placeholder values for trigger variables (not used for webhook origin)
+            entry_trigger = None
+            entry_trigger_name = None
+            has_exit_triggers = False
+
+        else:
+            # --- Standard: Entry Trigger ---
+            with r2c1:
+                if len(entry_triggers) == 0:
+                    st.warning("No entry triggers")
+                    entry_trigger = None
+                    entry_trigger_name = None
+                else:
+                    entry_trigger_options = list(entry_triggers.keys())
+                    entry_trigger_labels = []
+                    for tid in entry_trigger_options:
+                        name = entry_triggers[tid]
+                        tdef = all_trigger_defs.get(tid)
+                        from unified_engine import get_trigger_exec_type as _get_et
+                        exec_tag = _get_et(tid) if tdef else "C"
+                        entry_trigger_labels.append(f"{name} [{exec_tag}]")
+                    saved_entry = edit_config.get('entry_trigger_confluence_id', '')
+                    if saved_entry in entry_trigger_options:
+                        entry_default_idx = entry_trigger_options.index(saved_entry)
+                    else:
+                        settings_default = st.session_state.get('default_entry_trigger', '')
+                        if settings_default in entry_trigger_options:
+                            entry_default_idx = entry_trigger_options.index(settings_default)
+                        else:
+                            entry_default_idx = 0
+                    if _pending_entry_idx is not None and 0 <= _pending_entry_idx < len(entry_trigger_options):
+                        entry_default_idx = _pending_entry_idx
+                    entry_trigger_idx = st.selectbox(
+                        "Entry Trigger",
+                        range(len(entry_trigger_options)),
+                        index=entry_default_idx,
+                        format_func=lambda i: entry_trigger_labels[i],
+                        key="sb_entry_trigger",
+                    )
+                    entry_trigger = entry_trigger_options[entry_trigger_idx]
+                    entry_trigger_name = entry_triggers[entry_trigger]
+
+            # --- Standard: Exit Trigger (primary) ---
+            with r2c2:
+                exit_options = list(exit_trigger_display.keys())
+                exit_labels = list(exit_trigger_display.values())
+                has_exit_triggers = len(exit_options) > 0
+
+                if not has_exit_triggers:
+                    st.warning("No exit triggers")
+                else:
+                    saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+                    if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+                        saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+                    saved_primary = saved_exit_cids[0] if saved_exit_cids else ''
+                    if saved_primary in exit_options:
+                        exit_default_idx = exit_options.index(saved_primary)
+                    else:
+                        settings_exit_default = st.session_state.get('default_exit_trigger', '')
+                        if settings_exit_default in exit_options:
+                            exit_default_idx = exit_options.index(settings_exit_default)
+                        else:
+                            exit_default_idx = 0
+                    primary_exit_idx = st.selectbox(
+                        "Exit Trigger",
+                        range(len(exit_options)),
+                        index=exit_default_idx,
+                        format_func=lambda i, _labels=exit_labels: _labels[i],
+                        key="sb_exit_trigger_0",
+                    )
+                    primary_exit_cid = exit_options[primary_exit_idx]
+                    primary_exit_name = all_trigger_map[primary_exit_cid].name if primary_exit_cid in all_trigger_map else ""
 
         # --- Stop Loss ---
         with r2c3:
@@ -2684,6 +4322,75 @@ def render_strategy_builder():
                     value=float(saved_stop.get('padding', 0.05)),
                     step=0.01, key="sb_stop_padding",
                 )
+
+            # --- Optional: Trailing Stop ---
+            saved_trail = saved_stop.get('trailing', {})
+            trail_enabled = st.checkbox(
+                "Trailing Stop",
+                value=saved_trail.get('enabled', False),
+                key="sb_trail_enabled",
+            )
+            if trail_enabled:
+                trail_methods = ["ATR", "Fixed $", "Pct %"]
+                trail_keys = ["atr", "fixed_dollar", "percentage"]
+                saved_tm = saved_trail.get('method', 'atr')
+                trail_idx = trail_keys.index(saved_tm) if saved_tm in trail_keys else 0
+                trail_method_idx = st.selectbox(
+                    "Trail Method", range(len(trail_methods)),
+                    index=trail_idx,
+                    format_func=lambda i: trail_methods[i],
+                    key="sb_trail_method",
+                )
+                trail_key = trail_keys[trail_method_idx]
+                trail_cfg = {"enabled": True, "method": trail_key}
+                if trail_key == "atr":
+                    trail_cfg["atr_mult"] = st.number_input(
+                        "Trail ATR×", min_value=0.3, max_value=5.0,
+                        value=float(saved_trail.get('atr_mult', 1.0)),
+                        step=0.1, key="sb_trail_atr",
+                    )
+                elif trail_key == "fixed_dollar":
+                    trail_cfg["dollar_amount"] = st.number_input(
+                        "Trail $", min_value=0.01, max_value=100.0,
+                        value=float(saved_trail.get('dollar_amount', 0.50)),
+                        step=0.05, key="sb_trail_dollar",
+                    )
+                elif trail_key == "percentage":
+                    trail_cfg["percentage"] = st.number_input(
+                        "Trail %", min_value=0.01, max_value=10.0,
+                        value=float(saved_trail.get('percentage', 0.3)),
+                        step=0.05, key="sb_trail_pct",
+                    )
+                trail_cfg["activation_r"] = st.number_input(
+                    "Activation (R)", min_value=0.0, max_value=5.0,
+                    value=float(saved_trail.get('activation_r', 0.5)),
+                    step=0.1, key="sb_trail_activation",
+                )
+                stop_config_dict["trailing"] = trail_cfg
+
+            # --- Optional: Breakeven Stop ---
+            saved_be = saved_stop.get('breakeven', {})
+            be_enabled = st.checkbox(
+                "Breakeven Stop",
+                value=saved_be.get('enabled', False),
+                key="sb_be_enabled",
+            )
+            if be_enabled:
+                be_r = st.number_input(
+                    "BE Activation (R)", min_value=0.1, max_value=5.0,
+                    value=float(saved_be.get('activation_r', 1.0)),
+                    step=0.1, key="sb_be_activation",
+                )
+                be_offset = st.number_input(
+                    "BE Offset ($)", min_value=0.0, max_value=2.0,
+                    value=float(saved_be.get('offset', 0.0)),
+                    step=0.01, key="sb_be_offset",
+                )
+                stop_config_dict["breakeven"] = {
+                    "enabled": True,
+                    "activation_r": be_r,
+                    "offset": be_offset,
+                }
 
         stop_atr_mult = stop_config_dict.get('atr_mult', 1.5) if stop_method == 'atr' else 1.5
 
@@ -2759,33 +4466,47 @@ def render_strategy_builder():
     if has_exit_triggers:
         exit_trigger_selections.append((primary_exit_cid, primary_exit_name))
 
-    # Initialize additional exits from saved strategy
-    if 'sb_additional_exits' not in st.session_state:
-        saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
-        if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
-            saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
-        st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
+    if not _is_webhook_origin:
+        # Initialize additional exits from saved strategy.
+        # Re-init when the editing context changes (prevents stale CIDs from
+        # a previous strategy leaking into a different one).
+        _current_edit_ctx = editing_id or '__new__'
+        if ('sb_additional_exits' not in st.session_state
+                or st.session_state.get('_sb_exits_ctx') != _current_edit_ctx):
+            saved_exit_cids = edit_config.get('exit_trigger_confluence_ids', [])
+            if not saved_exit_cids and edit_config.get('exit_trigger_confluence_id'):
+                saved_exit_cids = [edit_config['exit_trigger_confluence_id']]
+            st.session_state.sb_additional_exits = saved_exit_cids[1:] if len(saved_exit_cids) > 1 else []
+            st.session_state._sb_exits_ctx = _current_edit_ctx
 
-    # Process pending exit operations from drill-down
-    if 'pending_add_exit' in st.session_state:
-        add_cid = st.session_state.pop('pending_add_exit')
-        if add_cid in exit_options and len(st.session_state.sb_additional_exits) < 2:
-            st.session_state.sb_additional_exits.append(add_cid)
-    if 'pending_replace_exits' in st.session_state:
-        replace_cids = st.session_state.pop('pending_replace_exits')
-        valid_cids = [c for c in replace_cids if c in exit_options]
-        if valid_cids:
-            st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
-    if 'pending_remove_exit_idx' in st.session_state:
-        rm_idx = st.session_state.pop('pending_remove_exit_idx')
-        addl = st.session_state.sb_additional_exits
-        adj_idx = rm_idx - 1  # index 0 is primary
-        if 0 <= adj_idx < len(addl):
-            addl.pop(adj_idx)
+        # Process pending exit operations from drill-down
+        if 'pending_add_exit' in st.session_state:
+            add_cid = st.session_state.pop('pending_add_exit')
+            if add_cid in exit_options and len(st.session_state.sb_additional_exits) < 2:
+                st.session_state.sb_additional_exits.append(add_cid)
+        if 'pending_replace_exits' in st.session_state:
+            replace_cids = st.session_state.pop('pending_replace_exits')
+            valid_cids = [c for c in replace_cids if c in exit_options]
+            if valid_cids:
+                st.session_state.sb_additional_exits = valid_cids[1:] if len(valid_cids) > 1 else []
+            st.session_state.pop('sb_bar_count_exit_removed', None)
+        if 'pending_remove_exit_idx' in st.session_state:
+            rm_idx = st.session_state.pop('pending_remove_exit_idx')
+            addl = st.session_state.sb_additional_exits
+            adj_idx = rm_idx - 1  # index 0 is primary
+            if 0 <= adj_idx < len(addl):
+                addl.pop(adj_idx)
+        if 'pending_remove_bar_count_exit' in st.session_state:
+            st.session_state.pop('pending_remove_bar_count_exit')
+            st.session_state.sb_bar_count_exit_removed = True
 
-    # Add additional exits to selections
-    for cid in st.session_state.get('sb_additional_exits', []):
-        if cid in exit_options:
+        # Add additional exits to selections (prune stale CIDs that are no
+        # longer valid — can happen when switching strategies or disabling groups)
+        _valid_addl = [cid for cid in st.session_state.get('sb_additional_exits', [])
+                       if cid in exit_options]
+        if len(_valid_addl) != len(st.session_state.get('sb_additional_exits', [])):
+            st.session_state.sb_additional_exits = _valid_addl
+        for cid in _valid_addl:
             name = all_trigger_map[cid].name if cid in all_trigger_map else ""
             exit_trigger_selections.append((cid, name))
 
@@ -2800,15 +4521,18 @@ def render_strategy_builder():
         if any(g.get_trigger_id("exit") == cid and g.base_template == "bar_count" for g in enabled_groups)
     )
     has_multiple_bar_count = bar_count_count > 1
-    can_save = (
-        entry_trigger is not None
-        and has_exit_triggers
-        and len(exit_trigger_selections) > 0
-        and not has_duplicate_exits
-        and not entry_in_exits
-        and not has_multiple_bar_count
-        and st.session_state.get('builder_data_loaded', False)
-    )
+    if _is_webhook_origin:
+        can_save = st.session_state.get('builder_data_loaded', False)
+    else:
+        can_save = (
+            entry_trigger is not None
+            and has_exit_triggers
+            and len(exit_trigger_selections) > 0
+            and not has_duplicate_exits
+            and not entry_in_exits
+            and not has_multiple_bar_count
+            and st.session_state.get('builder_data_loaded', False)
+        )
 
     # Fill status line (bar estimate + validation errors)
     est_parts = [f"~{est_bars:,} bars", TIMEFRAME_GUIDANCE.get(timeframe, "")]
@@ -2838,6 +4562,7 @@ def render_strategy_builder():
 
     # Separate bar_count exits from signal-based exits
     bar_count_exit_value = None
+    bar_count_removed = st.session_state.get('sb_bar_count_exit_removed', False)
     signal_exit_base_ids = []
     signal_exit_confluence_ids = []
     signal_exit_names = []
@@ -2845,7 +4570,8 @@ def render_strategy_builder():
         is_bar_count = False
         for g in enabled_groups:
             if g.get_trigger_id("exit") == cid and g.base_template == "bar_count":
-                bar_count_exit_value = g.parameters.get("candle_count", 4)
+                if not bar_count_removed:
+                    bar_count_exit_value = g.parameters.get("candle_count", 4)
                 is_bar_count = True
                 break
         if not is_bar_count:
@@ -2857,6 +4583,7 @@ def render_strategy_builder():
         'symbol': symbol,
         'direction': direction,
         'timeframe': timeframe,
+        'trading_session': trading_session,
         'entry_trigger': base_entry_trigger_id,
         'entry_trigger_confluence_id': entry_trigger,
         'exit_triggers': signal_exit_base_ids,
@@ -2879,8 +4606,20 @@ def render_strategy_builder():
         'bar_count': bar_count if lookback_mode == "Bars/Candles" else None,
         'lookback_start_date': start_date.isoformat() if start_date else None,
         'lookback_end_date': end_date.isoformat() if end_date else None,
-        'strategy_origin': strategy_origin.lower(),
+        'strategy_origin': strategy_origin.lower().replace(' ', '_'),
     }
+
+    # Add webhook config for webhook inbound origin
+    if _is_webhook_origin:
+        config['webhook_config'] = {
+            'secret': st.session_state.get('sb_wh_secret', _saved_wh.get('secret', '')),
+            'signal_json_path': st.session_state.get('sb_wh_json_path', 'action'),
+            'entry_long_value': st.session_state.get('sb_wh_entry_long', 'buy'),
+            'entry_short_value': st.session_state.get('sb_wh_entry_short', 'sell'),
+            'exit_value': st.session_state.get('sb_wh_exit_val', 'close'),
+            'layer_confluence': st.session_state.get('sb_wh_layer_conf', False),
+            'backtest_signals': edit_config.get('webhook_config', {}).get('backtest_signals', []),
+        }
 
     # Handle Load Data
     if load_clicked:
@@ -2904,47 +4643,60 @@ def render_strategy_builder():
     st.session_state.strategy_config = config
 
     # Header with strategy name
-    entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
-    exit_parts = list(signal_exit_names)
-    if config.get('bar_count_exit'):
-        exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
-    exit_str = " / ".join(exit_parts) if exit_parts else "?"
-    st.markdown(f"### {strategy_name}")
-    st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
+    if _is_webhook_origin:
+        st.markdown(f"### {strategy_name}")
+        st.caption(f"{symbol} | {direction} | Webhook Inbound")
+    else:
+        entry_name = entry_trigger_name or (entry_trigger if entry_trigger else "?")
+        exit_parts = list(signal_exit_names)
+        if config.get('bar_count_exit'):
+            exit_parts.append(f"Exit @ {config['bar_count_exit']} bars")
+        exit_str = " / ".join(exit_parts) if exit_parts else "?"
+        st.markdown(f"### {strategy_name}")
+        st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
 
     # Load data and generate trades
-    with st.spinner("Loading market data and running analysis..."):
-        df = prepare_data_with_indicators(symbol, data_days, data_seed,
-                                          start_date=start_date, end_date=end_date,
-                                          timeframe=timeframe)
-
-        if len(df) == 0:
-            st.error("No data available")
-            return
-
-        general_cols = [c for c in df.columns if c.startswith("GP_")]
-        trades = generate_trades(
-            df,
-            direction=direction,
-            entry_trigger=config['entry_trigger'],
-            exit_trigger=config.get('exit_trigger'),
-            exit_triggers=config.get('exit_triggers'),
-            confluence_required=None,
-            risk_per_trade=risk_per_trade,
-            stop_atr_mult=stop_atr_mult,
-            stop_config=stop_config_dict,
-            target_config=target_config_dict,
-            bar_count_exit=config.get('bar_count_exit'),
-            general_columns=general_cols,
-        )
-
-    # Apply confluence filter
     selected = st.session_state.selected_confluences
-    if len(selected) > 0 and len(trades) > 0:
-        mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
-        filtered_trades = trades[mask]
+    if _is_webhook_origin:
+        # Webhook origin: process uploaded backtest signals
+        df, trades, filtered_trades = _process_webhook_builder_data(
+            config, symbol, direction, data_days, data_seed,
+            start_date, end_date, timeframe,
+            risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+        )
+        if df is None:
+            return
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+        # Apply confluence filter to webhook trades (same as standard path)
+        if len(selected) > 0 and len(trades) > 0 and 'confluence_records' in trades.columns:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
     else:
-        filtered_trades = trades
+        sec_tfs = _get_secondary_tfs(timeframe)
+        with st.spinner("Loading market data and running analysis..."):
+            df = prepare_data_with_indicators(symbol, data_days, data_seed,
+                                              start_date=start_date, end_date=end_date,
+                                              timeframe=timeframe,
+                                              data_feed=_get_data_feed(),
+                                              session=trading_session,
+                                              secondary_tfs=sec_tfs)
+
+            if len(df) == 0:
+                st.error(f"No data available for **{symbol}**. Check that the ticker is valid on Alpaca.")
+                return
+
+            st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
+            trades = _unified_trades(df, config)
+
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+
+        # Apply confluence filter
+        selected = st.session_state.selected_confluences
+        if len(selected) > 0 and len(trades) > 0:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
+        else:
+            filtered_trades = trades
 
     # KPIs
     period_trading_days = count_trading_days(df)
@@ -2968,6 +4720,7 @@ def render_strategy_builder():
     render_secondary_kpis(filtered_trades, kpis, key_prefix="builder")
 
     # Optimizable Variables
+    _ov_all_tdefs = get_all_triggers(enabled_groups)
     with st.expander("Optimizable Variables"):
         var_cols = st.columns(6)
 
@@ -2975,7 +4728,9 @@ def render_strategy_builder():
         with var_cols[0]:
             st.caption("**Entry**")
             e_name = config.get('entry_trigger_name') or '?'
-            st.markdown(f"_{e_name}_")
+            _e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
+            _e_badge = "`[C]`" if not _e_tdef or _e_tdef.execution == 'bar_close' else "`[I]`"
+            st.markdown(f"{_e_badge} _{e_name}_")
 
         # 2. Exit Trigger(s)
         with var_cols[1]:
@@ -2993,18 +4748,18 @@ def render_strategy_builder():
             for idx_e, (ename, ecid) in enumerate(zip(ov_exit_names, ov_exit_cids)):
                 e_col1, e_col2 = st.columns([4, 1])
                 with e_col1:
-                    st.markdown(f"_{ename}_")
+                    _ex_tdef = _ov_all_tdefs.get(ecid or '') if ecid else None
+                    _ex_badge = "`[C]`" if not _ex_tdef or _ex_tdef.execution == 'bar_close' else "`[I]`"
+                    st.markdown(f"{_ex_badge} _{ename}_")
                 with e_col2:
-                    if len(ov_exit_names) > 1:
-                        if st.button("✕", key=f"var_rm_exit_{idx_e}"):
-                            actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
-                            if actual_idx is not None:
-                                st.session_state.pending_remove_exit_idx = actual_idx
-                            else:
-                                remaining_cids = [c for c in config.get('exit_trigger_confluence_ids', [])]
-                                if remaining_cids:
-                                    st.session_state.pending_replace_exits = remaining_cids
-                            st.rerun()
+                    if st.button("✕", key=f"var_rm_exit_{idx_e}"):
+                        actual_idx = idx_e if idx_e < len(config.get('exit_trigger_confluence_ids', [])) else None
+                        if actual_idx is not None:
+                            st.session_state.pending_remove_exit_idx = actual_idx
+                        else:
+                            # Bar_count exit removal
+                            st.session_state.pending_remove_bar_count_exit = True
+                        st.rerun()
             if not ov_exit_names:
                 st.markdown("_None_")
 
@@ -3064,7 +4819,12 @@ def render_strategy_builder():
     left_col, right_col = st.columns([1, 1])
 
     with left_col:
-        chart_tab1, chart_tab2 = st.tabs(["Equity Curve", "Price Chart"])
+        _has_live_data = config.get('alert_tracking_enabled') and len(config.get('live_executions', [])) > 0
+        _chart_tab_names = ["Equity Curve", "Price Chart"]
+        if _has_live_data:
+            _chart_tab_names.append("Live vs. Forward")
+        _chart_tabs = st.tabs(_chart_tab_names)
+        chart_tab1, chart_tab2 = _chart_tabs[0], _chart_tabs[1]
 
         with chart_tab1:
             if len(filtered_trades) > 0:
@@ -3101,7 +4861,7 @@ def render_strategy_builder():
                 st.info("No trades match current filters")
 
         with chart_tab2:
-            overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+            overlay_groups = [g for g in enabled_groups if is_overlay_template(g.base_template)]
 
             if len(overlay_groups) > 0:
                 selected_overlay_groups = st.multiselect(
@@ -3125,6 +4885,12 @@ def render_strategy_builder():
                 show_indicators = []
                 indicator_colors = {}
 
+            band_fills = []
+            indicator_line_styles = {}
+            for group in overlay_groups:
+                band_fills.extend(get_band_fills_for_group(group))
+                indicator_line_styles.update(get_line_styles_for_group(group))
+
             if len(filtered_trades) > 0:
                 st.caption(f"{len(filtered_trades)} trades on {symbol} ({direction})")
             else:
@@ -3132,18 +4898,145 @@ def render_strategy_builder():
 
             osc_panes = build_secondary_panes(df, enabled_groups)
             render_chart_with_candle_selector(df, filtered_trades, config, show_indicators=show_indicators, indicator_colors=indicator_colors,
-                               secondary_panes=osc_panes if osc_panes else None)
+                               secondary_panes=osc_panes if osc_panes else None,
+                               band_fills=band_fills if band_fills else None,
+                               indicator_line_styles=indicator_line_styles if indicator_line_styles else None)
+
+        # Live vs. Forward comparison tab
+        if _has_live_data:
+            with _chart_tabs[2]:
+                _live_execs = strat.get('live_executions', [])
+                _ft_start_dt = datetime.fromisoformat(strat['forward_test_start']) if strat.get('forward_test_start') else None
+                if _ft_start_dt and _ft_start_dt.tzinfo:
+                    _ft_start_dt = _ft_start_dt.replace(tzinfo=None)
+                _stored = strat.get('stored_trades', [])
+                # Get forward test trades
+                def _entry_after_ft(t):
+                    try:
+                        dt = datetime.fromisoformat(t['entry_time'])
+                        if dt.tzinfo:
+                            dt = dt.replace(tzinfo=None)
+                        return dt >= _ft_start_dt
+                    except (ValueError, KeyError):
+                        return False
+                _ft_trades = [t for t in _stored if _ft_start_dt and _entry_after_ft(t)]
+                _matched_indices = set(e.get('matched_trade_index') for e in _live_execs if e.get('matched_trade_index') is not None)
+
+                # Forward test KPIs
+                _ft_r = [t.get('r_multiple', 0) for t in _ft_trades]
+                _ft_wins = [r for r in _ft_r if r > 0]
+                _ft_losses = [r for r in _ft_r if r < 0]
+                _ft_total = len(_ft_r)
+                _ft_wr = (len(_ft_wins) / _ft_total * 100) if _ft_total > 0 else 0
+                _ft_pf = (sum(_ft_wins) / abs(sum(_ft_losses))) if _ft_losses else float('inf')
+                _ft_avg_r = (sum(_ft_r) / _ft_total) if _ft_total > 0 else 0
+                _ft_total_r = sum(_ft_r)
+
+                # Live KPIs (adjust R-multiples by slippage)
+                _live_r = []
+                for e in _live_execs:
+                    idx = e.get('matched_trade_index')
+                    if idx is not None and idx < len(_ft_trades):
+                        _live_r.append(_ft_trades[idx].get('r_multiple', 0) - e.get('slippage_r', 0))
+                _live_wins = [r for r in _live_r if r > 0]
+                _live_losses = [r for r in _live_r if r < 0]
+                _live_total = len(_live_r)
+                _live_wr = (len(_live_wins) / _live_total * 100) if _live_total > 0 else 0
+                _live_pf = (sum(_live_wins) / abs(sum(_live_losses))) if _live_losses else float('inf')
+                _live_avg_r = (sum(_live_r) / _live_total) if _live_total > 0 else 0
+                _live_total_r = sum(_live_r)
+
+                # Avg slippage
+                _slippages = [e.get('slippage_r', 0) for e in _live_execs]
+                _avg_slippage = (sum(_slippages) / len(_slippages)) if _slippages else 0
+
+                # Discrepancy counts
+                _discs = strat.get('discrepancies', [])
+                _missed = sum(1 for d in _discs if d.get('type') == 'missed_alert')
+                _phantom = sum(1 for d in _discs if d.get('type') == 'phantom_alert')
+
+                st.markdown("**Live vs. Forward Test Comparison**")
+                _cmp_cols = st.columns(3)
+                _cmp_cols[0].markdown("**Metric**")
+                _cmp_cols[1].markdown(f'<span style="color:#FF9800">**Forward Test**</span>', unsafe_allow_html=True)
+                _cmp_cols[2].markdown(f'<span style="color:#4CAF50">**Live**</span>', unsafe_allow_html=True)
+
+                def _delta_str(fwd_val, live_val, fmt=".1f", pct=False):
+                    diff = live_val - fwd_val
+                    sym = "\u25b2" if diff > 0 else "\u25bc" if diff < 0 else "="
+                    color = "#4CAF50" if diff >= 0 else "#f44336"
+                    suffix = "%" if pct else ""
+                    return f'<span style="color:{color}">{sym} {diff:+{fmt}}{suffix}</span>'
+
+                _rows = [
+                    ("Total Trades", f"{_ft_total}", f"{_live_total}", ""),
+                    ("Win Rate", f"{_ft_wr:.1f}%", f"{_live_wr:.1f}%", _delta_str(_ft_wr, _live_wr, ".1f", True)),
+                    ("Profit Factor", f"{_ft_pf:.2f}" if _ft_pf != float('inf') else "\u221e", f"{_live_pf:.2f}" if _live_pf != float('inf') else "\u221e", _delta_str(_ft_pf, _live_pf, ".2f") if _ft_pf != float('inf') and _live_pf != float('inf') else ""),
+                    ("Avg R", f"{_ft_avg_r:+.3f}", f"{_live_avg_r:+.3f}", _delta_str(_ft_avg_r, _live_avg_r, ".3f")),
+                    ("Total R", f"{_ft_total_r:+.2f}", f"{_live_total_r:+.2f}", _delta_str(_ft_total_r, _live_total_r, ".2f")),
+                    ("Avg Slippage", "\u2014", f"{_avg_slippage:+.3f}R", ""),
+                    ("Missed Alerts", "\u2014", f"{_missed}", ""),
+                    ("Phantom Alerts", "\u2014", f"{_phantom}", ""),
+                ]
+                for label, fwd_v, live_v, delta in _rows:
+                    _r = st.columns([1.2, 1, 1, 0.8])
+                    _r[0].markdown(f"**{label}**")
+                    _r[1].markdown(fwd_v)
+                    _r[2].markdown(live_v)
+                    if delta:
+                        _r[3].markdown(delta, unsafe_allow_html=True)
+
+                # Discrepancy table
+                if _discs:
+                    st.markdown("---")
+                    st.markdown(f"**Discrepancies** ({len(_discs)})")
+                    _disc_data = []
+                    for d in _discs:
+                        if d.get('type') == 'missed_alert':
+                            _disc_data.append({
+                                "Type": "Missed Alert",
+                                "Time": d.get('trade_entry_time', ''),
+                                "Detail": f"Trade #{d.get('trade_index', '?')} — no matching alert fired",
+                            })
+                        elif d.get('type') == 'phantom_alert':
+                            _disc_data.append({
+                                "Type": "Phantom Alert",
+                                "Time": d.get('alert_timestamp', ''),
+                                "Detail": f"Alert #{d.get('alert_id', '?')} — no matching forward test trade",
+                            })
+                    if _disc_data:
+                        st.dataframe(pd.DataFrame(_disc_data), use_container_width=True, hide_index=True)
 
     with right_col:
-        tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
-            "Entry", "Exit", "TF Conditions",
-            "General", "Stop Loss", "Take Profit"
-        ])
+        if _is_webhook_origin:
+            tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
+                "Webhook Config", "Signals",
+                "TF Conditions", "General", "Stop Loss", "Take Profit"
+            ])
+        else:
+            tab_entry, tab_exit, tab_tf, tab_gen, tab_sl, tab_tp = st.tabs([
+                "Entry", "Exit", "TF Conditions",
+                "General", "Stop Loss", "Take Profit"
+            ])
 
         # =================================================================
-        # Tab 1: Entry Trigger
+        # Tab 1: Entry Trigger / Webhook Config
         # =================================================================
         with tab_entry:
+          if _is_webhook_origin:
+            _wh_cfg = config.get('webhook_config', {})
+            st.markdown("**Webhook Inbound Configuration**")
+            wh_c1, wh_c2 = st.columns(2)
+            with wh_c1:
+                st.text_input("Secret", value=_wh_cfg.get('secret', ''), disabled=True, key="wh_tab_secret")
+                st.text_input("Signal JSON Path", value=_wh_cfg.get('signal_json_path', 'action'), disabled=True, key="wh_tab_path")
+            with wh_c2:
+                st.text_input("Long Entry", value=_wh_cfg.get('entry_long_value', 'buy'), disabled=True, key="wh_tab_long")
+                st.text_input("Short Entry", value=_wh_cfg.get('entry_short_value', 'sell'), disabled=True, key="wh_tab_short")
+                st.text_input("Exit", value=_wh_cfg.get('exit_value', 'close'), disabled=True, key="wh_tab_exit")
+            _n_signals = len(_wh_cfg.get('backtest_signals', []))
+            st.caption(f"Layer Confluence: {'Yes' if _wh_cfg.get('layer_confluence') else 'No'} | {_n_signals} backtest signals loaded")
+          else:
             entry_filters = st.session_state.confluence_filters
             e_search_col, e_action_col, e_filter_col = st.columns([3, 1.5, 0.5])
             with e_search_col:
@@ -3160,7 +5053,9 @@ def render_strategy_builder():
 
             # Active entry tag
             entry_tag_name = config.get('entry_trigger_name') or '?'
-            st.caption(f"Current: **{entry_tag_name}**")
+            _cur_e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
+            _cur_e_badge = "`[C]`" if not _cur_e_tdef or _cur_e_tdef.execution == 'bar_close' else "`[I]`"
+            st.caption(f"Current: {_cur_e_badge} **{entry_tag_name}**")
 
             # Build confluence set for filtering
             confluence_set = selected if len(selected) > 0 else None
@@ -3177,7 +5072,7 @@ def render_strategy_builder():
                         confluence_required=confluence_set,
                         starting_balance=starting_balance,
                         total_trading_days=period_trading_days,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.entry_trigger_results = entry_results
 
@@ -3190,17 +5085,15 @@ def render_strategy_builder():
 
                 for _, row in display_df.iterrows():
                     is_current = (row['trigger_id'] == current_entry_cid)
+                    _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
                     with st.container(border=True):
-                        t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                        t1, t2 = st.columns([4.3, 0.7])
                         with t1:
-                            label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                            label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
                             if is_current:
                                 label += " _(current)_"
                             st.markdown(label)
                         with t2:
-                            exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
-                            st.caption(exec_tag)
-                        with t3:
                             if not is_current and row['trigger_id'] in entry_trigger_options:
                                 if st.button("Replace", key=f"rep_entry_{row['trigger_id']}"):
                                     st.session_state.pending_entry_trigger = entry_trigger_options.index(row['trigger_id'])
@@ -3219,9 +5112,21 @@ def render_strategy_builder():
                 st.info("Click **Analyze** to compare all available entry triggers using the current strategy config.")
 
         # =================================================================
-        # Tab 2: Exit Triggers
+        # Tab 2: Exit Triggers / Signals Preview
         # =================================================================
         with tab_exit:
+          if _is_webhook_origin:
+            _wh_cfg = config.get('webhook_config', {})
+            _bt_sigs = _wh_cfg.get('backtest_signals', [])
+            if _bt_sigs:
+                st.markdown(f"**{len(_bt_sigs)} Signals Loaded**")
+                _sig_df = pd.DataFrame(_bt_sigs)
+                if 'timestamp' in _sig_df.columns:
+                    _sig_df['timestamp'] = pd.to_datetime(_sig_df['timestamp']).apply(lambda t: format_display_ts(t, '%Y-%m-%d %H:%M'))
+                st.dataframe(_sig_df, use_container_width=True, hide_index=True, height=400)
+            else:
+                st.info("No backtest signals loaded. Upload a CSV in the builder to see signals here.")
+          else:
             exit_mode = st.radio("Mode", ["Drill-Down", "Auto-Search"], horizontal=True,
                                  label_visibility="collapsed", key="exit_mode_radio")
 
@@ -3258,13 +5163,16 @@ def render_strategy_builder():
                 exit_tag_cols = st.columns(min(tag_count, 4))
                 for i_et, (et_name, et_cid) in enumerate(zip(exit_tag_names, exit_tag_cids)):
                     with exit_tag_cols[i_et % 4]:
-                        if tag_count > 1 and et_cid is not None:
-                            actual_idx = i_et if i_et < len(config.get('exit_trigger_confluence_ids', [])) else None
-                            if actual_idx is not None and st.button(f"✕ {et_name}", key=f"ext_rm_{et_cid}"):
+                        actual_idx = i_et if i_et < len(config.get('exit_trigger_confluence_ids', [])) else None
+                        if et_cid is not None and actual_idx is not None:
+                            if st.button(f"✕ {et_name}", key=f"ext_rm_{et_cid}"):
                                 st.session_state.pending_remove_exit_idx = actual_idx
                                 st.rerun()
                         else:
-                            st.caption(et_name)
+                            # Bar_count exit — show removable button
+                            if st.button(f"✕ {et_name}", key="ext_rm_bar_count"):
+                                st.session_state.pending_remove_bar_count_exit = True
+                                st.rerun()
 
             if not config.get('entry_trigger_confluence_id'):
                 st.warning("Select an entry trigger first.")
@@ -3280,7 +5188,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
-                            general_columns=general_cols,
+                            base_strategy=config,
                         )
                     st.session_state.exit_trigger_results = exit_results
 
@@ -3297,17 +5205,15 @@ def render_strategy_builder():
 
                     for _, row in display_df.iterrows():
                         is_current = (row['trigger_id'] in current_exit_cids)
+                        _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
                         with st.container(border=True):
-                            t1, t2, t3 = st.columns([3.5, 0.8, 0.7])
+                            t1, t2 = st.columns([4.3, 0.7])
                             with t1:
-                                label = f"**{row['trigger_name']}**" if is_current else row['trigger_name']
+                                label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
                                 if is_current:
                                     label += " _(current)_"
                                 st.markdown(label)
                             with t2:
-                                exec_tag = "Close" if row.get('execution', 'bar_close') == 'bar_close' else "Intra"
-                                st.caption(exec_tag)
-                            with t3:
                                 if not is_current and has_exit_triggers and len(st.session_state.get('sb_additional_exits', [])) < 2:
                                     if row['trigger_id'] in exit_options:
                                         if st.button("Add", key=f"add_exit_{row['trigger_id']}"):
@@ -3341,7 +5247,7 @@ def render_strategy_builder():
                             target_config=target_config_dict,
                             starting_balance=starting_balance,
                             total_trading_days=period_trading_days,
-                            general_columns=general_cols,
+                            base_strategy=config,
                         )
                     if len(best_exits) > 0:
                         st.session_state.auto_exit_results = best_exits
@@ -3554,6 +5460,13 @@ def render_strategy_builder():
                 if len(gen_confluence_df) > 0:
                     gen_confluence_df = gen_confluence_df[gen_confluence_df['confluence'].str.startswith('GEN-')]
 
+                # Filter to only enabled general packs
+                if len(gen_confluence_df) > 0:
+                    enabled_gp_ids = {p.id.upper() for p in enabled_gen}
+                    gen_confluence_df = gen_confluence_df[gen_confluence_df['confluence'].apply(
+                        lambda c: c.split('-')[1] in enabled_gp_ids if len(c.split('-')) >= 2 else False
+                    )]
+
                 if len(gen_confluence_df) > 0:
                     gen_confluence_df = apply_confluence_filters(gen_confluence_df, gen_filters, gen_search, enabled_groups)
                     gen_confluence_df = gen_confluence_df.head(20)
@@ -3591,6 +5504,12 @@ def render_strategy_builder():
         # Tab 5: Stop Loss Optimization
         # =================================================================
         with tab_sl:
+          if _is_webhook_origin:
+            stop_display = format_stop_display(config)
+            st.caption(f"Current: **{stop_display}**")
+            st.info("Stop loss comparison is not yet available for webhook-origin strategies. "
+                     "The current stop/target configuration is applied to your uploaded signals during backtesting.")
+          else:
             sl_filters = st.session_state.confluence_filters
             sl_search_col, sl_action_col, sl_filter_col = st.columns([3, 1.5, 0.5])
             with sl_search_col:
@@ -3623,7 +5542,7 @@ def render_strategy_builder():
                         mode="stop",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.sl_results = sl_results
 
@@ -3666,6 +5585,12 @@ def render_strategy_builder():
         # Tab 6: Take Profit Optimization
         # =================================================================
         with tab_tp:
+          if _is_webhook_origin:
+            tp_display = format_target_display(config)
+            st.caption(f"Current: **{tp_display}**")
+            st.info("Take profit comparison is not yet available for webhook-origin strategies. "
+                     "The current stop/target configuration is applied to your uploaded signals during backtesting.")
+          else:
             tp_filters = st.session_state.confluence_filters
             tp_search_col, tp_action_col, tp_filter_col = st.columns([3, 1.5, 0.5])
             with tp_search_col:
@@ -3697,7 +5622,7 @@ def render_strategy_builder():
                         mode="target",
                         base_stop_config=stop_config_dict,
                         base_target_config=target_config_dict,
-                        general_columns=general_cols,
+                        base_strategy=config,
                     )
                 st.session_state.tp_results = tp_results
 
@@ -3740,24 +5665,39 @@ def render_strategy_builder():
     with st.expander("Trade List"):
         if len(filtered_trades) > 0:
             display = filtered_trades.tail(20).copy()
-            display['time'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
+            display['time'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
             display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
             display['result'] = display['win'].apply(lambda x: "✓" if x else "✗")
             display['confluences'] = display['confluence_records'].apply(
                 lambda r: ", ".join([format_confluence_record(rec, enabled_groups) for rec in sorted(r)[:3]]) + ("..." if len(r) > 3 else "")
-            )
+            ) if 'confluence_records' in display.columns else ""
+
+            # Build column list based on available columns
+            _tl_cols = ['time']
+            _tl_config = {'time': 'Time'}
+            if 'entry_price' in display.columns and 'exit_price' in display.columns:
+                display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+                display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+                _tl_cols.extend(['entry_px', 'exit_px'])
+                _tl_config['entry_px'] = 'Entry Price'
+                _tl_config['exit_px'] = 'Exit Price'
+            if 'entry_trigger' in display.columns:
+                _tl_cols.append('entry_trigger')
+                _tl_config['entry_trigger'] = 'Entry'
+            if 'exit_reason' in display.columns:
+                _tl_cols.append('exit_reason')
+                _tl_config['exit_reason'] = 'Exit Reason'
+            _tl_cols.extend(['R', 'result'])
+            _tl_config.update({'R': 'R-Multiple', 'result': 'Result'})
+            if 'confluence_records' in display.columns:
+                _tl_cols.append('confluences')
+                _tl_config['confluences'] = 'Confluences'
+
             st.dataframe(
-                display[['time', 'entry_trigger', 'exit_reason', 'R', 'result', 'confluences']],
+                display[_tl_cols],
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    'time': 'Time',
-                    'entry_trigger': 'Entry',
-                    'exit_reason': 'Exit Reason',
-                    'R': 'R-Multiple',
-                    'result': 'Result',
-                    'confluences': 'Confluences',
-                }
+                column_config=_tl_config,
             )
 
     # =========================================================================
@@ -3775,8 +5715,8 @@ def render_strategy_builder():
                 'general_confluences': [c for c in selected if c.startswith("GEN-")],
             }
             if _has_optimizable_changes(_original_strat, _pending_config):
-                _ft_days = (datetime.now() - datetime.fromisoformat(
-                    _original_strat['forward_test_start'])).days
+                _ft_days = _days_since(datetime.fromisoformat(
+                    _original_strat['forward_test_start']))
                 st.warning(
                     f"Trade-affecting parameters have changed. Saving will "
                     f"reset your forward test ({_ft_days}d of data)."
@@ -3844,9 +5784,15 @@ def render_my_strategies():
 
 def render_strategy_list():
     """Render the strategy list view with sorting and filtering."""
-    col_header, col_update, col_new = st.columns([3, 1, 1])
+    col_header, col_reset, col_update, col_new = st.columns([3, 1, 1, 1])
     with col_header:
         st.header("My Strategies")
+    with col_reset:
+        st.write("")  # vertical spacing to align with header
+        if st.button("Reset All Alerts",
+                      help="Clear all alert history, executions, and discrepancies for every strategy"):
+            st.session_state._confirm_reset_all_alerts = True
+            st.rerun()
     with col_update:
         st.write("")  # vertical spacing to align with header
         if st.button("Update Data",
@@ -3864,12 +5810,39 @@ def render_strategy_list():
             st.session_state.pop('sb_additional_exits', None)
             st.rerun()
 
+    # --- Reset All Alerts confirmation ---
+    if st.session_state.get('_confirm_reset_all_alerts', False):
+        st.warning("This will clear **all** alert history, live executions, and discrepancies for **every** strategy.")
+        _ra_cols = st.columns([1, 1, 6])
+        with _ra_cols[0]:
+            if st.button("Yes, Reset All", key="confirm_reset_all_alerts", type="primary"):
+                st.session_state._confirm_reset_all_alerts = False
+                _all_strats = load_strategies()
+                _reset_ts = datetime.now(timezone.utc).isoformat()
+                for _s in _all_strats:
+                    _s['live_executions'] = []
+                    _s['discrepancies'] = []
+                    _s.pop('discrepancies_dismissed_at', None)
+                    _s['alert_tracking_reset_at'] = _reset_ts
+                    update_strategy(_s['id'], _s)
+                from alerts import delete_alerts_for_strategy, load_alerts, _save_all_alerts
+                _save_all_alerts([])  # clear all alerts at once
+                # Clear analysis caches
+                for _k in [k for k in list(st.session_state) if k.startswith("alert_analysis_")]:
+                    st.session_state.pop(_k, None)
+                st.toast("All alert tracking data has been reset.")
+                st.rerun()
+        with _ra_cols[1]:
+            if st.button("Cancel", key="cancel_reset_all_alerts"):
+                st.session_state._confirm_reset_all_alerts = False
+                st.rerun()
+
     # --- Bulk data refresh handler ---
     if st.session_state.get('_trigger_bulk_update', False):
         st.session_state._trigger_bulk_update = False
         _upd_strategies = load_strategies()
         _processable = [s for s in _upd_strategies
-                        if 'entry_trigger_confluence_id' in s]
+                        if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
 
         if not _processable:
             st.warning("No strategies to update.")
@@ -3919,7 +5892,8 @@ def render_strategy_list():
     filter_cols = st.columns([1, 1, 1, 2])
 
     with filter_cols[0]:
-        ticker_filter = st.selectbox("Ticker", ["All"] + AVAILABLE_SYMBOLS, key="strat_filter_ticker")
+        _used_tickers = sorted(set(s.get('symbol', '') for s in strategies if s.get('symbol')))
+        ticker_filter = st.selectbox("Ticker", ["All"] + _used_tickers, key="strat_filter_ticker")
     with filter_cols[1]:
         direction_filter = st.selectbox("Direction", ["All", "LONG", "SHORT"], key="strat_filter_dir")
     with filter_cols[2]:
@@ -4021,6 +5995,7 @@ def render_strategy_list():
 
     # --- Strategy Cards ---
     enabled_groups = get_enabled_groups()
+    _card_trigger_defs = get_all_triggers(enabled_groups)
 
     # Pre-compute set of strategy IDs being monitored (in webhook-enabled portfolios)
     _alert_config = load_alert_config()
@@ -4035,7 +6010,7 @@ def render_strategy_list():
 
     for i, strat in enumerate(strategies):
         sid = strat.get('id', 0)
-        is_legacy = 'entry_trigger_confluence_id' not in strat
+        is_legacy = 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound'
 
         # Use filtered data if active, else persisted data
         if _data_view_active and sid in _filtered_card_data:
@@ -4080,19 +6055,50 @@ def render_strategy_list():
                 # Name
                 st.markdown(f"#### {strat['name']}")
 
-                # Symbol / Direction / Status / Monitoring
-                if strat.get('forward_test_start'):
-                    ft_start = datetime.fromisoformat(strat['forward_test_start'])
-                    ft_days = (datetime.now() - ft_start).days
-                    status_text = f":green[Fwd ({ft_days}d)]"
+                # Symbol / Direction / Session / Duration segments / Monitoring
+                _caption_parts = [f"{strat['symbol']} {strat['direction']}"]
+                _session = strat.get('trading_session', 'RTH')
+                if _session != 'RTH':
+                    _caption_parts.append(f'<span style="color:#9C27B0">{_session}</span>')
+                # BT days
+                if strat.get('lookback_start_date') and strat.get('forward_test_start'):
+                    _bt_days = (datetime.fromisoformat(strat['forward_test_start']) - datetime.fromisoformat(strat['lookback_start_date'])).days
+                elif strat.get('lookback_start_date') and strat.get('lookback_end_date'):
+                    _bt_days = (datetime.fromisoformat(strat['lookback_end_date']) - datetime.fromisoformat(strat['lookback_start_date'])).days
+                elif strat.get('data_days'):
+                    _bt_days = strat['data_days']
                 else:
-                    status_text = ":green[Fwd]"
-                monitor_badge = " | :orange[Monitored]" if sid in _monitored_ids else ""
-                st.caption(f"{strat['symbol']} {strat['direction']} | {status_text}{monitor_badge}")
+                    _bt_days = None
+                if _bt_days is not None:
+                    _caption_parts.append(f'<span style="color:#2196F3">BT {_bt_days}d</span>')
+                # Fwd days
+                if strat.get('forward_test_start'):
+                    _ft_start = datetime.fromisoformat(strat['forward_test_start'])
+                    _ft_days = _days_since(_ft_start)
+                    _caption_parts.append(f'<span style="color:#FF9800">Fwd {_ft_days}d</span>')
+                # Live days
+                _live_execs = strat.get('live_executions', [])
+                if strat.get('alert_tracking_enabled') and _live_execs:
+                    _live_timestamps = [e.get('alert_timestamp', '') for e in _live_execs if e.get('alert_timestamp')]
+                    if _live_timestamps:
+                        _live_start = datetime.fromisoformat(min(_live_timestamps))
+                        _live_days = _days_since(_live_start)
+                        _caption_parts.append(f'<span style="color:#4CAF50">Live {_live_days}d</span>')
+                # Monitor badge
+                if sid in _monitored_ids:
+                    _caption_parts.append('<span style="color:#FF9800">Monitored</span>')
+                # Discrepancy badge (only show un-dismissed discrepancies)
+                _discrepancies = strat.get('discrepancies', [])
+                _dismissed_at = strat.get('discrepancies_dismissed_at', '')
+                if _dismissed_at:
+                    _discrepancies = [d for d in _discrepancies if d.get('detected_at', '') > _dismissed_at]
+                if _discrepancies:
+                    _caption_parts.append(f'<span style="color:#f44336">\u26a0 {len(_discrepancies)}</span>')
+                st.markdown(f"<small>{' | '.join(_caption_parts)}</small>", unsafe_allow_html=True)
 
                 # Mini equity curve (full card width)
                 if not is_legacy and eq_data and len(eq_data.get('exit_times', [])) > 0:
-                    render_mini_equity_curve_from_data(eq_data, key=f"mini_eq_{sid}")
+                    render_mini_equity_curve_from_data(eq_data, key=f"mini_eq_{sid}", strat=strat)
 
                 # KPI metrics
                 kpi_cols = st.columns(5)
@@ -4105,11 +6111,14 @@ def render_strategy_list():
                 kpi_cols[4].metric("Max DD", f"{max_rdd:+.1f}R")
 
                 # Trigger badges
-                entry_display = get_trigger_display_name(strat, 'entry_trigger')
-                exit_display = format_exit_triggers_display(strat)
                 stop_display = format_stop_display(strat)
                 target_display = format_target_display(strat)
-                st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
+                if strat.get('strategy_origin') == 'webhook_inbound':
+                    st.caption(f"Origin: Webhook Inbound")
+                else:
+                    entry_display = get_trigger_display_name(strat, 'entry_trigger', _card_trigger_defs)
+                    exit_display = format_exit_triggers_display(strat, _card_trigger_defs)
+                    st.caption(f"Entry: {entry_display} | Exit: {exit_display}")
                 st.caption(f"Stop: {stop_display} | Target: {target_display}")
 
                 # Confluence tags (always shown for uniform card height)
@@ -4119,6 +6128,19 @@ def render_strategy_list():
                     st.caption(f"Confluence: {', '.join(formatted)}" + ("..." if len(confluence) > 3 else ""))
                 else:
                     st.caption("Confluence: None")
+
+                # Alert tracking toggle
+                if strat.get('forward_testing'):
+                    _card_at = strat.get('alert_tracking_enabled', False)
+                    _card_at_new = st.toggle("Alert Tracking", value=_card_at, key=f"card_at_{sid}")
+                    if _card_at_new != _card_at:
+                        strat['alert_tracking_enabled'] = _card_at_new
+                        if not _card_at_new:
+                            strat['live_executions'] = []
+                            strat['discrepancies'] = []
+                            strat.pop('discrepancies_dismissed_at', None)
+                        update_strategy(sid, strat)
+                        st.rerun()
 
                 # Action buttons
                 btn_cols = st.columns(4)
@@ -4214,14 +6236,20 @@ def render_strategy_detail(strategy_id: int):
     st.header(strat['name'])
 
     enabled_groups = get_enabled_groups()
+    _detail_trigger_defs = get_all_triggers(enabled_groups)
 
-    meta_row1 = st.columns(6)
+    meta_row1 = st.columns(7)
     meta_row1[0].markdown(f"**Ticker:** {strat['symbol']}")
     meta_row1[1].markdown(f"**Direction:** {strat['direction']}")
     meta_row1[2].markdown(f"**Timeframe:** {strat.get('timeframe', '1Min')}")
-    meta_row1[3].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger')}")
-    meta_row1[4].markdown(f"**Exit:** {format_exit_triggers_display(strat)}")
-    meta_row1[5].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
+    meta_row1[3].markdown(f"**Session:** {strat.get('trading_session', 'RTH')}")
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        meta_row1[4].markdown("**Origin:** Webhook Inbound")
+        meta_row1[5].markdown(f"**Signals:** {len(strat.get('webhook_config', {}).get('backtest_signals', []))}")
+    else:
+        meta_row1[4].markdown(f"**Entry:** {get_trigger_display_name(strat, 'entry_trigger', _detail_trigger_defs)}")
+        meta_row1[5].markdown(f"**Exit:** {format_exit_triggers_display(strat, _detail_trigger_defs)}")
+    meta_row1[6].markdown(f"**Stop:** {format_stop_display(strat)} · **Target:** {format_target_display(strat)}")
 
     # Confluence conditions (TF + General)
     confluence = strat.get('confluence', [])
@@ -4239,30 +6267,67 @@ def render_strategy_detail(strategy_id: int):
         st.caption("No confluence conditions")
 
     # Action bar
-    action_cols = st.columns([1, 1, 1, 1, 4])
+    action_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1.5, 1.7])
     with action_cols[0]:
+        if st.button("Refresh", key="detail_refresh", help="Re-fetch market data and recompute KPIs"):
+            with st.spinner("Refreshing strategy data..."):
+                refresh_strategy_data(strategy_id)
+            st.session_state.strategy_trades_cache.pop(strategy_id, None)
+            st.session_state.pop(f"bt_trades_{strategy_id}", None)
+            st.session_state.pop(f"ft_data_{strategy_id}", None)
+            for _k in [k for k in list(st.session_state)
+                       if k.startswith(f"bt_ext_{strategy_id}_")
+                       or k.startswith(f"ft_ext_{strategy_id}_")]:
+                st.session_state.pop(_k, None)
+            st.toast("Strategy data refreshed.")
+            st.rerun()
+    with action_cols[1]:
         if st.button("Edit Strategy", key="detail_edit"):
             initiate_edit(strat)
-    with action_cols[1]:
+    with action_cols[2]:
         if st.button("Clone", key="detail_clone"):
             new = duplicate_strategy(strategy_id)
             if new:
                 st.toast(f"Cloned as '{new['name']}'")
                 st.rerun()
-    with action_cols[2]:
+    with action_cols[3]:
         if st.button("Delete", key="detail_delete", type="secondary"):
             st.session_state.confirm_delete_id = strategy_id
             st.rerun()
-    with action_cols[3]:
+    with action_cols[4]:
+        if strat.get('alert_tracking_enabled'):
+            if st.button("Reset Alerts", key="detail_reset_alerts", type="secondary",
+                         help="Clear all alert history, executions, and discrepancies for this strategy"):
+                st.session_state.confirm_reset_alerts_id = strategy_id
+                st.rerun()
+    with action_cols[5]:
         if strat.get('forward_testing') and strat.get('forward_test_start'):
             ft_start = datetime.fromisoformat(strat['forward_test_start'])
-            ft_days = (datetime.now() - ft_start).days
+            ft_days = _days_since(ft_start)
             status = f"🟢 Forward Testing ({ft_days}d)"
         elif strat.get('forward_testing'):
             status = "🟢 Forward Testing"
         else:
             status = "⚪ Backtest Only"
         st.markdown(f"**{status}**")
+    with action_cols[6]:
+        _at_enabled = strat.get('alert_tracking_enabled', False)
+        _at_new = st.toggle("Track Alerts", value=_at_enabled, key=f"alert_tracking_{strategy_id}")
+        if _at_new != _at_enabled:
+            strat['alert_tracking_enabled'] = _at_new
+            if not _at_new:
+                strat['live_executions'] = []
+                strat['discrepancies'] = []
+                strat.pop('discrepancies_dismissed_at', None)
+                strat['alert_tracking_reset_at'] = datetime.now(timezone.utc).isoformat()
+            update_strategy(strategy_id, strat)
+            # Auto-sync alert_config.json
+            set_strategy_alert_config(strategy_id, {
+                'alerts_enabled': _at_new,
+                'alert_on_entry': True,
+                'alert_on_exit': True,
+            })
+            st.rerun()
 
     # Inline delete confirmation
     if st.session_state.confirm_delete_id == strategy_id:
@@ -4282,6 +6347,30 @@ def render_strategy_detail(strategy_id: int):
         with confirm_cols[1]:
             if st.button("Cancel", key="detail_cancel_del"):
                 st.session_state.confirm_delete_id = None
+                st.rerun()
+
+    # Inline reset alerts confirmation
+    if st.session_state.confirm_reset_alerts_id == strategy_id:
+        st.warning("This will clear all live executions, discrepancies, and alert history for this strategy. Alert tracking will remain enabled.")
+        rc = st.columns([1, 1, 6])
+        with rc[0]:
+            if st.button("Yes, Reset", key="detail_confirm_reset_alerts", type="primary"):
+                strat['live_executions'] = []
+                strat['discrepancies'] = []
+                strat.pop('discrepancies_dismissed_at', None)
+                strat['alert_tracking_reset_at'] = datetime.now(timezone.utc).isoformat()
+                update_strategy(strategy_id, strat)
+                from alerts import delete_alerts_for_strategy
+                delete_alerts_for_strategy(strategy_id)
+                # Clear analysis cache
+                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strategy_id}")]:
+                    st.session_state.pop(_k, None)
+                st.session_state.confirm_reset_alerts_id = None
+                st.toast("Alert tracking data reset.")
+                st.rerun()
+        with rc[1]:
+            if st.button("Cancel", key="detail_cancel_reset_alerts"):
+                st.session_state.confirm_reset_alerts_id = None
                 st.rerun()
 
     # Inline edit confirmation (forward-tested strategies)
@@ -4310,7 +6399,7 @@ def render_strategy_detail(strategy_id: int):
     st.divider()
 
     # Route to appropriate view based on strategy type
-    is_legacy = 'entry_trigger_confluence_id' not in strat
+    is_legacy = 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound'
     if is_legacy:
         st.info("This is a legacy strategy. Live re-backtest is not available. Showing saved KPIs.")
         render_saved_kpis(strat)
@@ -4319,41 +6408,381 @@ def render_strategy_detail(strategy_id: int):
     else:
         render_live_backtest(strat)
 
+    # --- Advanced Analysis (Phase 11) ---
+    _stored = strat.get('stored_trades', [])
+    if _stored and len(_stored) >= 20:
+        render_advanced_analysis(strat, strategy_id)
+
+
+def _fmt_kpi(value, fmt=".2f", prefix="", suffix="", inf_str="∞"):
+    """Format a KPI value, handling None and inf."""
+    if value is None:
+        return "—"
+    if value == float('inf'):
+        return inf_str
+    return f"{prefix}{value:{fmt}}{suffix}"
+
 
 def render_secondary_kpis(trades_df: pd.DataFrame, kpis: dict, key_prefix: str = ""):
-    """Render secondary KPIs in an expander below primary KPIs."""
+    """Render extended KPIs in a tabbed panel below primary KPIs."""
     if len(trades_df) == 0:
         return
 
     sec = calculate_secondary_kpis(trades_df, kpis)
 
-    with st.expander("Extended KPIs"):
-        c1, c2, c3, c4 = st.columns(4)
+    with st.expander("Extended KPIs", expanded=False):
+        ktab_perf, ktab_risk, ktab_dist, ktab_dd, ktab_streak = st.tabs([
+            "Performance", "Risk-Adjusted", "Distribution", "Drawdown", "Streaks"
+        ])
 
-        with c1:
-            st.caption("**Trade Distribution**")
-            st.markdown(f"Wins: **{sec['win_count']}** &nbsp;/&nbsp; Losses: **{sec['loss_count']}**")
+        # --- Performance ---
+        with ktab_perf:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Wins", sec['win_count'])
+            c2.metric("Losses", sec['loss_count'])
+            c3.metric("Best Trade", f"{sec['best_trade_r']:+.2f}R")
+            c4.metric("Worst Trade", f"{sec['worst_trade_r']:+.2f}R")
 
-        with c2:
-            st.caption("**Best / Worst**")
-            st.markdown(f"Best Trade: **{sec['best_trade_r']:+.2f}R**")
-            st.markdown(f"Worst Trade: **{sec['worst_trade_r']:+.2f}R**")
-            st.markdown(f"Avg Win: **{sec['avg_win_r']:+.2f}R**")
-            st.markdown(f"Avg Loss: **{sec['avg_loss_r']:+.2f}R**")
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Avg Win", f"{sec['avg_win_r']:+.2f}R")
+            c6.metric("Avg Loss", f"{sec['avg_loss_r']:+.2f}R")
+            c7.metric("Payoff Ratio", _fmt_kpi(sec['payoff_ratio']))
+            c8.metric("Gain/Pain", _fmt_kpi(sec.get('gain_pain_ratio')))
 
-        with c3:
-            st.caption("**Streaks**")
-            st.markdown(f"Max Consec. Wins: **{sec['max_consec_wins']}**")
-            st.markdown(f"Max Consec. Losses: **{sec['max_consec_losses']}**")
-            st.markdown(f"Longest DD: **{sec['longest_dd_trades']} trades**")
+            c9, c10, c11, c12 = st.columns(4)
+            c9.metric("Expected Daily", _fmt_kpi(sec.get('expected_daily'), prefix="$"))
+            c10.metric("Expected Monthly", _fmt_kpi(sec.get('expected_monthly'), prefix="$"))
+            c11.metric("Expected Yearly", _fmt_kpi(sec.get('expected_yearly'), prefix="$"))
+            c12.metric("Common Sense", _fmt_kpi(sec.get('common_sense_ratio')))
 
-        with c4:
-            st.caption("**Risk / Reward**")
-            pr = sec['payoff_ratio']
-            st.markdown(f"Payoff Ratio: **{'∞' if pr == float('inf') else f'{pr:.2f}'}**")
-            rf = sec['recovery_factor']
-            st.markdown(f"Recovery Factor: **{'∞' if rf == float('inf') else f'{rf:.1f}'}**")
-            st.markdown(f"Max R DD: **{kpis.get('max_r_drawdown', 0):+.1f}R**")
+        # --- Risk-Adjusted ---
+        with ktab_risk:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Sharpe Ratio", _fmt_kpi(sec.get('sharpe_ratio')))
+            c2.metric("Sortino Ratio", _fmt_kpi(sec.get('sortino_ratio')))
+            c3.metric("Calmar Ratio", _fmt_kpi(sec.get('calmar_ratio')))
+            kelly = sec.get('kelly_criterion')
+            c4.metric("Kelly Criterion", f"{kelly * 100:.1f}%" if kelly is not None else "—")
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Daily VaR (95%)", _fmt_kpi(sec.get('daily_var_95'), prefix="$"))
+            c6.metric("CVaR (95%)", _fmt_kpi(sec.get('cvar_95'), prefix="$"))
+            c7.metric("Volatility", _fmt_kpi(sec.get('volatility'), suffix="%", fmt=".1f"))
+            c8.metric("R²", f"{kpis.get('r_squared', 0):.2f}")
+
+        # --- Distribution ---
+        with ktab_dist:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Skewness", _fmt_kpi(sec.get('skewness')))
+            c2.metric("Kurtosis", _fmt_kpi(sec.get('kurtosis')))
+            c3.metric("Tail Ratio", _fmt_kpi(sec.get('tail_ratio')))
+            c4.metric("Outlier Win", _fmt_kpi(sec.get('outlier_win_ratio'), suffix="x", fmt=".1f"))
+
+            c5, c6, _, _ = st.columns(4)
+            c5.metric("Outlier Loss", _fmt_kpi(sec.get('outlier_loss_ratio'), suffix="x", fmt=".1f"))
+
+        # --- Drawdown ---
+        with ktab_dd:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Max R DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
+            c2.metric("Recovery Factor", _fmt_kpi(sec['recovery_factor'], fmt=".1f"))
+            c3.metric("Ulcer Index", _fmt_kpi(sec.get('ulcer_index'), fmt=".3f"))
+            c4.metric("Serenity Index", _fmt_kpi(sec.get('serenity_index')))
+
+            c5, c6, _, _ = st.columns(4)
+            c5.metric("Longest DD (trades)", sec['longest_dd_trades'])
+            dd_days = sec.get('longest_dd_days')
+            c6.metric("Longest DD (days)", dd_days if dd_days is not None else "—")
+
+        # --- Streaks ---
+        with ktab_streak:
+            c1, c2, c3, _ = st.columns(4)
+            c1.metric("Max Consec. Wins", sec['max_consec_wins'])
+            c2.metric("Max Consec. Losses", sec['max_consec_losses'])
+            c3.metric("Total Trades", kpis.get('total_trades', 0))
+
+
+def render_advanced_analysis(strat: dict, strategy_id: int):
+    """Render Advanced Analysis section: rolling metrics, return distribution, and Markov Motor."""
+    stored = strat.get('stored_trades', [])
+    if not stored or len(stored) < 20:
+        return
+
+    trades_df = _trades_df_from_stored(stored)
+    if len(trades_df) == 0:
+        return
+
+    st.divider()
+    st.subheader("Advanced Analysis")
+
+    aa_tab_rolling, aa_tab_dist, aa_tab_markov = st.tabs([
+        "Rolling Metrics", "Return Distribution", "Markov Motor Analysis"
+    ])
+
+    # =========================================================================
+    # TAB 1: ROLLING PERFORMANCE METRICS
+    # =========================================================================
+    with aa_tab_rolling:
+        _aa_c1, _aa_c2 = st.columns([1, 4])
+        with _aa_c1:
+            aa_window = st.slider("Rolling window", 10, 100, 20,
+                                  key=f"aa_window_{strategy_id}")
+            aa_metric = st.radio("Metric", ["Win Rate", "Profit Factor", "Sharpe"],
+                                 key=f"aa_metric_{strategy_id}", horizontal=True)
+
+        with _aa_c2:
+            if len(trades_df) >= aa_window:
+                rm = compute_rolling_metrics(trades_df, window=aa_window)
+                trade_nums = np.arange(len(trades_df))
+
+                if aa_metric == "Win Rate":
+                    y_vals = rm["rolling_wr"]
+                    y_label = "Win Rate (%)"
+                elif aa_metric == "Profit Factor":
+                    y_vals = rm["rolling_pf"]
+                    y_label = "Profit Factor"
+                else:
+                    y_vals = rm["rolling_sharpe"]
+                    y_label = "Sharpe"
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=trade_nums, y=y_vals, mode="lines",
+                    name=aa_metric, line=dict(color="#4CAF50", width=2),
+                ))
+                fig.update_layout(
+                    height=350,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="Trade Number",
+                    yaxis_title=y_label,
+                )
+                st.plotly_chart(fig, use_container_width=True,
+                                key=f"aa_rolling_{strategy_id}")
+            else:
+                st.info(f"Need at least {aa_window} trades for rolling metrics.")
+
+    # =========================================================================
+    # TAB 2: RETURN DISTRIBUTION
+    # =========================================================================
+    with aa_tab_dist:
+        dist_view = st.radio("View", ["Histogram", "Box Plot", "Violin"],
+                             key=f"aa_dist_view_{strategy_id}", horizontal=True)
+
+        r_mult = trades_df["r_multiple"].values
+
+        if dist_view == "Histogram":
+            colors = ["#4CAF50" if v >= 0 else "#F44336" for v in r_mult]
+            fig = go.Figure(go.Histogram(
+                x=r_mult, nbinsx=30,
+                marker_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title="R-Multiple", yaxis_title="Frequency",
+            )
+        elif dist_view == "Box Plot":
+            fig = go.Figure(go.Box(
+                y=r_mult, name="R-Multiple",
+                marker_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                yaxis_title="R-Multiple",
+            )
+        else:  # Violin
+            fig = go.Figure(go.Violin(
+                y=r_mult, name="R-Multiple",
+                box_visible=True, meanline_visible=True,
+                fillcolor="rgba(33, 150, 243, 0.3)",
+                line_color="#2196F3",
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                yaxis_title="R-Multiple",
+            )
+
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f"aa_dist_{strategy_id}")
+
+        # Stat callouts
+        kpis = strat.get('kpis', {})
+        sec = calculate_secondary_kpis(trades_df, kpis)
+        dc1, dc2, dc3 = st.columns(3)
+        dc1.metric("Skewness", _fmt_kpi(sec.get('skewness')))
+        dc2.metric("Kurtosis", _fmt_kpi(sec.get('kurtosis')))
+        tail_risk = float(np.percentile(r_mult, 5)) if len(r_mult) >= 10 else None
+        dc3.metric("Tail Risk (5th %ile)", _fmt_kpi(tail_risk, fmt=".2f", suffix="R"))
+
+    # =========================================================================
+    # TAB 3: MARKOV MOTOR ANALYSIS
+    # =========================================================================
+    with aa_tab_markov:
+        render_markov_motor_analysis(trades_df, strategy_id)
+
+
+def render_markov_motor_analysis(trades_df: pd.DataFrame, strategy_id: int):
+    """Render the full Markov Motor Analysis section."""
+    n = len(trades_df)
+
+    # --- Analysis Controls ---
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    with ctrl1:
+        mm_window = st.slider("Rolling Window Size", 10, 100, 20,
+                               key=f"mm_window_{strategy_id}")
+    with ctrl2:
+        mm_threshold = st.slider("Edge Decay Threshold (PF)", 0.8, 2.5, 1.2, 0.1,
+                                  key=f"mm_threshold_{strategy_id}")
+    with ctrl3:
+        mm_confidence = st.selectbox("Confidence Level", ["90%", "95%", "99%"],
+                                      index=1, key=f"mm_confidence_{strategy_id}")
+
+    if n < mm_window:
+        st.info(f"Need at least {mm_window} trades for Markov analysis (currently {n}).")
+        return
+
+    # --- Compute all Markov metrics ---
+    probs, counts = compute_markov_transitions(trades_df)
+    streaks = compute_streaks(trades_df)
+    edge_scores = compute_edge_scores(trades_df, window=mm_window, edge_threshold=mm_threshold)
+    regime_info = detect_market_regimes(trades_df, window=mm_window)
+    insights = generate_markov_insights(probs, edge_scores, regime_info)
+    rm = compute_rolling_metrics(trades_df, window=mm_window)
+
+    # --- Rolling PF + Transition Probabilities side by side ---
+    mm_left, mm_right = st.columns(2)
+
+    with mm_left:
+        st.markdown("**Rolling Performance**")
+        trade_nums = np.arange(n)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=trade_nums, y=rm["rolling_wr"], mode="lines",
+            name="Win Rate", line=dict(color="#4CAF50", width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=trade_nums, y=rm["rolling_pf"], mode="lines",
+            name="Profit Factor", line=dict(color="#2196F3", width=2),
+            yaxis="y2",
+        ))
+        fig.update_layout(
+            height=300,
+            margin=dict(l=0, r=40, t=10, b=0),
+            xaxis_title="Trade Number",
+            yaxis=dict(title="Win Rate (%)", side="left"),
+            yaxis2=dict(title="Profit Factor", side="right", overlaying="y"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"mm_rolling_{strategy_id}")
+
+    with mm_right:
+        st.markdown("**Markov State Transitions**")
+        # Transition probability table
+        st.markdown(
+            f"| From \\ To | **Win** | **Loss** |\n"
+            f"|-----------|---------|----------|\n"
+            f"| **Win**   | {probs['W_to_W']*100:.1f}% | {probs['W_to_L']*100:.1f}% |\n"
+            f"| **Loss**  | {probs['L_to_W']*100:.1f}% | {probs['L_to_L']*100:.1f}% |"
+        )
+
+        # Streak chart
+        if streaks:
+            fig_streak = go.Figure()
+            streak_colors = ["#4CAF50" if s > 0 else "#F44336" for s in streaks]
+            fig_streak.add_trace(go.Bar(
+                x=list(range(len(streaks))), y=streaks,
+                marker_color=streak_colors, name="Streaks",
+            ))
+            fig_streak.update_layout(
+                height=180, margin=dict(l=0, r=0, t=5, b=0),
+                xaxis_title="Streak #", yaxis_title="Length",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_streak, use_container_width=True,
+                            key=f"mm_streaks_{strategy_id}")
+
+    # --- Current Trend & Edge Strength ---
+    trend_c1, trend_c2 = st.columns(2)
+    with trend_c1:
+        trend = edge_scores.get("trend_strength")
+        if trend is not None:
+            if trend > 60:
+                st.success(f"**Current Trend:** Improving ({trend:.0f}/100)")
+            elif trend > 40:
+                st.info(f"**Current Trend:** Stable ({trend:.0f}/100)")
+            else:
+                st.warning(f"**Current Trend:** Declining ({trend:.0f}/100)")
+
+    with trend_c2:
+        status = edge_scores.get("edge_status")
+        cpf = edge_scores.get("current_pf")
+        if status and cpf is not None:
+            status_map = {
+                "strong": ("success", "Strong"),
+                "moderate": ("info", "Moderate"),
+                "critical": ("warning", "Critical"),
+                "lost": ("error", "Lost"),
+            }
+            method, label = status_map.get(status, ("info", status))
+            getattr(st, method)(f"**Edge Strength:** {label} (PF {cpf:.2f})")
+
+    # --- Edge Decay Chart ---
+    st.markdown("**Edge Decay Analysis**")
+    rolling_pf = rm["rolling_pf"]
+    fig_decay = go.Figure()
+    fig_decay.add_trace(go.Scatter(
+        x=np.arange(n), y=rolling_pf, mode="lines",
+        name="Rolling PF", line=dict(color="#2196F3", width=2),
+    ))
+    fig_decay.add_hline(y=mm_threshold, line_dash="dash", line_color="red",
+                        annotation_text=f"Threshold ({mm_threshold})")
+    fig_decay.update_layout(
+        height=250, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="Trade Number", yaxis_title="Profit Factor",
+    )
+    st.plotly_chart(fig_decay, use_container_width=True, key=f"mm_decay_{strategy_id}")
+
+    # Scores
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("Consistency Score", f"{edge_scores.get('consistency', 0):.0f}/100")
+    sc2.metric("Stability Index", f"{edge_scores.get('stability', 0):.0f}/100")
+    sc3.metric("Trend Strength", f"{edge_scores.get('trend_strength', 0):.0f}/100")
+
+    # --- Market Regime Detection ---
+    st.markdown("**Market Regime Detection**")
+    regimes = regime_info["regimes"]
+    r_mult = trades_df["r_multiple"].values
+    regime_colors = {"favorable": "#4CAF50", "unfavorable": "#F44336", "neutral": "#9E9E9E"}
+
+    fig_regime = go.Figure()
+    for regime_type in ["favorable", "unfavorable", "neutral"]:
+        mask = [r == regime_type for r in regimes]
+        if any(mask):
+            idx = [i for i, m in enumerate(mask) if m]
+            fig_regime.add_trace(go.Scatter(
+                x=idx, y=r_mult[mask],
+                mode="markers", name=regime_type.capitalize(),
+                marker=dict(color=regime_colors[regime_type], size=5),
+            ))
+    fig_regime.update_layout(
+        height=250, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="Trade Number", yaxis_title="R-Multiple",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_regime, use_container_width=True, key=f"mm_regime_{strategy_id}")
+
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric("Favorable Regime %", f"{regime_info.get('favorable_pct', 0):.0f}%")
+    rc2.metric("Avg Regime Duration", f"~{regime_info.get('avg_regime_duration', 0):.0f} trades")
+    rc3.metric("Current Regime Age", f"{regime_info.get('current_regime_age', 0)} trades")
+
+    # --- Markov Intelligence Insights ---
+    if insights:
+        st.markdown("**Markov Intelligence Insights**")
+        for insight in insights:
+            st.info(insight)
 
 
 def render_saved_kpis(strat: dict):
@@ -4372,11 +6801,13 @@ def render_saved_kpis(strat: dict):
     kpi_cols[7].metric("Max R DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
 
     st.subheader("Strategy Configuration")
+    _kpi_groups = get_enabled_groups()
+    _kpi_trigger_defs = get_all_triggers(_kpi_groups)
     st.markdown(f"**Stop Loss:** {format_stop_display(strat)}")
     st.markdown(f"**Target:** {format_target_display(strat)}")
-    st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat)}")
+    st.markdown(f"**Exit Triggers:** {format_exit_triggers_display(strat, _kpi_trigger_defs)}")
     created = strat.get('created_at', 'Unknown')
-    st.markdown(f"**Created:** {created[:10] if len(created) >= 10 else created}")
+    st.markdown(f"**Created:** {format_display_ts(created, date_only=True)}")
 
 
 def render_live_backtest(strat: dict):
@@ -4391,9 +6822,15 @@ def render_live_backtest(strat: dict):
         strat_end = datetime.fromisoformat(strat['lookback_end_date'])
 
     # Data loading (cached via @st.cache_data, 1hr TTL)
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    _req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    _sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in _req_labels))
     df = prepare_data_with_indicators(strat['symbol'], data_days, data_seed,
                                       start_date=strat_start, end_date=strat_end,
-                                      timeframe=strat_timeframe)
+                                      timeframe=strat_timeframe,
+                                      data_feed=_get_data_feed(),
+                                      session=strat.get('trading_session', 'RTH'),
+                                      secondary_tfs=_sec_tfs)
 
     if len(df) == 0:
         st.error("No data available for this symbol.")
@@ -4403,38 +6840,51 @@ def render_live_backtest(strat: dict):
     bt_cache_key = f"bt_trades_{strat['id']}"
     if bt_cache_key not in st.session_state:
         with st.spinner("Running backtest with current data..."):
-            confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
-            confluence_set = confluence_set if confluence_set else None
-            general_cols = [c for c in df.columns if c.startswith("GP_")]
-
-            st.session_state[bt_cache_key] = generate_trades(
-                df,
-                direction=strat['direction'],
-                entry_trigger=strat['entry_trigger'],
-                exit_trigger=strat.get('exit_trigger'),
-                exit_triggers=strat.get('exit_triggers'),
-                confluence_required=confluence_set,
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-                stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                stop_config=strat.get('stop_config'),
-                target_config=strat.get('target_config'),
-                bar_count_exit=strat.get('bar_count_exit'),
-                general_columns=general_cols,
-            )
+            st.session_state[bt_cache_key] = _unified_trades(df, strat)
     trades = st.session_state[bt_cache_key]
 
     if len(trades) == 0:
-        st.warning("No trades generated. The entry trigger may reference a confluence pack that is no longer enabled.")
+        st.warning("No trades generated for the current data window.")
 
     confluence_set = set(strat.get('confluence', [])) | set(strat.get('general_confluences', []))
     confluence_set = confluence_set if confluence_set else None
     extended_data_days = strat.get('extended_data_days', 365)
 
-    # 7-tab layout
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence, tab_config, tab_alerts = st.tabs([
+    # Tab layout — include Live Chart when streaming engine is active, Alert Analysis when tracking
+    _bt_has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
+    _bt_has_live_chart = False
+    _bt_symbol = strat.get('symbol', 'SPY')
+    from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_BT
+    _bt_tf_sec = _TF_SEC_BT.get(strat.get('timeframe', '1Min'), 60)
+    _bt_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_bt_symbol}_{_bt_tf_sec}.pkl")
+    try:
+        _bt_ralph_status = _read_ralph_status()
+        _bt_mon_status = load_monitor_status()
+        if _bt_ralph_status.get('running') or _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
+            _bt_has_live_chart = True
+    except Exception:
+        pass
+
+    _bt_tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
-        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
-    ])
+    ]
+    if _bt_has_live_chart:
+        _bt_tab_names.append("Live Chart")
+    _bt_tab_names.extend(["Trade History", "Confluence Analysis", "Configuration", "Alerts"])
+    if _bt_has_alert_analysis:
+        _bt_tab_names.append("Alert Analysis")
+    _bt_tabs = st.tabs(_bt_tab_names)
+
+    # Destructure tabs dynamically based on which optional tabs are present
+    _bt_idx = 3
+    tab_kpi, tab_kpi_ext, tab_price = _bt_tabs[0], _bt_tabs[1], _bt_tabs[2]
+    tab_live_chart_bt = _bt_tabs[_bt_idx] if _bt_has_live_chart else None
+    if _bt_has_live_chart:
+        _bt_idx += 1
+    tab_trades = _bt_tabs[_bt_idx]
+    tab_confluence = _bt_tabs[_bt_idx + 1]
+    tab_config = _bt_tabs[_bt_idx + 2]
+    tab_alerts = _bt_tabs[_bt_idx + 3]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
@@ -4482,7 +6932,7 @@ def render_live_backtest(strat: dict):
                 ext_bar_count = st.number_input(
                     "Bars", min_value=100, max_value=500000, value=5000,
                     step=500, key="bt_ext_bar_count")
-                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe)
+                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe, session=strat.get('trading_session', 'RTH'))
             elif ext_lookback_mode == "Date Range":
                 from datetime import time as dtime
                 dr1, dr2 = st.columns(2)
@@ -4500,7 +6950,7 @@ def render_live_backtest(strat: dict):
                 ext_end_date = datetime.combine(ext_end_input, dtime(16, 0))
                 extended_data_days = (ext_end_input - ext_start_input).days
         with ext_lc3:
-            ext_est = estimate_bar_count(extended_data_days, strat_timeframe)
+            ext_est = estimate_bar_count(extended_data_days, strat_timeframe, session=strat.get('trading_session', 'RTH'))
             st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
 
         bt_ext_key = f"bt_ext_{strat['id']}_{extended_data_days}_{ext_start_date}_{ext_end_date}"
@@ -4512,25 +6962,14 @@ def render_live_backtest(strat: dict):
                 with st.spinner(f"Loading extended backtest ({extended_data_days} days)..."):
                     _ext_df = prepare_data_with_indicators(strat['symbol'], extended_data_days, data_seed,
                                                           start_date=ext_start_date, end_date=ext_end_date,
-                                                          timeframe=strat_timeframe)
+                                                          timeframe=strat_timeframe,
+                                                          data_feed=_get_data_feed(),
+                                                          session=strat.get('trading_session', 'RTH'),
+                                                          secondary_tfs=_sec_tfs)
                     if len(_ext_df) == 0:
                         st.session_state[bt_ext_key] = (None, None)
                     else:
-                        _ext_gc = [c for c in _ext_df.columns if c.startswith("GP_")]
-                        _ext_trades = generate_trades(
-                            _ext_df,
-                            direction=strat['direction'],
-                            entry_trigger=strat['entry_trigger'],
-                            exit_trigger=strat.get('exit_trigger'),
-                            exit_triggers=strat.get('exit_triggers'),
-                            confluence_required=confluence_set,
-                            risk_per_trade=strat.get('risk_per_trade', 100.0),
-                            stop_atr_mult=strat.get('stop_atr_mult', 1.5),
-                            stop_config=strat.get('stop_config'),
-                            target_config=strat.get('target_config'),
-                            bar_count_exit=strat.get('bar_count_exit'),
-                            general_columns=_ext_gc,
-                        )
+                        _ext_trades = _unified_trades(_ext_df, strat)
                         _ext_kpis = calculate_kpis(
                             _ext_trades,
                             starting_balance=strat.get('starting_balance', 10000.0),
@@ -4569,24 +7008,35 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
-        enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
+        relevant_groups = _get_strategy_relevant_groups(strat)
+        overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
         show_indicators = []
         indicator_colors = {}
+        band_fills = []
+        indicator_line_styles = {}
         for group in overlay_groups:
             show_indicators.extend(get_overlay_indicators_for_group(group))
             indicator_colors.update(get_overlay_colors_for_group(group))
+            band_fills.extend(get_band_fills_for_group(group))
+            indicator_line_styles.update(get_line_styles_for_group(group))
 
-        osc_panes = build_secondary_panes(df, enabled_groups)
+        osc_panes = build_secondary_panes(df, relevant_groups)
         render_chart_with_candle_selector(
             df, trades, strat,
             show_indicators=show_indicators,
             indicator_colors=indicator_colors,
             chart_key='detail_price_chart',
-            secondary_panes=osc_panes if osc_panes else None
+            secondary_panes=osc_panes if osc_panes else None,
+            band_fills=band_fills if band_fills else None,
+            indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
         )
 
         render_backtest_trade_table(trades)
+
+    # --- Live Chart tab (if streaming engine is active) ---
+    if tab_live_chart_bt is not None:
+        with tab_live_chart_bt:
+            render_live_chart_tab(_bt_symbol, _bt_tf_sec, strat, chart_key='bt_live_chart')
 
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
@@ -4605,14 +7055,16 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 6: Configuration ---
     with tab_config:
+        _cfg_groups = get_enabled_groups()
+        _cfg_trigger_defs = get_all_triggers(_cfg_groups)
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Strategy Setup**")
             st.markdown(f"- Ticker: {strat['symbol']}")
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
-            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger', _cfg_trigger_defs)}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat, _cfg_trigger_defs)}")
         with col2:
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
@@ -4621,14 +7073,14 @@ def render_live_backtest(strat: dict):
             if lb_mode == "Bars/Candles" and strat.get('bar_count'):
                 st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
             elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
-                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+                st.markdown(f"- Lookback: {format_display_ts(strat['lookback_start_date'], date_only=True)} to {format_display_ts(strat['lookback_end_date'], date_only=True)}")
             else:
                 st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
-            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
+            st.markdown(f"- Created: {format_display_ts(created)}")
             if strat.get('updated_at'):
-                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+                st.markdown(f"- Last Updated: {format_display_ts(strat['updated_at'])}")
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
@@ -4650,6 +7102,11 @@ def render_live_backtest(strat: dict):
     with tab_alerts:
         render_strategy_alerts_tab(strat)
 
+    # --- Tab 8: Alert Analysis (conditional) ---
+    if _bt_has_alert_analysis:
+        with _bt_tabs[-1]:
+            render_alert_analysis_tab(strat)
+
 
 # =============================================================================
 # CONFLUENCE ANALYSIS TAB (shared by backtest + forward test detail views)
@@ -4667,9 +7124,10 @@ def _get_strategy_relevant_groups(strat: dict) -> list:
     if not enabled_groups:
         return []
 
-    entry_conf_id = strat.get('entry_trigger_confluence_id', '')
-    exit_conf_id = strat.get('exit_trigger_confluence_id', '')
-    confluence_records = strat.get('confluence', [])
+    entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
+    exit_conf_id = strat.get('exit_trigger_confluence_id') or ''
+    exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
+    confluence_records = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
 
     # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
     confluence_interpreters = set()
@@ -4681,7 +7139,11 @@ def _get_strategy_relevant_groups(strat: dict) -> list:
     relevant = []
     for group in enabled_groups:
         # Check if group owns the entry or exit trigger
-        if entry_conf_id.startswith(group.id + "_") or exit_conf_id.startswith(group.id + "_"):
+        gid_prefix = group.id + "_"
+        if entry_conf_id.startswith(gid_prefix) or exit_conf_id.startswith(gid_prefix):
+            relevant.append(group)
+            continue
+        if any(cid.startswith(gid_prefix) for cid in exit_conf_ids):
             relevant.append(group)
             continue
 
@@ -4746,11 +7208,47 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
             grp_indicators = []
             grp_colors = {}
 
-            if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
+            if is_overlay_template(group.base_template):
                 grp_indicators = get_overlay_indicators_for_group(group)
                 grp_colors = get_overlay_colors_for_group(group)
 
             secondary_panes = build_secondary_panes(df, [group])
+
+            grp_band_fills = get_band_fills_for_group(group)
+            grp_line_styles = get_line_styles_for_group(group)
+
+            # --- Overlay toggles ---
+            interp_keys = template.get("interpreters", [])
+            tcol1, tcol2, tcol3 = st.columns([1, 1, 1])
+            show_conditions = tcol1.checkbox(
+                "Show Conditions", value=False,
+                key=f"show_cond_ca_{group.id}",
+            )
+            selected_interp = interp_keys[0] if interp_keys else None
+            if show_conditions and len(interp_keys) > 1:
+                selected_interp = tcol2.selectbox(
+                    "Interpreter", interp_keys,
+                    key=f"interp_sel_ca_{group.id}",
+                )
+            show_triggers = tcol3.checkbox(
+                "Show Triggers", value=False,
+                key=f"show_trig_ca_{group.id}",
+            )
+
+            # Build overlay data
+            cond_primitives = []
+            if show_conditions and selected_interp:
+                try:
+                    cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+                except Exception as e:
+                    st.warning(f"Could not build condition overlay: {e}")
+
+            trig_markers = []
+            if show_triggers:
+                try:
+                    trig_markers = _build_trigger_overlay(df, group, template)
+                except Exception as e:
+                    st.warning(f"Could not build trigger overlay: {e}")
 
             render_chart_with_candle_selector(
                 df,
@@ -4759,7 +7257,11 @@ def render_confluence_analysis_tab(df: pd.DataFrame, strat: dict, trades: pd.Dat
                 show_indicators=grp_indicators,
                 indicator_colors=grp_colors,
                 chart_key=f"confluence_chart_{group.id}",
-                secondary_panes=secondary_panes if secondary_panes else None
+                secondary_panes=secondary_panes if secondary_panes else None,
+                band_fills=grp_band_fills if grp_band_fills else None,
+                indicator_line_styles=grp_line_styles if grp_line_styles else None,
+                extra_markers=trig_markers if trig_markers else None,
+                extra_primitives=cond_primitives if cond_primitives else None,
             )
 
             # Interpreter state timeline
@@ -4779,10 +7281,11 @@ def render_forward_test_view(strat: dict):
     """Render the forward test view for a strategy with forward testing enabled."""
     forward_start_str = strat.get('forward_test_start', '')
     forward_start_dt = datetime.fromisoformat(forward_start_str)
-    duration_days = (datetime.now() - forward_start_dt).days
+    duration_days = _days_since(forward_start_dt)
 
+    _ft_display = format_display_ts(forward_start_str, '%Y-%m-%d %H:%M')
     st.markdown(
-        f"**Forward Testing since {forward_start_str[:10]}** "
+        f"**Forward Testing since {_ft_display}** "
         f"({duration_days}d)"
     )
 
@@ -4793,152 +7296,218 @@ def render_forward_test_view(strat: dict):
             st.session_state[ft_cache_key] = prepare_forward_test_data(strat)
     df, backtest_trades, forward_trades, boundary_dt = st.session_state[ft_cache_key]
 
-    if len(df) == 0:
+    is_webhook = strat.get('strategy_origin') == 'webhook_inbound'
+
+    if len(df) == 0 and not is_webhook:
         st.error("No data available for this symbol.")
         return
 
     all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True)
+
+    if len(all_trades) == 0 and is_webhook:
+        st.warning("No trades available. Upload a CSV or send webhook signals to populate this strategy.")
+        return
+
     extended_data_days = strat.get('extended_data_days', 365)
 
     # Compute trading days for KPI comparison
-    boundary_ts = boundary_dt
-    if df.index.tz is not None and boundary_ts.tzinfo is None:
-        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
-    bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
-    fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
+    if len(df) > 0:
+        boundary_ts = boundary_dt
+        if df.index.tz is not None and boundary_ts.tzinfo is None:
+            boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
+        bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
+        fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
+    else:
+        # Webhook strategies: estimate trading days from trade timestamps
+        bt_trading_days = len(set(str(t['exit_time'])[:10] for t in backtest_trades.to_dict('records'))) if len(backtest_trades) > 0 else 0
+        fw_trading_days = len(set(str(t['exit_time'])[:10] for t in forward_trades.to_dict('records'))) if len(forward_trades) > 0 else 0
 
     st.caption(
         f"BT: {len(backtest_trades)} trades ({bt_trading_days}d) · "
         f"FW: {len(forward_trades)} trades ({fw_trading_days}d) · "
-        f"Boundary: {boundary_dt.strftime('%Y-%m-%d')}"
+        f"Boundary: {format_display_ts(boundary_dt, date_only=True)}"
     )
 
-    # 7-tab layout
-    tab_kpi, tab_kpi_ext, tab_price, tab_trades, tab_confluence_ft, tab_config, tab_alerts = st.tabs([
+    # Tab layout — include Live Chart when streaming active, Alert Analysis when tracking
+    _has_alert_analysis = bool(strat.get('alert_tracking_enabled'))
+    _ft_has_live_chart = False
+    _ft_symbol = strat.get('symbol', 'SPY')
+    from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_FT
+    _ft_tf_sec = _TF_SEC_FT.get(strat.get('timeframe', '1Min'), 60)
+    _ft_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_ft_symbol}_{_ft_tf_sec}.pkl")
+    try:
+        _ft_ralph_status = _read_ralph_status()
+        _ft_mon_status = load_monitor_status()
+        if _ft_ralph_status.get('running') or _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
+            _ft_has_live_chart = True
+    except Exception:
+        pass
+
+    _tab_names = [
         "Equity & KPIs", "Equity & KPIs (Extended)", "Price Chart",
-        "Trade History", "Confluence Analysis", "Configuration", "Alerts"
-    ])
+    ]
+    if _ft_has_live_chart:
+        _tab_names.append("Live Chart")
+    _tab_names.extend(["Trade History", "Confluence Analysis", "Configuration", "Alerts"])
+    if _has_alert_analysis:
+        _tab_names.append("Alert Analysis")
+    _tabs = st.tabs(_tab_names)
+
+    _ft_idx = 3
+    tab_kpi, tab_kpi_ext, tab_price = _tabs[0], _tabs[1], _tabs[2]
+    tab_live_chart_ft = _tabs[_ft_idx] if _ft_has_live_chart else None
+    if _ft_has_live_chart:
+        _ft_idx += 1
+    tab_trades = _tabs[_ft_idx]
+    tab_confluence_ft = _tabs[_ft_idx + 1]
+    tab_config = _tabs[_ft_idx + 2]
+    tab_alerts = _tabs[_ft_idx + 3]
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
         render_kpi_comparison(backtest_trades, forward_trades, bt_trading_days, fw_trading_days)
-        render_combined_equity_curve(all_trades, boundary_dt)
+        render_combined_equity_curve(all_trades, boundary_dt, strat=strat)
         render_r_distribution_comparison(backtest_trades, forward_trades)
 
     # --- Tab 2: Equity & KPIs (Extended) ---
     with tab_kpi_ext:
-        fw_ext_lc1, fw_ext_lc2, fw_ext_lc3 = st.columns([1, 2, 4])
-        strat_timeframe_fw = strat.get('timeframe', '1Min')
-        with fw_ext_lc1:
-            fw_ext_mode = st.selectbox(
-                "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
-        with fw_ext_lc2:
-            if fw_ext_mode == "Days":
-                extended_data_days = st.number_input(
-                    "Days", min_value=7, max_value=1825,
-                    value=strat.get('extended_data_days', 365),
-                    step=7, key="fw_ext_days_slider")
-            elif fw_ext_mode == "Bars/Candles":
-                fw_ext_bars = st.number_input(
-                    "Bars", min_value=100, max_value=500000, value=5000,
-                    step=500, key="fw_ext_bar_count")
-                extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw)
-            elif fw_ext_mode == "Date Range":
-                from datetime import time as dtime
-                fw_dr1, fw_dr2 = st.columns(2)
-                with fw_dr1:
-                    fw_ext_start = st.date_input(
-                        "Start", value=date(2024, 1, 1),
-                        min_value=date(2016, 1, 1), key="fw_ext_start")
-                with fw_dr2:
-                    fw_ext_end = st.date_input(
-                        "End", value=date.today(),
-                        min_value=date(2016, 1, 1), key="fw_ext_end")
-                if fw_ext_start >= fw_ext_end:
-                    st.error("Start must be before end.")
-                extended_data_days = (fw_ext_end - fw_ext_start).days
-        with fw_ext_lc3:
-            fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw)
-            st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
+        if is_webhook:
+            st.info("Extended lookback is not available for webhook strategies. All trade data is shown in the primary tab.")
+        else:
+            fw_ext_lc1, fw_ext_lc2, fw_ext_lc3 = st.columns([1, 2, 4])
+            strat_timeframe_fw = strat.get('timeframe', '1Min')
+            with fw_ext_lc1:
+                fw_ext_mode = st.selectbox(
+                    "Lookback", LOOKBACK_MODES, key="fw_ext_lookback_mode")
+            with fw_ext_lc2:
+                if fw_ext_mode == "Days":
+                    extended_data_days = st.number_input(
+                        "Days", min_value=7, max_value=1825,
+                        value=strat.get('extended_data_days', 365),
+                        step=7, key="fw_ext_days_slider")
+                elif fw_ext_mode == "Bars/Candles":
+                    fw_ext_bars = st.number_input(
+                        "Bars", min_value=100, max_value=500000, value=5000,
+                        step=500, key="fw_ext_bar_count")
+                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
+                elif fw_ext_mode == "Date Range":
+                    from datetime import time as dtime
+                    fw_dr1, fw_dr2 = st.columns(2)
+                    with fw_dr1:
+                        fw_ext_start = st.date_input(
+                            "Start", value=date(2024, 1, 1),
+                            min_value=date(2016, 1, 1), key="fw_ext_start")
+                    with fw_dr2:
+                        fw_ext_end = st.date_input(
+                            "End", value=date.today(),
+                            min_value=date(2016, 1, 1), key="fw_ext_end")
+                    if fw_ext_start >= fw_ext_end:
+                        st.error("Start must be before end.")
+                    extended_data_days = (fw_ext_end - fw_ext_start).days
+            with fw_ext_lc3:
+                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
+                st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
-        ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
+            ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"
 
-        # Lazy load: only compute when user clicks the button
-        if ft_ext_key not in st.session_state:
-            if st.button("Load Extended Data", key="ft_ext_load_btn",
-                         type="primary"):
-                with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
-                    st.session_state[ft_ext_key] = prepare_forward_test_data(
-                        strat, data_days_override=extended_data_days
-                    )
-                st.rerun()
-            else:
-                st.info("Click **Load Extended Data** to run the extended backtest.")
+            # Lazy load: only compute when user clicks the button
+            if ft_ext_key not in st.session_state:
+                if st.button("Load Extended Data", key="ft_ext_load_btn",
+                             type="primary"):
+                    with st.spinner(f"Loading extended data ({extended_data_days} days)..."):
+                        st.session_state[ft_ext_key] = prepare_forward_test_data(
+                            strat, data_days_override=extended_data_days
+                        )
+                    st.rerun()
+                else:
+                    st.info("Click **Load Extended Data** to run the extended backtest.")
 
-        if ft_ext_key in st.session_state:
-            ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
+            if ft_ext_key in st.session_state:
+                ext_df, ext_bt, ext_fw, ext_boundary = st.session_state[ft_ext_key]
 
-            if len(ext_df) == 0:
-                st.warning("No data available for extended period.")
-            else:
-                ext_boundary_ts = ext_boundary
-                if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
-                    ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
-                ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
-                ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
+                if len(ext_df) == 0:
+                    st.warning("No data available for extended period.")
+                else:
+                    ext_boundary_ts = ext_boundary
+                    if ext_df.index.tz is not None and ext_boundary_ts.tzinfo is None:
+                        ext_boundary_ts = pd.Timestamp(ext_boundary).tz_localize(ext_df.index.tz)
+                    ext_bt_days = count_trading_days(ext_df.loc[ext_df.index < ext_boundary_ts])
+                    ext_fw_days = count_trading_days(ext_df.loc[ext_df.index >= ext_boundary_ts])
 
-                render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
+                    render_kpi_comparison(ext_bt, ext_fw, ext_bt_days, ext_fw_days)
 
-                ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
-                render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
-                render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
+                    ext_all = pd.concat([ext_bt, ext_fw], ignore_index=True)
+                    render_combined_equity_curve(ext_all, ext_boundary, key_suffix="ext")
+                    render_r_distribution_comparison(ext_bt, ext_fw, key_suffix="ext")
 
     # --- Tab 3: Price Chart (with indicators) ---
     with tab_price:
-        enabled_groups = get_enabled_groups()
-        overlay_groups = [g for g in enabled_groups if g.base_template in OVERLAY_COMPATIBLE_TEMPLATES]
-        show_indicators = []
-        indicator_colors = {}
-        for group in overlay_groups:
-            show_indicators.extend(get_overlay_indicators_for_group(group))
-            indicator_colors.update(get_overlay_colors_for_group(group))
+        if len(df) > 0:
+            relevant_groups = _get_strategy_relevant_groups(strat)
+            overlay_groups = [g for g in relevant_groups if is_overlay_template(g.base_template)]
+            show_indicators = []
+            indicator_colors = {}
+            band_fills = []
+            indicator_line_styles = {}
+            for group in overlay_groups:
+                show_indicators.extend(get_overlay_indicators_for_group(group))
+                indicator_colors.update(get_overlay_colors_for_group(group))
+                band_fills.extend(get_band_fills_for_group(group))
+                indicator_line_styles.update(get_line_styles_for_group(group))
 
-        osc_panes = build_secondary_panes(df, enabled_groups)
-        render_chart_with_candle_selector(
-            df, all_trades, strat,
-            show_indicators=show_indicators,
-            indicator_colors=indicator_colors,
-            chart_key='forward_test_chart',
-            secondary_panes=osc_panes if osc_panes else None
-        )
+            osc_panes = build_secondary_panes(df, relevant_groups)
+            render_chart_with_candle_selector(
+                df, all_trades, strat,
+                show_indicators=show_indicators,
+                indicator_colors=indicator_colors,
+                chart_key='forward_test_chart',
+                secondary_panes=osc_panes if osc_panes else None,
+                band_fills=band_fills if band_fills else None,
+                indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
+            )
+        else:
+            st.info("Price chart not available for webhook strategies (no market data).")
 
         render_split_trade_history(backtest_trades, forward_trades)
 
+    # --- Live Chart tab (if streaming engine is active) ---
+    if tab_live_chart_ft is not None:
+        with tab_live_chart_ft:
+            render_live_chart_tab(_ft_symbol, _ft_tf_sec, strat, chart_key='ft_live_chart')
+
     # --- Tab 4: Trade History (clean chart, no indicators) ---
     with tab_trades:
-        render_chart_with_candle_selector(
-            df, all_trades, strat,
-            show_indicators=[],
-            indicator_colors={},
-            chart_key='trade_history_chart'
-        )
+        if len(df) > 0:
+            render_chart_with_candle_selector(
+                df, all_trades, strat,
+                show_indicators=[],
+                indicator_colors={},
+                chart_key='trade_history_chart'
+            )
+        else:
+            st.info("Price chart not available for webhook strategies (no market data).")
 
         render_split_trade_history(backtest_trades, forward_trades)
 
     # --- Tab 5: Confluence Analysis ---
     with tab_confluence_ft:
-        render_confluence_analysis_tab(df, strat, all_trades)
+        if len(df) > 0:
+            render_confluence_analysis_tab(df, strat, all_trades)
+        else:
+            st.info("Confluence analysis not available for webhook strategies (no indicator data).")
 
     # --- Tab 6: Configuration ---
     with tab_config:
+        _cfg_groups = get_enabled_groups()
+        _cfg_trigger_defs = get_all_triggers(_cfg_groups)
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Strategy Setup**")
             st.markdown(f"- Ticker: {strat['symbol']}")
             st.markdown(f"- Direction: {strat['direction']}")
             st.markdown(f"- Timeframe: {strat.get('timeframe', '1Min')}")
-            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger')}")
-            st.markdown(f"- Exit: {format_exit_triggers_display(strat)}")
+            st.markdown(f"- Entry: {get_trigger_display_name(strat, 'entry_trigger', _cfg_trigger_defs)}")
+            st.markdown(f"- Exit: {format_exit_triggers_display(strat, _cfg_trigger_defs)}")
         with col2:
             st.markdown("**Settings**")
             st.markdown(f"- Stop Loss: {format_stop_display(strat)}")
@@ -4947,15 +7516,15 @@ def render_forward_test_view(strat: dict):
             if lb_mode == "Bars/Candles" and strat.get('bar_count'):
                 st.markdown(f"- Lookback: {strat['bar_count']:,} bars ({strat.get('data_days', 30)} days)")
             elif lb_mode == "Date Range" and strat.get('lookback_start_date'):
-                st.markdown(f"- Lookback: {strat['lookback_start_date'][:10]} to {strat['lookback_end_date'][:10]}")
+                st.markdown(f"- Lookback: {format_display_ts(strat['lookback_start_date'], date_only=True)} to {format_display_ts(strat['lookback_end_date'], date_only=True)}")
             else:
                 st.markdown(f"- Lookback: {strat.get('data_days', 30)} days")
             st.markdown(f"- Extended Data Days: {strat.get('extended_data_days', 365)}")
             created = strat.get('created_at', 'Unknown')
-            st.markdown(f"- Created: {created[:19] if len(created) >= 19 else created}")
-            st.markdown(f"- Forward Test Start: {forward_start_str[:19]}")
+            st.markdown(f"- Created: {format_display_ts(created)}")
+            st.markdown(f"- Forward Test Start: {format_display_ts(forward_start_str)}")
             if strat.get('updated_at'):
-                st.markdown(f"- Last Updated: {strat['updated_at'][:19]}")
+                st.markdown(f"- Last Updated: {format_display_ts(strat['updated_at'])}")
 
         st.markdown("**Confluence Conditions**")
         confluence = strat.get('confluence', [])
@@ -4976,6 +7545,649 @@ def render_forward_test_view(strat: dict):
     # --- Tab 7: Alerts ---
     with tab_alerts:
         render_strategy_alerts_tab(strat)
+
+    # --- Tab 8: Alert Analysis (conditional) ---
+    if _has_alert_analysis:
+        with _tabs[-1]:
+            render_alert_analysis_tab(strat)
+
+
+def _compute_alert_analysis(strat: dict) -> dict:
+    """Compute all alert analysis data. Results are cached in session state."""
+    live_execs = strat.get('live_executions', [])
+    stored = strat.get('stored_trades', [])
+    discrepancies = strat.get('discrepancies', [])
+    direction = strat.get('direction', 'LONG')
+
+    from datetime import timezone as _tz2
+    def _to_utc(s):
+        dt = datetime.fromisoformat(s)
+        return dt.astimezone(_tz2.utc).replace(tzinfo=None)
+
+    ft_start_str = strat.get('forward_test_start', '')
+    ft_start_dt = _to_utc(ft_start_str) if ft_start_str else None
+
+    def _is_ft(t):
+        try:
+            dt = _to_utc(t['entry_time'])
+            return ft_start_dt and dt >= ft_start_dt
+        except (ValueError, KeyError):
+            return False
+
+    ft_trades = [t for t in stored if _is_ft(t)] if ft_start_dt else stored
+
+    # Build maps from live executions
+    matched_indices = set()
+    entry_execs = {}
+    exit_execs = {}
+    for ex in live_execs:
+        tidx = ex.get('matched_trade_index')
+        if tidx is not None:
+            matched_indices.add(tidx)
+            if ex.get('type') == 'entry':
+                entry_execs[tidx] = ex
+            elif ex.get('type') == 'exit':
+                exit_execs[tidx] = ex
+
+    # Forward test KPIs
+    ft_r = [t.get('r_multiple', 0) for t in ft_trades]
+    ft_wins = [r for r in ft_r if r > 0]
+    ft_losses = [r for r in ft_r if r < 0]
+    ft_total = len(ft_r)
+    ft_wr = (len(ft_wins) / ft_total * 100) if ft_total > 0 else 0
+    ft_pf = (sum(ft_wins) / abs(sum(ft_losses))) if ft_losses else float('inf')
+    ft_avg_r = (sum(ft_r) / ft_total) if ft_total > 0 else 0
+    ft_total_r = sum(ft_r)
+
+    # Live KPIs
+    live_r = []
+    for idx in sorted(matched_indices):
+        if idx < len(stored):
+            entry_slip = entry_execs.get(idx, {}).get('slippage_r', 0)
+            exit_slip = exit_execs.get(idx, {}).get('slippage_r', 0)
+            adj_r = stored[idx].get('r_multiple', 0) - entry_slip - exit_slip
+            live_r.append(adj_r)
+    live_wins = [r for r in live_r if r > 0]
+    live_losses = [r for r in live_r if r < 0]
+    live_total = len(live_r)
+    live_wr = (len(live_wins) / live_total * 100) if live_total > 0 else 0
+    live_pf = (sum(live_wins) / abs(sum(live_losses))) if live_losses else float('inf')
+    live_avg_r = (sum(live_r) / live_total) if live_total > 0 else 0
+    live_total_r = sum(live_r)
+
+    all_slippages = [ex.get('slippage_r', 0) for ex in live_execs]
+    avg_slippage = (sum(all_slippages) / len(all_slippages)) if all_slippages else 0
+    webhook_success = sum(1 for ex in live_execs if ex.get('webhook_delivered'))
+    webhook_rate = (webhook_success / len(live_execs) * 100) if live_execs else 0
+    missed_count = sum(1 for d in discrepancies if d.get('type') == 'missed_alert')
+    phantom_count = sum(1 for d in discrepancies if d.get('type') == 'phantom_alert')
+
+    # ft_start_idx
+    ft_start_idx = 0
+    if ft_start_dt:
+        for i, t in enumerate(stored):
+            try:
+                dt = datetime.fromisoformat(t['entry_time'])
+                if dt.tzinfo:
+                    dt = dt.replace(tzinfo=None)
+                if dt >= ft_start_dt:
+                    ft_start_idx = i
+                    break
+            except (ValueError, KeyError):
+                pass
+
+    # Timing rows
+    timing_rows = []
+    barclose_time_deltas = []   # time deltas for bar-close only
+    intrabar_time_deltas = []   # time deltas for intra-bar only
+    # Bar period in seconds — trade timestamps use bar START, so bar-close
+    # triggers actually fire at bar START + period.  Offset the theoretical
+    # time by the bar duration so the delta reflects real latency from the
+    # bar close, not from the bar start.
+    from ralph_engine import TIMEFRAME_SECONDS as _TFS
+    _bar_period_s = _TFS.get(strat.get('timeframe', '1Min'), 60)
+    for ex in live_execs:
+        tidx = ex.get('matched_trade_index')
+        trade = stored[tidx] if tidx is not None and tidx < len(stored) else {}
+        source = ex.get('source', 'unknown')
+        is_intrabar = source == 'intra_bar'
+        if ex.get('type') == 'entry':
+            theo_time_raw = trade.get('entry_time', '')
+        else:
+            theo_time_raw = trade.get('exit_time', '')
+        alert_time_raw = ex.get('alert_timestamp', '')
+        time_delta_s = None
+        try:
+            if theo_time_raw and alert_time_raw:
+                theo_dt = _to_utc(theo_time_raw)
+                alert_dt = _to_utc(alert_time_raw)
+                raw_delta = (alert_dt - theo_dt).total_seconds()
+                if is_intrabar:
+                    time_delta_s = raw_delta
+                    intrabar_time_deltas.append(time_delta_s)
+                else:
+                    # Offset by bar period: trade timestamp = bar START,
+                    # alert fires at bar CLOSE + tick latency
+                    time_delta_s = raw_delta - _bar_period_s
+                    barclose_time_deltas.append(time_delta_s)
+        except (ValueError, TypeError):
+            pass
+        theo_price = ex.get('theoretical_price', 0)
+        alert_price = ex.get('alert_price', 0)
+        price_delta = alert_price - theo_price if alert_price and theo_price else None
+        timing_rows.append({
+            "Trade #": (tidx - ft_start_idx + 1) if tidx is not None else "?",
+            "Type": ex.get('type', '').title(),
+            "Source": "Intra-Bar" if is_intrabar else "Bar Close",
+            "Theo Time": format_display_ts(theo_time_raw) if theo_time_raw else "\u2014",
+            "Alert Time": format_display_ts(alert_time_raw) if alert_time_raw else "\u2014",
+            "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
+            "Theo Price": f"${theo_price:.2f}" if theo_price else "\u2014",
+            "Alert Price": f"${alert_price:.2f}" if alert_price else "\u2014",
+            "Price \u0394": f"${price_delta:+.2f}" if price_delta is not None else "\u2014",
+            "Slip (R)": f"{ex.get('slippage_r', 0):+.4f}",
+        })
+
+    entry_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'entry']
+    exit_slips = [ex.get('slippage_r', 0) for ex in live_execs if ex.get('type') == 'exit']
+    # Dollar per-share slippage
+    entry_dollar_slips = []
+    exit_dollar_slips = []
+    for ex in live_execs:
+        ap = ex.get('alert_price', 0)
+        tp = ex.get('theoretical_price', 0)
+        if ap and tp:
+            delta = ap - tp
+            if ex.get('type') == 'entry':
+                entry_dollar_slips.append(delta)
+            elif ex.get('type') == 'exit':
+                exit_dollar_slips.append(delta)
+
+    # Determine alerts-enabled window from first alert timestamp
+    # FT trades within this window form the apples-to-apples comparison
+    first_alert_dt = None
+    for ex in live_execs:
+        ts = ex.get('alert_timestamp', '')
+        if ts:
+            try:
+                dt = _to_utc(ts)
+                if first_alert_dt is None or dt < first_alert_dt:
+                    first_alert_dt = dt
+            except (ValueError, TypeError):
+                pass
+
+    # FT (Alerts-Enabled): trades that occurred during the alert-enabled window
+    ft_ae_trades = []
+    if first_alert_dt:
+        for t in ft_trades:
+            try:
+                entry_dt = _to_utc(t['entry_time'])
+                if entry_dt >= first_alert_dt:
+                    ft_ae_trades.append(t)
+            except (ValueError, KeyError):
+                pass
+
+    ft_ae_r = [t.get('r_multiple', 0) for t in ft_ae_trades]
+    ft_ae_wins = [r for r in ft_ae_r if r > 0]
+    ft_ae_losses = [r for r in ft_ae_r if r < 0]
+    ft_ae_total = len(ft_ae_r)
+    ft_ae_wr = (len(ft_ae_wins) / ft_ae_total * 100) if ft_ae_total > 0 else 0
+    ft_ae_pf = (sum(ft_ae_wins) / abs(sum(ft_ae_losses))) if ft_ae_losses else float('inf')
+    ft_ae_avg_r = (sum(ft_ae_r) / ft_ae_total) if ft_ae_total > 0 else 0
+    ft_ae_total_r = sum(ft_ae_r)
+
+    # Trade-by-trade rows (R-based and dollar-based)
+    tbt_rows = []
+    tbt_dollar_rows = []
+    for trade_num, idx in enumerate(range(ft_start_idx, len(stored))):
+        t = stored[idx]
+        entry_ex = entry_execs.get(idx)
+        exit_ex = exit_execs.get(idx)
+        ft_r_val = t.get('r_multiple', 0)
+        entry_slip = entry_ex.get('slippage_r', 0) if entry_ex else None
+        exit_slip = exit_ex.get('slippage_r', 0) if exit_ex else None
+        total_slip = (entry_slip or 0) + (exit_slip or 0)
+        live_r_val = ft_r_val - total_slip if idx in matched_indices else None
+        entry_time_str = format_display_ts(t.get('entry_time', ''), '%Y-%m-%d %H:%M')
+        exit_time_str = format_display_ts(t.get('exit_time', ''), '%Y-%m-%d %H:%M')
+        tbt_rows.append({
+            "Trade #": trade_num + 1,
+            "Entry": entry_time_str,
+            "Exit": exit_time_str,
+            "FT R": round(ft_r_val, 3),
+            "Live R": round(live_r_val, 3) if live_r_val is not None else "\u2014",
+            "Delta R": round(ft_r_val - live_r_val, 3) if live_r_val is not None else "\u2014",
+            "Entry Slip": f"{entry_slip:+.4f}" if entry_slip is not None else "\u2014",
+            "Exit Slip": f"{exit_slip:+.4f}" if exit_slip is not None else "\u2014",
+            "Webhook": "\u2705" if (entry_ex or exit_ex) and (entry_ex or {}).get('webhook_delivered', False) else ("\u274c" if idx in matched_indices else "\u2014"),
+        })
+        # Dollar-based row
+        entry_theo = entry_ex.get('theoretical_price', 0) if entry_ex else None
+        entry_alert = entry_ex.get('alert_price', 0) if entry_ex else None
+        exit_theo = exit_ex.get('theoretical_price', 0) if exit_ex else None
+        exit_alert = exit_ex.get('alert_price', 0) if exit_ex else None
+        entry_dollar = (entry_alert - entry_theo) if (entry_alert and entry_theo) else None
+        exit_dollar = (exit_alert - exit_theo) if (exit_alert and exit_theo) else None
+        tbt_dollar_rows.append({
+            "Trade #": trade_num + 1,
+            "Entry": entry_time_str,
+            "Theo Entry $": f"${entry_theo:.2f}" if entry_theo else "\u2014",
+            "Alert Entry $": f"${entry_alert:.2f}" if entry_alert else "\u2014",
+            "Entry \u0394/sh": f"{entry_dollar:+.3f}" if entry_dollar is not None else "\u2014",
+            "Theo Exit $": f"${exit_theo:.2f}" if exit_theo else "\u2014",
+            "Alert Exit $": f"${exit_alert:.2f}" if exit_alert else "\u2014",
+            "Exit \u0394/sh": f"{exit_dollar:+.3f}" if exit_dollar is not None else "\u2014",
+            "Net \u0394/sh": f"{((entry_dollar or 0) + (exit_dollar or 0)):+.3f}" if idx in matched_indices else "\u2014",
+        })
+
+    return {
+        'ft_trades': ft_trades, 'ft_total': ft_total, 'ft_wr': ft_wr, 'ft_pf': ft_pf,
+        'ft_avg_r': ft_avg_r, 'ft_total_r': ft_total_r,
+        'ft_ae_total': ft_ae_total, 'ft_ae_wr': ft_ae_wr, 'ft_ae_pf': ft_ae_pf,
+        'ft_ae_avg_r': ft_ae_avg_r, 'ft_ae_total_r': ft_ae_total_r,
+        'live_total': live_total, 'live_wr': live_wr, 'live_pf': live_pf,
+        'live_avg_r': live_avg_r, 'live_total_r': live_total_r,
+        'avg_slippage': avg_slippage, 'webhook_success': webhook_success,
+        'webhook_rate': webhook_rate, 'missed_count': missed_count, 'phantom_count': phantom_count,
+        'matched_indices': matched_indices, 'entry_execs': entry_execs, 'exit_execs': exit_execs,
+        'timing_rows': timing_rows,
+        'entry_slips': entry_slips, 'exit_slips': exit_slips,
+        'entry_dollar_slips': entry_dollar_slips, 'exit_dollar_slips': exit_dollar_slips,
+        'barclose_time_deltas': barclose_time_deltas, 'intrabar_time_deltas': intrabar_time_deltas,
+        'tbt_rows': tbt_rows, 'tbt_dollar_rows': tbt_dollar_rows, 'ft_start_idx': ft_start_idx,
+    }
+
+
+def render_alert_analysis_tab(strat: dict):
+    """Render Alert Analysis tab: FT vs Live comparison, trade-by-trade detail, discrepancies."""
+    strategy_id = strat['id']
+
+    # Date filter
+    _filter_options = ["All Time", "Last 7 Days", "Last 14 Days", "Last 30 Days"]
+    _filter_col1, _filter_col2 = st.columns([1, 3])
+    with _filter_col1:
+        _selected_filter = st.selectbox(
+            "Time Range", _filter_options,
+            key=f"aa_filter_{strategy_id}",
+            label_visibility="collapsed",
+        )
+
+    _filter_cutoff = None
+    if _selected_filter != "All Time":
+        _days_map = {"Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30}
+        _cutoff_dt = datetime.now(timezone.utc) - timedelta(days=_days_map[_selected_filter])
+        _filter_cutoff = _cutoff_dt.isoformat()
+
+    # Load and filter data
+    live_execs = strat.get('live_executions', [])
+    discrepancies = strat.get('discrepancies', [])
+
+    if _filter_cutoff:
+        live_execs = [e for e in live_execs if e.get('alert_timestamp', '') >= _filter_cutoff]
+        discrepancies = [d for d in discrepancies if d.get('detected_at', '') >= _filter_cutoff]
+
+    if not live_execs and not discrepancies:
+        st.info(
+            "No live execution data or discrepancies available yet. "
+            "Click **Refresh** (on the price chart or action bar) to match recent alerts against forward test trades."
+        )
+        return
+
+    if discrepancies:
+        st.subheader("Alert Discrepancies")
+        missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
+        phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
+        if missed:
+            st.warning(
+                f"**{len(missed)} forward test trade(s) had no matching alert** (missed alerts). "
+                "This typically means alert generation was not enabled when these trades occurred."
+            )
+            # Determine first alert timestamp for monitor-active column
+            _first_alert_ts_e = None
+            _all_alerts_e = get_alerts_for_strategy(strat['id'])
+            for _a in _all_alerts_e:
+                _ats = _a.get('timestamp')
+                if _ats:
+                    try:
+                        _adt = datetime.fromisoformat(_ats)
+                        if _first_alert_ts_e is None or _adt < _first_alert_ts_e:
+                            _first_alert_ts_e = _adt
+                    except (ValueError, TypeError):
+                        pass
+            _first_naive_e = _first_alert_ts_e.astimezone(timezone.utc).replace(tzinfo=None) if _first_alert_ts_e else None
+
+            missed_data = []
+            for d in missed:
+                _entry_str = d.get('trade_entry_time', '')
+                _monitor_active = "\u2014"
+                if _entry_str and _first_naive_e:
+                    try:
+                        _edt = datetime.fromisoformat(_entry_str)
+                        if _edt.tzinfo:
+                            _edt = _edt.astimezone(timezone.utc).replace(tzinfo=None)
+                        _monitor_active = "Yes" if _edt >= _first_naive_e else "No"
+                    except (ValueError, TypeError):
+                        pass
+                missed_data.append({
+                    "Trade #": d.get('trade_index', '?'),
+                    "Entry Time": format_display_ts(_entry_str, '%Y-%m-%d %H:%M:%S'),
+                    "Monitor Active": _monitor_active,
+                    "Status": "No alert fired",
+                })
+            st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+            if _first_alert_ts_e:
+                st.caption(f"Monitor Active = based on first alert at {format_display_ts(_first_alert_ts_e.isoformat(), '%Y-%m-%d %H:%M:%S')}")
+        if phantom:
+            st.warning(f"**{len(phantom)} phantom alert(s)** (alert fired with no matching forward test trade)")
+            phantom_data = []
+            for d in phantom:
+                phantom_data.append({
+                    "Alert ID": d.get('alert_id', '?'),
+                    "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
+                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M:%S'),
+                    "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
+                    "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
+                    "Status": "No matching trade",
+                })
+            st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+        _disc_c1e, _disc_c2e = st.columns(2)
+        with _disc_c1e:
+            if st.button("Dismiss Discrepancies", key=f"dismiss_disc_early_{strat['id']}",
+                         help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+                strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+                update_strategy(strat['id'], strat)
+                st.toast("Discrepancies dismissed.")
+                st.rerun()
+        with _disc_c2e:
+            if st.button("Delete Discrepancies", key=f"delete_disc_early_{strat['id']}",
+                         type="secondary",
+                         help="Permanently delete all discrepancies and live execution records for a fresh start"):
+                strat['discrepancies'] = []
+                strat['live_executions'] = []
+                strat['discrepancies_dismissed_at'] = ''
+                update_strategy(strat['id'], strat)
+                for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                    st.session_state.pop(_k, None)
+                st.toast("Discrepancies and live executions deleted.")
+                st.rerun()
+        if not live_execs:
+            st.info("Once alerts begin generating, matched live executions will appear here for FT vs Live comparison.")
+            return
+
+    # Use cached analysis data (recomputed only after refresh or filter change)
+    _aa_cache_key = f"alert_analysis_{strategy_id}_{_selected_filter}"
+    _aa_refreshed = strat.get('data_refreshed_at', '')
+    if _aa_cache_key not in st.session_state or st.session_state.get(f"{_aa_cache_key}_ts") != _aa_refreshed:
+        _filtered_strat = dict(strat)
+        _filtered_strat['live_executions'] = live_execs
+        _filtered_strat['discrepancies'] = discrepancies
+        st.session_state[_aa_cache_key] = _compute_alert_analysis(_filtered_strat)
+        st.session_state[f"{_aa_cache_key}_ts"] = _aa_refreshed
+
+    aa = st.session_state[_aa_cache_key]
+
+    ft_trades = aa['ft_trades']
+    ft_total = aa['ft_total']; ft_wr = aa['ft_wr']; ft_pf = aa['ft_pf']
+    ft_avg_r = aa['ft_avg_r']; ft_total_r = aa['ft_total_r']
+    ft_ae_total = aa['ft_ae_total']; ft_ae_wr = aa['ft_ae_wr']; ft_ae_pf = aa['ft_ae_pf']
+    ft_ae_avg_r = aa['ft_ae_avg_r']; ft_ae_total_r = aa['ft_ae_total_r']
+    live_total = aa['live_total']; live_wr = aa['live_wr']; live_pf = aa['live_pf']
+    live_avg_r = aa['live_avg_r']; live_total_r = aa['live_total_r']
+    avg_slippage = aa['avg_slippage']
+    webhook_success = aa['webhook_success']; webhook_rate = aa['webhook_rate']
+    missed_count = aa['missed_count']; phantom_count = aa['phantom_count']
+    matched_indices = aa['matched_indices']
+
+    # ── Section A: Summary Metrics ──
+    st.markdown("### Summary Metrics")
+
+    def _delta_html(fwd_val, live_val, fmt=".2f", pct=False):
+        diff = live_val - fwd_val
+        sym = "\u25b2" if diff > 0 else "\u25bc" if diff < 0 else "="
+        color = "#4CAF50" if diff >= 0 else "#f44336"
+        suffix = "%" if pct else ""
+        return f'<span style="color:{color}">{sym} {diff:+{fmt}}{suffix}</span>'
+
+    _hdr = st.columns([1.5, 1, 1, 1, 0.8])
+    _hdr[0].markdown("**Metric**")
+    _hdr[1].markdown(f'<span style="color:#FF9800">**Forward Test (All)**</span>', unsafe_allow_html=True)
+    _hdr[2].markdown(f'<span style="color:#2196F3">**FT (Alerts-Enabled)**</span>', unsafe_allow_html=True)
+    _hdr[3].markdown(f'<span style="color:#4CAF50">**Alert Actual**</span>', unsafe_allow_html=True)
+    _hdr[4].markdown("**Delta**")
+
+    def _fmt_pf(v):
+        return f"{v:.2f}" if v != float('inf') else "\u221e"
+
+    rows = [
+        ("Total Trades", f"{ft_total}", f"{ft_ae_total}", f"{live_total}",
+         ""),
+        ("Win Rate", f"{ft_wr:.1f}%", f"{ft_ae_wr:.1f}%", f"{live_wr:.1f}%",
+         _delta_html(ft_ae_wr, live_wr, ".1f", True) if ft_ae_total > 0 else ""),
+        ("Profit Factor", _fmt_pf(ft_pf), _fmt_pf(ft_ae_pf), _fmt_pf(live_pf),
+         _delta_html(ft_ae_pf, live_pf) if ft_ae_pf != float('inf') and live_pf != float('inf') else ""),
+        ("Avg R", f"{ft_avg_r:+.3f}", f"{ft_ae_avg_r:+.3f}", f"{live_avg_r:+.3f}",
+         _delta_html(ft_ae_avg_r, live_avg_r, ".3f") if ft_ae_total > 0 else ""),
+        ("Total R", f"{ft_total_r:+.2f}", f"{ft_ae_total_r:+.2f}", f"{live_total_r:+.2f}",
+         _delta_html(ft_ae_total_r, live_total_r) if ft_ae_total > 0 else ""),
+        ("Avg Slippage (R)", "\u2014", "\u2014", f"{avg_slippage:+.4f}R",
+         ""),
+        ("Avg Entry Slip ($/sh)", "\u2014", "\u2014",
+         f"{sum(aa['entry_dollar_slips'])/len(aa['entry_dollar_slips']):+.3f}" if aa['entry_dollar_slips'] else "\u2014",
+         ""),
+        ("Avg Exit Slip ($/sh)", "\u2014", "\u2014",
+         f"{sum(aa['exit_dollar_slips'])/len(aa['exit_dollar_slips']):+.3f}" if aa['exit_dollar_slips'] else "\u2014",
+         ""),
+        ("Webhook Success", "\u2014", "\u2014", f"{webhook_rate:.0f}% ({webhook_success}/{len(live_execs)})",
+         ""),
+        ("Missed Alerts", "\u2014", "\u2014", str(missed_count),
+         ""),
+        ("Phantom Alerts", "\u2014", "\u2014", str(phantom_count),
+         ""),
+    ]
+    for label, ft_all_v, ft_ae_v, live_v, delta in rows:
+        _r = st.columns([1.5, 1, 1, 1, 0.8])
+        _r[0].markdown(f"**{label}**")
+        _r[1].markdown(ft_all_v)
+        _r[2].markdown(ft_ae_v)
+        _r[3].markdown(live_v)
+        if delta:
+            _r[4].markdown(delta, unsafe_allow_html=True)
+
+    st.caption("**Delta** compares FT (Alerts-Enabled) vs Alert Actual \u2014 the apples-to-apples execution fidelity measure. "
+               "FT (All) vs Backtest tells you strategy quality; FT (Alerts-Enabled) vs Alert Actual tells you execution quality.")
+
+    # ── Section B: Trigger Timing Analysis ──
+    timing_rows = aa['timing_rows']
+    with st.expander("Trigger Timing Analysis", expanded=False):
+        if timing_rows:
+            timing_df = pd.DataFrame(timing_rows)
+            st.dataframe(timing_df, use_container_width=True, hide_index=True)
+
+            entry_slips = aa['entry_slips']
+            exit_slips = aa['exit_slips']
+            barclose_deltas = aa['barclose_time_deltas']
+            intrabar_deltas = aa['intrabar_time_deltas']
+            cols = st.columns(4)
+            if entry_slips:
+                cols[0].metric("Avg Entry Slippage", f"{sum(entry_slips)/len(entry_slips):+.4f}R")
+            if exit_slips:
+                cols[1].metric("Avg Exit Slippage", f"{sum(exit_slips)/len(exit_slips):+.4f}R")
+            if barclose_deltas:
+                cols[2].metric("Bar-Close Time \u0394", f"{sum(barclose_deltas)/len(barclose_deltas):+.1f}s",
+                               help="Avg seconds between bar close and alert fire (bar-close actions only)")
+            if intrabar_deltas:
+                cols[3].metric("Intra-Bar Count", f"{len(intrabar_deltas)}",
+                               help="Intra-bar alerts fire when price crosses the trigger level mid-bar. "
+                                    "Time delta vs bar boundary is not meaningful for these.")
+            if not barclose_deltas and not intrabar_deltas:
+                st.caption("No timing data available.")
+        else:
+            st.info("No matched executions to analyze trigger timing.")
+
+    # ── Section C: Trade-by-Trade Comparison (R-Based) ──
+    tbt_rows = aa['tbt_rows']
+    with st.expander("Trade-by-Trade: R-Multiple Comparison", expanded=False):
+        if tbt_rows:
+            tbt_df = pd.DataFrame(tbt_rows)
+            st.dataframe(tbt_df, use_container_width=True, hide_index=True)
+            coverage = len(matched_indices)
+            st.caption(f"{coverage} of {len(ft_trades)} forward test trades had matching alerts ({coverage / len(ft_trades) * 100:.0f}% coverage)" if ft_trades else "")
+        else:
+            st.info("No forward test trades to compare.")
+
+    # ── Section C2: Trade-by-Trade Comparison ($/Share) ──
+    tbt_dollar_rows = aa['tbt_dollar_rows']
+    with st.expander("Trade-by-Trade: Dollar Per Share Slippage", expanded=False):
+        if tbt_dollar_rows:
+            tbt_dollar_df = pd.DataFrame(tbt_dollar_rows)
+            st.dataframe(tbt_dollar_df, use_container_width=True, hide_index=True)
+            st.caption("Positive = alert price higher than theoretical. "
+                       "For entries (LONG): positive = paid more (worse). "
+                       "For exits (LONG): positive = sold higher (better).")
+        else:
+            st.info("No forward test trades to compare.")
+
+    # ── Section D: Alert Matching Detail ──
+    _n_matched = len(matched_indices)
+    _n_disc = len(discrepancies)
+    _match_label = f"Alert Matching Detail — {_n_matched} matched"
+    if _n_disc:
+        _match_label += f", {_n_disc} discrepancies"
+    with st.expander(_match_label, expanded=False):
+        # -- Matched Trades (successful alerts) --
+        if matched_indices:
+            st.markdown(f"**Matched Trades ({_n_matched})** — alert fired and matched to forward test trade")
+            _entry_execs = aa['entry_execs']
+            _exit_execs = aa['exit_execs']
+            _ft_si = aa['ft_start_idx']
+            _stored = strat.get('stored_trades', [])
+            matched_rows = []
+            for idx in sorted(matched_indices):
+                _t = _stored[idx] if idx < len(_stored) else {}
+                _en_ex = _entry_execs.get(idx)
+                _ex_ex = _exit_execs.get(idx)
+                _entry_src = (_en_ex.get('source', '') or '').replace('_', ' ').title() if _en_ex else "\u2014"
+                _exit_src = (_ex_ex.get('source', '') or '').replace('_', ' ').title() if _ex_ex else "\u2014"
+                _entry_delta = ""
+                if _en_ex:
+                    try:
+                        _theo = datetime.fromisoformat(_t.get('entry_time', ''))
+                        _actual = datetime.fromisoformat(_en_ex.get('alert_timestamp', ''))
+                        _ed = (_actual - _theo).total_seconds()
+                        _entry_delta = f"{_ed:+.0f}s"
+                    except (ValueError, TypeError):
+                        pass
+                _exit_delta = ""
+                if _ex_ex:
+                    try:
+                        _theo = datetime.fromisoformat(_t.get('exit_time', ''))
+                        _actual = datetime.fromisoformat(_ex_ex.get('alert_timestamp', ''))
+                        _ed = (_actual - _theo).total_seconds()
+                        _exit_delta = f"{_ed:+.0f}s"
+                    except (ValueError, TypeError):
+                        pass
+                _en_alert_ts = format_display_ts(_en_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _en_ex and _en_ex.get('alert_timestamp') else "\u2014"
+                _ex_alert_ts = format_display_ts(_ex_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _ex_ex and _ex_ex.get('alert_timestamp') else "\u2014"
+                matched_rows.append({
+                    "Trade #": idx - _ft_si + 1,
+                    "Entry Candle": format_display_ts(_t.get('entry_time', ''), '%m/%d %H:%M:%S'),
+                    "Entry Alert Time": _en_alert_ts,
+                    "Entry \u0394": _entry_delta or "\u2014",
+                    "Exit Candle": format_display_ts(_t.get('exit_time', ''), '%m/%d %H:%M:%S') if _t.get('exit_time') else "\u2014",
+                    "Exit Alert Time": _ex_alert_ts,
+                    "Exit \u0394": _exit_delta or "\u2014",
+                    "R": f"{_t.get('r_multiple', 0):+.2f}" if _t.get('r_multiple') is not None else "\u2014",
+                })
+            st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
+            st.caption("Entry/Exit Candle = bar time from backtest. Alert Time = when the monitor actually fired. "
+                       "\u0394 = seconds between candle and alert (positive = alert fired after candle).")
+        else:
+            st.info("No matched trades yet.")
+
+        missed = [d for d in discrepancies if d.get('type') == 'missed_alert']
+        phantom = [d for d in discrepancies if d.get('type') == 'phantom_alert']
+
+        if missed:
+            st.markdown("---")
+            st.markdown(f"**Missed Alerts ({len(missed)})** — forward test trade with no matching alert")
+            # Determine first alert timestamp for monitor-active column
+            _first_alert_ts = None
+            _all_alerts = get_alerts_for_strategy(strat['id'])
+            for _a in _all_alerts:
+                _ats = _a.get('timestamp')
+                if _ats:
+                    try:
+                        _adt = datetime.fromisoformat(_ats)
+                        if _first_alert_ts is None or _adt < _first_alert_ts:
+                            _first_alert_ts = _adt
+                    except (ValueError, TypeError):
+                        pass
+            _first_alert_naive = _first_alert_ts.astimezone(timezone.utc).replace(tzinfo=None) if _first_alert_ts else None
+
+            missed_data = []
+            for d in missed:
+                _entry_str = d.get('trade_entry_time', '')
+                _monitor_active = "\u2014"
+                if _entry_str and _first_alert_naive:
+                    try:
+                        _edt = datetime.fromisoformat(_entry_str)
+                        if _edt.tzinfo:
+                            _edt = _edt.astimezone(timezone.utc).replace(tzinfo=None)
+                        _monitor_active = "Yes" if _edt >= _first_alert_naive else "No"
+                    except (ValueError, TypeError):
+                        pass
+                missed_data.append({
+                    "Trade #": d.get('trade_index', '?'),
+                    "Entry Time": format_display_ts(_entry_str, '%Y-%m-%d %H:%M:%S'),
+                    "Exit Time": format_display_ts(d.get('trade_exit_time', ''), '%Y-%m-%d %H:%M:%S') if d.get('trade_exit_time') else "\u2014",
+                    "Monitor Active": _monitor_active,
+                    "Status": "No alert fired",
+                })
+            st.dataframe(pd.DataFrame(missed_data), use_container_width=True, hide_index=True)
+            if _first_alert_ts:
+                st.caption(f"Monitor Active = based on first alert at {format_display_ts(_first_alert_ts.isoformat(), '%Y-%m-%d %H:%M:%S')}")
+
+        if phantom:
+            st.markdown("---")
+            st.markdown(f"**Phantom Alerts ({len(phantom)})** — alert fired with no matching forward test trade")
+            phantom_data = []
+            for d in phantom:
+                phantom_data.append({
+                    "Alert ID": d.get('alert_id', '?'),
+                    "Type": (d.get('alert_type', '') or '').replace('_signal', '').title(),
+                    "Timestamp": format_display_ts(d.get('alert_timestamp', ''), '%Y-%m-%d %H:%M:%S'),
+                    "Bar Time": format_display_ts(d.get('bar_time', '')) if d.get('bar_time') else "\u2014",
+                    "Source": (d.get('source', 'unknown') or 'unknown').replace('_', ' ').title(),
+                    "Price": f"${d['price']:.2f}" if d.get('price') else "\u2014",
+                    "Trigger": _trigger_label(d.get('trigger', '')) if d.get('trigger') else "\u2014",
+                    "Status": "No matching trade",
+                })
+            st.dataframe(pd.DataFrame(phantom_data), use_container_width=True, hide_index=True)
+
+        if discrepancies:
+            st.markdown("---")
+            _disc_c1, _disc_c2 = st.columns(2)
+            with _disc_c1:
+                if st.button("Dismiss Discrepancies", key=f"dismiss_disc_{strat['id']}",
+                             help="Acknowledge current discrepancies and clear the badge on the strategy card"):
+                    strat['discrepancies_dismissed_at'] = datetime.now(timezone.utc).isoformat()
+                    update_strategy(strat['id'], strat)
+                    for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                        st.session_state.pop(_k, None)
+                    st.toast("Discrepancies dismissed.")
+                    st.rerun()
+            with _disc_c2:
+                if st.button("Delete Discrepancies", key=f"delete_disc_{strat['id']}",
+                             type="secondary",
+                             help="Permanently delete all discrepancies and live execution records for a fresh start"):
+                    strat['discrepancies'] = []
+                    strat['live_executions'] = []
+                    strat['discrepancies_dismissed_at'] = ''
+                    update_strategy(strat['id'], strat)
+                    for _k in [k for k in list(st.session_state) if k.startswith(f"alert_analysis_{strat['id']}")]:
+                        st.session_state.pop(_k, None)
+                    st.toast("Discrepancies and live executions deleted.")
+                    st.rerun()
 
 
 def render_strategy_alerts_tab(strat: dict):
@@ -5015,6 +8227,17 @@ def render_strategy_alerts_tab(strat: dict):
 
     if not alerts:
         st.caption("No alerts for this strategy yet.")
+        _discrepancies = strat.get('discrepancies', [])
+        if strat.get('alert_tracking_enabled') and _discrepancies:
+            _missed = sum(1 for d in _discrepancies if d.get('type') == 'missed_alert')
+            _phantom = sum(1 for d in _discrepancies if d.get('type') == 'phantom_alert')
+            st.warning(
+                f"**{len(_discrepancies)} discrepancies detected** "
+                f"({_missed} missed alerts, {_phantom} phantom alerts). "
+                f"See the **Alert Analysis** tab for details."
+            )
+        elif strat.get('alert_tracking_enabled'):
+            st.info("Alert tracking is enabled. Alerts will appear here once the monitor detects signals.")
     else:
         for alert in alerts:
             alert_type = alert.get('type', 'unknown')
@@ -5024,22 +8247,24 @@ def render_strategy_alerts_tab(strat: dict):
                 badge = ":red[EXIT]"
             else:
                 badge = f":gray[{alert_type.upper()}]"
+            if alert.get('source') == 'intra_bar':
+                badge += " :violet[Intra-bar]"
 
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
                 ts = alert.get('timestamp', '')
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16] if ts else '?')
+                st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
             with col_b:
                 st.markdown(badge)
             with col_d:
                 price = alert.get('price')
-                st.markdown(
-                    f"@ ${price:.2f}" if price else "Signal detected"
-                )
+                trigger = _trigger_label(alert.get('trigger', ''))
+                parts = []
+                if price:
+                    parts.append(f"@ ${price:.2f}")
+                if trigger:
+                    parts.append(f"*{trigger}*")
+                st.markdown(" | ".join(parts) if parts else "Signal detected")
 
 
 def _fmt_pf(val):
@@ -5107,26 +8332,110 @@ def render_kpi_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.Data
         return str(val)
 
     with st.expander("Extended KPIs"):
-        ext_data = {
-            "": ["Backtest"] + (["Forward Test", "Delta"] if has_fw else []),
-            "Wins": [bt_sec['win_count']] + ([fw_sec['win_count'], _sec_delta(fw_sec['win_count'], bt_sec['win_count'])] if has_fw else []),
-            "Losses": [bt_sec['loss_count']] + ([fw_sec['loss_count'], _sec_delta(fw_sec['loss_count'], bt_sec['loss_count'])] if has_fw else []),
-            "Best Trade": [f"{bt_sec['best_trade_r']:+.2f}R"] + ([f"{fw_sec['best_trade_r']:+.2f}R", f"{fw_sec['best_trade_r'] - bt_sec['best_trade_r']:+.2f}R"] if has_fw else []),
-            "Worst Trade": [f"{bt_sec['worst_trade_r']:+.2f}R"] + ([f"{fw_sec['worst_trade_r']:+.2f}R", f"{fw_sec['worst_trade_r'] - bt_sec['worst_trade_r']:+.2f}R"] if has_fw else []),
-            "Avg Win": [f"{bt_sec['avg_win_r']:+.2f}R"] + ([f"{fw_sec['avg_win_r']:+.2f}R", f"{fw_sec['avg_win_r'] - bt_sec['avg_win_r']:+.2f}R"] if has_fw else []),
-            "Avg Loss": [f"{bt_sec['avg_loss_r']:+.2f}R"] + ([f"{fw_sec['avg_loss_r']:+.2f}R", f"{fw_sec['avg_loss_r'] - bt_sec['avg_loss_r']:+.2f}R"] if has_fw else []),
-            "Max Consec Wins": [bt_sec['max_consec_wins']] + ([fw_sec['max_consec_wins'], _sec_delta(fw_sec['max_consec_wins'], bt_sec['max_consec_wins'])] if has_fw else []),
-            "Max Consec Losses": [bt_sec['max_consec_losses']] + ([fw_sec['max_consec_losses'], _sec_delta(fw_sec['max_consec_losses'], bt_sec['max_consec_losses'])] if has_fw else []),
-            "Payoff Ratio": [_fmt_sec(bt_sec['payoff_ratio'])] + ([_fmt_sec(fw_sec['payoff_ratio']), _sec_delta(fw_sec['payoff_ratio'], bt_sec['payoff_ratio'])] if has_fw else []),
-            "Recovery Factor": [_fmt_sec(bt_sec['recovery_factor'])] + ([_fmt_sec(fw_sec['recovery_factor']), _sec_delta(fw_sec['recovery_factor'], bt_sec['recovery_factor'])] if has_fw else []),
-            "Longest DD": [f"{bt_sec['longest_dd_trades']} trades"] + ([f"{fw_sec['longest_dd_trades']} trades", _sec_delta(fw_sec['longest_dd_trades'], bt_sec['longest_dd_trades'])] if has_fw else []),
-        }
+        def _cmp_row(label, bt_val, fw_val=None, fmt=".2f", prefix="", suffix=""):
+            """Build a comparison row as all-string values to avoid ArrowInvalid."""
+            bt_str = _fmt_kpi(bt_val, fmt=fmt, prefix=prefix, suffix=suffix)
+            if not has_fw:
+                return [bt_str]
+            fw_str = _fmt_kpi(fw_val, fmt=fmt, prefix=prefix, suffix=suffix)
+            if bt_val is None or fw_val is None or bt_val == float('inf') or fw_val == float('inf'):
+                return [bt_str, fw_str, "—"]
+            delta = fw_val - bt_val
+            return [bt_str, fw_str, f"{delta:+{fmt}}{suffix}"]
 
-        st.dataframe(
-            pd.DataFrame(ext_data),
-            use_container_width=True,
-            hide_index=True,
-        )
+        _hdr = ["Backtest"] + (["Forward Test", "Delta"] if has_fw else [])
+        _fw = fw_sec if has_fw else {}
+
+        ext_perf, ext_risk, ext_dist, ext_dd, ext_streak = st.tabs([
+            "Performance", "Risk-Adjusted", "Distribution", "Drawdown", "Streaks"
+        ])
+
+        with ext_perf:
+            perf_data = {"": _hdr}
+            perf_data["Wins"] = _cmp_row("", bt_sec['win_count'], _fw.get('win_count'), fmt="d")
+            perf_data["Losses"] = _cmp_row("", bt_sec['loss_count'], _fw.get('loss_count'), fmt="d")
+            perf_data["Best Trade"] = _cmp_row("", bt_sec['best_trade_r'], _fw.get('best_trade_r'), suffix="R")
+            perf_data["Worst Trade"] = _cmp_row("", bt_sec['worst_trade_r'], _fw.get('worst_trade_r'), suffix="R")
+            perf_data["Avg Win"] = _cmp_row("", bt_sec['avg_win_r'], _fw.get('avg_win_r'), suffix="R")
+            perf_data["Avg Loss"] = _cmp_row("", bt_sec['avg_loss_r'], _fw.get('avg_loss_r'), suffix="R")
+            perf_data["Payoff Ratio"] = _cmp_row("", bt_sec['payoff_ratio'], _fw.get('payoff_ratio'))
+            perf_data["Gain/Pain"] = _cmp_row("", bt_sec.get('gain_pain_ratio'), _fw.get('gain_pain_ratio'))
+            perf_data["Common Sense"] = _cmp_row("", bt_sec.get('common_sense_ratio'), _fw.get('common_sense_ratio'))
+            perf_data["Exp. Daily"] = _cmp_row("", bt_sec.get('expected_daily'), _fw.get('expected_daily'), prefix="$")
+            perf_data["Exp. Monthly"] = _cmp_row("", bt_sec.get('expected_monthly'), _fw.get('expected_monthly'), prefix="$")
+            perf_data["Exp. Yearly"] = _cmp_row("", bt_sec.get('expected_yearly'), _fw.get('expected_yearly'), prefix="$")
+            st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
+
+        with ext_risk:
+            risk_data = {"": _hdr}
+            risk_data["Sharpe Ratio"] = _cmp_row("", bt_sec.get('sharpe_ratio'), _fw.get('sharpe_ratio'))
+            risk_data["Sortino Ratio"] = _cmp_row("", bt_sec.get('sortino_ratio'), _fw.get('sortino_ratio'))
+            risk_data["Calmar Ratio"] = _cmp_row("", bt_sec.get('calmar_ratio'), _fw.get('calmar_ratio'))
+            bt_kelly = bt_sec.get('kelly_criterion')
+            fw_kelly = _fw.get('kelly_criterion')
+            risk_data["Kelly Criterion"] = [
+                f"{bt_kelly * 100:.1f}%" if bt_kelly is not None else "—"
+            ] + ([
+                f"{fw_kelly * 100:.1f}%" if fw_kelly is not None else "—",
+                f"{(fw_kelly - bt_kelly) * 100:+.1f}%" if bt_kelly is not None and fw_kelly is not None else "—"
+            ] if has_fw else [])
+            risk_data["Daily VaR (95%)"] = _cmp_row("", bt_sec.get('daily_var_95'), _fw.get('daily_var_95'), prefix="$")
+            risk_data["CVaR (95%)"] = _cmp_row("", bt_sec.get('cvar_95'), _fw.get('cvar_95'), prefix="$")
+            risk_data["Volatility"] = _cmp_row("", bt_sec.get('volatility'), _fw.get('volatility'), fmt=".1f", suffix="%")
+            risk_data["R\u00b2"] = [f"{bt_kpis.get('r_squared', 0):.2f}"] + ([f"{fw_kpis.get('r_squared', 0):.2f}", f"{fw_kpis.get('r_squared', 0) - bt_kpis.get('r_squared', 0):+.2f}"] if has_fw else [])
+            st.dataframe(pd.DataFrame(risk_data), use_container_width=True, hide_index=True)
+
+        with ext_dist:
+            dist_data = {"": _hdr}
+            dist_data["Skewness"] = _cmp_row("", bt_sec.get('skewness'), _fw.get('skewness'))
+            dist_data["Kurtosis"] = _cmp_row("", bt_sec.get('kurtosis'), _fw.get('kurtosis'))
+            dist_data["Tail Ratio"] = _cmp_row("", bt_sec.get('tail_ratio'), _fw.get('tail_ratio'))
+            dist_data["Outlier Win"] = _cmp_row("", bt_sec.get('outlier_win_ratio'), _fw.get('outlier_win_ratio'), fmt=".1f", suffix="x")
+            dist_data["Outlier Loss"] = _cmp_row("", bt_sec.get('outlier_loss_ratio'), _fw.get('outlier_loss_ratio'), fmt=".1f", suffix="x")
+            st.dataframe(pd.DataFrame(dist_data), use_container_width=True, hide_index=True)
+
+        with ext_dd:
+            dd_data = {"": _hdr}
+            dd_data["Max R DD"] = [f"{bt_kpis.get('max_r_drawdown', 0):+.1f}R"] + ([f"{fw_kpis.get('max_r_drawdown', 0):+.1f}R", f"{fw_kpis.get('max_r_drawdown', 0) - bt_kpis.get('max_r_drawdown', 0):+.1f}R"] if has_fw else [])
+            dd_data["Recovery Factor"] = _cmp_row("", bt_sec['recovery_factor'], _fw.get('recovery_factor'), fmt=".1f")
+            dd_data["Ulcer Index"] = _cmp_row("", bt_sec.get('ulcer_index'), _fw.get('ulcer_index'), fmt=".3f")
+            dd_data["Serenity Index"] = _cmp_row("", bt_sec.get('serenity_index'), _fw.get('serenity_index'))
+            dd_data["Longest DD (trades)"] = _cmp_row("", bt_sec['longest_dd_trades'], _fw.get('longest_dd_trades'), fmt="d")
+            bt_dd_days = bt_sec.get('longest_dd_days')
+            fw_dd_days = _fw.get('longest_dd_days')
+            dd_data["Longest DD (days)"] = [str(bt_dd_days) if bt_dd_days is not None else "—"] + ([str(fw_dd_days) if fw_dd_days is not None else "—", _sec_delta(fw_dd_days, bt_dd_days) if bt_dd_days is not None and fw_dd_days is not None else "—"] if has_fw else [])
+            st.dataframe(pd.DataFrame(dd_data), use_container_width=True, hide_index=True)
+
+        with ext_streak:
+            streak_data = {"": _hdr}
+            streak_data["Max Consec. Wins"] = _cmp_row("", bt_sec['max_consec_wins'], _fw.get('max_consec_wins'), fmt="d")
+            streak_data["Max Consec. Losses"] = _cmp_row("", bt_sec['max_consec_losses'], _fw.get('max_consec_losses'), fmt="d")
+            st.dataframe(pd.DataFrame(streak_data), use_container_width=True, hide_index=True)
+
+
+def _add_edge_check_traces(fig, x_values, cumulative_r):
+    """Add Edge Check overlay (21-MA + Bollinger Bands) to an equity curve figure."""
+    cum_series = pd.Series(cumulative_r)
+    ma_21 = cum_series.rolling(window=21, min_periods=1).mean()
+    std_21 = cum_series.rolling(window=21, min_periods=1).std().fillna(0)
+    bb_upper = ma_21 + 2 * std_21
+    bb_lower = ma_21 - 2 * std_21
+
+    fig.add_trace(go.Scatter(
+        x=x_values, y=bb_upper, mode="lines", name="BB Upper",
+        line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash="dot"),
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_values, y=bb_lower, mode="lines", name="BB Lower",
+        line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash="dot"),
+        fill="tonexty", fillcolor="rgba(255, 215, 0, 0.08)",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_values, y=ma_21, mode="lines", name="21-MA",
+        line=dict(color="#808000", width=2),
+    ))
 
 
 def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
@@ -5135,6 +8444,9 @@ def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
     if len(trades) == 0:
         st.info("No trades to display.")
         return
+
+    edge_check = st.checkbox("Edge Check", key=f"edge_bt_{key_suffix}", value=False,
+                             help="Overlay 21-MA & Bollinger Bands on equity curve")
 
     equity_df = trades[["exit_time", "r_multiple"]].sort_values("exit_time")
     equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
@@ -5156,6 +8468,10 @@ def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
         name="High Water Mark",
         line=dict(color="green", width=1, dash="dot")
     ))
+
+    if edge_check and len(equity_df) >= 5:
+        _add_edge_check_traces(fig, equity_df["exit_time"], equity_df["cumulative_r"].values)
+
     fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
     fig.update_layout(
         height=400,
@@ -5165,6 +8481,10 @@ def render_backtest_equity_curve(trades: pd.DataFrame, key_suffix: str = ""):
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     st.plotly_chart(fig, use_container_width=True, key=f"bt_equity_{key_suffix}" if key_suffix else None)
+
+    if edge_check:
+        st.caption("When the equity curve drops below the lower Bollinger Band, "
+                   "performance is statistically unusual — the strategy's edge may be degrading.")
 
 
 def render_backtest_r_distribution(trades: pd.DataFrame, key_suffix: str = ""):
@@ -5188,6 +8508,129 @@ def render_backtest_r_distribution(trades: pd.DataFrame, key_suffix: str = ""):
     st.plotly_chart(fig_hist, use_container_width=True, key=f"bt_r_dist_{key_suffix}" if key_suffix else None)
 
 
+def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
+    """Render a live-updating trade table built from fired alerts.
+
+    Pairs entry_signal and exit_signal alerts chronologically to build
+    trade rows.  Open positions (entry with no exit yet) display as "Open".
+    Timestamps include seconds so the user can gauge alert latency.
+    """
+    from alerts import get_alerts_for_strategy
+
+    strat_alerts = get_alerts_for_strategy(strategy_id, limit=200)
+    if not strat_alerts:
+        return
+
+    # Separate entries and exits, sort oldest-first
+    entries = sorted(
+        [a for a in strat_alerts if a.get('type') == 'entry_signal'],
+        key=lambda a: a.get('timestamp', ''))
+    exits = sorted(
+        [a for a in strat_alerts if a.get('type') == 'exit_signal'],
+        key=lambda a: a.get('timestamp', ''))
+
+    # Pair entries with exits using the exit's entry_price field for matching.
+    # Ralph exit alerts include entry_price — match to the entry alert whose
+    # price is closest.  Falls back to chronological order when field is absent.
+    used_exit_ids = set()
+    trades_list = []
+    for entry_a in entries:
+        ep = entry_a.get('price', 0)
+        entry_ts = entry_a.get('timestamp', '')
+        best_exit = None
+        for ex in exits:
+            if ex.get('id') in used_exit_ids:
+                continue
+            # Exit must be after entry
+            if ex.get('timestamp', '') <= entry_ts:
+                continue
+            # Match by entry_price field on the exit alert (within $0.01)
+            ex_ep = ex.get('entry_price')
+            if ex_ep is not None and abs(float(ex_ep) - ep) < 0.01:
+                best_exit = ex
+                break
+        # Fallback: next chronological exit after this entry
+        if best_exit is None:
+            for ex in exits:
+                if ex.get('id') in used_exit_ids:
+                    continue
+                if ex.get('timestamp', '') > entry_ts:
+                    best_exit = ex
+                    break
+        if best_exit:
+            used_exit_ids.add(best_exit.get('id'))
+            trades_list.append({'entry': entry_a, 'exit': best_exit})
+        else:
+            trades_list.append({'entry': entry_a, 'exit': None})
+
+    if not trades_list:
+        return
+
+    st.subheader("Alert History")
+
+    rows = []
+    for t in trades_list:
+        entry_a = t['entry']
+        exit_a = t['exit']
+
+        entry_price = entry_a.get('price', 0)
+        stop_price = entry_a.get('stop_price', 0)
+        entry_ts = format_display_ts(
+            entry_a.get('timestamp') or entry_a.get('bar_time'), '%m/%d %H:%M:%S')
+
+        if exit_a:
+            exit_price = exit_a.get('price', 0)
+            exit_ts = format_display_ts(
+                exit_a.get('timestamp') or exit_a.get('bar_time'), '%m/%d %H:%M:%S')
+            exit_reason = exit_a.get('trigger', '')
+
+            # Compute R-multiple
+            risk = abs(entry_price - stop_price) if stop_price else 0
+            if risk > 0:
+                pnl = (exit_price - entry_price) if direction == 'LONG' else (entry_price - exit_price)
+                r_mult = pnl / risk
+            else:
+                r_mult = 0.0
+
+            rows.append({
+                'entry': entry_ts,
+                'exit': exit_ts,
+                'entry_px': f"${entry_price:.2f}",
+                'exit_px': f"${exit_price:.2f}",
+                'exit_reason': exit_reason,
+                'R': f"{r_mult:+.2f}",
+                'result': 'Win' if r_mult > 0 else 'Loss',
+            })
+        else:
+            rows.append({
+                'entry': entry_ts,
+                'exit': 'Open',
+                'entry_px': f"${entry_price:.2f}",
+                'exit_px': '\u2014',
+                'exit_reason': '',
+                'R': '\u2014',
+                'result': 'Open',
+            })
+
+    display = pd.DataFrame(list(reversed(rows)))  # newest first
+    cols = ['entry', 'exit', 'entry_px', 'exit_px', 'exit_reason', 'R', 'result']
+    col_config = {
+        'entry': 'Entry Time',
+        'exit': 'Exit Time',
+        'entry_px': 'Entry Price',
+        'exit_px': 'Exit Price',
+        'exit_reason': 'Exit Reason',
+        'R': 'R-Multiple',
+        'result': 'Result',
+    }
+    st.dataframe(
+        display[cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config=col_config,
+    )
+
+
 def render_backtest_trade_table(trades: pd.DataFrame):
     """Render trade history table for backtest-only view."""
     st.subheader("Trade History")
@@ -5196,39 +8639,73 @@ def render_backtest_trade_table(trades: pd.DataFrame):
         return
 
     display = trades.copy()
-    display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-    display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+    display['entry'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
+    display['exit'] = display['exit_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
     display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
-    display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+    if 'exit_reason' in display.columns:
+        display['result'] = display.apply(
+            lambda r: "Open" if r.get('exit_reason') == 'open'
+            else ("Win" if r['win'] else "Loss"), axis=1)
+    else:
+        display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
+    has_exit_reason = 'exit_reason' in display.columns
+    has_prices = 'entry_price' in display.columns and 'exit_price' in display.columns
+    cols = ['entry', 'exit']
+    if has_prices:
+        display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+        display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+        cols.extend(['entry_px', 'exit_px'])
+    if has_exit_reason:
+        cols.append('exit_reason')
+    cols.extend(['R', 'result'])
+    col_config = {
+        'entry': 'Entry Time',
+        'exit': 'Exit Time',
+        'R': 'R-Multiple',
+        'result': 'Result',
+    }
+    if has_prices:
+        col_config['entry_px'] = 'Entry Price'
+        col_config['exit_px'] = 'Exit Price'
+    if has_exit_reason:
+        col_config['exit_reason'] = 'Exit Reason'
     st.dataframe(
-        display[['entry', 'exit', 'exit_reason', 'R', 'result']],
+        display[cols],
         use_container_width=True,
         hide_index=True,
-        column_config={
-            'entry': 'Entry Time',
-            'exit': 'Exit Time',
-            'exit_reason': 'Exit Reason',
-            'R': 'R-Multiple',
-            'result': 'Result',
-        }
+        column_config=col_config,
     )
 
 
-def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime, key_suffix: str = ""):
-    """Render a combined equity curve with vertical line at forward test start."""
+def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
+                                 key_suffix: str = "", strat: dict = None):
+    """Render a combined equity curve with vertical line at forward test start.
+
+    Shows three color segments when live data available:
+    - Blue: Backtest
+    - Orange: Forward Test
+    - Green: Live (overlaid on forward test where alert data exists)
+    """
     st.subheader("Equity Curve")
 
     if len(trades_df) == 0:
         st.info("No trades to display.")
         return
 
+    edge_check = st.checkbox("Edge Check", key=f"edge_combined_{key_suffix}", value=False,
+                             help="Overlay 21-MA & Bollinger Bands on equity curve")
+
     equity_df = trades_df[["exit_time", "r_multiple"]].sort_values("exit_time").reset_index(drop=True)
     equity_df["cumulative_r"] = equity_df["r_multiple"].cumsum()
 
     # Match timezone awareness for comparison
-    boundary_ts = boundary_dt
+    boundary_ts = pd.Timestamp(boundary_dt)
     if hasattr(equity_df["exit_time"].dtype, 'tz') and equity_df["exit_time"].dtype.tz is not None:
-        boundary_ts = pd.Timestamp(boundary_dt).tz_localize(equity_df["exit_time"].dtype.tz)
+        target_tz = equity_df["exit_time"].dtype.tz
+        if boundary_ts.tzinfo is not None:
+            boundary_ts = boundary_ts.tz_convert(target_tz)
+        else:
+            boundary_ts = boundary_ts.tz_localize(target_tz)
 
     # Split into backtest and forward portions
     bt_mask = equity_df["exit_time"] < boundary_ts
@@ -5249,7 +8726,7 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
             fillcolor="rgba(33, 150, 243, 0.1)"
         ))
 
-    # Forward portion (green) — connect to last backtest point
+    # Forward portion (orange) — connect to last backtest point
     fw_data = equity_df[fw_mask]
     if len(fw_data) > 0:
         # Include last backtest point for continuity
@@ -5264,10 +8741,55 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
             y=fw_plot["cumulative_r"],
             mode="lines",
             name="Forward Test",
-            line=dict(color="#4CAF50", width=2),
+            line=dict(color="#FF9800", width=2),
             fill="tozeroy",
-            fillcolor="rgba(76, 175, 80, 0.1)"
+            fillcolor="rgba(255, 152, 0, 0.1)"
         ))
+
+    # Live portion (green) — overlaid on forward test where live data exists
+    if strat and strat.get('alert_tracking_enabled') and strat.get('live_executions'):
+        live_execs = strat['live_executions']
+        # Build live equity curve from matched trades with actual alert prices
+        stored = strat.get('stored_trades', [])
+        live_trade_indices = set()
+        slippage_map = {}  # trade_index -> total_slippage_r
+        for ex in live_execs:
+            tidx = ex.get('matched_trade_index')
+            if tidx is not None:
+                live_trade_indices.add(tidx)
+                if tidx not in slippage_map:
+                    slippage_map[tidx] = 0
+                slippage_map[tidx] += ex.get('slippage_r', 0)
+
+        if live_trade_indices and len(stored) > 0:
+            live_records = []
+            cumulative = 0
+            # Start from the backtest cumulative R at boundary
+            if len(bt_data) > 0:
+                cumulative = float(bt_data["cumulative_r"].iloc[-1])
+            for idx in sorted(live_trade_indices):
+                if idx < len(stored):
+                    t = stored[idx]
+                    # Adjust R by slippage
+                    adj_r = t.get('r_multiple', 0) - slippage_map.get(idx, 0)
+                    cumulative += adj_r
+                    try:
+                        live_records.append({
+                            'exit_time': pd.Timestamp(t['exit_time']),
+                            'cumulative_r': cumulative,
+                        })
+                    except (ValueError, KeyError):
+                        pass
+
+            if live_records:
+                live_df = pd.DataFrame(live_records)
+                fig.add_trace(go.Scatter(
+                    x=live_df["exit_time"],
+                    y=live_df["cumulative_r"],
+                    mode="lines",
+                    name="Live",
+                    line=dict(color="#4CAF50", width=2.5),
+                ))
 
     # High water mark
     fig.add_trace(go.Scatter(
@@ -5277,6 +8799,10 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
         name="High Water Mark",
         line=dict(color="green", width=1, dash="dot")
     ))
+
+    # Edge Check overlay
+    if edge_check and len(equity_df) >= 5:
+        _add_edge_check_traces(fig, equity_df["exit_time"], equity_df["cumulative_r"].values)
 
     # Vertical line at forward test start
     # Use shape + annotation instead of add_vline to avoid Plotly datetime arithmetic bug
@@ -5299,6 +8825,10 @@ def render_combined_equity_curve(trades_df: pd.DataFrame, boundary_dt: datetime,
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     st.plotly_chart(fig, use_container_width=True, key=f"combined_eq_{key_suffix}" if key_suffix else None)
+
+    if edge_check:
+        st.caption("When the equity curve drops below the lower Bollinger Band, "
+                   "performance is statistically unusual — the strategy's edge may be degrading.")
 
 
 def render_r_distribution_comparison(backtest_trades: pd.DataFrame, forward_trades: pd.DataFrame, key_suffix: str = ""):
@@ -5338,19 +8868,34 @@ def render_split_trade_history(backtest_trades: pd.DataFrame, forward_trades: pd
     """Render trade history split into forward test and backtest sections."""
     def format_trade_table(trades: pd.DataFrame) -> pd.DataFrame:
         display = trades.copy()
-        display['entry'] = display['entry_time'].dt.strftime('%m/%d %H:%M')
-        display['exit'] = display['exit_time'].dt.strftime('%m/%d %H:%M')
+        display['entry'] = display['entry_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
+        display['exit'] = display['exit_time'].apply(lambda t: format_display_ts(t, '%m/%d %H:%M'))
         display['R'] = display['r_multiple'].apply(lambda x: f"{x:+.2f}")
         display['result'] = display['win'].apply(lambda x: "Win" if x else "Loss")
-        return display[['entry', 'exit', 'exit_reason', 'R', 'result']]
+        has_exit_reason = 'exit_reason' in display.columns
+        has_prices = 'entry_price' in display.columns and 'exit_price' in display.columns
+        cols = ['entry', 'exit']
+        if has_prices:
+            display['entry_px'] = display['entry_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+            display['exit_px'] = display['exit_price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "")
+            cols.extend(['entry_px', 'exit_px'])
+        if has_exit_reason:
+            cols.append('exit_reason')
+        cols.extend(['R', 'result'])
+        return display[cols]
 
+    _all_trades = pd.concat([backtest_trades, forward_trades], ignore_index=True) if len(backtest_trades) > 0 and len(forward_trades) > 0 else (backtest_trades if len(backtest_trades) > 0 else forward_trades)
     trade_col_config = {
         'entry': 'Entry Time',
         'exit': 'Exit Time',
-        'exit_reason': 'Exit Reason',
         'R': 'R-Multiple',
         'result': 'Result',
     }
+    if 'entry_price' in _all_trades.columns and 'exit_price' in _all_trades.columns:
+        trade_col_config['entry_px'] = 'Entry Price'
+        trade_col_config['exit_px'] = 'Exit Price'
+    if 'exit_reason' in _all_trades.columns:
+        trade_col_config['exit_reason'] = 'Exit Reason'
 
     with st.expander(f"Forward Test Trades ({len(forward_trades)})", expanded=True):
         if len(forward_trades) > 0:
@@ -5384,7 +8929,7 @@ def initiate_edit(strat: dict):
 
 def load_strategy_into_builder(strat: dict):
     """Load a saved strategy into the Strategy Builder for editing."""
-    if 'entry_trigger_confluence_id' not in strat:
+    if 'entry_trigger_confluence_id' not in strat and strat.get('strategy_origin') != 'webhook_inbound':
         st.error("Legacy strategies cannot be edited. Please create a new strategy in the Strategy Builder.")
         return
 
@@ -5407,7 +8952,8 @@ def load_strategy_into_builder(strat: dict):
         'symbol': strat['symbol'],
         'direction': strat['direction'],
         'timeframe': strat.get('timeframe', '1Min'),
-        'entry_trigger': strat['entry_trigger'],
+        'trading_session': strat.get('trading_session', 'RTH'),
+        'entry_trigger': strat.get('entry_trigger'),
         'entry_trigger_confluence_id': strat.get('entry_trigger_confluence_id', ''),
         # New multi-exit format
         'exit_triggers': exit_triggers_list,
@@ -5416,7 +8962,7 @@ def load_strategy_into_builder(strat: dict):
         # Legacy single-exit fields
         'exit_trigger': strat.get('exit_trigger', ''),
         'exit_trigger_confluence_id': strat.get('exit_trigger_confluence_id', ''),
-        'entry_trigger_name': strat.get('entry_trigger_name', strat['entry_trigger']),
+        'entry_trigger_name': strat.get('entry_trigger_name', strat.get('entry_trigger', '')),
         'exit_trigger_name': strat.get('exit_trigger_name', strat.get('exit_trigger', '')),
         'risk_per_trade': strat.get('risk_per_trade', 100.0),
         'stop_atr_mult': strat.get('stop_atr_mult', 1.5),
@@ -5431,6 +8977,7 @@ def load_strategy_into_builder(strat: dict):
         'lookback_start_date': strat.get('lookback_start_date'),
         'lookback_end_date': strat.get('lookback_end_date'),
         'strategy_origin': strat.get('strategy_origin', 'standard'),
+        'webhook_config': strat.get('webhook_config', {}),
     }
 
     # Set additional exits for UI (skip the primary)
@@ -5648,6 +9195,19 @@ def get_cached_strategy_trades(strat):
     return st.session_state.strategy_trades_cache[sid]
 
 
+def _get_fast_strategy_trades(strat):
+    """Get strategy trades from stored_trades (instant) or fall back to cached fetch."""
+    stored = strat.get('stored_trades')
+    if stored:
+        return _trades_df_from_stored(stored)
+    # Already in session cache (previously computed this session)
+    sid = strat['id']
+    if sid in st.session_state.strategy_trades_cache:
+        return st.session_state.strategy_trades_cache[sid]
+    # Need full computation — caller handles progress bar
+    return None
+
+
 def get_cached_forward_test_data(strat):
     """Cache forward test data in session state (compute once per session)."""
     cache_key = f"ft_data_{strat['id']}"
@@ -5733,6 +9293,7 @@ def render_portfolio_builder():
         'starting_balance': starting_balance,
         'compound_rate': compound_rate,
         'strategies': builder_strategies,
+        'requirement_set_id': req_set_id if req_set_id else None,
     }
 
     data = None
@@ -5816,7 +9377,8 @@ def render_portfolio_builder():
         # --- Add Strategy ---
         st.markdown("**Add Strategy**")
         all_strategies = load_strategies()
-        modern_strategies = [s for s in all_strategies if 'entry_trigger_confluence_id' in s]
+        modern_strategies = [s for s in all_strategies
+                             if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
         current_ids = {ps['strategy_id'] for ps in builder_strategies}
         available = [s for s in modern_strategies if s['id'] not in current_ids]
 
@@ -5836,6 +9398,8 @@ def render_portfolio_builder():
                     'risk_per_trade': add_risk,
                 })
                 st.session_state.builder_recommendations = None
+                for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                    st.session_state.pop(_k, None)
                 st.rerun()
         elif len(modern_strategies) == 0:
             st.caption("No strategies available. Create strategies first.")
@@ -5866,12 +9430,31 @@ def render_portfolio_builder():
                 if rc3.button("x", key=f"builder_rm_{i}"):
                     st.session_state.portfolio_builder_strategies.pop(i)
                     st.session_state.builder_recommendations = None
+                    for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                        st.session_state.pop(_k, None)
                     st.rerun()
 
         # --- Recommendations ---
         if builder_strategies and available:
             with st.expander("Strategy Recommendations"):
                 if st.button("Analyze Recommendations", key="builder_rec_btn"):
+                    # Pre-cache: use stored_trades where available, fetch the rest with progress
+                    needs_fetch = []
+                    for cand in available:
+                        result = _get_fast_strategy_trades(cand)
+                        if result is not None:
+                            st.session_state.strategy_trades_cache[cand['id']] = result
+                        else:
+                            needs_fetch.append(cand)
+
+                    if needs_fetch:
+                        progress = st.progress(0, text=f"Fetching data for {len(needs_fetch)} strategies...")
+                        for idx, cand in enumerate(needs_fetch):
+                            progress.progress((idx + 1) / len(needs_fetch),
+                                              text=f"Fetching {cand.get('name', '')} ({idx+1}/{len(needs_fetch)})...")
+                            get_cached_strategy_trades(cand)
+                        progress.empty()
+
                     with st.spinner("Evaluating candidates..."):
                         recs = compute_strategy_recommendations(
                             preview_portfolio, data if data else {'combined_trades': pd.DataFrame(), 'daily_pnl': pd.DataFrame(), 'strategy_daily_pnl': pd.DataFrame(), 'strategy_trades': {}, 'equity_curve': pd.Series(dtype=float)},
@@ -5894,9 +9477,15 @@ def render_portfolio_builder():
                                     'risk_per_trade': s.get('risk_per_trade', 100.0) if s else 100.0,
                                 })
                                 st.session_state.builder_recommendations = None
+                                for _k in [k for k in list(st.session_state) if k.startswith("mc_result_builder_")]:
+                                    st.session_state.pop(_k, None)
                                 st.rerun()
                 elif recs is not None:
                     st.caption("No recommendations available.")
+
+    # --- Risk Analytics (full width, below charts + strategy management) ---
+    if data and kpis and len(data['combined_trades']) > 0:
+        _render_risk_analytics(preview_portfolio, data, key_prefix="builder")
 
     st.divider()
 
@@ -5957,19 +9546,33 @@ def render_portfolio_detail(portfolio_id: int):
     st.caption(meta)
 
     # Action bar
-    action_cols = st.columns([1, 1, 1, 5])
+    action_cols = st.columns([0.8, 1, 1, 1, 4.2])
     with action_cols[0]:
+        if st.button("Refresh", key="pdetail_refresh", help="Recompute portfolio analytics"):
+            st.session_state.pop(f"port_data_{portfolio_id}", None)
+            for _alloc in port.get('strategies', []):
+                _sid = _alloc.get('strategy_id')
+                if _sid:
+                    st.session_state.strategy_trades_cache.pop(_sid, None)
+                    st.session_state.pop(f"bt_trades_{_sid}", None)
+                    st.session_state.pop(f"ft_data_{_sid}", None)
+            # Clear Monte Carlo caches for this portfolio
+            for _k in [k for k in list(st.session_state) if k.startswith(f"mc_result_{portfolio_id}_")]:
+                st.session_state.pop(_k, None)
+            st.toast("Portfolio data refreshed.")
+            st.rerun()
+    with action_cols[1]:
         if st.button("Edit Portfolio", key="pdetail_edit"):
             st.session_state.editing_portfolio_id = portfolio_id
             st.session_state.viewing_portfolio_id = None
             st.rerun()
-    with action_cols[1]:
+    with action_cols[2]:
         if st.button("Clone", key="pdetail_clone"):
             new = duplicate_portfolio(portfolio_id)
             if new:
                 st.toast(f"Cloned as '{new['name']}'")
                 st.rerun()
-    with action_cols[2]:
+    with action_cols[3]:
         if st.button("Delete", key="pdetail_del", type="secondary"):
             st.session_state.confirm_delete_portfolio_id = portfolio_id
             st.rerun()
@@ -6009,8 +9612,8 @@ def render_portfolio_detail(portfolio_id: int):
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
 
     # Tabs
-    tab_perf, tab_strats, tab_prop, tab_webhooks, tab_deploy = st.tabs(
-        ["Performance", "Strategies", "Prop Firm Check", "Webhooks", "Deploy"]
+    tab_perf, tab_strats, tab_prop, tab_account, tab_webhooks, tab_deploy = st.tabs(
+        ["Performance", "Strategies", "Prop Firm Check", "Account", "Webhooks", "Deploy"]
     )
 
     with tab_perf:
@@ -6022,11 +9625,264 @@ def render_portfolio_detail(portfolio_id: int):
     with tab_prop:
         render_portfolio_prop_firm(port, kpis, data['daily_pnl'])
 
+    with tab_account:
+        render_portfolio_account(port, portfolio_id)
+
     with tab_webhooks:
         render_portfolio_webhooks(port)
 
     with tab_deploy:
         render_portfolio_deploy(port)
+
+
+def _render_risk_analytics(port, data, key_prefix="perf"):
+    """Render capital utilization, Daily P&L vs Limits, Worst-Case Analysis,
+    and Monte Carlo sections.
+
+    Shared by the Performance tab and the portfolio builder.
+    key_prefix avoids Streamlit widget key collisions between callers.
+    """
+    daily = data['daily_pnl']
+    starting_balance = port.get('starting_balance', 10000.0)
+
+    # --- Capital Utilization ---
+    st.subheader("Capital Utilization")
+    _cu = compute_capital_utilization(data['combined_trades'], starting_balance)
+    if _cu is not None:
+        _tl = _cu['timeline']
+
+        _fig_cu = go.Figure()
+
+        # Available buying power (area)
+        _fig_cu.add_trace(go.Scatter(
+            x=_tl['time'], y=_tl['available_buying_power'],
+            mode='lines', name='Available Buying Power',
+            line=dict(color='#2196F3', width=2),
+            fill='tozeroy', fillcolor='rgba(33, 150, 243, 0.15)',
+        ))
+
+        # Capital deployed (secondary line)
+        _fig_cu.add_trace(go.Scatter(
+            x=_tl['time'], y=_tl['capital_deployed'],
+            mode='lines', name='Capital Deployed',
+            line=dict(color='#FF9800', width=1.5, dash='dot'),
+        ))
+
+        # Reference lines
+        _fig_cu.add_hline(
+            y=starting_balance, line_dash="dash", line_color="#4CAF50",
+            annotation_text="Starting Balance", annotation_font_color="#4CAF50",
+        )
+        _fig_cu.add_hline(
+            y=0, line_dash="dash", line_color="#f44336", opacity=0.6,
+            annotation_text="Insufficient Capital", annotation_font_color="#f44336",
+        )
+
+        _fig_cu.update_layout(
+            height=350, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="", yaxis_title="Dollars ($)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(_fig_cu, use_container_width=True, key=f"{key_prefix}_capital_util")
+
+        _cu_cols = st.columns(3)
+        _cu_cols[0].metric(
+            "Peak Capital Deployed",
+            f"${_cu['peak_capital_deployed']:,.0f}",
+            delta=f"{_cu['peak_capital_pct']:.1f}% of balance",
+        )
+        _cu_cols[1].metric(
+            "Min Buying Power",
+            f"${_cu['min_buying_power']:,.0f}",
+            delta=f"{_cu['min_buying_power_pct']:.1f}% of balance",
+            delta_color="inverse",
+        )
+        _cu_cols[2].metric(
+            "Max Concurrent Positions",
+            _cu['max_concurrent_positions'],
+        )
+
+        if _cu['insufficient_capital_events'] > 0:
+            st.warning(
+                f"{_cu['insufficient_capital_events']} instance(s) where buying power "
+                "was insufficient to support all open positions."
+            )
+    else:
+        st.info("Capital utilization requires entry price and stop data.")
+
+    # --- Daily P&L vs Limits chart ---
+    st.subheader("Daily P&L vs Limits")
+    if len(daily) > 0:
+        _dpct = daily.copy()
+        _dpct['pnl_pct'] = _dpct['daily_pnl'] / starting_balance * 100
+
+        _thresholds = get_daily_limit_thresholds(port)
+        _max_daily_loss = _thresholds.get('max_daily_loss_pct')
+        _daily_pause = _thresholds.get('daily_pause_pct')
+
+        _bar_colors = []
+        for _, _row in _dpct.iterrows():
+            _pct = _row['pnl_pct']
+            if _max_daily_loss is not None and _pct < 0 and abs(_pct) >= _max_daily_loss:
+                _bar_colors.append('#f44336')
+            elif _daily_pause is not None and _pct < 0 and abs(_pct) >= _daily_pause:
+                _bar_colors.append('#FF9800')
+            else:
+                _bar_colors.append('#2196F3')
+
+        _fig_dl = go.Figure()
+        _fig_dl.add_trace(go.Bar(
+            x=_dpct['date'], y=_dpct['pnl_pct'],
+            marker_color=_bar_colors, name='Daily P&L %',
+        ))
+        if _max_daily_loss is not None:
+            _fig_dl.add_hline(
+                y=-_max_daily_loss, line_dash="dash", line_color="#f44336",
+                annotation_text="Max Daily Loss", annotation_font_color="#f44336",
+            )
+        if _daily_pause is not None:
+            _fig_dl.add_hline(
+                y=-_daily_pause, line_dash="dash", line_color="#FF9800",
+                annotation_text="Daily Pause", annotation_font_color="#FF9800",
+            )
+        _fig_dl.add_hline(y=0, line_color="gray", opacity=0.3)
+        _fig_dl.update_layout(
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="", yaxis_title="Daily P&L (% of Starting Balance)",
+            showlegend=False,
+        )
+        st.plotly_chart(_fig_dl, use_container_width=True, key=f"{key_prefix}_daily_limits")
+
+        _cap_parts = []
+        if _max_daily_loss is not None:
+            _bc = ((_dpct['pnl_pct'] < 0) & (_dpct['pnl_pct'].abs() >= _max_daily_loss)).sum()
+            _cap_parts.append(f"{_bc} day(s) breached max daily loss ({_max_daily_loss}%)")
+        if _daily_pause is not None:
+            _pc = ((_dpct['pnl_pct'] < 0) & (_dpct['pnl_pct'].abs() >= _daily_pause)).sum()
+            _cap_parts.append(f"{_pc} day(s) breached daily pause ({_daily_pause}%)")
+        if _cap_parts:
+            st.caption(" | ".join(_cap_parts))
+        elif not _thresholds:
+            st.caption("No daily loss limits configured in the portfolio's requirement set.")
+
+    # --- Worst-Case Analysis ---
+    with st.expander("Worst-Case Analysis", expanded=False):
+        _wc_thresholds = get_daily_limit_thresholds(port)
+        _wc = compute_worst_case_analysis(
+            data['daily_pnl'], starting_balance, _wc_thresholds,
+        )
+        if _wc['worst_day_date'] is not None:
+            _wc1 = st.columns(3)
+            _wc1[0].metric("Worst Single Day", f"${_wc['worst_day_dollars']:+,.0f}",
+                           delta=f"{_wc['worst_day_pct']:+.1f}%", delta_color="inverse")
+            _wc1[1].metric("Worst Losing Streak", f"{_wc['worst_streak_days']} days",
+                           delta=f"${_wc['worst_streak_dollars']:+,.0f}", delta_color="inverse")
+            _wc1[2].metric("Worst 5-Day Rolling DD", f"${_wc['worst_5day_rolling_dd']:+,.0f}")
+
+            _wc2 = st.columns(2)
+            if _wc_thresholds.get('daily_pause_pct') is not None:
+                _wc2[0].metric("Days Breaching Daily Pause", _wc['days_breach_daily_pause'])
+            if _wc_thresholds.get('max_daily_loss_pct') is not None:
+                _wc2[1].metric("Days Breaching Max Daily Loss", _wc['days_breach_max_daily_loss'])
+
+            if _wc['top_5_worst_days']:
+                st.markdown("**Top 5 Worst Days**")
+                _wdf = pd.DataFrame(_wc['top_5_worst_days'])
+                _wdf.columns = ['Date', 'P&L ($)', 'P&L (%)', 'Cumulative DD %', 'Breach Status']
+                _wdf['P&L ($)'] = _wdf['P&L ($)'].apply(lambda x: f"${x:+,.0f}")
+                _wdf['P&L (%)'] = _wdf['P&L (%)'].apply(lambda x: f"{x:+.2f}%")
+                _wdf['Cumulative DD %'] = _wdf['Cumulative DD %'].apply(lambda x: f"{x:.2f}%")
+                st.dataframe(_wdf, use_container_width=True, hide_index=True)
+        else:
+            st.info("No trading data available for worst-case analysis.")
+
+    # --- Monte Carlo Simulation ---
+    _port_key = port.get('id', 'builder')
+    with st.expander("Risk Simulation (Monte Carlo)", expanded=False):
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            _shuffle = st.selectbox(
+                "Shuffle Mode", options=['daily', 'weekly', 'individual'],
+                format_func=lambda x: {'daily': 'Daily Blocks (default)',
+                                        'weekly': 'Weekly Blocks',
+                                        'individual': 'Individual Trades'}[x],
+                key=f"mc_shuffle_{key_prefix}_{_port_key}",
+            )
+        with _mc2:
+            _nsims = st.slider(
+                "Number of Simulations",
+                min_value=500, max_value=5000, value=1000, step=500,
+                key=f"mc_nsims_{key_prefix}_{_port_key}",
+            )
+
+        _mc_ck = f"mc_result_{key_prefix}_{_port_key}_{_shuffle}_{_nsims}"
+
+        _run = st.button("Run Simulation", key=f"mc_run_{key_prefix}_{_port_key}")
+        if _run:
+            _mc_thresh = get_daily_limit_thresholds(port)
+            with st.spinner(f"Running {_nsims} simulations ({_shuffle} mode)..."):
+                _mcr = run_monte_carlo(
+                    data['combined_trades'], data['daily_pnl'],
+                    starting_balance, _mc_thresh,
+                    n_simulations=_nsims, shuffle_mode=_shuffle,
+                )
+            st.session_state[_mc_ck] = _mcr
+
+        _mcr = st.session_state.get(_mc_ck)
+        if _mcr is not None and len(_mcr.get('max_dd_values', [])) > 0:
+            _pc = st.columns(3)
+            _pc[0].metric("Bust Probability", f"{_mcr['bust_probability']:.1f}%")
+            _pc[1].metric("Daily Pause Probability", f"{_mcr['daily_pause_probability']:.1f}%")
+            _pc[2].metric("Max Daily Loss Probability", f"{_mcr['max_daily_loss_probability']:.1f}%")
+
+            _sc = st.columns(3)
+            _sc[0].metric("Median Max DD", f"{_mcr['median_max_dd']:.1f}%")
+            _sc[1].metric("95th Percentile Max DD", f"{_mcr['p95_max_dd']:.1f}%")
+            _sc[2].metric("Expected Worst Day", f"{_mcr['expected_worst_day']:.2f}%")
+
+            st.markdown("**Max Drawdown Distribution**")
+            _fdd = go.Figure()
+            _fdd.add_trace(go.Histogram(x=_mcr['max_dd_values'], nbinsx=50,
+                                         marker_color='#2196F3', name='Max DD %'))
+            _dd_lim = get_daily_limit_thresholds(port).get('max_total_drawdown_pct')
+            if _dd_lim is not None:
+                _fdd.add_vline(x=-_dd_lim, line_dash="dash", line_color="#f44336",
+                               annotation_text="Max DD Limit", annotation_font_color="#f44336")
+            _fdd.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0),
+                               xaxis_title="Max Drawdown %", yaxis_title="Frequency", showlegend=False)
+            st.plotly_chart(_fdd, use_container_width=True, key=f"{key_prefix}_mc_dd_{_port_key}")
+
+            _pctiles = _mcr['equity_percentiles']
+            _ns = len(_pctiles['50'])
+            if _ns > 0:
+                st.markdown("**Equity Curve Confidence Bands**")
+                _xa = list(range(_ns))
+                _feq = go.Figure()
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['95'].tolist(),
+                                           mode='lines', line=dict(width=0), showlegend=False))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['5'].tolist(),
+                                           mode='lines', line=dict(width=0),
+                                           fill='tonexty', fillcolor='rgba(33, 150, 243, 0.1)', name='5th-95th'))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['75'].tolist(),
+                                           mode='lines', line=dict(width=0), showlegend=False))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['25'].tolist(),
+                                           mode='lines', line=dict(width=0),
+                                           fill='tonexty', fillcolor='rgba(33, 150, 243, 0.25)', name='25th-75th'))
+                _feq.add_trace(go.Scatter(x=_xa, y=_pctiles['50'].tolist(),
+                                           mode='lines', name='Median', line=dict(color='white', width=2)))
+                _feq.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                _xl = {'daily': 'Trading Days', 'weekly': 'Trading Days', 'individual': 'Trades'}
+                _feq.update_layout(
+                    height=350, margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title=_xl.get(_mcr['shuffle_mode'], 'Steps'),
+                    yaxis_title="Cumulative P&L ($)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                )
+                st.plotly_chart(_feq, use_container_width=True, key=f"{key_prefix}_mc_eq_{_port_key}")
+
+            st.caption(f"Based on {_mcr['n_simulations']} simulations, {_mcr['shuffle_mode']} shuffle mode.")
+        elif not _run:
+            st.info("Click 'Run Simulation' to generate Monte Carlo analysis.")
 
 
 def render_portfolio_performance(port, kpis, data, drawdown):
@@ -6114,6 +9970,9 @@ def render_portfolio_performance(port, kpis, data, drawdown):
         dd_cols[0].caption(f"Max DD: {kpis['max_drawdown_pct']:.1f}% (${kpis['max_drawdown_dollars']:,.0f})")
         dd_cols[1].caption(f"Profitable Days: {kpis['profitable_days_pct']:.0f}% ({kpis['profitable_days_count']}/{kpis['total_trading_days']})")
         dd_cols[2].caption(f"Avg Daily P&L: ${kpis['avg_daily_pnl']:+,.0f} (Std: ${kpis['daily_pnl_std']:,.0f})")
+
+    # Risk analytics (shared helper: Daily P&L vs Limits, Worst-Case, Monte Carlo)
+    _render_risk_analytics(port, data, key_prefix="perf")
 
     # Daily P&L distribution
     chart_left, chart_right = st.columns(2)
@@ -6239,6 +10098,43 @@ def render_portfolio_prop_firm(port, kpis, daily_pnl):
         failed = [r['name'] for r in result['rules'] if not r['passed']]
         st.error(f"NON-COMPLIANT — Failed: {', '.join(failed)}")
 
+    # Profit Target Progress
+    _profit_rule = None
+    for _rule in req_set.get('rules', []):
+        if _rule['type'] == 'min_profit_pct':
+            _profit_rule = _rule
+            break
+
+    if _profit_rule is not None:
+        _target_pct = _profit_rule['value']
+        _sb = port.get('starting_balance', 10000.0)
+        _current_pct = kpis['total_pnl'] / _sb * 100 if _sb > 0 else 0
+        _progress_fraction = max(0.0, min(_current_pct / _target_pct, 1.0))
+
+        st.subheader("Profit Target Progress")
+        st.progress(_progress_fraction)
+
+        _avg_daily = kpis.get('avg_daily_pnl', 0)
+        if _avg_daily > 0:
+            _remaining_pnl = (_target_pct / 100 * _sb) - kpis['total_pnl']
+            if _remaining_pnl > 0:
+                _est_days = int(np.ceil(_remaining_pnl / _avg_daily))
+                st.caption(
+                    f"{_current_pct:.1f}% of {_target_pct:.1f}% target "
+                    f"(estimated {_est_days} trading days remaining at current avg daily P&L)"
+                )
+            else:
+                st.caption(f"{_current_pct:.1f}% of {_target_pct:.1f}% target — TARGET REACHED")
+        elif _current_pct >= _target_pct:
+            st.caption(f"{_current_pct:.1f}% of {_target_pct:.1f}% target — TARGET REACHED")
+        else:
+            st.caption(
+                f"{_current_pct:.1f}% of {_target_pct:.1f}% target "
+                f"(cannot estimate days remaining — avg daily P&L is not positive)"
+            )
+
+        st.divider()
+
     # Margin of safety
     st.subheader("Margin of Safety")
     for r in result['rules']:
@@ -6305,15 +10201,13 @@ def render_portfolio_deploy(port):
                 badge = ":orange[COMPLIANCE]"
             else:
                 badge = f":gray[{alert_type.upper()}]"
+            if alert.get('source') == 'intra_bar':
+                badge += " :violet[Intra-bar]"
 
             col_t, col_b, col_d = st.columns([2, 1, 5])
             with col_t:
                 ts = alert.get('timestamp', '')
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16] if ts else '?')
+                st.caption(format_display_ts(ts, '%m/%d %H:%M'))
             with col_b:
                 st.markdown(badge)
             with col_d:
@@ -6563,6 +10457,46 @@ def render_alerts_page():
         _render_inbound_webhooks_tab()
 
 
+def _read_ralph_status() -> dict:
+    """Read Ralph engine status from engine_status.json."""
+    status_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_status.json")
+    if not os.path.exists(status_path):
+        return {}
+    try:
+        with open(status_path) as f:
+            info = json.load(f)
+        # Verify PID is alive (not just existing — zombies pass os.kill check)
+        pid = info.get('pid', 0)
+        if info.get('running') and pid:
+            try:
+                os.kill(pid, 0)
+                # Also check for zombie state (defunct process)
+                try:
+                    with open(f'/proc/{pid}/status') as pf:
+                        for line in pf:
+                            if line.startswith('State:') and 'zombie' in line.lower():
+                                info['running'] = False
+                                break
+                except (FileNotFoundError, PermissionError):
+                    pass
+            except OSError:
+                info['running'] = False
+        return info
+    except Exception:
+        return {}
+
+
+def _signal_ralph_reload():
+    """Write engine_reload.flag to signal the Ralph engine to hot-reload."""
+    flag_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "engine_reload.flag")
+    try:
+        with open(flag_path, 'w') as f:
+            f.write('reload')
+    except Exception:
+        pass
+
+
 def _render_monitor_status_bar(status: dict, config: dict):
     """Render the monitor status bar with start/stop controls."""
     is_running = status.get('running', False)
@@ -6578,14 +10512,30 @@ def _render_monitor_status_bar(status: dict, config: dict):
 
     col_status, col_info, col_action = st.columns([2, 4, 2])
 
+    # Check Ralph engine status (separate process via engine_status.json)
+    _engine_info = _read_ralph_status()
+    _engine_running = _engine_info.get('running', False)
+
     with col_status:
-        if is_running:
-            st.success("Monitor: Running")
+        if _engine_info.get('connected', False):
+            st.success("Engine: Streaming")
+        elif _engine_running:
+            st.warning("Engine: Connecting...")
+        elif is_running:
+            st.success("Monitor: Polling")
         else:
             st.error("Monitor: Stopped")
 
     with col_info:
-        if is_running:
+        if _engine_running:
+            sym_count = len(_engine_info.get('symbols', []))
+            ticks = _engine_info.get('tick_count', 0)
+            syms = ", ".join(_engine_info.get('symbols', []))
+            info_parts = [f"Symbols: {syms or 'none'}", f"Ticks: {ticks:,}"]
+            if _engine_info.get('started_at'):
+                info_parts.append(f"Started: {format_display_ts(_engine_info['started_at'])}")
+            st.caption(" | ".join(info_parts))
+        elif is_running:
             last_poll = status.get('last_poll', 'Never')
             strats = status.get('strategies_monitored', 0)
             duration = status.get('last_poll_duration_ms')
@@ -6597,15 +10547,48 @@ def _render_monitor_status_bar(status: dict, config: dict):
             errors = status.get('errors', [])
             if errors:
                 st.warning(f"{len(errors)} recent error(s). Latest: {errors[-1].get('error', '?')}")
-        else:
+        elif not _engine_running:
             if not config.get('global', {}).get('enabled', False):
                 st.caption("Enable alerts in Global Settings to start the monitor.")
             else:
                 st.caption("Monitor is not running. Click Start to begin polling.")
 
     with col_action:
-        if is_running:
+        if is_running or _engine_running:
             if st.button("Stop Monitor", type="secondary", use_container_width=True):
+                # Stop Ralph engine if active
+                engine_pid = _engine_info.get('pid') if _engine_running else None
+                if engine_pid:
+                    try:
+                        os.kill(engine_pid, signal_module.SIGTERM)
+                    except (OSError, ProcessLookupError):
+                        engine_pid = None
+                    # Wait briefly for graceful shutdown, then escalate
+                    if engine_pid:
+                        import time
+                        for _ in range(10):  # up to ~1s
+                            time.sleep(0.1)
+                            try:
+                                os.kill(engine_pid, 0)
+                            except OSError:
+                                break  # process exited
+                        else:
+                            # Still alive after 1s — force kill
+                            try:
+                                os.kill(engine_pid, signal_module.SIGKILL)
+                            except (OSError, ProcessLookupError):
+                                pass
+                    # Mark engine_status.json as stopped so UI updates
+                    # immediately (engine may not have written it)
+                    engine_status_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "engine_status.json")
+                    try:
+                        with open(engine_status_path, 'w') as f:
+                            json.dump({'running': False, 'pid': 0}, f)
+                    except Exception:
+                        pass
+                # Stop poller subprocess
                 pid = status.get('pid')
                 if pid:
                     try:
@@ -6613,23 +10596,29 @@ def _render_monitor_status_bar(status: dict, config: dict):
                     except (OSError, ProcessLookupError):
                         pass
                 status['running'] = False
+                status['streaming_connected'] = False
                 save_monitor_status(status)
                 st.rerun()
         else:
             can_start = config.get('global', {}).get('enabled', False)
             if st.button("Start Monitor", type="primary", disabled=not can_start,
                          use_container_width=True):
-                # Launch alert_monitor.py as a background process
-                monitor_script = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "alert_monitor.py"
+                # Launch Ralph engine as a background subprocess
+                ralph_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "ralph_engine.py"
                 )
+                venv_python = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..", ".venv", "bin", "python"
+                )
+                python_cmd = venv_python if os.path.exists(venv_python) else "python"
                 subprocess.Popen(
-                    ["python", monitor_script],
+                    [python_cmd, ralph_script],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-                st.toast("Monitor starting...")
+                st.toast("Ralph engine starting...")
                 import time
                 time.sleep(1)  # brief delay for status file to be written
                 st.rerun()
@@ -6643,21 +10632,67 @@ def _render_send_test_alert(config: dict):
         return
 
     if st.button("Send Test Alert", use_container_width=True):
+        # Build a realistic test alert from the first portfolio's first strategy
+        test_symbol = "TEST"
+        test_direction = "LONG"
+        test_price = 100.00
+        test_stop = 98.50
+        test_atr = 1.50
+        test_risk = 100.0
+        test_strat_name = "Test Alert (E2E Verification)"
+        test_strat_id = 0
+        test_timeframe = "1Min"
+
+        # Try to populate from real portfolio/strategy data
+        try:
+            portfolios = load_portfolios()
+            for port in portfolios:
+                pid = str(port.get('id', ''))
+                pcfg = config.get('portfolios', {}).get(pid, {})
+                port_whs = [wh for wh in pcfg.get('webhooks', []) if wh.get('enabled', True)]
+                if port_whs and port.get('strategies'):
+                    alloc = port['strategies'][0]
+                    strat = get_strategy_by_id(alloc.get('strategy_id'))
+                    if strat:
+                        test_symbol = strat.get('symbol', test_symbol)
+                        test_direction = strat.get('direction', test_direction)
+                        test_risk = alloc.get('risk_per_trade', strat.get('risk_per_trade', test_risk))
+                        test_strat_name = f"Test: {strat.get('name', 'Unknown')}"
+                        test_strat_id = strat.get('id', 0)
+                        test_timeframe = strat.get('timeframe', test_timeframe)
+                        # Use last trade data if available for realistic price/stop
+                        trades = get_strategy_trades(strat)
+                        if len(trades) > 0:
+                            last_trade = trades.iloc[-1]
+                            if 'entry_price' in last_trade and pd.notna(last_trade.get('entry_price')):
+                                test_price = round(float(last_trade['entry_price']), 2)
+                            if 'stop_price' in last_trade and pd.notna(last_trade.get('stop_price')):
+                                test_stop = round(float(last_trade['stop_price']), 2)
+                            test_atr = round(abs(test_price - test_stop) / max(strat.get('stop_atr_mult', 1.5), 0.01), 2)
+                    break
+        except Exception:
+            pass  # Fall back to defaults
+
+        # Calculate quantity from risk and stop distance
+        stop_distance = abs(test_price - test_stop)
+        test_qty = int(test_risk / stop_distance) if stop_distance > 0 else 1
+
         test_alert = {
             "type": "entry_signal",
             "level": "strategy",
-            "symbol": "TEST",
-            "direction": "LONG",
-            "strategy_name": "Test Alert (E2E Verification)",
-            "strategy_id": 0,
-            "price": 100.00,
-            "stop_price": 98.50,
-            "atr": 1.50,
+            "symbol": test_symbol,
+            "direction": test_direction,
+            "strategy_name": test_strat_name,
+            "strategy_id": test_strat_id,
+            "price": test_price,
+            "stop_price": test_stop,
+            "atr": test_atr,
+            "quantity": test_qty,
             "trigger": "test_trigger",
             "confluence_met": ["TEST-CONDITION"],
-            "risk_per_trade": 100.0,
-            "timeframe": "1Min",
-            "timestamp": datetime.now().isoformat(),
+            "risk_per_trade": test_risk,
+            "timeframe": test_timeframe,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "acknowledged": False,
             "webhook_sent": False,
             "portfolio_context": [],
@@ -6681,7 +10716,7 @@ def _render_send_test_alert(config: dict):
                 "webhook_id": wh.get("id", ""),
                 "webhook_name": wh.get("name", ""),
                 "portfolio_id": wh["portfolio_id"],
-                "sent_at": datetime.now().isoformat(),
+                "sent_at": datetime.now(timezone.utc).isoformat(),
                 "success": result["success"],
                 "status_code": result.get("status_code"),
                 "payload_sent": result.get("payload_sent", ""),
@@ -6772,8 +10807,24 @@ def _render_active_alerts_management(config: dict):
             'enabled': enabled,
         }
         save_alert_config(config)
+        _signal_ralph_reload()
         st.toast("Global settings saved")
         st.rerun()
+
+
+_TRIGGER_LABELS = {
+    "stop_loss": "Stop Loss",
+    "bar_count_exit": "Bar Count Exit",
+    "opposite_signal": "Opposite Signal",
+    "signal_exit": "Signal Exit",
+}
+
+
+def _trigger_label(trigger: str) -> str:
+    """Human-readable label for an alert trigger name."""
+    if not trigger:
+        return ""
+    return _TRIGGER_LABELS.get(trigger, trigger.replace("_", " ").title())
 
 
 def _render_alert_row(alert: dict, prefix: str = ""):
@@ -6788,18 +10839,15 @@ def _render_alert_row(alert: dict, prefix: str = ""):
         badge = ":orange[COMPLIANCE]"
     else:
         badge = f":gray[{alert_type.upper()}]"
+    if alert.get('source') == 'intra_bar':
+        badge += " :violet[Intra-bar]"
 
     with st.container():
         col_time, col_badge, col_detail = st.columns([2, 1, 6])
 
         with col_time:
             ts = alert.get('timestamp', '')
-            if ts:
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:16])
+            st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
 
         with col_badge:
             st.markdown(badge)
@@ -6809,6 +10857,7 @@ def _render_alert_row(alert: dict, prefix: str = ""):
             direction = alert.get('direction', '')
             strategy_name = alert.get('strategy_name', '')
             price = alert.get('price')
+            trigger = _trigger_label(alert.get('trigger', ''))
 
             detail_parts = []
             if strategy_name:
@@ -6817,6 +10866,8 @@ def _render_alert_row(alert: dict, prefix: str = ""):
                 detail_parts.append(f"{symbol} {direction}")
             if price:
                 detail_parts.append(f"@ ${price:.2f}")
+            if trigger:
+                detail_parts.append(f"*{trigger}*")
 
             if alert_type == 'compliance_breach':
                 port_name = alert.get('portfolio_name', '')
@@ -6913,17 +10964,16 @@ def _render_portfolio_alerts_tab():
                 else:
                     badge = f":gray[{alert_type.upper()}]"
 
+                # Add intra-bar badge when alert was triggered mid-bar
+                ib_badge = " :violet[Intra-bar]" if alert.get('source') == 'intra_bar' else ""
+
                 with st.container():
                     col_t, col_b, col_d = st.columns([2, 1, 6])
                     with col_t:
                         ts = alert.get('timestamp', '')
-                        try:
-                            dt = datetime.fromisoformat(ts)
-                            st.caption(dt.strftime("%m/%d %H:%M"))
-                        except (ValueError, TypeError):
-                            st.caption(ts[:16] if ts else '?')
+                        st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
                     with col_b:
-                        st.markdown(badge)
+                        st.markdown(badge + ib_badge)
                     with col_d:
                         strategy_name = alert.get('strategy_name', '')
                         price = alert.get('price')
@@ -6995,11 +11045,7 @@ def _render_outbound_webhooks_tab():
 
             with col_time:
                 ts = d.get("sent_at", "")
-                try:
-                    dt = datetime.fromisoformat(ts)
-                    st.caption(dt.strftime("%m/%d %H:%M:%S"))
-                except (ValueError, TypeError):
-                    st.caption(ts[:19] if ts else "?")
+                st.caption(format_display_ts(ts, '%m/%d %H:%M:%S'))
 
             with col_status:
                 st.markdown(status_badge)
@@ -7036,6 +11082,139 @@ def _render_outbound_webhooks_tab():
 def _render_inbound_webhooks_tab():
     """Placeholder for future inbound webhooks feature."""
     st.info("Inbound Webhooks — Coming Soon. This will allow external systems to send signals into RoR Trader.")
+
+
+# =============================================================================
+# PORTFOLIO ACCOUNT MANAGEMENT
+# =============================================================================
+
+def render_portfolio_account(port: dict, portfolio_id: int):
+    """Render the Account Management tab for a portfolio."""
+    account = get_account(port)
+    ledger = account.get('ledger', [])
+    current_balance = compute_account_balance(account)
+    starting_balance = account.get('starting_balance', port.get('starting_balance', 10000.0))
+
+    # Compute net deposits/withdrawals and trading P&L
+    net_deposits = sum(e['amount'] for e in ledger if e.get('type') in ('deposit', 'withdrawal'))
+    trading_pnl = sum(e['amount'] for e in ledger if e.get('type') == 'trading_pnl')
+
+    # Balance summary
+    st.subheader("Live Account")
+    bal_cols = st.columns(4)
+    bal_cols[0].metric("Current Balance", f"${current_balance:,.2f}")
+    bal_cols[1].metric("Starting Balance", f"${starting_balance:,.2f}")
+    bal_cols[2].metric("Net Deposits", f"${net_deposits:+,.2f}")
+    bal_cols[3].metric("Trading P&L", f"${trading_pnl:+,.2f}")
+
+    # Balance History Chart
+    history = get_balance_history(account)
+    if len(history) >= 2:
+        hist_df = pd.DataFrame(history)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=hist_df['date'], y=hist_df['balance'],
+            mode='lines', fill='tozeroy',
+            line=dict(color='#2196F3', width=2),
+            fillcolor='rgba(33, 150, 243, 0.1)',
+            name='Balance',
+        ))
+        fig.update_layout(
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title='', yaxis_title='Balance ($)',
+            yaxis=dict(tickformat='$,.0f'),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    elif len(ledger) == 0:
+        st.info("No ledger entries yet. Add a deposit to get started.")
+
+    # Deposit / Withdrawal forms
+    form_cols = st.columns(2)
+    with form_cols[0]:
+        with st.form("add_deposit", clear_on_submit=True):
+            st.markdown("**Add Deposit**")
+            dep_amount = st.number_input("Amount ($)", min_value=0.01, value=1000.0, key="dep_amt")
+            dep_date = st.date_input("Date", value=datetime.now().date(), key="dep_date")
+            dep_note = st.text_input("Note (optional)", key="dep_note")
+            if st.form_submit_button("Add Deposit"):
+                add_ledger_entry(port, 'deposit', dep_amount,
+                                 note=dep_note, date=dep_date.isoformat())
+                update_portfolio(portfolio_id, port)
+                st.toast(f"Deposit of ${dep_amount:,.2f} added")
+                st.rerun()
+
+    with form_cols[1]:
+        with st.form("add_withdrawal", clear_on_submit=True):
+            st.markdown("**Add Withdrawal**")
+            wd_amount = st.number_input("Amount ($)", min_value=0.01, value=500.0, key="wd_amt")
+            wd_date = st.date_input("Date", value=datetime.now().date(), key="wd_date")
+            wd_note = st.text_input("Note (optional)", key="wd_note")
+            if st.form_submit_button("Add Withdrawal"):
+                add_ledger_entry(port, 'withdrawal', -wd_amount,
+                                 note=wd_note, date=wd_date.isoformat())
+                update_portfolio(portfolio_id, port)
+                st.toast(f"Withdrawal of ${wd_amount:,.2f} recorded")
+                st.rerun()
+
+    # Ledger table
+    if ledger:
+        st.markdown("**Ledger**")
+        ledger_sorted = sorted(ledger, key=lambda e: e.get('date', ''), reverse=True)
+        # Header row
+        hdr = st.columns([2, 2, 2, 3, 1])
+        hdr[0].markdown("**Date**")
+        hdr[1].markdown("**Type**")
+        hdr[2].markdown("**Amount**")
+        hdr[3].markdown("**Note**")
+        hdr[4].markdown("**Action**")
+        for entry in ledger_sorted:
+            eid = entry.get('id', 0)
+            amount = entry.get('amount', 0)
+            entry_type = entry.get('type', '')
+            type_label = entry_type.replace('_', ' ').title()
+            if entry.get('auto'):
+                type_label += " (auto)"
+            row = st.columns([2, 2, 2, 3, 1])
+            row[0].write(entry.get('date', ''))
+            row[1].write(type_label)
+            row[2].write(f"${amount:+,.2f}")
+            row[3].write(entry.get('note', ''))
+            with row[4]:
+                if st.session_state.confirm_delete_ledger_id == eid:
+                    cc = st.columns(2)
+                    with cc[0]:
+                        if st.button("Yes", key=f"ledger_yes_{eid}", type="primary"):
+                            remove_ledger_entry(port, eid)
+                            update_portfolio(portfolio_id, port)
+                            st.session_state.confirm_delete_ledger_id = None
+                            st.toast("Ledger entry removed")
+                            st.rerun()
+                    with cc[1]:
+                        if st.button("No", key=f"ledger_no_{eid}"):
+                            st.session_state.confirm_delete_ledger_id = None
+                            st.rerun()
+                else:
+                    if st.button("🗑", key=f"ledger_del_{eid}"):
+                        st.session_state.confirm_delete_ledger_id = eid
+                        st.rerun()
+
+    # Trading Notes
+    st.markdown("---")
+    st.markdown("**Trading Notes**")
+    notes = account.get('notes', '')
+    notes_key = f"acct_notes_{portfolio_id}"
+    new_notes = st.text_area("Notes (markdown supported)", value=notes, height=200, key=notes_key)
+    note_cols = st.columns([1, 5])
+    with note_cols[0]:
+        if st.button("Save Notes", key=f"save_notes_{portfolio_id}"):
+            account['notes'] = new_notes
+            account['notes_updated_at'] = datetime.now(timezone.utc).isoformat()
+            update_portfolio(portfolio_id, port)
+            st.toast("Notes saved")
+            st.rerun()
+    if notes:
+        with st.expander("Preview", expanded=True):
+            st.markdown(notes)
 
 
 # =============================================================================
@@ -7188,7 +11367,7 @@ def _render_webhook_editor(portfolio_id: int, port: dict, wh: dict, index: int):
                     "price": 100.0, "stop_price": 98.5, "atr": 1.5,
                     "trigger": "test_trigger", "confluence_met": ["TEST-CONDITION"],
                     "risk_per_trade": 100.0, "timeframe": "1Min",
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 ctx = build_placeholder_context(test_alert, {
                     "portfolio_id": portfolio_id,
@@ -7349,6 +11528,22 @@ def render_settings():
     """Render the Settings page — global app preferences."""
     st.header("Settings")
 
+    # --- Display ---
+    st.subheader("Display")
+    tz_labels = list(DISPLAY_TIMEZONE_OPTIONS.keys())
+    tz_values = list(DISPLAY_TIMEZONE_OPTIONS.values())
+    current_tz = st.session_state.get('display_timezone', 'US/Eastern')
+    tz_idx = tz_values.index(current_tz) if current_tz in tz_values else 0
+    sel_tz = st.selectbox(
+        "Display Timezone",
+        tz_labels,
+        index=tz_idx,
+        key="settings_display_timezone",
+        help="All timestamps in the app will be shown in this timezone. "
+             "Does not affect calculations or stored data.",
+    )
+    st.session_state['display_timezone'] = DISPLAY_TIMEZONE_OPTIONS[sel_tz]
+
     # --- Chart Defaults ---
     st.subheader("Chart Defaults")
     candle_presets = {
@@ -7370,6 +11565,22 @@ def render_settings():
     )
     st.session_state['chart_visible_candles'] = candle_presets[preset_label]
     st.caption("Individual charts have a per-chart override dropdown.")
+
+    theme_options = {"Classic (Green / Red)": "classic",
+                     "Neutral (White / Gray)": "neutral",
+                     "Neutral Hollow (Hollow White / Gray)": "neutral_hollow"}
+    current_theme = st.session_state.get('candle_theme', 'neutral')
+    theme_labels = list(theme_options.keys())
+    theme_values = list(theme_options.values())
+    theme_idx = theme_values.index(current_theme) if current_theme in theme_values else 1
+    theme_label = st.selectbox(
+        "Candlestick Theme",
+        theme_labels,
+        index=theme_idx,
+        key="settings_candle_theme",
+        help="Color scheme for candlestick charts. Neutral themes help indicators and markers stand out.",
+    )
+    st.session_state['candle_theme'] = theme_options[theme_label]
 
     # --- Backtest Defaults ---
     st.divider()
@@ -7548,6 +11759,46 @@ def render_settings():
         )
         st.session_state['global_data_seed'] = data_seed
 
+    # --- Connections ---
+    st.divider()
+    st.subheader("Connections")
+
+    conn_col1, conn_col2 = st.columns(2)
+    with conn_col1:
+        st.markdown("**Alpaca API**")
+        _alpaca_status = "Connected" if is_alpaca_configured() else "Not Configured"
+        _status_color = "#4CAF50" if is_alpaca_configured() else "#9E9E9E"
+        st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_status}</span>', unsafe_allow_html=True)
+
+        if is_alpaca_configured():
+            from data_loader import ALPACA_API_KEY
+            _masked = ALPACA_API_KEY[:4] + "..." + ALPACA_API_KEY[-4:] if ALPACA_API_KEY and len(ALPACA_API_KEY) > 8 else "****"
+            st.text_input("API Key", value=_masked, disabled=True, key="conn_api_key")
+        else:
+            st.caption("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables to connect.")
+
+    with conn_col2:
+        st.markdown("**Data Feed**")
+        _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
+        _feed_keys = ["iex", "sip"]
+        _saved_feed = st.session_state.get('data_feed', 'sip')
+        _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
+        _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
+                             help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
+        st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
+
+        if st.session_state['data_feed'] == 'sip':
+            es = _read_ralph_status()
+            if es.get('running'):
+                sym_count = len(es.get('symbols', []))
+                ticks = es.get('tick_count', 0)
+                mode = "Connected" if es.get('connected') else "Reconnecting"
+                st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
+            else:
+                st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+        else:
+            st.caption("Real-time engine requires SIP data feed.")
+
     # --- Save Settings ---
     st.divider()
     if st.button("Save Settings", type="primary", use_container_width=True):
@@ -7556,6 +11807,103 @@ def render_settings():
             st.toast("Settings saved")
         else:
             st.error("Failed to save settings.")
+
+
+# =============================================================================
+# TIMEFRAMES PAGE (Multi-Timeframe Confluence)
+# =============================================================================
+
+def render_timeframes_page():
+    """Render the Timeframes management page for multi-timeframe confluence."""
+    from data_loader import MTF_AVAILABLE_TIMEFRAMES, TF_LABELS, SUB_MINUTE_TIMEFRAMES
+
+    st.header("Timeframes")
+    st.caption(
+        "Enable additional timeframes to unlock higher-timeframe confluence conditions "
+        "in the Strategy Builder drill-down. Enabled timeframes combine with enabled "
+        "TF Confluence Packs to produce the full matrix of available conditions."
+    )
+    st.caption("Sub-minute timeframes (5s–30s) require the streaming engine and are not available for backtesting.")
+
+    settings = load_settings()
+    enabled = set(settings.get("enabled_timeframes", ["1Min"]))
+    enabled_groups = get_enabled_groups()
+    pack_count = len(enabled_groups)
+
+    # --- Matrix summary ---
+    tf_count = len(enabled)
+    st.info(
+        f"**{tf_count} timeframe{'s' if tf_count != 1 else ''}** x "
+        f"**{pack_count} TF pack{'s' if pack_count != 1 else ''}** = "
+        f"**{tf_count * pack_count} condition group{'s' if tf_count * pack_count != 1 else ''}** "
+        f"available in drill-down"
+    )
+
+    # --- Timeframe grid ---
+    changed = False
+
+    # Group into rows of 4 for a clean grid
+    tfs = MTF_AVAILABLE_TIMEFRAMES
+    for row_start in range(0, len(tfs), 4):
+        row_tfs = tfs[row_start:row_start + 4]
+        cols = st.columns(4)
+        for i, tf in enumerate(row_tfs):
+            with cols[i]:
+                label = TF_LABELS.get(tf, tf)
+                is_enabled = tf in enabled
+                is_sub_min = tf in SUB_MINUTE_TIMEFRAMES
+                suffix = " (streaming)" if is_sub_min else ""
+
+                # Show checkbox
+                new_val = st.checkbox(
+                    f"**{label}**{suffix}",
+                    value=is_enabled,
+                    key=f"tf_enable_{tf}",
+                )
+                if new_val != is_enabled:
+                    changed = True
+                    if new_val:
+                        enabled.add(tf)
+                    else:
+                        enabled.discard(tf)
+
+    # --- Save on change ---
+    if changed:
+        # Ensure at least one timeframe is always enabled
+        if len(enabled) == 0:
+            enabled.add("1Min")
+            st.warning("At least one timeframe must be enabled.")
+        settings["enabled_timeframes"] = sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99)
+        save_settings(settings)
+        st.rerun()
+
+    # --- Show enabled packs for context ---
+    st.divider()
+    st.subheader("Enabled TF Packs")
+    if pack_count == 0:
+        st.warning("No TF Confluence Packs are enabled. Enable packs on the TF Confluence page.")
+    else:
+        pack_names = [g.name for g in enabled_groups]
+        st.write(", ".join(pack_names))
+
+    # --- Show sample matrix ---
+    if pack_count > 0 and len(enabled) > 1:
+        st.subheader("Condition Matrix Preview")
+        st.caption("Each cell represents a group of interpreter states available as confluence conditions.")
+        matrix_data = {}
+        for tf in sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99):
+            tf_label = TF_LABELS.get(tf, tf)
+            matrix_data[tf_label] = []
+            for g in enabled_groups:
+                matrix_data[tf_label].append(g.name)
+        import pandas as _pd
+        matrix_df = _pd.DataFrame(matrix_data, index=[g.name for g in enabled_groups])
+        # Transpose so TFs are rows, packs are columns
+        matrix_df = _pd.DataFrame(
+            {g.name: ["Yes"] * len(enabled) for g in enabled_groups},
+            index=[TF_LABELS.get(tf, tf) for tf in sorted(enabled, key=lambda t: MTF_AVAILABLE_TIMEFRAMES.index(t) if t in MTF_AVAILABLE_TIMEFRAMES else 99)]
+        )
+        st.dataframe(matrix_df, use_container_width=True)
 
 
 # =============================================================================
@@ -7751,6 +12099,11 @@ TEMPLATE_FUNCTIONS = {
         "Interpreter": [interpret_ema_stack],
         "Triggers": [detect_ema_triggers],
     },
+    "ema_price_position": {
+        "Indicator": [calculate_ema],
+        "Interpreter": [interpret_ema_price_position],
+        "Triggers": [detect_ema_price_position_triggers],
+    },
     "macd_line": {
         "Indicator": [calculate_macd],
         "Interpreter": [interpret_macd_line],
@@ -7772,20 +12125,38 @@ TEMPLATE_FUNCTIONS = {
         "Triggers": [detect_rvol_triggers],
     },
     "utbot": {
-        "Indicator": [],
-        "Interpreter": [],
-        "Triggers": [],
+        "Indicator": [calculate_utbot],
+        "Interpreter": [interpret_utbot],
+        "Triggers": [detect_utbot_triggers],
     },
 }
 
 
+def _load_pine_script_for_template(template_name: str):
+    """Load Pine Script reference for a template, if available.
+
+    Checks user pack directory first, then reference-indicators/.
+    Returns the Pine Script content string, or None.
+    """
+    # User pack: user_packs/{slug}/reference.pine
+    pack = pack_registry.get_pack(template_name)
+    if pack and pack.pack_dir.exists():
+        pine_path = pack.pack_dir / "reference.pine"
+        if pine_path.exists():
+            return pine_path.read_text()
+
+    # Built-in reference: reference-indicators/{template_name}.pine
+    ref_dir = os.path.join(os.path.dirname(__file__), "..", "reference-indicators")
+    ref_path = os.path.join(ref_dir, f"{template_name}.pine")
+    if os.path.exists(ref_path):
+        with open(ref_path, "r") as f:
+            return f.read()
+
+    return None
+
+
 def render_code_tab(group: ConfluenceGroup):
     """Render the Code tab showing source code for indicator, interpreter, and trigger functions."""
-    funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
-
-    if not funcs or all(len(v) == 0 for v in funcs.values()):
-        st.info(f"No source code available for template '{group.base_template}'. Implementation pending.")
-        return
 
     # Show this group's effective parameters
     st.markdown("**Active Parameters for this Group**")
@@ -7803,21 +12174,46 @@ def render_code_tab(group: ConfluenceGroup):
     st.divider()
     st.caption("Source code for this confluence pack's indicator, interpreter, and trigger logic.")
 
-    for section_name, func_list in funcs.items():
-        if not func_list:
-            continue
-        with st.expander(f"{section_name}", expanded=True):
-            for func in func_list:
-                try:
-                    source = inspect.getsource(func)
-                    st.code(source, language="python")
-                except (OSError, TypeError):
-                    st.warning(f"Could not retrieve source for {func.__name__}")
+    # Check if this is a user pack — read source files directly from disk
+    if template and template.get("_user_pack"):
+        pack = pack_registry.get_pack(group.base_template)
+        if pack and pack.pack_dir.exists():
+            for fname, label in [("indicator.py", "Indicator"), ("interpreter.py", "Interpreter & Triggers")]:
+                fpath = pack.pack_dir / fname
+                if fpath.exists():
+                    with st.expander(label, expanded=True):
+                        st.code(fpath.read_text(), language="python")
+        else:
+            st.info("User pack source files not found on disk.")
+    else:
+        # Built-in packs: use TEMPLATE_FUNCTIONS registry
+        funcs = TEMPLATE_FUNCTIONS.get(group.base_template, {})
+
+        if not funcs or all(len(v) == 0 for v in funcs.values()):
+            st.info(f"No source code available for template '{group.base_template}'.")
+        else:
+            for section_name, func_list in funcs.items():
+                if not func_list:
+                    continue
+                with st.expander(f"{section_name}", expanded=True):
+                    for func in func_list:
+                        try:
+                            source = inspect.getsource(func)
+                            st.code(source, language="python")
+                        except (OSError, TypeError):
+                            st.warning(f"Could not retrieve source for {func.__name__}")
+
+    # Pine Script reference (available for both user packs and built-ins)
+    pine_content = _load_pine_script_for_template(group.base_template)
+    if pine_content:
+        with st.expander("Pine Script Reference", expanded=False):
+            st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+            st.code(pine_content, language="pine")
 
 
 def render_preview_tab(group: ConfluenceGroup):
     """
-    Render the Preview tab with live indicator visualization on sample data.
+    Render the Preview tab with live indicator visualization on market data.
 
     Shows:
     - Price chart with indicator overlays (for overlay-compatible templates)
@@ -7825,14 +12221,14 @@ def render_preview_tab(group: ConfluenceGroup):
     - Interpreter state timeline
     - Trigger event markers
     """
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
     template = get_template(group.base_template)
     if not template:
         st.error("Template not found.")
         return
 
-    st.caption("Live preview using sample data to verify indicator, interpreter, and trigger behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify indicator, interpreter, and trigger behavior.")
 
     # Preview controls
     preview_symbol = st.selectbox(
@@ -7842,23 +12238,13 @@ def render_preview_tab(group: ConfluenceGroup):
         key=f"preview_symbol_{group.id}"
     )
 
-    # Generate sample data
-    with st.spinner("Generating preview data..."):
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=3)
+    # Load market data — fetch extra history for EMA warmup, display recent portion
+    # 30 days gives ~11,700 RTH bars, enough for EMA 200 to fully converge.
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
-
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         # Run the full indicator pipeline
@@ -7871,22 +12257,71 @@ def render_preview_tab(group: ConfluenceGroup):
         df = run_all_interpreters(df)
         df = detect_all_triggers(df)
 
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,  # RTH by default
+        key=f"preview_session_{group.id}",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, preview_session)
+
+    # Trim to last 3 days for display (indicators already warmed up)
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
+
     # --- Section 1: Chart ---
     # Overlay templates show indicator lines on the price chart.
     # Oscillator templates show a synced secondary pane (MACD/RVOL) below the price chart.
     show_indicators = []
     indicator_colors_map = {}
 
-    if group.base_template in OVERLAY_COMPATIBLE_TEMPLATES:
+    if is_overlay_template(group.base_template):
         st.markdown("**Price Chart with Indicator Overlay**")
         show_indicators = get_overlay_indicators_for_group(group)
         indicator_colors_map = get_overlay_colors_for_group(group)
-    elif group.base_template in ("macd_line", "macd_histogram"):
-        st.markdown("**Price Chart + MACD**")
-    elif group.base_template == "rvol":
-        st.markdown("**Price Chart + Relative Volume**")
+    elif is_oscillator_template(group.base_template):
+        pack_name = template.get("name", group.base_template)
+        st.markdown(f"**Price Chart + {pack_name}**")
 
     secondary_panes = build_secondary_panes(df, [group])
+    grp_band_fills = get_band_fills_for_group(group)
+    grp_line_styles = get_line_styles_for_group(group)
+
+    # --- Overlay toggles ---
+    interp_keys = template.get("interpreters", [])
+    tcol1, tcol2, tcol3 = st.columns([1, 1, 1])
+    show_conditions = tcol1.checkbox(
+        "Show Conditions", value=False,
+        key=f"show_cond_pv_{group.id}",
+    )
+    selected_interp = interp_keys[0] if interp_keys else None
+    if show_conditions and len(interp_keys) > 1:
+        selected_interp = tcol2.selectbox(
+            "Interpreter", interp_keys,
+            key=f"interp_sel_pv_{group.id}",
+        )
+    show_triggers = tcol3.checkbox(
+        "Show Triggers", value=False,
+        key=f"show_trig_pv_{group.id}",
+    )
+
+    # Build overlay data
+    cond_primitives = []
+    if show_conditions and selected_interp:
+        try:
+            cond_primitives, _ = _build_condition_overlay(df, template, selected_interp)
+        except Exception as e:
+            st.warning(f"Could not build condition overlay: {e}")
+
+    trig_markers = []
+    if show_triggers:
+        try:
+            trig_markers = _build_trigger_overlay(df, group, template)
+        except Exception as e:
+            st.warning(f"Could not build trigger overlay: {e}")
 
     render_chart_with_candle_selector(
         df,
@@ -7895,7 +12330,11 @@ def render_preview_tab(group: ConfluenceGroup):
         show_indicators=show_indicators,
         indicator_colors=indicator_colors_map,
         chart_key=f"preview_chart_{group.id}",
-        secondary_panes=secondary_panes if secondary_panes else None
+        secondary_panes=secondary_panes if secondary_panes else None,
+        band_fills=grp_band_fills if grp_band_fills else None,
+        indicator_line_styles=grp_line_styles if grp_line_styles else None,
+        extra_markers=trig_markers if trig_markers else None,
+        extra_primitives=cond_primitives if cond_primitives else None,
     )
 
     # --- Section 2: Interpreter State Timeline ---
@@ -7906,12 +12345,20 @@ def render_preview_tab(group: ConfluenceGroup):
     st.markdown("**Trigger Events**")
     _render_trigger_events_table(df, group, template)
 
+    # --- Section 4: Pine Script Reference (if available) ---
+    pine_content = _load_pine_script_for_template(group.base_template)
+    if pine_content:
+        with st.expander("Pine Script Reference", expanded=False):
+            st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+            st.code(pine_content, language="pine")
+
 
 def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
     """Build lightweight-charts secondary panes for oscillator-type confluence groups."""
     panes = []
     has_macd = False
     has_rvol = False
+    rendered_user_packs = set()
     for group in groups:
         if group.base_template in ("macd_line", "macd_histogram") and not has_macd:
             if "macd_line" in df.columns:
@@ -7921,7 +12368,128 @@ def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
             if "rvol" in df.columns:
                 panes.append(_build_rvol_lwc_pane(df, group))
                 has_rvol = True
+        elif is_oscillator_template(group.base_template) and group.base_template not in rendered_user_packs:
+            pane = _build_generic_oscillator_pane(df, group)
+            if pane:
+                panes.append(pane)
+                rendered_user_packs.add(group.base_template)
     return panes
+
+
+def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict | None:
+    """
+    Build a lightweight-charts pane config for a user pack oscillator.
+
+    Uses column_color_map and plot_schema from the template to render
+    indicator columns as line series in a separate pane.
+    """
+    template = get_template(group.base_template)
+    if not template:
+        return None
+
+    indicator_cols = template.get("indicator_columns", [])
+    ccm = template.get("column_color_map", {})
+    plot_schema = template.get("plot_schema", {})
+
+    # Determine which columns to plot and their colors
+    plot_cols = {}
+    if ccm:
+        for col_name, color_key in ccm.items():
+            if col_name in df.columns:
+                default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                plot_cols[col_name] = group.plot_settings.colors.get(color_key, default_color)
+    else:
+        # Fallback: plot all indicator_columns with available colors
+        color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+        for i, col in enumerate(indicator_cols):
+            if col in df.columns:
+                if i < len(color_keys):
+                    key = color_keys[i]
+                    default_color = plot_schema[key].get("default", "#8b5cf6")
+                    plot_cols[col] = group.plot_settings.colors.get(key, default_color)
+                else:
+                    plot_cols[col] = "#8b5cf6"
+
+    if not plot_cols:
+        return None
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
+
+    # Read line_styles from plot_config if available
+    plot_config = template.get("plot_config", {})
+    line_styles_map = plot_config.get("line_styles", {})
+
+    series = []
+    for col_name, color in plot_cols.items():
+        line_data = []
+        for _, row in plot_df.iterrows():
+            if pd.notna(row.get(col_name)):
+                line_data.append({
+                    "time": int(row['_time']),
+                    "value": float(row[col_name]),
+                })
+        if line_data:
+            line_opts = {
+                "color": color,
+                "lineWidth": 1,
+                "priceLineVisible": False,
+                "title": col_name,
+            }
+            if col_name in line_styles_map:
+                line_opts["lineStyle"] = line_styles_map[col_name]
+            series.append({
+                "type": "Line",
+                "data": line_data,
+                "options": line_opts,
+            })
+
+    if not series:
+        return None
+
+    # Add reference lines from plot_config (e.g., zero line for oscillators)
+    ref_lines = plot_config.get("reference_lines", [])
+    if ref_lines and series:
+        first_time = series[0]["data"][0]["time"]
+        last_time = series[0]["data"][-1]["time"]
+        for rl in ref_lines:
+            series.append({
+                "type": "Line",
+                "data": [{"time": first_time, "value": rl.get("value", 0)},
+                         {"time": last_time, "value": rl.get("value", 0)}],
+                "options": {
+                    "color": rl.get("color", "rgba(128,128,128,0.3)"),
+                    "lineWidth": rl.get("line_width", 1),
+                    "lineStyle": rl.get("line_style", 2),
+                    "priceLineVisible": False,
+                    "crosshairMarkerVisible": False,
+                    "lastValueVisible": False,
+                    "title": "",
+                }
+            })
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 200,
+        },
+        "series": series
+    }
 
 
 def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
@@ -7938,7 +12506,7 @@ def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     hist_data = []
     macd_data = []
@@ -7990,6 +12558,25 @@ def _build_macd_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
             }
         })
 
+    # Add dashed zero reference line
+    any_data = hist_data or macd_data or signal_data
+    if any_data:
+        first_time = any_data[0]["time"]
+        last_time = any_data[-1]["time"]
+        series.append({
+            "type": "Line",
+            "data": [{"time": first_time, "value": 0}, {"time": last_time, "value": 0}],
+            "options": {
+                "color": "rgba(128,128,128,0.3)",
+                "lineWidth": 1,
+                "lineStyle": 2,
+                "priceLineVisible": False,
+                "crosshairMarkerVisible": False,
+                "lastValueVisible": False,
+                "title": "",
+            }
+        })
+
     return {
         "chart": {
             "layout": {
@@ -8029,7 +12616,7 @@ def _build_rvol_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
 
     plot_df = df.reset_index()
     time_col = plot_df.columns[0]
-    plot_df['_time'] = pd.to_datetime(plot_df[time_col]).astype(int) // 10**9
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
 
     rvol_data = []
     for _, row in plot_df.iterrows():
@@ -8079,6 +12666,174 @@ def _build_rvol_lwc_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict:
         },
         "series": series
     }
+
+
+# Color palettes for interpreter state overlays
+_STATE_BG_COLORS = [
+    "rgba(34,197,94,0.06)",     # green
+    "rgba(245,158,11,0.06)",    # amber
+    "rgba(239,68,68,0.06)",     # red
+    "rgba(139,92,246,0.06)",    # purple
+    "rgba(59,130,246,0.06)",    # blue
+    "rgba(236,72,153,0.06)",    # pink
+]
+_STATE_TEXT_COLORS = [
+    "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#3b82f6", "#ec4899",
+]
+
+_TRIGGER_DIRECTION_STYLE = {
+    "LONG":  {"color": "#22c55e", "shape": "arrowUp",  "position": "belowBar"},
+    "SHORT": {"color": "#ef4444", "shape": "arrowDown", "position": "aboveBar"},
+    "BOTH":  {"color": "#f59e0b", "shape": "circle",    "position": "aboveBar"},
+}
+
+# =============================================================================
+# EXECUTION TAG HELPERS  [C] = bar close, [I] = intra-bar, [I?] = candidate
+# =============================================================================
+
+# Phase 19: All viable intra-bar candidates now have companion _ib triggers
+# with execution="intra_bar".  This set is empty — kept for reference.
+_INTRABAR_CANDIDATE_TRIGGERS: set = set()
+
+
+def _execution_tag(trigger_id: str, execution: str = "bar_close") -> str:
+    """Return a display tag for the trigger's execution mode.
+
+    Returns one of:
+      ``[L0]`` — level-cross, current bar's indicator level
+      ``[L1]`` — level-cross, previous bar's indicator level (fixed reference)
+      ``[HM]`` — hybrid market (L1 cross + bar-close confirmation)
+      ``[HL]`` — hybrid limit (L1 cross + limit fill at entry price)
+      ``[C]``  — bar-close only (needs completed candle)
+    """
+    if execution == "intra_bar":
+        from unified_engine import get_trigger_exec_type
+        lookup = trigger_id if trigger_id.endswith(('_ib', '_hm', '_hl')) else trigger_id + '_ib'
+        et = get_trigger_exec_type(lookup)
+        return f"`[{et}]`"
+    if execution == "hybrid_market":
+        return "`[HM]`"
+    if execution == "hybrid_limit":
+        return "`[HL]`"
+    if trigger_id in _INTRABAR_CANDIDATE_TRIGGERS:
+        return "`[L?]`"
+    return "`[C]`"
+
+
+def _build_condition_overlay(df: pd.DataFrame, template: dict, interp_key: str):
+    """Build SessionHighlighting + AnchoredText primitives for interpreter state overlay.
+
+    Returns:
+        (primitives_list, extra_markers_list) — primitives for background bands + text labels,
+        and empty markers list (reserved for future use).
+    """
+    if interp_key not in df.columns:
+        return [], []
+
+    states = df[interp_key].dropna()
+    if len(states) == 0:
+        return [], []
+
+    # Map state strings to colors via template outputs order
+    outputs = template.get("outputs", [])
+    state_color_map = {}
+    state_text_map = {}
+    for i, out in enumerate(outputs):
+        state_color_map[out] = _STATE_BG_COLORS[i % len(_STATE_BG_COLORS)]
+        state_text_map[out] = _STATE_TEXT_COLORS[i % len(_STATE_TEXT_COLORS)]
+
+    # Detect state transitions
+    changes = states[states != states.shift(1)]
+    if len(changes) == 0:
+        return [], []
+
+    # Build SessionHighlighting ranges — consecutive state periods
+    ranges = []
+    change_indices = list(changes.index)
+    for i, idx in enumerate(change_indices):
+        state = changes.loc[idx]
+        start_ts = int(pd.to_datetime(idx).timestamp())
+
+        # End time = next transition (or last bar in data)
+        if i + 1 < len(change_indices):
+            end_ts = int(pd.to_datetime(change_indices[i + 1]).timestamp())
+        else:
+            end_ts = int(pd.to_datetime(states.index[-1]).timestamp())
+
+        color = state_color_map.get(state, "rgba(148,163,184,0.05)")
+        ranges.append({
+            "startTime": start_ts,
+            "endTime": end_ts,
+            "color": color,
+        })
+
+    primitives = []
+    if ranges:
+        primitives.append({
+            "type": "sessionHighlight",
+            "seriesIndex": 0,
+            "options": {"ranges": ranges},
+        })
+
+    # Build AnchoredText at each state transition
+    for idx, state in changes.items():
+        ts = int(pd.to_datetime(idx).timestamp())
+        high_price = float(df.loc[idx, 'high']) if 'high' in df.columns else None
+        if high_price is None:
+            continue
+        text_color = state_text_map.get(state, "#94a3b8")
+        primitives.append({
+            "type": "anchoredText",
+            "seriesIndex": 0,
+            "options": {
+                "time": ts,
+                "price": high_price,
+                "text": str(state),
+                "color": text_color,
+                "fontSize": 9,
+                "position": "above",
+            },
+        })
+
+    return primitives, []
+
+
+def _build_trigger_overlay(df: pd.DataFrame, group, template: dict):
+    """Build LWC markers for trigger fire events.
+
+    Returns:
+        List of marker dicts for extra_markers parameter.
+    """
+    trigger_defs = template.get("triggers", [])
+    if not trigger_defs:
+        return []
+
+    markers = []
+    for trig_def in trigger_defs:
+        base = trig_def["base"]
+        possible_cols = [
+            f"trig_{group.id}_{base}",
+            f"trig_{template.get('trigger_prefix', '')}_{base}",
+        ]
+
+        for col in possible_cols:
+            if col in df.columns:
+                fired = df[df[col] == True]
+                direction = trig_def.get("direction", "BOTH")
+                style = _TRIGGER_DIRECTION_STYLE.get(direction, _TRIGGER_DIRECTION_STYLE["BOTH"])
+
+                for idx in fired.index:
+                    ts = _to_chart_unix(idx)
+                    markers.append({
+                        "time": ts,
+                        "position": style["position"],
+                        "color": style["color"],
+                        "shape": style["shape"],
+                        "text": trig_def.get("name", base),
+                    })
+                break
+
+    return markers
 
 
 def _render_interpreter_timeline(df: pd.DataFrame, group: ConfluenceGroup, template: dict):
@@ -8301,7 +13056,7 @@ def render_group_details(group_id: str, all_groups: list):
             st.markdown("**Interpreter Outputs**")
             output_descriptions = get_output_descriptions(group.base_template)
             for output, description in output_descriptions.items():
-                st.markdown(f"- **{output}**: {description}")
+                st.markdown(f"- `[C]` **{output}**: {description}")
 
         with col2:
             st.markdown("**Available Triggers**")
@@ -8309,7 +13064,8 @@ def render_group_details(group_id: str, all_groups: list):
             for trigger in triggers:
                 direction_icon = "LONG" if trigger.direction == "LONG" else "SHORT" if trigger.direction == "SHORT" else "BOTH"
                 type_icon = "ENTRY" if trigger.trigger_type == "ENTRY" else "EXIT"
-                st.markdown(f"- **{trigger.name}**")
+                tag = _execution_tag(trigger.id, trigger.execution)
+                st.markdown(f"- {tag} **{trigger.name}**")
                 st.caption(f"  {direction_icon} {type_icon} | ID: `{trigger.id}`")
 
     # TAB 4: Preview
@@ -8363,6 +13119,791 @@ def format_parameters(params: dict, template_id: str) -> str:
         parts.append(f"{short_label}: {value}")
 
     return " | ".join(parts)
+
+
+# =============================================================================
+# PACK BUILDER PAGE
+# =============================================================================
+
+def _exec_code_to_module(code: str, module_name: str):
+    """Execute Python code in an isolated module and return it."""
+    import types
+    mod = types.ModuleType(module_name)
+    mod.__builtins__ = __builtins__
+    # Provide pandas and numpy in the module's namespace
+    import pandas as _pd
+    import numpy as _np
+    mod.pd = _pd
+    mod.np = _np
+    mod.pandas = _pd
+    mod.numpy = _np
+    exec(compile(code, f"<{module_name}>", "exec"), mod.__dict__)
+    return mod
+
+
+def _render_pack_builder_preview(parsed: dict):
+    """
+    Render a live preview of a parsed (but not yet installed) pack.
+
+    Loads the indicator, interpreter, and trigger functions from parsed code
+    strings, runs them on market data, and renders the chart + state timeline
+    + trigger events — same as the Confluence Pack preview tab.
+    """
+    manifest = parsed["manifest"]
+    indicator_code = parsed.get("indicator_code")
+    interpreter_code = parsed.get("interpreter_code")
+
+    if not indicator_code or not interpreter_code:
+        st.warning("Missing indicator or interpreter code — cannot generate preview.")
+        return
+
+    from data_loader import load_market_data, get_data_source
+
+    st.caption(
+        f"Live preview using {get_data_source(_get_data_feed())} data. This runs your pack's indicator, "
+        "interpreter, and trigger functions before installation."
+    )
+
+    # Load functions from code strings
+    try:
+        ind_mod = _exec_code_to_module(indicator_code, "pb_preview_indicator")
+        interp_mod = _exec_code_to_module(interpreter_code, "pb_preview_interpreter")
+    except Exception as e:
+        st.error(f"Failed to load pack code: {e}")
+        return
+
+    indicator_func = getattr(ind_mod, manifest.get("indicator_function", ""), None)
+    interpreter_func = getattr(interp_mod, manifest.get("interpreter_function", ""), None)
+    trigger_func = getattr(interp_mod, manifest.get("trigger_function", ""), None)
+
+    if not indicator_func:
+        st.error(f"Indicator function '{manifest.get('indicator_function')}' not found in code.")
+        return
+    if not interpreter_func:
+        st.error(f"Interpreter function '{manifest.get('interpreter_function')}' not found in code.")
+        return
+
+    # Build default params from manifest
+    default_params = {
+        key: spec["default"]
+        for key, spec in manifest.get("parameters_schema", {}).items()
+    }
+
+    # Load market data
+    preview_symbol = st.selectbox(
+        "Preview Symbol",
+        AVAILABLE_SYMBOLS,
+        index=0,
+        key="pb_preview_symbol",
+    )
+
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
+
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
+            return
+
+        # Run the pack's indicator function
+        try:
+            df = indicator_func(df, **default_params)
+        except Exception as e:
+            st.error(f"Indicator function error: {e}")
+            return
+
+        # Run the interpreter function
+        try:
+            interp_key = manifest["interpreters"][0] if manifest.get("interpreters") else "STATE"
+            states = interpreter_func(df, **default_params)
+            df[interp_key] = states
+        except Exception as e:
+            st.error(f"Interpreter function error: {e}")
+            return
+
+        # Run the trigger function
+        trigger_prefix = manifest.get("trigger_prefix", "")
+        if trigger_func:
+            try:
+                trigger_results = trigger_func(df, **default_params)
+                for trig_key, trig_series in trigger_results.items():
+                    df[f"trig_{trig_key}"] = trig_series
+            except Exception as e:
+                st.warning(f"Trigger function error: {e}")
+
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    pb_preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,
+        key="pb_preview_session",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, pb_preview_session)
+
+    # Trim to last 3 days for display (indicators already warmed up)
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
+
+    # --- Chart ---
+    display_type = manifest.get("display_type", "overlay")
+    show_indicators = []
+    indicator_colors_map = {}
+
+    ccm = manifest.get("column_color_map", {})
+    plot_schema = manifest.get("plot_schema", {})
+
+    if display_type == "overlay":
+        st.markdown("**Price Chart with Indicator Overlay**")
+        # Get plottable columns and their colors
+        if ccm:
+            show_indicators = [col for col in ccm.keys() if col in df.columns]
+            for col_name, color_key in ccm.items():
+                if col_name in df.columns:
+                    default_color = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+                    indicator_colors_map[col_name] = default_color
+        else:
+            indicator_cols = manifest.get("indicator_columns", [])
+            show_indicators = [col for col in indicator_cols if col in df.columns]
+    elif display_type == "oscillator":
+        pack_name = manifest.get("name", "Indicator")
+        st.markdown(f"**Price Chart + {pack_name}**")
+
+    # Build oscillator pane for oscillator-type packs
+    secondary_panes = []
+    if display_type == "oscillator":
+        pane = _build_pack_builder_oscillator_pane(df, manifest)
+        if pane:
+            secondary_panes.append(pane)
+
+    # Extract band fills and line styles from manifest plot_config
+    pb_band_fills = []
+    pb_line_styles = {}
+    pb_plot_config = manifest.get("plot_config", {})
+    for bf in pb_plot_config.get("band_fills", []):
+        fill_color_key = bf.get("fill_color_key", "")
+        fill_color = plot_schema.get(fill_color_key, {}).get("default", "rgba(128,128,128,0.1)")
+        pb_band_fills.append({
+            "upper_column": bf["upper_column"],
+            "lower_column": bf["lower_column"],
+            "fill_color": fill_color,
+        })
+    pb_line_styles = pb_plot_config.get("line_styles", {})
+
+    render_chart_with_candle_selector(
+        df,
+        pd.DataFrame(),
+        {"direction": "LONG"},
+        show_indicators=show_indicators,
+        indicator_colors=indicator_colors_map,
+        chart_key="pb_preview_chart",
+        secondary_panes=secondary_panes if secondary_panes else None,
+        band_fills=pb_band_fills if pb_band_fills else None,
+        indicator_line_styles=pb_line_styles if pb_line_styles else None,
+    )
+
+    # --- Interpreter State Timeline ---
+    st.markdown("**Interpreter States**")
+    _render_pack_builder_interpreter_timeline(df, manifest)
+
+    # --- Trigger Events ---
+    st.markdown("**Trigger Events**")
+    _render_pack_builder_trigger_events(df, manifest)
+
+
+def _build_pack_builder_oscillator_pane(df: pd.DataFrame, manifest: dict) -> dict | None:
+    """Build a lightweight-charts oscillator pane from manifest + DataFrame for Pack Builder preview."""
+    ccm = manifest.get("column_color_map", {})
+    plot_schema = manifest.get("plot_schema", {})
+    indicator_cols = manifest.get("indicator_columns", [])
+
+    # Determine which columns to plot
+    plot_cols = {}
+    if ccm:
+        for col_name, color_key in ccm.items():
+            if col_name in df.columns:
+                plot_cols[col_name] = plot_schema.get(color_key, {}).get("default", "#8b5cf6")
+    else:
+        color_keys = [k for k, v in plot_schema.items() if v.get("type") == "color"]
+        for i, col in enumerate(indicator_cols):
+            if col in df.columns:
+                if i < len(color_keys):
+                    plot_cols[col] = plot_schema[color_keys[i]].get("default", "#8b5cf6")
+                else:
+                    plot_cols[col] = "#8b5cf6"
+
+    if not plot_cols:
+        return None
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
+
+    series = []
+    for col_name, color in plot_cols.items():
+        line_data = []
+        for _, row in plot_df.iterrows():
+            if pd.notna(row.get(col_name)):
+                line_data.append({
+                    "time": int(row['_time']),
+                    "value": float(row[col_name]),
+                })
+        if line_data:
+            series.append({
+                "type": "Line",
+                "data": line_data,
+                "options": {
+                    "color": color,
+                    "lineWidth": 1,
+                    "priceLineVisible": False,
+                    "title": col_name,
+                }
+            })
+
+    if not series:
+        return None
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD"
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "#2B2B2B"}
+            },
+            "crosshair": {"mode": 0},
+            "timeScale": {
+                "borderColor": "#2B2B2B",
+                "timeVisible": True,
+                "secondsVisible": False,
+            },
+            "rightPriceScale": {"borderColor": "#2B2B2B"},
+            "height": 200,
+        },
+        "series": series
+    }
+
+
+def _render_pack_builder_interpreter_timeline(df: pd.DataFrame, manifest: dict):
+    """Render interpreter state changes for Pack Builder preview."""
+    interp_keys = manifest.get("interpreters", [])
+    if not interp_keys:
+        st.caption("No interpreters defined.")
+        return
+
+    for interp_key in interp_keys:
+        if interp_key not in df.columns:
+            st.caption(f"Interpreter '{interp_key}' not in data.")
+            continue
+
+        states = df[interp_key].dropna()
+        if len(states) == 0:
+            st.caption(f"No state data for '{interp_key}'.")
+            continue
+
+        # State distribution
+        dist = states.value_counts()
+        total = len(states)
+        st.caption(f"**{interp_key}** — State distribution across {total} bars:")
+        dist_records = []
+        for state, count in dist.items():
+            pct = count / total * 100
+            dist_records.append({"State": state, "Count": count, "Pct": f"{pct:.1f}%"})
+        st.dataframe(pd.DataFrame(dist_records), use_container_width=True, hide_index=True)
+
+        # Detect state changes
+        changes = states[states != states.shift(1)]
+        if len(changes) > 0:
+            change_records = []
+            for idx, state in changes.tail(25).items():
+                change_records.append({"Time": str(idx), "State": state})
+            st.caption(f"Last {len(change_records)} state changes (of {len(changes)} total):")
+            st.dataframe(pd.DataFrame(change_records), use_container_width=True, hide_index=True)
+        else:
+            st.warning(
+                "No state changes detected — all bars classified as the same state. "
+                "This likely indicates the thresholds need adjustment or the output "
+                "states are not mutually exclusive."
+            )
+
+
+def _render_pack_builder_trigger_events(df: pd.DataFrame, manifest: dict):
+    """Render trigger events for Pack Builder preview."""
+    trigger_defs = manifest.get("triggers", [])
+    trigger_prefix = manifest.get("trigger_prefix", "")
+
+    if not trigger_defs:
+        st.caption("No triggers defined.")
+        return
+
+    events = []
+    for trig_def in trigger_defs:
+        col = f"trig_{trigger_prefix}_{trig_def['base']}"
+        if col in df.columns:
+            fired = df[df[col] == True]
+            for idx in fired.index:
+                events.append({
+                    "Time": str(idx),
+                    "Trigger": trig_def.get("name", trig_def["base"]),
+                    "Direction": trig_def.get("direction", "?"),
+                    "Type": trig_def.get("type", "?"),
+                    "Price": f"${df.loc[idx, 'close']:.2f}" if 'close' in df.columns else "N/A",
+                })
+
+    if not events:
+        st.caption("No triggers fired in the sample data period.")
+        return
+
+    events_df = pd.DataFrame(events).sort_values("Time", ascending=False).head(30)
+    st.dataframe(events_df, use_container_width=True, hide_index=True)
+    st.caption(f"{len(events)} total trigger events in sample data")
+
+
+def render_pack_builder_page():
+    """Render the AI-Assisted Pack Builder page."""
+    st.header("Pack Builder")
+    st.caption(
+        "Generate a structured prompt for any LLM to create a new confluence pack. "
+        "Paste the LLM's response back to validate and install."
+    )
+
+    # ── Step 1: Describe Your Pack ──
+    st.subheader("Step 1: Describe Your Pack")
+
+    pack_description = st.text_area(
+        "What indicator do you want to add?",
+        placeholder=(
+            "Example: Bollinger Bands with 3 zones (above upper band, "
+            "between bands, below lower band) and squeeze detection triggers..."
+        ),
+        height=100,
+        key="pb_description",
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        category = st.selectbox(
+            "Category",
+            ["Momentum", "Trend", "Volume", "Volatility", "Mean Reversion"],
+            key="pb_category",
+        )
+    with col2:
+        display_type = st.selectbox(
+            "Chart Display",
+            ["overlay", "oscillator", "hidden"],
+            key="pb_display_type",
+            help=(
+                "Overlay: drawn on the price chart (EMAs, Bollinger Bands). "
+                "Oscillator: separate pane below (RSI, Stochastic). "
+                "Hidden: no chart rendering."
+            ),
+        )
+    with col3:
+        st.info("Works with any LLM: Claude, ChatGPT, Gemini, etc.")
+
+    # Optional Pine Script
+    with st.expander("Pine Script (optional)", expanded=False):
+        pine_script = st.text_area(
+            "Paste TradingView Pine Script code to translate",
+            placeholder="// @version=5\nindicator(...)\n...",
+            height=200,
+            key="pb_pine_script",
+        )
+
+    # Optional parameters
+    with st.expander("Custom Parameters (optional)", expanded=False):
+        st.caption(
+            "Define specific parameters you want. If left empty, "
+            "the LLM will choose appropriate defaults."
+        )
+
+        if "pb_params" not in st.session_state:
+            st.session_state.pb_params = []
+
+        for i, param in enumerate(st.session_state.pb_params):
+            pcols = st.columns([2, 1, 1, 1, 0.5])
+            with pcols[0]:
+                param["name"] = st.text_input(
+                    "Name", value=param.get("name", ""),
+                    key=f"pb_param_name_{i}",
+                )
+            with pcols[1]:
+                param["type"] = st.selectbox(
+                    "Type", ["int", "float"],
+                    index=0 if param.get("type") == "int" else 1,
+                    key=f"pb_param_type_{i}",
+                )
+            with pcols[2]:
+                param["default"] = st.text_input(
+                    "Default", value=str(param.get("default", "")),
+                    key=f"pb_param_default_{i}",
+                )
+            with pcols[3]:
+                param["label"] = st.text_input(
+                    "Label", value=param.get("label", ""),
+                    key=f"pb_param_label_{i}",
+                )
+            with pcols[4]:
+                st.write("")
+                st.write("")
+                if st.button("X", key=f"pb_param_del_{i}"):
+                    st.session_state.pb_params.pop(i)
+                    st.rerun()
+
+        if st.button("+ Add Parameter", key="pb_add_param"):
+            st.session_state.pb_params.append({
+                "name": "", "type": "int", "default": "", "label": ""
+            })
+            st.rerun()
+
+    st.divider()
+
+    # ── Step 2: Generate Prompt ──
+    st.subheader("Step 2: Generate & Copy Prompt")
+
+    if st.button(
+        "Generate Prompt",
+        key="pb_generate",
+        type="primary",
+        disabled=not pack_description.strip(),
+    ):
+        # Build parameters list (filter out empty ones)
+        params = [
+            p for p in st.session_state.get("pb_params", [])
+            if p.get("name", "").strip()
+        ]
+
+        prompt = pack_builder.generate_prompt(
+            pack_description=pack_description,
+            pine_script=pine_script if pine_script else "",
+            parameters=params if params else None,
+            category=category,
+            display_type=display_type,
+        )
+        st.session_state.pb_generated_prompt = prompt
+
+    if "pb_generated_prompt" in st.session_state:
+        st.text_area(
+            "Generated prompt (copy this to your LLM)",
+            value=st.session_state.pb_generated_prompt,
+            height=300,
+            key="pb_prompt_display",
+        )
+        st.caption(
+            "Copy the prompt above and paste it into Claude, ChatGPT, Gemini, "
+            "or any other LLM. Then paste the LLM's full response in Step 3 below."
+        )
+
+    st.divider()
+
+    # ── Step 3: Paste LLM Response ──
+    st.subheader("Step 3: Paste LLM Response")
+
+    llm_response = st.text_area(
+        "Paste the LLM's full response here",
+        placeholder="Paste the complete response including all code blocks...",
+        height=300,
+        key="pb_llm_response",
+    )
+
+    if st.button(
+        "Parse & Validate",
+        key="pb_parse",
+        type="primary",
+        disabled=not llm_response.strip(),
+    ):
+        # Parse
+        success, parsed, parse_errors = pack_builder.parse_llm_response(llm_response)
+
+        if parse_errors:
+            # Filter warnings vs errors
+            warnings = [e for e in parse_errors if e.startswith("Warning:")]
+            hard_errors = [e for e in parse_errors if not e.startswith("Warning:")]
+            if hard_errors:
+                st.error("Parse errors:")
+                for err in hard_errors:
+                    st.markdown(f"- {err}")
+            if warnings:
+                for w in warnings:
+                    st.warning(w)
+
+        if not success:
+            st.error("Failed to extract all required files from the response.")
+            return
+
+        # Validate
+        valid, validation_errors = pack_builder.validate_parsed_response(parsed)
+
+        if validation_errors:
+            st.error("Validation errors:")
+            for err in validation_errors:
+                st.markdown(f"- {err}")
+            if not valid:
+                st.info(
+                    "Fix the issues above and regenerate, or manually edit "
+                    "the response before pasting again."
+                )
+                return
+
+        st.success("Validation passed!")
+
+        # Store parsed result for preview/install
+        st.session_state.pb_parsed = parsed
+
+    # ── Step 4: Preview & Install ──
+    if "pb_parsed" in st.session_state:
+        parsed = st.session_state.pb_parsed
+        manifest = parsed["manifest"]
+
+        st.divider()
+        st.subheader("Step 4: Review & Install")
+
+        # Preview tabs
+        tab_names = [
+            "Overview", "Preview", "manifest.json",
+            "indicator.py", "interpreter.py",
+        ]
+        if parsed.get("pine_script_code"):
+            tab_names.append("reference.pine")
+        tabs = st.tabs(tab_names)
+
+        with tabs[0]:
+            mcol1, mcol2 = st.columns(2)
+            with mcol1:
+                st.markdown(f"**Name:** {manifest.get('name', '?')}")
+                st.markdown(f"**Slug:** `{manifest.get('slug', '?')}`")
+                st.markdown(f"**Category:** {manifest.get('category', '?')}")
+                st.markdown(f"**Display Type:** {manifest.get('display_type', 'overlay')}")
+                st.markdown(f"**Description:** {manifest.get('description', '?')}")
+            with mcol2:
+                st.markdown("**Outputs:**")
+                for out in manifest.get("outputs", []):
+                    desc = manifest.get("output_descriptions", {}).get(out, "")
+                    st.markdown(f"- `[C]` `{out}`: {desc}")
+
+            st.markdown("**Triggers:**")
+            for trig in manifest.get("triggers", []):
+                trig_base = f"{manifest.get('trigger_prefix', '')}_{trig['base']}"
+                tag = _execution_tag(trig_base, trig.get("execution", "bar_close"))
+                st.markdown(
+                    f"- {tag} `{trig_base}`: "
+                    f"{trig.get('name', '')} "
+                    f"({trig.get('direction', '?')} {trig.get('type', '?')})"
+                )
+
+            st.markdown("**Parameters:**")
+            for key, spec in manifest.get("parameters_schema", {}).items():
+                st.markdown(
+                    f"- **{spec.get('label', key)}** (`{key}`): "
+                    f"default={spec.get('default', '?')}"
+                )
+
+        with tabs[1]:
+            _render_pack_builder_preview(parsed)
+
+        with tabs[2]:
+            st.code(json.dumps(manifest, indent=2), language="json")
+
+        with tabs[3]:
+            st.code(parsed["indicator_code"], language="python")
+
+        with tabs[4]:
+            st.code(parsed["interpreter_code"], language="python")
+
+        if parsed.get("pine_script_code"):
+            with tabs[5]:
+                st.caption("TradingView Pine Script equivalent — click the copy icon to paste into TradingView.")
+                st.code(parsed["pine_script_code"], language="pine")
+
+        # Install button
+        slug = manifest.get("slug", "unknown")
+        existing_packs = pack_registry.get_registered_packs()
+
+        if slug in existing_packs:
+            st.warning(
+                f"A pack with slug `{slug}` already exists. "
+                f"Delete it from the User Packs page first, or ask the LLM "
+                f"to use a different slug."
+            )
+        else:
+            if st.button(
+                f"Install '{manifest.get('name', slug)}'",
+                key="pb_install",
+                type="primary",
+            ):
+                success, installed_slug, install_errors = (
+                    pack_builder.install_pack_from_parsed(parsed)
+                )
+
+                if success:
+                    st.success(
+                        f"Pack '{manifest.get('name')}' installed! "
+                        f"Go to **User Packs** to see it, or use it in the "
+                        f"**Strategy Builder**."
+                    )
+                    # Clean up session state
+                    st.session_state.pop("pb_parsed", None)
+                    st.session_state.pop("pb_generated_prompt", None)
+                    st.cache_data.clear()
+                else:
+                    st.error("Installation failed:")
+                    for err in install_errors:
+                        st.markdown(f"- {err}")
+
+
+# =============================================================================
+# USER PACKS PAGE
+# =============================================================================
+
+def render_user_packs_page():
+    """Render the User Packs management page."""
+    st.header("User Packs")
+    st.caption(
+        "Manage custom confluence packs installed in "
+        f"`{pack_registry.get_user_packs_dir()}/`"
+    )
+
+    packs = pack_registry.get_registered_packs()
+
+    # Header row with count and refresh
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        valid_count = sum(1 for p in packs.values() if p.is_valid)
+        if packs:
+            st.markdown(
+                f"**{len(packs)}** pack{'s' if len(packs) != 1 else ''} "
+                f"discovered ({valid_count} valid)"
+            )
+    with col2:
+        if st.button("Refresh", key="refresh_user_packs", use_container_width=True):
+            pack_registry.refresh_registry()
+            st.session_state.user_packs_loaded = True
+            st.cache_data.clear()
+            st.rerun()
+
+    if not packs:
+        st.info(
+            "No user packs installed. To add a user pack, create a directory "
+            "under `user_packs/` with a `manifest.json`, `indicator.py`, "
+            "and `interpreter.py`."
+        )
+        return
+
+    st.divider()
+
+    # Pack list
+    for slug, pack_info in sorted(packs.items()):
+        m = pack_info.manifest
+
+        # Build expander label with status icon
+        status_icon = "+" if pack_info.is_valid else "x"
+        pack_name = m.get("name", slug)
+        pack_category = m.get("category", "Unknown")
+
+        with st.expander(
+            f"[{status_icon}] {pack_name}  |  {pack_category}",
+            expanded=False,
+        ):
+            # Status
+            if pack_info.is_valid:
+                st.success("Valid and loaded into pipeline")
+            else:
+                st.error("Validation errors:")
+                for err in pack_info.validation_errors:
+                    st.markdown(f"- {err}")
+
+            # Metadata
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                st.markdown(f"**Slug:** `{slug}`")
+                st.markdown(f"**Category:** {pack_category}")
+            with mcol2:
+                st.markdown(f"**Version:** {m.get('version', '1.0.0')}")
+                st.markdown(f"**Author:** {m.get('author', 'Unknown')}")
+            with mcol3:
+                st.markdown(f"**Pack Type:** {m.get('pack_type', 'tf_confluence')}")
+                st.markdown(f"**Trigger Prefix:** `{m.get('trigger_prefix', '')}`")
+
+            st.markdown(f"**Description:** {m.get('description', '')}")
+
+            # Tabs
+            tabs = st.tabs(["Parameters", "Outputs & Triggers", "Files", "Danger Zone"])
+
+            with tabs[0]:  # Parameters
+                schema = m.get("parameters_schema", {})
+                if schema:
+                    for key, spec in schema.items():
+                        st.markdown(
+                            f"- **{spec.get('label', key)}** (`{key}`): "
+                            f"type=`{spec.get('type', '?')}`, "
+                            f"default=`{spec.get('default', '?')}`"
+                            + (f", range=[{spec.get('min')}, {spec.get('max')}]"
+                               if 'min' in spec else "")
+                        )
+                else:
+                    st.info("No parameters defined")
+
+            with tabs[1]:  # Outputs & Triggers
+                st.markdown("**Interpreter Outputs:**")
+                for out in m.get("outputs", []):
+                    desc = m.get("output_descriptions", {}).get(out, "")
+                    st.markdown(f"- `[C]` `{out}`: {desc}")
+
+                st.markdown("")
+                st.markdown("**Triggers:**")
+                for trig in m.get("triggers", []):
+                    execution = trig.get("execution", "bar_close")
+                    trig_base = f"{m.get('trigger_prefix', '')}_{trig['base']}"
+                    tag = _execution_tag(trig_base, execution)
+                    st.markdown(
+                        f"- {tag} `{trig_base}`: "
+                        f"{trig.get('name', '')} "
+                        f"({trig.get('direction', '?')} {trig.get('type', '?')}, "
+                        f"{execution})"
+                    )
+
+                st.markdown("")
+                st.markdown("**Indicator Columns:**")
+                for col in m.get("indicator_columns", []):
+                    st.markdown(f"- `{col}`")
+
+            with tabs[2]:  # Files
+                for fname in ["manifest.json", "indicator.py", "interpreter.py"]:
+                    fpath = pack_info.pack_dir / fname
+                    if fpath.exists():
+                        lang = "json" if fname.endswith(".json") else "python"
+                        st.markdown(f"**{fname}**")
+                        st.code(fpath.read_text(), language=lang)
+                    else:
+                        st.warning(f"Missing: {fname}")
+
+            with tabs[3]:  # Danger Zone
+                st.warning(
+                    "Deleting a user pack removes all files from disk and "
+                    "disables associated confluence groups."
+                )
+                confirm_key = f"confirm_delete_user_pack_{slug}"
+                if st.button(
+                    f"Delete '{pack_name}'",
+                    key=f"delete_user_pack_{slug}",
+                    type="primary",
+                ):
+                    st.session_state[confirm_key] = True
+
+                if st.session_state.get(confirm_key):
+                    col_y, col_n = st.columns(2)
+                    with col_y:
+                        if st.button("Yes, Delete", key=f"confirm_y_up_{slug}"):
+                            pack_registry.delete_pack(slug)
+                            st.session_state.pop(confirm_key, None)
+                            st.cache_data.clear()
+                            st.rerun()
+                    with col_n:
+                        if st.button("Cancel", key=f"confirm_n_up_{slug}"):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
 
 
 # =============================================================================
@@ -8591,14 +14132,18 @@ def _render_gp_details(pack_id, all_packs):
             st.markdown("**Conditions**")
             output_descs = gp_module.get_output_descriptions(pack.base_template)
             for output, desc in output_descs.items():
-                st.markdown(f"- **{output}**: {desc}")
+                st.markdown(f"- `[C]` **{output}**: {desc}")
         with col2:
             st.markdown("**Triggers**")
             triggers = template.get("triggers", [])
             if triggers:
+                trigger_prefix = template.get("trigger_prefix", "")
                 for t in triggers:
-                    st.markdown(f"- **{t['name']}**")
-                    st.caption(f"  {t['direction']} {t['type']} | {t.get('execution', 'bar_close')}")
+                    execution = t.get("execution", "bar_close")
+                    trig_base = f"{trigger_prefix}_{t['base']}" if trigger_prefix else t.get("base", "")
+                    tag = _execution_tag(trig_base, execution)
+                    st.markdown(f"- {tag} **{t['name']}**")
+                    st.caption(f"  {t['direction']} {t['type']} | {execution}")
             else:
                 st.caption("No triggers (conditions only)")
 
@@ -8639,45 +14184,44 @@ def _render_gp_details(pack_id, all_packs):
 
 def _render_gp_preview(pack):
     """Render Preview tab for a General Pack — condition evaluation on sample data."""
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
-    st.caption("Live preview using sample data to verify condition behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify condition behavior.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        preview_symbol = st.selectbox(
-            "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
-            key=f"gp_preview_symbol_{pack.id}"
-        )
-    with c2:
-        extended = st.checkbox(
-            "Extended Hours (4 AM - 8 PM)",
-            value=pack.base_template in ("trading_session",),
-            key=f"gp_preview_ext_{pack.id}",
-            help="Include pre-market and after-hours bars. Useful for session-based packs."
-        )
+    preview_symbol = st.selectbox(
+        "Preview Symbol", AVAILABLE_SYMBOLS, index=0,
+        key=f"gp_preview_symbol_{pack.id}"
+    )
 
-    with st.spinner("Generating preview data..."):
-        end = datetime.now().replace(hour=20 if extended else 16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=3)
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42,
-                                  extended_hours=extended)
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         # Evaluate condition
         condition_col = gp_module.evaluate_condition(df, pack)
         df[pack.get_condition_column()] = condition_col
+
+    # --- Trading session filter ---
+    from data_loader import _filter_session
+    gp_preview_session = st.selectbox(
+        "Trading Session",
+        TRADING_SESSIONS,
+        index=0,  # RTH by default
+        key=f"gp_preview_session_{pack.id}",
+        help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM",
+    )
+    df = _filter_session(df, gp_preview_session)
+
+    if len(df) == 0:
+        st.warning("No data after session filter. Try selecting 'Extended Hours' to see this pack's behavior.")
+        return
+
+    # Trim to last 3 days for display
+    display_bars = min(len(df), 390 * 3)
+    df = df.iloc[-display_bars:]
 
     # --- Build condition state change markers ---
     col_name = pack.get_condition_column()
@@ -8695,7 +14239,7 @@ def _render_gp_preview(pack):
 
     condition_markers = []
     for idx, state in changes.items():
-        ts = int(pd.to_datetime(idx).timestamp())
+        ts = _to_chart_unix(idx)
         condition_markers.append({
             'time': ts,
             'position': 'aboveBar',
@@ -8704,13 +14248,97 @@ def _render_gp_preview(pack):
             'text': state,
         })
 
+    # --- Build trigger markers (arrows at state transitions) ---
+    trigger_markers = []
+    trigger_results = gp_module.detect_triggers(df, pack)
+    if trigger_results:
+        # Map column names back to trigger display names
+        trig_defs = template.get("triggers", []) if template else []
+        col_to_name = {}
+        for td in trig_defs:
+            col_key = f"gp_trig_{pack.id}_{td['base']}"
+            col_to_name[col_key] = td.get("name", td["base"])
+        for trig_col, trig_series in trigger_results.items():
+            fired = trig_series[trig_series == True]
+            trig_label = col_to_name.get(trig_col, trig_col)
+            for t_idx in fired.index:
+                ts = _to_chart_unix(t_idx)
+                trigger_markers.append({
+                    'time': ts,
+                    'position': 'belowBar',
+                    'color': '#3b82f6',
+                    'shape': 'arrowUp',
+                    'text': trig_label,
+                })
+
+    # --- Show Conditions toggle ---
+    show_conditions = st.checkbox(
+        "Show Conditions", value=False,
+        key=f"gp_show_cond_{pack.id}",
+    )
+
+    cond_primitives = []
+    if show_conditions and outputs:
+        # Build SessionHighlighting background bands (same style as TF confluence packs)
+        state_bg_map = {}
+        state_text_map = {}
+        for i, out in enumerate(outputs):
+            state_bg_map[out] = _STATE_BG_COLORS[i % len(_STATE_BG_COLORS)]
+            state_text_map[out] = _STATE_TEXT_COLORS[i % len(_STATE_TEXT_COLORS)]
+
+        change_indices = list(changes.index)
+        ranges = []
+        for i, idx in enumerate(change_indices):
+            state = changes.loc[idx]
+            start_ts = int(pd.to_datetime(idx).timestamp())
+            if i + 1 < len(change_indices):
+                end_ts = int(pd.to_datetime(change_indices[i + 1]).timestamp())
+            else:
+                end_ts = int(pd.to_datetime(states.index[-1]).timestamp())
+            ranges.append({
+                "startTime": start_ts,
+                "endTime": end_ts,
+                "color": state_bg_map.get(state, "rgba(148,163,184,0.05)"),
+            })
+
+        if ranges:
+            cond_primitives.append({
+                "type": "sessionHighlight",
+                "seriesIndex": 0,
+                "options": {"ranges": ranges},
+            })
+
+        # Add state text labels at each transition
+        for idx, state in changes.items():
+            ts = _to_chart_unix(idx)
+            high_price = float(df.loc[idx, 'high']) if 'high' in df.columns else None
+            if high_price is None:
+                continue
+            cond_primitives.append({
+                "type": "anchoredText",
+                "seriesIndex": 0,
+                "options": {
+                    "time": ts,
+                    "price": high_price,
+                    "text": str(state),
+                    "color": state_text_map.get(state, "#94a3b8"),
+                    "fontSize": 9,
+                    "position": "above",
+                },
+            })
+
     # --- Price Chart with condition markers ---
     st.markdown("**Price Chart**")
     markers_df = pd.DataFrame()
+    # Combine condition + trigger markers; trigger markers always show
+    all_markers = list(trigger_markers)
+    if not show_conditions:
+        all_markers = condition_markers + all_markers
     render_chart_with_candle_selector(
         df, markers_df, {"direction": "LONG"},
         chart_key=f"gp_preview_chart_{pack.id}",
-        extra_markers=condition_markers,
+        extra_markers=all_markers if all_markers else None,
+        extra_primitives=cond_primitives if cond_primitives else None,
     )
 
     # --- Condition State Timeline ---
@@ -9079,9 +14707,9 @@ def _render_rmp_details(pack_id, all_packs):
 
 def _render_rmp_preview(pack):
     """Render Preview tab for a Risk Management Pack — sample trades with stop/target visualization."""
-    from mock_data import generate_mock_bars
+    from data_loader import load_market_data, get_data_source
 
-    st.caption("Live preview using sample trades to verify stop-loss and take-profit behavior.")
+    st.caption(f"Live preview using {get_data_source(_get_data_feed())} data to verify stop-loss and take-profit behavior.")
 
     # Controls: symbol + entry/exit trigger selection
     c1, c2, c3 = st.columns(3)
@@ -9142,21 +14770,11 @@ def _render_rmp_preview(pack):
                          key=f"rmp_preview_dir_{pack.id}")
 
     # Generate data and run trades
-    with st.spinner("Generating preview trades..."):
-        end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=5)
+    with st.spinner("Loading preview data..."):
+        df = load_market_data(preview_symbol, days=30, timeframe="1Min", feed=_get_data_feed(), session="Extended Hours")
 
-        bars = generate_mock_bars([preview_symbol], start, end, "1Min", seed=42)
-        if hasattr(bars.index, 'get_level_values') and preview_symbol in bars.index.get_level_values(0):
-            df = bars.loc[preview_symbol]
-        elif len(bars) > 0:
-            df = bars
-        else:
-            st.error("Could not generate sample data.")
-            return
-
-        if len(df) == 0:
-            st.error("No sample data generated.")
+        if df is None or len(df) == 0:
+            st.error("No data available for preview.")
             return
 
         df = run_all_indicators(df)
@@ -9186,14 +14804,49 @@ def _render_rmp_preview(pack):
             target_config=target_config, general_columns=rm_general_cols,
         )
 
-    # --- Chart with trade markers ---
+    # --- Chart with trade markers + stop/target lines ---
     st.markdown("**Price Chart with Trades**")
     st.caption(f"Stop: {rmp_module.format_stop_summary(pack)} | "
                f"Target: {rmp_module.format_target_summary(pack)}")
 
+    # Build stop/target level markers as extra markers on candle bodies
+    st_markers = []
+    if len(trades) > 0:
+        for _, t in trades.iterrows():
+            entry_ts = _to_chart_unix(t['entry_time'])
+            # Stop level marker (red triangle down at entry bar)
+            if pd.notna(t.get('stop_price')):
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'belowBar',
+                    'color': 'rgba(239,68,68,0.7)',
+                    'shape': 'arrowDown',
+                    'text': f"S:{t['stop_price']:.2f}",
+                })
+            # Target level marker (green triangle up at entry bar)
+            if pd.notna(t.get('target_price')):
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'aboveBar',
+                    'color': 'rgba(34,197,94,0.7)',
+                    'shape': 'arrowUp',
+                    'text': f"T:{t['target_price']:.2f}",
+                })
+            # Initial stop marker for trailing stops (dashed marker)
+            init_stop = t.get('initial_stop_price')
+            if pd.notna(init_stop) and pd.notna(t.get('stop_price')) and abs(init_stop - t['stop_price']) > 0.001:
+                st_markers.append({
+                    'time': entry_ts,
+                    'position': 'inBar',
+                    'color': 'rgba(239,68,68,0.4)',
+                    'shape': 'circle',
+                    'text': f"IS:{init_stop:.2f}",
+                })
+
     render_chart_with_candle_selector(
         df, trades, {"direction": direction},
         chart_key=f"rmp_preview_chart_{pack.id}",
+        extra_markers=st_markers if st_markers else None,
     )
 
     # --- Trade Summary ---
@@ -9209,6 +14862,20 @@ def _render_rmp_preview(pack):
         k4.metric("Avg R", f"{kpis['avg_r']:+.2f}")
         k5.metric("Total R", f"{kpis['total_r']:+.1f}")
         k6.metric("Max DD", f"{kpis['max_r_drawdown']:+.1f}R")
+
+        # Exit reason breakdown
+        if 'exit_reason' in trades.columns:
+            reasons = trades['exit_reason'].value_counts()
+            if len(reasons) > 0:
+                st.markdown("**Exit Reasons**")
+                reason_cols = st.columns(min(len(reasons), 6))
+                for i, (reason, count) in enumerate(reasons.items()):
+                    pct = count / len(trades) * 100
+                    reason_cols[i % len(reason_cols)].metric(
+                        reason.replace('_', ' ').title(),
+                        f"{pct:.0f}%",
+                        help=f"{count} trades",
+                    )
 
         # Trade details table
         st.markdown("**Trade Details**")

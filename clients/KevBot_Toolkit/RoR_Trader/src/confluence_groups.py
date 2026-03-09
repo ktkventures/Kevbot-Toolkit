@@ -48,6 +48,7 @@ class TriggerDefinition:
     direction: str           # "LONG", "SHORT", or "BOTH"
     trigger_type: str        # "ENTRY" or "EXIT"
     execution: str = "bar_close"  # "bar_close" or "intra_bar"
+    column_base: Optional[str] = None  # If set, share boolean column with this base trigger
 
 
 @dataclass
@@ -122,12 +123,12 @@ TEMPLATES: Dict[str, Dict] = {
         },
         "outputs": ["SML", "SLM", "MSL", "MLS", "LSM", "LMS"],
         "output_descriptions": {
-            "SML": "Bullish - Short > Mid > Long",
-            "SLM": "Price below Short, above Mid",
-            "MSL": "Price below Mid, above Long",
-            "MLS": "Price below all EMAs (bull order)",
-            "LSM": "Transitional state",
-            "LMS": "Bearish - Long > Mid > Short",
+            "SML": "Full Bull Stack — Short > Mid > Long",
+            "SLM": "Short leading, Mid dipped below Long",
+            "MSL": "Mid leading, Short pulling back",
+            "MLS": "Mid leading, bearish Short",
+            "LSM": "Long on top, transitional",
+            "LMS": "Full Bear Stack — Long > Mid > Short",
         },
         "triggers": [
             {"base": "cross_bull", "name": "Short > Mid Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
@@ -227,9 +228,21 @@ TEMPLATES: Dict[str, Dict] = {
         },
         "triggers": [
             {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_above_ib", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_above"},
             {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_below_ib", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_below"},
             {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_upper_extreme_ib", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "enter_upper_extreme"},
             {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "enter_lower_extreme_ib", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "enter_lower_extreme"},
+            {"base": "cross_above_hm", "name": "Cross Above VWAP (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_above"},
+            {"base": "cross_above_hl", "name": "Cross Above VWAP (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_above"},
+            {"base": "cross_below_hm", "name": "Cross Below VWAP (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_below"},
+            {"base": "cross_below_hl", "name": "Cross Below VWAP (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_below"},
+            {"base": "enter_upper_extreme_hm", "name": "Enter Upper Extreme (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "enter_upper_extreme"},
+            {"base": "enter_upper_extreme_hl", "name": "Enter Upper Extreme (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "enter_upper_extreme"},
+            {"base": "enter_lower_extreme_hm", "name": "Enter Lower Extreme (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "enter_lower_extreme"},
+            {"base": "enter_lower_extreme_hl", "name": "Enter Lower Extreme (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "enter_lower_extreme"},
             {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT", "execution": "bar_close"},
         ],
         "indicator_columns": ["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"],
@@ -267,12 +280,12 @@ TEMPLATES: Dict[str, Dict] = {
         "indicator_columns": ["vol_sma", "rvol"],
     },
 
-    "utbot": {
-        "name": "UT Bot",
+    "utbot_v2": {
+        "name": "UT Bot (Confirmed)",
         "category": "Trend",
-        "description": "UT Bot trend-following alerts based on ATR trailing stop",
-        "interpreters": ["UTBOT"],
-        "trigger_prefix": "utbot",
+        "description": "UT Bot with 1-bar confirmation delay — signals fire the bar after the ATR trailing stop crossover to avoid repainting",
+        "interpreters": ["UTBOT_V2"],
+        "trigger_prefix": "utbot_v2",
         "parameters_schema": {
             "atr_period": {"type": "int", "default": 10, "min": 1, "max": 50, "label": "ATR Period"},
             "atr_multiplier": {"type": "float", "default": 1.0, "min": 0.5, "max": 5.0, "label": "ATR Multiplier"},
@@ -288,11 +301,87 @@ TEMPLATES: Dict[str, Dict] = {
             "BEAR": "Price below trailing stop (bearish)",
         },
         "triggers": [
-            {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "sell", "name": "Sell Signal", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "buy", "name": "Buy Signal (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "buy_ib", "name": "Buy Signal (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy"},
+            {"base": "sell", "name": "Sell Signal (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "sell_ib", "name": "Sell Signal (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "sell"},
+            {"base": "buy_hm", "name": "Buy Signal (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "buy"},
+            {"base": "buy_hl", "name": "Buy Signal (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "buy"},
+            {"base": "sell_hm", "name": "Sell Signal (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "sell"},
+            {"base": "sell_hl", "name": "Sell Signal (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "sell"},
         ],
-        "indicator_columns": ["utbot_stop", "utbot_direction"],
+        "indicator_columns": ["utbot_stop"],
     },
+
+    "ema_price_position_v2": {
+        "name": "EMA Price Position (Confirmed)",
+        "category": "Moving Averages",
+        "description": "Price position within the EMA stack with 1-bar confirmation delay — crossover signals fire the bar after the cross to avoid repainting",
+        "interpreters": ["EMA_PRICE_POSITION_V2"],
+        "trigger_prefix": "ema_pp_v2",
+        "parameters_schema": {
+            "short_period": {"type": "int", "default": 9, "min": 1, "max": 200, "label": "Short Period"},
+            "mid_period": {"type": "int", "default": 21, "min": 1, "max": 200, "label": "Mid Period"},
+            "long_period": {"type": "int", "default": 200, "min": 1, "max": 500, "label": "Long Period"},
+        },
+        "plot_schema": {
+            "short_color": {"type": "color", "default": "#22c55e", "label": "Short EMA Color"},
+            "mid_color": {"type": "color", "default": "#eab308", "label": "Mid EMA Color"},
+            "long_color": {"type": "color", "default": "#ef4444", "label": "Long EMA Color"},
+        },
+        "outputs": [
+            "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
+            "SPML", "SPLM", "MPSL", "MPLS", "LPSM", "LPMS",
+            "SMPL", "MSPL", "SLPM", "LSPM", "MLPS", "LMPS",
+            "SMLP", "SLMP", "MSLP", "MLSP", "LSMP", "LMSP",
+        ],
+        "output_descriptions": {
+            "PSML": "Price leading, full bull (P > S > M > L)",
+            "PSLM": "Price leading, mid dipped (P > S > L > M)",
+            "PMSL": "Price above mid, short fell (P > M > S > L)",
+            "PMLS": "Price above mid only (P > M > L > S)",
+            "PLSM": "Price above long only (P > L > S > M)",
+            "PLMS": "Price above long, bear EMAs (P > L > M > S)",
+            "SPML": "Below short, bull EMAs (S > P > M > L)",
+            "SPLM": "Below short, mid dipped (S > P > L > M)",
+            "MPSL": "Below mid, mid leading (M > P > S > L)",
+            "MPLS": "Below mid (M > P > L > S)",
+            "LPSM": "Below long (L > P > S > M)",
+            "LPMS": "Below long (L > P > M > S)",
+            "SMPL": "Between mid and long, bull (S > M > P > L)",
+            "MSPL": "Between mid and long (M > S > P > L)",
+            "SLPM": "Between long and mid (S > L > P > M)",
+            "LSPM": "Between long and mid (L > S > P > M)",
+            "MLPS": "Between long and short (M > L > P > S)",
+            "LMPS": "Between long and short (L > M > P > S)",
+            "SMLP": "Below all, bull EMAs (S > M > L > P)",
+            "SLMP": "Below all (S > L > M > P)",
+            "MSLP": "Below all (M > S > L > P)",
+            "MLSP": "Below all (M > L > S > P)",
+            "LSMP": "Below all (L > S > M > P)",
+            "LMSP": "Below all, bear EMAs (L > M > S > P)",
+        },
+        "triggers": [
+            {"base": "cross_short_up", "name": "Price > Short EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_up_ib", "name": "Price > Short EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_up"},
+            {"base": "cross_short_down", "name": "Price < Short EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_down_ib", "name": "Price < Short EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_short_down"},
+            {"base": "cross_mid_up", "name": "Price > Mid EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_mid_up_ib", "name": "Price > Mid EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down", "name": "Price < Mid EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_mid_down_ib", "name": "Price < Mid EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "column_base": "cross_mid_down"},
+            {"base": "cross_short_up_hm", "name": "Price > Short EMA (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_up"},
+            {"base": "cross_short_up_hl", "name": "Price > Short EMA (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_up"},
+            {"base": "cross_short_down_hm", "name": "Price < Short EMA (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_down"},
+            {"base": "cross_short_down_hl", "name": "Price < Short EMA (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_down"},
+            {"base": "cross_mid_up_hm", "name": "Price > Mid EMA (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_up_hl", "name": "Price > Mid EMA (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down_hm", "name": "Price < Mid EMA (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_down"},
+            {"base": "cross_mid_down_hl", "name": "Price < Mid EMA (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_down"},
+        ],
+        "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
+    },
+
     "bar_count": {
         "name": "Bar Count Exit",
         "trigger_prefix": "bar_count",
@@ -371,6 +460,14 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 params["sd1_mult"] = 1.0
                 params["sd2_mult"] = float(old_std)
                 params.pop("tolerance_pct", None)
+
+            # Guard: skip groups referencing templates not in TEMPLATES
+            # (e.g., a user pack that was removed)
+            if base_template not in TEMPLATES:
+                print(f"Warning: skipping group '{group_data['id']}' — "
+                      f"template '{base_template}' not found "
+                      f"(user pack may be removed)")
+                continue
 
             group = ConfluenceGroup(
                 id=group_data["id"],
@@ -563,27 +660,6 @@ def create_default_groups() -> List[ConfluenceGroup]:
             ),
         ),
         ConfluenceGroup(
-            id="utbot_default",
-            base_template="utbot",
-            version="Default",
-            description="UT Bot with ATR period 10, multiplier 1.0",
-            enabled=True,
-            is_default=True,
-            parameters={
-                "atr_period": 10,
-                "atr_multiplier": 1.0,
-            },
-            plot_settings=PlotSettings(
-                colors={
-                    "buy_color": "#22c55e",
-                    "sell_color": "#ef4444",
-                    "trail_color": "#64748b",
-                },
-                line_width=1,
-                visible=True,
-            ),
-        ),
-        ConfluenceGroup(
             id="bar_count_default",
             base_template="bar_count",
             version="Default",
@@ -611,6 +687,26 @@ def get_enabled_groups(groups: Optional[List[ConfluenceGroup]] = None) -> List[C
     if groups is None:
         groups = load_confluence_groups()
     return [g for g in groups if g.enabled]
+
+
+def get_enabled_interpreter_keys(groups: Optional[List[ConfluenceGroup]] = None) -> List[str]:
+    """Derive interpreter keys that correspond to enabled confluence groups.
+
+    Maps each enabled group's base_template to TEMPLATES[base_template]["interpreters"].
+    Returns a deduplicated list of interpreter keys (e.g., ["EMA_STACK", "MACD_LINE"]).
+    """
+    if groups is None:
+        groups = get_enabled_groups()
+    keys = []
+    seen = set()
+    for group in groups:
+        template = TEMPLATES.get(group.base_template)
+        if template:
+            for interp_key in template.get("interpreters", []):
+                if interp_key not in seen:
+                    keys.append(interp_key)
+                    seen.add(interp_key)
+    return keys
 
 
 def get_group_by_id(group_id: str, groups: Optional[List[ConfluenceGroup]] = None) -> Optional[ConfluenceGroup]:
@@ -701,6 +797,7 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
             direction=trig_def["direction"],
             trigger_type=trig_def["type"],
             execution=trig_def.get("execution", "bar_close"),
+            column_base=trig_def.get("column_base"),
         )
         triggers.append(trigger)
 

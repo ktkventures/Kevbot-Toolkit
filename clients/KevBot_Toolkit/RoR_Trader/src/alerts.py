@@ -14,10 +14,14 @@ import json
 import os
 import math
 import secrets
+import threading
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+
+# Lock to prevent concurrent read-modify-write races on alerts.json
+_alerts_lock = threading.Lock()
 
 from data_loader import load_latest_bars
 from indicators import run_all_indicators
@@ -26,7 +30,9 @@ from interpreters import (
     run_all_interpreters,
     detect_all_triggers,
     get_confluence_records,
+    get_mtf_confluence_records,
 )
+from interpreters import INTERPRETERS as _ALL_INTERPRETERS
 from triggers import generate_trades, calculate_stop_price
 from portfolios import load_portfolios, get_requirement_set_by_id
 
@@ -42,7 +48,7 @@ _SIGNAL_DETECTION_BARS_FLOOR = 200
 _INDICATOR_WARMUP = 50
 
 
-def compute_signal_detection_bars(timeframe: str) -> int:
+def compute_signal_detection_bars(timeframe: str, session: str = "RTH") -> int:
     """Compute minimum bars needed for accurate signal detection.
 
     Ensures we load at least:
@@ -50,8 +56,8 @@ def compute_signal_detection_bars(timeframe: str) -> int:
     - Enough bars for the longest indicator warmup (EMA 50)
     - Minimum 200 bars floor
     """
-    from data_loader import BARS_PER_DAY
-    full_day = int(BARS_PER_DAY.get(timeframe, 390))
+    from data_loader import _bars_per_day
+    full_day = int(_bars_per_day(timeframe, session))
     return max(full_day, _INDICATOR_WARMUP, _SIGNAL_DETECTION_BARS_FLOOR)
 
 DEFAULT_GLOBAL_CONFIG = {
@@ -134,10 +140,20 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
     if not position_risk:
         position_risk = alert.get("risk_per_trade")
 
+    # For exit signals, use entry parameters so exit quantity matches entry size
+    qty_price = price
+    qty_stop = stop_price
+    if alert_type == "exit_signal":
+        entry_price = alert.get("entry_price")
+        entry_stop = alert.get("entry_stop_price")
+        if entry_price and entry_stop:
+            qty_price = entry_price
+            qty_stop = entry_stop
+
     quantity = ""
-    if price and stop_price and position_risk:
+    if qty_price and qty_stop and position_risk:
         try:
-            stop_distance = abs(float(price) - float(stop_price))
+            stop_distance = abs(float(qty_price) - float(qty_stop))
             if stop_distance > 0:
                 quantity = str(int(float(position_risk) / stop_distance))
         except (ValueError, TypeError, ZeroDivisionError):
@@ -417,40 +433,67 @@ def load_alerts(limit: int = 100) -> list:
 
 
 def _save_all_alerts(alerts: list):
-    """Save full alerts list to file."""
-    with open(ALERTS_FILE, 'w') as f:
-        json.dump(alerts, f, indent=2, default=str)
+    """Save full alerts list to file (atomic write to prevent partial reads).
+
+    Caller MUST hold _alerts_lock when calling this function.
+    """
+    tmp_path = ALERTS_FILE + f".tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(tmp_path, 'w') as f:
+            json.dump(alerts, f, indent=2, default=str)
+        os.replace(tmp_path, ALERTS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def save_alert(alert: dict) -> dict:
     """Save a new alert, auto-assigning ID and timestamp."""
-    alerts = load_alerts(limit=10000)  # load all
-    max_id = max((a.get('id', 0) for a in alerts), default=0)
-    alert['id'] = max_id + 1
-    if 'timestamp' not in alert:
-        alert['timestamp'] = datetime.now().isoformat()
-    if 'acknowledged' not in alert:
-        alert['acknowledged'] = False
-    alerts.insert(0, alert)  # prepend (most recent first)
-    # Keep last 500 alerts
-    _save_all_alerts(alerts[:500])
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)  # load all
+        max_id = max((a.get('id', 0) for a in alerts), default=0)
+        alert['id'] = max_id + 1
+        if 'timestamp' not in alert:
+            alert['timestamp'] = datetime.now(timezone.utc).isoformat()
+        if 'acknowledged' not in alert:
+            alert['acknowledged'] = False
+        alerts.insert(0, alert)  # prepend (most recent first)
+        # Keep last 500 alerts
+        _save_all_alerts(alerts[:500])
     return alert
+
+
+def update_alert(alert_id: int, updates: dict):
+    """Update an existing alert by ID (thread-safe)."""
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        for i, a in enumerate(alerts):
+            if a.get('id') == alert_id:
+                alerts[i].update(updates)
+                _save_all_alerts(alerts)
+                return alerts[i]
+    return None
 
 
 def acknowledge_alert(alert_id: int) -> bool:
     """Mark an alert as acknowledged."""
-    alerts = load_alerts(limit=10000)
-    for alert in alerts:
-        if alert.get('id') == alert_id:
-            alert['acknowledged'] = True
-            _save_all_alerts(alerts)
-            return True
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        for alert in alerts:
+            if alert.get('id') == alert_id:
+                alert['acknowledged'] = True
+                _save_all_alerts(alerts)
+                return True
     return False
 
 
 def clear_alerts():
     """Remove all alert history."""
-    _save_all_alerts([])
+    with _alerts_lock:
+        _save_all_alerts([])
 
 
 def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
@@ -458,6 +501,14 @@ def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
     alerts = load_alerts(limit=10000)
     filtered = [a for a in alerts if a.get('strategy_id') == strategy_id]
     return filtered[:limit]
+
+
+def delete_alerts_for_strategy(strategy_id: int):
+    """Remove all alerts for a strategy from alerts.json."""
+    with _alerts_lock:
+        alerts = load_alerts(limit=10000)
+        filtered = [a for a in alerts if a.get('strategy_id') != strategy_id]
+        _save_all_alerts(filtered)
 
 
 def get_alerts_for_portfolio(portfolio_id: int, limit: int = 50) -> list:
@@ -589,7 +640,9 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
     return confluence_trigger_id
 
 
-def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
+def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
+                   secondary_tf_dfs: dict = None,
+                   override_in_position: bool = None) -> list:
     """
     Run the full pipeline on recent data and check for entry/exit signals.
 
@@ -597,6 +650,10 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
         strategy: Strategy dict with symbol, triggers, confluence, etc.
         df: Pre-loaded DataFrame of bars. If None, bars are loaded automatically
             using compute_signal_detection_bars() for the strategy's timeframe.
+        feed: Data feed — "sip" or "iex"
+        secondary_tf_dfs: Optional dict ``{tf_label: pd.DataFrame}`` of secondary
+            timeframe bar data for multi-timeframe confluence.  Each DataFrame
+            should contain raw OHLCV bars; the pipeline is run on them here.
 
     Returns list of signal dicts (usually 0 or 1 items).
     """
@@ -605,18 +662,40 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
     timeframe = strategy.get('timeframe', '1Min')
 
     # Load recent bars if not provided
+    session = strategy.get('trading_session', 'RTH')
     if df is None:
-        bars_needed = compute_signal_detection_bars(timeframe)
-        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe, seed=seed)
+        bars_needed = compute_signal_detection_bars(timeframe, session)
+        df = load_latest_bars(symbol, bars=bars_needed, timeframe=timeframe,
+                              seed=seed, feed=feed, session=session)
     if len(df) == 0:
         return []
 
-    # Run pipeline
+    # Run pipeline on primary TF
     df = _run_pipeline(df)
 
+    # ── Multi-Timeframe: run pipeline on secondary TFs, forward-fill states ──
+    secondary_tf_map = {}
+    interp_keys = list(_ALL_INTERPRETERS.keys())
+    if secondary_tf_dfs:
+        for tf_label, sec_df in secondary_tf_dfs.items():
+            if sec_df is None or len(sec_df) == 0:
+                continue
+            try:
+                sec_df = _run_pipeline(sec_df.copy())
+                suffixed_cols = []
+                for interp_col in interp_keys:
+                    if interp_col in sec_df.columns:
+                        suffixed = f"{interp_col}__{tf_label}"
+                        df[suffixed] = sec_df[interp_col].reindex(df.index, method='ffill')
+                        suffixed_cols.append(suffixed)
+                if suffixed_cols:
+                    secondary_tf_map[tf_label] = suffixed_cols
+            except Exception:
+                pass
+
     # Get trigger IDs
-    entry_trigger = strategy.get('entry_trigger', '')
-    exit_trigger = strategy.get('exit_trigger', '')
+    entry_trigger = strategy.get('entry_trigger') or ''
+    exit_trigger = strategy.get('exit_trigger') or ''
 
     # Map confluence trigger IDs to base trigger IDs if available
     if strategy.get('entry_trigger_confluence_id'):
@@ -627,48 +706,65 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
     # Build exit triggers list (new multi-exit format or legacy single)
     exit_triggers_list = None
     if strategy.get('exit_trigger_confluence_ids'):
-        exit_triggers_list = [_get_base_trigger_id(tid) for tid in strategy['exit_trigger_confluence_ids']]
+        exit_triggers_list = [_get_base_trigger_id(tid) for tid in strategy['exit_trigger_confluence_ids'] if tid]
     elif strategy.get('exit_triggers'):
-        exit_triggers_list = strategy['exit_triggers']
+        exit_triggers_list = [et for et in strategy['exit_triggers'] if et]
 
-    # Determine position state via generate_trades on recent bars
+    # Determine position state
     confluence_set = set(strategy.get('confluence', [])) if strategy.get('confluence') else None
-    trades = generate_trades(
-        df,
-        direction=strategy.get('direction', 'LONG'),
-        entry_trigger=entry_trigger,
-        exit_trigger=exit_trigger,
-        exit_triggers=exit_triggers_list,
-        confluence_required=confluence_set,
-        risk_per_trade=strategy.get('risk_per_trade', 100.0),
-        stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
-        stop_config=strategy.get('stop_config'),
-        target_config=strategy.get('target_config'),
-        bar_count_exit=strategy.get('bar_count_exit'),
-    )
+
+    if override_in_position is not None:
+        # Caller (e.g. streaming engine) knows authoritative position state
+        in_position = override_in_position
+    else:
+        trades = generate_trades(
+            df,
+            direction=strategy.get('direction', 'LONG'),
+            entry_trigger=entry_trigger,
+            exit_trigger=exit_trigger,
+            exit_triggers=exit_triggers_list,
+            confluence_required=confluence_set,
+            risk_per_trade=strategy.get('risk_per_trade', 100.0),
+            stop_atr_mult=strategy.get('stop_atr_mult', 1.5),
+            stop_config=strategy.get('stop_config'),
+            target_config=strategy.get('target_config'),
+            bar_count_exit=strategy.get('bar_count_exit'),
+            secondary_tf_map=secondary_tf_map if secondary_tf_map else None,
+        )
+        in_position = False
+        if len(trades) > 0:
+            last_trade = trades.iloc[-1]
+            if pd.isna(last_trade.get('exit_time')):
+                in_position = True
 
     signals = []
     last_bar = df.iloc[-1]
-    interpreter_list = list(INTERPRETERS.keys())
-    confluence_records = get_confluence_records(last_bar, "1M", interpreter_list)
+    interpreter_list = interp_keys
+    if secondary_tf_map:
+        confluence_records = get_mtf_confluence_records(
+            last_bar, interpreter_list, secondary_tf_map)
+    else:
+        confluence_records = get_confluence_records(last_bar, "1M", interpreter_list)
 
     # Check the last bar for trigger signals
     entry_col = f"trig_{entry_trigger}"
+    # _ib triggers share the boolean column with their bar-close base
+    if entry_col not in df.columns and entry_trigger.endswith('_ib'):
+        entry_col = f"trig_{entry_trigger[:-3]}"
 
     # Build list of exit trigger columns to check
     exit_cols = []
     if exit_triggers_list:
-        exit_cols = [f"trig_{et}" for et in exit_triggers_list]
+        for et in exit_triggers_list:
+            ec = f"trig_{et}"
+            if ec not in df.columns and et.endswith('_ib'):
+                ec = f"trig_{et[:-3]}"
+            exit_cols.append(ec)
     elif exit_trigger and exit_trigger not in ("opposite_signal", "fixed_r_2", "fixed_r_3", "trailing_stop", "time_exit_50"):
-        exit_cols = [f"trig_{exit_trigger}"]
-
-    # Determine if currently in position
-    in_position = False
-    if len(trades) > 0:
-        last_trade = trades.iloc[-1]
-        # If last trade has no exit_time or exit_time is NaT, we're in position
-        if pd.isna(last_trade.get('exit_time')):
-            in_position = True
+        ec = f"trig_{exit_trigger}"
+        if ec not in df.columns and exit_trigger.endswith('_ib'):
+            ec = f"trig_{exit_trigger[:-3]}"
+        exit_cols = [ec]
 
     atr_val = last_bar.get('atr', last_bar.get('close', 100) * 0.01)
     if pd.isna(atr_val) or atr_val <= 0:
@@ -692,7 +788,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
                     "type": "entry_signal",
                     "trigger": entry_trigger,
                     "confluence_met": list(confluence_records & confluence_set) if confluence_set else [],
-                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
+                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,
                     "stop_price": float(stop_price),
                     "atr": float(atr_val),
@@ -705,7 +801,7 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None) -> list:
                     "type": "exit_signal",
                     "trigger": ec.replace("trig_", ""),
                     "confluence_met": list(confluence_records),
-                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now().isoformat(),
+                    "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,
                     "stop_price": None,
                     "atr": float(atr_val),
@@ -793,7 +889,7 @@ def _format_default_webhook_payload(alert: dict) -> dict:
         "embeds": [{
             "title": strategy_name,
             "fields": fields,
-            "timestamp": alert.get('timestamp', datetime.now().isoformat()),
+            "timestamp": alert.get('timestamp', datetime.now(timezone.utc).isoformat()),
         }]
     }
 
@@ -957,3 +1053,207 @@ def get_webhook_template_by_id(template_id: str) -> dict | None:
         if t.get("id") == template_id:
             return t
     return None
+
+
+# =============================================================================
+# LIVE ALERTS VALIDATION (Phase 13)
+# =============================================================================
+
+def match_alerts_to_trades(strategy: dict, alerts: list = None) -> dict:
+    """Match fired alerts to forward test trades for a strategy.
+
+    Compares alerts from alerts.json against forward test trades to identify:
+    - Successfully matched alert→trade pairs (live_executions)
+    - Missed alerts (forward test trade exists, no matching alert)
+    - Phantom alerts (alert fired but no matching forward test trade)
+
+    Args:
+        strategy: Strategy dict with stored_trades and forward_test_start
+        alerts: Optional list of alert records. If None, loads from file.
+
+    Returns:
+        dict with 'live_executions' and 'discrepancies' lists.
+    """
+    if alerts is None:
+        alerts = load_alerts(limit=10000)
+
+    stored_trades = strategy.get('stored_trades', [])
+    ft_start = strategy.get('forward_test_start')
+    strategy_id = strategy.get('id')
+
+    if not ft_start or not strategy_id:
+        return {'live_executions': [], 'discrepancies': []}
+
+    # Normalize all timestamps to UTC-naive for safe comparison.
+    # Alert timestamps are local (no tz), trade times are UTC (+00:00).
+    from datetime import timezone as _tz
+    def _utc_naive(dt):
+        """Convert any datetime to UTC-naive (naive local → UTC, tz-aware → UTC)."""
+        return dt.astimezone(_tz.utc).replace(tzinfo=None)
+
+    ft_start_dt = _utc_naive(datetime.fromisoformat(ft_start))
+
+    # Parse reset timestamp (used later to filter discrepancies, NOT trades)
+    _reset_dt = None
+    _reset_at = strategy.get('alert_tracking_reset_at')
+    if _reset_at:
+        try:
+            _reset_dt = _utc_naive(datetime.fromisoformat(_reset_at))
+        except (ValueError, TypeError):
+            pass
+
+    # Get ALL forward test trades for matching (don't filter by reset —
+    # new alerts may legitimately match older trades)
+    ft_trades = []
+    for idx, t in enumerate(stored_trades):
+        try:
+            entry_dt = _utc_naive(datetime.fromisoformat(t['entry_time']))
+            if entry_dt >= ft_start_dt:
+                ft_trades.append((idx, t, entry_dt))
+        except (ValueError, KeyError):
+            continue
+
+    # Get alerts for this strategy, pre-parse timestamps once (avoid O(n²) parsing)
+    entry_alerts = []  # (parsed_dt, alert)
+    exit_alerts = []
+    for a in alerts:
+        if a.get('strategy_id') != strategy_id:
+            continue
+        a_type = a.get('type')
+        if a_type not in ('entry_signal', 'exit_signal'):
+            continue
+        try:
+            a_dt = _utc_naive(datetime.fromisoformat(a['timestamp']))
+        except (ValueError, KeyError):
+            continue
+        if a_type == 'entry_signal':
+            entry_alerts.append((a_dt, a))
+        else:
+            exit_alerts.append((a_dt, a))
+
+    # Sort by time for faster matching
+    entry_alerts.sort(key=lambda x: x[0])
+    exit_alerts.sort(key=lambda x: x[0])
+
+    from ralph_engine import TIMEFRAME_SECONDS as _TFS
+    _bar_period = _TFS.get(strategy.get('timeframe', '1Min'), 60)
+    MATCH_WINDOW_SECONDS = max(300, _bar_period * 5)  # ±5 bar periods, min 5 minutes
+
+    executions = []
+    matched_alert_ids = set()
+    matched_trade_indices = set()
+
+    for trade_idx, trade, trade_entry_dt in ft_trades:
+        trade_exit_dt = None
+        try:
+            trade_exit_dt = _utc_naive(datetime.fromisoformat(trade['exit_time']))
+        except (ValueError, KeyError):
+            pass
+
+        # Find closest entry alert match
+        entry_match = None
+        best_entry_delta = float('inf')
+        for a_dt, alert in entry_alerts:
+            if alert['id'] in matched_alert_ids:
+                continue
+            delta = abs((a_dt - trade_entry_dt).total_seconds())
+            if delta < MATCH_WINDOW_SECONDS and delta < best_entry_delta:
+                entry_match = alert
+                best_entry_delta = delta
+
+        # Find closest exit alert match
+        exit_match = None
+        if trade_exit_dt:
+            best_exit_delta = float('inf')
+            for a_dt, alert in exit_alerts:
+                if alert['id'] in matched_alert_ids:
+                    continue
+                delta = abs((a_dt - trade_exit_dt).total_seconds())
+                if delta < MATCH_WINDOW_SECONDS and delta < best_exit_delta:
+                    exit_match = alert
+                    best_exit_delta = delta
+
+        if entry_match:
+            matched_alert_ids.add(entry_match['id'])
+            matched_trade_indices.add(trade_idx)
+
+            alert_price = entry_match.get('price', 0)
+            theoretical_price = trade.get('entry_price', alert_price)
+            risk = abs(theoretical_price - trade.get('stop_price', theoretical_price)) or 1.0
+
+            # Check webhook delivery status
+            deliveries = entry_match.get('webhook_deliveries', [])
+            webhook_delivered = any(d.get('success') for d in deliveries)
+
+            execution = {
+                'alert_id': entry_match['id'],
+                'type': 'entry',
+                'alert_timestamp': entry_match.get('timestamp'),
+                'bar_time': entry_match.get('bar_time'),
+                'source': entry_match.get('source', 'unknown'),
+                'alert_price': alert_price,
+                'theoretical_price': theoretical_price,
+                'slippage_r': round((alert_price - theoretical_price) / risk, 4) if risk > 0 else 0,
+                'matched_trade_index': trade_idx,
+                'webhook_delivered': webhook_delivered,
+                'webhook_delivery_count': len(deliveries),
+            }
+            executions.append(execution)
+
+            if exit_match:
+                matched_alert_ids.add(exit_match['id'])
+                exit_alert_price = exit_match.get('price', 0)
+                exit_theoretical = trade.get('exit_price', exit_alert_price)
+
+                exit_execution = {
+                    'alert_id': exit_match['id'],
+                    'type': 'exit',
+                    'alert_timestamp': exit_match.get('timestamp'),
+                    'bar_time': exit_match.get('bar_time'),
+                    'source': exit_match.get('source', 'unknown'),
+                    'alert_price': exit_alert_price,
+                    'theoretical_price': exit_theoretical,
+                    'slippage_r': round((exit_alert_price - exit_theoretical) / risk, 4) if risk > 0 else 0,
+                    'matched_trade_index': trade_idx,
+                    'webhook_delivered': any(d.get('success') for d in exit_match.get('webhook_deliveries', [])),
+                    'webhook_delivery_count': len(exit_match.get('webhook_deliveries', [])),
+                }
+                executions.append(exit_execution)
+
+    # Build discrepancies
+    discrepancies = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Missed alerts: forward test trades with no matching alert
+    # Skip trades before reset — their alerts were intentionally deleted
+    for trade_idx, trade, trade_entry_dt in ft_trades:
+        if trade_idx not in matched_trade_indices:
+            if _reset_dt and trade_entry_dt < _reset_dt:
+                continue  # trade predates reset, alerts were cleared
+            discrepancies.append({
+                'type': 'missed_alert',
+                'trade_index': trade_idx,
+                'trade_entry_time': trade.get('entry_time'),
+                'trade_exit_time': trade.get('exit_time'),
+                'detected_at': now_iso,
+            })
+
+    # Phantom alerts: alerts that fired but no matching forward test trade
+    # Skip alerts before reset (shouldn't exist since we deleted them, but guard)
+    all_parsed_alerts = entry_alerts + exit_alerts
+    for a_dt, alert in all_parsed_alerts:
+        if alert['id'] not in matched_alert_ids:
+            if a_dt >= ft_start_dt and (not _reset_dt or a_dt >= _reset_dt):
+                discrepancies.append({
+                    'type': 'phantom_alert',
+                    'alert_id': alert['id'],
+                    'alert_type': alert.get('type'),
+                    'alert_timestamp': alert.get('timestamp'),
+                    'bar_time': alert.get('bar_time'),
+                    'source': alert.get('source', 'unknown'),
+                    'price': alert.get('price'),
+                    'trigger': alert.get('trigger', ''),
+                    'detected_at': now_iso,
+                })
+
+    return {'live_executions': executions, 'discrepancies': discrepancies}

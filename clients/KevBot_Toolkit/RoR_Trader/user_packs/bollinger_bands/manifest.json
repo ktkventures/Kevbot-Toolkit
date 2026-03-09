@@ -1,0 +1,182 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "bollinger_bands",
+  "name": "Bollinger Bands",
+  "category": "Momentum",
+  "description": "Bollinger Bands with upper/mid/lower zone classification and squeeze detection triggers",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-02-17T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": [
+    "BOLLINGER_BANDS"
+  ],
+  "trigger_prefix": "bb",
+  "parameters_schema": {
+    "bb_period": {
+      "type": "int",
+      "default": 20,
+      "min": 5,
+      "max": 100,
+      "label": "BB Period"
+    },
+    "bb_mult": {
+      "type": "float",
+      "default": 2.0,
+      "min": 0.5,
+      "max": 5.0,
+      "label": "StdDev Multiplier"
+    },
+    "squeeze_threshold": {
+      "type": "float",
+      "default": 0.04,
+      "min": 0.01,
+      "max": 0.2,
+      "label": "Squeeze Threshold (%)"
+    }
+  },
+  "plot_schema": {
+    "upper_color": {
+      "type": "color",
+      "default": "#ef4444",
+      "label": "Upper Band Color"
+    },
+    "basis_color": {
+      "type": "color",
+      "default": "#a855f7",
+      "label": "Basis Color"
+    },
+    "lower_color": {
+      "type": "color",
+      "default": "#22c55e",
+      "label": "Lower Band Color"
+    },
+    "band_fill_color": {
+      "type": "color",
+      "default": "rgba(168,85,247,0.08)",
+      "label": "Band Fill Color"
+    }
+  },
+  "plot_config": {
+    "band_fills": [
+      {
+        "upper_column": "bb_upper",
+        "lower_column": "bb_lower",
+        "fill_color_key": "band_fill_color"
+      }
+    ]
+  },
+  "outputs": [
+    "SQUEEZE_UPPER",
+    "SQUEEZE_MID",
+    "SQUEEZE_LOWER",
+    "UPPER_ZONE",
+    "MID_ZONE",
+    "LOWER_ZONE"
+  ],
+  "output_descriptions": {
+    "SQUEEZE_UPPER": "Price in upper zone while bandwidth is below squeeze threshold \u2014 tight bands, price near upper",
+    "SQUEEZE_MID": "Price in mid zone while bandwidth is below squeeze threshold \u2014 tight bands, price near basis",
+    "SQUEEZE_LOWER": "Price in lower zone while bandwidth is below squeeze threshold \u2014 tight bands, price near lower",
+    "UPPER_ZONE": "Price above basis (midline) in normal volatility",
+    "MID_ZONE": "Price near basis within 25% of band width in normal volatility",
+    "LOWER_ZONE": "Price below basis (midline) in normal volatility"
+  },
+  "triggers": [
+    {
+      "base": "cross_upper",
+      "name": "Cross Above Upper Band",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_upper_ib",
+      "name": "Cross Above Upper Band",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_upper"
+    },
+    {
+      "base": "cross_lower",
+      "name": "Cross Below Lower Band",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_lower_ib",
+      "name": "Cross Below Lower Band",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_lower"
+    },
+    {
+      "base": "cross_basis_up",
+      "name": "Cross Above Basis",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_basis_up_ib",
+      "name": "Cross Above Basis",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_basis_up"
+    },
+    {
+      "base": "cross_basis_down",
+      "name": "Cross Below Basis",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_basis_down_ib",
+      "name": "Cross Below Basis",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "intra_bar",
+      "column_base": "cross_basis_down"
+    },
+    {
+      "base": "squeeze_on",
+      "name": "Squeeze Starts",
+      "direction": "BOTH",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "squeeze_off",
+      "name": "Squeeze Ends",
+      "direction": "BOTH",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "bb_upper",
+    "bb_basis",
+    "bb_lower",
+    "bb_bandwidth"
+  ],
+  "column_color_map": {
+    "bb_upper": "upper_color",
+    "bb_basis": "basis_color",
+    "bb_lower": "lower_color"
+  },
+  "indicator_function": "calculate_bollinger_bands",
+  "interpreter_function": "interpret_bollinger_bands",
+  "trigger_function": "detect_bollinger_bands_triggers",
+  "requires_indicators": [
+    "bb_upper",
+    "bb_basis",
+    "bb_lower",
+    "bb_bandwidth"
+  ]
+}

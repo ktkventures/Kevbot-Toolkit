@@ -1,0 +1,31 @@
+//@version=6
+indicator("Swing 1-2-3 – Candle 2 & 3 Coloring (Real-Time)", overlay=true)
+
+// === COLORS ===
+medYellow = color.new(#FFD11A, 0)     // Bullish Candle 2
+neonYellow = color.new(#FFFF00, 0)    // Bullish Candle 3
+medPink = color.new(#FF66B3, 0)       // Bearish Candle 2
+neonPink = color.new(#FF33CC, 0)      // Bearish Candle 3
+
+// === DEFINE CANDLE 2 CONDITIONS ===
+// Bullish 2 = makes lower low than prior and closes above prior close
+bullC2 = low < low[1] and close > close[1]
+// Bearish 2 = makes higher high than prior and closes below prior close
+bearC2 = high > high[1] and close < close[1]
+
+// === DEFINE CANDLE 3 CONDITIONS ===
+// Bullish 3 = previous bar was bullC2 and current close > previous high
+bullC3 = bullC2[1] and close > high[1]
+// Bearish 3 = previous bar was bearC2 and current close < previous low
+bearC3 = bearC2[1] and close < low[1]
+
+// === COLOR LOGIC (PRIORITY 3 > 2) ===
+bullCol = bullC3 ? neonYellow : bullC2 ? medYellow : na
+bearCol = bearC3 ? neonPink : bearC2 ? medPink : na
+barcolor(not na(bullCol) ? bullCol : bearCol)
+
+// === ALERT HOOKS (OPTIONAL) ===
+alertcondition(bullC2, title="Bullish Candle 2", message="Bullish C2: Lower low + reclaimed prior close")
+alertcondition(bullC3, title="Bullish Candle 3", message="Bullish C3: Closed above Candle 2 high (continuation)")
+alertcondition(bearC2, title="Bearish Candle 2", message="Bearish C2: Higher high + dropped below prior close")
+alertcondition(bearC3, title="Bearish Candle 3", message="Bearish C3: Closed below Candle 2 low (continuation)")

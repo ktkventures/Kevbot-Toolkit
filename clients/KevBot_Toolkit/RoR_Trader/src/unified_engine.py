@@ -1,0 +1,2204 @@
+#!/usr/bin/env python3
+"""
+Unified Chart Engine — single bar-by-bar state machine for backtest and live.
+
+Processes OHLCV bars sequentially through the same computation path regardless
+of whether data is historical (backtest) or live (streaming).  Eliminates
+parity bugs between batch and incremental pipelines by construction.
+
+Phase 30A: Backtest-only.  No WebSocket, no live ticks, no alert dispatch.
+
+Usage:
+    from unified_engine import run_unified_backtest
+
+    trades_df, enriched_df = run_unified_backtest(raw_df, strategy)
+"""
+
+import logging
+import math
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import pandas as pd
+
+logger = logging.getLogger("unified_engine")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+MAX_HISTORY = 25_000
+
+TIMEFRAME_SECONDS = {
+    "5Sec": 5, "10Sec": 10, "15Sec": 15, "30Sec": 30,
+    "1Min": 60, "2Min": 120, "3Min": 180, "5Min": 300,
+    "10Min": 600, "15Min": 900, "30Min": 1800,
+    "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,
+    "1Day": 86400, "1Week": 604800, "1Month": 2592000,
+}
+SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
+
+VWAP_SESSION_GAP_SECONDS = 30 * 60  # 30 minutes
+
+# Template key -> required indicator set and interpreter key
+TEMPLATE_REQUIREMENTS = {
+    'ema_stack': ({'ema'}, 'EMA_STACK'),
+    'ema_price_position': ({'ema'}, 'EMA_PRICE_POSITION'),
+    'ema_price_position_v2': ({'ema'}, 'EMA_PRICE_POSITION_V2'),
+    'macd_line': ({'macd'}, 'MACD_LINE'),
+    'macd_histogram': ({'macd'}, 'MACD_HISTOGRAM'),
+    'vwap': ({'vwap'}, 'VWAP'),
+    'rvol': ({'rvol'}, 'RVOL'),
+    'utbot': ({'utbot'}, 'UTBOT'),
+    'utbot_v2': ({'utbot'}, 'UTBOT_V2'),
+    'bar_count': (set(), None),
+}
+
+# Trigger prefix -> template key
+TRIGGER_PREFIX_TO_TEMPLATE = {
+    'ema': 'ema_stack',
+    'ema_pp': 'ema_price_position',
+    'ema_pp_v2': 'ema_price_position_v2',
+    'macd': 'macd_line',
+    'macd_hist': 'macd_histogram',
+    'vwap': 'vwap',
+    'rvol': 'rvol',
+    'utbot': 'utbot',
+    'utbot_v2': 'utbot_v2',
+    'bar_count': 'bar_count',
+}
+
+# Intra-bar level map: base trigger -> level column + cross direction
+INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
+    "vwap_cross_above":          {"column": "vwap",            "cross": "above"},
+    "vwap_cross_below":          {"column": "vwap",            "cross": "below"},
+    "vwap_enter_upper_extreme":  {"column": "vwap_sd2_upper",  "cross": "above"},
+    "vwap_enter_lower_extreme":  {"column": "vwap_sd2_lower",  "cross": "below"},
+    "utbot_buy":                 {"column": "utbot_stop",      "cross": "above"},
+    "utbot_sell":                {"column": "utbot_stop",      "cross": "below"},
+    "utbot_v2_buy":              {"column": "utbot_stop_prev", "cross": "above"},
+    "utbot_v2_sell":             {"column": "utbot_stop_prev", "cross": "below"},
+    "ema_pp_cross_short_up":     {"column": "ema_9",  "cross": "above", "param_key": "short_period"},
+    "ema_pp_cross_short_down":   {"column": "ema_9",  "cross": "below", "param_key": "short_period"},
+    "ema_pp_cross_mid_up":       {"column": "ema_21", "cross": "above", "param_key": "mid_period"},
+    "ema_pp_cross_mid_down":     {"column": "ema_21", "cross": "below", "param_key": "mid_period"},
+    "ema_pp_v2_cross_short_up":  {"column": "ema_9_prev",  "cross": "above", "param_key": "short_period"},
+    "ema_pp_v2_cross_short_down": {"column": "ema_9_prev",  "cross": "below", "param_key": "short_period"},
+    "ema_pp_v2_cross_mid_up":    {"column": "ema_21_prev", "cross": "above", "param_key": "mid_period"},
+    "ema_pp_v2_cross_mid_down":  {"column": "ema_21_prev", "cross": "below", "param_key": "mid_period"},
+}
+
+# L-type triggers: prev-bar-close-opposite-side gating
+# (as opposed to H-type gating which requires bar-close C-type trigger to fire)
+_IB_L_TYPE_TRIGGERS = frozenset({
+    'vwap_cross_above', 'vwap_cross_below',
+    'vwap_enter_upper_extreme', 'vwap_enter_lower_extreme',
+    'ema_pp_cross_short_up', 'ema_pp_cross_short_down',
+    'ema_pp_cross_mid_up', 'ema_pp_cross_mid_down',
+    'ema_pp_v2_cross_short_up', 'ema_pp_v2_cross_short_down',
+    'ema_pp_v2_cross_mid_up', 'ema_pp_v2_cross_mid_down',
+    'utbot_v2_buy', 'utbot_v2_sell',
+})
+
+# Trigger execution type classification
+# C  = Bar Close
+# L0 = Level Cross, current bar's indicator level
+# L1 = Level Cross, previous bar's indicator level (fixed reference)
+# HM = Hybrid Market (L1 cross + bar-close confirmation → market order)
+# HL = Hybrid Limit  (L1 cross + bar-close confirmation → limit order)
+_L_TYPES = frozenset({'L0', 'L1'})
+
+
+def get_trigger_exec_type(trigger_id: str) -> str:
+    """Get execution type for a trigger.
+
+    Handles both template-prefixed IDs (e.g. ``utbot_v2_buy_ib``) and
+    group-prefixed IDs (e.g. ``utbot_v2_default_buy_ib``).
+
+    Returns: 'C' (bar close), 'L0' (level cross, current bar),
+             'L1' (level cross, previous bar), 'HM' (hybrid market),
+             or 'HL' (hybrid limit).
+    """
+    if trigger_id.endswith('_hm'):
+        return 'HM'
+    if trigger_id.endswith('_hl'):
+        return 'HL'
+    if trigger_id.endswith('_ib'):
+        base = trigger_id[:-3]
+        level_spec = INTRABAR_LEVEL_MAP.get(base)
+        if level_spec is None:
+            # Group-prefixed ID: find the template prefix in the trigger_id,
+            # then match the base trigger suffix against INTRABAR_LEVEL_MAP.
+            _sorted_prefixes = sorted(
+                TRIGGER_PREFIX_TO_TEMPLATE, key=len, reverse=True)
+            for tp in _sorted_prefixes:
+                if base.startswith(tp + '_'):
+                    base_suffix = base[len(tp) + 1:]  # e.g. "default_buy"
+                    for mk, spec in INTRABAR_LEVEL_MAP.items():
+                        if mk.startswith(tp + '_'):
+                            mk_suffix = mk[len(tp) + 1:]  # e.g. "buy"
+                            if base_suffix.endswith(mk_suffix):
+                                level_spec = spec
+                                break
+                    break
+        col = level_spec.get('column', '') if level_spec else ''
+        return 'L1' if col.endswith('_prev') else 'L0'
+    return 'C'
+
+
+def _strip_exec_suffix(trigger_id: str) -> str:
+    """Strip execution suffix (_ib/_hm/_hl) to get base trigger."""
+    for suffix in ('_ib', '_hm', '_hl'):
+        if trigger_id.endswith(suffix):
+            return trigger_id[:-len(suffix)]
+    return trigger_id
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GENERAL PACK SCALAR EVALUATORS
+# ═══════════════════════════════════════════════════════════════════════════
+
+_GP_SESSION_WINDOWS = {
+    "pre_market": (4, 0, 9, 30),
+    "regular": (9, 30, 16, 0),
+    "after_hours": (16, 0, 20, 0),
+    "extended": (4, 0, 20, 0),
+}
+
+
+def _eval_gp_scalar(pack, ts: datetime) -> Optional[str]:
+    """Evaluate a GeneralPack against a single timestamp. Returns state label."""
+    try:
+        from general_packs import TEMPLATES
+    except ImportError:
+        return None
+    logic = TEMPLATES.get(pack.base_template, {}).get("condition_logic")
+    params = pack.parameters
+    if logic == "time_window":
+        start = params.get("start_hour", 9) * 60 + params.get("start_minute", 30)
+        end = params.get("end_hour", 12) * 60 + params.get("end_minute", 0)
+        bar_min = ts.hour * 60 + ts.minute
+        return "IN_WINDOW" if start <= bar_min < end else "OUT_OF_WINDOW"
+    elif logic == "session_filter":
+        session = params.get("session", "regular")
+        sh, sm, eh, em = _GP_SESSION_WINDOWS.get(
+            session, _GP_SESSION_WINDOWS["regular"])
+        start = sh * 60 + sm
+        end = eh * 60 + em
+        bar_min = ts.hour * 60 + ts.minute
+        return "IN_SESSION" if start <= bar_min < end else "OUT_OF_SESSION"
+    elif logic == "day_filter":
+        day_map = {0: "monday", 1: "tuesday", 2: "wednesday",
+                   3: "thursday", 4: "friday"}
+        day_name = day_map.get(ts.weekday())
+        if day_name is None:
+            return "BLOCKED_DAY"
+        return "ALLOWED_DAY" if params.get(day_name, True) else "BLOCKED_DAY"
+    elif logic == "calendar_filter":
+        if params.get("avoid_fomc", True) and ts.weekday() == 2 and ts.day <= 7:
+            return "BLOCKED"
+        if params.get("avoid_nfp", True) and ts.weekday() == 4 and ts.day <= 7:
+            return "BLOCKED"
+        if params.get("avoid_opex", False) and ts.weekday() == 4 and 15 <= ts.day <= 21:
+            return "BLOCKED"
+        return "CLEAR"
+    return None
+
+
+def _load_enabled_general_packs() -> list:
+    """Load and return enabled GeneralPack objects."""
+    try:
+        from general_packs import load_general_packs, get_enabled_general_packs
+        return get_enabled_general_packs(load_general_packs())
+    except Exception:
+        return []
+
+
+def _evaluate_general_packs(packs: list, ts: datetime) -> Set[str]:
+    """Evaluate all packs against a single timestamp, return GEN- records."""
+    records = set()
+    for pack in packs:
+        state = _eval_gp_scalar(pack, ts)
+        if state:
+            records.add(f"GEN-{pack.id.upper()}-{state}")
+    return records
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STRATEGY RESOLVER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _resolve_trigger_id(strategy: dict, key: str) -> str:
+    """Resolve a strategy's trigger ID using confluence mapping."""
+    confluence_key = key.replace('trigger', 'trigger_confluence_id')
+    cid = strategy.get(confluence_key)
+    if cid:
+        try:
+            from alerts import _get_base_trigger_id
+            return _get_base_trigger_id(cid)
+        except Exception:
+            pass
+    return strategy.get(key, '')
+
+
+def _resolve_trigger_ids(strategy: dict, key: str) -> List[str]:
+    """Resolve multiple trigger IDs (exit_triggers)."""
+    confluence_key = key.replace('triggers', 'trigger_confluence_ids')
+    cids = strategy.get(confluence_key, [])
+    if cids:
+        try:
+            from alerts import _get_base_trigger_id
+            return [_get_base_trigger_id(c) for c in cids if c]
+        except Exception:
+            pass
+    return [t for t in strategy.get(key, []) if t]
+
+
+def resolve_strategy_requirements(strategy: dict) -> Tuple[
+        Set[str], Set[str], Set[str], Dict[str, Any]]:
+    """Resolve what indicators, interpreters, and triggers a strategy needs.
+
+    Returns:
+        (required_indicators, required_interpreters,
+         required_triggers, indicator_params)
+    """
+    indicators: Set[str] = set()
+    interpreters: Set[str] = set()
+    triggers: Set[str] = set()
+    params: Dict[str, Any] = {}
+
+    # Always need ATR for stop calculations
+    indicators.add('atr')
+
+    def _process_trigger_id(trigger_id: str):
+        if not trigger_id:
+            return
+        base = _strip_exec_suffix(trigger_id)
+        triggers.add(trigger_id)
+        if base != trigger_id:
+            triggers.add(base)
+
+        matched_template = None
+        for prefix in sorted(TRIGGER_PREFIX_TO_TEMPLATE.keys(),
+                             key=len, reverse=True):
+            if base.startswith(prefix + '_') or base == prefix:
+                matched_template = TRIGGER_PREFIX_TO_TEMPLATE[prefix]
+                break
+
+        if matched_template and matched_template in TEMPLATE_REQUIREMENTS:
+            ind_set, interp_key = TEMPLATE_REQUIREMENTS[matched_template]
+            indicators.update(ind_set)
+            if interp_key:
+                interpreters.add(interp_key)
+
+    def _process_confluence_record(record: str):
+        parts = record.split('-', 2)
+        if len(parts) < 3:
+            return
+        tf_label, interp_key, _state = parts
+        if tf_label == 'GEN':
+            return
+        interpreters.add(interp_key)
+        for tpl_key, (ind_set, ikey) in TEMPLATE_REQUIREMENTS.items():
+            if ikey == interp_key:
+                indicators.update(ind_set)
+                break
+
+    entry = _resolve_trigger_id(strategy, 'entry_trigger')
+    _process_trigger_id(entry)
+
+    exit_triggers = _resolve_trigger_ids(strategy, 'exit_triggers')
+    for et in exit_triggers:
+        _process_trigger_id(et)
+    if not exit_triggers:
+        exit_single = _resolve_trigger_id(strategy, 'exit_trigger')
+        if exit_single and exit_single != 'opposite_signal':
+            _process_trigger_id(exit_single)
+        elif exit_single == 'opposite_signal' or \
+                strategy.get('exit_trigger') == 'opposite_signal':
+            try:
+                from triggers import get_opposite_trigger
+                opp = get_opposite_trigger(entry)
+                if opp:
+                    _process_trigger_id(opp)
+            except ImportError:
+                pass
+
+    for conf in strategy.get('confluence', []):
+        _process_confluence_record(conf)
+    for conf in strategy.get('general_confluences', []):
+        _process_confluence_record(conf)
+
+    # Resolve EMA periods from confluence group params
+    ema_periods = [8, 21, 50]
+    if 'ema' in indicators:
+        try:
+            from confluence_groups import get_enabled_groups, get_all_triggers
+            groups = get_enabled_groups()
+            cid = (strategy.get('entry_trigger_confluence_id') or '')
+            exit_cids = strategy.get('exit_trigger_confluence_ids', [])
+            all_cids = ([cid] if cid else []) + (exit_cids or [])
+            all_triggers = get_all_triggers()
+            for c in all_cids:
+                if not c or c not in all_triggers:
+                    continue
+                for g in groups:
+                    p = g.parameters
+                    if 'short_period' in p and 'mid_period' in p:
+                        base_t = all_triggers[c].base_trigger
+                        if g.get_trigger_id(base_t) == c:
+                            ema_periods = [
+                                p.get('short_period', 9),
+                                p.get('mid_period', 21),
+                                p.get('long_period', 200)]
+                            break
+                else:
+                    continue
+                break
+        except Exception:
+            pass
+    params['ema_periods'] = ema_periods
+
+    return indicators, interpreters, triggers, params
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INCREMENTAL INDICATOR ENGINE — O(1) updates per bar close
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class IndicatorState:
+    """Cached state for O(1) incremental indicator computation."""
+
+    ema: Dict[int, float] = field(default_factory=dict)
+
+    macd_ema_fast: float = 0.0
+    macd_ema_slow: float = 0.0
+    macd_signal_ema: float = 0.0
+    macd_fast_period: int = 12
+    macd_slow_period: int = 26
+    macd_signal_period: int = 9
+
+    atr_value: float = 0.0
+    atr_period: int = 14
+    prev_close: float = 0.0
+
+    vwap_cum_pv: float = 0.0
+    vwap_cum_vol: float = 0.0
+    vwap_cum_sq_dev_vol: float = 0.0
+    vwap_value: float = 0.0
+    vwap_std: float = 0.0
+    vwap_sd1_mult: float = 1.0
+    vwap_sd2_mult: float = 2.0
+    vwap_prev_ts: Optional[datetime] = None
+
+    utbot_atr: float = 0.0
+    utbot_atr_period: int = 10
+    utbot_atr_mult: float = 1.0
+    utbot_trail_stop: float = 0.0
+    utbot_direction: int = 0
+    utbot_prev_close: float = 0.0
+
+    vol_buffer: deque = field(default_factory=lambda: deque(maxlen=20))
+    vol_sum: float = 0.0
+    vol_count: int = 0
+    vol_sma_period: int = 20
+
+    prev_values: Dict[str, float] = field(default_factory=dict)
+    current: Dict[str, float] = field(default_factory=dict)
+
+    prev_macd_hist: float = 0.0
+    prev2_macd_hist: float = 0.0
+
+
+class IncrementalIndicatorEngine:
+    """Strategy-scoped incremental indicator computation.
+
+    Only computes indicators that the strategy actually needs.
+    """
+
+    def __init__(self, required_indicators: Set[str], params: Dict[str, Any]):
+        self.required = required_indicators
+        self.params = params
+        self.state = IndicatorState()
+        self._initialized = False
+
+        if 'ema' in self.required:
+            for p in params.get('ema_periods', [8, 21, 50]):
+                self.state.ema[p] = 0.0
+
+        if 'macd' in self.required:
+            self.state.macd_fast_period = params.get('macd_fast_period', 12)
+            self.state.macd_slow_period = params.get('macd_slow_period', 26)
+            self.state.macd_signal_period = params.get('macd_signal_period', 9)
+
+        if 'atr' in self.required:
+            self.state.atr_period = params.get('atr_period', 14)
+
+        if 'vwap' in self.required:
+            self.state.vwap_sd1_mult = params.get('vwap_sd1_mult', 1.0)
+            self.state.vwap_sd2_mult = params.get('vwap_sd2_mult', 2.0)
+
+        if 'utbot' in self.required:
+            self.state.utbot_atr_period = params.get('utbot_atr_period', 10)
+            self.state.utbot_atr_mult = params.get('utbot_atr_mult', 1.0)
+
+        if 'rvol' in self.required:
+            period = params.get('vol_sma_period', 20)
+            self.state.vol_sma_period = period
+            self.state.vol_buffer = deque(maxlen=period)
+
+    def warmup(self, df: pd.DataFrame):
+        """Initialize state from historical bars."""
+        if len(df) < 2:
+            return
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            bar = {
+                'open': float(row['open']), 'high': float(row['high']),
+                'low': float(row['low']), 'close': float(row['close']),
+                'volume': float(row.get('volume', 0)),
+                'timestamp': df.index[i],
+            }
+            self._update_indicators(bar, is_first=(i == 0))
+
+        self._initialized = True
+
+    def update_bar(self, bar: dict) -> Dict[str, float]:
+        """Incremental O(1) update for a new completed bar.
+
+        Auto-detects first bar (no warmup needed for backtest mode).
+        Returns dict of current indicator values.
+        """
+        self.state.prev2_macd_hist = self.state.prev_macd_hist
+        self.state.prev_macd_hist = self.state.current.get('macd_hist', 0.0)
+        self.state.prev_values = dict(self.state.current)
+
+        is_first = not self._initialized
+        self._update_indicators(bar, is_first=is_first)
+        if not self._initialized:
+            self._initialized = True
+        return dict(self.state.current)
+
+    def get_values(self) -> Dict[str, float]:
+        return dict(self.state.current)
+
+    def get_prev_values(self) -> Dict[str, float]:
+        return dict(self.state.prev_values)
+
+    def _update_indicators(self, bar: dict, is_first: bool = False):
+        close = bar['close']
+        high = bar['high']
+        low = bar['low']
+        volume = bar['volume']
+        timestamp = bar['timestamp']
+
+        vals: Dict[str, float] = {
+            'close': close, 'high': high, 'low': low,
+            'open': bar['open'], 'volume': volume,
+        }
+
+        # ── EMA ──
+        if 'ema' in self.required:
+            for period, prev_ema in self.state.ema.items():
+                alpha = 2.0 / (period + 1)
+                if is_first:
+                    new_ema = close
+                else:
+                    new_ema = alpha * close + (1.0 - alpha) * prev_ema
+                self.state.ema[period] = new_ema
+                vals[f'ema_{period}'] = new_ema
+
+        # ── ATR (ewm-based) ──
+        if 'atr' in self.required:
+            if is_first:
+                tr = high - low
+                self.state.atr_value = tr
+                self.state.prev_close = close
+            else:
+                tr1 = high - low
+                tr2 = abs(high - self.state.prev_close)
+                tr3 = abs(low - self.state.prev_close)
+                tr = max(tr1, tr2, tr3)
+                alpha = 2.0 / (self.state.atr_period + 1)
+                self.state.atr_value = (
+                    alpha * tr + (1.0 - alpha) * self.state.atr_value)
+                self.state.prev_close = close
+            vals['atr'] = self.state.atr_value
+
+        # ── MACD ──
+        if 'macd' in self.required:
+            fp = self.state.macd_fast_period
+            sp = self.state.macd_slow_period
+            sig_p = self.state.macd_signal_period
+            af = 2.0 / (fp + 1)
+            a_s = 2.0 / (sp + 1)
+            a_sig = 2.0 / (sig_p + 1)
+
+            if is_first:
+                self.state.macd_ema_fast = close
+                self.state.macd_ema_slow = close
+                self.state.macd_signal_ema = 0.0
+            else:
+                self.state.macd_ema_fast = (
+                    af * close + (1.0 - af) * self.state.macd_ema_fast)
+                self.state.macd_ema_slow = (
+                    a_s * close + (1.0 - a_s) * self.state.macd_ema_slow)
+
+            macd_line = self.state.macd_ema_fast - self.state.macd_ema_slow
+
+            if is_first:
+                self.state.macd_signal_ema = macd_line
+            else:
+                self.state.macd_signal_ema = (
+                    a_sig * macd_line
+                    + (1.0 - a_sig) * self.state.macd_signal_ema)
+
+            macd_hist = macd_line - self.state.macd_signal_ema
+            vals['macd_line'] = macd_line
+            vals['macd_signal'] = self.state.macd_signal_ema
+            vals['macd_hist'] = macd_hist
+
+        # ── VWAP ──
+        if 'vwap' in self.required:
+            tp = (high + low + close) / 3.0
+
+            if self.state.vwap_prev_ts is not None:
+                if hasattr(timestamp, 'timestamp'):
+                    ts_epoch = timestamp.timestamp()
+                else:
+                    ts_epoch = pd.Timestamp(timestamp).timestamp()
+                prev_epoch = (self.state.vwap_prev_ts.timestamp()
+                              if hasattr(self.state.vwap_prev_ts, 'timestamp')
+                              else pd.Timestamp(
+                                  self.state.vwap_prev_ts).timestamp())
+                if ts_epoch - prev_epoch > VWAP_SESSION_GAP_SECONDS:
+                    self.state.vwap_cum_pv = 0.0
+                    self.state.vwap_cum_vol = 0.0
+                    self.state.vwap_cum_sq_dev_vol = 0.0
+
+            if is_first:
+                self.state.vwap_cum_pv = 0.0
+                self.state.vwap_cum_vol = 0.0
+                self.state.vwap_cum_sq_dev_vol = 0.0
+
+            self.state.vwap_cum_pv += tp * volume
+            self.state.vwap_cum_vol += volume
+
+            if self.state.vwap_cum_vol > 0:
+                vwap = self.state.vwap_cum_pv / self.state.vwap_cum_vol
+                sq_dev = volume * (tp - vwap) ** 2
+                self.state.vwap_cum_sq_dev_vol += sq_dev
+                std = math.sqrt(
+                    self.state.vwap_cum_sq_dev_vol / self.state.vwap_cum_vol)
+            else:
+                vwap = close
+                std = 0.0
+
+            self.state.vwap_value = vwap
+            self.state.vwap_std = std
+            self.state.vwap_prev_ts = timestamp
+
+            vals['vwap'] = vwap
+            m1 = self.state.vwap_sd1_mult
+            m2 = self.state.vwap_sd2_mult
+            vals['vwap_sd1_upper'] = vwap + m1 * std
+            vals['vwap_sd1_lower'] = vwap - m1 * std
+            vals['vwap_sd2_upper'] = vwap + m2 * std
+            vals['vwap_sd2_lower'] = vwap - m2 * std
+
+        # ── UT Bot (Wilder ATR) ──
+        if 'utbot' in self.required:
+            period = self.state.utbot_atr_period
+            mult = self.state.utbot_atr_mult
+            alpha_w = 1.0 / period  # Wilder smoothing
+
+            if is_first:
+                tr = high - low
+                self.state.utbot_atr = tr
+                self.state.utbot_trail_stop = close - mult * tr
+                self.state.utbot_direction = 0
+                self.state.utbot_prev_close = close
+            else:
+                prev_c = self.state.utbot_prev_close
+                tr1 = high - low
+                tr2 = abs(high - prev_c)
+                tr3 = abs(low - prev_c)
+                tr = max(tr1, tr2, tr3)
+
+                self.state.utbot_atr = (
+                    self.state.utbot_atr + alpha_w
+                    * (tr - self.state.utbot_atr))
+
+                n_loss = mult * self.state.utbot_atr
+                prev_stop = self.state.utbot_trail_stop
+                prev_dir = self.state.utbot_direction
+
+                if close > prev_stop and prev_c > prev_stop:
+                    new_stop = max(prev_stop, close - n_loss)
+                elif close < prev_stop and prev_c < prev_stop:
+                    new_stop = min(prev_stop, close + n_loss)
+                elif close > prev_stop:
+                    new_stop = close - n_loss
+                else:
+                    new_stop = close + n_loss
+
+                if prev_c < prev_stop and close > prev_stop:
+                    direction = 1
+                elif prev_c > prev_stop and close < prev_stop:
+                    direction = -1
+                else:
+                    direction = prev_dir
+
+                self.state.utbot_trail_stop = new_stop
+                self.state.utbot_direction = direction
+                self.state.utbot_prev_close = close
+
+            vals['utbot_stop'] = self.state.utbot_trail_stop
+            vals['utbot_direction'] = self.state.utbot_direction
+            vals['utbot_atr'] = self.state.utbot_atr
+            prev_stop_val = self.state.prev_values.get(
+                'utbot_stop', self.state.utbot_trail_stop)
+            vals['utbot_stop_prev'] = prev_stop_val
+
+        # ── Volume SMA / RVOL ──
+        if 'rvol' in self.required:
+            buf = self.state.vol_buffer
+            if len(buf) == buf.maxlen:
+                self.state.vol_sum -= buf[0]
+            buf.append(volume)
+            self.state.vol_sum += volume
+            self.state.vol_count = min(
+                self.state.vol_count + 1, self.state.vol_sma_period)
+
+            if self.state.vol_count >= 5:
+                vol_sma = self.state.vol_sum / len(buf)
+                rvol = volume / vol_sma if vol_sma > 0 else 0.0
+            else:
+                vol_sma = 0.0
+                rvol = 0.0
+            vals['vol_sma'] = vol_sma
+            vals['rvol'] = rvol
+
+        # ── Store previous EMA values for v2 triggers ──
+        if 'ema' in self.required:
+            for period in self.state.ema:
+                prev_key = f'ema_{period}_prev'
+                vals[prev_key] = self.state.prev_values.get(
+                    f'ema_{period}', vals.get(f'ema_{period}', 0.0))
+
+        self.state.current = vals
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TRIGGER EVALUATOR — single-bar interpreter + trigger evaluation
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TriggerEvaluator:
+    """Evaluates interpreters and triggers on a single bar's data.
+
+    For backtest mode, also evaluates L-type triggers via reachability.
+    """
+
+    def __init__(self, required_interpreters: Set[str],
+                 required_triggers: Set[str],
+                 ema_periods: List[int] = None):
+        self.required_interpreters = required_interpreters
+        self.required_triggers = required_triggers
+        self.ema_periods = ema_periods or [8, 21, 50]
+
+        # Intra-bar state
+        self._ib_fired: Dict[str, bool] = {}
+        self._cached_levels: Dict[str, float] = {}
+        self._bar_close_triggers: Dict[str, bool] = {}
+        self._ib_gate_open: Dict[str, bool] = {}
+
+    def evaluate_bar_close(self, current: Dict[str, float],
+                           prev: Dict[str, float],
+                           prev2_macd_hist: float = 0.0,
+                           ) -> Tuple[Dict[str, str], Dict[str, bool]]:
+        """Evaluate interpreters and C-type triggers on bar close.
+
+        Returns:
+            (interpreter_states, trigger_booleans)
+        """
+        interps: Dict[str, str] = {}
+        triggers: Dict[str, bool] = {}
+
+        # ── Interpreters ──
+        if 'EMA_STACK' in self.required_interpreters:
+            s, m, l_ = self._get_ema_triple(current)
+            if s is not None:
+                interps['EMA_STACK'] = self._classify_ema_stack(s, m, l_)
+
+        if 'EMA_PRICE_POSITION' in self.required_interpreters:
+            interps['EMA_PRICE_POSITION'] = self._classify_ema_price_pos(
+                current)
+
+        if 'EMA_PRICE_POSITION_V2' in self.required_interpreters:
+            interps['EMA_PRICE_POSITION_V2'] = self._classify_ema_price_pos(
+                current)
+
+        if 'MACD_LINE' in self.required_interpreters:
+            ml = current.get('macd_line', 0)
+            ms = current.get('macd_signal', 0)
+            if ml > ms:
+                interps['MACD_LINE'] = 'M>S+' if ml > 0 else 'M>S-'
+            else:
+                interps['MACD_LINE'] = 'M<S-' if ml <= 0 else 'M<S+'
+
+        if 'MACD_HISTOGRAM' in self.required_interpreters:
+            mh = current.get('macd_hist', 0)
+            pmh = prev.get('macd_hist', 0)
+            if mh > 0:
+                interps['MACD_HISTOGRAM'] = (
+                    'H+up' if mh > pmh else 'H+dn')
+            else:
+                interps['MACD_HISTOGRAM'] = (
+                    'H-dn' if mh <= pmh else 'H-up')
+
+        if 'VWAP' in self.required_interpreters:
+            interps['VWAP'] = self._classify_vwap(current)
+
+        if 'RVOL' in self.required_interpreters:
+            rv = current.get('rvol', 0)
+            if rv > 3.0:
+                interps['RVOL'] = 'EXTREME'
+            elif rv > 1.5:
+                interps['RVOL'] = 'HIGH'
+            elif rv > 0.75:
+                interps['RVOL'] = 'NORMAL'
+            elif rv > 0.5:
+                interps['RVOL'] = 'LOW'
+            else:
+                interps['RVOL'] = 'MINIMAL'
+
+        if 'UTBOT' in self.required_interpreters:
+            d = current.get('utbot_direction', 0)
+            if d == 1:
+                interps['UTBOT'] = 'BULL'
+            elif d == -1:
+                interps['UTBOT'] = 'BEAR'
+
+        if 'UTBOT_V2' in self.required_interpreters:
+            d = current.get('utbot_direction', 0)
+            if d == 1:
+                interps['UTBOT_V2'] = 'BULL'
+            elif d == -1:
+                interps['UTBOT_V2'] = 'BEAR'
+
+        # ── C-type Triggers (crossover detection: current vs prev) ──
+
+        # EMA Stack triggers
+        if 'ema_cross_bull' in self.required_triggers:
+            triggers['ema_cross_bull'] = (
+                current.get('ema_8', 0) > current.get('ema_21', 0)
+                and prev.get('ema_8', 0) <= prev.get('ema_21', 0))
+        if 'ema_cross_bear' in self.required_triggers:
+            triggers['ema_cross_bear'] = (
+                current.get('ema_8', 0) < current.get('ema_21', 0)
+                and prev.get('ema_8', 0) >= prev.get('ema_21', 0))
+        if 'ema_mid_cross_bull' in self.required_triggers:
+            triggers['ema_mid_cross_bull'] = (
+                current.get('ema_21', 0) > current.get('ema_50', 0)
+                and prev.get('ema_21', 0) <= prev.get('ema_50', 0))
+        if 'ema_mid_cross_bear' in self.required_triggers:
+            triggers['ema_mid_cross_bear'] = (
+                current.get('ema_21', 0) < current.get('ema_50', 0)
+                and prev.get('ema_21', 0) >= prev.get('ema_50', 0))
+
+        # EMA Price Position triggers (bar-close booleans)
+        for prefix in ('ema_pp', 'ema_pp_v2'):
+            sp = self.ema_periods[0] if len(self.ema_periods) > 0 else 8
+            mp = self.ema_periods[1] if len(self.ema_periods) > 1 else 21
+            s_key = f'ema_{sp}'
+            m_key = f'ema_{mp}'
+
+            t = f'{prefix}_cross_short_up'
+            if t in self.required_triggers:
+                triggers[t] = (
+                    current.get('close', 0) > current.get(s_key, 0)
+                    and prev.get('close', 0) <= prev.get(s_key, 0))
+            t = f'{prefix}_cross_short_down'
+            if t in self.required_triggers:
+                triggers[t] = (
+                    current.get('close', 0) < current.get(s_key, 0)
+                    and prev.get('close', 0) >= prev.get(s_key, 0))
+            t = f'{prefix}_cross_mid_up'
+            if t in self.required_triggers:
+                triggers[t] = (
+                    current.get('close', 0) > current.get(m_key, 0)
+                    and prev.get('close', 0) <= prev.get(m_key, 0))
+            t = f'{prefix}_cross_mid_down'
+            if t in self.required_triggers:
+                triggers[t] = (
+                    current.get('close', 0) < current.get(m_key, 0)
+                    and prev.get('close', 0) >= prev.get(m_key, 0))
+
+        # MACD triggers
+        if 'macd_cross_bull' in self.required_triggers:
+            triggers['macd_cross_bull'] = (
+                current.get('macd_line', 0) > current.get('macd_signal', 0)
+                and prev.get('macd_line', 0) <= prev.get('macd_signal', 0))
+        if 'macd_cross_bear' in self.required_triggers:
+            triggers['macd_cross_bear'] = (
+                current.get('macd_line', 0) < current.get('macd_signal', 0)
+                and prev.get('macd_line', 0) >= prev.get('macd_signal', 0))
+        if 'macd_zero_cross_up' in self.required_triggers:
+            triggers['macd_zero_cross_up'] = (
+                current.get('macd_line', 0) > 0
+                and prev.get('macd_line', 0) <= 0)
+        if 'macd_zero_cross_down' in self.required_triggers:
+            triggers['macd_zero_cross_down'] = (
+                current.get('macd_line', 0) < 0
+                and prev.get('macd_line', 0) >= 0)
+
+        # MACD Histogram triggers
+        if 'macd_hist_flip_pos' in self.required_triggers:
+            triggers['macd_hist_flip_pos'] = (
+                current.get('macd_hist', 0) > 0
+                and prev.get('macd_hist', 0) <= 0)
+        if 'macd_hist_flip_neg' in self.required_triggers:
+            triggers['macd_hist_flip_neg'] = (
+                current.get('macd_hist', 0) < 0
+                and prev.get('macd_hist', 0) >= 0)
+        if 'macd_hist_momentum_shift_up' in self.required_triggers:
+            mh = current.get('macd_hist', 0)
+            pmh = prev.get('macd_hist', 0)
+            triggers['macd_hist_momentum_shift_up'] = (
+                mh > pmh and pmh < prev2_macd_hist)
+        if 'macd_hist_momentum_shift_down' in self.required_triggers:
+            mh = current.get('macd_hist', 0)
+            pmh = prev.get('macd_hist', 0)
+            triggers['macd_hist_momentum_shift_down'] = (
+                mh < pmh and pmh > prev2_macd_hist)
+
+        # VWAP triggers
+        if 'vwap_cross_above' in self.required_triggers:
+            triggers['vwap_cross_above'] = (
+                current.get('close', 0) > current.get('vwap', 0)
+                and prev.get('close', 0) <= prev.get('vwap', 0))
+        if 'vwap_cross_below' in self.required_triggers:
+            triggers['vwap_cross_below'] = (
+                current.get('close', 0) < current.get('vwap', 0)
+                and prev.get('close', 0) >= prev.get('vwap', 0))
+        if 'vwap_enter_upper_extreme' in self.required_triggers:
+            triggers['vwap_enter_upper_extreme'] = (
+                current.get('close', 0) > current.get('vwap_sd2_upper', 0)
+                and prev.get('close', 0)
+                <= prev.get('vwap_sd2_upper', 0))
+        if 'vwap_enter_lower_extreme' in self.required_triggers:
+            triggers['vwap_enter_lower_extreme'] = (
+                current.get('close', 0) < current.get('vwap_sd2_lower', 0)
+                and prev.get('close', 0)
+                >= prev.get('vwap_sd2_lower', 0))
+        if 'vwap_return_to_vwap' in self.required_triggers:
+            pc = prev.get('close', 0)
+            pv1u = prev.get('vwap_sd1_upper', 0)
+            pv1l = prev.get('vwap_sd1_lower', 0)
+            was_extreme = pc > pv1u or pc < pv1l
+            v = current.get('vwap', 0)
+            v1u = current.get('vwap_sd1_upper', 0)
+            half_sd = (v1u - v) * 0.5 if v1u > v else v * 0.001
+            c = current.get('close', 0)
+            now_at_vwap = (v - half_sd) <= c <= (v + half_sd)
+            triggers['vwap_return_to_vwap'] = was_extreme and now_at_vwap
+
+        # RVOL triggers
+        if 'rvol_spike' in self.required_triggers:
+            triggers['rvol_spike'] = (
+                current.get('rvol', 0) > 1.5
+                and prev.get('rvol', 0) <= 1.5)
+        if 'rvol_extreme' in self.required_triggers:
+            triggers['rvol_extreme'] = (
+                current.get('rvol', 0) > 3.0
+                and prev.get('rvol', 0) <= 3.0)
+        if 'rvol_fade' in self.required_triggers:
+            triggers['rvol_fade'] = (
+                current.get('rvol', 0) < 1.0
+                and prev.get('rvol', 0) >= 1.0)
+
+        # UT Bot triggers
+        if 'utbot_buy' in self.required_triggers:
+            triggers['utbot_buy'] = (
+                current.get('utbot_direction', 0) == 1
+                and prev.get('utbot_direction', 0) != 1)
+        if 'utbot_sell' in self.required_triggers:
+            triggers['utbot_sell'] = (
+                current.get('utbot_direction', 0) == -1
+                and prev.get('utbot_direction', 0) != -1)
+        if 'utbot_v2_buy' in self.required_triggers:
+            triggers['utbot_v2_buy'] = (
+                current.get('utbot_direction', 0) == 1
+                and prev.get('utbot_direction', 0) != 1)
+        if 'utbot_v2_sell' in self.required_triggers:
+            triggers['utbot_v2_sell'] = (
+                current.get('utbot_direction', 0) == -1
+                and prev.get('utbot_direction', 0) != -1)
+
+        # Store for gating and caching
+        self._bar_close_triggers = dict(triggers)
+        self._update_cached_levels(current)
+        self._compute_ib_gates(current)
+        self._ib_fired.clear()
+
+        return interps, triggers
+
+    def evaluate_bar_for_backtest(self, current: Dict[str, float],
+                                  prev: Dict[str, float],
+                                  prev2_macd_hist: float = 0.0,
+                                  ) -> Tuple[Dict[str, str],
+                                             Dict[str, bool],
+                                             Dict[str, float]]:
+        """Evaluate all trigger types for one bar in backtest mode.
+
+        Calls evaluate_bar_close() for C-type triggers and interpreters,
+        then simulates L-type triggers via gate check + reachability.
+
+        Timing: In live mode, gates are set at bar N-1's close and
+        crossings are checked during bar N (different bars).  To match
+        this, the backtest saves bar N-1's gate and cached levels and
+        uses them for bar N's reachability checks.  H-type triggers
+        (which require a C-type trigger on the same bar) still use the
+        current bar's bar_close_triggers.
+
+        Returns:
+            (interpreter_states, c_type_triggers, l_type_fills)
+            l_type_fills: {trigger_id: fill_price} for L0/L1-type triggers
+                that passed both gate and reachability checks.
+        """
+        # Save previous bar's L-type state before evaluate_bar_close
+        # overwrites it.  This matches live timing where the gate is
+        # set at bar N-1's close and crossings happen during bar N.
+        prev_gates = dict(self._ib_gate_open)
+        prev_cached = dict(self._cached_levels)
+
+        interps, c_triggers = self.evaluate_bar_close(
+            current, prev, prev2_macd_hist)
+
+        l_fills: Dict[str, float] = {}
+
+        # Evaluate L-type triggers via gate + reachability
+        high = current.get('high', 0)
+        low = current.get('low', 0)
+
+        # Temporarily swap to previous bar's cached levels for crossing
+        # checks (matches live mode where levels are cached at bar N-1
+        # close and used during bar N).
+        current_cached = self._cached_levels
+        self._cached_levels = prev_cached
+
+        for trigger_id, (level, direction) in self._get_ib_checks():
+            base_trigger = _strip_exec_suffix(trigger_id)
+            exec_type = get_trigger_exec_type(trigger_id)
+
+            # L-type gate: use PREVIOUS bar's gate (matches live timing)
+            if exec_type in ('HM', 'HL') or base_trigger in _IB_L_TYPE_TRIGGERS:
+                if not prev_gates.get(trigger_id, False):
+                    continue
+            else:
+                # H-type (legacy UT Bot V1 _ib): bar-close trigger on
+                # THIS bar must have fired
+                if not self._bar_close_triggers.get(base_trigger, False):
+                    continue
+
+            # Reachability check
+            if direction == 'above' and high >= level:
+                l_fills[trigger_id] = level
+            elif direction == 'below' and low <= level:
+                l_fills[trigger_id] = level
+
+        # Restore current bar's cached levels for live-mode compatibility
+        self._cached_levels = current_cached
+
+        return interps, c_triggers, l_fills
+
+    def check_intrabar(self, price: float) -> Optional[Tuple[str, float]]:
+        """Check if tick price crosses any cached level (O(1) per level).
+
+        Returns (trigger_id, fill_price) if a crossing is detected,
+        or None.  Each trigger fires at most once per bar.
+
+        Gate logic:
+        - L-type (_ib) + HM/HL with base in _IB_L_TYPE_TRIGGERS: use _ib_gate_open
+          (prev-close-opposite-side check).  Includes VWAP, EMA, EMA V2, UT Bot V2.
+        - HM/HL with base NOT in _IB_L_TYPE_TRIGGERS: use _ib_gate_open
+          (HM/HL always use L-type gate, per Phase 30B design)
+        - H-type (legacy UT Bot V1 _ib only): use _bar_close_triggers
+        """
+        for trigger_id, (level, direction) in self._get_ib_checks():
+            if self._ib_fired.get(trigger_id, False):
+                continue
+            base_trigger = _strip_exec_suffix(trigger_id)
+            exec_type = get_trigger_exec_type(trigger_id)
+
+            # Gate check
+            if exec_type in ('HM', 'HL') or base_trigger in _IB_L_TYPE_TRIGGERS:
+                if not self._ib_gate_open.get(trigger_id, False):
+                    continue
+            else:
+                # H-type (legacy UT Bot V1 _ib): bar-close trigger must have fired
+                if not self._bar_close_triggers.get(base_trigger, False):
+                    continue
+
+            if direction == 'above' and price > level:
+                self._ib_fired[trigger_id] = True
+                return (trigger_id, level)
+            elif direction == 'below' and price < level:
+                self._ib_fired[trigger_id] = True
+                return (trigger_id, level)
+        return None
+
+    def _get_ib_checks(self) -> List[Tuple[str, Tuple[float, str]]]:
+        """Return list of (trigger_id, (level, direction)) for intra-bar."""
+        checks = []
+        IB_MAP = {
+            'vwap_cross_above': ('vwap', 'above'),
+            'vwap_cross_below': ('vwap', 'below'),
+            'vwap_enter_upper_extreme': ('vwap_sd2_upper', 'above'),
+            'vwap_enter_lower_extreme': ('vwap_sd2_lower', 'below'),
+            'utbot_buy': ('utbot_stop', 'above'),
+            'utbot_sell': ('utbot_stop', 'below'),
+            'utbot_v2_buy': ('utbot_stop_prev', 'above'),
+            'utbot_v2_sell': ('utbot_stop_prev', 'below'),
+        }
+        if self.ema_periods:
+            sp = self.ema_periods[0]
+            mp = self.ema_periods[1] if len(self.ema_periods) > 1 else 21
+            IB_MAP.update({
+                'ema_pp_cross_short_up': (f'ema_{sp}', 'above'),
+                'ema_pp_cross_short_down': (f'ema_{sp}', 'below'),
+                'ema_pp_cross_mid_up': (f'ema_{mp}', 'above'),
+                'ema_pp_cross_mid_down': (f'ema_{mp}', 'below'),
+                'ema_pp_v2_cross_short_up': (f'ema_{sp}_prev', 'above'),
+                'ema_pp_v2_cross_short_down': (f'ema_{sp}_prev', 'below'),
+                'ema_pp_v2_cross_mid_up': (f'ema_{mp}_prev', 'above'),
+                'ema_pp_v2_cross_mid_down': (f'ema_{mp}_prev', 'below'),
+            })
+
+        for base_trigger, (level_key, direction) in IB_MAP.items():
+            for suffix in ('_ib', '_hm', '_hl'):
+                trigger_id = f'{base_trigger}{suffix}'
+                if trigger_id in self.required_triggers:
+                    level = self._cached_levels.get(level_key)
+                    if level is not None and level > 0:
+                        checks.append((trigger_id, (level, direction)))
+        return checks
+
+    def _update_cached_levels(self, current: Dict[str, float]):
+        """Cache indicator levels for intra-bar crossing detection.
+
+        For _prev keys, cache the CURRENT bar's non-_prev value.
+        Matches backtest .shift(1) semantics.
+        """
+        for key in ('vwap', 'vwap_sd2_upper', 'vwap_sd2_lower',
+                    'utbot_stop'):
+            if key in current:
+                self._cached_levels[key] = current[key]
+        if 'utbot_stop' in current:
+            self._cached_levels['utbot_stop_prev'] = current['utbot_stop']
+        for period in self.ema_periods:
+            key = f'ema_{period}'
+            if key in current:
+                self._cached_levels[key] = current[key]
+                self._cached_levels[f'ema_{period}_prev'] = current[key]
+
+    def _compute_ib_gates(self, current: Dict[str, float]):
+        """Compute L-type intra-bar gate states from the just-closed bar."""
+        self._ib_gate_open.clear()
+        close = current.get('close', 0)
+
+        sp = self.ema_periods[0] if self.ema_periods else 8
+        mp = self.ema_periods[1] if len(self.ema_periods) > 1 else 21
+
+        gate_map = {
+            'vwap_cross_above':          ('vwap', 'above'),
+            'vwap_cross_below':          ('vwap', 'below'),
+            'vwap_enter_upper_extreme':  ('vwap_sd2_upper', 'above'),
+            'vwap_enter_lower_extreme':  ('vwap_sd2_lower', 'below'),
+            'utbot_buy':                 ('utbot_stop', 'above'),
+            'utbot_sell':                ('utbot_stop', 'below'),
+            'utbot_v2_buy':              ('utbot_stop', 'above'),
+            'utbot_v2_sell':             ('utbot_stop', 'below'),
+            'ema_pp_cross_short_up':     (f'ema_{sp}', 'above'),
+            'ema_pp_cross_short_down':   (f'ema_{sp}', 'below'),
+            'ema_pp_cross_mid_up':       (f'ema_{mp}', 'above'),
+            'ema_pp_cross_mid_down':     (f'ema_{mp}', 'below'),
+            'ema_pp_v2_cross_short_up':  (f'ema_{sp}', 'above'),
+            'ema_pp_v2_cross_short_down':(f'ema_{sp}', 'below'),
+            'ema_pp_v2_cross_mid_up':    (f'ema_{mp}', 'above'),
+            'ema_pp_v2_cross_mid_down':  (f'ema_{mp}', 'below'),
+        }
+
+        for base_trigger, (level_key, direction) in gate_map.items():
+            for suffix in ('_ib', '_hm', '_hl'):
+                trigger_id = f'{base_trigger}{suffix}'
+                if trigger_id not in self.required_triggers:
+                    continue
+                level = current.get(level_key, 0)
+                if level <= 0:
+                    continue
+                if direction == 'above':
+                    self._ib_gate_open[trigger_id] = (close <= level)
+                else:
+                    self._ib_gate_open[trigger_id] = (close >= level)
+
+    # ── Confirmation check (HM/HL) ──
+
+    def check_confirmation(self, base_trigger: str,
+                           current: Dict[str, float]) -> bool:
+        """Check if bar close confirms the entry's cross direction.
+
+        For HM/HL entries: after entering intra-bar at the indicator level,
+        confirm that the bar closed on the same side as the cross direction.
+        Returns True if confirmed (trade continues normally).
+        """
+        entry_info = INTRABAR_LEVEL_MAP.get(base_trigger)
+        if not entry_info:
+            return True  # Unknown trigger, assume confirmed
+
+        col = entry_info['column']
+        cross = entry_info['cross']
+
+        # For _prev columns (V2 triggers), use current indicator value
+        if col.endswith('_prev'):
+            col = col[:-5]
+
+        # Resolve parameterized EMA columns
+        if 'param_key' in entry_info:
+            param_key = entry_info['param_key']
+            if 'short' in param_key and self.ema_periods:
+                col = f'ema_{self.ema_periods[0]}'
+            elif 'mid' in param_key and len(self.ema_periods) > 1:
+                col = f'ema_{self.ema_periods[1]}'
+
+        level = current.get(col, 0)
+        close = current.get('close', 0)
+
+        if level <= 0:
+            return True  # Can't determine, assume confirmed
+
+        if cross == 'above':
+            return close > level
+        else:
+            return close < level
+
+    # ── Interpreter helpers ──
+
+    def _get_ema_triple(self, vals):
+        if len(self.ema_periods) >= 3:
+            s = vals.get(f'ema_{self.ema_periods[0]}')
+            m = vals.get(f'ema_{self.ema_periods[1]}')
+            l_ = vals.get(f'ema_{self.ema_periods[2]}')
+            return s, m, l_
+        return None, None, None
+
+    @staticmethod
+    def _classify_ema_stack(s, m, l_) -> str:
+        if s > m > l_:
+            return 'SML'
+        elif s > l_ > m:
+            return 'SLM'
+        elif m > s > l_:
+            return 'MSL'
+        elif m > l_ > s:
+            return 'MLS'
+        elif l_ > s > m:
+            return 'LSM'
+        elif l_ > m > s:
+            return 'LMS'
+        return 'SML'
+
+    def _classify_ema_price_pos(self, vals) -> str:
+        s, m, l_ = self._get_ema_triple(vals)
+        c = vals.get('close', 0)
+        if s is None:
+            return 'PSML'
+        items = [('P', c), ('S', s), ('M', m), ('L', l_)]
+        items.sort(key=lambda x: -x[1])
+        return ''.join(x[0] for x in items)
+
+    @staticmethod
+    def _classify_vwap(vals) -> str:
+        c = vals.get('close', 0)
+        v = vals.get('vwap', 0)
+        v2u = vals.get('vwap_sd2_upper', v)
+        v1u = vals.get('vwap_sd1_upper', v)
+        v1l = vals.get('vwap_sd1_lower', v)
+        v2l = vals.get('vwap_sd2_lower', v)
+        half_sd = (v1u - v) * 0.5 if v1u > v else v * 0.001
+
+        if c > v2u:
+            return '>+2sigma'
+        elif c > v1u:
+            return '>+1sigma'
+        elif c > v + half_sd:
+            return '>V'
+        elif c >= v - half_sd:
+            return '@V'
+        elif c >= v1l:
+            return '<V'
+        elif c >= v2l:
+            return '<-1sigma'
+        else:
+            return '<-2sigma'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POSITION STATE MACHINE
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PositionState:
+    """Persistent position state for one strategy."""
+    status: str = 'FLAT'
+    entry_price: float = 0.0
+    entry_time: Optional[str] = None
+    stop_price: float = 0.0
+    initial_stop_price: float = 0.0
+    target_price: Optional[float] = None
+    entry_bar_count: int = 0
+    last_exit_bar_count: int = 0
+    direction: str = 'LONG'
+    entry_trigger: str = ''
+    confluence_records: Optional[set] = None
+    exec_type: str = 'C'            # C, L0, L1, HM, HL
+    pending_hm_exit: bool = False    # Exit at next bar open (HM unconfirmed)
+    pending_hl_limit: bool = False   # Limit exit at entry_price (HL unconfirmed)
+
+    def to_dict(self) -> dict:
+        return {
+            'status': self.status,
+            'entry_price': self.entry_price,
+            'entry_time': self.entry_time,
+            'stop_price': self.stop_price,
+            'initial_stop_price': self.initial_stop_price,
+            'target_price': self.target_price,
+            'entry_bar_count': self.entry_bar_count,
+            'last_exit_bar_count': self.last_exit_bar_count,
+            'direction': self.direction,
+            'entry_trigger': self.entry_trigger,
+            'exec_type': self.exec_type,
+            'pending_hm_exit': self.pending_hm_exit,
+            'pending_hl_limit': self.pending_hl_limit,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'PositionState':
+        return cls(
+            status=d.get('status', 'FLAT'),
+            entry_price=d.get('entry_price', 0.0),
+            entry_time=d.get('entry_time'),
+            stop_price=d.get('stop_price', 0.0),
+            initial_stop_price=d.get('initial_stop_price', 0.0),
+            target_price=d.get('target_price'),
+            entry_bar_count=d.get('entry_bar_count', 0),
+            last_exit_bar_count=d.get('last_exit_bar_count', 0),
+            direction=d.get('direction', 'LONG'),
+            entry_trigger=d.get('entry_trigger', ''),
+            exec_type=d.get('exec_type', 'C'),
+            pending_hm_exit=d.get('pending_hm_exit', False),
+            pending_hl_limit=d.get('pending_hl_limit', False),
+        )
+
+
+class PositionStateMachine:
+    """Manages FLAT <-> IN_POSITION transitions for one strategy."""
+
+    def __init__(self, strategy: dict, state: Optional[PositionState] = None,
+                 resolved_entry: str = '', resolved_exits: List[str] = None):
+        self.strategy = strategy
+        self.state = state or PositionState(
+            direction=strategy.get('direction', 'LONG'))
+        self.strat_id = strategy.get('id', '')
+
+        self.entry_trigger = resolved_entry or strategy.get('entry_trigger', '')
+        self.exit_triggers: Set[str] = set()
+        if resolved_exits:
+            self.exit_triggers = set(resolved_exits)
+        elif strategy.get('exit_triggers'):
+            self.exit_triggers = set(strategy['exit_triggers'])
+        elif strategy.get('exit_trigger'):
+            et = strategy['exit_trigger']
+            if et == 'opposite_signal':
+                try:
+                    from triggers import get_opposite_trigger
+                    opp = get_opposite_trigger(self.entry_trigger)
+                    if opp:
+                        self.exit_triggers = {opp}
+                except ImportError:
+                    pass
+            elif et:
+                self.exit_triggers = {et}
+
+        self.bar_count_exit = strategy.get('bar_count_exit')
+        self.stop_config = strategy.get('stop_config') or {
+            'method': 'atr', 'atr_mult': strategy.get('stop_atr_mult', 1.5)}
+        self.target_config = strategy.get('target_config')
+        self.confluence_set = set(strategy.get('confluence', [])) | set(
+            strategy.get('general_confluences', []))
+        self.confluence_set = self.confluence_set or None
+
+        # Rolling buffer for swing stop/target lookback
+        self._high_low_buffer: deque = deque(maxlen=50)
+
+    def update_high_low(self, high: float, low: float):
+        """Append a (high, low) pair to the rolling buffer for swing lookback."""
+        self._high_low_buffer.append((high, low))
+
+    def check_entry(self, trigger_booleans: Dict[str, bool],
+                    current_values: Dict[str, float],
+                    bar_count: int, bar_time: str,
+                    confluence_records: Set[str] = None,
+                    l_type_fills: Dict[str, float] = None,
+                    prev_values: Dict[str, float] = None,
+                    ) -> Optional[dict]:
+        """Check for entry signal (C-type or L-type).
+
+        For L-type triggers, checks l_type_fills dict.
+        For C-type triggers, checks trigger_booleans dict.
+        prev_values: Previous bar's indicator values.  Used for L-type
+            stop/target computation to match live behaviour (intra-bar
+            entries don't have the current bar's indicators yet).
+
+        Returns signal dict or None.
+        """
+        if self.state.status != 'FLAT':
+            return None
+
+        # 1-bar cooldown: don't re-enter on the same bar we exited
+        if self.state.last_exit_bar_count >= bar_count:
+            return None
+
+        trigger_id = self.entry_trigger
+        exec_type = get_trigger_exec_type(trigger_id)
+
+        # Determine if trigger fired and fill price
+        fill_price = None
+        is_ltype = False
+
+        if exec_type in (_L_TYPES | {'HM', 'HL'}) and l_type_fills:
+            if trigger_id in l_type_fills:
+                fill_price = l_type_fills[trigger_id]
+                is_ltype = True
+        if fill_price is None:
+            # C-type check (or L-type bar-close fallback)
+            base_trigger = _strip_exec_suffix(trigger_id)
+            if trigger_booleans.get(trigger_id, False) or \
+               trigger_booleans.get(base_trigger, False):
+                fill_price = current_values.get('close', 0)
+
+        if fill_price is None:
+            return None
+
+        # Confluence check
+        if self.confluence_set and confluence_records:
+            if not self.confluence_set.issubset(confluence_records):
+                return None
+
+        # For L-type entries, use previous bar's indicator values for
+        # stop/target computation — matches live engine behaviour where
+        # the current bar hasn't closed yet at time of intra-bar entry.
+        vals_for_stop = (prev_values if is_ltype and prev_values
+                         else current_values)
+        atr = vals_for_stop.get('atr', fill_price * 0.01)
+        if not atr or atr <= 0:
+            atr = fill_price * 0.01
+
+        stop_price = self._compute_stop(fill_price, atr, vals_for_stop)
+        target_price = self._compute_target(fill_price, stop_price, atr,
+                                            vals_for_stop)
+
+        self.state.status = 'IN_POSITION'
+        self.state.entry_price = fill_price
+        self.state.entry_time = bar_time
+        self.state.stop_price = stop_price
+        self.state.initial_stop_price = stop_price
+        self.state.target_price = target_price
+        self.state.entry_bar_count = bar_count
+        self.state.entry_trigger = trigger_id
+        self.state.confluence_records = confluence_records
+        self.state.exec_type = exec_type
+
+        return {
+            'type': 'entry_signal',
+            'trigger': trigger_id,
+            'price': fill_price,
+            'stop_price': stop_price,
+            'target_price': target_price,
+            'bar_time': bar_time,
+            'atr': atr,
+        }
+
+    def check_exit(self, trigger_booleans: Dict[str, bool],
+                   current_values: Dict[str, float],
+                   bar_count: int, bar_time: str,
+                   l_type_fills: Dict[str, float] = None,
+                   suppress_bar_count: bool = False,
+                   ) -> Optional[dict]:
+        """Check for exit on bar close. Returns signal dict or None.
+
+        Priority: stop > target > signal exit (C-type + L-type) > bar count.
+        suppress_bar_count: If True, skip bar_count_exit (partial bar).
+        """
+        if self.state.status != 'IN_POSITION':
+            return None
+
+        close = current_values.get('close', 0)
+        high = current_values.get('high', close)
+        low = current_values.get('low', close)
+        bar_open = current_values.get('open', close)
+        direction = self.state.direction
+
+        # For L-type entries on the same bar, skip OHLC-based stop/target
+        # checks.  The bar's low/high includes price action from before
+        # the entry, which would create false triggers.  In live, tick-
+        # level checks handle intra-bar stops correctly.
+        same_bar_ltype = (
+            self.state.entry_bar_count == bar_count and
+            self.state.exec_type in _L_TYPES)
+
+        # Update trailing/breakeven stop before checking
+        self._update_stop(current_values)
+
+        # Priority 1: Stop loss (gap-aware)
+        # Skipped on entry bar for L-type (pre-entry OHLC is unreliable)
+        if self.state.stop_price and not same_bar_ltype:
+            if direction == 'LONG' and low <= self.state.stop_price:
+                fill = min(self.state.stop_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('stop_loss', fill, bar_time)
+            elif direction == 'SHORT' and high >= self.state.stop_price:
+                fill = max(self.state.stop_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('stop_loss', fill, bar_time)
+
+        # Priority 2: HL limit exit at entry price (unconfirmed HL trade)
+        if self.state.pending_hl_limit:
+            ep = self.state.entry_price
+            if direction == 'LONG' and high >= ep:
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('unconfirmed_hl', ep, bar_time)
+            elif direction == 'SHORT' and low <= ep:
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('unconfirmed_hl', ep, bar_time)
+
+        # Priority 3: Target (also skipped on entry bar for L-type)
+        if self.state.target_price and not same_bar_ltype:
+            if direction == 'LONG' and high >= self.state.target_price:
+                fill = max(self.state.target_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('target', fill, bar_time)
+            elif direction == 'SHORT' and low <= self.state.target_price:
+                fill = min(self.state.target_price, bar_open)
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('target', fill, bar_time)
+
+        # Priority 3: Signal exit (C-type booleans + L-type fills)
+        for et in self.exit_triggers:
+            base_et = _strip_exec_suffix(et)
+            # L-type exit
+            if l_type_fills and et in l_type_fills:
+                self.state.last_exit_bar_count = bar_count
+                return self._exit(et, l_type_fills[et], bar_time)
+            # C-type exit
+            if trigger_booleans.get(et, False) or \
+               trigger_booleans.get(base_et, False):
+                self.state.last_exit_bar_count = bar_count
+                return self._exit(et, close, bar_time)
+
+        # Priority 4: Bar count exit (suppressed on partial bars)
+        if self.bar_count_exit is not None and not suppress_bar_count:
+            bars_held = bar_count - self.state.entry_bar_count
+            if bars_held >= self.bar_count_exit:
+                self.state.last_exit_bar_count = bar_count
+                return self._exit('bar_count_exit', close, bar_time)
+
+        return None
+
+    def get_trade_record(self, exit_price: float, exit_time,
+                         exit_reason: str, exit_trigger: str = None,
+                         ) -> dict:
+        """Build a trade record matching generate_trades() schema."""
+        entry_price = self.state.entry_price
+        direction = self.state.direction
+        initial_stop = self.state.initial_stop_price
+
+        if direction == 'LONG':
+            pnl = exit_price - entry_price
+        else:
+            pnl = entry_price - exit_price
+
+        risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price * 0.01)
+        if risk <= 0:
+            risk = entry_price * 0.01
+
+        return {
+            'entry_time': self.state.entry_time,
+            'exit_time': exit_time,
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'stop_price': self.state.stop_price,
+            'initial_stop_price': initial_stop,
+            'target_price': self.state.target_price,
+            'pnl': pnl,
+            'risk': risk,
+            'r_multiple': pnl / risk,
+            'win': pnl > 0,
+            'exit_reason': exit_reason,
+            'entry_trigger': self.state.entry_trigger,
+            'exit_trigger': exit_trigger,
+            'confluence_records': self.state.confluence_records or set(),
+        }
+
+    def _reset_position(self):
+        """Reset all position state fields to FLAT defaults.
+
+        Preserves last_exit_bar_count for 1-bar cooldown enforcement.
+        """
+        self.state.status = 'FLAT'
+        self.state.entry_price = 0.0
+        self.state.entry_time = None
+        self.state.stop_price = 0.0
+        self.state.initial_stop_price = 0.0
+        self.state.target_price = None
+        self.state.confluence_records = None
+        self.state.exec_type = 'C'
+        self.state.pending_hm_exit = False
+        self.state.pending_hl_limit = False
+        # last_exit_bar_count intentionally preserved for cooldown
+
+    def _exit(self, reason: str, price: float, bar_time) -> dict:
+        """Execute exit transition and return trade record (backtest path)."""
+        record = self.get_trade_record(price, bar_time, reason, reason)
+        self._reset_position()
+        return record
+
+    def _signal_exit(self, reason: str, price: float,
+                     timestamp: str, bar_count: int = None) -> dict:
+        """Build signal dict for live alert dispatch and reset state."""
+        if bar_count is not None:
+            self.state.last_exit_bar_count = bar_count
+        sig = {
+            'type': 'exit_signal',
+            'trigger': reason,
+            'price': price,
+            'bar_time': timestamp,
+            'entry_price': self.state.entry_price,
+            'entry_stop_price': self.state.stop_price,
+            'atr': 0,  # filled by caller
+        }
+        self._reset_position()
+        return sig
+
+    # ── Live-tick methods (signal dict returns) ──
+
+    def check_entry_intrabar(self, trigger_id: str, fill_price: float,
+                             current_values: Dict[str, float],
+                             bar_count: int, timestamp: str,
+                             confluence_records: Set[str] = None,
+                             ) -> Optional[dict]:
+        """Check intra-bar entry from tick-level cross. Returns signal dict."""
+        if self.state.status != 'FLAT':
+            return None
+        if trigger_id != self.entry_trigger:
+            return None
+
+        # 1-bar cooldown: don't re-enter on the same bar we exited
+        if self.state.last_exit_bar_count >= bar_count:
+            return None
+
+        # Confluence check
+        if self.confluence_set and confluence_records:
+            if not self.confluence_set.issubset(confluence_records):
+                return None
+
+        atr = current_values.get('atr', fill_price * 0.01)
+        if not atr or atr <= 0:
+            atr = fill_price * 0.01
+
+        stop_price = self._compute_stop(fill_price, atr, current_values)
+        target_price = self._compute_target(fill_price, stop_price, atr,
+                                            current_values)
+
+        exec_type = get_trigger_exec_type(trigger_id)
+
+        self.state.status = 'IN_POSITION'
+        self.state.entry_price = fill_price
+        self.state.entry_time = timestamp
+        self.state.stop_price = stop_price
+        self.state.initial_stop_price = stop_price
+        self.state.target_price = target_price
+        # Use bar_count + 1 so that entry_bar_count matches the bar_count
+        # value that on_bar_close will receive when the entry bar closes.
+        # In the live path, intra-bar entries set bar_count = builder._bar_count
+        # (incremented when the *previous* bar closed).  The entry bar hasn't
+        # closed yet, so its on_bar_close will see bar_count = current + 1.
+        # This aligns with the backtest, where entry and exit checks happen
+        # inside the same process_bar() call (entry_bar_count == bar_count).
+        self.state.entry_bar_count = bar_count + 1
+        self.state.entry_trigger = trigger_id
+        self.state.exec_type = exec_type
+
+        return {
+            'type': 'entry_signal',
+            'trigger': trigger_id,
+            'price': fill_price,
+            'stop_price': stop_price,
+            'target_price': target_price,
+            'bar_time': timestamp,
+            'atr': atr,
+        }
+
+    def check_exit_tick(self, price: float,
+                        timestamp: str) -> Optional[dict]:
+        """Check exit on each tick (O(1)). Handles HM/HL pending exits."""
+        if self.state.status != 'IN_POSITION':
+            return None
+
+        direction = self.state.direction
+
+        # Priority 1: Pending HM exit (unconfirmed — exit at market)
+        if self.state.pending_hm_exit:
+            return self._signal_exit('unconfirmed_hm', price, timestamp)
+
+        # Priority 2: Pending HL limit (exit at entry price)
+        if self.state.pending_hl_limit:
+            ep = self.state.entry_price
+            if direction == 'LONG' and price >= ep:
+                return self._signal_exit('unconfirmed_hl', ep, timestamp)
+            elif direction == 'SHORT' and price <= ep:
+                return self._signal_exit('unconfirmed_hl', ep, timestamp)
+
+        # Priority 3: Stop loss
+        if self.state.stop_price:
+            if direction == 'LONG' and price <= self.state.stop_price:
+                return self._signal_exit(
+                    'stop_loss', self.state.stop_price, timestamp)
+            elif direction == 'SHORT' and price >= self.state.stop_price:
+                return self._signal_exit(
+                    'stop_loss', self.state.stop_price, timestamp)
+
+        # Priority 4: Target
+        if self.state.target_price:
+            if direction == 'LONG' and price >= self.state.target_price:
+                return self._signal_exit(
+                    'target', self.state.target_price, timestamp)
+            elif direction == 'SHORT' and price <= self.state.target_price:
+                return self._signal_exit(
+                    'target', self.state.target_price, timestamp)
+
+        return None
+
+    def check_exit_intrabar(self, trigger_id: str, fill_price: float,
+                            timestamp: str) -> Optional[dict]:
+        """Check signal exit from intra-bar level cross."""
+        if self.state.status != 'IN_POSITION':
+            return None
+        base_id = _strip_exec_suffix(trigger_id)
+        if base_id in self.exit_triggers or trigger_id in self.exit_triggers:
+            return self._signal_exit(trigger_id, fill_price, timestamp)
+        return None
+
+    def check_exit_bar_close(self, trigger_booleans: Dict[str, bool],
+                             current_values: Dict[str, float],
+                             bar_count: int,
+                             bar_time: str) -> Optional[dict]:
+        """Check for exit on bar close (live path). Returns signal dict."""
+        if self.state.status != 'IN_POSITION':
+            return None
+
+        close = current_values.get('close', 0)
+        high = current_values.get('high', close)
+        low = current_values.get('low', close)
+        bar_open = current_values.get('open', close)
+        direction = self.state.direction
+
+        # For L-type entries on the same bar, skip OHLC-based stop/target
+        # checks.  The bar's low/high includes price action from before
+        # the entry, which would create false triggers.
+        same_bar_ltype = (
+            self.state.entry_bar_count == bar_count and
+            self.state.exec_type in _L_TYPES)
+
+        self._update_stop(current_values)
+
+        # Priority 1: Stop loss (gap-aware)
+        # Skipped on entry bar for L-type (pre-entry OHLC is unreliable)
+        if self.state.stop_price and not same_bar_ltype:
+            if direction == 'LONG' and low <= self.state.stop_price:
+                fill = min(self.state.stop_price, bar_open)
+                return self._signal_exit(
+                    'stop_loss', fill, bar_time, bar_count)
+            elif direction == 'SHORT' and high >= self.state.stop_price:
+                fill = max(self.state.stop_price, bar_open)
+                return self._signal_exit(
+                    'stop_loss', fill, bar_time, bar_count)
+
+        # Priority 2: HL limit exit at entry price
+        if self.state.pending_hl_limit:
+            ep = self.state.entry_price
+            if direction == 'LONG' and high >= ep:
+                return self._signal_exit(
+                    'unconfirmed_hl', ep, bar_time, bar_count)
+            elif direction == 'SHORT' and low <= ep:
+                return self._signal_exit(
+                    'unconfirmed_hl', ep, bar_time, bar_count)
+
+        # Priority 3: Target (also skipped on entry bar for L-type)
+        if self.state.target_price and not same_bar_ltype:
+            if direction == 'LONG' and high >= self.state.target_price:
+                fill = max(self.state.target_price, bar_open)
+                return self._signal_exit(
+                    'target', fill, bar_time, bar_count)
+            elif direction == 'SHORT' and low <= self.state.target_price:
+                fill = min(self.state.target_price, bar_open)
+                return self._signal_exit(
+                    'target', fill, bar_time, bar_count)
+
+        # Priority 4: Signal exit
+        for et in self.exit_triggers:
+            base_et = _strip_exec_suffix(et)
+            if trigger_booleans.get(et, False) or \
+               trigger_booleans.get(base_et, False):
+                return self._signal_exit(et, close, bar_time, bar_count)
+
+        # Priority 5: Bar count exit
+        if self.bar_count_exit is not None:
+            bars_held = bar_count - self.state.entry_bar_count
+            if bars_held >= self.bar_count_exit:
+                return self._signal_exit(
+                    'bar_count_exit', close, bar_time, bar_count)
+
+        return None
+
+    def _update_stop(self, current_values: Dict[str, float]):
+        """Update stop price for trailing and/or breakeven stops."""
+        if self.state.status != 'IN_POSITION':
+            return
+
+        entry_price = self.state.entry_price
+        current_stop = self.state.stop_price
+        direction = self.state.direction
+        close = current_values.get('close', 0)
+
+        risk = abs(entry_price - current_stop)
+        if risk <= 0:
+            risk = entry_price * 0.01
+
+        new_stop = current_stop
+
+        # Breakeven activation
+        be = self.stop_config.get("breakeven")
+        if be and be.get("enabled"):
+            if direction == "LONG":
+                unrealized_r = (close - entry_price) / risk
+            else:
+                unrealized_r = (entry_price - close) / risk
+            if unrealized_r >= be.get("activation_r", 1.0):
+                be_offset = be.get("offset", 0.0)
+                if direction == "LONG":
+                    be_level = entry_price + be_offset
+                    new_stop = max(new_stop, be_level)
+                else:
+                    be_level = entry_price - be_offset
+                    new_stop = min(new_stop, be_level)
+
+        # Trailing stop
+        trail = self.stop_config.get("trailing")
+        if trail and trail.get("enabled"):
+            if direction == "LONG":
+                unrealized_r = (close - entry_price) / risk
+            else:
+                unrealized_r = (entry_price - close) / risk
+
+            if unrealized_r >= trail.get("activation_r", 0.0):
+                trail_method = trail.get("method", "atr")
+                atr = current_values.get('atr', entry_price * 0.01)
+                if not atr or atr <= 0:
+                    atr = entry_price * 0.01
+
+                if trail_method == "atr":
+                    trail_distance = atr * trail.get("atr_mult", 1.0)
+                elif trail_method == "fixed_dollar":
+                    trail_distance = trail.get("dollar_amount", 1.0)
+                elif trail_method == "percentage":
+                    trail_distance = entry_price * (trail.get("percentage", 0.5) / 100.0)
+                else:
+                    trail_distance = None
+
+                if trail_distance is not None:
+                    if direction == "LONG":
+                        trail_level = close - trail_distance
+                        new_stop = max(new_stop, trail_level)
+                    else:
+                        trail_level = close + trail_distance
+                        new_stop = min(new_stop, trail_level)
+
+        self.state.stop_price = new_stop
+
+    def _compute_stop(self, entry_price: float, atr: float,
+                      vals: Dict[str, float]) -> float:
+        method = self.stop_config.get('method', 'atr')
+        direction = self.state.direction
+
+        if method == 'atr':
+            mult = self.stop_config.get('atr_mult', 1.5)
+            distance = atr * mult
+        elif method == 'fixed_dollar':
+            distance = self.stop_config.get('dollar_amount', 1.0)
+        elif method == 'percentage':
+            pct = self.stop_config.get('percentage', 0.5)
+            distance = entry_price * (pct / 100.0)
+        elif method == 'swing':
+            lookback = self.stop_config.get('lookback', 5)
+            padding = self.stop_config.get('padding', 0.0)
+            # Exclude current bar (last entry in buffer)
+            buf = list(self._high_low_buffer)[:-1]
+            window = buf[-lookback:] if len(buf) >= lookback else buf
+            if not window:
+                distance = atr * 1.5  # Fallback if not enough history
+            elif direction == 'LONG':
+                return min(low for _, low in window) - padding
+            else:
+                return max(high for high, _ in window) + padding
+        else:
+            distance = atr * 1.5
+
+        if direction == 'LONG':
+            return entry_price - distance
+        else:
+            return entry_price + distance
+
+    def _compute_target(self, entry_price: float, stop_price: float,
+                        atr: float, vals: Dict[str, float]) -> Optional[float]:
+        if self.target_config is None:
+            return None
+
+        method = self.target_config.get('method')
+        if method is None:
+            return None
+
+        risk = abs(entry_price - stop_price)
+        direction = self.state.direction
+
+        if method == 'risk_reward':
+            rr = self.target_config.get('rr_ratio', 2.0)
+            distance = risk * rr
+        elif method == 'atr':
+            mult = self.target_config.get('atr_mult', 2.0)
+            distance = atr * mult
+        elif method == 'fixed_dollar':
+            distance = self.target_config.get('dollar_amount', 2.0)
+        elif method == 'percentage':
+            pct = self.target_config.get('percentage', 1.0)
+            distance = entry_price * (pct / 100.0)
+        elif method == 'swing':
+            lookback = self.target_config.get('lookback', 5)
+            padding = self.target_config.get('padding', 0.0)
+            buf = list(self._high_low_buffer)[:-1]
+            window = buf[-lookback:] if len(buf) >= lookback else buf
+            if not window:
+                return None
+            elif direction == 'LONG':
+                return max(high for high, _ in window) + padding
+            else:
+                return min(low for _, low in window) - padding
+        else:
+            return None
+
+        if direction == 'LONG':
+            return entry_price + distance
+        else:
+            return entry_price - distance
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UNIFIED STRATEGY — single-strategy coordinator
+# ═══════════════════════════════════════════════════════════════════════════
+
+class UnifiedStrategy:
+    """Single-strategy coordinator for the unified engine.
+
+    Wraps IncrementalIndicatorEngine + TriggerEvaluator + PositionStateMachine.
+    Processes one bar at a time, returns trade records.
+    """
+
+    def __init__(self, strategy: dict, general_packs=None):
+        self.strategy = strategy
+        self.direction = strategy.get('direction', 'LONG')
+        self.tf_label = self._get_tf_label(strategy.get('timeframe', '1Min'))
+
+        # Resolve requirements
+        req_ind, req_interp, req_trig, params = resolve_strategy_requirements(
+            strategy)
+
+        # Resolve entry/exit triggers
+        self.entry_trigger = _resolve_trigger_id(strategy, 'entry_trigger')
+        self.exit_triggers = _resolve_trigger_ids(strategy, 'exit_triggers')
+        if not self.exit_triggers:
+            single = _resolve_trigger_id(strategy, 'exit_trigger')
+            if single:
+                self.exit_triggers = [single]
+
+        # Create components
+        self.indicators = IncrementalIndicatorEngine(req_ind, params)
+        self.trigger_eval = TriggerEvaluator(
+            req_interp, req_trig,
+            ema_periods=params.get('ema_periods', [8, 21, 50]))
+        self.position = PositionStateMachine(
+            strategy,
+            resolved_entry=self.entry_trigger,
+            resolved_exits=self.exit_triggers)
+
+        self.general_packs = general_packs or []
+        self._bar_count = 0
+
+        # Interpreter keys needed for confluence records
+        self._interpreter_keys = list(req_interp)
+
+    def process_bar(self, bar: dict, mtf_records: Set[str] = None,
+                    partial: bool = False,
+                    ) -> Tuple[List[dict], Dict[str, float],
+                               Dict[str, str], Dict[str, bool]]:
+        """Process one completed bar.
+
+        Args:
+            bar: {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
+            mtf_records: Optional set of multi-timeframe confluence records
+                from pre-computed columns (e.g. '5m-EMA_STACK-FULL_BULL_STACK').
+            partial: If True, this bar is still forming (live chart).
+                Only L-type (intra-bar) signals are evaluated; bar-close
+                entries/exits (C-type, bar_count_exit) are suppressed.
+
+        Returns:
+            (trade_records, indicator_values, interpreter_states, trigger_bools)
+            trade_records: List of 0-2 trade dicts (exit then entry)
+            indicator_values: Current indicator values for enriched DataFrame
+            interpreter_states: Current interpreter states
+            trigger_bools: C-type trigger booleans for this bar
+        """
+        self._bar_count += 1
+        trades = []
+
+        # 1. Update indicators (O(1))
+        current = self.indicators.update_bar(bar)
+        prev = self.indicators.get_prev_values()
+
+        # 1b. Feed high/low into position buffer (for swing stops/targets)
+        self.position.update_high_low(bar['high'], bar['low'])
+
+        # 2. Evaluate triggers (C-type + L-type)
+        interps, c_triggers, l_fills = self.trigger_eval.evaluate_bar_for_backtest(
+            current, prev, self.indicators.state.prev2_macd_hist)
+
+        # 3. Build confluence records
+        bar_time = bar['timestamp']
+        confluence_records = set()
+        for interp_key, state_val in interps.items():
+            confluence_records.add(
+                f"{self.tf_label}-{interp_key}-{state_val}")
+
+        # MTF confluence records (from pre-computed columns)
+        if mtf_records:
+            confluence_records |= mtf_records
+
+        # General packs
+        if self.general_packs:
+            ts = bar_time
+            if hasattr(ts, 'to_pydatetime'):
+                ts = ts.to_pydatetime()
+            elif not isinstance(ts, datetime):
+                ts = pd.Timestamp(ts).to_pydatetime()
+            gp_records = _evaluate_general_packs(self.general_packs, ts)
+            confluence_records.update(gp_records)
+
+        # On partial (still-forming) bars, only L-type (intra-bar) signals
+        # fire.  C-type signals (bar-close triggers, bar_count_exit) are
+        # suppressed because the close price is not final.  Stops and
+        # targets still fire since they are intra-bar events.
+        c_trigs_for_eval = {} if partial else c_triggers
+
+        # 4. Handle pending HM exit (unconfirmed on previous bar)
+        if not partial and self.position.state.pending_hm_exit:
+            exit_record = self.position._exit(
+                'unconfirmed_hm', bar['open'], bar_time)
+            trades.append(exit_record)
+
+        # 5. Check exit (includes HL limit check, stop, target, signal, bar count)
+        if self.position.state.status == 'IN_POSITION':
+            exit_record = self.position.check_exit(
+                c_trigs_for_eval, current, self._bar_count,
+                bar_time, l_type_fills=l_fills,
+                suppress_bar_count=partial)
+            if exit_record:
+                trades.append(exit_record)
+
+        # 6. Check entry (only if FLAT after exit check)
+        # Entry signals are internal state changes, not trade records.
+        # The trade record is produced on exit.
+        self.position.check_entry(
+            c_trigs_for_eval, current, self._bar_count,
+            bar_time, confluence_records=confluence_records,
+            l_type_fills=l_fills,
+            prev_values=prev)
+
+        # 7. Confirmation check for HM/HL entries made THIS bar
+        if (self.position.state.status == 'IN_POSITION' and
+                self.position.state.entry_bar_count == self._bar_count and
+                self.position.state.exec_type in ('HM', 'HL')):
+            base_trigger = _strip_exec_suffix(
+                self.position.state.entry_trigger)
+            if not self.trigger_eval.check_confirmation(base_trigger, current):
+                if self.position.state.exec_type == 'HM':
+                    self.position.state.pending_hm_exit = True
+                else:
+                    self.position.state.pending_hl_limit = True
+
+        return trades, current, interps, c_triggers
+
+    @staticmethod
+    def _get_tf_label(timeframe: str) -> str:
+        """Convert timeframe string to label format."""
+        tf_map = {
+            '1Min': '1M', '2Min': '2M', '3Min': '3M', '5Min': '5M',
+            '10Min': '10M', '15Min': '15M', '30Min': '30M',
+            '1Hour': '1H', '2Hour': '2H', '4Hour': '4H',
+            '1Day': '1D', '1Week': '1W',
+        }
+        return tf_map.get(timeframe, '1M')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PUBLIC API — run_unified_backtest
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_unified_backtest(
+    df: pd.DataFrame,
+    strategy: dict,
+    general_packs: list = None,
+    secondary_tf_map: dict = None,
+    include_open_position: bool = False,
+    last_bar_partial: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Run unified backtest on historical OHLCV data.
+
+    Args:
+        df: DataFrame (timestamp-indexed). Must contain OHLCV columns.
+            May also contain pre-computed MTF columns (e.g. EMA_STACK__5m).
+        strategy: Strategy config dict (same format as strategies.json)
+        general_packs: Optional list of GeneralPack objects
+        secondary_tf_map: Optional {tf_label: [suffixed_col_names]} for MTF
+            confluence.  Column names have the form ``{INTERP}__{tf_label}``.
+        include_open_position: If True, append a synthetic row for any
+            open position at the end of the data (exit_time/exit_price=None).
+            Useful for chart rendering to show entry markers immediately.
+        last_bar_partial: If True, treat the last bar as still forming.
+            Indicators are updated but entry/exit signals are suppressed
+            on that bar, preventing premature markers on live charts.
+
+    Returns:
+        (trades_df, enriched_df)
+        trades_df: DataFrame matching generate_trades() output format
+        enriched_df: DataFrame with indicator + interpreter + trigger columns
+    """
+    if len(df) < 2:
+        return pd.DataFrame(), df.copy()
+
+    strat = UnifiedStrategy(strategy, general_packs)
+
+    trades = []
+    indicator_rows = []
+    interp_rows = []
+    trigger_rows = []
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        bar = {
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close']),
+            'volume': float(row.get('volume', 0)),
+            'timestamp': df.index[i],
+        }
+
+        # Build MTF confluence records from pre-computed columns
+        mtf_records = None
+        if secondary_tf_map:
+            mtf_set = set()
+            for tf_label, cols in secondary_tf_map.items():
+                for col in cols:
+                    val = row.get(col)
+                    if val is not None and pd.notna(val):
+                        base_interp = col.rsplit('__', 1)[0]
+                        mtf_set.add(f"{tf_label}-{base_interp}-{val}")
+            if mtf_set:
+                mtf_records = mtf_set
+
+        is_partial = last_bar_partial and (i == len(df) - 1)
+        bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(
+            bar, mtf_records=mtf_records, partial=is_partial)
+        trades.extend(bar_trades)
+        indicator_rows.append(ind_vals)
+        interp_rows.append(interp_states)
+        trigger_rows.append(trig_bools)
+
+    # If position is still open, append a synthetic open-trade row so charts
+    # can plot the entry marker immediately (before the trade closes).
+    if include_open_position and strat.position.state.status == 'IN_POSITION':
+        pos = strat.position.state
+        last_close = float(df.iloc[-1]['close'])
+        direction = pos.direction
+        entry_price = pos.entry_price
+        initial_stop = pos.initial_stop_price
+        risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price * 0.01)
+        if risk <= 0:
+            risk = entry_price * 0.01
+        unrealized_pnl = (last_close - entry_price) if direction == 'LONG' else (entry_price - last_close)
+        trades.append({
+            'entry_time': pos.entry_time,
+            'exit_time': None,
+            'entry_price': entry_price,
+            'exit_price': None,
+            'stop_price': pos.stop_price,
+            'initial_stop_price': initial_stop,
+            'target_price': pos.target_price,
+            'pnl': unrealized_pnl,
+            'risk': risk,
+            'r_multiple': unrealized_pnl / risk,
+            'win': unrealized_pnl > 0,
+            'exit_reason': 'open',
+            'entry_trigger': pos.entry_trigger,
+            'exec_type': pos.exec_type,
+        })
+
+    # Build trades DataFrame
+    trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+
+    # Build enriched DataFrame
+    enriched_df = df.copy()
+
+    # Add indicator columns
+    if indicator_rows:
+        ind_df = pd.DataFrame(indicator_rows, index=df.index)
+        # Only add columns not already in df (avoid overwriting OHLCV)
+        for col in ind_df.columns:
+            if col not in ('open', 'high', 'low', 'close', 'volume'):
+                enriched_df[col] = ind_df[col]
+
+    # Add interpreter state columns
+    if interp_rows:
+        interp_df = pd.DataFrame(interp_rows, index=df.index)
+        for col in interp_df.columns:
+            enriched_df[col] = interp_df[col]
+
+    # Add trigger boolean columns (prefixed with trig_)
+    if trigger_rows:
+        trig_df = pd.DataFrame(trigger_rows, index=df.index)
+        for col in trig_df.columns:
+            enriched_df[f'trig_{col}'] = trig_df[col]
+
+    return trades_df, enriched_df

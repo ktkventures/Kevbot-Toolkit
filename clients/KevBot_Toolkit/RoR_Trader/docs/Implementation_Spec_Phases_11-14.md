@@ -1,7 +1,7 @@
 # RoR Trader — Implementation Spec: Phases 11–14
 
-**Version:** 0.1 (First Draft)
-**Date:** February 13, 2026
+**Version:** 0.3
+**Date:** February 17, 2026
 **Purpose:** Detailed, autonomous-implementation-ready spec for Phases 11–14. Designed for a "Ralph Wiggum" loop — each phase can be implemented without user validation between steps.
 
 **Reference Images:** `docs/reference_images/DaviddTech *.png` (5 screenshots)
@@ -25,17 +25,25 @@
 
 | File | Purpose | Approx Lines |
 |------|---------|-------------|
-| `src/app.py` | Main Streamlit app — all pages, tabs, UI | ~9,300 |
+| `src/app.py` | Main Streamlit app — all pages, tabs, UI | ~10,500 |
 | `src/triggers.py` | Trade generation engine (`generate_trades`) | ~700 |
-| `src/indicators.py` | Technical indicator calculations | ~440 |
+| `src/indicators.py` | Technical indicator calculations (registry-based dispatch) | ~500 |
+| `src/interpreters.py` | Confluence interpreters (registry-based dispatch) | ~600 |
 | `src/alerts.py` | Alert detection, webhook delivery, templates | ~960 |
+| `src/alert_monitor.py` | Background alert polling with feed-aware caching | ~250 |
 | `src/confluence_groups.py` | Confluence pack system, templates, interpreters | ~1,200 |
 | `src/mock_data.py` | Mock OHLCV data generator | ~200 |
-| `src/data_loader.py` | Alpaca/mock data loading | ~270 |
+| `src/data_loader.py` | Alpaca/mock data loading, RTH filter, source tracking | ~325 |
+| `src/pack_spec.py` | Pack Spec schema definitions + AST validation | ~200 |
+| `src/pack_registry.py` | User pack hot-load, import, register/unregister | ~350 |
+| `src/pack_builder_context.py` | Architecture context + prompt assembly for Pack Builder | ~400 |
+| `src/realtime_engine.py` | Unified streaming alert engine — WebSocket tick processing, multi-TF bar building, [I]+[C] trigger evaluation | ~100 → ~600 |
+| `user_packs/` | User-created confluence packs (hot-loaded on startup) | |
 | `config/strategies.json` | Persisted strategy data | |
 | `config/alert_config.json` | Alert monitoring & webhook config | |
 | `config/alerts.json` | Fired alert history (last 500) | |
-| `config/settings.json` | User settings | |
+| `config/settings.json` | User settings (includes `data_feed: "sip"`) | |
+| `config/confluence_groups.json` | Confluence group configs (built-in + user packs) | |
 
 ### Existing Data Structures
 
@@ -100,7 +108,7 @@
 ### Style Rules
 - **No new files** unless structurally necessary (new module > 200 lines).
 - **Streamlit patterns:** Use `st.tabs()` for sub-views, `st.columns()` for layouts, `st.metric()` for KPI cards, `st.plotly_chart()` for charts.
-- **Chart library:** Plotly (`go.Figure`, `go.Scatter`, `go.Bar`, `go.Histogram`). Mini equity curves use `render_mini_equity_curve()`.
+- **Chart library:** Two libraries in use. **Plotly** (`go.Figure`, `go.Scatter`, `go.Bar`, `go.Histogram`) for equity curves, KPI charts, analytics, and distribution plots. **TradingView Lightweight Charts** (via `streamlit-lightweight-charts`) for candlestick price charts with indicator overlays and synced oscillator panes. For Phases 11–14, all new charts are Plotly (no new candlestick/price charts). Mini equity curves use `render_mini_equity_curve()`.
 - **Persistence:** JSON files in `config/`. Use existing `load_strategies()`/`save_strategies()` pattern.
 - **KPI display:** `_display_kpi_card(label, value, fmt)` helper for consistent formatting.
 - **Testing:** Run `cd src && python -c "import app"` as syntax check after major changes.
@@ -612,6 +620,8 @@ timestamp,signal,price
 
 **Goal:** Add a third confidence tier — live/triggered — that captures actual alert executions and compares them to forward test trades. Visualize all three tiers (backtest, forward test, live) on the equity curve with distinct colors.
 
+**Critical design principle:** Enabling live alert tracking does **NOT** turn off or replace the forward test. Both run in parallel on the same trades and time period. The difference between backtest and forward test is the date range (historical vs. real-time). The difference between forward test and live is **apples-to-apples comparison on the exact same trades** — same days, same signals — but live captures actual alert execution prices, timing, and missed signals. Live data is still a form of testing with additional analysis layered on top (slippage measurement, delivery reliability, etc.). The forward test curve always shows theoretical bar-close prices; the live curve shows what actually happened when alerts fired.
+
 **Prerequisite:** Phase 11 (expanded KPIs) is helpful but not blocking. Phase 12 is not required.
 
 ### 13.1 Alert Execution Records
@@ -745,35 +755,40 @@ def match_alerts_to_trades(strategy: dict, alerts: list) -> dict:
 | Live/Triggered | `#4CAF50` (green) | Alert-matched executions |
 
 **Implementation approach:**
+
+The equity curve shows three segments sequentially (backtest → forward test), but in the forward test period where live data exists, **both** the forward test and live lines are rendered so the user can see divergence:
+
 ```python
 # Split equity curve data into segments
 boundary_idx = equity_data.get('boundary_index')  # BT→FT boundary (exists)
 live_start_idx = None  # First trade with a matched live execution
 
-# For live segment: use alert trigger prices instead of theoretical bar prices
-# This means the live equity curve may diverge from the forward test curve
-
-# Build three traces:
+# Backtest segment: blue, up to forward test boundary
 fig.add_trace(go.Scatter(  # Backtest segment
     x=trade_numbers[:boundary_idx],
     y=cumulative_r[:boundary_idx],
     line=dict(color="#2196F3"), fill="tozeroy", name="Backtest"
 ))
+
+# Forward test segment: orange, runs for the FULL forward test period
+# (does NOT stop when live starts — both lines coexist)
 fig.add_trace(go.Scatter(  # Forward test segment
-    x=trade_numbers[boundary_idx:live_start_idx],
-    y=cumulative_r[boundary_idx:live_start_idx],
+    x=trade_numbers[boundary_idx:],
+    y=cumulative_r[boundary_idx:],
     line=dict(color="#FF9800"), fill="tozeroy", name="Forward Test"
 ))
-fig.add_trace(go.Scatter(  # Live segment
-    x=trade_numbers[live_start_idx:],
-    y=live_cumulative_r[live_start_idx:],
-    line=dict(color="#4CAF50"), fill="tozeroy", name="Live"
-))
+
+# Live segment: green, overlaid on top of forward test where live data exists
+# Uses actual alert execution prices — may diverge from forward test
+if live_start_idx is not None:
+    fig.add_trace(go.Scatter(  # Live segment (overlaid)
+        x=trade_numbers[live_start_idx:],
+        y=live_cumulative_r[live_start_idx:],
+        line=dict(color="#4CAF50", width=2), name="Live"
+    ))
 ```
 
-**Live equity curve divergence:** The live segment uses `alert_price` instead of theoretical `close` price. This means:
-- The R-multiples may differ (slippage).
-- The live cumulative R starts from the forward test cumulative R at the transition point, then diverges based on actual execution prices.
+**Forward test + live coexistence:** Both lines render for the same trades in the live period. The forward test line shows theoretical bar-close R-multiples; the live line shows actual alert-execution R-multiples. The gap between them is the slippage/divergence the user wants to monitor. This is an apples-to-apples comparison on the exact same trades.
 
 ### 13.4 Strategy Card Caption Enhancement
 
@@ -871,7 +886,15 @@ Delta column with ▲/▼ indicators showing where live outperforms or underperf
 
 **Goal:** Bridge the gap between backtesting and real-world trading with account management, balance tracking, and real-time intra-bar alert capabilities.
 
-**Prerequisite:** Phase 13 (alert tracking) should be complete for full value, but Phase 14 can be partially implemented independently.
+**Prerequisite:** Phase 13 (alert tracking) should be complete for full value, but Phase 14A can be implemented independently.
+
+**Split rationale:** Phase 14 is divided into **14A** (account management — no external dependencies, COMPLETE) and **14B** (unified streaming alert engine — Alpaca SIP subscription now active at $99/mo). 14B replaces the polling-based alert monitor with a WebSocket-first architecture that handles both `[I]` and `[C]` triggers from a single tick stream, achieving sub-millisecond alert latency and enabling sub-minute candle support (10s, 30s) for high-frequency trading use cases.
+
+### Phase 14A: Account Management (no Alpaca upgrade needed)
+Sections: 14.1–14.6
+
+### Phase 14B: Unified Streaming Alert Engine (Alpaca SIP active)
+Sections: 14.7–14.8. Replaces polling-based alert monitor with WebSocket-first architecture. Both `[I]` (intra-bar) and `[C]` (bar-close) triggers evaluated from a single real-time tick stream. Polling retained as degraded-mode fallback only.
 
 ### 14.1 Account Management Tab
 
@@ -976,176 +999,239 @@ When webhook-triggered trades resolve (from Phase 13's live executions):
 - Y-axis: running balance (cumulative sum of ledger amounts).
 - Color: deposits/withdrawals shown as step changes, trading P&L as gradual.
 
-### 14.7 Intra-Bar Real-Time Alert Engine
+### 14.7 Unified Streaming Alert Engine
 
-**This is the most complex item in Phase 14.** It enables real-time alerting for `[I]` (intra-bar) triggers using WebSocket streaming.
+**This is the most complex item in Phase 14.** It replaces the polling-based alert monitor with a WebSocket-first architecture where a single Alpaca SIP tick stream powers both `[I]` (intra-bar) and `[C]` (bar-close) trigger evaluation.
 
-**Current state:** Alert monitoring uses bar-close polling — it loads the latest completed bar and checks trigger conditions. This works for `[C]` (close-only) triggers but misses intra-bar price movements.
+**Current state:** Alert monitoring uses bar-close polling (`alert_monitor.py`) — it sleeps until the next candle close, fetches the completed bar via REST API, and checks trigger conditions. This adds 4-6 seconds of latency per bar close and doesn't support intra-bar price-level triggers. For HFT use cases and sub-minute candles, this is unacceptable.
 
-**Architecture:**
+**New architecture:**
 
 ```
-┌─────────────────────────────────────────────────┐
-│              ALERT ENGINE (alert_monitor.py)     │
-├─────────────────────────────────────────────────┤
-│                                                  │
-│  [C] Triggers ──→ Bar-Close Poller (existing)   │
-│                    - Runs every bar close        │
-│                    - Uses completed OHLCV bars   │
-│                    - detect_signals() from       │
-│                      alerts.py                   │
-│                                                  │
-│  [I] Triggers ──→ WebSocket Streamer (NEW)      │
-│                    - Alpaca real-time trades/    │
-│                      quotes feed                 │
-│                    - Builds partial OHLCV bars   │
-│                    - Checks trigger conditions   │
-│                      against live ticks          │
-│                    - Fires alert immediately     │
-│                      when condition met          │
-│                                                  │
-│  Alpaca Data Feed Requirements:                  │
-│  - SIP feed ($99/mo): All symbols, real-time    │
-│  - IEX feed (free): 30 symbols, ~15min delay    │
-│                                                  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│           UNIFIED STREAMING ENGINE (realtime_engine.py)          │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  Alpaca SIP WebSocket ──→ on_trade(symbol, price, volume, ts)   │
+│                                   │                               │
+│                    ┌──────────────┴──────────────┐               │
+│                    ▼                              ▼               │
+│         [I] Trigger Check                  Bar Builder           │
+│         (every tick)                    (per symbol/timeframe)    │
+│         - Price vs cached level         - Aggregates ticks into  │
+│         - O(1) float comparison           OHLCV bars             │
+│         - Cooldown dedup               - Multiple TFs from one   │
+│                                           tick stream            │
+│                                         - Clock-aligned periods  │
+│                                                  │               │
+│                                           Bar Complete?          │
+│                                             │        │           │
+│                                            YES       NO          │
+│                                             │                    │
+│                                             ▼                    │
+│                                  Incremental Indicators          │
+│                                  - Append bar to history         │
+│                                  - Compute latest values         │
+│                                  - Update cached trigger levels  │
+│                                             │                    │
+│                                             ▼                    │
+│                                    [C] Trigger Check             │
+│                                    - Bar-close conditions        │
+│                                    - Full indicator context      │
+│                                             │                    │
+│                                             ▼                    │
+│                            ┌────────────────────────────┐       │
+│                            │  Alert Pipeline             │       │
+│                            │  save_alert() + send_webhook()│    │
+│                            └────────────────────────────┘       │
+│                                                                   │
+│  FALLBACK: alert_monitor.py polling (on WebSocket disconnect)    │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-**New file: `src/realtime_engine.py` (~300-400 lines)**
+**Rewrite: `src/realtime_engine.py` (~500-600 lines)**
 
+Core components:
+
+**1. BarBuilder — multi-timeframe bar aggregation from ticks**
 ```python
-"""
-Real-time intra-bar alert engine using Alpaca WebSocket streaming.
+class BarBuilder:
+    """Builds OHLCV bars from tick data for a single symbol at a specific timeframe."""
 
-Subscribes to real-time trades/quotes for active [I]-trigger strategy symbols.
-Builds partial OHLCV bars from tick data and checks trigger conditions.
-"""
-import asyncio
-import threading
-from datetime import datetime
-from typing import Dict, Set, Optional
-from collections import defaultdict
+    def __init__(self, symbol: str, timeframe_seconds: int):
+        self.symbol = symbol
+        self.tf_seconds = timeframe_seconds
+        self.current_bar: Optional[PartialBar] = None
+        self.history: pd.DataFrame  # Rolling N-bar history for indicator computation
 
-class RealtimeAlertEngine:
-    def __init__(self):
-        self.active_symbols: Set[str] = set()
-        self.partial_bars: Dict[str, dict] = {}  # symbol -> current partial bar
-        self.strategies: list = []                # Active [I]-trigger strategies
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self, strategies: list):
-        """Start the real-time engine for strategies with [I] triggers."""
-        self.strategies = [s for s in strategies if self._has_intrabar_triggers(s)]
-        if not self.strategies:
-            return
-        self.active_symbols = {s['symbol'] for s in self.strategies}
-        self._running = True
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-
-    def _has_intrabar_triggers(self, strategy: dict) -> bool:
-        """Check if strategy uses any [I] execution type triggers."""
-        # Check trigger execution_type property from confluence_groups
-        # [I] triggers fire intra-bar, [C] triggers fire at bar close
-        # Implementation depends on trigger metadata
-        pass
-
-    def _run_loop(self):
-        """Main event loop — connect to Alpaca WebSocket and process ticks."""
-        asyncio.run(self._stream_data())
-
-    async def _stream_data(self):
-        """Subscribe to Alpaca real-time data and process ticks."""
-        try:
-            from alpaca.data.live import StockDataStream
-            stream = StockDataStream(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-
-            async def on_trade(trade):
-                self._process_tick(trade.symbol, float(trade.price), trade.timestamp)
-
-            for symbol in self.active_symbols:
-                stream.subscribe_trades(on_trade, symbol)
-
-            await stream.run()
-        except Exception as e:
-            print(f"Realtime stream error: {e}")
-
-    def _process_tick(self, symbol: str, price: float, timestamp):
-        """Process a single trade tick — update partial bar and check triggers."""
-        # Update partial OHLCV bar
-        bar = self.partial_bars.get(symbol)
-        if bar is None or self._is_new_bar_period(bar, timestamp):
-            # Start new bar
-            self.partial_bars[symbol] = {
-                'open': price, 'high': price, 'low': price,
-                'close': price, 'volume': 0, 'bar_start': timestamp
-            }
+    def process_tick(self, price: float, volume: int, timestamp: datetime) -> Optional[dict]:
+        """Update current bar. Returns completed bar dict if bar period elapsed, else None."""
+        bar_start = self._align_to_period(timestamp)
+        if self.current_bar is None or bar_start > self.current_bar.bar_start:
+            completed = self.current_bar.to_dict() if self.current_bar else None
+            self.current_bar = PartialBar(price, bar_start, self.tf_seconds)
+            self.current_bar.update(price, volume)
+            if completed:
+                self._append_to_history(completed)
+            return completed
         else:
-            bar['high'] = max(bar['high'], price)
-            bar['low'] = min(bar['low'], price)
-            bar['close'] = price
-            bar['volume'] += 1
+            self.current_bar.update(price, volume)
+            return None
 
-        # Check trigger conditions for strategies using this symbol
-        for strategy in self.strategies:
-            if strategy['symbol'] != symbol:
-                continue
-            self._check_intrabar_triggers(strategy, symbol, price)
+    def _align_to_period(self, ts: datetime) -> datetime:
+        """Snap timestamp to the start of its bar period (clock-aligned)."""
+        # For 60s bars: 9:31:23 → 9:31:00
+        # For 10s bars: 9:31:23 → 9:31:20
+        epoch = ts.timestamp()
+        aligned = epoch - (epoch % self.tf_seconds)
+        return datetime.fromtimestamp(aligned, tz=ts.tzinfo)
+```
 
-    def _check_intrabar_triggers(self, strategy, symbol, current_price):
-        """Check if any [I] trigger conditions are met at current price."""
-        # This is the core logic — evaluate trigger conditions against live price
-        # For price-level triggers (e.g., UT Bot trail crossing):
-        #   Compare current_price against the trigger level computed from the last complete bar
-        # If condition met: fire alert via save_alert() and send_webhook()
-        pass
+**2. SymbolHub — per-symbol tick dispatcher to multiple timeframes**
+```python
+class SymbolHub:
+    """Manages all bar builders and trigger evaluations for a single symbol."""
+
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.bar_builders: Dict[int, BarBuilder] = {}  # tf_seconds -> BarBuilder
+        self.indicator_cache: Dict[int, dict] = {}     # tf_seconds -> latest indicator values
+        self.trigger_levels: Dict[str, float] = {}     # trigger_id -> cached price level for [I]
+        self.strategies: List[dict] = []               # Strategies using this symbol
+
+    def add_timeframe(self, tf_seconds: int, warmup_df: pd.DataFrame):
+        """Register a timeframe and seed with historical bar data for indicator warmup."""
+        builder = BarBuilder(self.symbol, tf_seconds)
+        builder.history = warmup_df
+        self.bar_builders[tf_seconds] = builder
+
+    def on_tick(self, price: float, volume: int, timestamp: datetime):
+        """Process tick: check [I] triggers, update all bar builders, check [C] on complete."""
+        # 1. [I] trigger evaluation — every tick
+        self._check_intrabar_triggers(price, timestamp)
+
+        # 2. Update each timeframe's bar builder
+        for tf_seconds, builder in self.bar_builders.items():
+            completed_bar = builder.process_tick(price, volume, timestamp)
+            if completed_bar is not None:
+                # 3. Bar closed — run incremental indicator pipeline
+                indicators = self._compute_incremental_indicators(tf_seconds, builder.history)
+                self.indicator_cache[tf_seconds] = indicators
+                # 4. Update cached trigger levels for [I] triggers
+                self._update_trigger_levels(tf_seconds, indicators)
+                # 5. [C] trigger evaluation — bar close only
+                self._check_barclose_triggers(tf_seconds, indicators, completed_bar, timestamp)
+```
+
+**3. TriggerLevelCache — pre-computed price levels for [I] evaluation**
+```python
+class TriggerLevelCache:
+    """Caches trigger price levels computed from the last completed bar's indicators."""
+
+    def __init__(self):
+        self.levels: Dict[str, TriggerLevel] = {}  # strategy_id:trigger_id -> level
+
+    def update_from_indicators(self, strategy: dict, indicators: dict):
+        """Recompute trigger levels from latest indicator values."""
+        # Example: UT Bot trailing stop
+        #   level = indicators['utbot_stop']  (last row value)
+        #   direction = 'above' if strategy['direction'] == 'LONG' else 'below'
+
+    def check(self, strategy_id: str, trigger_id: str, price: float) -> bool:
+        """O(1) price comparison against cached level."""
+        level = self.levels.get(f"{strategy_id}:{trigger_id}")
+        if level is None:
+            return False
+        if level.direction == 'above':
+            return price > level.value
+        return price < level.value
+```
+
+**4. Alert cooldown — deduplication for [I] triggers**
+```python
+class AlertCooldown:
+    """Prevents duplicate [I] alerts within the same bar period."""
+
+    def __init__(self):
+        self._fired: Dict[str, datetime] = {}  # strategy_id:trigger_id -> last_fire_time
+
+    def can_fire(self, key: str, timestamp: datetime, cooldown_seconds: int) -> bool:
+        last = self._fired.get(key)
+        if last and (timestamp - last).total_seconds() < cooldown_seconds:
+            return False
+        self._fired[key] = timestamp
+        return True
+```
+
+**5. Engine lifecycle and WebSocket management**
+```python
+class UnifiedStreamingEngine:
+    """Main engine — manages WebSocket connection, SymbolHubs, and fallback."""
+
+    def __init__(self):
+        self.hubs: Dict[str, SymbolHub] = {}        # symbol -> SymbolHub
+        self.cooldown = AlertCooldown()
+        self._running = False
+        self._connected = False
+        self._thread: Optional[threading.Thread] = None
+        self._alert_callback = None
+
+    def start(self, strategies: list, alert_callback=None):
+        """Start the engine for all monitored strategies (not just [I])."""
+        # Group strategies by symbol
+        # For each symbol: create SymbolHub, register timeframes
+        # Seed each BarBuilder with historical data for indicator warmup
+        # Start WebSocket thread
+
+    def _on_disconnect(self):
+        """WebSocket dropped — activate polling fallback."""
+        self._connected = False
+        # Signal alert_monitor.py to resume polling
+        # Attempt reconnection with exponential backoff (5s, 10s, 20s, 40s, cap 60s)
+
+    def _on_reconnect(self):
+        """WebSocket restored — deactivate polling fallback."""
+        self._connected = True
+        # Signal alert_monitor.py to pause polling
+        # Re-seed bar builders with bars missed during disconnect
 ```
 
 **Key design decisions:**
-- The WebSocket streamer runs in a separate daemon thread.
-- Partial bars are constructed from tick data but the full pipeline (indicators, interpreters) still runs on completed bars.
-- `[I]` triggers check price-level crossings against levels computed from the last completed bar (e.g., UT Bot trailing stop level, EMA value).
-- `[C]` triggers continue using the existing bar-close polling model unchanged.
+- **Single tick stream, multiple timeframes** — One Alpaca WebSocket subscription per symbol feeds all timeframe bar builders. 10s, 1m, and 5m bars for the same symbol are built from the same tick data.
+- **SymbolHub as the deduplication boundary** — All strategies on the same symbol share one hub. Indicator computation happens once per symbol/timeframe, not once per strategy.
+- **Warmup on startup** — Each `BarBuilder` is seeded with historical bars from `load_latest_bars()` on engine start. This ensures indicators (especially long-period ones like EMA-200) are accurate from the first completed bar.
+- **Clock-aligned bar periods** — `_align_to_period()` snaps tick timestamps to period boundaries. For 10s bars: `9:31:23 → 9:31:20`. For 1m bars: `9:31:23 → 9:31:00`. Bar completion is detected when a tick arrives in the next period.
+- **Polling fallback via status file** — `alert_monitor.py` reads `monitor_status.json` to check if the streaming engine is connected. When connected, the poller sleeps. When disconnected, the poller resumes its candle-close-aligned polling loop. No code changes to `alert_monitor.py` required — just a status check at the top of its poll loop.
+- **Sub-minute timeframe support** — The `BarBuilder` accepts any `timeframe_seconds` value. 10-second and 30-second bars are first-class citizens. The timeframe list in `app.py` will be extended to include these options.
 
-### 14.8 Data Feed Configuration
+### 14.8 Data Feed Configuration — COMPLETE
 
-**Location:** Settings page — new "Connections" subsection.
+**Location:** Settings page — "Connections" subsection (implemented Feb 17, 2026).
 
-```
-┌─────────────────────────────────────────────┐
-│  CONNECTIONS                                │
-├─────────────────────────────────────────────┤
-│  Alpaca API                                 │
-│  Status: ● Connected (Paper)                │
-│                                             │
-│  API Key: [text_input, masked]              │
-│  Secret Key: [text_input, masked]           │
-│  [Save] [Test Connection]                   │
-│                                             │
-│  Data Feed:                                 │
-│  ○ IEX (Free — 30 symbols, basic quotes)   │
-│  ● SIP ($99/mo — all symbols, real-time)    │
-│                                             │
-│  Real-Time Engine: [toggle]                 │
-│  Active Symbols: SPY, AAPL, TSLA (3)       │
-└─────────────────────────────────────────────┘
-```
+Alpaca API key status display (masked), data feed selector (IEX/SIP with description captions), real-time engine enable/disable toggle. SIP is now the default feed.
 
 ### 14.9 Implementation Order
 
-1. **Add `account` schema to portfolio dict** — ledger, notes, balance helpers.
-2. **Build Account Management tab** — balance display, ledger table, deposit/withdrawal forms.
-3. **Add Trading Notes** — text area with save/render.
-4. **Add Balance History Chart** — Plotly area chart from ledger.
-5. **Wire trading P&L integration** — auto-generate ledger entries from live executions (depends on Phase 13).
-6. **Create `src/realtime_engine.py`** — WebSocket streamer, partial bar builder, intra-bar trigger checker.
-7. **Add Connections subsection to Settings** — Alpaca config, data feed selection, engine toggle.
-8. **Integrate real-time engine with alert monitor** — start/stop engine based on active [I]-trigger strategies.
-9. **Syntax check.**
+**Phase 14A (COMPLETE):**
+1. ~~Add `account` schema to portfolio dict~~ ✓
+2. ~~Build Account Management tab~~ ✓
+3. ~~Add Trading Notes~~ ✓
+4. ~~Add Balance History Chart~~ ✓
+5. ~~Wire trading P&L integration~~ — depends on live execution data
+6. ~~Syntax check + commit~~ ✓
+
+**Phase 14B — Unified Streaming Alert Engine:**
+
+7. **Tag triggers with execution types** — Update built-in TEMPLATES in `confluence_groups.py` to mark appropriate triggers as `"intra_bar"`. Candidates: UT Bot buy/sell (price-level crossings), VWAP cross_above/cross_below. EMA/MACD cross triggers remain `"bar_close"` (depend on indicator values only meaningful at close). Wire `_has_intrabar_triggers()` in `realtime_engine.py` to look up execution type via `get_all_triggers()`.
+8. **Implement BarBuilder + SymbolHub** — Rewrite `realtime_engine.py` with the unified architecture: `BarBuilder` (multi-timeframe bar aggregation with clock-aligned periods), `SymbolHub` (per-symbol tick dispatcher), `TriggerLevelCache` (pre-computed price levels), `AlertCooldown` (deduplication).
+9. **Incremental indicator pipeline** — Add `compute_incremental_indicators()` helper that appends a new bar to a rolling DataFrame and runs `prepare_data_with_indicators()` on just the tail. Cache indicator history per (symbol, timeframe) in the `SymbolHub`.
+10. **Wire `[C]` trigger evaluation at bar close** — When `BarBuilder` detects a completed bar, run the incremental indicator pipeline and evaluate all `[C]` triggers for strategies using that symbol/timeframe. Use existing `detect_signals()` logic adapted for single-bar evaluation.
+11. **Wire `[I]` trigger evaluation on every tick** — Implement `TriggerLevelCache.update_from_indicators()` for each supported `[I]` trigger type. Evaluate `TriggerLevelCache.check()` on every tick. Fire alerts via `AlertCooldown` gate.
+12. **Startup warmup** — On engine start, call `load_latest_bars()` per symbol/timeframe to seed `BarBuilder.history` with enough bars for indicator warmup (same logic as `compute_signal_detection_bars()`).
+13. **Polling fallback integration** — Add status flag to `monitor_status.json` (`streaming_connected: true/false`). `alert_monitor.py` checks this flag at the top of its poll loop and sleeps when streaming is active. Engine sets flag on connect/disconnect. Add exponential backoff reconnection (5s → 10s → 20s → 40s → 60s cap).
+14. **Sub-minute timeframe support** — Extend `TIMEFRAMES` in `app.py` and related maps in `data_loader.py` / `mock_data.py` with 10-second and 30-second options. These timeframes are only usable with the streaming engine (no REST API fallback for sub-minute bars).
+15. **Syntax check + integration test with live SIP stream.**
 
 ---
 
@@ -1170,56 +1256,121 @@ Phase 12 (Webhook Inbound)
     (no hard downstream dependency)
 ```
 
-**Recommended execution order:** 11 → 12 → 13 → 14
+**Recommended execution order:** 11 → 12 → 13 → 14A → 14B
 
 **Parallel opportunities:**
 - Phase 11 and Phase 12 are independent — can be done in either order.
-- Phase 14.1-14.5 (Account Management) is independent of Phase 13.
-- Phase 14.6-14.8 (Real-Time Engine) depends on alert infrastructure but not specifically on Phase 13.
+- Phase 14A (Account Management) is independent of Phase 13.
+- Phase 14B (Unified Streaming Engine) depends on alert infrastructure (Phase 13) and SIP subscription (now active). The engine replaces the polling model for both `[I]` and `[C]` triggers, so it touches `alert_monitor.py` integration (fallback coordination) and `realtime_engine.py` (full rewrite of scaffold).
 
 ---
 
 ## Verification Checklist Per Phase
 
-### Phase 11
-- [ ] `calculate_kpis()` returns all new KPI fields
-- [ ] Strategy detail shows tabbed KPI panel with all categories
-- [ ] Edge Check toggle shows 21-MA + Bollinger Bands on equity curve
-- [ ] Rolling metrics chart renders with Win Rate / PF / Sharpe toggles
-- [ ] Return distribution shows Histogram / Box Plot / Violin views
-- [ ] Markov section shows transition probabilities, streak chart, edge decay
-- [ ] Market regime detection scatter plot renders
-- [ ] Markov insights generate 2-4 text summaries
-- [ ] Guards work: metrics show "—" when trade count is below threshold
-- [ ] Existing KPIs on strategy cards unchanged
+### Phase 11 — COMPLETE
+- [x] `calculate_kpis()` returns all new KPI fields
+- [x] Strategy detail shows tabbed KPI panel with all categories
+- [x] Edge Check toggle shows 21-MA + Bollinger Bands on equity curve
+- [x] Rolling metrics chart renders with Win Rate / PF / Sharpe toggles
+- [x] Return distribution shows Histogram / Box Plot / Violin views
+- [x] Markov section shows transition probabilities, streak chart, edge decay
+- [x] Market regime detection scatter plot renders
+- [x] Markov insights generate 2-4 text summaries
+- [x] Guards work: metrics show "—" when trade count is below threshold
+- [x] Existing KPIs on strategy cards unchanged
 
-### Phase 12
-- [ ] Strategy origin selectbox shows "Standard" and "Webhook Inbound"
-- [ ] Webhook Inbound hides entry/exit trigger sections
-- [ ] Webhook config fields render (secret, JSON path, signal mapping)
-- [ ] CSV upload parses signals and pairs entries/exits
-- [ ] Backtest runs with stop/target logic on uploaded signals
-- [ ] KPIs and equity curve generate from webhook backtest
-- [ ] Webhook server starts and receives POST requests
-- [ ] Inbound signals are processed and added to stored_trades
-- [ ] `OPTIMIZABLE_PARAMS` updated for webhook fields
+### Phase 12 — COMPLETE
+- [x] Strategy origin selectbox shows "Standard" and "Webhook Inbound"
+- [x] Webhook Inbound hides entry/exit trigger sections
+- [x] Webhook config fields render (secret, JSON path, signal mapping)
+- [x] CSV upload parses signals and pairs entries/exits
+- [x] Backtest runs with stop/target logic on uploaded signals
+- [x] KPIs and equity curve generate from webhook backtest
+- [x] Webhook server starts and receives POST requests
+- [x] Inbound signals are processed and added to stored_trades
+- [x] `OPTIMIZABLE_PARAMS` updated for webhook fields
 
-### Phase 13
-- [ ] Alert matching correlates fired alerts with forward test trades
-- [ ] Three-color equity curve renders (blue/orange/green segments)
-- [ ] Strategy card captions show colored BT/Fwd/Live durations
-- [ ] Mini equity curves show three-color segments
-- [ ] Discrepancies displayed on cards (badge) and detail (table)
-- [ ] Alert tracking toggle persists to strategy dict
-- [ ] "Live vs. Forward" comparison tab shows side-by-side KPIs
-- [ ] Matching runs on each data refresh when tracking enabled
+### Phase 13 — COMPLETE (pending live data validation)
+- [x] Alert matching correlates fired alerts with forward test trades
+- [x] Three-color equity curve renders (blue/orange/green segments)
+- [x] Strategy card captions show colored BT/Fwd/Live durations
+- [x] Mini equity curves show three-color segments
+- [x] Discrepancies displayed on cards (badge) and detail (table)
+- [x] Alert tracking toggle persists to strategy dict
+- [x] "Live vs. Forward" comparison tab shows side-by-side KPIs
+- [x] Matching runs on each data refresh when tracking enabled
+- **Note:** Needs spoofed live execution data to validate visually — no real alerts have been fired yet.
 
-### Phase 14
-- [ ] Account Management tab appears on portfolio detail
-- [ ] Deposit and withdrawal forms work, append to ledger
-- [ ] Balance computed correctly from ledger sum
-- [ ] Balance history chart renders
-- [ ] Trading notes save and render markdown
-- [ ] Real-time engine connects to Alpaca WebSocket (when configured)
-- [ ] Intra-bar triggers fire on tick data
-- [ ] Connections section in Settings shows Alpaca status
+### Phase 14A — COMPLETE
+- [x] Account Management tab appears on portfolio detail
+- [x] Deposit and withdrawal forms work, append to ledger
+- [x] Balance computed correctly from ledger sum
+- [x] Balance history chart renders
+- [x] Trading notes save and render markdown
+- [x] Ledger record deletion — trash-can delete button per row with two-step Yes/No confirmation
+- [ ] Trading P&L auto-generates ledger entries from live executions — *depends on Phase 13 live data*
+
+### Phase 14B — DATA INFRASTRUCTURE COMPLETE (Feb 17, 2026); Unified Streaming Engine in planning
+- [x] Connections section in Settings shows Alpaca API key status (masked) and data feed selection (IEX/SIP)
+- [x] Real-time engine scaffolded (`src/realtime_engine.py` created)
+- [x] **Alpaca SIP subscription active** — User upgraded to paid plan ($99/mo). All data paths now use SIP consolidated feed
+- [x] **Data feed wiring** — `feed` parameter threaded through `data_loader.py` → `app.py` (`prepare_data_with_indicators`, all preview functions) → `alert_monitor.py` (`load_cached_bars`, `poll_strategies`) → `alerts.py` (`detect_signals`). Feed included in `@st.cache_data` key for proper cache busting
+- [x] **UTC timezone fix** — `datetime.now()` → `datetime.now(timezone.utc)` in `load_from_alpaca()`. Prevents MST/PST systems from truncating 7+ hours of market data
+- [x] **RTH filter** — `_filter_rth()` in `data_loader.py` strips pre-market and after-hours bars. Converts bar timestamps to ET, keeps only 9:30 AM–4:00 PM. Matches TradingView RTH mode
+- [x] **Actual source tracking** — `_last_actual_source` module-level variable in `data_loader.py`. `get_data_source()` returns what was *actually* used (e.g., "Alpaca SIP" vs "Mock Data") rather than configured source. Prevents silent mock-data fallback from misleading UI captions
+- [x] **EMA warmup** — All preview functions load 30 days (~11,700 RTH bars) for indicator warmup, then `df.iloc[-display_bars:]` trims to last 3 days for display. EMA 200 now converges properly
+- [x] **Data feed default changed** — `SETTINGS_DEFAULTS['data_feed']` changed from `"iex"` to `"sip"`
+- [ ] Built-in triggers tagged with correct execution types (`bar_close` / `intra_bar`)
+- [ ] `BarBuilder` assembles OHLCV bars from ticks with clock-aligned periods
+- [ ] `SymbolHub` dispatches ticks to multiple timeframe `BarBuilder` instances per symbol
+- [ ] `TriggerLevelCache` stores pre-computed price levels, updated on bar close
+- [ ] `AlertCooldown` prevents duplicate `[I]` alerts within the same bar period
+- [ ] `UnifiedStreamingEngine` manages WebSocket connection, hubs, and lifecycle
+- [ ] `[C]` triggers evaluated at locally-detected bar close (millisecond latency, no API poll)
+- [ ] `[I]` triggers evaluated on every tick via cached trigger level comparison
+- [ ] Startup warmup seeds bar builders with historical data from `load_latest_bars()`
+- [ ] Polling fallback activates on WebSocket disconnect, deactivates on reconnect
+- [ ] Sub-minute timeframes (10s, 30s) supported via bar builder
+- [ ] Engine status visible on Connections settings page (connected, symbols, latency)
+
+### QA Fixes Applied — Round 1 (Feb 16, 2026)
+- [x] Extended KPIs (Phase 11) now visible in Forward Test view — rewrote `render_kpi_comparison()` with tabbed layout
+- [x] Webhook strategy builder — fixed 6 runtime errors (RangeIndex, unbound `selected`, undefined `strat`, missing columns, empty confluence records, missing market data)
+- [x] Webhook drill-down tabs — TF Conditions and General tabs now populate with confluence records from market data indicators
+- [x] General packs defaults — `dow_weekdays` and `cal_avoid_fomc_nfp` now default to `enabled=True`
+- [x] Confluence pack enabled/disabled checkboxes now control drill-down tab visibility — added `get_enabled_interpreter_keys()` for TF packs and `get_enabled_gp_columns()` for General packs, threaded through strategy builder call sites
+- [x] Fixed early-return tuple bug in `_generate_webhook_backtest_trades()` when no signal pairs found
+
+### QA Fixes Applied — Round 2 (Feb 16, 2026)
+- [x] **Confluence filtering scoped to builder only** — Reverted `enabled_interpreter_keys` and `get_enabled_gp_columns()` from 6 non-builder call sites (`prepare_forward_test_data`, `get_strategy_trades`, `_generate_incremental_trades`, `render_live_backtest`, extended backtest, RM pack detail) and alerts.py. Disabled packs no longer cause "No trades generated" on portfolios or strategy detail pages.
+- [x] **Webhook strategy detail page** — `render_forward_test_view()` now detects webhook strategies (`is_webhook` flag), skips `len(df) == 0` early return, computes trading days from trade timestamps, and shows informational messages on Price Chart / Confluence / Extended tabs. Fixed `Timestamp` not subscriptable error by converting to `str()` before slicing.
+- [x] **Null confluence ID crash** — Fixed `NoneType.startswith` in `_get_strategy_relevant_groups()` when webhook strategies have `null` entry/exit trigger confluence IDs. Changed `strat.get(..., '')` to `strat.get(...) or ''`.
+- [x] **Ledger record deletion** — Added trash-can delete button per ledger row with two-step Yes/No confirmation. Wired to existing `remove_ledger_entry()` from portfolios.py.
+- [x] **Phase 13 spoofed test data** — SPY LONG strategy (id=1) populated with 40 live_executions across 11 trading days, 5 discrepancies (3 missed, 2 phantom), 42 matching alerts. Forward test start moved to Jan 20 for 27-day forward test window.
+- [x] **Strategy card BT days** — Added `data_days` fallback for BT days display on strategy cards when `lookback_start_date` is not set.
+
+### Data Infrastructure Improvements (Feb 17, 2026)
+*Alpaca SIP upgrade, RTH filtering, timezone fix, EMA warmup — all data paths now produce charts matching TradingView.*
+
+- [x] **Alpaca SIP wiring** — Added `feed` parameter to `load_from_alpaca()`, `load_market_data()`, `load_latest_bars()` in `data_loader.py`. Added `_get_data_feed()` helper in `app.py`. Added `data_feed` parameter to `prepare_data_with_indicators()` (included in `@st.cache_data` key for proper cache busting). Updated all 8 call sites in `app.py`, all 4 preview `load_market_data` calls, `alert_monitor.py` (`load_cached_bars`, `poll_strategies`), and `alerts.py` (`detect_signals`).
+- [x] **UTC timezone fix** — Root cause: `datetime.now()` on MST system returned local time as naive datetime; Alpaca interpreted as UTC, cutting off 7 hours of market data. Fix: `datetime.now(timezone.utc)` in `load_from_alpaca()`.
+- [x] **RTH filter** — `_filter_rth()` converts bar timestamps to Eastern Time via `pytz`, keeps only 9:30 AM–4:00 PM ET. Applied after Alpaca fetch in `load_from_alpaca()`. Matches TradingView's RTH mode.
+- [x] **Actual source tracking** — Added `_last_actual_source` module-level variable. `get_data_source()` returns what was *actually* used on the last `load_market_data()` call. Prevents UI showing "Alpaca SIP" when data silently fell back to mock.
+- [x] **EMA warmup in previews** — Changed all 4 preview render functions (`_render_ema_stack_preview`, `_render_macd_preview`, `_render_vwap_preview`, `_render_gp_preview`, `_render_rmp_preview`) from `days=3` to `days=30`. After running indicators, display trimmed to last 3 days: `df = df.iloc[-display_bars:]`.
+- [x] **Default data feed** — `SETTINGS_DEFAULTS['data_feed']` changed from `"iex"` to `"sip"`.
+
+### Phase 16 Implementation Notes (Feb 16–17, 2026)
+*AI-Assisted Confluence Pack Builder — see PRD Phase 16 for full feature list.*
+
+**New files created:**
+- `src/pack_spec.py` (~200 lines) — Manifest schema, `ALLOWED_IMPORTS`, `DISALLOWED_CALLS`, `DISALLOWED_MODULES`. `validate_manifest()`, `validate_python_file()` (AST walk), `validate_function_exists()`.
+- `src/pack_registry.py` (~350 lines) — `RegisteredPack` dataclass, `scan_and_load_all()`, `load_single_pack()`, `register_pack()`, `unregister_pack()`, `delete_pack()`, `_import_module_safely()`. Wrapper factories adapt user `(df, **params)` signatures to match built-in `(df)` signatures.
+- `src/pack_builder_context.py` (~400 lines) — `generate_architecture_context()`, `assemble_prompt()`, Pine Script translation reference, complete pack examples for all 3 types.
+- `user_packs/` directory with example packs (Bollinger Bands, S/R Channels)
+
+**Existing files modified:**
+- `src/interpreters.py` — Added `INTERPRETER_FUNCS` and `TRIGGER_FUNCS` mutable dicts. Registered all built-in functions. Rewrote `run_all_interpreters()` and `detect_all_triggers()` to dispatch from registries. Added `register_interpreter()`, `register_trigger_detector()`, `unregister_interpreter()`, `unregister_trigger_detector()`.
+- `src/indicators.py` — Added `GROUP_INDICATOR_FUNCS` registry. Extracted per-template logic into named functions. Rewrote `run_indicators_for_group()` to dispatch from registry. Added `register_group_indicator()`, `unregister_group_indicator()`.
+- `src/confluence_groups.py` — Guard to skip groups whose `base_template` is not in TEMPLATES (handles removed user packs).
+- `src/triggers.py` — Generic suffix-based opposite trigger lookup (`_bull↔_bear`, `_up↔_down`, `_buy↔_sell`) as fallback.
+- `src/app.py` — `pack_registry.scan_and_load_all()` on startup. User Packs tab, Pack Builder tab with full guided workflow (type selector, description, Pine Script input, parameter rows, generate prompt, paste-back, validation, preview with dynamic charts, install). Preview uses real Alpaca SIP data.

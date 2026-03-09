@@ -29,6 +29,12 @@
         "value": 3,
         "threshold_pct": 0.5,
         "description": "At least 3 days with 0.5%+ gain"
+      },
+      {
+        "name": "Daily Pause",
+        "type": "daily_pause_pct",
+        "value": 1.5,
+        "description": "Pause trading if daily loss exceeds 1.5%"
       }
     ],
     "created_at": "2026-02-05T16:34:15.033378"

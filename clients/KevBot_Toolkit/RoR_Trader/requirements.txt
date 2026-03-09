@@ -15,7 +15,7 @@ streamlit>=1.32.0
 
 # Visualization
 plotly>=5.18.0
-streamlit-lightweight-charts>=0.7.0
+-e ./streamlit_lwc_fork  # vendored fork: LWC v4.2 + createPriceLine + primitives
 
 # Database (local storage for MVP)
 # sqlite3 is built-in to Python

@@ -31,13 +31,13 @@
       "base_template": "day_of_week",
       "version": "All Weekdays",
       "description": "Trade all weekdays (default)",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "monday": true,
-        "tuesday": true,
+        "tuesday": false,
         "wednesday": true,
-        "thursday": true,
+        "thursday": false,
         "friday": true
       }
     },
@@ -46,7 +46,7 @@
       "base_template": "calendar_filter",
       "version": "Avoid FOMC & NFP",
       "description": "Skip trading on FOMC and NFP days",
-      "enabled": false,
+      "enabled": true,
       "is_default": true,
       "parameters": {
         "avoid_fomc": true,
