@@ -1631,7 +1631,14 @@ class PositionStateMachine:
         self.state.stop_price = stop_price
         self.state.initial_stop_price = stop_price
         self.state.target_price = target_price
-        self.state.entry_bar_count = bar_count
+        # Use bar_count + 1 so that entry_bar_count matches the bar_count
+        # value that on_bar_close will receive when the entry bar closes.
+        # In the live path, intra-bar entries set bar_count = builder._bar_count
+        # (incremented when the *previous* bar closed).  The entry bar hasn't
+        # closed yet, so its on_bar_close will see bar_count = current + 1.
+        # This aligns with the backtest, where entry and exit checks happen
+        # inside the same process_bar() call (entry_bar_count == bar_count).
+        self.state.entry_bar_count = bar_count + 1
         self.state.entry_trigger = trigger_id
         self.state.exec_type = exec_type
 

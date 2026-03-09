@@ -2330,7 +2330,7 @@ Every trigger is classified into one of four execution types. The type is intrin
 
 > **Future: Minimum Gate Bars Parameter** — Adding a `min_gate_bars` parameter to L-type triggers that requires price to remain on the opposite side of the level for N consecutive bars before the gate opens. This filters out "flash" crosses where price briefly dips below/above the level for a single bar before reverting. Default of 1 preserves current behavior. Requires counter tracking in TriggerEvaluator + Strategy Builder UI field.
 
-##### Phase 30I: Live QA Hardening — COMPLETED 2026-03-06
+##### Phase 30I: Live QA Hardening — COMPLETED 2026-03-09
 Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-bar count exit, 5-bar swing stop) uncovered and fixed multiple backtest–live parity issues:
 
 - [x] **Alert timestamp alignment** — `on_bar_close()` in ralph_engine was using `bar_start + tf_seconds - 1` (bar-end) for alert timestamps; backtest uses `bar_start` (bar-open). Fixed: alerts now use raw bar_start timestamp, matching backtest convention and chart candle positioning.
@@ -2342,6 +2342,13 @@ Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-b
 - [x] **1-bar cooldown** — Prevents re-entry on the same bar as exit, reducing whipsaw trades from rapid exit→re-entry sequences. Added `last_exit_bar_count` field to `PositionState`; both `check_entry()` and `check_entry_intrabar()` skip if `last_exit_bar_count >= bar_count`. Preserved across `_reset_position()`.
 - [x] **L-type entry ATR parity** — Backtest was using current bar's ATR for L-type entry stop computation; live only has previous bar's ATR since current bar hasn't closed. Fixed: backtest uses `prev_values` for L-type stop/target computation, matching live behaviour.
 - [x] **`last_exit_bar_count` propagation in live path** — `_signal_exit()` accepts optional `bar_count` parameter; `check_exit_bar_close()` passes it for all exit types. Tick-level exits (`check_exit_tick()`, `check_exit_intrabar()`) record via caller (`on_tick()` in ralph_engine).
+- [x] **L-type intra-bar `entry_bar_count` alignment** — `check_entry_intrabar()` was setting `entry_bar_count = bar_count` (the builder's count from the *previous* bar close), but `on_bar_close` receives `bar_count + 1` (incremented when the entry bar closes). This off-by-one caused `bars_held` to be 1 on the entry bar close (instead of 0), making bar_count_exit fire 1 bar early for L-type entries. Also broke `same_bar_ltype` guard and HM/HL confirmation check. Fixed: `entry_bar_count = bar_count + 1` in `check_entry_intrabar()`, aligning with the bar_count value the entry bar's `on_bar_close` will receive. C-type entries (via `check_entry()`) unchanged — already aligned.
+- [x] **`last_exit_bar_count` rebase on restart** — After engine restart, `last_exit_bar_count` from the old session (e.g., 4900) persisted while the new session's `bar_count` restarted from warmup length (~300). The 1-bar cooldown check (`last_exit_bar_count >= bar_count`) permanently blocked ALL entries for every strategy. The existing rebase logic only handled `entry_bar_count` for IN_POSITION strategies. Fixed: reset `last_exit_bar_count` to 0 for any strategy where the old value exceeds the current `bar_count` after warmup.
+
+**Live QA verification — 2026-03-09:**
+- All trigger execution types (C-type and L-type) confirmed firing correctly with proper timing
+- Entry and exit alert markers (×) align with backtest markers (+) on the live chart
+- Alert dispatch and webhook delivery working as expected across all monitored strategies
 
 **Live QA findings — alert vs backtest exit price drift:**
 - L-type entry markers (× and +) align closely because both systems price off computed indicator levels
@@ -2367,7 +2374,7 @@ Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-b
 6. **Phase 30F** ✅ live chart migrated to unified engine + open-position entry markers
 7. **Phase 30G** ✅ L0/L1 naming + _prev level bugfix — backtest fill prices now correct for V2 triggers
 8. **Phase 30H** ✅ L-type gate timing fix — correct crossover semantics for UT Bot V2 and EMA V2 triggers
-9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity
+9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity, L-type bar_count alignment, restart rebase
 10. Existing C-type strategies migrate automatically (trigger classification is additive)
 11. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 

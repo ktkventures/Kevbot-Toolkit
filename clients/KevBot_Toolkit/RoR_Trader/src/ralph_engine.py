@@ -779,16 +779,26 @@ class RalphEngine:
         # Load warmup data and initialize indicators
         self._warmup_all()
 
-        # Rebase entry_bar_count for restored positions.  After restart
+        # Rebase bar-count fields for restored positions.  After restart
         # the bar_count counter starts fresh from warmup length, so the
-        # old session's entry_bar_count is meaningless.  Reset it to the
-        # current bar_count so bar_count_exit counts from now.
+        # old session's values are meaningless.
         for sym, hub in self.hubs.items():
             for tf_seconds, builder in hub.builders.items():
                 cur_bc = builder._bar_count
                 for monitor in hub.monitors.values():
-                    if (monitor.tf_seconds == tf_seconds and
-                            monitor.position.state.status == 'IN_POSITION'):
+                    if monitor.tf_seconds != tf_seconds:
+                        continue
+
+                    # Reset last_exit_bar_count so the 1-bar cooldown
+                    # doesn't permanently block entries after restart.
+                    old_lebc = monitor.position.state.last_exit_bar_count
+                    if old_lebc > cur_bc:
+                        monitor.position.state.last_exit_bar_count = 0
+                        logger.info(
+                            "Reset last_exit_bar_count for %s: %d → 0",
+                            monitor.strat_name, old_lebc)
+
+                    if monitor.position.state.status == 'IN_POSITION':
                         old_ebc = monitor.position.state.entry_bar_count
                         if old_ebc > cur_bc:
                             monitor.position.state.entry_bar_count = cur_bc
