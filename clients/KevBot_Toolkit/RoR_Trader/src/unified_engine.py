@@ -91,7 +91,9 @@ INTRABAR_LEVEL_MAP: Dict[str, Dict[str, str]] = {
 
 # L-type triggers: prev-bar-close-opposite-side gating
 # (as opposed to H-type gating which requires bar-close C-type trigger to fire)
-_IB_L_TYPE_TRIGGERS = frozenset({
+# Mutable set: user packs can register additional L-type triggers at runtime
+# via pack_registry._inject_intrabar_level_map().
+_IB_L_TYPE_TRIGGERS: set = {
     'vwap_cross_above', 'vwap_cross_below',
     'vwap_enter_upper_extreme', 'vwap_enter_lower_extreme',
     'ema_pp_cross_short_up', 'ema_pp_cross_short_down',
@@ -99,7 +101,7 @@ _IB_L_TYPE_TRIGGERS = frozenset({
     'ema_pp_v2_cross_short_up', 'ema_pp_v2_cross_short_down',
     'ema_pp_v2_cross_mid_up', 'ema_pp_v2_cross_mid_down',
     'utbot_v2_buy', 'utbot_v2_sell',
-})
+}
 
 # Trigger execution type classification
 # C  = Bar Close
@@ -1550,6 +1552,7 @@ class PositionStateMachine:
             'exit_reason': exit_reason,
             'entry_trigger': self.state.entry_trigger,
             'exit_trigger': exit_trigger,
+            'exec_type': self.state.exec_type or 'C',
             'confluence_records': self.state.confluence_records or set(),
         }
 
@@ -2173,6 +2176,7 @@ def run_unified_backtest(
             'exit_reason': 'open',
             'entry_trigger': pos.entry_trigger,
             'exec_type': pos.exec_type,
+            'confluence_records': pos.confluence_records or set(),
         })
 
     # Build trades DataFrame

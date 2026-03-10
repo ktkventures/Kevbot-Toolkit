@@ -61,7 +61,7 @@ VALID_DISPLAY_TYPES = ["overlay", "oscillator", "hidden"]
 
 VALID_TRIGGER_DIRECTIONS = ["LONG", "SHORT", "BOTH"]
 VALID_TRIGGER_TYPES = ["ENTRY", "EXIT"]
-VALID_TRIGGER_EXECUTIONS = ["bar_close", "intra_bar"]
+VALID_TRIGGER_EXECUTIONS = ["bar_close", "intra_bar", "hybrid_market", "hybrid_limit"]
 
 VALID_PARAM_TYPES = ["int", "float", "str", "bool"]
 

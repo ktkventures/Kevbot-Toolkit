@@ -264,7 +264,10 @@ def register_pack(pack: RegisteredPack) -> None:
     # 3. Register group indicator function
     _inject_into_indicators(manifest, pack.indicator_func)
 
-    # 4. Auto-create ConfluenceGroup if none exists
+    # 4. Register intra-bar level mappings for L-type triggers
+    _inject_intrabar_level_map(manifest)
+
+    # 5. Auto-create ConfluenceGroup if none exists
     _ensure_confluence_group(manifest)
 
 
@@ -449,6 +452,48 @@ def _inject_into_indicators(
     if indicator_func:
         wrapper = _make_group_indicator_wrapper(indicator_func, manifest)
         register_group_indicator(manifest["slug"], wrapper)
+
+
+def _inject_intrabar_level_map(manifest: dict) -> None:
+    """Register intra-bar level mappings for user pack triggers.
+
+    Triggers with execution "intra_bar", "hybrid_market", or "hybrid_limit"
+    need entries in unified_engine.INTRABAR_LEVEL_MAP so the live engine
+    can detect level crosses on each tick and the backtest can simulate
+    intra-bar fills.
+
+    Each such trigger must declare a "level_column" and "cross" direction
+    in the manifest trigger definition.  Example:
+        {"base": "buy_ib", "execution": "intra_bar",
+         "level_column": "my_line_prev", "cross": "above", ...}
+    """
+    try:
+        from unified_engine import INTRABAR_LEVEL_MAP, _IB_L_TYPE_TRIGGERS
+    except ImportError:
+        return
+
+    prefix = manifest["trigger_prefix"]
+    for t in manifest.get("triggers", []):
+        if t.get("execution") not in ("intra_bar", "hybrid_market", "hybrid_limit"):
+            continue
+        level_col = t.get("level_column")
+        cross_dir = t.get("cross")
+        if not level_col or not cross_dir:
+            continue
+        base_key = f"{prefix}_{t['base']}"
+        # Strip _ib/_hm/_hl suffix to get the base trigger for the map
+        for suffix in ("_ib", "_hm", "_hl"):
+            if base_key.endswith(suffix):
+                base_key = base_key[:-len(suffix)]
+                break
+        entry = {"column": level_col, "cross": cross_dir}
+        param_key = t.get("param_key")
+        if param_key:
+            entry["param_key"] = param_key
+        INTRABAR_LEVEL_MAP[base_key] = entry
+        # Register as L-type for gate logic (mutable set workaround)
+        if t.get("execution") == "intra_bar":
+            _IB_L_TYPE_TRIGGERS.add(base_key)
 
 
 def _ensure_confluence_group(manifest: dict) -> None:

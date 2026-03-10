@@ -263,34 +263,64 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
 - Use `.shift(1)` to compare current bar with previous bar for crosses
 - Trigger detection should be vectorized (boolean operations on Series)
 
-### Intra-Bar Triggers and Realistic Entry Prices
+### Trigger Execution Types
 
-Triggers can use `"execution": "intra_bar"` to fill at a specific indicator level rather than the bar's close price. This is more realistic for crossover-based entries because the trade would execute when price reaches the indicator line, not at bar close.
+Every trigger has an execution type that determines when it fires and at what price. There are four execution types available:
 
-**How intra-bar triggers work:**
-- Define both a bar-close trigger and an `_ib` companion in the manifest:
-  ```json
+| Execution | Suffix | Fill Price | When It Fires | Manifest Value |
+|-----------|--------|-----------|---------------|----------------|
+| **Bar Close (C)** | _(none)_ | Bar close price | At bar close | `"bar_close"` |
+| **Intra-Bar (L-type)** | `_ib` | Indicator level | When price crosses level mid-bar | `"intra_bar"` |
+| **Hybrid Market (HM)** | `_hm` | Indicator level | Intra-bar cross + bar-close confirmation | `"hybrid_market"` |
+| **Hybrid Limit (HL)** | `_hl` | Indicator level | Intra-bar cross + bar-close confirmation | `"hybrid_limit"` |
+
+**Bar Close (C):** Standard entry/exit at bar close price. The trigger boolean fires when the bar closes.
+
+**Intra-Bar (L-type):** Enters when price crosses an indicator level within the bar. More realistic for crossover-based entries. The fill price is the indicator level, not bar close. Classified as L0 (current bar's level) or L1 (previous bar's level) based on whether the level column uses a `_prev` suffix.
+
+**Hybrid Market (HM):** Enters intra-bar like L-type, but checks bar-close confirmation. If the indicator state does NOT confirm the trade direction at bar close, the position exits at market (next tick) — conservative approach that limits unconfirmed exposure to one bar.
+
+**Hybrid Limit (HL):** Same as HM for entry, but on non-confirmation places a virtual limit order at the entry price (break-even exit). If price returns to entry, exits at no loss. Otherwise falls through to normal exit rules — optimistic approach.
+
+**Declaring triggers with execution types in the manifest:**
+
+For a pack with all four variants:
+```json
+"triggers": [
   {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-  {"base": "buy_ib", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy"}
-  ```
-- The `_ib` trigger shares the same boolean signal as its bar-close base but fills at the indicator level
-- The entry level mapping is registered in `realtime_engine.py`'s `INTRABAR_LEVEL_MAP`
+  {"base": "buy_ib", "name": "Buy Signal [L]", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
+  {"base": "buy_hm", "name": "Buy Signal [HM]", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
+  {"base": "buy_hl", "name": "Buy Signal [HL]", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"}
+]
+```
 
-**Important — use the previous bar's indicator level for entry price:**
+**Required fields for intra-bar/hybrid triggers:**
+- `column_base`: The bar-close trigger base whose boolean this trigger shares
+- `level_column`: The DataFrame column containing the indicator level for fills (registered automatically in `INTRABAR_LEVEL_MAP`)
+- `cross`: Direction of the level cross — `"above"` or `"below"`
 
-When an indicator line recalculates on the signal candle (e.g., an ATR trailing stop that flips direction, or any dynamic line), the current bar's indicator value is NOT the level price crossed. The realistic entry price is the **previous bar's** indicator level — that's the line price actually had to cross to trigger the signal.
+These fields are used to register the trigger in the unified engine's `INTRABAR_LEVEL_MAP` at pack install time, enabling both backtest simulation and live tick-level detection.
 
-To handle this correctly:
-1. In `indicator.py`, add a `_prev` column: `result["your_line_prev"] = result["your_line"].shift(1)`
-2. In `INTRABAR_LEVEL_MAP`, map the `_ib` trigger to the `_prev` column:
-   ```python
-   "your_prefix_buy": {"column": "your_line_prev", "cross": "above"}
-   ```
-3. The trigger still fires on the same candle as the crossover, but the fill price uses the previous bar's level
+### L0 vs L1 Classification
 
-This prevents artificially favorable backtesting results from indicators that shift when they change state.
+Intra-bar triggers are automatically classified based on the `level_column`:
+- **L0** (current bar's level): Column does NOT end in `_prev` (e.g., `"vwap"`) — the cross level updates every bar
+- **L1** (previous bar's level): Column ends in `_prev` (e.g., `"utbot_stop_prev"`) — the cross level is fixed from the previous bar
 
-**When to use `_prev` columns:** Any indicator where the plotted line recalculates or jumps when the signal fires (ATR trailing stops, dynamic support/resistance, adaptive moving averages). Static or slow-moving indicators like standard EMAs generally don't need this since the EMA value barely changes bar-to-bar.
+**When to use `_prev` columns (L1):** Any indicator where the plotted line recalculates or jumps when the signal fires (ATR trailing stops, dynamic support/resistance, adaptive moving averages). The realistic entry price is the **previous bar's** level — that's the line price actually had to cross.
+
+To create a `_prev` column in `indicator.py`:
+```python
+result["your_line_prev"] = result["your_line"].shift(1)
+```
+
+**When to use current columns (L0):** Static or slow-moving indicators where the level barely changes bar-to-bar (VWAP, standard EMAs). The current bar's level is close enough to the actual cross price.
+
+### Gate Logic for Intra-Bar Triggers
+
+All intra-bar and hybrid triggers use a gate: the previous bar's close must be on the **opposite side** of the indicator level from the cross direction. This prevents phantom entries on bars where price is already past the level.
+
+The gate is computed automatically by the unified engine — pack authors only need to declare `level_column` and `cross` in the trigger definition.
 
 ---
 

@@ -1,7 +1,7 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.51
-**Date:** March 4, 2026
+**Version:** 0.52
+**Date:** March 9, 2026
 **Author:** Kevin Johnson
 **Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A/C/E/F done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
 
@@ -1738,15 +1738,61 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - Existing strategies, portfolios, and alerts successfully migrated from JSON
 - Git push to main triggers automatic deployment
 
-### Phase 23: Scanner Strategy Origin
-*Strategy origin not tied to a single ticker — runs against a universe of stocks matching screener criteria. Targets active day trading / scalping use cases (S&B Capital, Warrior Trading style).*
+### Phase 23: Scanner Strategy Method — Stock Scanner & Dynamic Universe Trading
+*Third strategy method type: scanner-based strategies that trade a dynamic universe of stocks matching configurable filter criteria. Targets active day trading / scalping use cases (Warrior Trading pre-market news plays, SMB Capital stocks-in-play scalping, gap-and-go setups).*
 
-- [ ] Add "Scanner" option to Strategy Origin selectbox
-- [ ] Scanner configuration fields — screener criteria (price range, volume, gap %, sector, float), universe source (Alpaca screener APIs), scan frequency
-- [ ] 1:many ticker architecture — a single scanner strategy evaluates triggers across all matching symbols; trades attributed to individual symbols but KPIs aggregated at strategy level
-- [ ] Scanner backtest — run trigger/confluence evaluation across historical screener results; requires architecture planning for data volume and performance
-- [ ] Scanner forward test — periodic scan + signal detection across matching symbols in real-time
-- [ ] Requires separate planning session for architecture given fundamental 1:many ticker relationship vs. current 1:1 model
+**Dependency:** Phase 31 (Polygon.io migration) — scanner requires Polygon's all-tickers snapshot endpoint, reference data API, and news API.
+
+**Detailed reference:** `docs/Scanner_Reference.md` — complete filter metrics tree, UI specification, Scanz reference screenshots, backtesting architecture, and system integration vision.
+
+**Scanner UI (three collapsible sections):**
+- [ ] **Filter Rules** — rule builder with metric tree (8 categories: Price, Change, Liquidity, Technical, Capital Structure, Short Interest, Financials, News), operators (>, <, =, >=, <=), static values or metric-vs-metric comparisons with temporal offsets (N days/candles ago, average of N), session scoping (Pre-Market, Regular Hours, After Hours, Full Day), per-rule toggle on/off, drag reorder, "Add as column to results" checkbox
+- [ ] **Results Table** — dynamic watchlist of qualifying tickers with real-time updates, sortable columns, Market/Security Type/Watchlist filters, customizable columns
+- [ ] **Activity Log** — timestamped ENTERED/EXITED events tracking when tickers join or leave the qualifying set
+
+**Scanner CRUD:**
+- [ ] Save/load scanner presets with custom names (JSON-based, like strategies/portfolios)
+- [ ] Pre-built "Stocks in Play" scanner templates (pre-market movers, after-hours gainers, etc.)
+- [ ] Ticker detail pane — click a ticker to see price chart + news feed
+
+**Strategy Builder integration:**
+- [ ] Add "Scanner-Based" option to Strategy Method selector (alongside Ticker-Based and Webhook-Based)
+- [ ] Scanner selection dropdown (select from saved scanners, similar to confluence pack selection)
+- [ ] Entry/exit triggers, confluence, stops configured identically to ticker-based strategies
+- [ ] Scanner acts as additional filter layer: trade fires only when ticker qualifies AND entry trigger fires AND confluence met
+
+**Backtest engine (time-varying universe):**
+- [ ] Two-loop architecture: outer loop evaluates scanner filters per bar across all tickers, inner loop runs strategy triggers on qualifying tickers
+- [ ] Staged filtering for performance: cheap filters first (static reference data), then snapshot-level (price/volume/change), then expensive (technical indicators) only on survivors
+- [ ] Position persistence: once in a position, exit governed by strategy triggers (stop/target/signal), NOT by ticker falling out of scanner
+- [ ] Portfolio-level position limits enforced across all scanner-sourced trades
+
+**Backtest results (multi-ticker):**
+- [ ] Aggregate KPIs across all trades on all qualifying tickers (win rate, avg R, profit factor, etc.)
+- [ ] Ticker column in trade table identifying which stock each trade was on
+- [ ] Scanner Activity timeline showing historical qualification events
+- [ ] Composite equity curve aggregating P&L across all ticker trades
+- [ ] Per-ticker drill-down reusing existing chart infrastructure
+- [ ] Scanner hit rate metric (qualifying events that produced actual entries)
+
+**Live trading integration:**
+- [ ] Scanner evaluation engine polls Polygon snapshot endpoint on configurable interval
+- [ ] Qualifying tickers get Ralph Engine instances (WebSocket subscription + unified engine triggers)
+- [ ] Alert dispatch via existing webhook pipeline (Discord/Slack) — no downstream changes needed
+- [ ] Tickers unsubscribed when disqualifying (if FLAT; held positions continue until strategy exit)
+
+**News evaluation pipeline (future enhancement):**
+- [ ] Polygon News API integration for ticker-level news feed
+- [ ] LLM-based news classification: novelty detection (is this actually new?), category (earnings/FDA/partnership/offering), sentiment, magnitude
+- [ ] News as scanner filter or confluence condition (e.g., "news count > 0 AND sentiment = positive")
+- [ ] Historical news data enables backtesting news-driven strategies
+
+**Data sources (Polygon):**
+- [ ] Snapshot endpoint (`/v2/snapshot/locale/us/markets/stocks/tickers`) — all-market scanner sweeps
+- [ ] Reference data (`/v3/reference/tickers`) — float, market cap, shares outstanding, sector
+- [ ] Historical aggregates — for RVOL, ATR, moving average lookbacks
+- [ ] News API (`/v2/reference/news`) — timestamped news articles with ticker tags
+- [ ] Short interest — NOT available from Polygon; evaluate FINRA/Ortex as supplementary source
 
 ### Phase 24: Sub-Minute Historical Data & HFT Backtesting
 *Build our own sub-minute historical data by recording tick streams for priority tickers, and/or integrate alternative data providers (Databento, Polygon.io, etc.) to enable backtesting on sub-minute timeframes (5s, 10s, 15s, 30s).*
@@ -2363,6 +2409,23 @@ Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-b
 - [x] Migrated all 4 strategy builder analyzer functions from `generate_trades()` (batch pipeline) to `_unified_trades()` (unified engine): `analyze_entry_triggers()`, `analyze_exit_triggers()`, `find_best_exit_combinations()`, `analyze_risk_management()`
 - [x] Each analyzer builds a synthetic strategy dict with the varied parameter and delegates to `_unified_trades()`, ensuring Entry/Exit/Stop Loss/Take Profit card KPIs match the top-level strategy KPIs exactly
 - [x] Fixed `UnboundLocalError` for `general_cols` in non-webhook strategy builder path
+
+**Alert Analysis & Pack Builder updates (2026-03-09):**
+- [x] **Alert Analysis exec type fix** — Timing analysis was checking `source == 'intra_bar'` but ralph_engine sets `source: 'ralph'` on all alerts, causing ALL alerts to be treated as bar-close for timing delta calculations. Fixed: derives exec type from trigger ID via `get_trigger_exec_type()`, correctly classifying C vs L0/L1/HM/HL
+- [x] **Alert Analysis new columns** — Added "Exec" (C/L0/L1/HM/HL) and "Trigger" columns to Trigger Timing table; added entry/exit trigger columns to Matched Trades table
+- [x] **Alert matching trigger field** — `match_alerts_to_trades()` now includes `trigger` field in execution records for downstream analysis
+- [x] **Pack Builder execution types** — Expanded `VALID_TRIGGER_EXECUTIONS` in pack_spec.py to accept `"hybrid_market"` and `"hybrid_limit"` alongside existing `"bar_close"` and `"intra_bar"`
+- [x] **Pack Builder AI prompt** — Rewrote intra-bar section of `pack_builder_context.md` with full execution type documentation (C/L0/L1/HM/HL), manifest field requirements (`level_column`, `cross`), gate logic, and examples for all four execution types
+- [x] **Pack Builder intra-bar registration** — New `_inject_intrabar_level_map()` in pack_registry.py auto-registers user pack triggers in `INTRABAR_LEVEL_MAP` and `_IB_L_TYPE_TRIGGERS` at install time, enabling tick-level detection in the live engine
+- [x] **`_IB_L_TYPE_TRIGGERS` extensibility** — Changed from `frozenset` to `set` so user packs can register L-type triggers at runtime
+
+> **Note:** Pack Builder and Alert Analysis updates should be re-validated after HM/HL live QA is complete.
+
+**Execution type tags & chart enhancements (2026-03-09):**
+- [x] **Execution type tags** — All 6 locations in app.py that displayed binary `[C]`/`[I]` badges now call `_execution_tag()`, correctly rendering `[C]`, `[L0]`, `[L1]`, `[HM]`, `[HL]` across strategy overview, "Current:" label, entry/exit analyzer results, and `find_best_exit_combinations()`
+- [x] **`exec_type` in closed trade records** — `get_trade_record()` in unified_engine.py was missing `exec_type` field (only open-position records had it). Now all trade records include `exec_type` for downstream use by chart markers, Alert Analysis, and trade tables
+- [x] **Exit price marker color coding** — Exit price markers (`+` and `x`) are now color-coded by exit reason: green (signal/target exit), red (stop loss), orange (HM/HL unconfirmed), teal (bar count exit). Exit arrows remain green/red for win/loss
+- [x] **Chart legend tooltip** — Added `st.popover("Chart Legend")` above every price chart documenting all marker types: entry/exit arrows, exit price markers with color meanings, and alert price markers
 
 #### Migration Path
 

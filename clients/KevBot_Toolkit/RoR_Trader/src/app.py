@@ -2060,7 +2060,8 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
     # Find all unique confluence records
     all_records = set()
     for records in base_trades["confluence_records"]:
-        all_records.update(records)
+        if isinstance(records, set):
+            all_records.update(records)
 
     # Remove already-required records
     if required:
@@ -2300,7 +2301,7 @@ def find_best_exit_combinations(
                 break
         _tdef = all_trigger_defs.get(cid)
         _exec = _tdef.execution if _tdef else 'bar_close'
-        _badge = "[C]" if _exec == 'bar_close' else "[I]"
+        _badge = _execution_tag(_tdef.id, _exec).replace('`', '') if _tdef else "[C]"
         exit_info[cid] = {'is_bar_count': is_bar_count, 'bar_count_val': bar_count_val,
                           'name': exit_triggers[cid],
                           'name_with_badge': f"{_badge} {exit_triggers[cid]}"}
@@ -2899,9 +2900,20 @@ def render_price_chart(
                     'text': f"{trade['r_multiple']:+.1f}R"
                 })
                 if _has_prices and exit_time >= min_time and pd.notna(trade.get('exit_price')):
+                    # Color exit price marker by exit reason
+                    _exit_reason = trade.get('exit_reason', '')
+                    if _exit_reason == 'stop':
+                        _price_color = '#f44336'      # Red — stop loss
+                    elif _exit_reason in ('unconfirmed_hm', 'unconfirmed_hl'):
+                        _price_color = '#FF9800'      # Orange — hybrid unconfirmed
+                    elif _exit_reason == 'bar_count_exit':
+                        _price_color = '#26A69A'      # Teal — bar count exit
+                    else:
+                        _price_color = '#4CAF50'      # Green — signal/target exit
                     target_exit_data.append({
                         "time": exit_time,
                         "value": float(trade['exit_price']),
+                        "color": _price_color,
                     })
 
     # Build alert-price markers (right ◂) — only when real alerts exist
@@ -2953,7 +2965,19 @@ def render_price_chart(
                     if not is_open and exit_ts >= min_time:
                         for a_ts, a_price in exit_alerts_parsed:
                             if abs(a_ts - exit_ts) <= tf_sec * 2:
-                                alert_exit_data.append({"time": int(exit_ts), "value": a_price})
+                                _er = trade.get('exit_reason', '')
+                                if _er == 'stop':
+                                    _ac = 'rgba(244,67,54,0.8)'
+                                elif _er in ('unconfirmed_hm', 'unconfirmed_hl'):
+                                    _ac = 'rgba(255,152,0,0.8)'
+                                elif _er == 'bar_count_exit':
+                                    _ac = 'rgba(38,166,154,0.8)'
+                                else:
+                                    _ac = 'rgba(76,175,80,0.8)'
+                                alert_exit_data.append({
+                                    "time": int(exit_ts), "value": a_price,
+                                    "color": _ac,
+                                })
                                 break
         except Exception:
             pass  # Alerts not available — skip alert-price markers
@@ -3026,12 +3050,15 @@ def render_price_chart(
     if target_exit_data:
         target_exit_markers = [
             {"time": d["time"], "position": "inBar", "shape": "cross",
-             "color": "#4CAF50", "size": 1}
+             "color": d.get("color", "#4CAF50"), "size": 1}
             for d in target_exit_data
         ]
+        # Strip extra keys before passing to Line series data
+        _exit_line_data = [{"time": d["time"], "value": d["value"]}
+                           for d in target_exit_data]
         series.append({
             "type": "Line",
-            "data": target_exit_data,
+            "data": _exit_line_data,
             "options": {
                 "color": "#4CAF50",
                 "lineVisible": False,
@@ -3068,12 +3095,14 @@ def render_price_chart(
     if alert_exit_data:
         alert_exit_markers = [
             {"time": d["time"], "position": "inBar", "shape": "xcross",
-             "color": "rgba(76,175,80,0.8)", "size": 1}
+             "color": d.get("color", "rgba(76,175,80,0.8)"), "size": 1}
             for d in alert_exit_data
         ]
+        _alert_exit_line_data = [{"time": d["time"], "value": d["value"]}
+                                  for d in alert_exit_data]
         series.append({
             "type": "Line",
-            "data": alert_exit_data,
+            "data": _alert_exit_line_data,
             "options": {
                 "color": "rgba(76,175,80,0.6)",
                 "lineVisible": False,
@@ -3165,6 +3194,24 @@ def render_price_chart(
                 for s in pane.get("series", []):
                     s["data"] = [d for d in s["data"] if d["time"] >= min_time]
         chart_panes.extend(secondary_panes)
+
+    # Chart legend tooltip
+    with st.popover("Chart Legend"):
+        st.markdown(
+            "**Entry/Exit Arrows**\n"
+            "- :blue[Arrow up/down] — Entry (closed trade)\n"
+            "- :orange[Arrow up/down] — Open position\n"
+            "- :green[Arrow up/down] — Exit (win)\n"
+            "- :red[Arrow up/down] — Exit (loss)\n\n"
+            "**Exit Price Markers** _(color = exit reason)_\n"
+            "- :green[+] / :green[x] — Signal or target exit\n"
+            "- :red[+] / :red[x] — Stop loss\n"
+            "- :orange[+] / :orange[x] — Hybrid unconfirmed (HM/HL)\n"
+            "- Teal **+** / **x** — Bar count exit\n\n"
+            "**Entry Price Markers**\n"
+            "- :blue[+] — Backtest entry price\n"
+            "- :blue[x] — Alert entry price"
+        )
 
     renderLightweightCharts(chart_panes, key=chart_key)
 
@@ -4729,7 +4776,7 @@ def render_strategy_builder():
             st.caption("**Entry**")
             e_name = config.get('entry_trigger_name') or '?'
             _e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
-            _e_badge = "`[C]`" if not _e_tdef or _e_tdef.execution == 'bar_close' else "`[I]`"
+            _e_badge = _execution_tag(_e_tdef.id, _e_tdef.execution) if _e_tdef else "`[C]`"
             st.markdown(f"{_e_badge} _{e_name}_")
 
         # 2. Exit Trigger(s)
@@ -4749,7 +4796,7 @@ def render_strategy_builder():
                 e_col1, e_col2 = st.columns([4, 1])
                 with e_col1:
                     _ex_tdef = _ov_all_tdefs.get(ecid or '') if ecid else None
-                    _ex_badge = "`[C]`" if not _ex_tdef or _ex_tdef.execution == 'bar_close' else "`[I]`"
+                    _ex_badge = _execution_tag(_ex_tdef.id, _ex_tdef.execution) if _ex_tdef else "`[C]`"
                     st.markdown(f"{_ex_badge} _{ename}_")
                 with e_col2:
                     if st.button("✕", key=f"var_rm_exit_{idx_e}"):
@@ -5054,7 +5101,7 @@ def render_strategy_builder():
             # Active entry tag
             entry_tag_name = config.get('entry_trigger_name') or '?'
             _cur_e_tdef = _ov_all_tdefs.get(config.get('entry_trigger_confluence_id', ''))
-            _cur_e_badge = "`[C]`" if not _cur_e_tdef or _cur_e_tdef.execution == 'bar_close' else "`[I]`"
+            _cur_e_badge = _execution_tag(_cur_e_tdef.id, _cur_e_tdef.execution) if _cur_e_tdef else "`[C]`"
             st.caption(f"Current: {_cur_e_badge} **{entry_tag_name}**")
 
             # Build confluence set for filtering
@@ -5085,7 +5132,7 @@ def render_strategy_builder():
 
                 for _, row in display_df.iterrows():
                     is_current = (row['trigger_id'] == current_entry_cid)
-                    _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
+                    _exec_badge = _execution_tag(row.get('trigger_id', ''), row.get('execution', 'bar_close'))
                     with st.container(border=True):
                         t1, t2 = st.columns([4.3, 0.7])
                         with t1:
@@ -5205,7 +5252,7 @@ def render_strategy_builder():
 
                     for _, row in display_df.iterrows():
                         is_current = (row['trigger_id'] in current_exit_cids)
-                        _exec_badge = "`[C]`" if row.get('execution', 'bar_close') == 'bar_close' else "`[I]`"
+                        _exec_badge = _execution_tag(row.get('trigger_id', ''), row.get('execution', 'bar_close'))
                         with st.container(border=True):
                             t1, t2 = st.columns([4.3, 0.7])
                             with t1:
@@ -7645,12 +7692,14 @@ def _compute_alert_analysis(strat: dict) -> dict:
     # time by the bar duration so the delta reflects real latency from the
     # bar close, not from the bar start.
     from ralph_engine import TIMEFRAME_SECONDS as _TFS
+    from unified_engine import get_trigger_exec_type as _get_exec_type
     _bar_period_s = _TFS.get(strat.get('timeframe', '1Min'), 60)
     for ex in live_execs:
         tidx = ex.get('matched_trade_index')
         trade = stored[tidx] if tidx is not None and tidx < len(stored) else {}
-        source = ex.get('source', 'unknown')
-        is_intrabar = source == 'intra_bar'
+        trigger = ex.get('trigger', '')
+        exec_type = _get_exec_type(trigger) if trigger else 'C'
+        is_intrabar = exec_type != 'C'
         if ex.get('type') == 'entry':
             theo_time_raw = trade.get('entry_time', '')
         else:
@@ -7678,7 +7727,8 @@ def _compute_alert_analysis(strat: dict) -> dict:
         timing_rows.append({
             "Trade #": (tidx - ft_start_idx + 1) if tidx is not None else "?",
             "Type": ex.get('type', '').title(),
-            "Source": "Intra-Bar" if is_intrabar else "Bar Close",
+            "Exec": exec_type,
+            "Trigger": _trigger_label(trigger) if trigger else "\u2014",
             "Theo Time": format_display_ts(theo_time_raw) if theo_time_raw else "\u2014",
             "Alert Time": format_display_ts(alert_time_raw) if alert_time_raw else "\u2014",
             "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
@@ -8088,11 +8138,15 @@ def render_alert_analysis_tab(strat: dict):
                         pass
                 _en_alert_ts = format_display_ts(_en_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _en_ex and _en_ex.get('alert_timestamp') else "\u2014"
                 _ex_alert_ts = format_display_ts(_ex_ex.get('alert_timestamp', ''), '%m/%d %H:%M:%S') if _ex_ex and _ex_ex.get('alert_timestamp') else "\u2014"
+                _en_trigger = _en_ex.get('trigger', '') if _en_ex else ''
+                _ex_trigger = _ex_ex.get('trigger', '') if _ex_ex else ''
                 matched_rows.append({
                     "Trade #": idx - _ft_si + 1,
+                    "Entry": _trigger_label(_en_trigger) if _en_trigger else "\u2014",
                     "Entry Candle": format_display_ts(_t.get('entry_time', ''), '%m/%d %H:%M:%S'),
                     "Entry Alert Time": _en_alert_ts,
                     "Entry \u0394": _entry_delta or "\u2014",
+                    "Exit": _trigger_label(_ex_trigger) if _ex_trigger else "\u2014",
                     "Exit Candle": format_display_ts(_t.get('exit_time', ''), '%m/%d %H:%M:%S') if _t.get('exit_time') else "\u2014",
                     "Exit Alert Time": _ex_alert_ts,
                     "Exit \u0394": _exit_delta or "\u2014",
