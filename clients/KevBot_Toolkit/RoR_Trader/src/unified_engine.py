@@ -1410,6 +1410,14 @@ class PositionStateMachine:
             atr = fill_price * 0.01
 
         stop_price = self._compute_stop(fill_price, atr, vals_for_stop)
+
+        # Stop-validity guard: reject entry if stop is on the wrong side
+        # (e.g. swing stop above entry during a gap-down L-type fill)
+        if self.state.direction == 'LONG' and stop_price >= fill_price:
+            return None
+        if self.state.direction == 'SHORT' and stop_price <= fill_price:
+            return None
+
         target_price = self._compute_target(fill_price, stop_price, atr,
                                             vals_for_stop)
 
@@ -1623,6 +1631,13 @@ class PositionStateMachine:
             atr = fill_price * 0.01
 
         stop_price = self._compute_stop(fill_price, atr, current_values)
+
+        # Stop-validity guard: reject entry if stop is on the wrong side
+        if self.state.direction == 'LONG' and stop_price >= fill_price:
+            return None
+        if self.state.direction == 'SHORT' and stop_price <= fill_price:
+            return None
+
         target_price = self._compute_target(fill_price, stop_price, atr,
                                             current_values)
 

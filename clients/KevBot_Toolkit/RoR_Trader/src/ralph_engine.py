@@ -250,6 +250,37 @@ class BarBuilder:
         if len(self.history) > MAX_HISTORY:
             self.history = self.history.iloc[-MAX_HISTORY:]
 
+    def force_close_stale_bar(self, now: datetime) -> Optional[dict]:
+        """Close the partial bar if wall-clock time has passed bar_end.
+
+        Returns the completed bar dict, or None if no bar was stale.
+        Gap-fills any missing intermediate bars (same logic as process_tick).
+        """
+        if self._partial is None:
+            return None
+        bar_end = self._partial.bar_start + timedelta(seconds=self.tf_seconds)
+        if now < bar_end:
+            return None  # Bar still forming
+        fill_close = self._partial.close
+        completed = self._close_bar()
+        # Fill gap bars between bar_end and current period
+        current_period = self._align_to_period(now)
+        gap_ts = bar_end
+        while gap_ts < current_period:
+            self._append_to_history({
+                'timestamp': gap_ts.isoformat(),
+                'open': fill_close, 'high': fill_close,
+                'low': fill_close, 'close': fill_close,
+                'volume': 0,
+            })
+            self._bar_count += 1
+            gap_ts += timedelta(seconds=self.tf_seconds)
+        # Start a new partial bar at the current period using last known
+        # close, so that arriving ticks will update it normally.
+        if current_period >= bar_end:
+            self._partial = PartialBar(fill_close, current_period,
+                                       self.tf_seconds)
+        return completed
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -688,6 +719,47 @@ class SymbolHub:
                 if signals and alert_callback:
                     for sig in signals:
                         alert_callback(sig, monitor.strategy, config)
+
+    def flush_stale_bars(self, now: datetime,
+                         alert_callback: Callable = None,
+                         config: dict = None,
+                         auditor: 'FidelityAuditor' = None):
+        """Force-close any bars whose period has expired (wall-clock driven).
+
+        This ensures bar-close signals fire promptly even when no ticks
+        arrive (e.g., after-hours low liquidity).  Called from the
+        periodic tasks loop every PICKLE_WRITE_INTERVAL seconds.
+        """
+        for tf_seconds, builder in self.builders.items():
+            completed = builder.force_close_stale_bar(now)
+            if completed is None:
+                continue
+
+            # Run all monitors for this timeframe — same as on_tick bar-close
+            for monitor in self.monitors.values():
+                if monitor.tf_seconds != tf_seconds:
+                    continue
+                if not _is_in_session(now, monitor.session):
+                    continue
+
+                signals, audit_data = monitor.on_bar_close(
+                    completed, builder._bar_count)
+                if signals and alert_callback:
+                    for sig in signals:
+                        alert_callback(sig, monitor.strategy, config)
+
+                if auditor:
+                    auditor.log_bar_close(
+                        symbol=self.symbol,
+                        tf_seconds=tf_seconds,
+                        bar=completed,
+                        indicator_values=audit_data['indicator_values'],
+                        trigger_booleans=audit_data['trigger_booleans'],
+                        interpreter_states=audit_data[
+                            'interpreter_states'],
+                        positions={monitor.strat_id:
+                                   audit_data['position_state']},
+                    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1170,6 +1242,25 @@ class RalphEngine:
                     break
 
                 now = time.monotonic()
+
+                # Flush stale bars — force-close any bars whose period has
+                # expired based on wall-clock time.  This ensures bar-close
+                # signals (especially bar_count_exit) fire promptly even
+                # during low-liquidity periods (after-hours) where ticks
+                # may arrive many seconds after bar period ends.
+                # Runs in the event loop (not thread pool) to serialize
+                # with the tick handler — no lock needed.
+                try:
+                    utc_now = datetime.now(timezone.utc)
+                    for hub in self.hubs.values():
+                        hub.flush_stale_bars(
+                            utc_now,
+                            alert_callback=self._on_alert,
+                            config=self._config,
+                            auditor=self.auditor,
+                        )
+                except Exception as e:
+                    logger.debug("Stale bar flush error: %s", e)
 
                 # Pickle writes — offloaded to thread pool
                 try:

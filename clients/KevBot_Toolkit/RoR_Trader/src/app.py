@@ -3790,6 +3790,56 @@ def main():
         else:
             st.warning(f"{data_source}")
 
+        # ── Position Monitor ──
+        _all_strats = load_strategies()
+        _tracked = [s for s in _all_strats if s.get('alert_tracking_enabled')]
+        if _tracked:
+            st.markdown("---")
+            st.markdown("**Position Monitor**")
+            _total_anomalies = 0
+            _total_open = 0
+            _issues = []  # (strategy, health_dict)
+            for _ts in _tracked:
+                _health = compute_position_health(_ts)
+                if not _health['has_alerts']:
+                    continue
+                _n_anom = len(_health['anomalies'])
+                _is_open = _health['state'] == 'IN_POSITION'
+                _is_overdue = (_is_open and _health['expected_max_sec']
+                               and _health['open_duration']
+                               and _health['open_duration'] > _health['expected_max_sec'] * 2)
+                _total_anomalies += _n_anom
+                if _is_open:
+                    _total_open += 1
+                if _n_anom > 0 or _is_overdue or not _health['balanced']:
+                    _issues.append((_ts, _health))
+
+            if not _issues:
+                if _total_open > 0:
+                    st.info(f"{_total_open} open position(s) — no anomalies")
+                else:
+                    st.success("All clear")
+            else:
+                for _ts_issue, _h in _issues:
+                    _sid = _ts_issue['id']
+                    _name = _ts_issue.get('name', f'Strategy {_sid}')
+                    _parts = []
+                    if _h['anomalies']:
+                        _parts.append(f"{len(_h['anomalies'])} anomaly(ies)")
+                    if not _h['balanced']:
+                        _parts.append("entry/exit mismatch")
+                    if (_h['state'] == 'IN_POSITION' and _h['expected_max_sec']
+                            and _h['open_duration']
+                            and _h['open_duration'] > _h['expected_max_sec'] * 2):
+                        _parts.append("OVERDUE")
+                    _detail = ", ".join(_parts)
+                    st.error(f"**{_name}**: {_detail}", icon="\u26a0\ufe0f")
+                    if st.button(f"View {_name}", key=f"sb_ph_{_sid}", type="primary", use_container_width=True):
+                        st.session_state.viewing_strategy_id = _sid
+                        st.session_state.main_nav = "Strategies"
+                        st.session_state.sub_nav_strategies = "My Strategies"
+                        st.rerun()
+
     # Top navigation bar
     section = st.radio(
         "Navigation",
@@ -7705,19 +7755,26 @@ def _compute_alert_analysis(strat: dict) -> dict:
         else:
             theo_time_raw = trade.get('exit_time', '')
         alert_time_raw = ex.get('alert_timestamp', '')
+        # For C-type (bar-close) signals, the trade timestamp is the bar
+        # START, but the alert fires at bar CLOSE.  Shift the theoretical
+        # time forward by one bar period so the displayed time and delta
+        # reflect actual expected alert time.
+        theo_display_raw = theo_time_raw
+        if not is_intrabar and theo_time_raw:
+            try:
+                _shifted = _to_utc(theo_time_raw) + timedelta(seconds=_bar_period_s)
+                theo_display_raw = _shifted.isoformat()
+            except (ValueError, TypeError):
+                pass
         time_delta_s = None
         try:
-            if theo_time_raw and alert_time_raw:
-                theo_dt = _to_utc(theo_time_raw)
+            if theo_display_raw and alert_time_raw:
+                theo_dt = _to_utc(theo_display_raw)
                 alert_dt = _to_utc(alert_time_raw)
-                raw_delta = (alert_dt - theo_dt).total_seconds()
+                time_delta_s = (alert_dt - theo_dt).total_seconds()
                 if is_intrabar:
-                    time_delta_s = raw_delta
                     intrabar_time_deltas.append(time_delta_s)
                 else:
-                    # Offset by bar period: trade timestamp = bar START,
-                    # alert fires at bar CLOSE + tick latency
-                    time_delta_s = raw_delta - _bar_period_s
                     barclose_time_deltas.append(time_delta_s)
         except (ValueError, TypeError):
             pass
@@ -7729,7 +7786,7 @@ def _compute_alert_analysis(strat: dict) -> dict:
             "Type": ex.get('type', '').title(),
             "Exec": exec_type,
             "Trigger": _trigger_label(trigger) if trigger else "\u2014",
-            "Theo Time": format_display_ts(theo_time_raw) if theo_time_raw else "\u2014",
+            "Theo Time": format_display_ts(theo_display_raw) if theo_display_raw else "\u2014",
             "Alert Time": format_display_ts(alert_time_raw) if alert_time_raw else "\u2014",
             "Time \u0394 (s)": f"{time_delta_s:+.0f}" if time_delta_s is not None else "\u2014",
             "Theo Price": f"${theo_price:.2f}" if theo_price else "\u2014",
@@ -7845,6 +7902,110 @@ def _compute_alert_analysis(strat: dict) -> dict:
         'entry_dollar_slips': entry_dollar_slips, 'exit_dollar_slips': exit_dollar_slips,
         'barclose_time_deltas': barclose_time_deltas, 'intrabar_time_deltas': intrabar_time_deltas,
         'tbt_rows': tbt_rows, 'tbt_dollar_rows': tbt_dollar_rows, 'ft_start_idx': ft_start_idx,
+    }
+
+
+def compute_position_health(strat: dict) -> dict:
+    """Compute position health metrics from alert sequence.
+
+    Returns dict with: state, entry_time, entry_price, entry_alert_id,
+    open_duration, total_entries, total_exits, holds, longest_hold,
+    anomalies, expected_max_sec, balanced.
+    """
+    from ralph_engine import TIMEFRAME_SECONDS as _TFS_PH
+    alerts = sorted(
+        get_alerts_for_strategy(strat['id']),
+        key=lambda a: a.get('timestamp', ''),
+    )
+    _tf_sec = _TFS_PH.get(strat.get('timeframe', '1Min'), 60)
+    _bar_count_exit = strat.get('bar_count_exit')
+    _expected_max_sec = (_bar_count_exit * _tf_sec) if _bar_count_exit else None
+
+    state = 'FLAT'
+    entry_time = None
+    entry_price = None
+    entry_alert_id = None
+    anomalies = []
+    total_entries = 0
+    total_exits = 0
+    holds = []
+    longest_hold = 0.0
+
+    for a in alerts:
+        a_type = a.get('type', '')
+        a_ts_str = a.get('timestamp', '')
+        a_id = a.get('id', '?')
+        try:
+            a_ts = datetime.fromisoformat(a_ts_str)
+        except (ValueError, TypeError):
+            continue
+
+        if a_type == 'entry_signal':
+            total_entries += 1
+            if state == 'IN_POSITION':
+                anomalies.append({
+                    'type': 'double_entry',
+                    'alert_id': a_id,
+                    'timestamp': a_ts_str,
+                    'strategy_name': strat.get('name', ''),
+                    'detail': f"Entry (alert {a_id}) while already in position from alert {entry_alert_id}",
+                })
+            state = 'IN_POSITION'
+            entry_time = a_ts
+            entry_price = a.get('price')
+            entry_alert_id = a_id
+
+        elif a_type == 'exit_signal':
+            total_exits += 1
+            if state == 'FLAT':
+                anomalies.append({
+                    'type': 'double_exit',
+                    'alert_id': a_id,
+                    'timestamp': a_ts_str,
+                    'strategy_name': strat.get('name', ''),
+                    'detail': f"Exit (alert {a_id}) while already FLAT",
+                })
+            elif entry_time:
+                hold_sec = (a_ts - entry_time).total_seconds()
+                holds.append(hold_sec)
+                if hold_sec > longest_hold:
+                    longest_hold = hold_sec
+                if _expected_max_sec and hold_sec > _expected_max_sec * 2:
+                    anomalies.append({
+                        'type': 'long_hold',
+                        'alert_id': a_id,
+                        'timestamp': a_ts_str,
+                        'strategy_name': strat.get('name', ''),
+                        'detail': (f"Position held {hold_sec:.0f}s "
+                                   f"(expected max ~{_expected_max_sec}s)"),
+                    })
+            state = 'FLAT'
+            entry_time = None
+            entry_price = None
+            entry_alert_id = None
+
+    open_duration = None
+    if state == 'IN_POSITION' and entry_time:
+        open_duration = (datetime.now(timezone.utc) - entry_time).total_seconds()
+
+    balanced = (total_entries == total_exits or
+                (total_entries == total_exits + 1 and state == 'IN_POSITION'))
+
+    return {
+        'state': state,
+        'entry_time': entry_time,
+        'entry_price': entry_price,
+        'entry_alert_id': entry_alert_id,
+        'open_duration': open_duration,
+        'total_entries': total_entries,
+        'total_exits': total_exits,
+        'holds': holds,
+        'longest_hold': longest_hold,
+        'anomalies': anomalies,
+        'expected_max_sec': _expected_max_sec,
+        'bar_count_exit': _bar_count_exit,
+        'balanced': balanced,
+        'has_alerts': len(alerts) > 0,
     }
 
 
@@ -8046,6 +8207,63 @@ def render_alert_analysis_tab(strat: dict):
     st.caption("**Delta** compares FT (Alerts-Enabled) vs Alert Actual \u2014 the apples-to-apples execution fidelity measure. "
                "FT (All) vs Backtest tells you strategy quality; FT (Alerts-Enabled) vs Alert Actual tells you execution quality.")
 
+    # ── Section A2: Position Health Tracker ──
+    _ph = compute_position_health(strat)
+    if _ph['has_alerts']:
+        _ph_anomalies = _ph['anomalies']
+        _ph_state = _ph['state']
+        _ph_open_duration = _ph['open_duration']
+        _expected_max_sec = _ph['expected_max_sec']
+        _bar_count_exit = _ph['bar_count_exit']
+
+        with st.expander("Position Health", expanded=bool(_ph_anomalies) or _ph_state == 'IN_POSITION'):
+            _ph_cols = st.columns(4)
+            if _ph_state == 'FLAT':
+                _ph_cols[0].metric("Position Status", "FLAT")
+            else:
+                _dur_str = ""
+                if _ph_open_duration is not None:
+                    _dur_min = _ph_open_duration / 60
+                    _dur_str = f"{_dur_min:.0f}m" if _dur_min < 60 else f"{_dur_min / 60:.1f}h"
+                _overdue = ""
+                if _expected_max_sec and _ph_open_duration and _ph_open_duration > _expected_max_sec * 2:
+                    _overdue = " (OVERDUE)"
+                _ph_cols[0].metric("Position Status", f"IN POSITION{_overdue}", delta=_dur_str, delta_color="inverse")
+                if _ph['entry_price']:
+                    _ph_cols[0].caption(f"Entry ${_ph['entry_price']:.2f} (alert {_ph['entry_alert_id']})")
+
+            _ph_cols[1].metric("Entries / Exits", f"{_ph['total_entries']} / {_ph['total_exits']}")
+            if not _ph['balanced']:
+                _ph_cols[1].caption(f"Expected {'equal' if _ph_state == 'FLAT' else 'entries = exits + 1'}")
+
+            if _ph['holds']:
+                _avg_hold = sum(_ph['holds']) / len(_ph['holds'])
+                _avg_str = f"{_avg_hold:.0f}s" if _avg_hold < 120 else f"{_avg_hold / 60:.1f}m"
+                _ph_cols[2].metric("Avg Hold Time", _avg_str)
+            else:
+                _ph_cols[2].metric("Avg Hold Time", "\u2014")
+
+            if _expected_max_sec:
+                _max_str = f"{_expected_max_sec}s" if _expected_max_sec < 120 else f"{_expected_max_sec / 60:.0f}m"
+                _ph_cols[3].metric("Expected Max Hold", _max_str, help=f"bar_count_exit ({_bar_count_exit}) x timeframe ({_expected_max_sec // _bar_count_exit}s)")
+            else:
+                _ph_cols[3].metric("Expected Max Hold", "No limit", help="No bar_count_exit configured")
+
+            if _ph_anomalies:
+                st.markdown("---")
+                st.warning(f"**{len(_ph_anomalies)} anomaly(ies) detected** in alert sequence")
+                _anom_rows = []
+                for _an in _ph_anomalies:
+                    _anom_rows.append({
+                        "Type": _an['type'].replace('_', ' ').title(),
+                        "Alert ID": _an['alert_id'],
+                        "Timestamp": format_display_ts(_an['timestamp'], '%Y-%m-%d %H:%M:%S'),
+                        "Detail": _an['detail'],
+                    })
+                st.dataframe(pd.DataFrame(_anom_rows), use_container_width=True, hide_index=True)
+            elif _ph_state == 'FLAT' and _ph['balanced']:
+                st.success("No anomalies detected. Entry/exit sequences are properly balanced.")
+
     # ── Section B: Trigger Timing Analysis ──
     timing_rows = aa['timing_rows']
     with st.expander("Trigger Timing Analysis", expanded=False):
@@ -8118,19 +8336,36 @@ def render_alert_analysis_tab(strat: dict):
                 _ex_ex = _exit_execs.get(idx)
                 _entry_src = (_en_ex.get('source', '') or '').replace('_', ' ').title() if _en_ex else "\u2014"
                 _exit_src = (_ex_ex.get('source', '') or '').replace('_', ' ').title() if _ex_ex else "\u2014"
+                # For C-type signals, shift displayed candle time from bar
+                # start → bar close so the delta reflects real latency.
+                from ralph_engine import TIMEFRAME_SECONDS as _TFS2
+                from unified_engine import get_trigger_exec_type as _get_exec2
+                _bp = _TFS2.get(strat.get('timeframe', '1Min'), 60)
                 _entry_delta = ""
+                _en_candle_display = _t.get('entry_time', '')
                 if _en_ex:
+                    _en_trig = _en_ex.get('trigger', '')
+                    _en_et = _get_exec2(_en_trig) if _en_trig else 'C'
                     try:
                         _theo = datetime.fromisoformat(_t.get('entry_time', ''))
+                        if _en_et == 'C':
+                            _theo = _theo + timedelta(seconds=_bp)
+                            _en_candle_display = _theo.isoformat()
                         _actual = datetime.fromisoformat(_en_ex.get('alert_timestamp', ''))
                         _ed = (_actual - _theo).total_seconds()
                         _entry_delta = f"{_ed:+.0f}s"
                     except (ValueError, TypeError):
                         pass
                 _exit_delta = ""
+                _ex_candle_display = _t.get('exit_time', '')
                 if _ex_ex:
+                    _ex_trig = _ex_ex.get('trigger', '')
+                    _ex_et = _get_exec2(_ex_trig) if _ex_trig else 'C'
                     try:
                         _theo = datetime.fromisoformat(_t.get('exit_time', ''))
+                        if _ex_et == 'C':
+                            _theo = _theo + timedelta(seconds=_bp)
+                            _ex_candle_display = _theo.isoformat()
                         _actual = datetime.fromisoformat(_ex_ex.get('alert_timestamp', ''))
                         _ed = (_actual - _theo).total_seconds()
                         _exit_delta = f"{_ed:+.0f}s"
@@ -8143,18 +8378,19 @@ def render_alert_analysis_tab(strat: dict):
                 matched_rows.append({
                     "Trade #": idx - _ft_si + 1,
                     "Entry": _trigger_label(_en_trigger) if _en_trigger else "\u2014",
-                    "Entry Candle": format_display_ts(_t.get('entry_time', ''), '%m/%d %H:%M:%S'),
+                    "Entry Candle": format_display_ts(_en_candle_display, '%m/%d %H:%M:%S'),
                     "Entry Alert Time": _en_alert_ts,
                     "Entry \u0394": _entry_delta or "\u2014",
                     "Exit": _trigger_label(_ex_trigger) if _ex_trigger else "\u2014",
-                    "Exit Candle": format_display_ts(_t.get('exit_time', ''), '%m/%d %H:%M:%S') if _t.get('exit_time') else "\u2014",
+                    "Exit Candle": format_display_ts(_ex_candle_display, '%m/%d %H:%M:%S') if _ex_candle_display else "\u2014",
                     "Exit Alert Time": _ex_alert_ts,
                     "Exit \u0394": _exit_delta or "\u2014",
                     "R": f"{_t.get('r_multiple', 0):+.2f}" if _t.get('r_multiple') is not None else "\u2014",
                 })
             st.dataframe(pd.DataFrame(matched_rows), use_container_width=True, hide_index=True)
-            st.caption("Entry/Exit Candle = bar time from backtest. Alert Time = when the monitor actually fired. "
-                       "\u0394 = seconds between candle and alert (positive = alert fired after candle).")
+            st.caption("Entry/Exit Candle = expected alert time (bar close for C-type, cross time for L-type). "
+                       "Alert Time = when the monitor actually fired. "
+                       "\u0394 = seconds of real latency (positive = alert fired after expected time).")
         else:
             st.info("No matched trades yet.")
 

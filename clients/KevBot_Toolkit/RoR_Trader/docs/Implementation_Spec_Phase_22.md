@@ -24,7 +24,7 @@
 
 ## Architecture Overview
 
-### Current Architecture (Local)
+### Current Architecture (Local — Post-Phase 30)
 ```
 ┌─────────────────────────────────────────────────┐
 │                  User's Machine                  │
@@ -32,21 +32,22 @@
 │  ┌──────────────────────────────────────────┐   │
 │  │           Streamlit (app.py)              │   │
 │  │  ┌─────────────┐  ┌──────────────────┐   │   │
-│  │  │ UI Rendering │  │ Daemon Threads   │   │   │
-│  │  │              │  │  - realtime_engine│   │   │
-│  │  │              │  │  - webhook_server │   │   │
+│  │  │ UI Rendering │  │ unified_engine   │   │   │
+│  │  │              │  │ (backtest engine) │   │   │
 │  │  └─────────────┘  └──────────────────┘   │   │
 │  └──────────────────────────────────────────┘   │
 │                      │                           │
 │  ┌──────────────┐    │    ┌──────────────────┐  │
-│  │ alert_monitor │◄───┘   │   JSON Files     │  │
+│  │ ralph_engine  │◄───┘   │   JSON Files     │  │
 │  │ (subprocess)  │ PID    │  strategies.json  │  │
-│  └──────────────┘ mgmt   │  portfolios.json  │  │
-│                           │  alerts.json      │  │
-│                           │  alert_config.json│  │
-│                           │  settings.json    │  │
-│                           │  ...              │  │
-│                           └──────────────────┘  │
+│  │               │ mgmt   │  portfolios.json  │  │
+│  │ Alpaca WS ──► │        │  alerts.json      │  │
+│  │ BarBuilder    │        │  alert_config.json│  │
+│  │ Indicators    │ IPC:   │  engine_status.json│ │
+│  │ Triggers      │◄─────► │  engine_state.json│  │
+│  │ Positions     │        │  engine_audit.jsonl│ │
+│  │ Alerts        │        │  engine_reload.flag│ │
+│  └──────────────┘        └──────────────────┘  │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -55,12 +56,17 @@
 ┌──────────────────┐     ┌──────────────────────┐
 │   Railway: Web   │     │   Railway: Worker    │
 │   ────────────   │     │   ──────────────     │
-│  Streamlit app   │     │  alert_monitor       │
-│  (UI only)       │     │  realtime_engine     │
-│                  │     │  webhook_server       │
-│  Auth gate       │     │                      │
-│  Read/write DB   │     │  Admin DB client     │
-│  Monitor control │     │  Reads desired_state │
+│  Streamlit app   │     │  worker.py manages   │
+│  (UI only)       │     │  per-user RalphEngine│
+│                  │     │  instances:          │
+│  unified_engine  │     │   Alpaca WebSocket   │
+│  (backtest only) │     │   BarBuilder         │
+│                  │     │   Indicators+Triggers│
+│  Auth gate       │     │   Position tracking  │
+│  Read/write DB   │     │   Alert dispatch     │
+│  Monitor control │     │                      │
+│                  │     │  Admin DB client     │
+│                  │     │  Reads desired_state │
 │                  │     │  Writes alerts/status│
 └────────┬─────────┘     └────────┬─────────────┘
          │                         │
@@ -84,7 +90,7 @@
 | Component | Provider | Cost | Purpose |
 |-----------|----------|------|---------|
 | Web service | Railway | ~$5-7/mo | Streamlit app (UI, auth, DB queries) |
-| Worker service | Railway | ~$2-5/mo | Alert monitor, streaming engine, webhook delivery |
+| Worker service | Railway | ~$2-5/mo | Per-user RalphEngine instances (WebSocket, indicators, alerts) |
 | Database | Supabase (free tier) | $0/mo | PostgreSQL, Row Level Security |
 | Authentication | Supabase Auth | $0/mo | Email/password, optional OAuth |
 | Domain | Namecheap | (already owned) | Custom domain DNS |
@@ -550,11 +556,16 @@ def _load_strategies_db() -> list:
 | `load_confluence_groups()` | ~484 | SELECT from confluence_groups |
 | `save_confluence_groups(groups)` | ~510 | UPSERT to confluence_groups |
 
-**`src/alert_monitor.py`:**
-| Function | Line | Operation |
+**`src/ralph_engine.py`:**
+| Function / I/O path | Current | Target |
 |----------|------|-----------|
-| `load_strategies()` (local copy) | ~170 | Uses admin client in worker |
-| `get_strategy_by_id()` (local copy) | ~182 | Uses admin client in worker |
+| `_load_config()` | Reads alert_config.json | SELECT from alert_config (admin client, per-user) |
+| Strategy loading in `_build_monitors()` | Reads strategies.json | SELECT from strategies WHERE alert_tracking_enabled |
+| `_on_alert()` dispatch | Appends to alerts.json | INSERT to alerts table |
+| Status writes | Writes engine_status.json | UPDATE monitor_status.status JSONB |
+| Position state persistence | Writes engine_state.json | UPDATE monitor_status.status JSONB (or dedicated column) |
+| Fidelity audit logging | Appends to engine_audit.jsonl | INSERT to engine_audit table (or Railway log drain) |
+| Hot-reload trigger | Checks engine_reload.flag | Poll monitor_status.updated_at for config changes |
 
 **`src/webhook_server.py`:**
 | Function | Line | Operation |
@@ -736,24 +747,31 @@ if USE_DB:
 
 ---
 
-## Phase 22D: Worker Service
+## Phase 22D: Worker Service (Ralph Engine Integration)
 
 ### New File: `src/worker.py`
 
-The worker replaces `alert_monitor.py` as the standalone background process. It runs on Railway as a separate service.
+The worker manages per-user `RalphEngine` instances. Ralph already owns the full live pipeline (Alpaca WebSocket → BarBuilder → IncrementalIndicatorEngine → TriggerEvaluator → PositionStateMachine → AlertDispatcher), so the worker just needs to:
+1. Poll the database for user monitor desired states
+2. Start/stop RalphEngine instances per user
+3. Rewire Ralph's I/O from JSON files to Supabase (config loading, alert writes, status/state persistence)
+
+**Key architectural note:** Each RalphEngine instance runs its own asyncio event loop with the Alpaca WebSocket connection. Alpaca allows 1 WebSocket per API key, so each user needs their own Alpaca credentials (stored in user_settings or environment). The worker runs each user's Ralph in a separate thread with its own event loop.
 
 ```python
 """
 RoR Trader Background Worker Service.
 
-Runs on Railway as a persistent background service. Manages the alert
-monitor and streaming engine for all users with monitoring enabled.
+Runs on Railway as a persistent background service. Manages per-user
+RalphEngine instances for all users with monitoring enabled.
 Communicates with the web service exclusively through the Supabase database.
 """
+import asyncio
 import logging
 import os
 import signal
 import sys
+import threading
 import time
 
 # Setup logging (Railway captures stdout/stderr)
@@ -766,7 +784,7 @@ logger = logging.getLogger('worker')
 
 # Load environment
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 # Force database mode
 os.environ['USE_DB'] = 'true'
@@ -776,12 +794,53 @@ from db import get_admin_client
 POLL_INTERVAL = 30  # seconds — check for user monitor state changes
 HEARTBEAT_INTERVAL = 30  # seconds — write heartbeat to DB
 
+
+class UserRalphInstance:
+    """Wraps a RalphEngine running in its own thread/event loop."""
+
+    def __init__(self, user_id: str, config: dict):
+        self.user_id = user_id
+        self.config = config
+        self._thread = None
+        self._engine = None
+        self._loop = None
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run_loop, daemon=True,
+            name=f"ralph-{self.user_id[:8]}")
+        self._thread.start()
+
+    def _run_loop(self):
+        from ralph_engine import RalphEngine
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        # RalphEngine reads strategies/config — rewired to use DB via
+        # the USE_DB flag + user context set by admin client
+        self._engine = RalphEngine()
+        try:
+            self._loop.run_until_complete(self._engine.run())
+        except Exception as e:
+            logger.error("Ralph engine error for user %s: %s",
+                         self.user_id, e)
+
+    def stop(self):
+        if self._engine:
+            self._engine.request_stop()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    @property
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
 class WorkerManager:
-    """Manages per-user monitoring instances."""
+    """Manages per-user RalphEngine instances."""
 
     def __init__(self):
         self._running = True
-        self._user_monitors = {}  # user_id -> MonitorInstance
+        self._user_instances = {}  # user_id -> UserRalphInstance
         self._last_heartbeat = 0
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -811,28 +870,34 @@ class WorkerManager:
             desired = row.get('desired_state', 'stopped')
             if desired == 'running':
                 active_users.add(uid)
-                if uid not in self._user_monitors:
-                    self._start_user_monitor(uid, row)
-            elif uid in self._user_monitors:
-                self._stop_user_monitor(uid)
-        # Stop monitors for users no longer in the table
-        for uid in list(self._user_monitors):
+                if uid not in self._user_instances:
+                    self._start_user_ralph(uid, row)
+                elif not self._user_instances[uid].is_alive:
+                    # Restart crashed instance
+                    logger.warning("Ralph instance for %s died, restarting", uid)
+                    self._stop_user_ralph(uid)
+                    self._start_user_ralph(uid, row)
+            elif uid in self._user_instances:
+                self._stop_user_ralph(uid)
+        # Stop instances for users no longer in the table
+        for uid in list(self._user_instances):
             if uid not in active_users:
-                self._stop_user_monitor(uid)
+                self._stop_user_ralph(uid)
 
-    def _start_user_monitor(self, user_id, status_row):
-        """Start monitoring for a user."""
-        logger.info("Starting monitor for user %s", user_id)
-        # Import and initialize the monitoring pipeline for this user
-        # (Reuses existing alert_monitor + realtime_engine logic)
-        # ... implementation details ...
+    def _start_user_ralph(self, user_id, status_row):
+        """Start a RalphEngine instance for a user."""
+        logger.info("Starting Ralph engine for user %s", user_id)
+        config = status_row.get('config', {})
+        instance = UserRalphInstance(user_id, config)
+        instance.start()
+        self._user_instances[user_id] = instance
 
-    def _stop_user_monitor(self, user_id):
-        """Stop monitoring for a user."""
-        logger.info("Stopping monitor for user %s", user_id)
-        monitor = self._user_monitors.pop(user_id, None)
-        if monitor:
-            monitor.stop()
+    def _stop_user_ralph(self, user_id):
+        """Stop a user's RalphEngine instance."""
+        logger.info("Stopping Ralph engine for user %s", user_id)
+        instance = self._user_instances.pop(user_id, None)
+        if instance:
+            instance.stop()
 
     def _heartbeat(self):
         """Write heartbeat to all active user monitor_status rows."""
@@ -841,26 +906,39 @@ class WorkerManager:
             return
         self._last_heartbeat = now
         client = get_admin_client()
-        for uid in self._user_monitors:
+        for uid, instance in self._user_instances.items():
             client.table('monitor_status').update({
                 'status': {
-                    'running': True,
+                    'running': instance.is_alive,
                     'last_heartbeat': time.time(),
-                    # ... other status fields
                 },
                 'updated_at': 'now()',
             }).eq('user_id', uid).execute()
 
     def _shutdown(self):
-        """Graceful shutdown: stop all monitors."""
-        logger.info("Shutting down all monitors...")
-        for uid in list(self._user_monitors):
-            self._stop_user_monitor(uid)
+        """Graceful shutdown: stop all Ralph instances."""
+        logger.info("Shutting down all Ralph engines...")
+        for uid in list(self._user_instances):
+            self._stop_user_ralph(uid)
         logger.info("Worker shutdown complete")
 
 if __name__ == '__main__':
     WorkerManager().run()
 ```
+
+### Ralph Engine I/O Rewiring
+
+The following Ralph I/O paths need to be rewired from JSON files to Supabase:
+
+| Current (JSON file IPC) | Target (Supabase) | Notes |
+|---|---|---|
+| `alert_config.json` → `_load_config()` | `alert_config` table query | Admin client, filter by user_id |
+| `strategies.json` → strategy loading | `strategies` table query | Filter by alert_tracking_enabled |
+| `alerts.json` → `_on_alert()` dispatch | `alerts` table insert | Include user_id, strategy_id |
+| `engine_status.json` → status writes | `monitor_status.status` JSONB update | Merged with heartbeat |
+| `engine_state.json` → position state | `monitor_status.status` JSONB update | Or separate `engine_state` column |
+| `engine_audit.jsonl` → fidelity logs | `engine_audit` table inserts (or log drain) | Optional — may use Railway log drain instead |
+| `engine_reload.flag` → hot-reload trigger | Poll `monitor_status.updated_at` | Reload when config timestamp changes |
 
 ### UI Monitor Controls Update (`app.py`)
 
@@ -940,7 +1018,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (worker needs all modules for pipeline)
+# Copy application code (worker needs all modules for ralph_engine pipeline)
 COPY src/ ./src/
 COPY config/ ./config/
 COPY user_packs/ ./user_packs/
@@ -1179,7 +1257,7 @@ if __name__ == '__main__':
   ├── 22B-portfolios (portfolios.py)         (these can be
   ├── 22B-alerts (alerts.py)                  done in parallel)
   ├── 22B-config (confluence_groups, settings)
-  └── 22B-monitor (alert_monitor, webhook_server)
+  └── 22B-ralph (ralph_engine I/O rewiring)
        │
        ▼
 22C: Auth ────────────────────────────────────────┐
@@ -1205,8 +1283,8 @@ if __name__ == '__main__':
 | `src/alerts.py` | Alert CRUD, config CRUD, status CRUD, templates | ~1,200 |
 | `src/portfolios.py` | Portfolio + requirements CRUD, computation engine | ~900 |
 | `src/confluence_groups.py` | Confluence group CRUD, templates | ~650 |
-| `src/alert_monitor.py` | Background alert polling (refactored for worker) | ~640 |
-| `src/realtime_engine.py` | WebSocket streaming engine (moves to worker) | ~1,400 |
+| `src/ralph_engine.py` | O(1) streaming alert engine — wraps unified engine components, manages Alpaca WS, bar building, alert dispatch. I/O rewired from JSON to Supabase. | ~3,000 |
+| `src/unified_engine.py` | Shared bar-by-bar engine (backtest + live classes) — used by both app.py and ralph_engine | ~1,700 |
 | `src/webhook_server.py` | Inbound webhook receiver | ~120 |
 | **New files** | |
 | `src/db.py` | Database access layer | ~150 |

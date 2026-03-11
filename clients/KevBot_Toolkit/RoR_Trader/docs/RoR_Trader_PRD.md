@@ -1657,7 +1657,12 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 *Deploy the application to production hosting so the alert monitor runs reliably in the cloud without requiring a local machine. Add user authentication and migrate from JSON file storage to a proper database for multi-user support. Full spec: `docs/Implementation_Spec_Phase_22.md`.*
 
 **Why this phase exists:**
-The application is currently a local Streamlit app with JSON file storage, no authentication, and background processes managed via subprocess PID files. To use it for actual trading, the monitor must run reliably in the cloud, data must be safe in a database, and the app must be accessible from any device with proper auth. This is the critical infrastructure phase that transitions RoR Trader from a local development tool to a production-ready web application.
+The application is currently a local Streamlit app with JSON file storage, no authentication, and the Ralph engine (ralph_engine.py) running as a local subprocess for live alert monitoring. To use it for actual trading, the engine must run reliably in the cloud, data must be safe in a database, and the app must be accessible from any device with proper auth. This is the critical infrastructure phase that transitions RoR Trader from a local development tool to a production-ready web application.
+
+**Current engine architecture (post-Phase 30):**
+- `unified_engine.py` — Single bar-by-bar engine for both backtest and live (replaces old batch pipeline)
+- `ralph_engine.py` — O(1) incremental streaming alert engine wrapping the unified engine's components (IncrementalIndicatorEngine, TriggerEvaluator, PositionStateMachine). Manages Alpaca WebSocket feeds, bar building, multi-timeframe support, fidelity auditing, and alert dispatch. This is the process that becomes the Railway worker.
+- `app.py` — Streamlit UI that spawns/stops Ralph via subprocess PID management (to be replaced by database-driven control)
 
 **Hosting Stack:**
 - **Railway** — App hosting (web service + background worker). Usage-based pricing (~$8-13/month). Git push-to-deploy.
@@ -1679,7 +1684,7 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - [ ] Rewire portfolio + requirements CRUD in portfolios.py
 - [ ] Rewire alert system CRUD in alerts.py: alerts, alert_config, monitor_status, webhook templates
 - [ ] Rewire config/pack storage: confluence_groups.py, settings in app.py
-- [ ] Rewire alert_monitor.py and webhook_server.py data access
+- [ ] Rewire ralph_engine.py data access: config loading, alert dispatch, state persistence (replaces JSON file IPC: engine_status.json, engine_state.json, engine_audit.jsonl, engine_reload.flag)
 
 **22C: Authentication**
 - [ ] New `src/auth.py` module with Supabase Auth integration (sign up, sign in, sign out, session refresh)
@@ -1689,13 +1694,15 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - [ ] New user onboarding: seed default confluence groups, packs, settings on first login
 - [ ] Pre-registration: simple email collection form on public landing page
 
-**22D: Worker Service**
-- [ ] New `src/worker.py` — standalone entry point replacing subprocess.Popen monitor spawning
-- [ ] Alert monitor + streaming engine run in the worker service (not Streamlit daemon threads)
+**22D: Worker Service (Ralph Engine Integration)**
+- [ ] New `src/worker.py` — standalone entry point that manages per-user `RalphEngine` instances
+- [ ] Each user's RalphEngine runs in its own asyncio event loop (Ralph already handles WebSocket feeds, bar building, indicator computation, trigger evaluation, position tracking, and alert dispatch)
 - [ ] Uses admin Supabase client (service role key) for cross-user monitoring
-- [ ] Monitor control via database: UI writes `desired_state: 'running'|'stopped'` to `monitor_status` table; worker reads and acts accordingly — no PID management
-- [ ] Hot-reload (already implemented, 5-min refresh) reads config from database instead of JSON files
-- [ ] Update app.py monitor controls: remove subprocess/PID code, replace with database reads/writes
+- [ ] Monitor control via database: UI writes `desired_state: 'running'|'stopped'` to `monitor_status` table; worker polls and starts/stops user RalphEngine instances accordingly — no PID management
+- [ ] Ralph's hot-reload (5-min refresh, engine_reload.flag) rewired to read config from database instead of JSON files
+- [ ] Ralph's alert dispatch (`_on_alert`) rewired to write alerts to database instead of alerts.json
+- [ ] Ralph's IPC files (engine_status.json, engine_state.json, engine_audit.jsonl) replaced by database writes
+- [ ] Update app.py monitor controls: remove subprocess/PID/zombie-detection code, replace with database reads/writes
 
 **22E: Containerization & Deployment**
 - [ ] `Dockerfile` for web service (Streamlit app + vendored LWC fork)
@@ -1720,14 +1727,16 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - Feature branches off dev for each sub-phase
 
 **Design Decisions (Phase 22):**
-- Railway chosen over Render for usage-based billing (monitor only costs money during market hours) and simpler multi-service projects
-- Supabase chosen for combined database + auth in one service with excellent Python client and Row Level Security
-- Firebase rejected: Cloud Run's scale-to-zero fights Streamlit's stateful WebSocket model; Firestore NoSQL is a worse fit for relational data; higher cost
+- **Railway chosen over Render** (re-evaluated 2026-03-11): Render offers a clean multi-project dashboard and fixed-price tiers ($7/service), but Railway's usage-based billing saves money for a trading app — the worker only runs during market hours (~6.5h/day), not 24/7. Render's free tier spins down after 15 min of inactivity, which is incompatible with a persistent alert monitor. Both platforms handle WebSocket, Docker, custom domains, and auto-SSL equally well. Railway total: ~$8-13/month vs Render: ~$14/month (2× $7 for web + worker).
+- **Supabase chosen** for combined database + auth in one service with excellent Python client and Row Level Security. Used regardless of hosting platform — Render's built-in PostgreSQL (90-day free trial) lacks auth and RLS.
+- **Firebase rejected**: Cloud Run's scale-to-zero fights Streamlit's stateful WebSocket model; Firestore NoSQL is a worse fit for relational data; higher cost
 - Database migration done upfront (not deferred) to avoid JSON file locking issues with multiple users and to enable RLS-based data isolation
 - Design/aesthetics deferred to a separate phase — focus this phase on infrastructure, auth, and reliability
 - Config tables (settings, confluence_groups, packs) use single JSONB column per user since they're always loaded/saved as whole documents — preserves current load/save pattern
+- **Worker wraps RalphEngine** (not the legacy alert_monitor.py). Ralph already owns the full live pipeline: Alpaca WebSocket → BarBuilder → IncrementalIndicatorEngine → TriggerEvaluator → PositionStateMachine → AlertDispatcher. The worker just needs to manage per-user Ralph instances and rewire Ralph's I/O from JSON files to Supabase.
 - Worker service always runs on Railway; monitor start/stop controlled via database flag (not PID/signal management) — simpler, more reliable, works across services
 - `USE_DB` toggle flag enables incremental development — each CRUD module can be switched independently
+- **Multi-account support**: Users will maintain separate accounts (e.g., production strategies vs. dev/testing), so RLS-based data isolation is critical from day one
 
 **Definition of Done:**
 - App accessible via custom domain with HTTPS and user authentication
@@ -2410,6 +2419,23 @@ Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-b
 - [x] Each analyzer builds a synthetic strategy dict with the varied parameter and delegates to `_unified_trades()`, ensuring Entry/Exit/Stop Loss/Take Profit card KPIs match the top-level strategy KPIs exactly
 - [x] Fixed `UnboundLocalError` for `general_cols` in non-webhook strategy builder path
 
+##### Phase 30J: Stop-Validity Guard + Position Health Monitor — COMPLETED 2026-03-10
+
+Live QA with Spy UTBot Extended Test revealed 4 phantom alerts (2 entry + 2 exit pairs) caused by L-type intra-bar entries where the swing stop was at or above the entry price, producing guaranteed-loss trades that the backtest never reproduces (different REST bar data means the signal doesn't fire at all). Also added position health tracking to catch stuck-position and sequence anomalies.
+
+- [x] **Stop-validity guard** — Both `check_entry()` and `check_entry_intrabar()` in `PositionStateMachine` now reject entries where the computed stop is on the wrong side of the fill price (stop >= entry for LONG, stop <= entry for SHORT). Prevents the swing stop edge case where a gap-down L-type fill enters below the lookback window's lowest low, creating an instant stop. Guard applies to both backtest and live paths since Ralph imports `PositionStateMachine` from unified_engine. All 27 parity tests pass.
+
+- [x] **`compute_position_health()` helper** — Extracted reusable function that walks a strategy's alert sequence chronologically, tracking position state transitions. Returns: current state (FLAT/IN_POSITION), entry details if open, hold time statistics, entry/exit balance check, and anomaly list. Used by both the Alert Analysis tab and the sidebar widget.
+
+- [x] **Position Health expander (Alert Analysis tab)** — New "Position Health" section in `render_alert_analysis_tab()`, placed after Summary Metrics. Shows 4 metrics: Position Status (with OVERDUE flag if held > 2x expected max hold), Entries/Exits balance, Avg Hold Time, Expected Max Hold. Detects 3 anomaly types: double entry (entry while already in position), double exit (exit while flat), long hold (position held > 2x bar_count_exit * timeframe). Auto-expands when anomalies detected or position is open.
+
+- [x] **Sidebar Position Monitor** — New "Position Monitor" section in the sidebar, visible on every page. Scans all alert-tracked strategies via `compute_position_health()`. Shows green "All clear" when healthy, blue info for open positions without anomalies, or red error badges per strategy with anomalies/mismatches/overdue positions. Each issue has a "View" button that navigates directly to the strategy detail view (sets `viewing_strategy_id`, `main_nav`, and `sub_nav_strategies`).
+
+**Cross-strategy analysis findings (2026-03-10):**
+- Spy UTBot Extended Test (id=32): 4 phantom alerts from 2 rapid stop→re-entry cycles caused by swing stop above entry price. Stop-validity guard eliminates this class.
+- HL Campaign (id=34): 2 double-entry sequences in live_executions (reconciliation issue, not engine-level). 5 missed + 2 phantom alerts point to HM/HL type reconciliation as most drift-prone area.
+- alerts.json across all 8 active strategies shows properly alternating entry/exit sequences — no stuck positions at the dispatch level.
+
 **Alert Analysis & Pack Builder updates (2026-03-09):**
 - [x] **Alert Analysis exec type fix** — Timing analysis was checking `source == 'intra_bar'` but ralph_engine sets `source: 'ralph'` on all alerts, causing ALL alerts to be treated as bar-close for timing delta calculations. Fixed: derives exec type from trigger ID via `get_trigger_exec_type()`, correctly classifying C vs L0/L1/HM/HL
 - [x] **Alert Analysis new columns** — Added "Exec" (C/L0/L1/HM/HL) and "Trigger" columns to Trigger Timing table; added entry/exit trigger columns to Matched Trades table
@@ -2438,8 +2464,9 @@ Live QA session with SPY UT Bot Extended Test strategy (L1-type, 1-min bars, 4-b
 7. **Phase 30G** ✅ L0/L1 naming + _prev level bugfix — backtest fill prices now correct for V2 triggers
 8. **Phase 30H** ✅ L-type gate timing fix — correct crossover semantics for UT Bot V2 and EMA V2 triggers
 9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity, L-type bar_count alignment, restart rebase
-10. Existing C-type strategies migrate automatically (trigger classification is additive)
-11. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
+10. **Phase 30J** ✅ Stop-validity guard + Position Health Monitor — prevents guaranteed-loss entries, adds position tracking to alert analysis and sidebar
+11. Existing C-type strategies migrate automatically (trigger classification is additive)
+12. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 
 ---
 
