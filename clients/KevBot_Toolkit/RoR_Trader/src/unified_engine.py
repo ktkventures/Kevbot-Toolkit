@@ -2221,3 +2221,206 @@ def run_unified_backtest(
             enriched_df[f'trig_{col}'] = trig_df[col]
 
     return trades_df, enriched_df
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FAST PATH — precompute + replay for Strategy Builder analyzers
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class CachedBarState:
+    """Pre-computed per-bar state for fast trade replay."""
+    bar: dict           # {open, high, low, close, volume, timestamp}
+    bar_count: int
+    current_values: dict
+    prev_values: dict
+    c_triggers: dict    # {trigger_id: bool}
+    l_fills: dict       # {trigger_id: fill_price}
+    confluence_records: set
+
+
+def precompute_bar_cache(
+    df: pd.DataFrame,
+    strategy: dict,
+    general_packs: list = None,
+    secondary_tf_map: dict = None,
+) -> Tuple[List[CachedBarState], dict]:
+    """Run indicator/trigger pipeline once and cache per-bar state.
+
+    Returns (cache, metadata).  The cache stores all intermediate values
+    needed to replay trade generation with different strategy configs
+    (entry trigger, exit triggers, stop, target).  Indicators and triggers
+    are NOT recomputed during replay — only PositionStateMachine logic runs.
+
+    Typical speedup: 10-50x for analyzer functions that test many configs.
+    """
+    if len(df) < 2:
+        return [], {}
+
+    strat = UnifiedStrategy(strategy, general_packs)
+    cache: List[CachedBarState] = []
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        bar = {
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close']),
+            'volume': float(row.get('volume', 0)),
+            'timestamp': df.index[i],
+        }
+
+        strat._bar_count += 1
+
+        # 1. Update indicators (O(1))
+        current = strat.indicators.update_bar(bar)
+        prev = strat.indicators.get_prev_values()
+
+        # 2. Evaluate triggers
+        interps, c_triggers, l_fills = strat.trigger_eval.evaluate_bar_for_backtest(
+            current, prev, strat.indicators.state.prev2_macd_hist)
+
+        # 3. Build confluence records
+        confluence_records = set()
+        for interp_key, state_val in interps.items():
+            confluence_records.add(
+                f"{strat.tf_label}-{interp_key}-{state_val}")
+
+        # MTF confluence records
+        if secondary_tf_map:
+            for tf_label, cols in secondary_tf_map.items():
+                for col in cols:
+                    val = row.get(col)
+                    if val is not None and pd.notna(val):
+                        base_interp = col.rsplit('__', 1)[0]
+                        confluence_records.add(
+                            f"{tf_label}-{base_interp}-{val}")
+
+        # General packs
+        if strat.general_packs:
+            ts = bar['timestamp']
+            if hasattr(ts, 'to_pydatetime'):
+                ts = ts.to_pydatetime()
+            elif not isinstance(ts, datetime):
+                ts = pd.Timestamp(ts).to_pydatetime()
+            gp_records = _evaluate_general_packs(strat.general_packs, ts)
+            confluence_records.update(gp_records)
+
+        cache.append(CachedBarState(
+            bar=bar,
+            bar_count=strat._bar_count,
+            current_values=current,
+            prev_values=prev,
+            c_triggers=c_triggers,
+            l_fills=l_fills,
+            confluence_records=confluence_records,
+        ))
+
+    metadata = {
+        'ema_periods': list(strat.trigger_eval.ema_periods),
+    }
+    return cache, metadata
+
+
+def run_trades_from_cache(
+    cache: List[CachedBarState],
+    strategy: dict,
+    metadata: dict,
+    include_open_position: bool = False,
+) -> pd.DataFrame:
+    """Generate trades by replaying only PositionStateMachine logic.
+
+    Uses pre-computed indicator values and trigger booleans from the cache.
+    No indicator or trigger computation — ~10-50x faster than full backtest.
+    """
+    if not cache:
+        return pd.DataFrame()
+
+    # Resolve entry/exit triggers
+    entry_trigger = _resolve_trigger_id(strategy, 'entry_trigger')
+    exit_triggers = _resolve_trigger_ids(strategy, 'exit_triggers')
+    if not exit_triggers:
+        single = _resolve_trigger_id(strategy, 'exit_trigger')
+        if single:
+            exit_triggers = [single]
+
+    psm = PositionStateMachine(
+        strategy,
+        resolved_entry=entry_trigger,
+        resolved_exits=exit_triggers)
+
+    # Lightweight trigger evaluator for HM/HL confirmation only
+    trigger_eval = TriggerEvaluator(
+        set(), set(),
+        ema_periods=metadata.get('ema_periods', [8, 21, 50]))
+
+    trades = []
+
+    for cb in cache:
+        psm.update_high_low(cb.bar['high'], cb.bar['low'])
+
+        # Handle pending HM exit (unconfirmed on previous bar)
+        if psm.state.pending_hm_exit:
+            exit_record = psm._exit(
+                'unconfirmed_hm', cb.bar['open'], cb.bar['timestamp'])
+            trades.append(exit_record)
+
+        # Check exit
+        if psm.state.status == 'IN_POSITION':
+            exit_record = psm.check_exit(
+                cb.c_triggers, cb.current_values, cb.bar_count,
+                cb.bar['timestamp'], l_type_fills=cb.l_fills)
+            if exit_record:
+                trades.append(exit_record)
+
+        # Check entry (only if FLAT)
+        psm.check_entry(
+            cb.c_triggers, cb.current_values, cb.bar_count,
+            cb.bar['timestamp'], confluence_records=cb.confluence_records,
+            l_type_fills=cb.l_fills,
+            prev_values=cb.prev_values)
+
+        # HM/HL confirmation check
+        if (psm.state.status == 'IN_POSITION' and
+                psm.state.entry_bar_count == cb.bar_count and
+                psm.state.exec_type in ('HM', 'HL')):
+            base_trigger = _strip_exec_suffix(psm.state.entry_trigger)
+            if not trigger_eval.check_confirmation(
+                    base_trigger, cb.current_values):
+                if psm.state.exec_type == 'HM':
+                    psm.state.pending_hm_exit = True
+                else:
+                    psm.state.pending_hl_limit = True
+
+    # Open position synthetic row
+    if include_open_position and psm.state.status == 'IN_POSITION':
+        pos = psm.state
+        last_close = cache[-1].bar['close']
+        entry_price = pos.entry_price
+        initial_stop = pos.initial_stop_price
+        risk = abs(entry_price - initial_stop) if initial_stop else abs(
+            entry_price * 0.01)
+        if risk <= 0:
+            risk = entry_price * 0.01
+        unrealized = ((last_close - entry_price) if pos.direction == 'LONG'
+                      else (entry_price - last_close))
+        trades.append({
+            'entry_time': pos.entry_time,
+            'exit_time': None,
+            'entry_price': entry_price,
+            'exit_price': None,
+            'stop_price': pos.stop_price,
+            'initial_stop_price': initial_stop,
+            'target_price': pos.target_price,
+            'pnl': unrealized,
+            'risk': risk,
+            'r_multiple': unrealized / risk,
+            'win': unrealized > 0,
+            'exit_reason': 'open',
+            'entry_trigger': pos.entry_trigger,
+            'exec_type': pos.exec_type,
+            'confluence_records': pos.confluence_records or set(),
+        })
+
+    return pd.DataFrame(trades) if trades else pd.DataFrame()

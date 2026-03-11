@@ -722,7 +722,8 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
 
 def _unified_trades(df: pd.DataFrame, strategy: dict,
                     include_open_position: bool = True,
-                    last_bar_partial: bool = False) -> pd.DataFrame:
+                    last_bar_partial: bool = False,
+                    bar_cache=None, cache_metadata=None) -> pd.DataFrame:
     """Trade generation via unified engine with MTF support.
 
     Args:
@@ -734,12 +735,26 @@ def _unified_trades(df: pd.DataFrame, strategy: dict,
         last_bar_partial: If True, the last bar in df is still forming.
             Entry/exit signals are suppressed on that bar to prevent
             premature chart markers.
+        bar_cache: Optional pre-computed bar cache from precompute_bar_cache().
+            When provided, skips indicator/trigger computation and only
+            replays PositionStateMachine logic (~10-50x faster).
+        cache_metadata: Required when bar_cache is provided.
 
     Returns:
         trades_df matching generate_trades() schema.
     """
     import logging
     _logger = logging.getLogger('ror_trader')
+
+    # Fast path: replay from cache (skips all indicator/trigger computation)
+    if bar_cache is not None and cache_metadata is not None:
+        try:
+            from unified_engine import run_trades_from_cache
+            return run_trades_from_cache(
+                bar_cache, strategy, cache_metadata,
+                include_open_position=include_open_position)
+        except Exception as exc:
+            _logger.warning("cache replay failed (%s), falling back to full backtest", exc)
 
     sec_tf_map = get_secondary_tf_map(df)
 
@@ -2099,38 +2114,72 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
 
 def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10,
                            starting_balance: float = 10000, risk_per_trade: float = 100,
-                           total_trading_days: int = None, exclude_prefix: str = None) -> pd.DataFrame:
-    """Find the best confluence combinations automatically."""
+                           total_trading_days: int = None, exclude_prefix: str = None,
+                           progress_callback=None) -> pd.DataFrame:
+    """Find the best confluence combinations automatically.
+
+    Uses pre-computed numpy boolean masks for fast subset filtering
+    instead of per-combination pandas .apply() calls.
+    """
+    import numpy as np
+
     if len(trades_df) == 0:
         return pd.DataFrame()
 
     # Get all unique records
     all_records = set()
     for records in trades_df["confluence_records"]:
-        all_records.update(records)
+        if isinstance(records, set):
+            all_records.update(records)
     if exclude_prefix:
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
-    all_records = list(all_records)
+
+    # Pre-compute boolean mask per record (vectorized)
+    n_trades = len(trades_df)
+    record_masks = {}
+    conf_list = trades_df["confluence_records"].tolist()
+    for r in all_records:
+        mask = np.zeros(n_trades, dtype=bool)
+        for i, recs in enumerate(conf_list):
+            if isinstance(recs, set) and r in recs:
+                mask[i] = True
+        record_masks[r] = mask
+
+    # Only test records that appear in >= min_trades trades (prune search space)
+    valid_records = [r for r, m in record_masks.items() if m.sum() >= min_trades]
+    valid_records.sort()  # deterministic order
+
+    # Pre-count total combinations for progress
+    all_combos = []
+    for depth in range(1, min(max_depth + 1, len(valid_records) + 1)):
+        for combo in combinations(valid_records, depth):
+            all_combos.append(combo)
+    total = len(all_combos)
 
     results = []
+    for idx, combo in enumerate(all_combos):
+        if progress_callback and idx % 50 == 0:
+            progress_callback(idx, total)
 
-    for depth in range(1, min(max_depth + 1, len(all_records) + 1)):
-        for combo in combinations(all_records, depth):
-            combo_set = set(combo)
+        # AND the pre-computed masks (numpy vectorized — fast)
+        combined = record_masks[combo[0]]
+        for r in combo[1:]:
+            combined = combined & record_masks[r]
 
-            mask = trades_df["confluence_records"].apply(lambda r: isinstance(r, set) and combo_set.issubset(r))
-            subset = trades_df[mask]
+        count = int(combined.sum())
+        if count >= min_trades:
+            subset = trades_df[combined]
+            kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+            results.append({
+                "combination": set(combo),
+                "combo_str": " + ".join(sorted(combo)),
+                "depth": len(combo),
+                **kpis
+            })
 
-            if len(subset) >= min_trades:
-                kpis = calculate_kpis(subset, starting_balance=starting_balance,
-                                      risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
-
-                results.append({
-                    "combination": combo_set,
-                    "combo_str": " + ".join(sorted(combo_set)),
-                    "depth": depth,
-                    **kpis
-                })
+    if progress_callback:
+        progress_callback(total, total)
 
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
@@ -2151,6 +2200,8 @@ def analyze_entry_triggers(
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
     base_strategy: dict = None,
+    bar_cache=None, cache_metadata=None,
+    progress_callback=None,
 ) -> pd.DataFrame:
     """For each available entry trigger, generate trades with current strategy config and compute KPIs."""
     entry_triggers = get_confluence_entry_triggers(direction, groups)
@@ -2162,8 +2213,11 @@ def analyze_entry_triggers(
     if not effective_exit_triggers and effective_bar_count is None:
         effective_bar_count = 4  # fallback default
 
+    total = len(entry_triggers)
     results = []
-    for trig_cid, trig_name in entry_triggers.items():
+    for idx, (trig_cid, trig_name) in enumerate(entry_triggers.items()):
+        if progress_callback:
+            progress_callback(idx, total)
         base_id = get_base_trigger_id(trig_cid)
         tdef = all_trigger_defs.get(trig_cid)
         # Build synthetic strategy dict for unified engine
@@ -2180,7 +2234,8 @@ def analyze_entry_triggers(
         })
         if confluence_required:
             synth['confluence'] = list(confluence_required)
-        trades = _unified_trades(df, synth, include_open_position=False)
+        trades = _unified_trades(df, synth, include_open_position=False,
+                                 bar_cache=bar_cache, cache_metadata=cache_metadata)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -2197,6 +2252,8 @@ def analyze_entry_triggers(
             'r_squared': kpis['r_squared'],
         })
 
+    if progress_callback:
+        progress_callback(total, total)
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
         results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
@@ -2210,14 +2267,19 @@ def analyze_exit_triggers(
     starting_balance: float = 10000.0, total_trading_days: int = None,
     general_columns: list = None,
     base_strategy: dict = None,
+    bar_cache=None, cache_metadata=None,
+    progress_callback=None,
 ) -> pd.DataFrame:
     """For each available exit trigger, generate trades with current entry and compute KPIs."""
     exit_triggers = get_confluence_exit_triggers(groups)
     all_trigger_defs = get_all_triggers(groups)
     base_entry = get_base_trigger_id(entry_trigger_confluence_id)
+    total = len(exit_triggers)
     results = []
 
-    for trig_cid, trig_name in exit_triggers.items():
+    for idx, (trig_cid, trig_name) in enumerate(exit_triggers.items()):
+        if progress_callback:
+            progress_callback(idx, total)
         tdef = all_trigger_defs.get(trig_cid)
 
         # Detect bar_count exits
@@ -2248,7 +2310,8 @@ def analyze_exit_triggers(
             synth['exit_triggers'] = [base_exit]
             synth['bar_count_exit'] = None
 
-        trades = _unified_trades(df, synth, include_open_position=False)
+        trades = _unified_trades(df, synth, include_open_position=False,
+                                 bar_cache=bar_cache, cache_metadata=cache_metadata)
 
         if len(trades) == 0:
             continue
@@ -2266,6 +2329,8 @@ def analyze_exit_triggers(
             'r_squared': kpis['r_squared'],
         })
 
+    if progress_callback:
+        progress_callback(total, total)
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
         results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
@@ -2279,6 +2344,8 @@ def find_best_exit_combinations(
     target_config: dict = None, starting_balance: float = 10000.0,
     total_trading_days: int = None, general_columns: list = None,
     base_strategy: dict = None,
+    bar_cache=None, cache_metadata=None,
+    progress_callback=None,
 ) -> pd.DataFrame:
     """Find the best exit trigger combinations (1-3 triggers) automatically."""
     exit_triggers = get_confluence_exit_triggers(groups)
@@ -2306,47 +2373,68 @@ def find_best_exit_combinations(
                           'name': exit_triggers[cid],
                           'name_with_badge': f"{_badge} {exit_triggers[cid]}"}
 
-    results = []
+    # Pre-count valid combinations for progress tracking
+    all_combos = []
     for depth in range(1, min(max_depth + 1, len(all_cids) + 1)):
         for combo in combinations(all_cids, depth):
-            # Separate bar_count from signal exits; allow at most one bar_count per combo
             bar_count_exits = [c for c in combo if exit_info[c]['is_bar_count']]
-            signal_exits = [c for c in combo if not exit_info[c]['is_bar_count']]
-
             if len(bar_count_exits) > 1:
-                continue  # skip combos with multiple bar_count exits
+                continue
+            all_combos.append(combo)
 
-            bar_count_exit_val = exit_info[bar_count_exits[0]]['bar_count_val'] if bar_count_exits else None
-            signal_base_ids = [get_base_trigger_id(c) for c in signal_exits]
+    total = len(all_combos)
 
-            # Build synthetic strategy dict for unified engine
-            synth = dict(base_strategy) if base_strategy else {}
-            synth.update({
-                'direction': direction,
-                'entry_trigger': base_entry,
-                'entry_trigger_confluence_id': entry_trigger_confluence_id,
-                'exit_triggers': signal_base_ids,
-                'bar_count_exit': bar_count_exit_val,
-                'risk_per_trade': risk_per_trade,
-                'stop_config': stop_config,
-                'target_config': target_config,
-            })
+    # Use direct cache replay when available (skip _unified_trades overhead)
+    use_direct_cache = bar_cache is not None and cache_metadata is not None
+    if use_direct_cache:
+        from unified_engine import run_trades_from_cache as _rtfc
 
+    results = []
+    for idx, combo in enumerate(all_combos):
+        if progress_callback:
+            progress_callback(idx, total)
+
+        bar_count_exits = [c for c in combo if exit_info[c]['is_bar_count']]
+        signal_exits = [c for c in combo if not exit_info[c]['is_bar_count']]
+
+        bar_count_exit_val = exit_info[bar_count_exits[0]]['bar_count_val'] if bar_count_exits else None
+        signal_base_ids = [get_base_trigger_id(c) for c in signal_exits]
+
+        # Build synthetic strategy dict
+        synth = dict(base_strategy) if base_strategy else {}
+        synth.update({
+            'direction': direction,
+            'entry_trigger': base_entry,
+            'entry_trigger_confluence_id': entry_trigger_confluence_id,
+            'exit_triggers': signal_base_ids,
+            'bar_count_exit': bar_count_exit_val,
+            'risk_per_trade': risk_per_trade,
+            'stop_config': stop_config,
+            'target_config': target_config,
+        })
+
+        if use_direct_cache:
+            trades = _rtfc(bar_cache, synth, cache_metadata,
+                           include_open_position=False)
+        else:
             trades = _unified_trades(df, synth, include_open_position=False)
 
-            if len(trades) < min_trades:
-                continue
+        if len(trades) < min_trades:
+            continue
 
-            kpis = calculate_kpis(trades, starting_balance=starting_balance,
-                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+        kpis = calculate_kpis(trades, starting_balance=starting_balance,
+                              risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
 
-            combo_names = [exit_info[c]['name_with_badge'] for c in combo]
-            results.append({
-                'combination': set(combo),
-                'combo_str': " + ".join(sorted(combo_names)),
-                'depth': depth,
-                **kpis,
-            })
+        combo_names = [exit_info[c]['name_with_badge'] for c in combo]
+        results.append({
+            'combination': set(combo),
+            'combo_str': " + ".join(sorted(combo_names)),
+            'depth': len(combo),
+            **kpis,
+        })
+
+    if progress_callback:
+        progress_callback(total, total)
 
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
@@ -2366,6 +2454,8 @@ def analyze_risk_management(
     base_stop_config: dict = None, base_target_config: dict = None,
     general_columns: list = None,
     base_strategy: dict = None,
+    bar_cache=None, cache_metadata=None,
+    progress_callback=None,
 ) -> pd.DataFrame:
     """
     For each enabled Risk Management Pack, generate trades varying either
@@ -2396,9 +2486,12 @@ def analyze_risk_management(
     if bar_count_exit and bar_count_val is None:
         bar_count_val = bar_count_exit
 
+    total = len(enabled_packs)
     results = []
 
-    for pack in enabled_packs:
+    for idx, pack in enumerate(enabled_packs):
+        if progress_callback:
+            progress_callback(idx, total)
         if mode == "stop":
             sc = pack.get_stop_config()
             tc = base_target_config
@@ -2421,7 +2514,8 @@ def analyze_risk_management(
         if confluence_required:
             synth['confluence'] = list(confluence_required)
 
-        trades = _unified_trades(df, synth, include_open_position=False)
+        trades = _unified_trades(df, synth, include_open_position=False,
+                                 bar_cache=bar_cache, cache_metadata=cache_metadata)
         if len(trades) == 0:
             continue
         kpis = calculate_kpis(trades, starting_balance=starting_balance,
@@ -2445,6 +2539,8 @@ def analyze_risk_management(
             'r_squared': kpis['r_squared'],
         })
 
+    if progress_callback:
+        progress_callback(total, total)
     results_df = pd.DataFrame(results)
     if len(results_df) > 0:
         results_df = results_df.sort_values('profit_factor', ascending=False, na_position='last')
@@ -4727,6 +4823,8 @@ def render_strategy_builder():
         st.session_state.auto_exit_results = None
         st.session_state.sl_results = None
         st.session_state.tp_results = None
+        st.session_state.builder_bar_cache = None
+        st.session_state.builder_cache_metadata = None
         st.rerun()
 
     # =========================================================================
@@ -4784,6 +4882,22 @@ def render_strategy_builder():
 
             st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
             trades = _unified_trades(df, config)
+
+            # Pre-compute bar cache for fast analyzer replays
+            if st.session_state.get('builder_bar_cache') is None:
+                try:
+                    from unified_engine import precompute_bar_cache
+                    sec_tf_map = get_secondary_tf_map(df)
+                    enabled_gen = gp_module.get_enabled_general_packs(
+                        gp_module.load_general_packs())
+                    _cache, _meta = precompute_bar_cache(
+                        df, config, general_packs=enabled_gen,
+                        secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                    st.session_state.builder_bar_cache = _cache
+                    st.session_state.builder_cache_metadata = _meta
+                except Exception:
+                    st.session_state.builder_bar_cache = None
+                    st.session_state.builder_cache_metadata = None
 
         general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
 
@@ -5158,19 +5272,25 @@ def render_strategy_builder():
             confluence_set = selected if len(selected) > 0 else None
 
             if entry_analyze_clicked:
-                with st.spinner("Generating trades for each entry trigger..."):
-                    entry_results = analyze_entry_triggers(
-                        df, direction, enabled_groups,
-                        exit_triggers=config.get('exit_triggers'),
-                        bar_count_exit=config.get('bar_count_exit'),
-                        risk_per_trade=risk_per_trade,
-                        stop_config=stop_config_dict,
-                        target_config=target_config_dict,
-                        confluence_required=confluence_set,
-                        starting_balance=starting_balance,
-                        total_trading_days=period_trading_days,
-                        base_strategy=config,
-                    )
+                _prog_bar = st.progress(0, text="Preparing entry trigger analysis...")
+                def _entry_prog(i, n):
+                    _prog_bar.progress(i / max(n, 1), text=f"Backtesting entry trigger {i + 1:,} of {n:,}...")
+                entry_results = analyze_entry_triggers(
+                    df, direction, enabled_groups,
+                    exit_triggers=config.get('exit_triggers'),
+                    bar_count_exit=config.get('bar_count_exit'),
+                    risk_per_trade=risk_per_trade,
+                    stop_config=stop_config_dict,
+                    target_config=target_config_dict,
+                    confluence_required=confluence_set,
+                    starting_balance=starting_balance,
+                    total_trading_days=period_trading_days,
+                    base_strategy=config,
+                    bar_cache=st.session_state.get('builder_bar_cache'),
+                    cache_metadata=st.session_state.get('builder_cache_metadata'),
+                    progress_callback=_entry_prog,
+                )
+                _prog_bar.empty()
                 st.session_state.entry_trigger_results = entry_results
 
             if st.session_state.entry_trigger_results is not None and len(st.session_state.entry_trigger_results) > 0:
@@ -5275,18 +5395,24 @@ def render_strategy_builder():
                 st.warning("Select an entry trigger first.")
             elif exit_mode == "Drill-Down":
                 if exit_action_clicked:
-                    with st.spinner("Generating trades for each exit trigger..."):
-                        exit_results = analyze_exit_triggers(
-                            df, direction,
-                            entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
-                            groups=enabled_groups,
-                            risk_per_trade=risk_per_trade,
-                            stop_config=stop_config_dict,
-                            target_config=target_config_dict,
-                            starting_balance=starting_balance,
-                            total_trading_days=period_trading_days,
-                            base_strategy=config,
-                        )
+                    _prog_bar = st.progress(0, text="Preparing exit trigger analysis...")
+                    def _exit_prog(i, n):
+                        _prog_bar.progress(i / max(n, 1), text=f"Backtesting exit trigger {i + 1:,} of {n:,}...")
+                    exit_results = analyze_exit_triggers(
+                        df, direction,
+                        entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
+                        groups=enabled_groups,
+                        risk_per_trade=risk_per_trade,
+                        stop_config=stop_config_dict,
+                        target_config=target_config_dict,
+                        starting_balance=starting_balance,
+                        total_trading_days=period_trading_days,
+                        base_strategy=config,
+                        bar_cache=st.session_state.get('builder_bar_cache'),
+                        cache_metadata=st.session_state.get('builder_cache_metadata'),
+                        progress_callback=_exit_prog,
+                    )
+                    _prog_bar.empty()
                     st.session_state.exit_trigger_results = exit_results
 
                 if st.session_state.exit_trigger_results is not None and len(st.session_state.exit_trigger_results) > 0:
@@ -5331,21 +5457,27 @@ def render_strategy_builder():
 
             else:  # Auto-Search
                 if exit_action_clicked:
-                    with st.spinner("Searching exit combinations..."):
-                        best_exits = find_best_exit_combinations(
-                            df, direction,
-                            entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
-                            groups=enabled_groups,
-                            max_depth=exit_filters.get('max_depth', 3),
-                            min_trades=exit_filters.get('min_trades', 5),
-                            top_n=50,
-                            risk_per_trade=risk_per_trade,
-                            stop_config=stop_config_dict,
-                            target_config=target_config_dict,
-                            starting_balance=starting_balance,
-                            total_trading_days=period_trading_days,
-                            base_strategy=config,
-                        )
+                    _prog_bar = st.progress(0, text="Preparing exit combination search...")
+                    def _combo_prog(i, n):
+                        _prog_bar.progress(i / max(n, 1), text=f"Backtesting combination {i + 1:,} of {n:,}...")
+                    best_exits = find_best_exit_combinations(
+                        df, direction,
+                        entry_trigger_confluence_id=config['entry_trigger_confluence_id'],
+                        groups=enabled_groups,
+                        max_depth=exit_filters.get('max_depth', 3),
+                        min_trades=exit_filters.get('min_trades', 5),
+                        top_n=50,
+                        risk_per_trade=risk_per_trade,
+                        stop_config=stop_config_dict,
+                        target_config=target_config_dict,
+                        starting_balance=starting_balance,
+                        total_trading_days=period_trading_days,
+                        base_strategy=config,
+                        bar_cache=st.session_state.get('builder_bar_cache'),
+                        cache_metadata=st.session_state.get('builder_cache_metadata'),
+                        progress_callback=_combo_prog,
+                    )
+                    _prog_bar.empty()
                     if len(best_exits) > 0:
                         st.session_state.auto_exit_results = best_exits
 
@@ -5472,14 +5604,18 @@ def render_strategy_builder():
 
             else:  # Auto-Search
                 if tf_search_clicked:
-                    with st.spinner("Searching..."):
-                        best = find_best_combinations(
-                            trades, filters.get('max_depth', 2), filters.get('min_trades', 5), top_n=50,
-                            starting_balance=starting_balance,
-                            risk_per_trade=risk_per_trade,
-                            total_trading_days=period_trading_days,
-                            exclude_prefix="GEN-",
-                        )
+                    _prog_bar = st.progress(0, text="Preparing TF conditions auto-search...")
+                    def _tf_prog(i, n):
+                        _prog_bar.progress(i / max(n, 1), text=f"Evaluating combination {i + 1:,} of {n:,}...")
+                    best = find_best_combinations(
+                        trades, filters.get('max_depth', 2), filters.get('min_trades', 5), top_n=50,
+                        starting_balance=starting_balance,
+                        risk_per_trade=risk_per_trade,
+                        total_trading_days=period_trading_days,
+                        exclude_prefix="GEN-",
+                        progress_callback=_tf_prog,
+                    )
+                    _prog_bar.empty()
                     if len(best) > 0:
                         st.session_state.auto_results = best
 
@@ -5628,19 +5764,25 @@ def render_strategy_builder():
             confluence_set = selected if len(selected) > 0 else None
 
             if sl_analyze_clicked:
-                with st.spinner("Comparing stop-loss configurations..."):
-                    sl_results = analyze_risk_management(
-                        df, direction, entry_trigger, exit_cids,
-                        config.get('bar_count_exit'), enabled_groups,
-                        risk_per_trade=risk_per_trade,
-                        confluence_required=confluence_set,
-                        starting_balance=starting_balance,
-                        total_trading_days=period_trading_days,
-                        mode="stop",
-                        base_stop_config=stop_config_dict,
-                        base_target_config=target_config_dict,
-                        base_strategy=config,
-                    )
+                _prog_bar = st.progress(0, text="Preparing stop-loss comparison...")
+                def _sl_prog(i, n):
+                    _prog_bar.progress(i / max(n, 1), text=f"Backtesting stop config {i + 1:,} of {n:,}...")
+                sl_results = analyze_risk_management(
+                    df, direction, entry_trigger, exit_cids,
+                    config.get('bar_count_exit'), enabled_groups,
+                    risk_per_trade=risk_per_trade,
+                    confluence_required=confluence_set,
+                    starting_balance=starting_balance,
+                    total_trading_days=period_trading_days,
+                    mode="stop",
+                    base_stop_config=stop_config_dict,
+                    base_target_config=target_config_dict,
+                    base_strategy=config,
+                    bar_cache=st.session_state.get('builder_bar_cache'),
+                    cache_metadata=st.session_state.get('builder_cache_metadata'),
+                    progress_callback=_sl_prog,
+                )
+                _prog_bar.empty()
                 st.session_state.sl_results = sl_results
 
             if st.session_state.sl_results is not None and len(st.session_state.sl_results) > 0:
@@ -5708,19 +5850,25 @@ def render_strategy_builder():
             confluence_set_tp = selected if len(selected) > 0 else None
 
             if tp_analyze_clicked:
-                with st.spinner("Comparing take-profit configurations..."):
-                    tp_results = analyze_risk_management(
-                        df, direction, entry_trigger, exit_cids_tp,
-                        config.get('bar_count_exit'), enabled_groups,
-                        risk_per_trade=risk_per_trade,
-                        confluence_required=confluence_set_tp,
-                        starting_balance=starting_balance,
-                        total_trading_days=period_trading_days,
-                        mode="target",
-                        base_stop_config=stop_config_dict,
-                        base_target_config=target_config_dict,
-                        base_strategy=config,
-                    )
+                _prog_bar = st.progress(0, text="Preparing take-profit comparison...")
+                def _tp_prog(i, n):
+                    _prog_bar.progress(i / max(n, 1), text=f"Backtesting target config {i + 1:,} of {n:,}...")
+                tp_results = analyze_risk_management(
+                    df, direction, entry_trigger, exit_cids_tp,
+                    config.get('bar_count_exit'), enabled_groups,
+                    risk_per_trade=risk_per_trade,
+                    confluence_required=confluence_set_tp,
+                    starting_balance=starting_balance,
+                    total_trading_days=period_trading_days,
+                    mode="target",
+                    base_stop_config=stop_config_dict,
+                    base_target_config=target_config_dict,
+                    base_strategy=config,
+                    bar_cache=st.session_state.get('builder_bar_cache'),
+                    cache_metadata=st.session_state.get('builder_cache_metadata'),
+                    progress_callback=_tp_prog,
+                )
+                _prog_bar.empty()
                 st.session_state.tp_results = tp_results
 
             if st.session_state.tp_results is not None and len(st.session_state.tp_results) > 0:

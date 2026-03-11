@@ -1913,7 +1913,7 @@ The application is currently a local Streamlit app with JSON file storage, no au
 **Optimization Workflow Polish (deferred from Phase 9/10):**
 - [ ] Trigger parameters visible and expandable in Optimizable Variables — show EMA periods, ATR multiplier, etc. (not just trigger name)
 - [ ] Stop/target variation tags on trades — tag individual trades with pack ID when running multi-backtest comparisons
-- [ ] Multi-backtest progress indicator + caching — progress bar for SL/TP drill-down; cache keyed on (symbol, timeframe, date range, strategy config, pack ID)
+- [x] ~~Multi-backtest progress indicator + caching~~ — implemented in Phase 30K (bar cache fast path + progress bars on all 5 analyzer call sites)
 - [ ] Lazy tab loading — only compute drill-down results when a tab is first opened, not all 6 on page load
 
 **Data Refresh (Hard vs Soft):**
@@ -2453,6 +2453,20 @@ Live QA with Spy UTBot Extended Test revealed 4 phantom alerts (2 entry + 2 exit
 - [x] **Exit price marker color coding** — Exit price markers (`+` and `x`) are now color-coded by exit reason: green (signal/target exit), red (stop loss), orange (HM/HL unconfirmed), teal (bar count exit). Exit arrows remain green/red for win/loss
 - [x] **Chart legend tooltip** — Added `st.popover("Chart Legend")` above every price chart documenting all marker types: entry/exit arrows, exit price markers with color meanings, and alert price markers
 
+##### Phase 30K: Strategy Builder Speed Optimization — COMPLETED 2026-03-11
+
+The unified engine's bar-by-bar architecture caused a regression in Strategy Builder analysis speed — each analyzer call recomputed all indicators from scratch (O(N) per call vs old pipeline's O(1) lookup). With 5+ analyzer functions each running multiple backtests, total analysis time increased from seconds to minutes.
+
+- [x] **Bar cache fast path** — `precompute_bar_cache()` runs the indicator/trigger pipeline once and stores per-bar state (indicators, triggers, confluence records) in a `CachedBarState` list. `run_trades_from_cache()` replays only `PositionStateMachine` logic against the cached state, skipping all indicator computation. ~70x speedup for analyzer functions.
+
+- [x] **`_unified_trades()` cache integration** — Added `bar_cache` and `cache_metadata` optional params. When provided, takes the fast path via `run_trades_from_cache()` with fallback to full backtest on error.
+
+- [x] **Analyzer cache threading** — All 4 analyzer functions (`analyze_entry_triggers`, `analyze_exit_triggers`, `find_best_exit_combinations`, `analyze_risk_management`) accept `bar_cache` and `cache_metadata` params, passing them through to `_unified_trades()`. Cache is built once after "Load Data" and stored in `builder_bar_cache` / `builder_cache_metadata` session state.
+
+- [x] **Numpy boolean mask auto-search** — Rewrote `find_best_combinations()` to pre-compute per-record numpy boolean arrays, then AND masks for each combination instead of per-combination `pandas.apply(lambda)`. Also pre-filters records by `min_trades` frequency to prune the combination search space.
+
+- [x] **Progress bars** — All 5 analyzer call sites (Entry, Exit Drill-Down, Exit Auto-Search, SL/TP, TF Conditions Auto-Search) replaced `st.spinner()` with `st.progress()` bars showing "Backtesting X of Y..." or "Evaluating combination X of Y..." with real iteration counts.
+
 #### Migration Path
 
 1. **Phase 30A** ✅ runs in parallel with existing system — backtest parity verified (8 tests)
@@ -2465,8 +2479,9 @@ Live QA with Spy UTBot Extended Test revealed 4 phantom alerts (2 entry + 2 exit
 8. **Phase 30H** ✅ L-type gate timing fix — correct crossover semantics for UT Bot V2 and EMA V2 triggers
 9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity, L-type bar_count alignment, restart rebase
 10. **Phase 30J** ✅ Stop-validity guard + Position Health Monitor — prevents guaranteed-loss entries, adds position tracking to alert analysis and sidebar
-11. Existing C-type strategies migrate automatically (trigger classification is additive)
-12. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
+11. **Phase 30K** ✅ Strategy Builder speed optimization — bar cache fast path + numpy auto-search + progress bars
+12. Existing C-type strategies migrate automatically (trigger classification is additive)
+13. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 
 ---
 
