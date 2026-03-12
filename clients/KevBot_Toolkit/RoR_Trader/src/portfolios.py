@@ -61,7 +61,12 @@ PROP_FIRM_RULES = {
 # =============================================================================
 
 def load_portfolios() -> list:
-    """Load saved portfolios from file. Migrates legacy prop_firm fields."""
+    """Load saved portfolios from file or database. Migrates legacy prop_firm fields."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_portfolios_db
+        return load_portfolios_db()
+
     if not os.path.exists(PORTFOLIOS_FILE):
         return []
     try:
@@ -90,6 +95,12 @@ def _save_all(portfolios: list):
 
 def save_portfolio(portfolio: dict) -> dict:
     """Save a new portfolio. Assigns ID and created_at. Returns the saved portfolio."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_portfolio_db
+        portfolio['created_at'] = datetime.now().isoformat()
+        return save_portfolio_db(portfolio)
+
     portfolios = load_portfolios()
     portfolio['id'] = max((p.get('id', 0) for p in portfolios), default=0) + 1
     portfolio['created_at'] = datetime.now().isoformat()
@@ -100,6 +111,11 @@ def save_portfolio(portfolio: dict) -> dict:
 
 def get_portfolio_by_id(portfolio_id: int) -> Optional[dict]:
     """Get a single portfolio by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_portfolio_by_id_db
+        return get_portfolio_by_id_db(portfolio_id)
+
     for p in load_portfolios():
         if p.get('id') == portfolio_id:
             return p
@@ -108,6 +124,18 @@ def get_portfolio_by_id(portfolio_id: int) -> Optional[dict]:
 
 def update_portfolio(portfolio_id: int, updated: dict) -> bool:
     """Update an existing portfolio. Preserves id and created_at."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_portfolio_by_id_db, update_portfolio_db
+        old = get_portfolio_by_id_db(portfolio_id)
+        if not old:
+            return False
+        updated['id'] = portfolio_id
+        updated['created_at'] = old['created_at']
+        updated['updated_at'] = datetime.now().isoformat()
+        update_portfolio_db(portfolio_id, updated)
+        return True
+
     portfolios = load_portfolios()
     for i, p in enumerate(portfolios):
         if p.get('id') == portfolio_id:
@@ -122,6 +150,11 @@ def update_portfolio(portfolio_id: int, updated: dict) -> bool:
 
 def delete_portfolio(portfolio_id: int) -> bool:
     """Delete a portfolio by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import delete_portfolio_db
+        return delete_portfolio_db(portfolio_id)
+
     portfolios = load_portfolios()
     original_len = len(portfolios)
     portfolios = [p for p in portfolios if p.get('id') != portfolio_id]
@@ -133,6 +166,19 @@ def delete_portfolio(portfolio_id: int) -> bool:
 
 def duplicate_portfolio(portfolio_id: int) -> Optional[dict]:
     """Duplicate a portfolio with new ID and '(Copy)' suffix."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_portfolio_by_id_db, save_portfolio_db
+        source = get_portfolio_by_id_db(portfolio_id)
+        if source is None:
+            return None
+        new = copy.deepcopy(source)
+        new.pop('id', None)
+        new['created_at'] = datetime.now().isoformat()
+        new['name'] = source['name'] + " (Copy)"
+        new.pop('updated_at', None)
+        return save_portfolio_db(new)
+
     portfolios = load_portfolios()
     source = None
     for p in portfolios:
@@ -172,7 +218,12 @@ def _seed_built_in_requirements() -> list:
 
 
 def load_requirements() -> list:
-    """Load requirement sets from file. Seeds built-in templates on first call."""
+    """Load requirement sets from file or database. Seeds built-in templates on first call."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_requirements_db
+        return load_requirements_db()
+
     if not os.path.exists(REQUIREMENTS_FILE):
         seeds = _seed_built_in_requirements()
         _save_all_requirements(seeds)
@@ -189,6 +240,14 @@ def _save_all_requirements(requirements: list):
 
 def save_requirement_set(req_set: dict) -> dict:
     """Save a new requirement set. Assigns ID and created_at."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_requirement_set_db
+        req_set['created_at'] = datetime.now().isoformat()
+        req_set.setdefault('built_in', False)
+        req_set.setdefault('firm_key', None)
+        return save_requirement_set_db(req_set)
+
     requirements = load_requirements()
     req_set['id'] = max((r.get('id', 0) for r in requirements), default=0) + 1
     req_set['created_at'] = datetime.now().isoformat()
@@ -201,6 +260,17 @@ def save_requirement_set(req_set: dict) -> dict:
 
 def get_requirement_set_by_id(req_id: int) -> Optional[dict]:
     """Get a single requirement set by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_client
+        client = get_client()
+        result = client.table('requirement_sets') \
+            .select('*') \
+            .eq('id', req_id) \
+            .maybe_single() \
+            .execute()
+        return result.data
+
     for r in load_requirements():
         if r.get('id') == req_id:
             return r
@@ -209,6 +279,20 @@ def get_requirement_set_by_id(req_id: int) -> Optional[dict]:
 
 def update_requirement_set(req_id: int, updated: dict) -> bool:
     """Update an existing requirement set. Preserves id, created_at, built_in."""
+    from db import USE_DB
+    if USE_DB:
+        from db import update_requirement_set_db
+        old = get_requirement_set_by_id(req_id)
+        if not old:
+            return False
+        updated['id'] = req_id
+        updated['created_at'] = old['created_at']
+        updated['built_in'] = old.get('built_in', False)
+        updated['firm_key'] = old.get('firm_key')
+        updated['updated_at'] = datetime.now().isoformat()
+        update_requirement_set_db(req_id, updated)
+        return True
+
     requirements = load_requirements()
     for i, r in enumerate(requirements):
         if r.get('id') == req_id:
@@ -225,6 +309,14 @@ def update_requirement_set(req_id: int, updated: dict) -> bool:
 
 def delete_requirement_set(req_id: int) -> bool:
     """Delete a requirement set by ID. Blocks deletion of built_in sets."""
+    from db import USE_DB
+    if USE_DB:
+        from db import delete_requirement_set_db
+        old = get_requirement_set_by_id(req_id)
+        if not old or old.get('built_in'):
+            return False
+        return delete_requirement_set_db(req_id)
+
     requirements = load_requirements()
     original_len = len(requirements)
     requirements = [r for r in requirements if not (r.get('id') == req_id and not r.get('built_in'))]
@@ -236,6 +328,21 @@ def delete_requirement_set(req_id: int) -> bool:
 
 def duplicate_requirement_set(req_id: int) -> Optional[dict]:
     """Duplicate a requirement set. Always creates non-built_in copy."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_requirement_set_db
+        source = get_requirement_set_by_id(req_id)
+        if source is None:
+            return None
+        new = copy.deepcopy(source)
+        new.pop('id', None)
+        new['created_at'] = datetime.now().isoformat()
+        new['name'] = source['name'] + " (Copy)"
+        new['built_in'] = False
+        new['firm_key'] = None
+        new.pop('updated_at', None)
+        return save_requirement_set_db(new)
+
     requirements = load_requirements()
     source = None
     for r in requirements:

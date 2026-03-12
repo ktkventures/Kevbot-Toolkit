@@ -337,7 +337,43 @@ def get_config_path() -> Path:
     return project_dir / "config" / "risk_management_packs.json"
 
 
+def _parse_pack_list(raw_packs: list) -> List[RiskManagementPack]:
+    """Convert list of dicts to RiskManagementPack objects."""
+    return [RiskManagementPack(
+        id=p["id"],
+        base_template=p["base_template"],
+        version=p.get("version", "Default"),
+        description=p.get("description", ""),
+        enabled=p.get("enabled", True),
+        is_default=p.get("is_default", False),
+        parameters=p.get("parameters", {}),
+    ) for p in raw_packs]
+
+
+def _serialize_pack_list(packs: List[RiskManagementPack]) -> list:
+    """Convert RiskManagementPack objects to list of dicts for storage."""
+    return [{
+        "id": p.id,
+        "base_template": p.base_template,
+        "version": p.version,
+        "description": p.description,
+        "enabled": p.enabled,
+        "is_default": p.is_default,
+        "parameters": p.parameters,
+    } for p in packs]
+
+
 def load_risk_management_packs() -> List[RiskManagementPack]:
+    from db import USE_DB
+    if USE_DB:
+        from db import load_risk_management_packs_db
+        raw = load_risk_management_packs_db()
+        if not raw:
+            packs = create_default_packs()
+            save_risk_management_packs(packs)
+            return packs
+        return _parse_pack_list(raw)
+
     config_path = get_config_path()
 
     if not config_path.exists():
@@ -347,20 +383,7 @@ def load_risk_management_packs() -> List[RiskManagementPack]:
         with open(config_path, 'r') as f:
             data = json.load(f)
 
-        packs = []
-        for pack_data in data.get("packs", []):
-            pack = RiskManagementPack(
-                id=pack_data["id"],
-                base_template=pack_data["base_template"],
-                version=pack_data.get("version", "Default"),
-                description=pack_data.get("description", ""),
-                enabled=pack_data.get("enabled", True),
-                is_default=pack_data.get("is_default", False),
-                parameters=pack_data.get("parameters", {}),
-            )
-            packs.append(pack)
-
-        return packs
+        return _parse_pack_list(data.get("packs", []))
 
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error loading risk management packs: {e}")
@@ -368,26 +391,17 @@ def load_risk_management_packs() -> List[RiskManagementPack]:
 
 
 def save_risk_management_packs(packs: List[RiskManagementPack]) -> bool:
+    from db import USE_DB
+    if USE_DB:
+        from db import save_risk_management_packs_db
+        save_risk_management_packs_db(_serialize_pack_list(packs))
+        return True
+
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        data = {
-            "version": "1.0",
-            "packs": []
-        }
-
-        for pack in packs:
-            pack_data = {
-                "id": pack.id,
-                "base_template": pack.base_template,
-                "version": pack.version,
-                "description": pack.description,
-                "enabled": pack.enabled,
-                "is_default": pack.is_default,
-                "parameters": pack.parameters,
-            }
-            data["packs"].append(pack_data)
+        data = {"version": "1.0", "packs": _serialize_pack_list(packs)}
 
         with open(config_path, 'w') as f:
             json.dump(data, f, indent=2)

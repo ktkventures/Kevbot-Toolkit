@@ -15,13 +15,18 @@ streamlit>=1.32.0
 
 # Visualization
 plotly>=5.18.0
--e ./streamlit_lwc_fork  # vendored fork: LWC v4.2 + createPriceLine + primitives
+# streamlit-lightweight-charts fork installed separately
+# Local:  pip install -e ./streamlit_lwc_fork
+# Docker: handled in Dockerfile
 
-# Database (local storage for MVP)
-# sqlite3 is built-in to Python
+# Database & Auth (Supabase PostgreSQL + Row Level Security)
+supabase>=2.0.0
 
 # HTTP (webhooks)
 requests>=2.31.0
+
+# Timezone support
+pytz>=2024.1
 
 # Environment Variables
 python-dotenv>=1.0.0

@@ -1,0 +1,40 @@
+# Virtual environment
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Runtime data files (not baked into image)
+src/*.pkl
+src/*.log
+src/*.jsonl
+src/engine_status.json
+src/engine_state.json
+src/engine_reload.flag
+src/monitor_status.json
+src/.env
+
+# Node modules in lwc fork (377MB — not needed at runtime)
+streamlit_lwc_fork/streamlit_lightweight_charts/frontend/node_modules/
+streamlit_lwc_fork/streamlit_lightweight_charts/frontend/src/
+streamlit_lwc_fork/streamlit_lightweight_charts/frontend/public/
+streamlit_lwc_fork/streamlit_lightweight_charts/frontend/package*.json
+streamlit_lwc_fork/streamlit_lightweight_charts/frontend/tsconfig.json
+streamlit_lwc_fork/streamlit_lightweight_charts.egg-info/
+streamlit_lwc_fork/.gitignore
+
+# Documentation
+docs/
+
+# Test files
+src/test_*.py
+
+# Dev helpers
+run.sh

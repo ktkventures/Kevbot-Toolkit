@@ -412,12 +412,109 @@ def get_config_path() -> Path:
     return project_dir / "config" / "confluence_groups.json"
 
 
+def _parse_group_list(raw_groups: list) -> List[ConfluenceGroup]:
+    """Convert list of dicts to ConfluenceGroup objects with backward compat."""
+    groups = []
+    for group_data in raw_groups:
+        # Parse plot settings
+        plot_data = group_data.get("plot_settings", {})
+        plot_settings = PlotSettings(
+            colors=plot_data.get("colors", {}),
+            line_width=plot_data.get("line_width", 1),
+            visible=plot_data.get("visible", True),
+        )
+
+        # Support both "version" (new) and "name" (legacy) fields
+        version = group_data.get("version")
+        if not version:
+            legacy_name = group_data.get("name", "")
+            if "(" in legacy_name and ")" in legacy_name:
+                version = legacy_name.split("(")[-1].rstrip(")")
+            else:
+                version = "Default"
+
+        # Backward compat: old "macd" template -> "macd_line"
+        base_template = group_data["base_template"]
+        if base_template == "macd":
+            base_template = "macd_line"
+
+        # Backward compat: old VWAP parameters
+        params = group_data.get("parameters", {})
+        if base_template == "vwap" and "std_dev" in params and "sd1_mult" not in params:
+            old_std = params.pop("std_dev")
+            params["sd1_mult"] = 1.0
+            params["sd2_mult"] = float(old_std)
+            params.pop("tolerance_pct", None)
+
+        # Guard: skip groups referencing templates not in TEMPLATES
+        if base_template not in TEMPLATES:
+            print(f"Warning: skipping group '{group_data['id']}' — "
+                  f"template '{base_template}' not found "
+                  f"(user pack may be removed)")
+            continue
+
+        group = ConfluenceGroup(
+            id=group_data["id"],
+            base_template=base_template,
+            version=version,
+            description=group_data.get("description", ""),
+            enabled=group_data.get("enabled", True),
+            is_default=group_data.get("is_default", False),
+            parameters=params,
+            plot_settings=plot_settings,
+        )
+        groups.append(group)
+
+    # Migration: add bar_count_default if no bar_count group exists
+    if not any(g.base_template == "bar_count" for g in groups):
+        groups.append(ConfluenceGroup(
+            id="bar_count_default",
+            base_template="bar_count",
+            version="Default",
+            description="Exit after 4 candles if no other exit triggers fire",
+            enabled=True,
+            is_default=True,
+            parameters={"candle_count": 4},
+            plot_settings=PlotSettings(colors={}, line_width=1, visible=False),
+        ))
+
+    return groups
+
+
+def _serialize_group_list(groups: List[ConfluenceGroup]) -> list:
+    """Convert ConfluenceGroup objects to list of dicts for storage."""
+    return [{
+        "id": g.id,
+        "base_template": g.base_template,
+        "version": g.version,
+        "description": g.description,
+        "enabled": g.enabled,
+        "is_default": g.is_default,
+        "parameters": g.parameters,
+        "plot_settings": {
+            "colors": g.plot_settings.colors,
+            "line_width": g.plot_settings.line_width,
+            "visible": g.plot_settings.visible,
+        },
+    } for g in groups]
+
+
 def load_confluence_groups() -> List[ConfluenceGroup]:
     """
-    Load confluence groups from the config file.
+    Load confluence groups from the config file or database.
 
     Returns list of ConfluenceGroup objects.
     """
+    from db import USE_DB
+    if USE_DB:
+        from db import load_confluence_groups_db
+        raw = load_confluence_groups_db()
+        if not raw:
+            groups = create_default_groups()
+            save_confluence_groups(groups)
+            return groups
+        return _parse_group_list(raw)
+
     config_path = get_config_path()
 
     if not config_path.exists():
@@ -503,37 +600,23 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
 
 def save_confluence_groups(groups: List[ConfluenceGroup]) -> bool:
     """
-    Save confluence groups to the config file.
+    Save confluence groups to the config file or database.
 
     Returns True if successful.
     """
+    from db import USE_DB
+    if USE_DB:
+        from db import save_confluence_groups_db
+        save_confluence_groups_db(_serialize_group_list(groups))
+        return True
+
     config_path = get_config_path()
 
     # Ensure directory exists
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        data = {
-            "version": "1.0",
-            "groups": []
-        }
-
-        for group in groups:
-            group_data = {
-                "id": group.id,
-                "base_template": group.base_template,
-                "version": group.version,
-                "description": group.description,
-                "enabled": group.enabled,
-                "is_default": group.is_default,
-                "parameters": group.parameters,
-                "plot_settings": {
-                    "colors": group.plot_settings.colors,
-                    "line_width": group.plot_settings.line_width,
-                    "visible": group.plot_settings.visible,
-                },
-            }
-            data["groups"].append(group_data)
+        data = {"version": "1.0", "groups": _serialize_group_list(groups)}
 
         with open(config_path, 'w') as f:
             json.dump(data, f, indent=2)

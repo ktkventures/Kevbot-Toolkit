@@ -3317,7 +3317,13 @@ def render_price_chart(
 # =============================================================================
 
 def load_settings() -> dict:
-    """Load user settings from config/settings.json, falling back to defaults."""
+    """Load user settings from config/settings.json or database, falling back to defaults."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_settings_db
+        saved = load_settings_db()
+        return {**SETTINGS_DEFAULTS, **saved}
+
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
@@ -3329,7 +3335,13 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> bool:
-    """Save user settings to config/settings.json."""
+    """Save user settings to config/settings.json or database."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_settings_db
+        save_settings_db(settings)
+        return True
+
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
     try:
         with open(SETTINGS_FILE, 'w') as f:
@@ -3344,7 +3356,12 @@ def save_settings(settings: dict) -> bool:
 # =============================================================================
 
 def load_strategies() -> list:
-    """Load saved strategies from file."""
+    """Load saved strategies from file or database."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_strategies_db
+        return load_strategies_db()
+
     if os.path.exists(STRATEGIES_FILE):
         try:
             with open(STRATEGIES_FILE, 'r') as f:
@@ -3355,21 +3372,21 @@ def load_strategies() -> list:
 
 
 def save_strategy(strategy: dict):
-    """Save a strategy to file."""
-    strategies = load_strategies()
-
-    # Add timestamp and ID (max+1 is safe after deletions)
-    strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
+    """Save a strategy to file or database."""
     strategy['created_at'] = datetime.now(timezone.utc).isoformat()
-
-    # Forward testing is always on
     strategy['forward_testing'] = True
     strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
 
-    # Convert set to list for JSON serialization
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
         strategy['confluence'] = list(strategy['confluence'])
 
+    from db import USE_DB
+    if USE_DB:
+        from db import save_strategy_db
+        return save_strategy_db(strategy)
+
+    strategies = load_strategies()
+    strategy['id'] = max((s.get('id', 0) for s in strategies), default=0) + 1
     strategies.append(strategy)
 
     with open(STRATEGIES_FILE, 'w') as f:
@@ -3378,6 +3395,11 @@ def save_strategy(strategy: dict):
 
 def get_strategy_by_id(strategy_id: int) -> dict | None:
     """Get a single strategy by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_strategy_by_id_db
+        return get_strategy_by_id_db(strategy_id)
+
     for s in load_strategies():
         if s.get('id') == strategy_id:
             return s
@@ -3467,8 +3489,13 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
 
         strategies[i] = updated_strategy
 
-        with open(STRATEGIES_FILE, 'w') as f:
-            json.dump(strategies, f, indent=2)
+        from db import USE_DB
+        if USE_DB:
+            from db import update_strategy_db
+            update_strategy_db(strategy_id, updated_strategy)
+        else:
+            with open(STRATEGIES_FILE, 'w') as f:
+                json.dump(strategies, f, indent=2)
         return result
 
     return False
@@ -3615,8 +3642,13 @@ def refresh_strategy_data(strategy_id: int) -> bool:
         strat['data_refreshed_at'] = datetime.now(timezone.utc).isoformat()
         strategies[i] = strat
 
-        with open(STRATEGIES_FILE, 'w') as f:
-            json.dump(strategies, f, indent=2)
+        from db import USE_DB
+        if USE_DB:
+            from db import update_strategy_db
+            update_strategy_db(strategy_id, strat)
+        else:
+            with open(STRATEGIES_FILE, 'w') as f:
+                json.dump(strategies, f, indent=2)
         return True
 
     return False
@@ -3660,7 +3692,12 @@ def bulk_refresh_all_strategies(progress_callback=None) -> dict:
 
 
 def delete_strategy(strategy_id: int) -> bool:
-    """Delete a strategy from strategies.json by ID."""
+    """Delete a strategy by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import delete_strategy_db
+        return delete_strategy_db(strategy_id)
+
     strategies = load_strategies()
     original_len = len(strategies)
     strategies = [s for s in strategies if s.get('id') != strategy_id]
@@ -3677,6 +3714,23 @@ def duplicate_strategy(strategy_id: int) -> dict | None:
     Duplicate a strategy. Creates a new copy with forward testing disabled.
     The original (including forward test data) is untouched.
     """
+    from db import USE_DB
+    if USE_DB:
+        from db import get_strategy_by_id_db, save_strategy_db
+        source = get_strategy_by_id_db(strategy_id)
+        if source is None:
+            return None
+        new_strategy = copy.deepcopy(source)
+        new_strategy.pop('id', None)
+        new_strategy['created_at'] = datetime.now(timezone.utc).isoformat()
+        new_strategy['name'] = source['name'] + " (Copy)"
+        new_strategy['forward_testing'] = False
+        new_strategy.pop('forward_test_start', None)
+        new_strategy.pop('updated_at', None)
+        if 'equity_curve_data' in new_strategy and new_strategy['equity_curve_data']:
+            new_strategy['equity_curve_data']['boundary_index'] = None
+        return save_strategy_db(new_strategy)
+
     strategies = load_strategies()
     source = None
     for s in strategies:
@@ -3742,12 +3796,25 @@ CUSTOM_CSS = """
 """
 
 
+def _check_auth_quick() -> bool:
+    """Lightweight auth check for layout selection (no session refresh)."""
+    return 'auth_user' in st.session_state and st.session_state['auth_user'] is not None
+
+
 def main():
-    st.set_page_config(
-        page_title="RoR Trader",
-        page_icon="📈",
-        layout="wide"
-    )
+    from db import USE_DB
+
+    # Page config must be the first Streamlit command
+    if USE_DB and not _check_auth_quick():
+        # Login page uses centered layout
+        st.set_page_config(page_title="RoR Trader", page_icon="📈", layout="centered")
+    else:
+        st.set_page_config(page_title="RoR Trader", page_icon="📈", layout="wide")
+
+    # Auth gate — shows login page and stops if not authenticated
+    if USE_DB:
+        from auth import require_auth
+        require_auth()
 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
@@ -3878,6 +3945,14 @@ def main():
     with st.sidebar:
         st.title("RoR Trader")
         st.caption("Return on Risk Trader")
+
+        # User info + logout (when authenticated via DB)
+        if USE_DB:
+            from auth import get_user, render_logout_button
+            _auth_user = get_user()
+            if _auth_user:
+                st.caption(f"Signed in as {_auth_user['email']}")
+                render_logout_button()
 
         data_source = get_data_source(_get_data_feed())
         if is_alpaca_configured():

@@ -239,7 +239,12 @@ def generate_webhook_id() -> str:
 
 
 def load_alert_config() -> dict:
-    """Load alert configuration. Migrates legacy schema if detected."""
+    """Load alert configuration from file or database. Migrates legacy schema if detected."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_alert_config_db
+        return load_alert_config_db()
+
     if os.path.exists(ALERT_CONFIG_FILE):
         try:
             with open(ALERT_CONFIG_FILE, 'r') as f:
@@ -301,7 +306,13 @@ def load_alert_config() -> dict:
 
 
 def save_alert_config(config: dict):
-    """Save alert configuration to JSON file."""
+    """Save alert configuration to file or database."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_alert_config_db
+        save_alert_config_db(config)
+        return
+
     with open(ALERT_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
@@ -420,6 +431,11 @@ def get_all_active_webhooks() -> list:
 
 def load_alerts(limit: int = 100) -> list:
     """Load alert history, most recent first. Returns up to `limit` alerts."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_alerts_db
+        return load_alerts_db(limit=limit)
+
     if not os.path.exists(ALERTS_FILE):
         return []
     try:
@@ -452,6 +468,15 @@ def _save_all_alerts(alerts: list):
 
 def save_alert(alert: dict) -> dict:
     """Save a new alert, auto-assigning ID and timestamp."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_alert_db
+        if 'timestamp' not in alert:
+            alert['timestamp'] = datetime.now(timezone.utc).isoformat()
+        if 'acknowledged' not in alert:
+            alert['acknowledged'] = False
+        return save_alert_db(alert)
+
     with _alerts_lock:
         alerts = load_alerts(limit=10000)  # load all
         max_id = max((a.get('id', 0) for a in alerts), default=0)
@@ -468,6 +493,11 @@ def save_alert(alert: dict) -> dict:
 
 def update_alert(alert_id: int, updates: dict):
     """Update an existing alert by ID (thread-safe)."""
+    from db import USE_DB
+    if USE_DB:
+        from db import update_alert_db
+        return update_alert_db(alert_id, updates)
+
     with _alerts_lock:
         alerts = load_alerts(limit=10000)
         for i, a in enumerate(alerts):
@@ -480,6 +510,12 @@ def update_alert(alert_id: int, updates: dict):
 
 def acknowledge_alert(alert_id: int) -> bool:
     """Mark an alert as acknowledged."""
+    from db import USE_DB
+    if USE_DB:
+        from db import update_alert_db
+        result = update_alert_db(alert_id, {'acknowledged': True})
+        return result is not None
+
     with _alerts_lock:
         alerts = load_alerts(limit=10000)
         for alert in alerts:
@@ -492,19 +528,36 @@ def acknowledge_alert(alert_id: int) -> bool:
 
 def clear_alerts():
     """Remove all alert history."""
+    from db import USE_DB
+    if USE_DB:
+        from db import clear_alerts_db
+        clear_alerts_db()
+        return
+
     with _alerts_lock:
         _save_all_alerts([])
 
 
 def get_alerts_for_strategy(strategy_id: int, limit: int = 50) -> list:
     """Get alerts for a specific strategy."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_alerts_for_strategy_db
+        return get_alerts_for_strategy_db(strategy_id, limit=limit)
+
     alerts = load_alerts(limit=10000)
     filtered = [a for a in alerts if a.get('strategy_id') == strategy_id]
     return filtered[:limit]
 
 
 def delete_alerts_for_strategy(strategy_id: int):
-    """Remove all alerts for a strategy from alerts.json."""
+    """Remove all alerts for a strategy."""
+    from db import USE_DB
+    if USE_DB:
+        from db import delete_alerts_for_strategy_db
+        delete_alerts_for_strategy_db(strategy_id)
+        return
+
     with _alerts_lock:
         alerts = load_alerts(limit=10000)
         filtered = [a for a in alerts if a.get('strategy_id') != strategy_id]
@@ -575,6 +628,11 @@ def get_active_alert_configs() -> dict:
 
 def load_monitor_status() -> dict:
     """Load monitor status. Returns default offline status if missing."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_monitor_status_db
+        return load_monitor_status_db()
+
     if os.path.exists(MONITOR_STATUS_FILE):
         try:
             with open(MONITOR_STATUS_FILE, 'r') as f:
@@ -594,6 +652,12 @@ def load_monitor_status() -> dict:
 
 def save_monitor_status(status: dict):
     """Save monitor status."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_monitor_status_db
+        save_monitor_status_db(status)
+        return
+
     with open(MONITOR_STATUS_FILE, 'w') as f:
         json.dump(status, f, indent=2, default=str)
 
@@ -989,6 +1053,25 @@ DEFAULT_WEBHOOK_TEMPLATES = [
 
 def load_webhook_templates() -> list:
     """Load webhook templates. Seeds defaults if file missing."""
+    from db import USE_DB
+    if USE_DB:
+        from db import load_webhook_templates_db
+        templates = load_webhook_templates_db()
+        if not templates:
+            # Seed defaults
+            from db import save_webhook_template_db, get_current_user_id
+            for t in DEFAULT_WEBHOOK_TEMPLATES:
+                tpl = dict(t)
+                tpl['user_id'] = None  # Built-in defaults have no user
+                # Use admin client for seeding built-ins
+                try:
+                    from db import get_admin_client
+                    get_admin_client().table('webhook_templates').insert(tpl).execute()
+                except Exception:
+                    pass
+            return [dict(t) for t in DEFAULT_WEBHOOK_TEMPLATES]
+        return templates
+
     if os.path.exists(WEBHOOK_TEMPLATES_FILE):
         with open(WEBHOOK_TEMPLATES_FILE, 'r') as f:
             templates = json.load(f)
@@ -1010,13 +1093,24 @@ def load_webhook_templates() -> list:
 
 
 def save_webhook_templates(templates: list):
-    """Save webhook templates to file."""
+    """Save webhook templates to file. (In DB mode, use individual add/update/delete.)"""
+    from db import USE_DB
+    if USE_DB:
+        return  # DB mode uses individual CRUD, not bulk save
+
     with open(WEBHOOK_TEMPLATES_FILE, 'w') as f:
         json.dump(templates, f, indent=2)
 
 
 def add_webhook_template(template: dict) -> dict:
     """Add a user-created webhook template. Auto-assigns ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import save_webhook_template_db
+        template["id"] = f"tpl_{secrets.token_hex(3)}"
+        template["is_default"] = False
+        return save_webhook_template_db(template)
+
     templates = load_webhook_templates()
     template["id"] = f"tpl_{secrets.token_hex(3)}"
     template["is_default"] = False
@@ -1027,6 +1121,12 @@ def add_webhook_template(template: dict) -> dict:
 
 def update_webhook_template(template_id: str, updates: dict) -> bool:
     """Update an existing webhook template. Returns True if found and updated."""
+    from db import USE_DB
+    if USE_DB:
+        from db import update_webhook_template_db
+        result = update_webhook_template_db(template_id, updates)
+        return result is not None
+
     templates = load_webhook_templates()
     for i, t in enumerate(templates):
         if t.get("id") == template_id:
@@ -1038,6 +1138,14 @@ def update_webhook_template(template_id: str, updates: dict) -> bool:
 
 def delete_webhook_template(template_id: str) -> bool:
     """Delete a webhook template (only user-created). Returns True if removed."""
+    from db import USE_DB
+    if USE_DB:
+        from db import delete_webhook_template_db
+        tpl = get_webhook_template_by_id(template_id)
+        if not tpl or tpl.get('is_default'):
+            return False
+        return delete_webhook_template_db(template_id)
+
     templates = load_webhook_templates()
     original_len = len(templates)
     templates = [t for t in templates if not (t.get("id") == template_id and not t.get("is_default", False))]
@@ -1049,6 +1157,17 @@ def delete_webhook_template(template_id: str) -> bool:
 
 def get_webhook_template_by_id(template_id: str) -> dict | None:
     """Get a single webhook template by ID."""
+    from db import USE_DB
+    if USE_DB:
+        from db import get_client
+        client = get_client()
+        result = client.table('webhook_templates') \
+            .select('*') \
+            .eq('id', template_id) \
+            .maybe_single() \
+            .execute()
+        return result.data
+
     for t in load_webhook_templates():
         if t.get("id") == template_id:
             return t
