@@ -256,6 +256,8 @@ SETTINGS_DEFAULTS = {
     "enabled_timeframes": ["1Min"],
     "candle_theme": "neutral",
     "display_timezone": "US/Eastern",
+    "alpaca_api_key": "",
+    "alpaca_secret_key": "",
 }
 
 # Candlestick color themes — keys match the candle_theme setting
@@ -11012,6 +11014,11 @@ def _signal_ralph_reload():
 
 def _render_monitor_status_bar(status: dict, config: dict):
     """Render the monitor status bar with start/stop controls."""
+    from db import USE_DB
+
+    if USE_DB:
+        return _render_monitor_status_bar_db(status, config)
+
     is_running = status.get('running', False)
 
     # Verify PID is actually alive if status says running
@@ -11134,6 +11141,62 @@ def _render_monitor_status_bar(status: dict, config: dict):
                 st.toast("Ralph engine starting...")
                 import time
                 time.sleep(1)  # brief delay for status file to be written
+                st.rerun()
+
+
+def _render_monitor_status_bar_db(status: dict, config: dict):
+    """DB-mode monitor status bar — worker manages engines, UI sets desired_state."""
+    from db import set_desired_state_db
+
+    desired = status.get('desired_state', 'stopped')
+    engine_running = status.get('running', False)
+    engine_connected = status.get('connected', False) or status.get('streaming_connected', False)
+    engine_error = status.get('error', '')
+
+    col_status, col_info, col_action = st.columns([2, 4, 2])
+
+    with col_status:
+        if engine_connected:
+            st.success("Engine: Streaming")
+        elif engine_running:
+            st.warning("Engine: Connecting...")
+        elif desired == 'running':
+            st.warning("Engine: Starting...")
+        else:
+            st.error("Engine: Stopped")
+
+    with col_info:
+        if engine_running or engine_connected:
+            sym_count = len(status.get('symbols', []))
+            ticks = status.get('tick_count', 0)
+            syms = ", ".join(status.get('symbols', []))
+            strat_count = status.get('strategies', 0)
+            info_parts = [f"Symbols: {syms or 'none'}", f"Ticks: {ticks:,}"]
+            if status.get('started_at'):
+                info_parts.append(f"Started: {format_display_ts(status['started_at'])}")
+            st.caption(" | ".join(info_parts))
+        elif desired == 'running' and not engine_running:
+            st.caption("Worker is starting your engine — this may take a few seconds.")
+        elif engine_error:
+            st.warning(f"Last error: {engine_error}")
+        else:
+            if not config.get('global', {}).get('enabled', False):
+                st.caption("Enable alerts in Global Settings to start the monitor.")
+            else:
+                st.caption("Click Start to request the worker to launch your engine.")
+
+    with col_action:
+        if desired == 'running' or engine_running:
+            if st.button("Stop Monitor", type="secondary", use_container_width=True):
+                set_desired_state_db('stopped')
+                st.toast("Stop signal sent to worker")
+                st.rerun()
+        else:
+            can_start = config.get('global', {}).get('enabled', False)
+            if st.button("Start Monitor", type="primary", disabled=not can_start,
+                         use_container_width=True):
+                set_desired_state_db('running')
+                st.toast("Start signal sent to worker — engine will launch shortly")
                 st.rerun()
 
 
@@ -12276,21 +12339,43 @@ def render_settings():
     st.divider()
     st.subheader("Connections")
 
-    conn_col1, conn_col2 = st.columns(2)
-    with conn_col1:
-        st.markdown("**Alpaca API**")
-        _alpaca_status = "Connected" if is_alpaca_configured() else "Not Configured"
-        _status_color = "#4CAF50" if is_alpaca_configured() else "#9E9E9E"
-        st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_status}</span>', unsafe_allow_html=True)
+    from db import USE_DB as _settings_use_db
 
-        if is_alpaca_configured():
-            from data_loader import ALPACA_API_KEY
-            _masked = ALPACA_API_KEY[:4] + "..." + ALPACA_API_KEY[-4:] if ALPACA_API_KEY and len(ALPACA_API_KEY) > 8 else "****"
-            st.text_input("API Key", value=_masked, disabled=True, key="conn_api_key")
-        else:
-            st.caption("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables to connect.")
+    if _settings_use_db:
+        # DB mode: Alpaca keys stored per-user in user_settings
+        st.markdown("**Alpaca API Keys**")
+        st.caption(
+            "Your API keys are stored securely per-account. "
+            "The worker service uses them to run your engine."
+        )
+        _saved_ak = st.session_state.get('alpaca_api_key', '')
+        _saved_sk = st.session_state.get('alpaca_secret_key', '')
+        _has_keys = bool(_saved_ak and _saved_sk)
 
-    with conn_col2:
+        conn_col1, conn_col2 = st.columns(2)
+        with conn_col1:
+            _new_ak = st.text_input(
+                "Alpaca API Key",
+                value=_saved_ak,
+                type="password",
+                key="settings_alpaca_api_key",
+                help="Your Alpaca paper or live API key.",
+            )
+            st.session_state['alpaca_api_key'] = _new_ak
+        with conn_col2:
+            _new_sk = st.text_input(
+                "Alpaca Secret Key",
+                value=_saved_sk,
+                type="password",
+                key="settings_alpaca_secret_key",
+                help="Your Alpaca paper or live secret key.",
+            )
+            st.session_state['alpaca_secret_key'] = _new_sk
+
+        _status_color = "#4CAF50" if _has_keys else "#9E9E9E"
+        _alpaca_label = "Configured" if _has_keys else "Not Configured"
+        st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_label}</span>', unsafe_allow_html=True)
+
         st.markdown("**Data Feed**")
         _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
         _feed_keys = ["iex", "sip"]
@@ -12300,17 +12385,54 @@ def render_settings():
                              help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
         st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
 
-        if st.session_state['data_feed'] == 'sip':
-            es = _read_ralph_status()
-            if es.get('running'):
-                sym_count = len(es.get('symbols', []))
-                ticks = es.get('tick_count', 0)
-                mode = "Connected" if es.get('connected') else "Reconnecting"
-                st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
-            else:
-                st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+        # Show engine status from DB
+        _db_status = load_monitor_status()
+        if _db_status.get('running') or _db_status.get('connected'):
+            sym_count = len(_db_status.get('symbols', []))
+            ticks = _db_status.get('tick_count', 0)
+            mode = "Connected" if _db_status.get('connected') else "Running"
+            st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
+        elif _db_status.get('desired_state') == 'running':
+            st.info("Engine starting...")
         else:
-            st.caption("Real-time engine requires SIP data feed.")
+            st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+    else:
+        # Local mode: keys from .env
+        conn_col1, conn_col2 = st.columns(2)
+        with conn_col1:
+            st.markdown("**Alpaca API**")
+            _alpaca_status = "Connected" if is_alpaca_configured() else "Not Configured"
+            _status_color = "#4CAF50" if is_alpaca_configured() else "#9E9E9E"
+            st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_status}</span>', unsafe_allow_html=True)
+
+            if is_alpaca_configured():
+                from data_loader import ALPACA_API_KEY
+                _masked = ALPACA_API_KEY[:4] + "..." + ALPACA_API_KEY[-4:] if ALPACA_API_KEY and len(ALPACA_API_KEY) > 8 else "****"
+                st.text_input("API Key", value=_masked, disabled=True, key="conn_api_key")
+            else:
+                st.caption("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables to connect.")
+
+        with conn_col2:
+            st.markdown("**Data Feed**")
+            _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
+            _feed_keys = ["iex", "sip"]
+            _saved_feed = st.session_state.get('data_feed', 'sip')
+            _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
+            _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
+                                 help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
+            st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
+
+            if st.session_state['data_feed'] == 'sip':
+                es = _read_ralph_status()
+                if es.get('running'):
+                    sym_count = len(es.get('symbols', []))
+                    ticks = es.get('tick_count', 0)
+                    mode = "Connected" if es.get('connected') else "Reconnecting"
+                    st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
+                else:
+                    st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+            else:
+                st.caption("Real-time engine requires SIP data feed.")
 
     # --- Save Settings ---
     st.divider()

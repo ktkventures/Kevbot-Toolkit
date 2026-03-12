@@ -653,3 +653,156 @@ def append_audit_log_db(entry: dict, user_id: str = None):
         'interpreters': entry.get('interpreters', {}),
         'positions': entry.get('positions', {}),
     }).execute()
+
+
+# ============================================================
+# Admin-only functions (worker service — bypasses RLS)
+# ============================================================
+
+def load_all_desired_states() -> list:
+    """Load desired_state for all users. Worker polls this to start/stop engines."""
+    client = get_admin_client()
+    result = client.table('monitor_status') \
+        .select('user_id, desired_state, updated_at') \
+        .execute()
+    return result.data
+
+
+def load_alert_config_admin(user_id: str) -> dict:
+    """Load alert config for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('alert_config') \
+        .select('config, updated_at') \
+        .eq('user_id', user_id) \
+        .maybe_single() \
+        .execute()
+    if result and result.data:
+        config = result.data['config']
+        config = json.loads(config) if isinstance(config, str) else config
+        config['_updated_at'] = result.data.get('updated_at', '')
+        return config
+    return {"global": {}, "strategies": {}, "portfolios": {}}
+
+
+def load_strategies_admin(user_id: str) -> list:
+    """Load all strategies for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('strategies') \
+        .select('*') \
+        .eq('user_id', user_id) \
+        .order('id') \
+        .execute()
+    return [_row_to_strategy(r) for r in result.data]
+
+
+def load_portfolios_admin(user_id: str) -> list:
+    """Load all portfolios for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('portfolios') \
+        .select('*') \
+        .eq('user_id', user_id) \
+        .order('id') \
+        .execute()
+    return result.data
+
+
+def save_alert_admin(alert: dict, user_id: str) -> dict:
+    """Insert an alert for a specific user (admin client)."""
+    alert['user_id'] = user_id
+    row = _alert_to_row(alert)
+    row.pop('id', None)
+    client = get_admin_client()
+    result = client.table('alerts').insert(row).execute()
+    return _row_to_alert(result.data[0])
+
+
+def save_monitor_status_admin(user_id: str, status: dict):
+    """Update monitor status for a specific user (admin client)."""
+    now = datetime.now(timezone.utc).isoformat()
+    desired_state = status.pop('desired_state', None)
+    row = {
+        'user_id': user_id,
+        'status': status,
+        'last_heartbeat': now,
+        'updated_at': now,
+    }
+    if desired_state:
+        row['desired_state'] = desired_state
+    client = get_admin_client()
+    client.table('monitor_status').upsert(
+        row, on_conflict='user_id'
+    ).execute()
+
+
+def load_user_settings_admin(user_id: str) -> dict:
+    """Load user settings for a specific user (admin client, for Alpaca keys)."""
+    client = get_admin_client()
+    result = client.table('user_settings') \
+        .select('settings') \
+        .eq('user_id', user_id) \
+        .maybe_single() \
+        .execute()
+    if result and result.data:
+        val = result.data['settings']
+        return json.loads(val) if isinstance(val, str) else val
+    return {}
+
+
+def load_general_packs_admin(user_id: str) -> list:
+    """Load general packs for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('general_packs') \
+        .select('packs') \
+        .eq('user_id', user_id) \
+        .maybe_single() \
+        .execute()
+    if result and result.data:
+        val = result.data['packs']
+        return json.loads(val) if isinstance(val, str) else val
+    return []
+
+
+def load_confluence_groups_admin(user_id: str) -> list:
+    """Load confluence groups for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('confluence_groups') \
+        .select('groups') \
+        .eq('user_id', user_id) \
+        .maybe_single() \
+        .execute()
+    if result and result.data:
+        val = result.data['groups']
+        return json.loads(val) if isinstance(val, str) else val
+    return []
+
+
+def get_monitored_strategies_db(user_id: str) -> list:
+    """Resolve which strategies to monitor for a user (admin client).
+
+    A strategy is monitored if it belongs to any portfolio that has at
+    least one enabled webhook in alert_config.
+    """
+    config = load_alert_config_admin(user_id)
+    strategies = load_strategies_admin(user_id)
+    portfolios = load_portfolios_admin(user_id)
+
+    # Build set of strategy IDs in portfolios with active webhooks
+    webhook_strategy_ids = set()
+    for port in portfolios:
+        pid = str(port['id'])
+        pcfg = config.get('portfolios', {}).get(pid, {})
+        webhooks = pcfg.get('webhooks', [])
+        has_active_webhook = any(wh.get('enabled', True) for wh in webhooks)
+        if has_active_webhook:
+            for alloc in port.get('strategies', []):
+                webhook_strategy_ids.add(alloc.get('strategy_id'))
+
+    monitored = []
+    for strat in strategies:
+        if strat['id'] not in webhook_strategy_ids:
+            continue
+        if 'entry_trigger_confluence_id' not in strat:
+            continue  # skip legacy strategies
+        monitored.append(strat)
+
+    return monitored
