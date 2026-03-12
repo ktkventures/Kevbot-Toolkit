@@ -43,7 +43,6 @@ from db import (
     save_engine_state_db,
     load_engine_state_db,
     append_audit_log_db,
-    load_user_settings_admin,
     load_general_packs_admin,
     get_monitored_strategies_db,
 )
@@ -515,30 +514,18 @@ class WorkerManager:
 
     def _start_user_engine(self, user_id: str):
         """Start or restart an engine for a user."""
-        # Load user's Alpaca keys from settings
-        try:
-            settings = load_user_settings_admin(user_id)
-        except Exception as e:
-            logger.error("[%s] Failed to load settings: %s", user_id[:8], e)
-            return
-
+        # Alpaca keys are system-level (shared across all users)
         alpaca_keys = {
-            'api_key': settings.get('alpaca_api_key', os.getenv('ALPACA_API_KEY', '')),
-            'secret_key': settings.get('alpaca_secret_key', os.getenv('ALPACA_SECRET_KEY', '')),
-            'data_feed': settings.get('data_feed', os.getenv('ALPACA_DATA_FEED', 'sip')),
+            'api_key': os.getenv('ALPACA_API_KEY', ''),
+            'secret_key': os.getenv('ALPACA_SECRET_KEY', ''),
+            'data_feed': os.getenv('ALPACA_DATA_FEED', 'sip'),
         }
 
         if not alpaca_keys['api_key'] or not alpaca_keys['secret_key']:
-            logger.warning("[%s] No Alpaca keys configured — using env fallback",
-                           user_id[:8])
-            alpaca_keys['api_key'] = os.getenv('ALPACA_API_KEY', '')
-            alpaca_keys['secret_key'] = os.getenv('ALPACA_SECRET_KEY', '')
-
-        if not alpaca_keys['api_key'] or not alpaca_keys['secret_key']:
-            logger.error("[%s] No Alpaca API keys available", user_id[:8])
+            logger.error("[%s] No Alpaca API keys in environment", user_id[:8])
             save_monitor_status_admin(user_id, {
                 'running': False,
-                'error': 'No Alpaca API keys configured',
+                'error': 'No Alpaca API keys configured on worker',
             })
             return
 
