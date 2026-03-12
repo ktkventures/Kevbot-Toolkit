@@ -44,14 +44,15 @@ def render_auth_page():
     """
     st.title("RoR Trader")
 
-    tab_login, tab_signup, tab_waitlist = st.tabs([
-        "Login", "Sign Up", "Pre-Register"
+    # Sign Up tab hidden until ready for public access
+    tab_login, tab_waitlist = st.tabs([
+        "Login", "Pre-Register"
     ])
 
     with tab_login:
         _render_login_form()
-    with tab_signup:
-        _render_signup_form()
+    # with tab_signup:
+    #     _render_signup_form()
     with tab_waitlist:
         _render_waitlist_form()
 
