@@ -11145,13 +11145,18 @@ def _render_monitor_status_bar(status: dict, config: dict):
 
 
 def _render_monitor_status_bar_db(status: dict, config: dict):
-    """DB-mode monitor status bar — worker manages engines, UI sets desired_state."""
+    """DB-mode monitor status bar — worker manages engines automatically.
+
+    Shows engine connection status and a simple enable/disable toggle.
+    The worker service polls desired_state and starts/stops accordingly.
+    """
     from db import set_desired_state_db
 
     desired = status.get('desired_state', 'stopped')
     engine_running = status.get('running', False)
     engine_connected = status.get('connected', False) or status.get('streaming_connected', False)
     engine_error = status.get('error', '')
+    monitoring_enabled = desired == 'running'
 
     col_status, col_info, col_action = st.columns([2, 4, 2])
 
@@ -11160,43 +11165,45 @@ def _render_monitor_status_bar_db(status: dict, config: dict):
             st.success("Engine: Streaming")
         elif engine_running:
             st.warning("Engine: Connecting...")
-        elif desired == 'running':
+        elif monitoring_enabled:
             st.warning("Engine: Starting...")
         else:
-            st.error("Engine: Stopped")
+            st.info("Monitoring: Off")
 
     with col_info:
         if engine_running or engine_connected:
             sym_count = len(status.get('symbols', []))
             ticks = status.get('tick_count', 0)
             syms = ", ".join(status.get('symbols', []))
-            strat_count = status.get('strategies', 0)
             info_parts = [f"Symbols: {syms or 'none'}", f"Ticks: {ticks:,}"]
             if status.get('started_at'):
                 info_parts.append(f"Started: {format_display_ts(status['started_at'])}")
             st.caption(" | ".join(info_parts))
-        elif desired == 'running' and not engine_running:
+        elif monitoring_enabled and not engine_running:
             st.caption("Worker is starting your engine — this may take a few seconds.")
         elif engine_error:
             st.warning(f"Last error: {engine_error}")
         else:
-            if not config.get('global', {}).get('enabled', False):
-                st.caption("Enable alerts in Global Settings to start the monitor.")
-            else:
-                st.caption("Click Start to request the worker to launch your engine.")
+            st.caption(
+                "Enable monitoring to start receiving alerts. "
+                "Make sure you have at least one portfolio with an active webhook."
+            )
 
     with col_action:
-        if desired == 'running' or engine_running:
-            if st.button("Stop Monitor", type="secondary", use_container_width=True):
+        if monitoring_enabled:
+            if st.button("Disable Monitoring", type="secondary", use_container_width=True):
                 set_desired_state_db('stopped')
-                st.toast("Stop signal sent to worker")
+                st.toast("Monitoring disabled")
                 st.rerun()
         else:
-            can_start = config.get('global', {}).get('enabled', False)
-            if st.button("Start Monitor", type="primary", disabled=not can_start,
-                         use_container_width=True):
+            if st.button("Enable Monitoring", type="primary", use_container_width=True):
+                # Auto-enable global alerts when user enables monitoring
+                if not config.get('global', {}).get('enabled', False):
+                    config.setdefault('global', {})['enabled'] = True
+                    from alerts import save_alert_config
+                    save_alert_config(config)
                 set_desired_state_db('running')
-                st.toast("Start signal sent to worker — engine will launch shortly")
+                st.toast("Monitoring enabled — worker will start your engine shortly")
                 st.rerun()
 
 
