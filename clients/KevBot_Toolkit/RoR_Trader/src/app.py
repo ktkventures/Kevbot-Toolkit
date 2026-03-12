@@ -2746,36 +2746,25 @@ def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list
 @st.fragment(run_every=5)
 def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
                           chart_key: str = 'live_chart'):
-    """Auto-refreshing live chart that reads data from the Ralph alert engine.
+    """Auto-refreshing live chart.
 
-    Reads ``live_data_{symbol}_{tf}.pkl`` written by the Ralph engine's
-    bar builder.  Re-renders every 5 seconds via ``@st.fragment(run_every=5)``.
+    Local mode: reads pickle files written by Ralph engine.
+    DB/cloud mode: loads recent bars via Alpaca REST API.
 
-    Runs unified engine on recent bars (last 2000) to produce trade
-    markers for visual display.
+    Runs unified engine on recent bars to produce trade markers.
     """
-    import pickle
+    from db import USE_DB as _live_use_db
 
-    src_dir = os.path.dirname(os.path.abspath(__file__))
-    pkl_path = os.path.join(src_dir, f"live_data_{symbol}_{tf_seconds}.pkl")
-
-    if not os.path.exists(pkl_path):
-        st.info("Waiting for live data from Ralph engine...")
-        return
-
-    try:
-        with open(pkl_path, 'rb') as f:
-            df_live = pickle.load(f)
-    except Exception as e:
-        st.warning(f"Could not read live data: {e}")
-        return
+    if _live_use_db:
+        df_live = _load_live_chart_rest(symbol, tf_seconds, strat)
+    else:
+        df_live = _load_live_chart_pickle(symbol, tf_seconds)
 
     if df_live is None or len(df_live) == 0:
         st.info("No live data available yet.")
         return
 
     # Slice to recent bars for performance.
-    # Full DataFrame can be 20K+ rows; only need recent bars for trade markers.
     TRADE_WINDOW = 2000
     df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
 
@@ -2806,17 +2795,22 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     # Status bar
     last_ts = df_display.index[-1]
     last_close = float(df_display.iloc[-1]['close'])
-    file_mtime = datetime.fromtimestamp(os.path.getmtime(pkl_path), tz=timezone.utc)
-    age_sec = (datetime.now(timezone.utc) - file_mtime).total_seconds()
 
     cols = st.columns([2, 2, 2, 1])
     cols[0].caption(f"Last bar: {last_ts}")
     cols[1].caption(f"Close: ${last_close:,.2f}")
     cols[2].caption(f"Bars: {len(df_live)}")
-    if age_sec < 5:
-        cols[3].caption("Live")
+
+    # Data freshness
+    if _live_use_db:
+        cols[3].caption("REST")
     else:
-        cols[3].caption(f"Data age: {age_sec:.0f}s")
+        pkl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                f"live_data_{symbol}_{tf_seconds}.pkl")
+        if os.path.exists(pkl_path):
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(pkl_path), tz=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - file_mtime).total_seconds()
+            cols[3].caption("Live" if age_sec < 5 else f"Data age: {age_sec:.0f}s")
 
     render_price_chart(
         df_display, trades, strat,
@@ -2831,6 +2825,41 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
 
     # Current condition states
     _render_live_conditions(df_live, strat, relevant_groups)
+
+
+def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
+    """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode)."""
+    from ralph_engine import TIMEFRAME_SECONDS
+    # Reverse lookup: tf_seconds -> timeframe string
+    tf_str = strat.get('timeframe', '1Min')
+    for k, v in TIMEFRAME_SECONDS.items():
+        if v == tf_seconds:
+            tf_str = k
+            break
+
+    try:
+        df = load_market_data(
+            symbol, days=3, timeframe=tf_str,
+            feed=_get_data_feed(), session="Extended Hours")
+        if df is not None and len(df) > 0:
+            return df
+    except Exception:
+        pass
+    return None
+
+
+def _load_live_chart_pickle(symbol: str, tf_seconds: int):
+    """Load live data from pickle file (local mode)."""
+    import pickle
+    pkl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            f"live_data_{symbol}_{tf_seconds}.pkl")
+    if not os.path.exists(pkl_path):
+        return None
+    try:
+        with open(pkl_path, 'rb') as f:
+            return pickle.load(f)
+    except Exception:
+        return None
 
     # Alert-based trade history (real executions from alerts.json)
     render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
@@ -7178,12 +7207,18 @@ def render_live_backtest(strat: dict):
     _bt_symbol = strat.get('symbol', 'SPY')
     from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_BT
     _bt_tf_sec = _TF_SEC_BT.get(strat.get('timeframe', '1Min'), 60)
-    _bt_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_bt_symbol}_{_bt_tf_sec}.pkl")
     try:
-        _bt_ralph_status = _read_ralph_status()
         _bt_mon_status = load_monitor_status()
-        if _bt_ralph_status.get('running') or _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
-            _bt_has_live_chart = True
+        from db import USE_DB as _bt_use_db
+        if _bt_use_db:
+            # DB mode: check worker status from DB
+            if _bt_mon_status.get('running') or _bt_mon_status.get('connected') or _bt_mon_status.get('desired_state') == 'running':
+                _bt_has_live_chart = True
+        else:
+            _bt_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_bt_symbol}_{_bt_tf_sec}.pkl")
+            _bt_ralph_status = _read_ralph_status()
+            if _bt_ralph_status.get('running') or _bt_mon_status.get('running') or os.path.exists(_bt_pkl):
+                _bt_has_live_chart = True
     except Exception:
         pass
 
@@ -7656,12 +7691,17 @@ def render_forward_test_view(strat: dict):
     _ft_symbol = strat.get('symbol', 'SPY')
     from ralph_engine import TIMEFRAME_SECONDS as _TF_SEC_FT
     _ft_tf_sec = _TF_SEC_FT.get(strat.get('timeframe', '1Min'), 60)
-    _ft_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_ft_symbol}_{_ft_tf_sec}.pkl")
     try:
-        _ft_ralph_status = _read_ralph_status()
         _ft_mon_status = load_monitor_status()
-        if _ft_ralph_status.get('running') or _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
-            _ft_has_live_chart = True
+        from db import USE_DB as _ft_use_db
+        if _ft_use_db:
+            if _ft_mon_status.get('running') or _ft_mon_status.get('connected') or _ft_mon_status.get('desired_state') == 'running':
+                _ft_has_live_chart = True
+        else:
+            _ft_pkl = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"live_data_{_ft_symbol}_{_ft_tf_sec}.pkl")
+            _ft_ralph_status = _read_ralph_status()
+            if _ft_ralph_status.get('running') or _ft_mon_status.get('running') or os.path.exists(_ft_pkl):
+                _ft_has_live_chart = True
     except Exception:
         pass
 
