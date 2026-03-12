@@ -25,7 +25,7 @@ RUN mkdir -p .streamlit && printf '\
 [server]\n\
 headless = true\n\
 enableCORS = false\n\
-enableXsrfProtection = true\n\
+enableXsrfProtection = false\n\
 maxUploadSize = 10\n\
 \n\
 [browser]\n\
