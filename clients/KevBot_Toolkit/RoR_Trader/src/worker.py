@@ -239,19 +239,20 @@ class DBRalphEngine:
 
         # 2. Status writes: write to DB
         def db_write_status(running: bool, connected: bool = False):
+            tick_count = sum(h.tick_count for h in engine.hubs.values())
             status = {
                 'running': running,
                 'started_at': getattr(engine, '_start_time', ''),
                 'connected': connected,
                 'symbols': list(engine.hubs.keys()),
                 'strategies': len(engine.strategies) if engine.strategies else 0,
-                'tick_count': sum(h.tick_count for h in engine.hubs.values()),
+                'tick_count': tick_count,
                 'streaming_connected': connected,
             }
             try:
                 save_monitor_status_admin(self.user_id, status)
             except Exception as e:
-                logger.debug("Status write failed: %s", e)
+                logger.warning("Status write failed: %s", e)
 
         engine._write_status = db_write_status
 
