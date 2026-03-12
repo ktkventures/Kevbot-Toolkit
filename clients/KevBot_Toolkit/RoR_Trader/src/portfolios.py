@@ -1184,7 +1184,7 @@ def compute_strategy_recommendations(
 
 def get_account(portfolio: dict) -> dict:
     """Get or initialize the account sub-dict for a portfolio."""
-    if 'account' not in portfolio:
+    if not portfolio.get('account'):
         portfolio['account'] = {
             'starting_balance': portfolio.get('starting_balance', 10000.0),
             'ledger': [],
