@@ -6070,8 +6070,10 @@ def render_strategy_builder():
             saved_id = editing_id
             st.session_state._save_feedback = _update_result  # 'preserved' or 'reset'
         else:
-            save_strategy(strategy)
-            saved_id = strategy['id']
+            saved = save_strategy(strategy)
+            # DB path returns the saved dict with assigned id;
+            # JSON path mutates strategy in-place
+            saved_id = (saved or strategy).get('id', strategy.get('id'))
             st.session_state._save_feedback = 'new'
 
         # Invalidate session caches for this strategy
