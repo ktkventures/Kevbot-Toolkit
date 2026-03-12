@@ -2755,6 +2755,16 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     """
     from db import USE_DB as _live_use_db
 
+    # Fragment auto-reruns don't re-execute require_auth(), so thread-local
+    # user context may be missing. Re-establish from session_state.
+    if _live_use_db:
+        from db import set_current_user, get_current_token
+        if not get_current_token():
+            _user = st.session_state.get('auth_user')
+            _token = st.session_state.get('auth_access_token', '')
+            if _user and _token:
+                set_current_user(_user['id'], _token)
+
     if _live_use_db:
         df_live = _load_live_chart_rest(symbol, tf_seconds, strat)
     else:

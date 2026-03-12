@@ -370,7 +370,10 @@ def load_risk_management_packs() -> List[RiskManagementPack]:
         raw = load_risk_management_packs_db()
         if not raw:
             packs = create_default_packs()
-            save_risk_management_packs(packs)
+            try:
+                save_risk_management_packs(packs)
+            except Exception:
+                pass  # Return in-memory defaults even if save fails (e.g. no JWT)
             return packs
         return _parse_pack_list(raw)
 

@@ -511,7 +511,10 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
         raw = load_confluence_groups_db()
         if not raw:
             groups = create_default_groups()
-            save_confluence_groups(groups)
+            try:
+                save_confluence_groups(groups)
+            except Exception:
+                pass  # Return in-memory defaults even if save fails (e.g. no JWT)
             return groups
         return _parse_group_list(raw)
 

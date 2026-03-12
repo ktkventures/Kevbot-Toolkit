@@ -205,7 +205,10 @@ def load_general_packs() -> List[GeneralPack]:
         raw = load_general_packs_db()
         if not raw:
             packs = create_default_packs()
-            save_general_packs(packs)
+            try:
+                save_general_packs(packs)
+            except Exception:
+                pass  # Return in-memory defaults even if save fails (e.g. no JWT)
             return packs
         return _parse_pack_list(raw)
 
