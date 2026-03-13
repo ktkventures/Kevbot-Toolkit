@@ -782,9 +782,17 @@ def get_monitored_strategies_db(user_id: str) -> list:
     A strategy is monitored if it belongs to any portfolio that has at
     least one enabled webhook in alert_config.
     """
+    import logging
+    _log = logging.getLogger("worker")
+
     config = load_alert_config_admin(user_id)
     strategies = load_strategies_admin(user_id)
     portfolios = load_portfolios_admin(user_id)
+
+    _log.info("[%s] get_monitored: %d strategies, %d portfolios, "
+              "config portfolio keys: %s",
+              user_id[:8], len(strategies), len(portfolios),
+              list(config.get('portfolios', {}).keys()))
 
     # Build set of strategy IDs in portfolios with active webhooks
     webhook_strategy_ids = set()
@@ -793,16 +801,27 @@ def get_monitored_strategies_db(user_id: str) -> list:
         pcfg = config.get('portfolios', {}).get(pid, {})
         webhooks = pcfg.get('webhooks', [])
         has_active_webhook = any(wh.get('enabled', True) for wh in webhooks)
+        strat_ids_in_port = [a.get('strategy_id') for a in port.get('strategies', [])]
+        _log.info("[%s]   Portfolio '%s' (id=%s): webhooks=%d, active=%s, strategies=%s",
+                  user_id[:8], port.get('name', '?'), pid,
+                  len(webhooks), has_active_webhook, strat_ids_in_port)
         if has_active_webhook:
             for alloc in port.get('strategies', []):
                 webhook_strategy_ids.add(alloc.get('strategy_id'))
 
     monitored = []
     for strat in strategies:
-        if strat['id'] not in webhook_strategy_ids:
+        in_webhook_port = strat['id'] in webhook_strategy_ids
+        has_confluence = 'entry_trigger_confluence_id' in strat
+        if not in_webhook_port:
+            _log.info("[%s]   SKIP '%s' (id=%s): not in webhook portfolio",
+                      user_id[:8], strat.get('name', '?'), strat['id'])
             continue
-        if 'entry_trigger_confluence_id' not in strat:
-            continue  # skip legacy strategies
+        if not has_confluence:
+            _log.info("[%s]   SKIP '%s' (id=%s): no entry_trigger_confluence_id",
+                      user_id[:8], strat.get('name', '?'), strat['id'])
+            continue
         monitored.append(strat)
 
+    _log.info("[%s] get_monitored result: %d strategies", user_id[:8], len(monitored))
     return monitored

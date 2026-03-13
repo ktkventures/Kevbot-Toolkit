@@ -80,8 +80,6 @@ class DBAlertDispatcher:
     def dispatch(self, signal_data: dict, strategy: dict,
                  config: dict) -> Optional[dict]:
         """Build, enrich, save, and deliver an alert via DB."""
-        from alerts import enrich_signal_with_portfolio_context
-
         direction = strategy.get('direction', 'LONG')
         sig_type = signal_data['type']
         if sig_type == 'exit_signal':
@@ -115,10 +113,35 @@ class DBAlertDispatcher:
             alert['entry_price'] = signal_data.get('entry_price')
             alert['entry_stop_price'] = signal_data.get('entry_stop_price')
 
-        alert = enrich_signal_with_portfolio_context(alert, strategy['id'])
-        alert = save_alert_admin(alert, self.user_id)
+        # Enrich with portfolio context using admin client
+        # (worker has no user JWT so the normal load_portfolios() RLS path fails)
+        try:
+            portfolios = load_portfolios_admin(self.user_id)
+            context = []
+            for port in portfolios:
+                for alloc in port.get('strategies', []):
+                    if alloc.get('strategy_id') == strategy['id']:
+                        context.append({
+                            "portfolio_id": port['id'],
+                            "portfolio_name": port.get('name', f"Portfolio {port['id']}"),
+                            "position_risk": alloc.get('risk_per_trade', 100.0),
+                        })
+                        break
+            alert['portfolio_context'] = context
+        except Exception as e:
+            logger.warning("Portfolio enrichment failed: %s", e)
+            alert['portfolio_context'] = []
 
-        logger.info("ALERT [%s]: %s for %s (%s) trigger=%s price=%.2f",
+        # Save alert to DB
+        try:
+            alert = save_alert_admin(alert, self.user_id)
+        except Exception as e:
+            logger.error("ALERT SAVE FAILED [%s]: %s for %s (%s) — %s",
+                         self.user_id[:8], sig_type, strategy.get('name'),
+                         strategy.get('symbol'), e)
+            return None
+
+        logger.info("ALERT SAVED [%s]: %s for %s (%s) trigger=%s price=%.2f",
                      self.user_id[:8], sig_type, strategy.get('name'),
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
@@ -398,12 +421,32 @@ class UserRalphInstance:
             strategies = get_monitored_strategies_db(self.user_id)
 
             if not strategies:
-                logger.info("[%s] No strategies to monitor", self.user_id[:8])
+                # Diagnostic: log why no strategies are monitored
+                all_strats = load_strategies_admin(self.user_id)
+                all_ports = load_portfolios_admin(self.user_id)
+                logger.warning(
+                    "[%s] No strategies to monitor. "
+                    "Total strategies: %d, total portfolios: %d. "
+                    "Check: portfolios need active webhooks in alert_config, "
+                    "strategies need entry_trigger_confluence_id.",
+                    self.user_id[:8], len(all_strats), len(all_ports))
+                # Log which strategies were filtered and why
+                for s in all_strats:
+                    has_conf = 'entry_trigger_confluence_id' in s
+                    logger.info(
+                        "[%s]   Strategy '%s' (id=%s): has_confluence_id=%s",
+                        self.user_id[:8], s.get('name', '?'),
+                        s.get('id', '?'), has_conf)
                 save_monitor_status_admin(self.user_id, {
                     'running': False,
                     'error': 'No strategies configured for monitoring',
                 })
                 return
+
+            for s in strategies:
+                logger.info("[%s] Monitoring: '%s' (id=%s, symbol=%s, tf=%s)",
+                            self.user_id[:8], s.get('name', '?'),
+                            s.get('id'), s.get('symbol'), s.get('timeframe'))
 
             self._db_engine = DBRalphEngine(self.user_id, self.alpaca_keys)
             self._db_engine.start(strategies, config)

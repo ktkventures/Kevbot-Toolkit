@@ -3994,9 +3994,13 @@ def main():
                 render_logout_button()
 
         data_source = get_data_source(_get_data_feed())
+        from db import USE_DB as _sidebar_use_db
         if is_alpaca_configured():
             st.success(f"{data_source}")
             st.caption("IEX: single exchange \u00b7 SIP: consolidated (all exchanges)")
+        elif _sidebar_use_db:
+            # Cloud mode: Alpaca keys are on the worker, not the web service
+            st.success("Alpaca API — Live market data (via worker)")
         else:
             st.warning(f"{data_source}")
 
@@ -4233,29 +4237,45 @@ def render_dashboard():
         st.subheader("System Status")
 
         # Data source
+        from db import USE_DB as _dash_use_db
         if is_alpaca_configured():
             st.markdown(":green[Alpaca API] — Live market data")
+        elif _dash_use_db:
+            st.markdown(":green[Alpaca API] — Live data via worker")
         else:
             st.markdown(":orange[Mock Data] — Configure Alpaca for live data")
 
-        # Alert engine status
-        _dash_ralph = _read_ralph_status()
-        if _dash_ralph.get('running'):
-            _dash_syms = ", ".join(_dash_ralph.get('symbols', []))
-            _dash_ticks = _dash_ralph.get('tick_count', 0)
-            _dash_mode = "Streaming" if _dash_ralph.get('connected') else "Connecting"
-            st.markdown(f":green[Ralph Engine {_dash_mode}] — {_dash_syms} | {_dash_ticks:,} ticks")
-        else:
+        # Alert engine status — in DB mode, always read from DB (no local engine_status.json)
+        if _dash_use_db:
             monitor = load_monitor_status()
-            if monitor.get('running'):
-                last_poll = monitor.get('last_poll', '')
-                poll_time = ''
-                if last_poll:
-                    poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
-                strats_mon = monitor.get('strategies_monitored', 0)
-                st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+            if monitor.get('connected') or monitor.get('streaming_connected'):
+                _dash_syms = ", ".join(monitor.get('symbols', []))
+                _dash_ticks = monitor.get('tick_count', 0)
+                st.markdown(f":green[Ralph Engine Streaming] — {_dash_syms} | {_dash_ticks:,} ticks")
+            elif monitor.get('running'):
+                st.markdown(":orange[Ralph Engine Connecting...]")
+            elif monitor.get('desired_state') == 'running':
+                st.markdown(":orange[Engine Starting...]")
             else:
                 st.markdown(":gray[Alert Engine Stopped]")
+        else:
+            _dash_ralph = _read_ralph_status()
+            if _dash_ralph.get('running'):
+                _dash_syms = ", ".join(_dash_ralph.get('symbols', []))
+                _dash_ticks = _dash_ralph.get('tick_count', 0)
+                _dash_mode = "Streaming" if _dash_ralph.get('connected') else "Connecting"
+                st.markdown(f":green[Ralph Engine {_dash_mode}] — {_dash_syms} | {_dash_ticks:,} ticks")
+            else:
+                monitor = load_monitor_status()
+                if monitor.get('running'):
+                    last_poll = monitor.get('last_poll', '')
+                    poll_time = ''
+                    if last_poll:
+                        poll_time = f" (last poll: {format_display_ts(last_poll, '%H:%M:%S')})"
+                    strats_mon = monitor.get('strategies_monitored', 0)
+                    st.markdown(f":green[Alert Monitor Running] — {strats_mon} strategies{poll_time}")
+                else:
+                    st.markdown(":gray[Alert Engine Stopped]")
 
         # Forward tests
         st.markdown(f"**{len(forward_testing)}** strategies in forward testing")
@@ -12380,8 +12400,9 @@ def render_settings():
 
         st.session_state['default_target_config'] = def_target_config
 
-    # --- Development (mock data only) ---
-    if not is_alpaca_configured():
+    # --- Development (mock data only — hide in cloud/DB mode) ---
+    from db import USE_DB as _dev_use_db
+    if not is_alpaca_configured() and not _dev_use_db:
         st.divider()
         st.subheader("Development")
         data_seed = st.number_input(
@@ -12399,13 +12420,16 @@ def render_settings():
     from db import USE_DB as _settings_use_db
 
     if _settings_use_db:
-        # DB mode: Alpaca keys are system-level (env vars on Railway services)
+        # DB mode: Alpaca keys are system-level (env vars on Railway worker service)
+        # The web app may not have them directly, but the worker does
         conn_col1, conn_col2 = st.columns(2)
         with conn_col1:
             st.markdown("**Alpaca API**")
-            _alpaca_ok = is_alpaca_configured()
+            # In cloud mode, check engine status to determine if Alpaca is connected
+            _db_eng_status = load_monitor_status()
+            _alpaca_ok = is_alpaca_configured() or _db_eng_status.get('connected') or _db_eng_status.get('running')
             _status_color = "#4CAF50" if _alpaca_ok else "#9E9E9E"
-            _alpaca_label = "Connected" if _alpaca_ok else "Not Configured"
+            _alpaca_label = "Connected (via worker)" if _alpaca_ok else "Not Configured"
             st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_label}</span>', unsafe_allow_html=True)
             if not _alpaca_ok:
                 st.caption("Alpaca API keys are configured by the system administrator.")
@@ -12420,17 +12444,19 @@ def render_settings():
                                  help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
             st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
 
-            # Show engine status from DB
-            _db_status = load_monitor_status()
-            if _db_status.get('running') or _db_status.get('connected'):
+            # Show engine status from DB (reuse status fetched above for Alpaca check)
+            _db_status = _db_eng_status
+            _is_streaming = _db_status.get('connected') or _db_status.get('streaming_connected')
+            if _is_streaming:
                 sym_count = len(_db_status.get('symbols', []))
                 ticks = _db_status.get('tick_count', 0)
-                mode = "Connected" if _db_status.get('connected') else "Running"
-                st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
+                st.success(f"Ralph Engine: Streaming | {sym_count} symbols | {ticks:,} ticks")
+            elif _db_status.get('running'):
+                st.warning("Ralph Engine: Connecting...")
             elif _db_status.get('desired_state') == 'running':
                 st.info("Engine starting...")
             else:
-                st.caption("Engine will start when you click Start Monitor on the Alerts page.")
+                st.caption("Enable monitoring on the Alerts & Signals page to start the engine.")
     else:
         # Local mode: keys from .env
         conn_col1, conn_col2 = st.columns(2)

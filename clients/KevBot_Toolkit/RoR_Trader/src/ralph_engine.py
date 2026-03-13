@@ -1057,9 +1057,13 @@ class RalphEngine:
 
     def _on_alert(self, signal: dict, strategy: dict, config: dict):
         """Callback when a strategy monitor fires a signal."""
-        alert = self.dispatcher.dispatch(signal, strategy, config or self._config)
-        if alert:
-            self._save_all_positions()
+        try:
+            alert = self.dispatcher.dispatch(signal, strategy, config or self._config)
+            if alert:
+                self._save_all_positions()
+        except Exception as e:
+            logger.error("Alert dispatch failed for %s (%s): %s",
+                         strategy.get('name', '?'), signal.get('type', '?'), e)
 
     async def _stream_data(self):
         """Subscribe to Alpaca real-time trade data + run periodic tasks."""
