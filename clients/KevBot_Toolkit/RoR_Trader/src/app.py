@@ -2705,42 +2705,51 @@ def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list
         st.info("Waiting for bar data to evaluate conditions.")
         return
 
-    # Determine TF label for confluence record matching
+    # Strategy's own timeframe label (used to know which conditions we can evaluate)
     tf_map = {
         '1Min': '1M', '2Min': '2M', '3Min': '3M', '5Min': '5M',
         '10Min': '10M', '15Min': '15M', '30Min': '30M',
         '1Hour': '1H', '2Hour': '2H', '4Hour': '4H',
         '1Day': '1D', '1Week': '1W',
     }
-    tf_label = tf_map.get(strat.get('timeframe', '1Min'), '1M')
+    strat_tf_label = tf_map.get(strat.get('timeframe', '1Min'), '1M')
     required_confs = set(strat.get('confluence', []))
     required_gen_confs = set(strat.get('general_confluences', []))
-    all_required = required_confs | required_gen_confs
 
     rows = []
 
-    # Indicator-based confluence conditions
+    # Build interpreter lookup from relevant groups for display names
+    interp_templates = {}
     for group in (relevant_groups or []):
         template = get_template(group.base_template)
         if not template:
             continue
         for interp_key in template.get("interpreters", []):
-            prefix = f"{tf_label}-{interp_key}-"
-            matching_reqs = [r for r in required_confs if r.startswith(prefix)]
-            if not matching_reqs:
-                continue
-            # Extract the needed state from the confluence record
-            needed = ", ".join(r.split("-", 2)[2] for r in matching_reqs)
+            interp_templates[interp_key] = template
+
+    # Indicator-based confluence conditions — parse TF from each record
+    for conf_rec in sorted(required_confs):
+        parts = conf_rec.split("-", 2)
+        if len(parts) < 3:
+            continue
+        rec_tf, interp_key, needed_state = parts[0], parts[1], parts[2]
+
+        # Can we evaluate this from our data? Only if TF matches strategy's TF
+        same_tf = (rec_tf == strat_tf_label)
+        if same_tf:
             val = last_row.get(interp_key)
             current = str(val) if pd.notna(val) else "—"
-            record = f"{tf_label}-{interp_key}-{val}" if pd.notna(val) else ""
-            met = record in matching_reqs
-            rows.append({
-                "Condition": interp_key.replace("_", " ").title(),
-                "Current State": current,
-                "Needed State": needed,
-                "Confluence": "Met" if met else "Not met",
-            })
+            met = (f"{rec_tf}-{interp_key}-{val}" == conf_rec) if pd.notna(val) else False
+        else:
+            current = f"— ({rec_tf} data)"
+            met = False
+
+        rows.append({
+            "Condition": f"[{rec_tf}] {interp_key.replace('_', ' ').title()}",
+            "Current State": current,
+            "Needed State": needed_state,
+            "Confluence": "Met" if met else "Not met",
+        })
 
     # General pack confluence conditions
     for gen_rec in sorted(required_gen_confs):
