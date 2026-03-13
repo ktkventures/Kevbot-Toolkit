@@ -2771,7 +2771,14 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         df_live = _load_live_chart_pickle(symbol, tf_seconds)
 
     if df_live is None or len(df_live) == 0:
-        st.info("No live data available yet.")
+        if _live_use_db:
+            from data_loader import is_alpaca_configured as _lc_alpaca_check
+            if not _lc_alpaca_check():
+                st.warning("Live chart unavailable — Alpaca API keys not configured on web service.")
+            else:
+                st.info("No live data available yet. Alpaca REST may be loading...")
+        else:
+            st.info("No live data available yet.")
         return
 
     # Slice to recent bars for performance.
@@ -2838,11 +2845,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
 
 
 def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
-    """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode).
-
-    Uses load_from_alpaca directly to avoid mock data fallthrough —
-    showing random mock prices on a live chart is misleading.
-    """
+    """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode)."""
     from ralph_engine import TIMEFRAME_SECONDS
     # Reverse lookup: tf_seconds -> timeframe string
     tf_str = strat.get('timeframe', '1Min')
@@ -2851,26 +2854,21 @@ def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
             tf_str = k
             break
 
+    session = strat.get('trading_session', 'RTH')
     try:
-        from data_loader import load_from_alpaca, is_alpaca_configured
-        if is_alpaca_configured():
-            df = load_from_alpaca(
-                symbol, days=3, timeframe=tf_str,
-                feed=_get_data_feed(), session=strat.get('trading_session', 'RTH'))
-            if df is not None and len(df) > 0:
-                return df
-        # If Alpaca isn't configured on this service, try load_market_data
-        # but only in non-DB mode (local dev with mock data is OK)
-        from db import USE_DB as _lc_use_db
-        if not _lc_use_db:
-            df = load_market_data(
-                symbol, days=3, timeframe=tf_str,
-                feed=_get_data_feed(), session=strat.get('trading_session', 'RTH'))
-            if df is not None and len(df) > 0:
-                return df
+        df = load_market_data(
+            symbol, days=3, timeframe=tf_str,
+            feed=_get_data_feed(), session=session)
+        if df is not None and len(df) > 0:
+            # Check if we got mock data — don't show mock on live chart in cloud mode
+            from data_loader import _last_actual_source
+            from db import USE_DB as _lc_use_db
+            if _lc_use_db and 'Mock' in _last_actual_source:
+                return None
+            return df
     except Exception as e:
         import logging
-        logging.getLogger("app").debug("Live chart REST load failed: %s", e)
+        logging.getLogger("app").warning("Live chart REST load failed for %s: %s", symbol, e)
     return None
 
 
