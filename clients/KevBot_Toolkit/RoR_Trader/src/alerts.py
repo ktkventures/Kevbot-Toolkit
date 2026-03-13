@@ -681,8 +681,9 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
     Map a confluence group trigger ID to the base trigger ID for DataFrame columns.
 
     Mirrors get_base_trigger_id() from app.py but importable standalone.
-    Falls back to the input ID if mapping fails.
+    Falls back to structural parsing if DB access is unavailable (worker context).
     """
+    # Try DB-based resolution first (works in app context with user JWT)
     try:
         from confluence_groups import get_all_triggers, get_enabled_groups, TEMPLATES
 
@@ -698,6 +699,33 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
                     if template and "trigger_prefix" in template:
                         return f"{template['trigger_prefix']}_{base_trigger}"
                     break
+    except Exception:
+        pass
+
+    # Structural fallback: parse the confluence ID without DB access.
+    # Format is "{trigger_prefix}_{group_name}_{base_trigger}[_exec_suffix]"
+    # e.g. "utbot_v2_default_buy" → prefix="utbot_v2", base="buy" → "utbot_v2_buy"
+    try:
+        from confluence_groups import TEMPLATES
+        # Sort prefixes longest-first so "utbot_v2" matches before "utbot"
+        prefixes = sorted(
+            [(t.get('trigger_prefix', ''), t)
+             for t in TEMPLATES.values() if 'trigger_prefix' in t],
+            key=lambda x: len(x[0]), reverse=True)
+        for prefix, template in prefixes:
+            if confluence_trigger_id.startswith(prefix + '_'):
+                remainder = confluence_trigger_id[len(prefix) + 1:]
+                # remainder = "{group_name}_{base_trigger}[_exec_suffix]"
+                # Match against known trigger bases from the template
+                for trig_def in template.get('triggers', []):
+                    base = trig_def['base']
+                    # Check if remainder ends with the base trigger
+                    # (possibly with exec suffix like _ib, _hm, _hl)
+                    for suffix in ('', '_ib', '_hm', '_hl'):
+                        candidate = base + suffix
+                        if remainder.endswith('_' + candidate) or remainder == candidate:
+                            return f"{prefix}_{candidate}"
+                break
     except Exception:
         pass
 

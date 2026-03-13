@@ -338,9 +338,10 @@ class StrategyMonitor:
         ] if gp_ids_needed else []
 
         logger.info("StrategyMonitor: %s (%s/%ds) — indicators=%s, "
-                     "triggers=%d, interpreters=%d",
+                     "triggers=%s, interpreters=%s, entry=%s, exits=%s",
                      self.strat_name, self.symbol, self.tf_seconds,
-                     req_ind, len(req_trig), len(req_interp))
+                     req_ind, req_trig, req_interp,
+                     resolved_entry, resolved_exits)
 
     def warmup(self, df: pd.DataFrame):
         """Initialize indicator state from historical bars."""
