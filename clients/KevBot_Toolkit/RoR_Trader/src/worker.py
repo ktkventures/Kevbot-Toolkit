@@ -359,6 +359,22 @@ class DBRalphEngine:
                             "(%d added, %d removed)",
                             len(engine.monitors), len(added), len(removed))
 
+                # If new symbols were added, force a WebSocket reconnect
+                # so the stream subscribes to the updated symbol list.
+                if added:
+                    new_symbols = {
+                        s.get('symbol', 'SPY') for s in strategies
+                        if s['id'] in added
+                    } - set(engine._subscribed_symbols or [])
+                    if new_symbols and engine._stream_ref:
+                        logger.info("New symbols detected (%s) — forcing "
+                                    "stream reconnect",
+                                    ', '.join(new_symbols))
+                        try:
+                            engine._stream_ref.close()
+                        except Exception:
+                            pass
+
             except Exception as e:
                 logger.warning("DB hot-reload failed: %s", e)
 
