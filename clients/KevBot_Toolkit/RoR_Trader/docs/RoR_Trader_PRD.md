@@ -1653,7 +1653,7 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 - New strategies are picked up by the running monitor within 5 minutes without restart
 - Alert chart markers (+ and x) align vertically with backtest trade markers for stop-loss exits
 
-### Phase 22: Web Deployment & Multi-User Infrastructure
+### Phase 22: Web Deployment & Multi-User Infrastructure — COMPLETED 2026-03-12
 *Deploy the application to production hosting so the alert monitor runs reliably in the cloud without requiring a local machine. Add user authentication and migrate from JSON file storage to a proper database for multi-user support. Full spec: `docs/Implementation_Spec_Phase_22.md`.*
 
 **Why this phase exists:**
@@ -1669,62 +1669,67 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - **Supabase** — PostgreSQL database + authentication. Free tier for 5-10 users ($0-25/month). Row Level Security for multi-user data isolation.
 - **Namecheap** — Custom domain DNS pointed to Railway. Railway auto-provisions SSL.
 
-**22A: Supabase Setup & Database Schema**
-- [ ] Create Supabase project, configure email/password auth provider
-- [ ] Design PostgreSQL schema — tables for strategies, portfolios, requirement_sets, alerts, alert_config, webhook_templates, monitor_status, user_settings, confluence_groups, general_packs, risk_management_packs
-- [ ] Design principle: proper columns for queryable fields (id, user_id, name, symbol), JSONB for nested blobs (KPIs, equity curves, rules, stored_trades)
-- [ ] Row Level Security policies on all tables: `auth.uid() = user_id`
-- [ ] Built-in data (TTP/FTMO requirement sets, default webhook templates) stored with `user_id IS NULL`
+**22A: Supabase Setup & Database Schema** ✓
+- [x] Create Supabase project, configure email/password auth provider
+- [x] Design PostgreSQL schema — tables for strategies, portfolios, requirement_sets, alerts, alert_config, webhook_templates, monitor_status, user_settings, confluence_groups, general_packs, risk_management_packs
+- [x] Design principle: proper columns for queryable fields (id, user_id, name, symbol), JSONB for nested blobs (KPIs, equity curves, rules, stored_trades)
+- [x] Row Level Security policies on all tables: `auth.uid() = user_id`
+- [x] Built-in data (TTP/FTMO requirement sets, default webhook templates) stored with `user_id IS NULL`
 
-**22B: Data Access Layer**
-- [ ] New `src/db.py` module wrapping all Supabase/PostgreSQL operations — `get_client()`, `get_admin_client()`, user context management
-- [ ] `USE_DB` environment flag for incremental development (toggle JSON ↔ database)
-- [ ] Transformation layer (`_row_to_strategy()` / `_strategy_to_row()`) so rest of app sees same dict shapes — minimizes downstream code changes
-- [ ] Rewire strategy CRUD in app.py: `load_strategies()`, `save_strategy()`, `get_strategy_by_id()`, `update_strategy()`, `delete_strategy()`, `duplicate_strategy()`
-- [ ] Rewire portfolio + requirements CRUD in portfolios.py
-- [ ] Rewire alert system CRUD in alerts.py: alerts, alert_config, monitor_status, webhook templates
-- [ ] Rewire config/pack storage: confluence_groups.py, settings in app.py
-- [ ] Rewire ralph_engine.py data access: config loading, alert dispatch, state persistence (replaces JSON file IPC: engine_status.json, engine_state.json, engine_audit.jsonl, engine_reload.flag)
+**22B: Data Access Layer** ✓
+- [x] New `src/db.py` module wrapping all Supabase/PostgreSQL operations — `get_client()`, `get_admin_client()`, user context management
+- [x] `USE_DB` environment flag for incremental development (toggle JSON ↔ database)
+- [x] Transformation layer (`_row_to_strategy()` / `_strategy_to_row()`) so rest of app sees same dict shapes — minimizes downstream code changes
+- [x] Rewire strategy CRUD in app.py: `load_strategies()`, `save_strategy()`, `get_strategy_by_id()`, `update_strategy()`, `delete_strategy()`, `duplicate_strategy()`
+- [x] Rewire portfolio + requirements CRUD in portfolios.py
+- [x] Rewire alert system CRUD in alerts.py: alerts, alert_config, monitor_status, webhook templates
+- [x] Rewire config/pack storage: confluence_groups.py, settings in app.py
+- [x] Rewire ralph_engine.py data access: config loading, alert dispatch, state persistence (replaces JSON file IPC: engine_status.json, engine_state.json, engine_audit.jsonl, engine_reload.flag)
 
-**22C: Authentication**
-- [ ] New `src/auth.py` module with Supabase Auth integration (sign up, sign in, sign out, session refresh)
-- [ ] Login/signup page in Streamlit — email + password, optional OAuth (Google/GitHub)
-- [ ] Auth gate at top of app.py: unauthenticated users see login page, authenticated users see the app
-- [ ] JWT stored in `st.session_state`, auto-refresh on expiry, establishes RLS context for all database queries
-- [ ] New user onboarding: seed default confluence groups, packs, settings on first login
-- [ ] Pre-registration: simple email collection form on public landing page
+**22C: Authentication** ✓
+- [x] New `src/auth.py` module with Supabase Auth integration (sign up, sign in, sign out, session refresh)
+- [x] Login/signup page in Streamlit — email + password (OAuth deferred)
+- [x] Auth gate at top of app.py: unauthenticated users see login page, authenticated users see the app
+- [x] JWT stored in `st.session_state`, auto-refresh on expiry, establishes RLS context for all database queries
+- [x] New user onboarding: seed default confluence groups, packs, settings on first login
+- [x] Pre-registration: simple email collection form (waitlist) on public landing page
 
-**22D: Worker Service (Ralph Engine Integration)**
-- [ ] New `src/worker.py` — standalone entry point that manages per-user `RalphEngine` instances
-- [ ] Each user's RalphEngine runs in its own asyncio event loop (Ralph already handles WebSocket feeds, bar building, indicator computation, trigger evaluation, position tracking, and alert dispatch)
-- [ ] Uses admin Supabase client (service role key) for cross-user monitoring
-- [ ] Monitor control via database: UI writes `desired_state: 'running'|'stopped'` to `monitor_status` table; worker polls and starts/stops user RalphEngine instances accordingly — no PID management
-- [ ] Ralph's hot-reload (5-min refresh, engine_reload.flag) rewired to read config from database instead of JSON files
-- [ ] Ralph's alert dispatch (`_on_alert`) rewired to write alerts to database instead of alerts.json
-- [ ] Ralph's IPC files (engine_status.json, engine_state.json, engine_audit.jsonl) replaced by database writes
-- [ ] Update app.py monitor controls: remove subprocess/PID/zombie-detection code, replace with database reads/writes
+**22D: Worker Service (Ralph Engine Integration)** ✓
+- [x] New `src/worker.py` — standalone entry point that manages per-user `RalphEngine` instances
+- [x] Each user's RalphEngine runs in its own asyncio event loop (Ralph already handles WebSocket feeds, bar building, indicator computation, trigger evaluation, position tracking, and alert dispatch)
+- [x] Uses admin Supabase client (service role key) for cross-user monitoring
+- [x] Monitor control via database: UI writes `desired_state: 'running'|'stopped'` to `monitor_status` table; worker polls and starts/stops user RalphEngine instances accordingly — no PID management
+- [x] Ralph's hot-reload (5-min refresh, engine_reload.flag) rewired to read config from database instead of JSON files
+- [x] Ralph's alert dispatch (`_on_alert`) rewired to write alerts to database instead of alerts.json
+- [x] Ralph's IPC files (engine_status.json, engine_state.json, engine_audit.jsonl) replaced by database writes
+- [x] Update app.py monitor controls: Enable/Disable Monitoring toggle writes `desired_state` to DB (replaces subprocess/PID/zombie-detection code)
+- [x] Alpaca API keys are system-level env vars on Railway (not per-user) — Alpaca provides market data infrastructure, not a per-user service
+- [x] `src/migrations/copy_user_config.py` — admin script to copy confluence groups, packs, strategies, portfolios between user accounts
+- [x] Live chart in DB/cloud mode loads from Alpaca REST API (pickle files are local-only); `@st.fragment(run_every=5)` auto-refreshes with thread-local JWT re-establishment
 
-**22E: Containerization & Deployment**
-- [ ] `Dockerfile` for web service (Streamlit app + vendored LWC fork)
-- [ ] `Dockerfile.worker` for background worker service
-- [ ] `.streamlit/config.toml` for production configuration
-- [ ] Railway project setup: web service + worker service, shared environment variables
-- [ ] Environment variables: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
-- [ ] Health checks: Streamlit `/_stcore/health` endpoint, worker heartbeat in database
+**22E: Containerization & Deployment** ✓
+- [x] `Dockerfile` for web service (Streamlit app + vendored LWC fork)
+- [x] `Dockerfile.worker` for background worker service
+- [x] `.streamlit/config.toml` for production configuration
+- [x] Railway project setup: web service + worker service, shared environment variables
+- [x] Environment variables: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+- [x] Health checks: Streamlit `/_stcore/health` endpoint, worker `/tmp/worker_alive` touch file
 
 **22F: Data Migration & DNS**
-- [ ] Migration script (`src/migrate_json_to_db.py`): reads all JSON files, transforms, inserts into Supabase
-- [ ] Execution order respects foreign keys (requirement_sets → strategies → portfolios → alerts)
-- [ ] Verification: row count comparison, spot-check specific records
-- [ ] `.gitignore` update: exclude runtime JSON files, .env, logs
+- [x] Migration script (`src/migrate_json_to_db.py`): reads all JSON files, transforms, inserts into Supabase
+- [x] Execution order respects foreign keys (requirement_sets → strategies → portfolios → alerts)
+- [x] Verification: row count comparison, spot-check specific records
+- [x] `.gitignore` update: exclude runtime JSON files, .env, logs
 - [ ] Namecheap DNS CNAME → Railway custom domain
 - [ ] Railway auto-provisions SSL via Let's Encrypt
 
-**Git Workflow:**
-- `main` — Production (auto-deploys to Railway web + worker services)
-- `dev` — Active development
-- `staging` — Optional Railway staging environment (auto-deploys from dev)
+**Git Workflow & Environments:**
+- `main` — Production (auto-deploys to Railway production environment: web + worker services)
+- `dev` — Active development (auto-deploys to Railway dev environment: web + worker services)
+- `main-backup-pre-22d` — Snapshot of main before Phase 22D worker changes (safety net)
 - Feature branches off dev for each sub-phase
+- **Railway environments:** Production (main branch, paper Alpaca keys) and Dev (dev branch, live Alpaca keys). Separate Alpaca API keys per environment avoids WebSocket connection limit conflicts. Both environments share the same Supabase database.
+- **Caution:** Since dev and prod share Supabase, only enable monitoring in one environment at a time — both workers would try to start an engine for the same user via the shared `monitor_status` table.
 
 **Design Decisions (Phase 22):**
 - **Railway chosen over Render** (re-evaluated 2026-03-11): Render offers a clean multi-project dashboard and fixed-price tiers ($7/service), but Railway's usage-based billing saves money for a trading app — the worker only runs during market hours (~6.5h/day), not 24/7. Render's free tier spins down after 15 min of inactivity, which is incompatible with a persistent alert monitor. Both platforms handle WebSocket, Docker, custom domains, and auto-SSL equally well. Railway total: ~$8-13/month vs Render: ~$14/month (2× $7 for web + worker).
@@ -1737,6 +1742,10 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - Worker service always runs on Railway; monitor start/stop controlled via database flag (not PID/signal management) — simpler, more reliable, works across services
 - `USE_DB` toggle flag enables incremental development — each CRUD module can be switched independently
 - **Multi-account support**: Users will maintain separate accounts (e.g., production strategies vs. dev/testing), so RLS-based data isolation is critical from day one
+- **Alpaca keys are system-level** (decided 2026-03-12): Alpaca provides market data infrastructure (SIP/IEX feeds), not a per-user service. Keys are env vars on Railway shared by all users. Removes unnecessary per-user key input from Settings UI.
+- **Single WebSocket connection**: Alpaca allows only 1 WebSocket per API key. Worker owns the connection; app uses REST API for chart data. Rolling deploys can cause "connection limit exceeded" during the handoff — connection slots take several minutes to clear on Alpaca's side.
+- **Live chart in cloud mode**: Worker writes data to DB (status, alerts, positions). App's live chart loads recent bars via Alpaca REST (completed bars only, ~60s behind). Near-real-time chart requires future work: worker writes forming bar to a DB table every few seconds (planned).
+- **Streamlit fragment JWT fix**: `@st.fragment(run_every=5)` auto-reruns don't re-execute `require_auth()`, losing thread-local JWT. Fragment functions must re-establish user context from `st.session_state`. Config loaders (general_packs, confluence_groups, risk_management_packs) defensively return in-memory defaults if save fails due to missing JWT.
 
 **Definition of Done:**
 - App accessible via custom domain with HTTPS and user authentication
@@ -1746,6 +1755,17 @@ The application is currently a local Streamlit app with JSON file storage, no au
 - Monitor start/stop controllable from the web UI
 - Existing strategies, portfolios, and alerts successfully migrated from JSON
 - Git push to main triggers automatic deployment
+
+**22G: Admin Page & Role-Based Access**
+*Dedicated Admin page in the sidebar for infrastructure controls. Separates admin-level operations from user-facing features. Only visible to admin users — prevents testers from accidentally disabling shared services.*
+
+- [ ] `is_admin` flag on users (Supabase user metadata or `user_roles` table)
+- [ ] New "Admin" page in sidebar navigation (only rendered for admin users)
+- [ ] Move Enable/Disable Monitoring toggle from Alerts & Signals page to Admin page
+- [ ] Move E2E test section from Alerts & Signals page to Admin page (or remove)
+- [ ] Admin page contents: monitor controls, worker status/logs, system-level settings, data feed status
+- [ ] Alerts & Signals page cleaned up: only Manage Alerts, Webhooks, and strategy alert tabs remain
+- [ ] Regular users see read-only monitoring status indicator (e.g. sidebar badge or status bar) without controls
 
 ### Phase 23: Scanner Strategy Method — Stock Scanner & Dynamic Universe Trading
 *Third strategy method type: scanner-based strategies that trade a dynamic universe of stocks matching configurable filter criteria. Targets active day trading / scalping use cases (Warrior Trading pre-market news plays, SMB Capital stocks-in-play scalping, gap-and-go setups).*

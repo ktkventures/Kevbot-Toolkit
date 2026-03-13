@@ -1,7 +1,7 @@
 {
   "chart_visible_candles": 200,
   "default_extended_data_days": 365,
-  "default_entry_trigger": "utbot_default_buy_ib",
+  "default_entry_trigger": "ema_price_position_v2_default_cross_short_up",
   "default_exit_trigger": "bar_count_default_exit",
   "default_stop_config": {
     "method": "swing",

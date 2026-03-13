@@ -7,4 +7,7 @@ engine_status.json
 engine_state.json
 engine_audit.jsonl
 engine_reload.flag
+alerts.json
+alert_config.json
+strategies.json
 __pycache__/
