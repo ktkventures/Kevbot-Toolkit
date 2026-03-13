@@ -2788,11 +2788,20 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     # Run unified engine on recent data — same engine used by all other charts
     # last_bar_partial=True suppresses bar-close signals on the current
     # forming candle so markers don't appear prematurely.
-    trades = _unified_trades(df_for_trades, strat, last_bar_partial=True)
+    # Use run_unified_backtest directly to get enriched_df with indicator columns.
+    from unified_engine import run_unified_backtest as _live_backtest
+    enabled_gen = gp_module.get_enabled_general_packs(gp_module.load_general_packs())
+    try:
+        trades, enriched_df = _live_backtest(
+            df_for_trades, strat, general_packs=enabled_gen,
+            include_open_position=True, last_bar_partial=True)
+    except Exception:
+        trades = _unified_trades(df_for_trades, strat, last_bar_partial=True)
+        enriched_df = df_for_trades
 
     # Show last 100 candles (about 1.5 hours for 1-min bars)
-    visible = min(100, len(df_live))
-    df_display = df_live.tail(visible)
+    visible = min(100, len(enriched_df))
+    df_display = enriched_df.tail(visible)
 
     # Resolve indicators from strategy-relevant groups only
     relevant_groups = _get_strategy_relevant_groups(strat)
@@ -2841,7 +2850,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     )
 
     # Current condition states
-    _render_live_conditions(df_live, strat, relevant_groups)
+    _render_live_conditions(enriched_df, strat, relevant_groups)
 
 
 def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
