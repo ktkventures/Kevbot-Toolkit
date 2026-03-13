@@ -2698,11 +2698,10 @@ def render_candle_selector(chart_key: str) -> int:
 
 
 def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list):
-    """Show current interpreter states for strategy's confluence packs."""
-    if not relevant_groups:
+    """Show current interpreter states for strategy's confluence conditions."""
+    last_row = df.iloc[-1] if len(df) > 0 else None
+    if last_row is None:
         return
-
-    last_row = df.iloc[-1]
 
     # Determine TF label for confluence record matching
     tf_map = {
@@ -2713,30 +2712,51 @@ def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list
     }
     tf_label = tf_map.get(strat.get('timeframe', '1Min'), '1M')
     required_confs = set(strat.get('confluence', []))
+    required_gen_confs = set(strat.get('general_confluences', []))
+    all_required = required_confs | required_gen_confs
 
     rows = []
-    for group in relevant_groups:
+
+    # Indicator-based confluence conditions
+    for group in (relevant_groups or []):
         template = get_template(group.base_template)
         if not template:
             continue
         for interp_key in template.get("interpreters", []):
+            prefix = f"{tf_label}-{interp_key}-"
+            matching_reqs = [r for r in required_confs if r.startswith(prefix)]
+            if not matching_reqs:
+                continue
+            # Extract the needed state from the confluence record
+            needed = ", ".join(r.split("-", 2)[2] for r in matching_reqs)
             val = last_row.get(interp_key)
-            if pd.notna(val):
-                record = f"{tf_label}-{interp_key}-{val}"
-                # Check if this interpreter has a required confluence
-                prefix = f"{tf_label}-{interp_key}-"
-                matching_reqs = [r for r in required_confs if r.startswith(prefix)]
-                if matching_reqs:
-                    met = record in matching_reqs
-                    status = "Met" if met else "Not met"
-                else:
-                    status = ""
-                rows.append({
-                    "Pack": group.name,
-                    "Interpreter": interp_key.replace("_", " ").title(),
-                    "State": str(val),
-                    "Confluence": status,
-                })
+            current = str(val) if pd.notna(val) else "—"
+            record = f"{tf_label}-{interp_key}-{val}" if pd.notna(val) else ""
+            met = record in matching_reqs
+            rows.append({
+                "Condition": interp_key.replace("_", " ").title(),
+                "Current State": current,
+                "Needed State": needed,
+                "Confluence": "Met" if met else "Not met",
+            })
+
+    # General pack confluence conditions
+    for gen_rec in sorted(required_gen_confs):
+        parts = gen_rec.split("-", 2)
+        if len(parts) < 3:
+            continue
+        pack_id = parts[1]
+        needed_state = parts[2]
+        col_name = f"GP_{pack_id}"
+        val = last_row.get(col_name)
+        current = str(val) if pd.notna(val) else "—"
+        met = (current == needed_state)
+        rows.append({
+            "Condition": pack_id.replace("_", " ").title(),
+            "Current State": current,
+            "Needed State": needed_state,
+            "Confluence": "Met" if met else "Not met",
+        })
 
     if rows:
         st.markdown("**Current Conditions**")
