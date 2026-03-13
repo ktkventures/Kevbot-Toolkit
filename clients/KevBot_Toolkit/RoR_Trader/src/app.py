@@ -2699,8 +2699,10 @@ def render_candle_selector(chart_key: str) -> int:
 
 def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list):
     """Show current interpreter states for strategy's confluence conditions."""
+    st.markdown("**Current Conditions**")
     last_row = df.iloc[-1] if len(df) > 0 else None
     if last_row is None:
+        st.info("Waiting for bar data to evaluate conditions.")
         return
 
     # Determine TF label for confluence record matching
@@ -2759,8 +2761,9 @@ def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list
         })
 
     if rows:
-        st.markdown("**Current Conditions**")
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No confluence conditions configured for this strategy.")
 
 
 @st.fragment(run_every=5)
@@ -2872,6 +2875,12 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     # Current condition states
     _render_live_conditions(enriched_df, strat, relevant_groups)
 
+    # Alert-based trade history (real executions from alerts.json)
+    render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
+
+    # Theoretical trade history from unified engine
+    render_backtest_trade_table(trades)
+
 
 def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
     """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode)."""
@@ -2913,13 +2922,6 @@ def _load_live_chart_pickle(symbol: str, tf_seconds: int):
             return pickle.load(f)
     except Exception:
         return None
-
-    # Alert-based trade history (real executions from alerts.json)
-    render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))
-
-    # Theoretical trade history from unified engine
-    if len(trades) > 0:
-        render_backtest_trade_table(trades)
 
 
 @st.fragment
@@ -9159,8 +9161,10 @@ def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
     """
     from alerts import get_alerts_for_strategy
 
+    st.subheader("Alert History")
     strat_alerts = get_alerts_for_strategy(strategy_id, limit=200)
     if not strat_alerts:
+        st.info("No alerts fired yet. The worker will log alerts here as entry/exit signals trigger.")
         return
 
     # Separate entries and exits, sort oldest-first
@@ -9206,9 +9210,8 @@ def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
             trades_list.append({'entry': entry_a, 'exit': None})
 
     if not trades_list:
+        st.info("Alerts found but no entry signals yet. Waiting for first entry trigger.")
         return
-
-    st.subheader("Alert History")
 
     rows = []
     for t in trades_list:
@@ -9274,10 +9277,10 @@ def render_alert_trade_table(strategy_id: int, direction: str = 'LONG'):
 
 
 def render_backtest_trade_table(trades: pd.DataFrame):
-    """Render trade history table for backtest-only view."""
-    st.subheader("Trade History")
-    if len(trades) == 0:
-        st.info("No trades to display.")
+    """Render trade history table from unified engine on recent bars."""
+    st.subheader("Trade History (Backtest)")
+    if trades is None or (isinstance(trades, pd.DataFrame) and len(trades) == 0) or (not isinstance(trades, pd.DataFrame)):
+        st.info("No trades found in recent bar data. Trades will appear here once entry conditions are met in the loaded bars.")
         return
 
     display = trades.copy()
