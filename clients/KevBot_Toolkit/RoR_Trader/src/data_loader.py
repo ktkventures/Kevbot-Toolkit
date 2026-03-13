@@ -163,7 +163,8 @@ def load_from_alpaca(
         return df if len(df) > 0 else None
 
     except Exception as e:
-        print(f"Alpaca fetch failed: {e}")
+        import logging
+        logging.getLogger("data_loader").warning("Alpaca fetch failed for %s: %s", symbol, e)
         return None
 
 

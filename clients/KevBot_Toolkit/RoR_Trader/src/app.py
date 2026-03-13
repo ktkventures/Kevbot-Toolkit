@@ -2838,7 +2838,11 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
 
 
 def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
-    """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode)."""
+    """Load recent bars via Alpaca REST API for the live chart (DB/cloud mode).
+
+    Uses load_from_alpaca directly to avoid mock data fallthrough —
+    showing random mock prices on a live chart is misleading.
+    """
     from ralph_engine import TIMEFRAME_SECONDS
     # Reverse lookup: tf_seconds -> timeframe string
     tf_str = strat.get('timeframe', '1Min')
@@ -2848,13 +2852,25 @@ def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
             break
 
     try:
-        df = load_market_data(
-            symbol, days=3, timeframe=tf_str,
-            feed=_get_data_feed(), session="Extended Hours")
-        if df is not None and len(df) > 0:
-            return df
-    except Exception:
-        pass
+        from data_loader import load_from_alpaca, is_alpaca_configured
+        if is_alpaca_configured():
+            df = load_from_alpaca(
+                symbol, days=3, timeframe=tf_str,
+                feed=_get_data_feed(), session=strat.get('trading_session', 'RTH'))
+            if df is not None and len(df) > 0:
+                return df
+        # If Alpaca isn't configured on this service, try load_market_data
+        # but only in non-DB mode (local dev with mock data is OK)
+        from db import USE_DB as _lc_use_db
+        if not _lc_use_db:
+            df = load_market_data(
+                symbol, days=3, timeframe=tf_str,
+                feed=_get_data_feed(), session=strat.get('trading_session', 'RTH'))
+            if df is not None and len(df) > 0:
+                return df
+    except Exception as e:
+        import logging
+        logging.getLogger("app").debug("Live chart REST load failed: %s", e)
     return None
 
 
@@ -3993,15 +4009,17 @@ def main():
                 st.caption(f"Signed in as {_auth_user['email']}")
                 render_logout_button()
 
-        data_source = get_data_source(_get_data_feed())
         from db import USE_DB as _sidebar_use_db
-        if is_alpaca_configured():
+        if _sidebar_use_db:
+            # Cloud mode: always show Alpaca (worker handles streaming)
+            _sidebar_feed = _get_data_feed().upper()
+            st.success(f"Alpaca {_sidebar_feed} — Live market data")
+        elif is_alpaca_configured():
+            data_source = get_data_source(_get_data_feed())
             st.success(f"{data_source}")
             st.caption("IEX: single exchange \u00b7 SIP: consolidated (all exchanges)")
-        elif _sidebar_use_db:
-            # Cloud mode: Alpaca keys are on the worker, not the web service
-            st.success("Alpaca API — Live market data (via worker)")
         else:
+            data_source = get_data_source(_get_data_feed())
             st.warning(f"{data_source}")
 
         # ── Position Monitor ──
