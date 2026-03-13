@@ -691,12 +691,23 @@ class SymbolHub:
                     pos_state = audit_data.get('position_state', '?')
                     trigger_bools = audit_data.get('trigger_booleans', {})
                     active_triggers = [k for k, v in trigger_bools.items() if v]
+                    ind_vals = audit_data.get('indicator_values', {})
+                    interp_states = audit_data.get('interpreter_states', {})
+                    # Key indicator values for quick diagnosis
+                    diag_parts = []
+                    for k in ('utbot_direction', 'utbot_stop', 'utbot_atr'):
+                        if k in ind_vals:
+                            v = ind_vals[k]
+                            diag_parts.append(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}")
+                    interp_str = ",".join(f"{k}={v}" for k, v in interp_states.items()) if interp_states else "none"
                     logger.info("BAR_CLOSE strat=%s bar=%d close=%.2f pos=%s "
-                                "signals=%d triggers=%s",
+                                "signals=%d triggers=%s ind=[%s] interp=[%s]",
                                 monitor.strat_id, builder._bar_count,
                                 completed['close'], pos_state,
                                 len(signals) if signals else 0,
-                                active_triggers if active_triggers else "none")
+                                active_triggers if active_triggers else "none",
+                                " ".join(diag_parts) if diag_parts else "none",
+                                interp_str)
 
                     if signals and alert_callback:
                         for sig in signals:
