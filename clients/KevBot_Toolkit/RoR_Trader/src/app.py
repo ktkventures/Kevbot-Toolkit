@@ -2697,7 +2697,50 @@ def render_candle_selector(chart_key: str) -> int:
     return int(choice)
 
 
-def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list):
+def _load_secondary_tf_states(strat: dict) -> dict:
+    """Load latest interpreter states from secondary timeframes via REST.
+
+    Returns dict mapping ``'{TF_LABEL}-{INTERP_KEY}'`` → state value,
+    e.g. ``{'15M-VWAP_POSITION': 'GT_2SIGMA', '5M-MACD_HISTOGRAM': 'H_PLUS_UP'}``.
+    """
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    required_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    if not required_labels:
+        return {}
+
+    symbol = strat.get('symbol', 'SPY')
+    session = strat.get('trading_session', 'RTH')
+    states: dict = {}
+
+    for label in required_labels:
+        # get_tf_from_label expects lowercase ('15m'), labels may be uppercase ('15M')
+        tf_str = get_tf_from_label(label.lower())
+        if not tf_str or tf_str == label.lower():
+            continue
+        try:
+            df = load_market_data(
+                symbol, days=3, timeframe=tf_str,
+                feed=_get_data_feed(), session=session)
+            if df is None or len(df) == 0:
+                continue
+            df = run_all_indicators(df)
+            for group in get_enabled_groups(load_confluence_groups()):
+                df = run_indicators_for_group(df, group)
+            df = run_all_interpreters(df)
+            last_row = df.iloc[-1]
+            # Normalize label to uppercase to match engine convention
+            upper_label = label.upper()
+            for interp_key in INTERPRETERS.keys():
+                if interp_key in df.columns and pd.notna(last_row.get(interp_key)):
+                    states[f"{upper_label}-{interp_key}"] = str(last_row[interp_key])
+        except Exception:
+            continue
+
+    return states
+
+
+def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list,
+                            secondary_tf_states: dict = None):
     """Show current interpreter states for strategy's confluence conditions."""
     st.markdown("**Current Conditions**")
     last_row = df.iloc[-1] if len(df) > 0 else None
@@ -2734,15 +2777,23 @@ def _render_live_conditions(df: pd.DataFrame, strat: dict, relevant_groups: list
             continue
         rec_tf, interp_key, needed_state = parts[0], parts[1], parts[2]
 
-        # Can we evaluate this from our data? Only if TF matches strategy's TF
-        same_tf = (rec_tf == strat_tf_label)
+        # Can we evaluate this from our data?
+        same_tf = (rec_tf.upper() == strat_tf_label)
         if same_tf:
             val = last_row.get(interp_key)
             current = str(val) if pd.notna(val) else "—"
             met = (f"{rec_tf}-{interp_key}-{val}" == conf_rec) if pd.notna(val) else False
         else:
-            current = f"— ({rec_tf} data)"
-            met = False
+            # Try secondary TF states loaded via REST
+            sec_key = f"{rec_tf.upper()}-{interp_key}"
+            sec_val = (secondary_tf_states or {}).get(sec_key)
+            if sec_val is not None:
+                current = sec_val
+                # Normalize for comparison (check both original and upper)
+                met = (needed_state == sec_val)
+            else:
+                current = f"— ({rec_tf} data)"
+                met = False
 
         rows.append({
             "Condition": f"[{rec_tf}] {interp_key.replace('_', ' ').title()}",
@@ -2881,8 +2932,12 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
     )
 
+    # Load secondary TF interpreter states for cross-TF conditions
+    sec_tf_states = _load_secondary_tf_states(strat)
+
     # Current condition states
-    _render_live_conditions(enriched_df, strat, relevant_groups)
+    _render_live_conditions(enriched_df, strat, relevant_groups,
+                            secondary_tf_states=sec_tf_states)
 
     # Alert-based trade history (real executions from alerts.json)
     render_alert_trade_table(strat.get('id'), strat.get('direction', 'LONG'))

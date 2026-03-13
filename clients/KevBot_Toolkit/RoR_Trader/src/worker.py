@@ -339,9 +339,13 @@ class DBRalphEngine:
                     engine.monitors[strat['id']] = monitor
                     logger.info("Added strategy %d to monitoring", strat['id'])
 
-                    # Warmup new strategy
+                    # Finalize shadow engines (idempotent — creates only new ones)
+                    hub.finalize_shadow_engines()
+
+                    # Warmup new strategy + any new shadow engines
                     try:
                         from data_loader import load_market_data
+                        from ralph_engine import SECONDS_TO_TIMEFRAME
                         tf_str = strat.get('timeframe', '1Min')
                         df = load_market_data(
                             sym, days=7, timeframe=tf_str,
@@ -350,6 +354,21 @@ class DBRalphEngine:
                         tf_seconds = monitor.tf_seconds
                         hub.seed_history(tf_seconds, df)
                         monitor.warmup(df)
+
+                        # Warmup shadow engines for secondary TFs
+                        for sec_tf, shadow in hub._shadow_engines.items():
+                            if not shadow.indicators._initialized:
+                                sec_tf_str = SECONDS_TO_TIMEFRAME.get(sec_tf, '1Min')
+                                try:
+                                    sec_df = load_market_data(
+                                        sym, days=7, timeframe=sec_tf_str,
+                                        feed=self.alpaca_keys.get('data_feed', 'sip'),
+                                        session=monitor.session)
+                                    hub.seed_history(sec_tf, sec_df)
+                                    shadow.warmup(sec_df)
+                                except Exception as se:
+                                    logger.warning("Shadow warmup failed for %s/%s: %s",
+                                                   sym, sec_tf_str, se)
                     except Exception as e:
                         logger.warning("Warmup failed for strategy %d: %s",
                                        strat['id'], e)

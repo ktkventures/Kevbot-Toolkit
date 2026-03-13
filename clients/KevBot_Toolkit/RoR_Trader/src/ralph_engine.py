@@ -90,6 +90,29 @@ TIMEFRAME_SECONDS = {
 }
 SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
 
+# Short TF labels → seconds (both cases for normalization)
+_LABEL_TO_TF_SECONDS = {}
+for _tf_name, _tf_sec in TIMEFRAME_SECONDS.items():
+    _short = _tf_name.replace('Min', 'M').replace('Hour', 'H').replace(
+        'Day', 'D').replace('Week', 'W').replace('Sec', 's')
+    _LABEL_TO_TF_SECONDS[_short] = _tf_sec
+    _LABEL_TO_TF_SECONDS[_short.lower()] = _tf_sec
+
+
+def _normalize_confluence_label(record: str) -> str:
+    """Normalize TF prefix to uppercase (e.g., '15m-...' → '15M-...').
+
+    GEN- records pass through unchanged.
+    """
+    if record.startswith('GEN-'):
+        return record
+    dash = record.find('-')
+    if dash < 0:
+        return record
+    prefix = record[:dash]
+    return prefix.upper() + record[dash:]
+
+
 # Chart pickle defaults per timeframe
 CHART_BAR_COUNTS = {
     60: 300, 300: 200, 900: 150, 1800: 100, 3600: 100,
@@ -337,19 +360,46 @@ class StrategyMonitor:
             if p.id in gp_ids_needed
         ] if gp_ids_needed else []
 
+        # Normalize confluence labels to uppercase (backtest may store lowercase)
+        if self.position.confluence_set:
+            self.position.confluence_set = {
+                _normalize_confluence_label(r)
+                for r in self.position.confluence_set
+            }
+
+        # Parse required secondary TFs from confluence records
+        self._required_secondary_tf: Set[int] = set()
+        all_conf = (list(strategy.get('confluence', []))
+                    + list(strategy.get('general_confluences', [])))
+        for rec in all_conf:
+            if rec.startswith('GEN-'):
+                continue
+            tf_part = rec.split('-', 1)[0]
+            sec = _LABEL_TO_TF_SECONDS.get(tf_part, 0)
+            if sec and sec != self.tf_seconds:
+                self._required_secondary_tf.add(sec)
+
         logger.info("StrategyMonitor: %s (%s/%ds) — indicators=%s, "
-                     "triggers=%s, interpreters=%s, entry=%s, exits=%s",
+                     "triggers=%s, interpreters=%s, entry=%s, exits=%s%s",
                      self.strat_name, self.symbol, self.tf_seconds,
                      req_ind, req_trig, req_interp,
-                     resolved_entry, resolved_exits)
+                     resolved_entry, resolved_exits,
+                     f", secondary_tfs={self._required_secondary_tf}"
+                     if self._required_secondary_tf else "")
 
     def warmup(self, df: pd.DataFrame):
         """Initialize indicator state from historical bars."""
         self.indicators.warmup(df)
 
     def on_bar_close(self, bar: dict,
-                     bar_count: int) -> Tuple[List[dict], dict]:
+                     bar_count: int,
+                     mtf_confluence: Dict[int, Set[str]] = None,
+                     ) -> Tuple[List[dict], dict]:
         """Process a completed bar.
+
+        Args:
+            mtf_confluence: Cross-TF confluence buffer from SymbolHub.
+                Maps tf_seconds → latest confluence records from other TFs.
 
         Returns:
             (signals, audit_data) — signals list and dict for fidelity logging.
@@ -383,6 +433,12 @@ class StrategyMonitor:
             if isinstance(bar_ts, datetime):
                 self._current_confluence |= _evaluate_general_packs(
                     self._general_packs, bar_ts)
+
+        # 3c. Merge cross-TF confluence records from hub's shared buffer
+        if mtf_confluence:
+            for other_tf, records in mtf_confluence.items():
+                if other_tf != self.tf_seconds:
+                    self._current_confluence |= records
 
         # Use bar_start timestamp for bar-close signals — matches backtest
         # convention (df.index = bar-start) and chart candle positioning.
@@ -474,6 +530,51 @@ class StrategyMonitor:
                     signals.append(entry_sig)
 
         return signals
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _ShadowIndicatorEngine:
+    """Runs indicator/interpreter pipeline for a secondary TF.
+
+    Produces confluence records but does NOT manage positions, triggers, or
+    alerts.  Used by SymbolHub to provide cross-TF interpreter states to
+    primary monitors for MTF confluence gating.
+    """
+
+    def __init__(self, tf_seconds: int, req_ind: Set[str],
+                 req_interp: Set[str], params: Dict[str, Any]):
+        self.tf_seconds = tf_seconds
+        self.indicators = IncrementalIndicatorEngine(req_ind, params)
+        # TriggerEvaluator needs interpreters but no triggers (empty set)
+        self.trigger_eval = TriggerEvaluator(
+            req_interp, set(), params.get('ema_periods', [8, 21, 50]))
+
+        tf_label = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
+        self._tf_short_label = tf_label.replace(
+            'Min', 'M').replace('Hour', 'H').replace(
+            'Day', 'D').replace('Week', 'W')
+        self._current_confluence: Set[str] = set()
+
+    def warmup(self, df: pd.DataFrame):
+        self.indicators.warmup(df)
+
+    def on_bar_close(self, bar: dict) -> Set[str]:
+        """Process a completed bar and return confluence records."""
+        current = self.indicators.update_bar(bar)
+        prev = self.indicators.get_prev_values()
+
+        interps, _ = self.trigger_eval.evaluate_bar_close(
+            current, prev, self.indicators.state.prev2_macd_hist)
+
+        self._current_confluence = set()
+        for ikey, state_val in interps.items():
+            self._current_confluence.add(
+                f'{self._tf_short_label}-{ikey}-{state_val}')
+
+        return self._current_confluence
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -648,12 +749,76 @@ class SymbolHub:
         self.monitors: Dict[int, StrategyMonitor] = {}  # strat_id → monitor
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
+        # Cross-TF confluence: tf_seconds → latest interpreter confluence records
+        self._mtf_confluence: Dict[int, Set[str]] = {}
+        # Shadow engines for secondary TFs not covered by real monitors
+        self._shadow_engines: Dict[int, '_ShadowIndicatorEngine'] = {}
 
     def add_monitor(self, monitor: StrategyMonitor):
         self.monitors[monitor.strat_id] = monitor
         # Ensure a BarBuilder exists for this timeframe
         if monitor.tf_seconds not in self.builders:
             self.builders[monitor.tf_seconds] = BarBuilder(monitor.tf_seconds)
+        # Also create BarBuilders for required secondary TFs
+        for sec_tf in getattr(monitor, '_required_secondary_tf', set()):
+            if sec_tf not in self.builders:
+                self.builders[sec_tf] = BarBuilder(sec_tf)
+                logger.info("Created BarBuilder for secondary TF %ss (%s)",
+                            sec_tf, self.symbol)
+
+    def finalize_shadow_engines(self):
+        """Create shadow indicator engines for secondary TFs not covered by
+        real monitors.  Call after all monitors have been added.  Idempotent.
+        """
+        # Collect all secondary TFs needed across monitors
+        needed: Dict[int, List[StrategyMonitor]] = {}
+        for monitor in self.monitors.values():
+            for sec_tf in getattr(monitor, '_required_secondary_tf', set()):
+                needed.setdefault(sec_tf, []).append(monitor)
+
+        # For each needed secondary TF, check if a real monitor covers it
+        for sec_tf, requesting_monitors in needed.items():
+            if sec_tf in self._shadow_engines:
+                continue  # already created
+            has_real = any(m.tf_seconds == sec_tf for m in self.monitors.values())
+            if has_real:
+                continue  # real monitor produces confluence records
+
+            # Collect indicator/interpreter requirements from requesting monitors
+            req_ind: Set[str] = {'atr'}
+            req_interp: Set[str] = set()
+            ema_periods = [8, 21, 50]
+
+            for monitor in requesting_monitors:
+                all_conf = (list(monitor.strategy.get('confluence', []))
+                            + list(monitor.strategy.get('general_confluences', [])))
+                for rec in all_conf:
+                    if rec.startswith('GEN-'):
+                        continue
+                    parts = rec.split('-', 2)
+                    if len(parts) < 3:
+                        continue
+                    tf_sec = _LABEL_TO_TF_SECONDS.get(parts[0], 0)
+                    if tf_sec != sec_tf:
+                        continue
+                    interp_key = parts[1]
+                    req_interp.add(interp_key)
+                    for _tpl_key, (ind_set, ikey) in TEMPLATE_REQUIREMENTS.items():
+                        if ikey == interp_key:
+                            req_ind.update(ind_set)
+                            break
+
+                # Use requesting monitor's EMA params
+                _, _, _, params = resolve_strategy_requirements(monitor.strategy)
+                ema_periods = params.get('ema_periods', ema_periods)
+
+            if req_interp:
+                shadow = _ShadowIndicatorEngine(
+                    sec_tf, req_ind, req_interp,
+                    {'ema_periods': ema_periods})
+                self._shadow_engines[sec_tf] = shadow
+                logger.info("Created shadow engine for %s/%ss: ind=%s interp=%s",
+                            self.symbol, sec_tf, req_ind, req_interp)
 
     def seed_history(self, tf_seconds: int, df: pd.DataFrame):
         builder = self.builders.get(tf_seconds)
@@ -672,8 +837,20 @@ class SymbolHub:
             completed = builder.process_tick(price, volume, timestamp)
 
             if completed is not None:
-                # Bar close — run all monitors for this timeframe
-                # Collect audit data keyed by strategy id
+                # Bar close — update shared confluence buffer FIRST
+                # so monitors on other TFs can see this TF's state
+                shadow = self._shadow_engines.get(tf_seconds)
+                if shadow and shadow.indicators._initialized:
+                    self._mtf_confluence[tf_seconds] = shadow.on_bar_close(completed)
+                else:
+                    # Use first real monitor's confluence as the TF's records
+                    for m in self.monitors.values():
+                        if m.tf_seconds == tf_seconds:
+                            # Will be updated after on_bar_close, but for
+                            # same-TF monitors the records don't matter
+                            break
+
+                # Run all monitors for this timeframe
                 bar_audit_positions = {}
 
                 for monitor in self.monitors.values():
@@ -686,7 +863,8 @@ class SymbolHub:
                         continue
 
                     signals, audit_data = monitor.on_bar_close(
-                        completed, builder._bar_count)
+                        completed, builder._bar_count,
+                        mtf_confluence=self._mtf_confluence)
 
                     # Log every bar-close evaluation for diagnostics
                     pos_state = audit_data.get('position_state', '?')
@@ -701,14 +879,21 @@ class SymbolHub:
                             v = ind_vals[k]
                             diag_parts.append(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}")
                     interp_str = ",".join(f"{k}={v}" for k, v in interp_states.items()) if interp_states else "none"
+                    # MTF confluence diagnostic
+                    mtf_count = sum(
+                        len(r) for tf, r in self._mtf_confluence.items()
+                        if tf != tf_seconds) if self._mtf_confluence else 0
+                    conf_str = (f" mtf_records={mtf_count} "
+                                f"confluence={len(monitor._current_confluence)}"
+                                if mtf_count else "")
                     logger.info("BAR_CLOSE strat=%s bar=%d close=%.2f pos=%s "
-                                "signals=%d triggers=%s ind=[%s] interp=[%s]",
+                                "signals=%d triggers=%s ind=[%s] interp=[%s]%s",
                                 monitor.strat_id, builder._bar_count,
                                 completed['close'], pos_state,
                                 len(signals) if signals else 0,
                                 active_triggers if active_triggers else "none",
                                 " ".join(diag_parts) if diag_parts else "none",
-                                interp_str)
+                                interp_str, conf_str)
 
                     if signals and alert_callback:
                         for sig in signals:
@@ -731,6 +916,18 @@ class SymbolHub:
                             positions={monitor.strat_id:
                                        audit_data['position_state']},
                         )
+
+                # Publish this TF's confluence to shared buffer (from real
+                # monitor if no shadow engine covers it)
+                if tf_seconds not in self._mtf_confluence or \
+                        not self._shadow_engines.get(tf_seconds):
+                    for m in self.monitors.values():
+                        if m.tf_seconds == tf_seconds:
+                            # Use interpreter-only records (exclude GEN-)
+                            own_records = {r for r in m._current_confluence
+                                           if not r.startswith('GEN-')}
+                            self._mtf_confluence[tf_seconds] = own_records
+                            break
 
             # Intra-bar tick checks for all monitors on this timeframe
             for monitor in self.monitors.values():
@@ -762,6 +959,11 @@ class SymbolHub:
             if completed is None:
                 continue
 
+            # Update shared confluence buffer first (shadow or real monitor)
+            shadow = self._shadow_engines.get(tf_seconds)
+            if shadow and shadow.indicators._initialized:
+                self._mtf_confluence[tf_seconds] = shadow.on_bar_close(completed)
+
             # Run all monitors for this timeframe — same as on_tick bar-close
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
@@ -770,7 +972,8 @@ class SymbolHub:
                     continue
 
                 signals, audit_data = monitor.on_bar_close(
-                    completed, builder._bar_count)
+                    completed, builder._bar_count,
+                    mtf_confluence=self._mtf_confluence)
 
                 # Diagnostic logging (same as tick-driven bar close)
                 pos_state = audit_data.get('position_state', '?')
@@ -809,6 +1012,15 @@ class SymbolHub:
                         positions={monitor.strat_id:
                                    audit_data['position_state']},
                     )
+
+            # Publish real monitor's confluence to shared buffer
+            if not self._shadow_engines.get(tf_seconds):
+                for m in self.monitors.values():
+                    if m.tf_seconds == tf_seconds:
+                        own_records = {r for r in m._current_confluence
+                                       if not r.startswith('GEN-')}
+                        self._mtf_confluence[tf_seconds] = own_records
+                        break
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -897,6 +1109,10 @@ class RalphEngine:
                 self.monitors[strat_id] = monitor
 
             self.hubs[sym] = hub
+
+        # Create shadow indicator engines for cross-TF confluence
+        for sym, hub in self.hubs.items():
+            hub.finalize_shadow_engines()
 
         # Load warmup data and initialize indicators
         self._warmup_all()
@@ -1023,6 +1239,14 @@ class RalphEngine:
                     elif monitor.tf_seconds == tf_seconds:
                         logger.warning("Warmup SKIPPED %s: strat=%s tf=%ss — no historical data",
                                        sym, monitor.strat_id, tf_seconds)
+
+                # Warmup shadow engine for this TF (if exists)
+                shadow = hub._shadow_engines.get(tf_seconds)
+                if shadow and len(df) > 0:
+                    shadow.warmup(df)
+                    logger.info("Shadow warmup %s: tf=%ss bars=%d initialized=%s",
+                                sym, tf_seconds, len(df),
+                                shadow.indicators._initialized)
 
         logger.info("Warmup complete for %d symbols", len(self.hubs))
 
