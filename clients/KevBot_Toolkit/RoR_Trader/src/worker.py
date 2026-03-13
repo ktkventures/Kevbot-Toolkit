@@ -382,9 +382,9 @@ class DBRalphEngine:
         engine.start(strategies, config)
 
     def stop(self):
-        """Signal the engine to stop."""
+        """Signal the engine to stop and close the WebSocket."""
         if self._engine:
-            self._engine._running = False
+            self._engine.stop()  # Properly closes WebSocket, not just _running=False
 
     @property
     def is_running(self):

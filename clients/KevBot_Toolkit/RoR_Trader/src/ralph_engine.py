@@ -803,6 +803,7 @@ class RalphEngine:
         self._running = False
         self._config: dict = {}
         self._stream_ref = None
+        self._event_loop = None  # Set when async loop starts
         self._ws_confirmed = False  # True only after first trade received
         self._start_time: Optional[str] = None
         self._last_reconcile = 0.0
@@ -921,9 +922,10 @@ class RalphEngine:
                 pass
             # Force-close the WebSocket to unblock the blocking _consume()
             # await. Without this, the engine hangs until ping_timeout (180s).
+            # Use the stored event loop (runs in the engine thread, not caller).
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                loop = self._event_loop
+                if loop and loop.is_running():
                     loop.call_soon_threadsafe(
                         loop.create_task, stream.close())
             except Exception:
@@ -1067,6 +1069,8 @@ class RalphEngine:
 
     async def _stream_data(self):
         """Subscribe to Alpaca real-time trade data + run periodic tasks."""
+        self._event_loop = asyncio.get_running_loop()
+
         from dotenv import load_dotenv
         load_dotenv(_SCRIPT_DIR / '.env', override=True)
 
@@ -1138,6 +1142,16 @@ class RalphEngine:
         backoff = 5
         max_backoff = 120
 
+        async def _interruptible_sleep(seconds):
+            """Sleep in 1-second increments so stop() takes effect quickly."""
+            for _ in range(int(seconds)):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
+            remainder = seconds - int(seconds)
+            if remainder > 0 and self._running:
+                await asyncio.sleep(remainder)
+
         try:
             while self._running:
                 # Re-read symbols on each reconnect (may have changed
@@ -1205,13 +1219,19 @@ class RalphEngine:
                         logger.error("Alpaca auth failed — check API keys "
                                      "in .env. Retrying in %ds", backoff)
                     elif "connection limit" in msg:
+                        # Cap connection limit backoff at 30s — the old
+                        # connection clears on its own, no need for 120s waits
+                        conn_backoff = min(backoff, 30)
                         logger.warning("Connection limit exceeded — "
                                        "another stream may be active. "
-                                       "Retrying in %ds", backoff)
+                                       "Retrying in %ds", conn_backoff)
+                        await _interruptible_sleep(conn_backoff)
+                        backoff = min(backoff * 2, max_backoff)
+                        continue
                     else:
                         logger.warning("Stream error: %s — retrying in "
                                        "%ds", e, backoff)
-                    await asyncio.sleep(backoff)
+                    await _interruptible_sleep(backoff)
                     backoff = min(backoff * 2, max_backoff)
 
                 except Exception as e:
@@ -1221,7 +1241,7 @@ class RalphEngine:
                         break
                     logger.warning("Stream disconnected: %s — reconnect "
                                    "in %ds", e, backoff)
-                    await asyncio.sleep(backoff)
+                    await _interruptible_sleep(backoff)
                     backoff = min(backoff * 2, max_backoff)
         finally:
             periodic_task.cancel()
