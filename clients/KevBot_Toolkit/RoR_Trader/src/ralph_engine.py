@@ -679,10 +679,25 @@ class SymbolHub:
                     if monitor.tf_seconds != tf_seconds:
                         continue
                     if not _is_in_session(timestamp, monitor.session):
+                        if self.tick_count % 5000 == 0:
+                            logger.debug("Session skip: strat=%s session=%s ts=%s",
+                                         monitor.strat_id, monitor.session, timestamp)
                         continue
 
                     signals, audit_data = monitor.on_bar_close(
                         completed, builder._bar_count)
+
+                    # Log every bar-close evaluation for diagnostics
+                    pos_state = audit_data.get('position_state', '?')
+                    trigger_bools = audit_data.get('trigger_booleans', {})
+                    active_triggers = [k for k, v in trigger_bools.items() if v]
+                    logger.info("BAR_CLOSE strat=%s bar=%d close=%.2f pos=%s "
+                                "signals=%d triggers=%s",
+                                monitor.strat_id, builder._bar_count,
+                                completed['close'], pos_state,
+                                len(signals) if signals else 0,
+                                active_triggers if active_triggers else "none")
+
                     if signals and alert_callback:
                         for sig in signals:
                             alert_callback(sig, monitor.strategy, config)
@@ -968,6 +983,12 @@ class RalphEngine:
                 for monitor in hub.monitors.values():
                     if monitor.tf_seconds == tf_seconds and len(df) > 0:
                         monitor.warmup(df)
+                        logger.info("Warmup %s: strat=%s tf=%ss bars=%d initialized=%s",
+                                    sym, monitor.strat_id, tf_seconds, len(df),
+                                    monitor.indicators._initialized)
+                    elif monitor.tf_seconds == tf_seconds:
+                        logger.warning("Warmup SKIPPED %s: strat=%s tf=%ss — no historical data",
+                                       sym, monitor.strat_id, tf_seconds)
 
         logger.info("Warmup complete for %d symbols", len(self.hubs))
 

@@ -4908,7 +4908,13 @@ def render_strategy_builder():
 
     # Fill status line (bar estimate + validation errors)
     est_parts = [f"~{est_bars:,} bars", TIMEFRAME_GUIDANCE.get(timeframe, "")]
-    if est_bars > 200_000:
+    # Hard cap to prevent out-of-memory crashes on Railway (512MB)
+    MAX_BARS_CLOUD = 100_000
+    from db import USE_DB as _oom_use_db
+    if _oom_use_db and est_bars > MAX_BARS_CLOUD:
+        est_parts.append(f":red[**Exceeds {MAX_BARS_CLOUD:,} bar limit — reduce days or use a coarser timeframe**]")
+        can_save = False
+    elif est_bars > 200_000:
         est_parts.append(":red[**Very large dataset — may be slow**]")
     elif est_bars > 50_000:
         est_parts.append(":orange[Large dataset]")
@@ -4995,6 +5001,12 @@ def render_strategy_builder():
 
     # Handle Load Data
     if load_clicked:
+        # Block large datasets on Railway to prevent OOM crashes
+        from db import USE_DB as _load_use_db
+        if _load_use_db and est_bars > MAX_BARS_CLOUD:
+            st.error(f"Dataset too large (~{est_bars:,} bars). Max {MAX_BARS_CLOUD:,} bars on cloud. "
+                     "Reduce days or use a coarser timeframe.")
+            return
         st.session_state.builder_data_loaded = True
         st.session_state.strategy_config = config
         st.session_state.entry_trigger_results = None
