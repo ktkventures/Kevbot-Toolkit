@@ -5613,31 +5613,32 @@ def render_strategy_builder():
                 display_df = display_df.head(20)
                 current_entry_cid = config.get('entry_trigger_confluence_id', '')
 
-                for _, row in display_df.iterrows():
-                    is_current = (row['trigger_id'] == current_entry_cid)
-                    _exec_badge = _execution_tag(row.get('trigger_id', ''), row.get('execution', 'bar_close'))
-                    with st.container(border=True):
-                        t1, t2 = st.columns([4.3, 0.7])
-                        with t1:
-                            label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
-                            if is_current:
-                                label += " _(current)_"
-                            st.markdown(label)
-                        with t2:
-                            if not is_current and row['trigger_id'] in entry_trigger_options:
-                                if st.button("Replace", key=f"rep_entry_{row['trigger_id']}"):
-                                    st.session_state.pending_entry_trigger = entry_trigger_options.index(row['trigger_id'])
-                                    st.session_state.entry_trigger_results = None
-                                    st.rerun()
+                with st.container(height=480):
+                    for _, row in display_df.iterrows():
+                        is_current = (row['trigger_id'] == current_entry_cid)
+                        _exec_badge = _execution_tag(row.get('trigger_id', ''), row.get('execution', 'bar_close'))
+                        with st.container(border=True):
+                            t1, t2 = st.columns([4.3, 0.7])
+                            with t1:
+                                label = f"{_exec_badge} **{row['trigger_name']}**" if is_current else f"{_exec_badge} {row['trigger_name']}"
+                                if is_current:
+                                    label += " _(current)_"
+                                st.markdown(label)
+                            with t2:
+                                if not is_current and row['trigger_id'] in entry_trigger_options:
+                                    if st.button("Replace", key=f"rep_entry_{row['trigger_id']}"):
+                                        st.session_state.pending_entry_trigger = entry_trigger_options.index(row['trigger_id'])
+                                        st.session_state.entry_trigger_results = None
+                                        st.rerun()
 
-                        k1, k2, k3, k4, k5, k6 = st.columns(6)
-                        k1.caption(f"Trades: {row['total_trades']}")
-                        pf = row['profit_factor']
-                        k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
-                        k3.caption(f"WR: {row['win_rate']:.1f}%")
-                        k4.caption(f"Avg R: {row['avg_r']:+.2f}")
-                        k5.caption(f"Daily R: {row['daily_r']:+.2f}")
-                        k6.caption(f"R²: {row['r_squared']:.2f}")
+                            k1, k2, k3, k4, k5, k6 = st.columns(6)
+                            k1.caption(f"Trades: {row['total_trades']}")
+                            pf = row['profit_factor']
+                            k2.caption(f"PF: {'∞' if pf == float('inf') else f'{pf:.1f}'}")
+                            k3.caption(f"WR: {row['win_rate']:.1f}%")
+                            k4.caption(f"Avg R: {row['avg_r']:+.2f}")
+                            k5.caption(f"Daily R: {row['daily_r']:+.2f}")
+                            k6.caption(f"R²: {row['r_squared']:.2f}")
             else:
                 st.info("Click **Analyze** to compare all available entry triggers using the current strategy config.")
 

@@ -2319,6 +2319,7 @@ def precompute_bar_cache(
 
     metadata = {
         'ema_periods': list(strat.trigger_eval.ema_periods),
+        'available_triggers': set(strat.trigger_eval.required_triggers),
     }
     return cache, metadata
 
@@ -2344,6 +2345,20 @@ def run_trades_from_cache(
         single = _resolve_trigger_id(strategy, 'exit_trigger')
         if single:
             exit_triggers = [single]
+
+    # Check if the requested triggers exist in the cache.  The cache only
+    # contains trigger booleans for the pack it was built with.  If the
+    # analyzer is testing a trigger from a different pack, we must raise so
+    # the caller falls back to a full backtest.
+    available = metadata.get('available_triggers', set())
+    if available:
+        # Strip execution-type suffixes (e.g. _hm, _hl, _l0, _l1) for base match
+        _base_entry = _strip_exec_suffix(entry_trigger) if entry_trigger else ''
+        _base_avail = {_strip_exec_suffix(t) for t in available}
+        if _base_entry and _base_entry not in _base_avail:
+            raise ValueError(
+                f"Trigger '{entry_trigger}' not in cache "
+                f"(available: {available})")
 
     psm = PositionStateMachine(
         strategy,
