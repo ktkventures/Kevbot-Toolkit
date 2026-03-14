@@ -7454,12 +7454,25 @@ def render_live_backtest(strat: dict):
 
     # --- Tab 1: Equity & KPIs (standard data_days range) ---
     with tab_kpi:
+        # Show backtest date range
+        _bt_start = df.index[0].strftime('%b %d, %Y')
+        _bt_end = df.index[-1].strftime('%b %d, %Y')
+        st.caption(f"Backtest range: {_bt_start} — {_bt_end} ({len(df):,} bars)")
+
         kpis = calculate_kpis(
             trades,
             starting_balance=strat.get('starting_balance', 10000.0),
             risk_per_trade=strat.get('risk_per_trade', 100.0),
             total_trading_days=count_trading_days(df),
         )
+
+        # Persist recalculated KPIs so strategy cards stay in sync
+        _saved_kpis = strat.get('kpis', {})
+        if _saved_kpis.get('profit_factor') != kpis.get('profit_factor') or \
+           _saved_kpis.get('win_rate') != kpis.get('win_rate') or \
+           _saved_kpis.get('total_trades') != kpis.get('total_trades'):
+            strat['kpis'] = kpis
+            update_strategy(strat['id'], strat)
 
         kpi_cols = st.columns(8)
         kpi_cols[0].metric("Trades", kpis["total_trades"])

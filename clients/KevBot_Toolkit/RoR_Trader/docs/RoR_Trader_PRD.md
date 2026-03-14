@@ -1,9 +1,9 @@
 # RoR Trader - Product Requirements Document (PRD)
 
-**Version:** 0.52
-**Date:** March 9, 2026
+**Version:** 0.53
+**Date:** March 13, 2026
 **Author:** Kevin Johnson
-**Status:** Phase 21 (Alert & Execution Fidelity) substantially complete — 21A/C/E/F done, 21B/21D in progress. Phase 20 COMPLETE. Phase 24 partial (gap-aware fills). Phases 17A–D, 18A–C, 19, 11–16 complete
+**Status:** Phase 32 (Crypto Support) COMPLETE. Phase 30A–L (Unified Chart Engine) COMPLETE. Phase 28 (Ralph Wiggum Alert Engine) COMPLETE. Phase 22A–E (Web Deployment) COMPLETE. Phase 31 (Polygon.io Migration) planned. Phases 11–21, 24 complete
 
 ---
 
@@ -278,11 +278,12 @@ Users can contribute and monetize:
 
 ### 6.4 Data Provider: Alpaca
 - **Selection:** Alpaca Markets API
-- **Capabilities Needed:**
-  - Historical bars (daily, intraday down to 1-minute)
-  - Real-time/delayed quotes for forward testing
-  - Equity market data (US stocks)
-- **Next Step:** Set up Alpaca account and explore data structure
+- **Capabilities Used:**
+  - Historical bars (daily, intraday down to 1-minute) via `StockHistoricalDataClient` and `CryptoHistoricalDataClient`
+  - Real-time trade WebSocket via `StockDataStream` (equities) and `CryptoDataStream` (crypto)
+  - Equity market data (US stocks) — SIP and IEX feeds
+  - Cryptocurrency market data — BTC/USD, ETH/USD, and all Alpaca-supported crypto pairs (24/7)
+- **Asset Types:** Equities (initial, SIP/IEX feeds) and Crypto (added Phase 32, CryptoFeed.US)
 
 ---
 
@@ -525,7 +526,7 @@ Strategy Builder → Load Data → Entry Trigger tab
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | **Data Provider** | Alpaca | Need to set up subscription; will explore data structure |
-| **Supported Markets** | Equities (initial) | Start focused, expand later to futures/crypto |
+| **Supported Markets** | Equities + Crypto | Equities via Alpaca SIP/IEX; Crypto via Alpaca CryptoFeed (Phase 32). Futures not yet supported. |
 | **Pricing Model** | TBD | Focus on functional tool first, then determine pricing |
 | **Trading Bot Integration** | Webhooks (MVP) | Start with webhook-based alerts; explore aggregator platforms later |
 | **Prop Firm Approach** | Rule compliance checking | Start with Trade The Pool rules; add more rule sets over time |
@@ -1659,10 +1660,11 @@ The alert pipeline has been built incrementally across Phases 5/5B, 13, 14B, and
 **Why this phase exists:**
 The application is currently a local Streamlit app with JSON file storage, no authentication, and the Ralph engine (ralph_engine.py) running as a local subprocess for live alert monitoring. To use it for actual trading, the engine must run reliably in the cloud, data must be safe in a database, and the app must be accessible from any device with proper auth. This is the critical infrastructure phase that transitions RoR Trader from a local development tool to a production-ready web application.
 
-**Current engine architecture (post-Phase 30):**
-- `unified_engine.py` — Single bar-by-bar engine for both backtest and live (replaces old batch pipeline)
-- `ralph_engine.py` — O(1) incremental streaming alert engine wrapping the unified engine's components (IncrementalIndicatorEngine, TriggerEvaluator, PositionStateMachine). Manages Alpaca WebSocket feeds, bar building, multi-timeframe support, fidelity auditing, and alert dispatch. This is the process that becomes the Railway worker.
-- `app.py` — Streamlit UI that spawns/stops Ralph via subprocess PID management (to be replaced by database-driven control)
+**Current engine architecture (post-Phase 30, updated Phase 32):**
+- `unified_engine.py` — Single bar-by-bar engine for both backtest and live (replaces old batch pipeline). Asset-agnostic — works on any OHLCV DataFrame.
+- `ralph_engine.py` — O(1) incremental streaming alert engine wrapping the unified engine's components (IncrementalIndicatorEngine, TriggerEvaluator, PositionStateMachine). Manages dual Alpaca WebSocket feeds (`StockDataStream` for equities, `CryptoDataStream` for crypto), bar building, cross-timeframe confluence via shadow engines, fidelity auditing, and alert dispatch. This is the process that becomes the Railway worker.
+- `data_loader.py` — Dual-client data loading: `StockHistoricalDataClient`/`StockBarsRequest` for equities, `CryptoHistoricalDataClient`/`CryptoBarsRequest` for crypto. Auto-detects asset type via `is_crypto(symbol)` (`"/" in symbol`). Session filtering skipped for crypto (24/7 market).
+- `app.py` — Streamlit UI with Asset Type selector in Strategy Builder (Equity/Crypto); session auto-set to "24/7" for crypto.
 
 **Hosting Stack:**
 - **Railway** — App hosting (web service + background worker). Usage-based pricing (~$8-13/month). Git push-to-deploy.
@@ -2131,12 +2133,35 @@ Additionally, v2 `_prev` cached levels (EMA and UT Bot) were corrected to cache 
 - [x] Bar-close signal timestamps — `on_bar_close()` now uses raw `bar_start` timestamp (matching backtest's `df.index = bar-start` convention and chart candle positioning). Originally set to `bar_start + timeframe - 1s` but reverted in Phase 30I QA to eliminate timestamp offset between alert markers and backtest markers.
 - [x] Alerts.json race condition — added `threading.Lock` around all read-modify-write cycles in `alerts.py`; tmp files use unique names (`{pid}.{thread_id}`); `deliver_alert()` in `alert_monitor.py` uses new `update_alert()` helper instead of raw load/modify/save
 
+**Cross-Timeframe Confluence in Live Engine (2026-03-13):**
+
+Strategies with multi-timeframe (MTF) confluences (e.g., "15M VWAP > 2σ" + "5M MACD H+" + "1H UO Bullish" on a 1-min trigger) worked correctly in backtests but never fired entries in the live engine. The issue was a missing data-feed step in ralph_engine's orchestration layer — not a logic divergence between engines (`check_entry()` is literally the same code).
+
+**Root cause:** `StrategyMonitor.on_bar_close()` only built confluence records from its own timeframe. `PositionStateMachine.check_entry()` checks `confluence_set.issubset(confluence_records)`, so cross-TF records were always missing → entry blocked forever.
+
+**Fix components:**
+- [x] **Label case normalization** — `_normalize_confluence_label()` uppercases TF prefix (backtest stores lowercase "15m-...", live produces uppercase "15M-..."). Called in `StrategyMonitor.__init__` to normalize `confluence_set`.
+- [x] **`_required_secondary_tf: Set[int]`** — Parsed from strategy's confluence records in `StrategyMonitor.__init__`; identifies which other timeframes are needed.
+- [x] **`SymbolHub._mtf_confluence: Dict[int, Set[str]]`** — Shared buffer mapping `tf_seconds → latest interpreter confluence records` from that TF. Updated on every bar close.
+- [x] **BarBuilder creation for secondary TFs** — `add_monitor()` creates BarBuilders for secondary TFs so ticks build bars at those timeframes.
+- [x] **`_ShadowIndicatorEngine`** — Lightweight class (IncrementalIndicatorEngine + TriggerEvaluator, no position management) that computes indicators/interpreters on secondary TF bars and returns confluence records. Created by `SymbolHub.finalize_shadow_engines()` only for TFs not covered by real monitors.
+- [x] **Cross-TF merge in `on_bar_close()`** — After building own confluence, merges records from `_mtf_confluence` for other TFs. Existing `check_entry(confluence_records=...)` call now includes cross-TF data.
+- [x] **Worker hot-reload** — `finalize_shadow_engines()` called after adding new monitors; shadow engines warmed up for secondary TFs.
+- [x] **Confluence timing** — Cross-TF confluence updates at secondary bar close (not intra-bar), matching backtest's forward-fill behavior.
+
+**Live chart fixes (2026-03-13):**
+- [x] **Missing tables below live chart** — `render_alert_trade_table()` and `render_backtest_trade_table()` were after a `return None` in `_load_live_chart_pickle`. Moved into `render_live_chart_tab` after conditions render.
+- [x] **Empty-state headers** — Always show "Current Conditions", "Alert History", "Trade History (Backtest)" headers with descriptive empty-state messages even when no data exists.
+- [x] **Cross-TF conditions table** — `_render_live_conditions()` was filtering by strategy's own TF prefix only, so cross-TF confluences never matched. Fixed to parse TF from each confluence record directly.
+- [x] **`_load_secondary_tf_states()`** — New function that loads REST data for secondary TFs, runs indicator/interpreter pipeline, returns real current states for the conditions table instead of placeholder text.
+- [x] **Live chart trade markers for MTF strategies** — `render_live_chart_tab()` was calling `run_unified_backtest()` without `secondary_tf_map`, so strategies with cross-TF confluence requirements could never generate trades on the live chart. Fixed by resampling primary data to required secondary TFs, running the same indicator/interpreter pipeline as `prepare_data_with_indicators()`, and passing the resulting `secondary_tf_map` through to the unified engine.
+
 **IPC Files (runtime, gitignored):**
 - `engine_status.json` — running/connected/tick_count/PID for Streamlit UI polling
 - `engine_state.json` — position states per strategy for persistence across restarts
 - `engine_audit.jsonl` — fidelity audit log (incremental vs batch drift)
 - `engine_reload.flag` — touched by UI to trigger hot-reload of strategies.json
-- `live_data_{symbol}_{tf_seconds}.pkl` — enriched DataFrames for Live Chart tab
+- `live_data_{symbol}_{tf_seconds}.pkl` — enriched DataFrames for Live Chart tab (symbol "/" sanitized to "_" for crypto)
 
 **CLI Interface:**
 - `python ralph_engine.py` — start engine (foreground)
@@ -2500,8 +2525,9 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 9. **Phase 30I** ✅ Live QA hardening — timestamp alignment, swing stops, same-bar guards, 1-bar cooldown, ATR parity, L-type bar_count alignment, restart rebase
 10. **Phase 30J** ✅ Stop-validity guard + Position Health Monitor — prevents guaranteed-loss entries, adds position tracking to alert analysis and sidebar
 11. **Phase 30K** ✅ Strategy Builder speed optimization — bar cache fast path + numpy auto-search + progress bars
-12. Existing C-type strategies migrate automatically (trigger classification is additive)
-13. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
+12. **Phase 30L** ✅ Cross-TF confluence in live engine — shadow indicator engines, shared confluence buffer, label normalization, live chart table fixes
+13. Existing C-type strategies migrate automatically (trigger classification is additive)
+14. HM/HL-type is opt-in: existing UT Bot strategies remain L1-type unless user explicitly changes execution type
 
 ---
 
@@ -2534,6 +2560,52 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - [ ] **31C:** Per-second bar support — subscribe to Polygon per-second bars for L-type intra-bar trigger detection; evaluate whether this replaces tick-level processing
 - [ ] **31D:** Remove Alpaca market data dependencies — drop `alpaca-py` data subscriptions, `EXCLUDED_TRADE_CONDITIONS`, `_reconcile_bars()`, tick-based BarBuilder logic
 - [ ] **31E:** Sub-minute backtesting — expose 10-second/30-second timeframes in Strategy Builder; update unified engine to handle sub-minute bar data
+
+---
+
+### Phase 32: Crypto / Multi-Asset Support — COMPLETED 2026-03-13
+
+*Add cryptocurrency as a first-class asset type alongside equities, enabling 24/7 strategy testing and monitoring via Alpaca's crypto market data APIs.*
+
+**Motivation:** The user needed to battle-test the full trade execution pipeline (Strategy Builder → backtest → live monitoring → alert dispatch) over the weekend when equity markets are closed. Crypto trades 24/7 on Alpaca, providing a continuous testing environment. All Alpaca-supported crypto pairs are included (BTC/USD, ETH/USD, LTC/USD, AVAX/USD, SOL/USD, etc.), not just BTC.
+
+**Detection heuristic:** Crypto vs equity is auto-detected throughout the codebase via `"/" in symbol` (e.g., "BTC/USD" → crypto, "SPY" → equity). This is consistent with Alpaca's symbol format.
+
+**Changes by file:**
+
+**`data_loader.py`:**
+- [x] `is_crypto(symbol)` — detects crypto via `"/" in symbol`
+- [x] `load_from_alpaca_crypto()` — uses `CryptoHistoricalDataClient` + `CryptoBarsRequest` (no `feed` param, no session filtering)
+- [x] `load_market_data()` — routes crypto to `load_from_alpaca_crypto()`, sets source to "Alpaca Crypto"
+- [x] `CRYPTO_BARS_PER_DAY` — 24h/day calculations (1440 for 1Min, 288 for 5Min, 24 for 1Hour, etc.)
+- [x] `_bars_per_day()` / `estimate_bar_count()` / `days_from_bar_count()` — accept `asset_type` param; crypto uses 365/365 trading days (no weekday ratio)
+- [x] `load_latest_bars()` — auto-detects crypto for bars-per-day calculation
+- [x] `TRADING_SESSIONS` — added "24/7" entry
+
+**`ralph_engine.py`:**
+- [x] `StrategyMonitor.__init__` — forces `session = '24/7'` for crypto symbols (detected via `"/" in symbol`)
+- [x] `_is_in_session()` — returns `True` unconditionally for `'24/7'` session
+- [x] `_stream_data()` — splits symbols into stock vs crypto; runs dual WebSocket streams (`StockDataStream` + `CryptoDataStream`) concurrently via `asyncio.wait(return_when=FIRST_EXCEPTION)`. If either fails, all are cancelled and reconnected.
+- [x] `_make_on_trade()` — async handler factory (CryptoDataStream requires coroutine handlers); skips `EXCLUDED_TRADE_CONDITIONS` filtering for crypto (no CTA/UTP condition codes)
+- [x] `_crypto_stream_ref` — stored for clean shutdown; `stop()` closes both stock and crypto streams
+- [x] Pickle file paths — sanitizes `"/"` to `"_"` for crypto symbols (`live_data_BTC_USD_60.pkl`)
+
+**`worker.py`:**
+- [x] Hot-reload stream reconnect — closes both stock and crypto streams via `loop.call_soon_threadsafe()` when new symbols are added
+
+**`app.py`:**
+- [x] Strategy Builder — "Asset Type" selectbox (Equity/Crypto) before symbol input; help text updates dynamically
+- [x] Session selector — disabled "24/7" text input for crypto (replaces session dropdown)
+- [x] Strategy config — saves `asset_type` field (lowercase: "equity" or "crypto"); defaults to "equity" for backwards compatibility
+- [x] `AVAILABLE_CRYPTO_SYMBOLS` — reference list (BTC/USD, ETH/USD, LTC/USD, AVAX/USD, SOL/USD, DOGE/USD, LINK/USD, DOT/USD, UNI/USD, AAVE/USD)
+- [x] Bar estimation — all `estimate_bar_count()` / `days_from_bar_count()` calls pass `asset_type` from strategy
+- [x] Pickle read path — sanitizes `"/"` for crypto symbols
+
+**Files NOT modified:**
+- `unified_engine.py` — IncrementalIndicatorEngine, TriggerEvaluator, PositionStateMachine all work asset-agnostically on OHLCV DataFrames. Zero changes needed.
+- `indicators.py`, `interpreters.py`, `triggers.py` — Pure math on price data, asset-agnostic.
+
+**Runtime fix (2026-03-14):** `CryptoDataStream.subscribe_trades()` requires `async def` handler — sync handlers cause `"handler must be a coroutine function"` error and the crypto WebSocket never connects. Fixed by making `on_trade` handler async (works for both `StockDataStream` and `CryptoDataStream`).
 
 ---
 
