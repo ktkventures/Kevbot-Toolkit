@@ -2609,6 +2609,35 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 
 ---
 
+### Post-Phase Fixes & Improvements (2026-03-13)
+
+**Live chart MTF confluence (app.py):**
+- [x] `render_live_chart_tab()` now resamples primary data to required secondary TFs, runs the same indicator/interpreter pipeline as `prepare_data_with_indicators()`, and passes `secondary_tf_map` to `run_unified_backtest()`. Previously, strategies with cross-TF confluence requirements could never generate trade markers on the live chart.
+
+**KPI consistency (app.py):**
+- [x] Strategies now save `backtest_start_date` / `backtest_end_date` from the actual DataFrame used in the Strategy Builder. The detail page (`render_live_backtest`) uses these pinned dates instead of a rolling `data_days` window, ensuring KPIs match the builder.
+- [x] Date range caption added to both `render_live_backtest` ("Backtest range: ...") and `render_forward_test_view` ("Data range: ...") so users can see exactly what data window is being used.
+
+**Trigger analyzer cross-pack fix (unified_engine.py, app.py):**
+- [x] `precompute_bar_cache()` now stores `available_triggers` in metadata.
+- [x] `run_trades_from_cache()` checks if the requested entry trigger exists in the cache. If not (cross-pack trigger), raises `ValueError` so `_unified_trades` falls back to full backtest. Previously, cross-pack triggers silently produced 0 trades because their trigger booleans weren't in the cache.
+- [x] Analyzer results wrapped in scrollable container (`st.container(height=480)`) to prevent pushing trade list off-screen.
+
+---
+
+### Planned: Strategy Builder Performance Optimization
+
+**Problem:** The Strategy Builder reruns expensive operations too frequently. Every UI interaction (adding/removing a confluence, applying filters, clicking analyze) triggers `st.rerun()`, which re-executes `prepare_data_with_indicators()` and `_unified_trades()` from scratch — even though the data and strategy config haven't changed.
+
+**Root cause:** While `prepare_data_with_indicators` has `@st.cache_data(ttl=3600)` (which helps when params match), the trade generation via `_unified_trades()` is uncached and runs on every rerun. Analysis functions like `analyze_confluences()` also re-run unnecessarily.
+
+**Planned approach:**
+- [ ] Cache `df` and `trades` in `session_state` keyed by a config hash; only regenerate when strategy parameters actually change (symbol, timeframe, triggers, stops, etc.)
+- [ ] Skip re-analysis when only display filters change (filter/sort operations should not trigger backtests)
+- [ ] Evaluate using Streamlit callbacks or fragment-based updates instead of full `st.rerun()` for simple state changes
+
+---
+
 ## Appendix A: Interpreter Examples
 
 ### A.1 EMA Stack Interpreter
