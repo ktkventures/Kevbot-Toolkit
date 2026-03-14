@@ -6291,6 +6291,11 @@ def render_strategy_builder():
         eq_data = extract_equity_curve_data(filtered_trades, boundary_dt=ec_boundary)
         stored_trades = _extract_minimal_trades(filtered_trades)
 
+        # Pin the actual backtest date range so the detail page reproduces
+        # the same data window regardless of when it's viewed.
+        _bt_range_start = df.index[0].isoformat() if len(df) > 0 else None
+        _bt_range_end = df.index[-1].isoformat() if len(df) > 0 else None
+
         strategy = {
             'name': strategy_name,
             **config,
@@ -6301,6 +6306,8 @@ def render_strategy_builder():
             'stored_trades': stored_trades,
             'forward_testing': enable_forward,
             'alerts': enable_alerts,
+            'backtest_start_date': _bt_range_start,
+            'backtest_end_date': _bt_range_end,
         }
 
         if editing_id:
@@ -7377,7 +7384,12 @@ def render_live_backtest(strat: dict):
     strat_timeframe = strat.get('timeframe', '1Min')
     strat_start = None
     strat_end = None
-    if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
+    # Use pinned backtest dates if available (saved from Strategy Builder),
+    # otherwise fall back to lookback_mode Date Range, then rolling data_days.
+    if strat.get('backtest_start_date') and strat.get('backtest_end_date'):
+        strat_start = datetime.fromisoformat(strat['backtest_start_date'])
+        strat_end = datetime.fromisoformat(strat['backtest_end_date'])
+    elif strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
         strat_start = datetime.fromisoformat(strat['lookback_start_date'])
         strat_end = datetime.fromisoformat(strat['lookback_end_date'])
 
@@ -7465,14 +7477,6 @@ def render_live_backtest(strat: dict):
             risk_per_trade=strat.get('risk_per_trade', 100.0),
             total_trading_days=count_trading_days(df),
         )
-
-        # Persist recalculated KPIs so strategy cards stay in sync
-        _saved_kpis = strat.get('kpis', {})
-        if _saved_kpis.get('profit_factor') != kpis.get('profit_factor') or \
-           _saved_kpis.get('win_rate') != kpis.get('win_rate') or \
-           _saved_kpis.get('total_trades') != kpis.get('total_trades'):
-            strat['kpis'] = kpis
-            update_strategy(strat['id'], strat)
 
         kpi_cols = st.columns(8)
         kpi_cols[0].metric("Trades", kpis["total_trades"])
@@ -7907,7 +7911,10 @@ def render_forward_test_view(strat: dict):
         bt_trading_days = len(set(str(t['exit_time'])[:10] for t in backtest_trades.to_dict('records'))) if len(backtest_trades) > 0 else 0
         fw_trading_days = len(set(str(t['exit_time'])[:10] for t in forward_trades.to_dict('records'))) if len(forward_trades) > 0 else 0
 
+    _ft_data_start = df.index[0].strftime('%b %d, %Y') if len(df) > 0 else '?'
+    _ft_data_end = df.index[-1].strftime('%b %d, %Y') if len(df) > 0 else '?'
     st.caption(
+        f"Data range: {_ft_data_start} — {_ft_data_end} · "
         f"BT: {len(backtest_trades)} trades ({bt_trading_days}d) · "
         f"FW: {len(forward_trades)} trades ({fw_trading_days}d) · "
         f"Boundary: {format_display_ts(boundary_dt, date_only=True)}"
