@@ -1440,10 +1440,11 @@ class RalphEngine:
             if remainder > 0 and self._running:
                 await asyncio.sleep(remainder)
 
-        # Shared trade handler for both stock and crypto streams
+        # Shared trade handler for both stock and crypto streams.
+        # Must be async — CryptoDataStream requires coroutine handlers.
         def _make_on_trade(symbol_list, is_crypto_stream=False):
             confirmed = [False]
-            def on_trade(trade):
+            async def on_trade(trade):
                 nonlocal backoff
                 if not self._running:
                     return

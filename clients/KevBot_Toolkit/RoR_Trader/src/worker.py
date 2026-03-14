@@ -394,7 +394,14 @@ class DBRalphEngine:
                                     getattr(engine, '_crypto_stream_ref', None)):
                             if _sr:
                                 try:
-                                    _sr.close()
+                                    _sr._should_run = False
+                                except Exception:
+                                    pass
+                                try:
+                                    loop = engine._event_loop
+                                    if loop and loop.is_running():
+                                        loop.call_soon_threadsafe(
+                                            loop.create_task, _sr.close())
                                 except Exception:
                                     pass
 
