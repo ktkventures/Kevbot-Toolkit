@@ -385,14 +385,18 @@ class DBRalphEngine:
                         s.get('symbol', 'SPY') for s in strategies
                         if s['id'] in added
                     } - set(engine._subscribed_symbols or [])
-                    if new_symbols and engine._stream_ref:
+                    if new_symbols and (engine._stream_ref or
+                                        getattr(engine, '_crypto_stream_ref', None)):
                         logger.info("New symbols detected (%s) — forcing "
                                     "stream reconnect",
                                     ', '.join(new_symbols))
-                        try:
-                            engine._stream_ref.close()
-                        except Exception:
-                            pass
+                        for _sr in (engine._stream_ref,
+                                    getattr(engine, '_crypto_stream_ref', None)):
+                            if _sr:
+                                try:
+                                    _sr.close()
+                                except Exception:
+                                    pass
 
             except Exception as e:
                 logger.warning("DB hot-reload failed: %s", e)

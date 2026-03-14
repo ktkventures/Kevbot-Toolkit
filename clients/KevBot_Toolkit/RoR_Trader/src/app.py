@@ -24,7 +24,7 @@ import signal as signal_module
 import inspect
 import pytz
 
-from data_loader import load_market_data, get_data_source, is_alpaca_configured, estimate_bar_count, days_from_bar_count
+from data_loader import load_market_data, get_data_source, is_alpaca_configured, estimate_bar_count, days_from_bar_count, is_crypto
 from indicators import (
     INDICATORS,
     run_all_indicators,
@@ -164,6 +164,10 @@ import pack_builder
 # =============================================================================
 
 AVAILABLE_SYMBOLS = ["SPY", "AAPL", "QQQ", "TSLA", "NVDA", "MSFT", "AMD", "META"]
+AVAILABLE_CRYPTO_SYMBOLS = [
+    "BTC/USD", "ETH/USD", "LTC/USD", "AVAX/USD", "SOL/USD",
+    "DOGE/USD", "LINK/USD", "DOT/USD", "UNI/USD", "AAVE/USD",
+]
 TIMEFRAMES = [
     "5Sec", "10Sec", "15Sec", "30Sec",
     "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
@@ -2977,8 +2981,10 @@ def _load_live_chart_rest(symbol: str, tf_seconds: int, strat: dict):
 def _load_live_chart_pickle(symbol: str, tf_seconds: int):
     """Load live data from pickle file (local mode)."""
     import pickle
+    # Sanitize symbol for filesystem (BTC/USD → BTC_USD)
+    safe_sym = symbol.replace('/', '_')
     pkl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            f"live_data_{symbol}_{tf_seconds}.pkl")
+                            f"live_data_{safe_sym}_{tf_seconds}.pkl")
     if not os.path.exists(pkl_path):
         return None
     try:
@@ -4474,9 +4480,18 @@ def render_strategy_builder():
         )
 
     with r1c1:
+        _asset_types = ["Equity", "Crypto"]
+        _saved_asset = edit_config.get('asset_type', 'equity')
+        _asset_idx = 1 if _saved_asset == 'crypto' else 0
+        asset_type = st.selectbox("Asset", _asset_types, index=_asset_idx,
+                                   key="sb_asset_type")
+        _sym_help = ("e.g. BTC/USD, ETH/USD, LTC/USD"
+                     if asset_type == "Crypto"
+                     else "e.g. SPY, AAPL, PLTR")
+        _sym_default = edit_config.get('symbol', 'BTC/USD' if asset_type == "Crypto" else 'SPY')
         symbol = st.text_input(
-            "Ticker", value=edit_config.get('symbol', 'SPY'),
-            key="sb_symbol", help="Any Alpaca-supported stock ticker (e.g. SPY, AAPL, PLTR)",
+            "Ticker", value=_sym_default,
+            key="sb_symbol", help=_sym_help,
         ).strip().upper()
 
     with r1c2:
@@ -4488,10 +4503,15 @@ def render_strategy_builder():
         direction = st.selectbox("Direction", DIRECTIONS, index=direction_idx, key="sb_direction")
 
     with r1c3b:
-        _saved_sess = edit_config.get('trading_session', 'RTH')
-        _sess_idx = TRADING_SESSIONS.index(_saved_sess) if _saved_sess in TRADING_SESSIONS else 0
-        trading_session = st.selectbox("Session", TRADING_SESSIONS, index=_sess_idx, key="sb_session",
-            help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM")
+        if asset_type == "Crypto":
+            trading_session = "24/7"
+            st.text_input("Session", value="24/7", disabled=True,
+                          help="Crypto markets trade 24/7")
+        else:
+            _saved_sess = edit_config.get('trading_session', 'RTH')
+            _sess_idx = TRADING_SESSIONS.index(_saved_sess) if _saved_sess in TRADING_SESSIONS else 0
+            trading_session = st.selectbox("Session", TRADING_SESSIONS, index=_sess_idx, key="sb_session",
+                help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · After Hours: 4-8PM · Extended: 4AM-8PM")
 
     # Re-fetch entry triggers with actual selected direction
     entry_triggers = get_confluence_entry_triggers(direction, enabled_groups)
@@ -4514,7 +4534,9 @@ def render_strategy_builder():
             saved_bar_count = edit_config.get('bar_count', 1000)
             bar_count = st.number_input("Bars", min_value=100, max_value=500000,
                                          value=saved_bar_count, step=100, key="sb_bar_count")
-            data_days = days_from_bar_count(bar_count, timeframe, session=trading_session)
+            _at = asset_type.lower()
+            data_days = days_from_bar_count(bar_count, timeframe, session=trading_session,
+                                            asset_type=_at)
         elif lookback_mode == "Date Range":
             from datetime import time as dtime
             saved_start = edit_config.get('lookback_start_date')
@@ -4554,7 +4576,8 @@ def render_strategy_builder():
         load_clicked = st.button("Load Data", type="primary", use_container_width=True)
 
     # Bar estimate (computed now, rendered after validation via placeholder)
-    est_bars = estimate_bar_count(data_days, timeframe, session=trading_session)
+    est_bars = estimate_bar_count(data_days, timeframe, session=trading_session,
+                                  asset_type=asset_type.lower())
     _status_placeholder = st.empty()
 
     # =========================================================================
@@ -5025,6 +5048,7 @@ def render_strategy_builder():
 
     config = {
         'symbol': symbol,
+        'asset_type': asset_type.lower(),
         'direction': direction,
         'timeframe': timeframe,
         'trading_session': trading_session,
@@ -7442,7 +7466,10 @@ def render_live_backtest(strat: dict):
                 ext_bar_count = st.number_input(
                     "Bars", min_value=100, max_value=500000, value=5000,
                     step=500, key="bt_ext_bar_count")
-                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe, session=strat.get('trading_session', 'RTH'))
+                _bt_at = strat.get('asset_type', 'equity')
+                extended_data_days = days_from_bar_count(ext_bar_count, strat_timeframe,
+                                                         session=strat.get('trading_session', 'RTH'),
+                                                         asset_type=_bt_at)
             elif ext_lookback_mode == "Date Range":
                 from datetime import time as dtime
                 dr1, dr2 = st.columns(2)
@@ -7460,7 +7487,10 @@ def render_live_backtest(strat: dict):
                 ext_end_date = datetime.combine(ext_end_input, dtime(16, 0))
                 extended_data_days = (ext_end_input - ext_start_input).days
         with ext_lc3:
-            ext_est = estimate_bar_count(extended_data_days, strat_timeframe, session=strat.get('trading_session', 'RTH'))
+            _bt_at = strat.get('asset_type', 'equity')
+            ext_est = estimate_bar_count(extended_data_days, strat_timeframe,
+                                          session=strat.get('trading_session', 'RTH'),
+                                          asset_type=_bt_at)
             st.caption(f"~{ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe, '')}")
 
         bt_ext_key = f"bt_ext_{strat['id']}_{extended_data_days}_{ext_start_date}_{ext_end_date}"
@@ -7904,7 +7934,10 @@ def render_forward_test_view(strat: dict):
                     fw_ext_bars = st.number_input(
                         "Bars", min_value=100, max_value=500000, value=5000,
                         step=500, key="fw_ext_bar_count")
-                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
+                    _fw_at = strat.get('asset_type', 'equity')
+                    extended_data_days = days_from_bar_count(fw_ext_bars, strat_timeframe_fw,
+                                                             session=strat.get('trading_session', 'RTH'),
+                                                             asset_type=_fw_at)
                 elif fw_ext_mode == "Date Range":
                     from datetime import time as dtime
                     fw_dr1, fw_dr2 = st.columns(2)
@@ -7920,7 +7953,10 @@ def render_forward_test_view(strat: dict):
                         st.error("Start must be before end.")
                     extended_data_days = (fw_ext_end - fw_ext_start).days
             with fw_ext_lc3:
-                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw, session=strat.get('trading_session', 'RTH'))
+                _fw_at = strat.get('asset_type', 'equity')
+                fw_ext_est = estimate_bar_count(extended_data_days, strat_timeframe_fw,
+                                                 session=strat.get('trading_session', 'RTH'),
+                                                 asset_type=_fw_at)
                 st.caption(f"~{fw_ext_est:,} bars · {TIMEFRAME_GUIDANCE.get(strat_timeframe_fw, '')}")
 
             ft_ext_key = f"ft_ext_{strat['id']}_{extended_data_days}"

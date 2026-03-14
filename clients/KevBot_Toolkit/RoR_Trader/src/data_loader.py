@@ -168,6 +168,88 @@ def load_from_alpaca(
         return None
 
 
+def is_crypto(symbol: str) -> bool:
+    """Check if a symbol is crypto (uses BASE/QUOTE format, e.g. BTC/USD)."""
+    return "/" in symbol
+
+
+def load_from_alpaca_crypto(
+    symbol: str,
+    days: int = 30,
+    timeframe: str = "1Min",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> Optional[pd.DataFrame]:
+    """
+    Load historical bar data from Alpaca Crypto API.
+
+    Args:
+        symbol: Crypto symbol (e.g., "BTC/USD")
+        days: Number of days of history to fetch
+        timeframe: Bar timeframe ("1Min", "5Min", "15Min", "1Hour", "1Day")
+        start_date: Explicit start date (overrides days)
+        end_date: Explicit end date (overrides days)
+
+    Returns:
+        DataFrame with OHLCV data, or None if fetch fails
+    """
+    if not is_alpaca_configured():
+        return None
+
+    try:
+        from alpaca.data.historical import CryptoHistoricalDataClient
+        from alpaca.data.requests import CryptoBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        client = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+
+        tf_map = {
+            "1Min": TimeFrame.Minute,
+            "2Min": TimeFrame(2, TimeFrameUnit.Minute),
+            "3Min": TimeFrame(3, TimeFrameUnit.Minute),
+            "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+            "10Min": TimeFrame(10, TimeFrameUnit.Minute),
+            "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+            "30Min": TimeFrame(30, TimeFrameUnit.Minute),
+            "1Hour": TimeFrame.Hour,
+            "2Hour": TimeFrame(2, TimeFrameUnit.Hour),
+            "4Hour": TimeFrame(4, TimeFrameUnit.Hour),
+            "1Day": TimeFrame.Day,
+            "1Week": TimeFrame.Week,
+            "1Month": TimeFrame.Month,
+        }
+        tf = tf_map.get(timeframe, TimeFrame.Minute)
+
+        if start_date is None or end_date is None:
+            from datetime import timezone
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=days)
+
+        request = CryptoBarsRequest(
+            symbol_or_symbols=[symbol],
+            timeframe=tf,
+            start=start_date,
+            end=end_date,
+        )
+
+        bars = client.get_crypto_bars(request)
+        df = bars.df
+
+        if len(df) == 0:
+            return None
+
+        if symbol in df.index.get_level_values(0):
+            df = df.loc[symbol]
+
+        # No session filtering for crypto (24/7 market)
+        return df if len(df) > 0 else None
+
+    except Exception as e:
+        import logging
+        logging.getLogger("data_loader").warning("Alpaca crypto fetch failed for %s: %s", symbol, e)
+        return None
+
+
 def load_from_mock(
     symbol: str,
     days: int = 30,
@@ -228,15 +310,15 @@ def load_market_data(
     Load market data, preferring Alpaca if configured.
 
     Args:
-        symbol: Stock symbol (e.g., "SPY")
+        symbol: Stock symbol (e.g., "SPY") or crypto (e.g., "BTC/USD")
         days: Number of days of history (used if start_date/end_date not provided)
         timeframe: Bar timeframe (only affects Alpaca, mock always uses 1Min)
         seed: Random seed for mock data
         force_mock: If True, skip Alpaca and use mock data
         start_date: Explicit start date (overrides days)
         end_date: Explicit end date (overrides days)
-        feed: Data feed — "sip" (consolidated) or "iex" (IEX only)
-        session: Trading session filter — "RTH", "Pre-Market", "After Hours", "Extended Hours"
+        feed: Data feed — "sip" (consolidated) or "iex" (IEX only). Ignored for crypto.
+        session: Trading session filter — "RTH", "Pre-Market", etc. Ignored for crypto.
 
     Returns:
         DataFrame with OHLCV data (columns: open, high, low, close, volume, trade_count, vwap)
@@ -245,12 +327,19 @@ def load_market_data(
 
     # Try Alpaca first (unless forced to use mock)
     if not force_mock and is_alpaca_configured():
-        df = load_from_alpaca(symbol, days, timeframe, start_date=start_date,
-                              end_date=end_date, feed=feed, session=session)
-        if df is not None and len(df) > 0:
-            feed_label = "SIP" if feed == "sip" else "IEX"
-            _last_actual_source = f"Alpaca {feed_label}"
-            return df
+        if is_crypto(symbol):
+            df = load_from_alpaca_crypto(symbol, days, timeframe,
+                                         start_date=start_date, end_date=end_date)
+            if df is not None and len(df) > 0:
+                _last_actual_source = "Alpaca Crypto"
+                return df
+        else:
+            df = load_from_alpaca(symbol, days, timeframe, start_date=start_date,
+                                  end_date=end_date, feed=feed, session=session)
+            if df is not None and len(df) > 0:
+                feed_label = "SIP" if feed == "sip" else "IEX"
+                _last_actual_source = f"Alpaca {feed_label}"
+                return df
 
     # Fall back to mock data
     _last_actual_source = "Mock Data"
@@ -362,7 +451,7 @@ def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
 # TRADING SESSION DEFINITIONS
 # =============================================================================
 
-TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours"]
+TRADING_SESSIONS = ["RTH", "Pre-Market", "After Hours", "Extended Hours", "24/7"]
 
 SESSION_HOURS = {
     "RTH":            (9, 30, 16, 0),    # 6.5 hours
@@ -384,9 +473,20 @@ BARS_PER_DAY = {
     "1Day": 1, "1Week": 0.2, "1Month": 1 / 21,
 }
 
+# Crypto: 24 hours/day, 7 days/week (no session concept)
+CRYPTO_BARS_PER_DAY = {
+    "5Sec": 17280, "10Sec": 8640, "15Sec": 5760, "30Sec": 2880,
+    "1Min": 1440, "2Min": 720, "3Min": 480, "5Min": 288,
+    "10Min": 144, "15Min": 96, "30Min": 48,
+    "1Hour": 24, "2Hour": 12, "4Hour": 6,
+    "1Day": 1, "1Week": 1 / 7, "1Month": 1 / 30,
+}
 
-def _bars_per_day(timeframe: str, session: str = "RTH") -> float:
+
+def _bars_per_day(timeframe: str, session: str = "RTH", asset_type: str = "equity") -> float:
     """Return approximate trading bars per day for a timeframe and session."""
+    if asset_type == "crypto":
+        return CRYPTO_BARS_PER_DAY.get(timeframe, 1440)
     rth_bpd = BARS_PER_DAY.get(timeframe, 390)
     if session == "RTH":
         return rth_bpd
@@ -394,19 +494,27 @@ def _bars_per_day(timeframe: str, session: str = "RTH") -> float:
     return rth_bpd * (session_hours / 6.5)
 
 
-def estimate_bar_count(days: int, timeframe: str, session: str = "RTH") -> int:
+def estimate_bar_count(days: int, timeframe: str, session: str = "RTH",
+                       asset_type: str = "equity") -> int:
     """Estimate total bar count for a given number of calendar days and timeframe.
-    Assumes ~252 trading days per 365 calendar days (~69%).
+    Assumes ~252 trading days per 365 calendar days (~69%) for equities.
+    Crypto trades every day (365/365).
     """
-    trading_days = int(days * 252 / 365)
-    return max(1, int(trading_days * _bars_per_day(timeframe, session)))
+    if asset_type == "crypto":
+        trading_days = days
+    else:
+        trading_days = int(days * 252 / 365)
+    return max(1, int(trading_days * _bars_per_day(timeframe, session, asset_type)))
 
 
-def days_from_bar_count(bars: int, timeframe: str, session: str = "RTH") -> int:
+def days_from_bar_count(bars: int, timeframe: str, session: str = "RTH",
+                        asset_type: str = "equity") -> int:
     """Convert a desired bar count to approximate calendar days."""
     import math
-    bpd = _bars_per_day(timeframe, session)
+    bpd = _bars_per_day(timeframe, session, asset_type)
     trading_days = math.ceil(bars / bpd)
+    if asset_type == "crypto":
+        return max(1, trading_days)
     return max(1, int(math.ceil(trading_days * 365 / 252)))
 
 
@@ -427,9 +535,11 @@ def load_latest_bars(
 
     Calculates the minimum number of days needed to cover `bars` rows
     based on the timeframe's bars-per-day rate and trading session.
+    Automatically detects crypto symbols (containing '/') and adjusts.
     """
     import math
-    bpd = _bars_per_day(timeframe, session)
+    asset_type = "crypto" if is_crypto(symbol) else "equity"
+    bpd = _bars_per_day(timeframe, session, asset_type)
     days = max(1, math.ceil(bars / bpd) + 1)  # +1 for safety margin
     return load_market_data(symbol, days=days, timeframe=timeframe, seed=seed,
                             feed=feed, session=session)

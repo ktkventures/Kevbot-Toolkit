@@ -322,7 +322,11 @@ class StrategyMonitor:
         self.symbol = strategy.get('symbol', 'SPY')
         self.tf_seconds = TIMEFRAME_SECONDS.get(
             strategy.get('timeframe', '1Min'), 60)
-        self.session = strategy.get('trading_session', 'RTH')
+        # Crypto symbols trade 24/7 — override session
+        if '/' in self.symbol:
+            self.session = '24/7'
+        else:
+            self.session = strategy.get('trading_session', 'RTH')
 
         # Resolve requirements (uses confluence mapping for trigger IDs)
         req_ind, req_interp, req_trig, params = (
@@ -1041,7 +1045,11 @@ except ImportError:
 
 
 def _is_in_session(timestamp: datetime, session: str) -> bool:
-    """Check if a UTC timestamp falls within the given trading session (ET)."""
+    """Check if a UTC timestamp falls within the given trading session (ET).
+    Returns True unconditionally for '24/7' session (crypto).
+    """
+    if session == '24/7':
+        return True
     from datetime import time as _time
     et_time = timestamp.astimezone(_ET_TZ).time()
     sh, sm, eh, em = _SESSION_HOURS.get(session, (9, 30, 16, 0))
@@ -1064,6 +1072,7 @@ class RalphEngine:
         self._running = False
         self._config: dict = {}
         self._stream_ref = None
+        self._crypto_stream_ref = None
         self._event_loop = None  # Set when async loop starts
         self._ws_confirmed = False  # True only after first trade received
         self._start_time: Optional[str] = None
@@ -1179,26 +1188,24 @@ class RalphEngine:
     def stop(self):
         """Signal the engine to stop."""
         self._running = False
-        stream = self._stream_ref
-        if stream:
-            try:
-                stream._should_run = False
-            except Exception:
-                pass
-            # Force-close the WebSocket to unblock the blocking _consume()
-            # await. Without this, the engine hangs until ping_timeout (180s).
-            # Use the stored event loop (runs in the engine thread, not caller).
-            try:
-                loop = self._event_loop
-                if loop and loop.is_running():
-                    loop.call_soon_threadsafe(
-                        loop.create_task, stream.close())
-            except Exception:
-                pass
+        # Close all active WebSocket streams
+        for stream in (self._stream_ref, self._crypto_stream_ref):
+            if stream:
+                try:
+                    stream._should_run = False
+                except Exception:
+                    pass
+                try:
+                    loop = self._event_loop
+                    if loop and loop.is_running():
+                        loop.call_soon_threadsafe(
+                            loop.create_task, stream.close())
+                except Exception:
+                    pass
 
     def _warmup_all(self):
         """Load historical data and initialize all monitors."""
-        from data_loader import load_market_data
+        from data_loader import load_market_data, is_crypto
 
         seen_tf: Dict[Tuple[str, int], pd.DataFrame] = {}
 
@@ -1217,6 +1224,8 @@ class RalphEngine:
                             break
 
                     try:
+                        # Crypto: session is irrelevant (24/7 market),
+                        # load_market_data auto-routes via is_crypto()
                         df = load_market_data(
                             sym, days=7, timeframe=tf_str,
                             feed='sip', session=session)
@@ -1431,62 +1440,124 @@ class RalphEngine:
             if remainder > 0 and self._running:
                 await asyncio.sleep(remainder)
 
+        # Shared trade handler for both stock and crypto streams
+        def _make_on_trade(symbol_list, is_crypto_stream=False):
+            confirmed = [False]
+            def on_trade(trade):
+                nonlocal backoff
+                if not self._running:
+                    return
+                if not confirmed[0]:
+                    confirmed[0] = True
+                    if not self._ws_confirmed:
+                        self._ws_confirmed = True
+                        backoff = 5
+                        self._write_status(running=True, connected=True)
+                    stream_type = "Crypto" if is_crypto_stream else "Stock"
+                    logger.info("%s WebSocket confirmed — receiving "
+                                "trades for %d symbols",
+                                stream_type, len(symbol_list))
+
+                # Skip trade condition filtering for crypto
+                # (crypto trades don't have CTA/UTP condition codes)
+                if not is_crypto_stream:
+                    conditions = getattr(trade, 'conditions', None) or []
+                    if conditions and EXCLUDED_TRADE_CONDITIONS.intersection(
+                            conditions):
+                        return
+
+                hub = self.hubs.get(trade.symbol)
+                if hub:
+                    hub.on_tick(
+                        price=float(trade.price),
+                        volume=int(trade.size)
+                        if hasattr(trade, 'size') else 1,
+                        timestamp=trade.timestamp,
+                        alert_callback=self._on_alert,
+                        config=self._config,
+                        auditor=self.auditor,
+                    )
+            return on_trade
+
         try:
             while self._running:
                 # Re-read symbols on each reconnect (may have changed
-                # via hot-reload)
-                symbols = list(self.hubs.keys())
-                self._subscribed_symbols = symbols
+                # via hot-reload). Split into stock vs crypto.
+                all_symbols = list(self.hubs.keys())
+                stock_symbols = [s for s in all_symbols if '/' not in s]
+                crypto_symbols = [s for s in all_symbols if '/' in s]
+                self._subscribed_symbols = all_symbols
 
                 try:
-                    stream = StockDataStream(
-                        api_key, secret_key, feed=data_feed,
-                        websocket_params={
-                            'ping_interval': 10,
-                            'ping_timeout': 180,
-                            'max_queue': 1024,
-                        })
-                    self._stream_ref = stream
-                    self._ws_confirmed = False
+                    tasks = []
 
-                    async def on_trade(trade):
-                        nonlocal backoff
-                        if not self._running:
-                            return
-                        if not self._ws_confirmed:
-                            self._ws_confirmed = True
-                            backoff = 5
-                            self._write_status(running=True, connected=True)
-                            logger.info("WebSocket confirmed — receiving "
-                                        "trades for %d symbols", len(symbols))
+                    # Stock stream (if any stock symbols)
+                    if stock_symbols:
+                        stream = StockDataStream(
+                            api_key, secret_key, feed=data_feed,
+                            websocket_params={
+                                'ping_interval': 10,
+                                'ping_timeout': 180,
+                                'max_queue': 1024,
+                            })
+                        self._stream_ref = stream
+                        self._ws_confirmed = False
 
-                        # Filter out trades with excluded condition codes
-                        # (odd lots, average price, out-of-sequence, etc.)
-                        # to match Alpaca's historical bar aggregation.
-                        conditions = getattr(trade, 'conditions', None) or []
-                        if conditions and EXCLUDED_TRADE_CONDITIONS.intersection(
-                                conditions):
-                            return
+                        on_stock_trade = _make_on_trade(stock_symbols,
+                                                        is_crypto_stream=False)
+                        stream.subscribe_trades(on_stock_trade, *stock_symbols)
+                        logger.info("Connecting to Alpaca STOCK stream for "
+                                    "%d symbols (backoff=%ds)…",
+                                    len(stock_symbols), backoff)
+                        tasks.append(_patched_run_forever(stream))
 
-                        hub = self.hubs.get(trade.symbol)
-                        if hub:
-                            hub.on_tick(
-                                price=float(trade.price),
-                                volume=int(trade.size)
-                                if hasattr(trade, 'size') else 1,
-                                timestamp=trade.timestamp,
-                                alert_callback=self._on_alert,
-                                config=self._config,
-                                auditor=self.auditor,
-                            )
+                    # Crypto stream (if any crypto symbols)
+                    if crypto_symbols:
+                        try:
+                            from alpaca.data.live import CryptoDataStream
+                        except ImportError:
+                            logger.error("CryptoDataStream not available in "
+                                         "alpaca-py — crypto symbols skipped")
+                            crypto_symbols = []
 
-                    stream.subscribe_trades(on_trade, *symbols)
-                    logger.info("Connecting to Alpaca stream for %d symbols "
-                                "(backoff=%ds)…", len(symbols), backoff)
+                    if crypto_symbols:
+                        crypto_stream = CryptoDataStream(
+                            api_key, secret_key,
+                            websocket_params={
+                                'ping_interval': 10,
+                                'ping_timeout': 180,
+                                'max_queue': 1024,
+                            })
+                        self._crypto_stream_ref = crypto_stream
+                        if not stock_symbols:
+                            self._stream_ref = crypto_stream
+                            self._ws_confirmed = False
 
-                    # Use patched _run_forever that properly
-                    # propagates connection limit errors
-                    await _patched_run_forever(stream)
+                        on_crypto_trade = _make_on_trade(crypto_symbols,
+                                                         is_crypto_stream=True)
+                        crypto_stream.subscribe_trades(on_crypto_trade,
+                                                       *crypto_symbols)
+                        logger.info("Connecting to Alpaca CRYPTO stream for "
+                                    "%d symbols (backoff=%ds)…",
+                                    len(crypto_symbols), backoff)
+                        tasks.append(_patched_run_forever(crypto_stream))
+
+                    if not tasks:
+                        logger.warning("No symbols to subscribe — sleeping")
+                        await _interruptible_sleep(10)
+                        continue
+
+                    # Run all streams concurrently; if any fails, all
+                    # are cancelled and we reconnect
+                    done, pending = await asyncio.wait(
+                        [asyncio.ensure_future(t) for t in tasks],
+                        return_when=asyncio.FIRST_EXCEPTION)
+                    for p in pending:
+                        p.cancel()
+                    # Re-raise the first exception
+                    for d in done:
+                        if d.exception():
+                            raise d.exception()
 
                 except ValueError as e:
                     self._ws_confirmed = False
@@ -1661,7 +1732,9 @@ class RalphEngine:
                     logger.debug("Pickle enrichment error for %s/%s: %s",
                                  sym, tf_seconds, e)
 
-                pkl_path = _SCRIPT_DIR / f"live_data_{sym}_{tf_seconds}.pkl"
+                # Sanitize symbol for filesystem (BTC/USD → BTC_USD)
+                _safe_sym = sym.replace('/', '_')
+                pkl_path = _SCRIPT_DIR / f"live_data_{_safe_sym}_{tf_seconds}.pkl"
                 tmp_path = str(pkl_path) + ".tmp"
                 try:
                     with open(tmp_path, 'wb') as f:
