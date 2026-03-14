@@ -2872,6 +2872,37 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     TRADE_WINDOW = 2000
     df_for_trades = df_live.iloc[-TRADE_WINDOW:] if len(df_live) > TRADE_WINDOW else df_live
 
+    # ── Multi-Timeframe: add secondary TF columns for confluence ──────
+    from data_loader import (get_required_tfs_from_confluence, get_tf_from_label,
+                             resample_to_timeframe, get_tf_label)
+    _req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    if _req_labels and len(df_for_trades) > 0:
+        _interp_keys = list(INTERPRETERS.keys())
+        from confluence_groups import get_enabled_groups
+        _enabled_cgroups = get_enabled_groups(load_confluence_groups())
+        for _lbl in _req_labels:
+            try:
+                _sec_tf = get_tf_from_label(_lbl)
+                _sec_df = resample_to_timeframe(
+                    df_for_trades[['open', 'high', 'low', 'close', 'volume']].copy(),
+                    _sec_tf)
+                if len(_sec_df) == 0:
+                    continue
+                _sec_df = run_all_indicators(_sec_df)
+                for _cg in _enabled_cgroups:
+                    _sec_df = run_indicators_for_group(_sec_df, _cg)
+                _sec_df = run_all_interpreters(_sec_df)
+                _tf_label = get_tf_label(_sec_tf)
+                for _ik in _interp_keys:
+                    if _ik in _sec_df.columns:
+                        _suffixed = f"{_ik}__{_tf_label}"
+                        df_for_trades[_suffixed] = _sec_df[_ik].reindex(
+                            df_for_trades.index, method='ffill')
+            except Exception:
+                pass
+
+    _sec_tf_map = get_secondary_tf_map(df_for_trades)
+
     # Run unified engine on recent data — same engine used by all other charts
     # last_bar_partial=True suppresses bar-close signals on the current
     # forming candle so markers don't appear prematurely.
@@ -2881,6 +2912,7 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
     try:
         trades, enriched_df = _live_backtest(
             df_for_trades, strat, general_packs=enabled_gen,
+            secondary_tf_map=_sec_tf_map if _sec_tf_map else None,
             include_open_position=True, last_bar_partial=True)
     except Exception:
         trades = _unified_trades(df_for_trades, strat, last_bar_partial=True)
