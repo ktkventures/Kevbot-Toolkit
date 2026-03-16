@@ -10108,9 +10108,14 @@ def render_mass_strategy_builder():
                 all_entry_long = get_entry_triggers('LONG', enabled_groups)
                 all_entry_short = get_entry_triggers('SHORT', enabled_groups)
                 all_entries = {**all_entry_long, **all_entry_short}
+                _all_tdefs_entry = get_all_triggers(enabled_groups)
                 selected_entries = []
                 for cid, name in all_entries.items():
-                    if st.checkbox(name, value=cid in mc.get('entry_triggers', []),
+                    _tdef = _all_tdefs_entry.get(cid)
+                    _exec = _tdef.execution if _tdef else 'bar_close'
+                    _tag = _execution_tag(cid, _exec)
+                    if st.checkbox(f"{name} {_tag}",
+                                   value=cid in mc.get('entry_triggers', []),
                                    key=f"mass_entry_{cid}"):
                         selected_entries.append(cid)
                 mc['entry_triggers'] = selected_entries
@@ -10120,7 +10125,10 @@ def render_mass_strategy_builder():
                 st.markdown("**Select exit triggers to test**")
                 # Use all triggers (same as Strategy Builder exit picker)
                 _all_tdefs = get_all_triggers(enabled_groups)
-                all_exits = {tid: f"{tdef.name}" for tid, tdef in _all_tdefs.items()}
+                all_exits = {}
+                for tid, tdef in _all_tdefs.items():
+                    _tag = _execution_tag(tid, tdef.execution)
+                    all_exits[tid] = f"{tdef.name} {_tag}"
                 selected_exits = []
                 for cid, name in all_exits.items():
                     if st.checkbox(name, value=cid in mc.get('exit_triggers', []),
