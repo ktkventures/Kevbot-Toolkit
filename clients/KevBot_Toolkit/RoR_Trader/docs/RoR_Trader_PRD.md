@@ -2623,6 +2623,23 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - [x] `run_trades_from_cache()` checks if the requested entry trigger exists in the cache. If not (cross-pack trigger), raises `ValueError` so `_unified_trades` falls back to full backtest. Previously, cross-pack triggers silently produced 0 trades because their trigger booleans weren't in the cache.
 - [x] Analyzer results wrapped in scrollable container (`st.container(height=480)`) to prevent pushing trade list off-screen.
 
+### Cross-TF Look-Ahead Bias Fix & Confluence Heatmap (2026-03-16)
+
+**Cross-TF confluence look-ahead bias fix (app.py, prepare_dataframe):**
+- [x] Secondary TF interpreter states are now **shifted forward by one period** before forward-filling to the primary TF index. Previously, a 15M bar's interpreter state was visible to 1M bars at the *start* of the 15M period (look-ahead). Now it only becomes visible after the 15M bar closes — matching Ralph engine live behaviour.
+- [x] Speculative (unshifted) columns (`_spec_{INTERP}__{tf_label}`) stored alongside shifted columns for heatmap yellow detection.
+- [x] `get_secondary_tf_map()` filters out `_spec_` columns so they don't affect trade gating.
+- **Impact:** Backtest cross-TF confluence gating now matches live engine exactly. Strategies with cross-TF confluence conditions may show fewer trades in backtests (previously inflated by look-ahead).
+
+**Confluence heatmap pane (app.py, build_confluence_heatmap_pane):**
+- [x] New secondary chart pane showing per-bar confluence state as a color-coded heatmap below the price chart.
+- [x] Each row = one confluence condition (same-TF, cross-TF, or general pack). Colors: green (met/confirmed), red (not met), yellow (speculative — met on forming bar but not on previous closed bar, cross-TF last bar only).
+- [x] Stacked Histogram series per condition with thin separator lines between rows.
+- [x] Floating condition labels in right margin — invisible Line series with `lastValueVisible=true` and `title` set to condition name + needed state (e.g., "EMA_STACK (15M): BULL STACK").
+- [x] `_render_heatmap_legend()` — compact caption below chart mapping row numbers to condition names.
+- [x] Wired into live chart (`last_bar_partial=True` for yellow), backtest detail, and forward test chart views.
+- **Design note:** Heatmap colors reflect each bar's *own* closed interpreter state. Entries during a bar are gated by the *previous* bar's confirmed state, so an entry can legitimately appear on a red bar if the prior bar was green.
+
 ---
 
 ### Planned: Strategy Builder Performance Optimization
