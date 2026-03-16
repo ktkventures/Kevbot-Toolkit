@@ -2653,6 +2653,70 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - [x] Display-only actions (confluence add/remove, filter apply, auto-search toggle) now use cached data instantly — no spinner, no delay.
 - [x] Cache cleared on strategy edit load and new strategy creation to ensure fresh data.
 
+### Phase 33: Mass Strategy Builder — Bulk Strategy Discovery & Optimization
+
+**Goal:** Allow users to test thousands of strategy combinations across multiple tickers, timeframes, triggers, confluences, and risk profiles in a single run. Surface the best-performing strategies as saveable cards, enabling rapid portfolio construction from the cream of the crop.
+
+**Two new pages:**
+1. **Mass Strategy Builder** — configure search parameters, run analysis, monitor progress
+2. **Mass Strategy Results** — saved search history, revisit past runs, review/save/pass on results
+
+**UI Layout (Mass Strategy Builder page):**
+
+| Section | Description |
+|---------|-------------|
+| **1. Header Row** | Search name (text input) + Save button |
+| **2. Config Row** | `Select Tickers` · `Select Variables` · `Select Required Performance` · **`Analyze`** (red action button). Each opens a modal/popover. |
+| **3. Preview + Progress** | Combination count preview, estimated time, progress bar during analysis |
+| **4. Post-Analysis Filters** | Sort by + KPI filter row (win rate, PF, daily R, R², trades, etc.) |
+| **5. Result Cards** | Strategy cards with KPIs, equity curve sparkline, config summary. Buttons: `Save to My Strategies` (marks card as saved) · `Pass` (grays out, reversible) |
+
+**Select Variables modal tabs:**
+- **Date Range** — lookback days / date range picker
+- **Timeframes** — checkboxes for each available TF (1Min, 5Min, 15Min, etc.)
+- **Direction** — Long, Short, or both
+- **Entry Triggers** — checkboxes from enabled confluence packs
+- **Exit Triggers** — checkboxes + depth selector (best 1 / best 2 / best 3 / best 4 combined). Default: best 1 (test individually)
+- **TF Confluences** — checkboxes from enabled confluence packs + depth selector (max factors 1–4)
+- **General Confluences** — checkboxes from enabled general packs
+- **Stop Loss / Take Profit** — checkboxes from enabled Risk Management packs (each RM pack defines its own stop/target config)
+
+**Combination engine:**
+- Groups by (symbol, timeframe, session) to minimize `prepare_data_with_indicators()` calls (one per group, cached)
+- Within each group: precompute `bar_cache` once, then iterate over (direction × entry × exit_combo × RM_pack) using fast `run_trades_from_cache()` replay
+- For each base config that meets minimum trade count: auto-search TF + General confluences up to selected depth
+- Pre-filter at each level by Required Performance thresholds
+- Store top N results per search (configurable, default ~500)
+
+**Background execution:**
+- Click Analyze → job starts in background thread
+- Progress written to DB (cloud) or JSON file (desktop)
+- User can navigate away; results appear on Mass Strategy Results page when complete
+- Railway: throttle concurrent backtests to avoid OOM
+
+**Result cards include:**
+- KPIs: trades, win rate, PF, avg R, total R, daily R, R², max R drawdown
+- Equity curve sparkline (cumulative R series — small data, just R-multiples per trade)
+- Config summary: ticker, TF, direction, entry trigger, exit triggers, confluences, stop/target
+- `Save to My Strategies` button → creates a full strategy in My Strategies (identical to Strategy Builder output)
+- `Pass` toggle → grays out card (reversible visual indicator)
+
+**Mass Strategy Results page:**
+- List of saved searches with name, date, status (running/completed), result count
+- Click to expand → shows result cards with same layout as builder
+- Filter/sort controls persist per search
+
+**Phases:**
+
+| Sub-Phase | Scope |
+|-----------|-------|
+| **33A** | Data model + storage (mass_searches table/JSON, result schema). UI skeleton for both pages. Select Tickers + Select Variables modals. Combination count preview. |
+| **33B** | Combination engine — group-by optimization, bar_cache iteration, auto-search confluences within each combo, Required Performance pre-filter. |
+| **33C** | Background execution + progress tracking, Railway throttling, partial results as they arrive. |
+| **33D** | Result cards — equity curve sparklines, Save to My Strategies, Pass toggle, post-analysis KPI filters/sort, search history on Results page. |
+
+**Full implementation spec:** `docs/Mass_Strategy_Builder_Spec.md`
+
 ---
 
 ## Appendix A: Interpreter Examples
