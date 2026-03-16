@@ -695,12 +695,25 @@ def prepare_data_with_indicators(symbol: str, days: int = 30, seed: int = 42,
                     sec_df = run_indicators_for_group(sec_df, group)
                 sec_df = run_all_interpreters(sec_df)
 
-                # Forward-fill interpreter STATE columns to primary TF index
+                # Forward-fill interpreter STATE columns to primary TF index.
+                # Shift the secondary TF index forward by one period so that
+                # a 15M bar's state only becomes visible to 1M bars AFTER the
+                # 15M bar closes — matching live engine (Ralph) behaviour and
+                # eliminating look-ahead bias in cross-TF confluence gating.
                 tf_label = get_tf_label(sec_tf)
+                from unified_engine import TIMEFRAME_SECONDS
+                period_seconds = TIMEFRAME_SECONDS.get(sec_tf, 60)
+                period_offset = pd.Timedelta(seconds=period_seconds)
                 for interp_col in interp_keys:
                     if interp_col in sec_df.columns:
                         suffixed = f"{interp_col}__{tf_label}"
-                        df[suffixed] = sec_df[interp_col].reindex(df.index, method='ffill')
+                        shifted = sec_df[interp_col].copy()
+                        shifted.index = shifted.index + period_offset
+                        df[suffixed] = shifted.reindex(df.index, method='ffill')
+                        # Keep unshifted (speculative) values for heatmap
+                        # yellow detection on the forming bar
+                        df[f"_spec_{interp_col}__{tf_label}"] = sec_df[interp_col].reindex(
+                            df.index, method='ffill')
             except Exception:
                 # Skip this secondary TF if resampling fails
                 pass
@@ -716,7 +729,7 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
     """
     tf_map: dict = {}
     for col in df.columns:
-        if "__" in col:
+        if "__" in col and not col.startswith("_spec_"):
             parts = col.rsplit("__", 1)
             if len(parts) == 2:
                 tf_label = parts[1]
@@ -2937,6 +2950,17 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
 
     osc_panes = build_secondary_panes(df_display, relevant_groups)
 
+    # Confluence heatmap pane (appended after oscillator panes)
+    _heatmap_pane = build_confluence_heatmap_pane(
+        df_display, strat, last_bar_partial=True)
+    _heatmap_labels = None
+    if _heatmap_pane:
+        _heatmap_labels = _heatmap_pane.pop('_heatmap_labels', None)
+        if osc_panes:
+            osc_panes.append(_heatmap_pane)
+        else:
+            osc_panes = [_heatmap_pane]
+
     # Status bar
     last_ts = df_display.index[-1]
     last_close = float(df_display.iloc[-1]['close'])
@@ -2967,6 +2991,8 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
         band_fills=band_fills if band_fills else None,
         indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
     )
+    if _heatmap_labels:
+        _render_heatmap_legend(_heatmap_labels)
 
     # Load secondary TF interpreter states for cross-TF conditions
     sec_tf_states = _load_secondary_tf_states(strat)
@@ -7611,6 +7637,11 @@ def render_live_backtest(strat: dict):
             indicator_line_styles.update(get_line_styles_for_group(group))
 
         osc_panes = build_secondary_panes(df, relevant_groups)
+        _hm = build_confluence_heatmap_pane(df, strat)
+        _hm_labels = None
+        if _hm:
+            _hm_labels = _hm.pop('_heatmap_labels', None)
+            osc_panes = (osc_panes or []) + [_hm]
         render_chart_with_candle_selector(
             df, trades, strat,
             show_indicators=show_indicators,
@@ -7620,6 +7651,8 @@ def render_live_backtest(strat: dict):
             band_fills=band_fills if band_fills else None,
             indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
         )
+        if _hm_labels:
+            _render_heatmap_legend(_hm_labels)
 
         render_backtest_trade_table(trades)
 
@@ -8060,6 +8093,11 @@ def render_forward_test_view(strat: dict):
                 indicator_line_styles.update(get_line_styles_for_group(group))
 
             osc_panes = build_secondary_panes(df, relevant_groups)
+            _hm = build_confluence_heatmap_pane(df, strat)
+            _hm_labels = None
+            if _hm:
+                _hm_labels = _hm.pop('_heatmap_labels', None)
+                osc_panes = (osc_panes or []) + [_hm]
             render_chart_with_candle_selector(
                 df, all_trades, strat,
                 show_indicators=show_indicators,
@@ -8069,6 +8107,8 @@ def render_forward_test_view(strat: dict):
                 band_fills=band_fills if band_fills else None,
                 indicator_line_styles=indicator_line_styles if indicator_line_styles else None,
             )
+            if _hm_labels:
+                _render_heatmap_legend(_hm_labels)
         else:
             st.info("Price chart not available for webhook strategies (no market data).")
 
@@ -13283,6 +13323,159 @@ def build_secondary_panes(df: pd.DataFrame, groups: list) -> list:
                 panes.append(pane)
                 rendered_user_packs.add(group.base_template)
     return panes
+
+
+def build_confluence_heatmap_pane(
+    df: pd.DataFrame,
+    strategy: dict,
+    last_bar_partial: bool = False,
+) -> dict | None:
+    """Build a lightweight-charts pane showing per-bar confluence state as a heatmap.
+
+    Each row represents one confluence condition. Colors:
+    - Green: condition met (confirmed on closed bar)
+    - Red: condition not met
+    - Yellow: met on forming bar but not on previous closed bar (cross-TF, last bar only)
+
+    Returns a pane dict for secondary_panes, or None if no conditions.
+    """
+    conditions = list(strategy.get('confluence', []))
+    conditions += list(strategy.get('general_confluences', []))
+    if not conditions:
+        return None
+
+    from data_loader import get_tf_label as _gtl
+    primary_tf = _gtl(strategy.get('timeframe', '1Min')).lower()
+    n = len(conditions)
+
+    plot_df = df.reset_index()
+    time_col = plot_df.columns[0]
+    plot_df['_time'] = _to_chart_unix(plot_df[time_col])
+    n_bars = len(plot_df)
+
+    GREEN = '#4CAF50'
+    RED = 'rgba(244,67,54,0.7)'
+    YELLOW = '#FFC107'
+
+    series = []
+    condition_labels = []
+
+    # Build one Histogram series per condition.
+    # Tallest value drawn first (back), shortest drawn last (front).
+    # Visual result: condition 0 at top, condition N-1 at bottom.
+    for idx, record in enumerate(conditions):
+        parts = record.split('-', 2)
+        if len(parts) < 3:
+            continue
+        rec_tf, interp_key, needed_state = parts
+
+        is_general = rec_tf == 'GEN'
+        is_cross_tf = (not is_general
+                       and rec_tf.lower() != primary_tf)
+
+        if is_general:
+            col_name = f"GP_{interp_key}"
+            spec_col = None
+        elif is_cross_tf:
+            col_name = f"{interp_key}__{rec_tf.lower()}"
+            spec_col = f"_spec_{interp_key}__{rec_tf.lower()}"
+        else:
+            col_name = interp_key
+            spec_col = None
+
+        # Histogram value: tallest for first condition (drawn in back)
+        hist_value = n - idx
+
+        data = []
+        for i, (_, row) in enumerate(plot_df.iterrows()):
+            t = int(row['_time'])
+            val = row.get(col_name)
+            is_met = (val is not None and pd.notna(val)
+                      and str(val) == needed_state)
+
+            color = GREEN if is_met else RED
+
+            # Yellow: last bar, cross-TF only, speculative met but confirmed not met
+            if (last_bar_partial and i == n_bars - 1
+                    and is_cross_tf and spec_col and not is_met):
+                spec_val = row.get(spec_col)
+                if (spec_val is not None and pd.notna(spec_val)
+                        and str(spec_val) == needed_state):
+                    color = YELLOW
+
+            data.append({"time": t, "value": hist_value, "color": color})
+
+        if data:
+            if is_general:
+                label = interp_key.replace('_', ' ').title()
+            elif is_cross_tf:
+                label = f"{interp_key} ({rec_tf.upper()})"
+            else:
+                label = interp_key
+            condition_labels.append(label)
+            series.append({
+                "type": "Histogram",
+                "data": data,
+                "options": {
+                    "priceLineVisible": False,
+                    "lastValueVisible": False,
+                    "title": "",
+                }
+            })
+
+    if not series:
+        return None
+
+    # Add thin separator lines between condition rows
+    if n > 1 and series:
+        first_time = series[0]["data"][0]["time"]
+        last_time = series[0]["data"][-1]["time"]
+        for sep_level in range(1, n):
+            series.append({
+                "type": "Line",
+                "data": [
+                    {"time": first_time, "value": sep_level},
+                    {"time": last_time, "value": sep_level},
+                ],
+                "options": {
+                    "color": "rgba(80,80,80,0.8)",
+                    "lineWidth": 1,
+                    "lineStyle": 0,
+                    "priceLineVisible": False,
+                    "crosshairMarkerVisible": False,
+                    "lastValueVisible": False,
+                    "title": "",
+                }
+            })
+
+    height = max(60, 25 * n + 20)
+
+    return {
+        "chart": {
+            "layout": {
+                "background": {"color": "#1E1E1E"},
+                "textColor": "#DDD",
+            },
+            "grid": {
+                "vertLines": {"color": "#2B2B2B"},
+                "horzLines": {"color": "transparent"},
+            },
+            "rightPriceScale": {"visible": False},
+            "height": height,
+            "crosshair": {"mode": 0},
+        },
+        "series": series,
+        "_heatmap_labels": condition_labels,
+    }
+
+
+def _render_heatmap_legend(labels: list):
+    """Render a compact legend below the confluence heatmap."""
+    if not labels:
+        return
+    parts = [f"**{i+1}.** {lbl}" for i, lbl in enumerate(labels)]
+    legend_text = " · ".join(parts)
+    st.caption(f"Confluence Heatmap (top→bottom): {legend_text}")
 
 
 def _build_generic_oscillator_pane(df: pd.DataFrame, group: ConfluenceGroup) -> dict | None:
