@@ -574,6 +574,13 @@ def start_mass_search_async(search_id: str, search_config: dict):
     Progress is written to _active_searches (in-memory, polled by UI)
     and periodically flushed to the database.
     """
+    # Capture the current user context so the background thread can
+    # load user-specific packs from the database (confluence groups,
+    # RM packs, general packs, strategies).
+    from db import get_current_user_id, get_current_token
+    _user_id = get_current_user_id()
+    _token = get_current_token()
+
     with _search_lock:
         _active_searches[search_id] = {
             'status': 'running',
@@ -587,6 +594,12 @@ def start_mass_search_async(search_id: str, search_config: dict):
 
     def _worker():
         try:
+            # Re-establish user context on this thread so DB queries
+            # (confluence groups, RM packs, etc.) return user's data.
+            if _user_id and _token:
+                from db import set_current_user
+                set_current_user(_user_id, _token)
+
             from db import save_mass_search, update_mass_search
 
             last_db_flush = _time.monotonic()
