@@ -250,7 +250,9 @@ def run_mass_search(
         get_enabled_groups, get_all_triggers, load_confluence_groups,
     )
     from risk_management_packs import load_risk_management_packs
-    from unified_engine import run_unified_backtest
+    from unified_engine import (
+        run_unified_backtest, precompute_bar_cache, run_trades_from_cache,
+    )
     import general_packs as gp_module
 
     enabled_groups = get_enabled_groups(load_confluence_groups())
@@ -291,19 +293,45 @@ def run_mass_search(
     if not rm_pack_ids:
         rm_pack_ids = ['_default']
 
+    # Pre-resolve ALL trigger base IDs for the mega-config
+    all_entry_bases = {}
+    all_entry_names = {}
+    for cid in entry_cids:
+        tdef = all_trigger_defs.get(cid)
+        if tdef:
+            all_entry_bases[cid] = get_base_trigger_id(cid)
+            all_entry_names[cid] = tdef.name
+
+    all_exit_bases = {}
+    all_exit_names = {}
+    for cid in exit_cids_raw:
+        tdef = all_trigger_defs.get(cid)
+        if tdef:
+            all_exit_bases[cid] = get_base_trigger_id(cid)
+            all_exit_names[cid] = tdef.name
+
+    # Collect ALL unique base trigger IDs for the mega bar_cache
+    _all_base_triggers = set(all_entry_bases.values()) | set(all_exit_bases.values())
+
     # Count total base configs for progress
     total_steps = (len(tickers) * len(timeframes) * len(directions)
                    * len(entry_cids) * len(exit_combos) * len(rm_pack_ids))
     step = 0
     results = []
+    min_trades = required_perf.get('min_trades', 10)
+
+    logger.info("Mass search: %d tickers × %d TFs × %d dirs × %d entries "
+                "× %d exit_combos × %d RM = %d base configs",
+                len(tickers), len(timeframes), len(directions),
+                len(entry_cids), len(exit_combos), len(rm_pack_ids),
+                total_steps)
 
     for symbol in tickers:
-        # Detect asset type
         asset_type = 'crypto' if '/' in symbol else 'equity'
         sym_session = '24/7' if asset_type == 'crypto' else session
 
         for tf in timeframes:
-            # Level 1: Load data (cached by @st.cache_data)
+            # ── Level 1: Load data (one per symbol+TF, cached) ──
             try:
                 from app import _get_secondary_tfs
                 sec_tfs = _get_secondary_tfs(tf)
@@ -313,7 +341,7 @@ def run_mass_search(
                     timeframe=tf, data_feed=data_feed,
                     session=sym_session, secondary_tfs=sec_tfs)
             except Exception as exc:
-                logger.warning("Mass search: failed to load %s/%s: %s",
+                logger.warning("Mass search: data load failed %s/%s: %s",
                                symbol, tf, exc)
                 step += (len(directions) * len(entry_cids)
                          * len(exit_combos) * len(rm_pack_ids))
@@ -322,6 +350,7 @@ def run_mass_search(
                 continue
 
             if len(df) == 0:
+                logger.info("Mass search: %s/%s — 0 bars, skipping", symbol, tf)
                 step += (len(directions) * len(entry_cids)
                          * len(exit_combos) * len(rm_pack_ids))
                 if progress_callback:
@@ -330,6 +359,45 @@ def run_mass_search(
 
             sec_tf_map = get_secondary_tf_map(df)
             period_trading_days = count_trading_days(df)
+            logger.info("Mass search: %s/%s — %d bars loaded", symbol, tf, len(df))
+
+            # ── Level 1b: Precompute BROAD bar_cache for ALL triggers ──
+            # Build a mega-config referencing all selected triggers so the
+            # cache contains every trigger boolean. run_trades_from_cache()
+            # then replays in milliseconds per combo.
+            _first_entry = list(all_entry_bases.values())[0] if all_entry_bases else ''
+            _first_entry_cid = list(all_entry_bases.keys())[0] if all_entry_bases else ''
+            _all_exit_base_list = list(all_exit_bases.values())
+            _all_exit_cid_list = list(all_exit_bases.keys())
+            mega_config = {
+                'symbol': symbol,
+                'timeframe': tf,
+                'direction': 'LONG',
+                'trading_session': sym_session,
+                'entry_trigger': _first_entry,
+                'entry_trigger_confluence_id': _first_entry_cid,
+                'exit_triggers': _all_exit_base_list,
+                'exit_trigger_confluence_ids': _all_exit_cid_list,
+                'exit_trigger': _all_exit_base_list[0] if _all_exit_base_list else '',
+                'exit_trigger_confluence_id': _all_exit_cid_list[0] if _all_exit_cid_list else '',
+                'stop_config': {"method": "atr", "atr_mult": 1.5},
+                'target_config': None,
+                'bar_count_exit': None,
+            }
+
+            bar_cache = None
+            cache_meta = None
+            try:
+                bar_cache, cache_meta = precompute_bar_cache(
+                    df, mega_config, general_packs=enabled_gen,
+                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                _avail = cache_meta.get('available_triggers', set())
+                logger.info("Mass search: %s/%s — bar_cache ready, %d triggers: %s",
+                            symbol, tf, len(_avail),
+                            sorted(_avail)[:10])
+            except Exception as exc:
+                logger.warning("Mass search: bar_cache failed %s/%s: %s — "
+                               "falling back to full backtests", symbol, tf, exc)
 
             for direction in directions:
                 for entry_cid in entry_cids:
@@ -337,27 +405,29 @@ def run_mass_search(
                     if not entry_tdef:
                         step += len(exit_combos) * len(rm_pack_ids)
                         continue
-                    entry_base = get_base_trigger_id(entry_cid)
-                    entry_name = entry_tdef.name
+                    entry_base = all_entry_bases.get(entry_cid, '')
+                    entry_name = all_entry_names.get(entry_cid, '?')
 
-                    # Check direction compatibility
+                    # Direction compatibility
                     if (entry_tdef.direction != 'BOTH'
                             and entry_tdef.direction != direction):
                         step += len(exit_combos) * len(rm_pack_ids)
                         continue
 
                     for exit_combo in exit_combos:
-                        # Resolve exit trigger details
                         exit_bases = []
                         exit_names = []
+                        exit_cid_list = []
                         valid_exits = True
                         for ecid in exit_combo:
-                            etdef = all_trigger_defs.get(ecid)
-                            if not etdef:
+                            eb = all_exit_bases.get(ecid)
+                            en = all_exit_names.get(ecid)
+                            if eb is None:
                                 valid_exits = False
                                 break
-                            exit_bases.append(get_base_trigger_id(ecid))
-                            exit_names.append(etdef.name)
+                            exit_bases.append(eb)
+                            exit_names.append(en)
+                            exit_cid_list.append(ecid)
                         if not valid_exits:
                             step += len(rm_pack_ids)
                             continue
@@ -366,7 +436,6 @@ def run_mass_search(
                             step += 1
                             label = f"{symbol} {tf} {direction}"
 
-                            # Resolve stop/target from RM pack
                             rm_pack = rm_pack_map.get(rm_id)
                             if rm_pack:
                                 stop_config = rm_pack.get_stop_config()
@@ -376,13 +445,12 @@ def run_mass_search(
                                 target_config = {"method": "risk_reward",
                                                  "rr_ratio": 2.0}
 
-                            # Build strategy config (NO confluences — base run)
                             config = build_strategy_config(
                                 symbol=symbol, timeframe=tf,
                                 direction=direction, session=sym_session,
                                 entry_cid=entry_cid, entry_base=entry_base,
                                 entry_name=entry_name,
-                                exit_cids=list(exit_combo),
+                                exit_cids=exit_cid_list,
                                 exit_bases=exit_bases,
                                 exit_names=exit_names,
                                 bar_count_exit=None,
@@ -392,15 +460,21 @@ def run_mass_search(
                                 asset_type=asset_type,
                             )
 
-                            # Level 2: Run base backtest (no confluences)
+                            # ── Level 2: Run trades (bar_cache replay or full) ──
                             try:
-                                trades_df, _ = run_unified_backtest(
-                                    df, config,
-                                    general_packs=enabled_gen,
-                                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                                if bar_cache and cache_meta:
+                                    trades_df = run_trades_from_cache(
+                                        bar_cache, config, cache_meta)
+                                else:
+                                    trades_df, _ = run_unified_backtest(
+                                        df, config,
+                                        general_packs=enabled_gen,
+                                        secondary_tf_map=sec_tf_map if sec_tf_map else None)
                             except Exception as exc:
-                                logger.warning("Mass search: backtest failed %s: %s",
-                                               label, exc)
+                                logger.warning("Mass search: backtest failed "
+                                               "%s %s %s entry=%s: %s",
+                                               symbol, tf, direction,
+                                               entry_base, exc)
                                 if progress_callback:
                                     progress_callback(step, total_steps, label)
                                 continue
@@ -409,21 +483,19 @@ def run_mass_search(
                                 trades_df = pd.DataFrame()
 
                             n_trades = len(trades_df)
-                            min_trades = required_perf.get('min_trades', 10)
 
                             if n_trades < min_trades:
                                 if progress_callback:
                                     progress_callback(step, total_steps, label)
                                 continue
 
-                            # Check base performance (no confluences)
+                            # KPIs on base trades (no confluence filter)
                             base_kpis = calculate_kpis(
                                 trades_df,
                                 starting_balance=config.get('starting_balance', 10000),
                                 risk_per_trade=config.get('risk_per_trade', 100),
                                 total_trading_days=period_trading_days)
 
-                            # Store base result if it meets performance
                             if meets_required_performance(base_kpis, required_perf):
                                 results.append({
                                     'config': dict(config),
@@ -433,7 +505,7 @@ def run_mass_search(
                                     'confluence_str': 'None',
                                 })
 
-                            # Level 3: Auto-search confluences
+                            # ── Level 3: Auto-search confluences ──
                             if ('confluence_records' in trades_df.columns
                                     and n_trades >= min_trades):
                                 try:
@@ -459,14 +531,12 @@ def run_mass_search(
                                                 continue
                                             combo_set = row['combination']
                                             conf_config = dict(config)
-                                            # Split into TF and General
                                             tf_confs = [c for c in combo_set
                                                         if not c.startswith('GEN-')]
                                             gen_confs = [c for c in combo_set
                                                          if c.startswith('GEN-')]
                                             conf_config['confluence'] = tf_confs
                                             conf_config['general_confluences'] = gen_confs
-                                            # Re-filter trades for equity curve
                                             mask = trades_df['confluence_records'].apply(
                                                 lambda r: isinstance(r, set)
                                                 and combo_set.issubset(r))
@@ -487,6 +557,10 @@ def run_mass_search(
 
                             if progress_callback:
                                 progress_callback(step, total_steps, label)
+
+            # Release bar_cache after this (symbol, TF) group to free memory
+            bar_cache = None
+            cache_meta = None
 
     # Sort by daily_r descending, trim to max_results
     results.sort(key=lambda r: r.get('kpis', {}).get('daily_r', -999),
