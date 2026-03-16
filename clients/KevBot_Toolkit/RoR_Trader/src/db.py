@@ -825,3 +825,150 @@ def get_monitored_strategies_db(user_id: str) -> list:
 
     _log.info("[%s] get_monitored result: %d strategies", user_id[:8], len(monitored))
     return monitored
+
+
+# ============================================================
+# Mass Search CRUD
+# ============================================================
+
+_MASS_SEARCHES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "config", "mass_searches.json")
+
+
+def _load_mass_searches_file() -> list:
+    if os.path.exists(_MASS_SEARCHES_FILE):
+        try:
+            with open(_MASS_SEARCHES_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception):
+            pass
+    return []
+
+
+def _save_mass_searches_file(searches: list):
+    os.makedirs(os.path.dirname(_MASS_SEARCHES_FILE), exist_ok=True)
+    with open(_MASS_SEARCHES_FILE, 'w') as f:
+        json.dump(searches, f, indent=2, default=str)
+
+
+def load_mass_searches() -> list:
+    """Load all mass searches for the current user."""
+    if USE_DB:
+        try:
+            client = get_client()
+            result = client.table('mass_searches') \
+                .select('*') \
+                .order('created_at', desc=True) \
+                .execute()
+            return [r['config_data'] if 'config_data' in r else r
+                    for r in (result.data or [])]
+        except Exception as e:
+            logger.warning("load_mass_searches DB error: %s", e)
+            return []
+    return _load_mass_searches_file()
+
+
+def get_mass_search(search_id: str) -> dict | None:
+    """Get a single mass search by ID."""
+    if USE_DB:
+        try:
+            client = get_client()
+            result = client.table('mass_searches') \
+                .select('*') \
+                .eq('id', search_id) \
+                .maybe_single() \
+                .execute()
+            if result.data:
+                return result.data.get('config_data', result.data)
+            return None
+        except Exception as e:
+            logger.warning("get_mass_search DB error: %s", e)
+            return None
+    for s in _load_mass_searches_file():
+        if s.get('id') == search_id:
+            return s
+    return None
+
+
+def save_mass_search(search: dict) -> str:
+    """Save (upsert) a mass search. Returns the search ID."""
+    search_id = search.get('id', '')
+    now = datetime.now(timezone.utc).isoformat()
+    search['updated_at'] = now
+    if not search.get('created_at'):
+        search['created_at'] = now
+
+    if USE_DB:
+        try:
+            client = get_client()
+            user_id = getattr(_local, 'user_id', None)
+            row = {
+                'id': search_id,
+                'user_id': user_id,
+                'name': search.get('name', 'Untitled'),
+                'status': search.get('status', 'pending'),
+                'config_data': search,
+                'created_at': search['created_at'],
+                'updated_at': now,
+            }
+            client.table('mass_searches').upsert(row).execute()
+            return search_id
+        except Exception as e:
+            logger.warning("save_mass_search DB error: %s", e)
+            return search_id
+
+    # Local JSON fallback
+    searches = _load_mass_searches_file()
+    existing = next((i for i, s in enumerate(searches) if s.get('id') == search_id), None)
+    if existing is not None:
+        searches[existing] = search
+    else:
+        searches.insert(0, search)
+    _save_mass_searches_file(searches)
+    return search_id
+
+
+def update_mass_search(search_id: str, updates: dict):
+    """Partial update of a mass search (merges updates into existing record)."""
+    if USE_DB:
+        try:
+            client = get_client()
+            existing = get_mass_search(search_id)
+            if existing:
+                existing.update(updates)
+                existing['updated_at'] = datetime.now(timezone.utc).isoformat()
+                row = {
+                    'id': search_id,
+                    'status': existing.get('status', 'pending'),
+                    'config_data': existing,
+                    'updated_at': existing['updated_at'],
+                }
+                if 'name' in updates:
+                    row['name'] = updates['name']
+                client.table('mass_searches').update(row).eq('id', search_id).execute()
+        except Exception as e:
+            logger.warning("update_mass_search DB error: %s", e)
+        return
+
+    searches = _load_mass_searches_file()
+    for s in searches:
+        if s.get('id') == search_id:
+            s.update(updates)
+            s['updated_at'] = datetime.now(timezone.utc).isoformat()
+            break
+    _save_mass_searches_file(searches)
+
+
+def delete_mass_search(search_id: str):
+    """Delete a mass search by ID."""
+    if USE_DB:
+        try:
+            client = get_client()
+            client.table('mass_searches').delete().eq('id', search_id).execute()
+        except Exception as e:
+            logger.warning("delete_mass_search DB error: %s", e)
+        return
+
+    searches = _load_mass_searches_file()
+    searches = [s for s in searches if s.get('id') != search_id]
+    _save_mass_searches_file(searches)

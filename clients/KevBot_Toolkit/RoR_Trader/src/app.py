@@ -4129,7 +4129,7 @@ def main():
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
         "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder", "Timeframes"],
-        "Strategies": ["Strategy Builder", "My Strategies"],
+        "Strategies": ["Strategy Builder", "My Strategies", "Mass Builder", "Mass Results"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
     }
@@ -4137,6 +4137,8 @@ def main():
         "Dashboard": ("Dashboard", None),
         "Strategy Builder": ("Strategies", "Strategy Builder"),
         "My Strategies": ("Strategies", "My Strategies"),
+        "Mass Builder": ("Strategies", "Mass Builder"),
+        "Mass Results": ("Strategies", "Mass Results"),
         "Portfolios": ("Portfolios", "My Portfolios"),
         "Portfolio Requirements": ("Portfolios", "Portfolio Requirements"),
         "Alerts & Signals": ("Alerts", "Alerts & Signals"),
@@ -4271,8 +4273,12 @@ def main():
         sub = render_sub_nav("Strategies")
         if sub == "Strategy Builder":
             render_strategy_builder()
-        else:
+        elif sub == "My Strategies":
             render_my_strategies()
+        elif sub == "Mass Builder":
+            render_mass_strategy_builder()
+        elif sub == "Mass Results":
+            render_mass_strategy_results()
     elif section == "Portfolios":
         sub = render_sub_nav("Portfolios")
         if sub == "My Portfolios":
@@ -9925,6 +9931,513 @@ def load_strategy_into_builder(strat: dict):
 # =============================================================================
 # PORTFOLIOS
 # =============================================================================
+
+# =============================================================================
+# MASS STRATEGY BUILDER
+# =============================================================================
+
+def render_mass_strategy_builder():
+    """Render the Mass Strategy Builder page — configure and run bulk strategy searches."""
+    from mass_builder import (
+        estimate_combinations, generate_exit_combos, format_time_estimate,
+        new_search_id, TICKER_PRESETS, meets_required_performance,
+    )
+    from db import (
+        save_mass_search, load_mass_searches, get_mass_search,
+    )
+    from confluence_groups import (
+        get_enabled_groups, get_all_triggers, get_entry_triggers,
+        get_exit_triggers, load_confluence_groups,
+    )
+
+    st.header("Mass Strategy Builder")
+
+    # Initialize session state
+    if 'mass_config' not in st.session_state:
+        st.session_state.mass_config = {
+            'tickers': [],
+            'timeframes': ['1Min'],
+            'directions': ['LONG'],
+            'entry_triggers': [],
+            'exit_triggers': [],
+            'exit_depth': 1,
+            'tf_confluences': [],
+            'tf_confluence_depth': 2,
+            'general_confluences': [],
+            'general_confluence_depth': 1,
+            'rm_packs': [],
+            'date_range': {'mode': 'days', 'days': 90},
+            'required_performance': {
+                'min_trades': 10,
+                'min_win_rate': None,
+                'min_profit_factor': None,
+                'min_daily_r': None,
+                'min_r_squared': None,
+            },
+            'max_results': 500,
+        }
+    mc = st.session_state.mass_config
+
+    enabled_groups = get_enabled_groups(load_confluence_groups())
+
+    # =====================================================================
+    # Section 1: Header Row — Search Name + Save
+    # =====================================================================
+    s1c1, s1c2 = st.columns([4, 1])
+    with s1c1:
+        search_name = st.text_input(
+            "Search Name",
+            value=st.session_state.get('mass_search_name',
+                                       f"Search {datetime.now().strftime('%b %d %H:%M')}"),
+            key="mass_search_name_input")
+        st.session_state.mass_search_name = search_name
+    with s1c2:
+        st.write("")
+        save_clicked = st.button("Save Search", use_container_width=True)
+
+    if save_clicked:
+        search = {
+            'id': st.session_state.get('mass_search_id', new_search_id()),
+            'name': search_name,
+            'status': 'pending',
+            'config': dict(mc),
+            'results': st.session_state.get('mass_results', []),
+            'progress': {},
+            'summary': {},
+        }
+        save_mass_search(search)
+        st.session_state.mass_search_id = search['id']
+        st.success(f"Search saved: **{search_name}**")
+
+    # =====================================================================
+    # Section 2: Config Row — Tickers | Variables | Performance | Analyze
+    # =====================================================================
+    s2c1, s2c2, s2c3, s2c4 = st.columns(4)
+
+    # --- Select Tickers ---
+    with s2c1:
+        with st.popover("Select Tickers", use_container_width=True):
+            st.markdown("**Tickers to analyze**")
+            ticker_text = st.text_area(
+                "Enter tickers (comma or newline separated)",
+                value=", ".join(mc.get('tickers', [])),
+                height=100, key="mass_ticker_input")
+            # Quick-add preset buttons
+            st.markdown("**Quick Add**")
+            preset_cols = st.columns(len(TICKER_PRESETS))
+            for i, (preset_name, preset_tickers) in enumerate(TICKER_PRESETS.items()):
+                with preset_cols[i]:
+                    if st.button(preset_name, key=f"mass_preset_{preset_name}",
+                                 use_container_width=True):
+                        existing = set(mc.get('tickers', []))
+                        existing.update(preset_tickers)
+                        mc['tickers'] = sorted(existing)
+                        st.rerun()
+
+            if st.button("Apply Tickers", type="primary", use_container_width=True):
+                raw = ticker_text.replace('\n', ',').replace(';', ',')
+                tickers = [t.strip().upper() for t in raw.split(',') if t.strip()]
+                mc['tickers'] = sorted(set(tickers))
+                st.rerun()
+
+        n_tickers = len(mc.get('tickers', []))
+        st.caption(f"{n_tickers} ticker{'s' if n_tickers != 1 else ''} selected")
+
+    # --- Select Variables ---
+    with s2c2:
+        with st.popover("Select Variables", use_container_width=True):
+            var_tabs = st.tabs(["Date Range", "Timeframes", "Direction",
+                                "Entry", "Exit", "TF Confluence",
+                                "General", "Risk Mgmt"])
+
+            # Date Range tab
+            with var_tabs[0]:
+                dr_mode = st.radio("Lookback mode",
+                                   ["Days", "Date Range"],
+                                   index=0 if mc['date_range'].get('mode') == 'days' else 1,
+                                   key="mass_dr_mode", horizontal=True)
+                if dr_mode == "Days":
+                    dr_days = st.number_input("Days", min_value=7, max_value=1825,
+                                              value=mc['date_range'].get('days', 90),
+                                              key="mass_dr_days")
+                    mc['date_range'] = {'mode': 'days', 'days': dr_days}
+                else:
+                    from datetime import date as _date
+                    dr_start = st.date_input("Start", value=_date(2025, 1, 1),
+                                              key="mass_dr_start")
+                    dr_end = st.date_input("End", value=_date.today(),
+                                            key="mass_dr_end")
+                    mc['date_range'] = {
+                        'mode': 'range',
+                        'start': dr_start.isoformat(),
+                        'end': dr_end.isoformat(),
+                        'days': (dr_end - dr_start).days,
+                    }
+
+            # Timeframes tab
+            with var_tabs[1]:
+                st.markdown("**Select timeframes to test**")
+                available_tfs = ["1Min", "2Min", "3Min", "5Min", "10Min",
+                                 "15Min", "30Min", "1Hour", "2Hour", "4Hour"]
+                selected_tfs = []
+                tf_cols = st.columns(5)
+                for i, tf in enumerate(available_tfs):
+                    with tf_cols[i % 5]:
+                        if st.checkbox(tf, value=tf in mc.get('timeframes', []),
+                                       key=f"mass_tf_{tf}"):
+                            selected_tfs.append(tf)
+                mc['timeframes'] = selected_tfs if selected_tfs else ['1Min']
+
+            # Direction tab
+            with var_tabs[2]:
+                st.markdown("**Select directions to test**")
+                sel_long = st.checkbox("LONG", value='LONG' in mc.get('directions', []),
+                                       key="mass_dir_long")
+                sel_short = st.checkbox("SHORT", value='SHORT' in mc.get('directions', []),
+                                        key="mass_dir_short")
+                dirs = []
+                if sel_long:
+                    dirs.append('LONG')
+                if sel_short:
+                    dirs.append('SHORT')
+                mc['directions'] = dirs if dirs else ['LONG']
+
+            # Entry Triggers tab
+            with var_tabs[3]:
+                st.markdown("**Select entry triggers to test**")
+                all_entry_long = get_entry_triggers('LONG', enabled_groups)
+                all_entry_short = get_entry_triggers('SHORT', enabled_groups)
+                all_entries = {**all_entry_long, **all_entry_short}
+                selected_entries = []
+                for cid, name in all_entries.items():
+                    if st.checkbox(name, value=cid in mc.get('entry_triggers', []),
+                                   key=f"mass_entry_{cid}"):
+                        selected_entries.append(cid)
+                mc['entry_triggers'] = selected_entries
+
+            # Exit Triggers tab
+            with var_tabs[4]:
+                st.markdown("**Select exit triggers to test**")
+                all_exits = get_exit_triggers(enabled_groups)
+                selected_exits = []
+                for cid, name in all_exits.items():
+                    if st.checkbox(name, value=cid in mc.get('exit_triggers', []),
+                                   key=f"mass_exit_{cid}"):
+                        selected_exits.append(cid)
+                mc['exit_triggers'] = selected_exits
+                st.divider()
+                mc['exit_depth'] = st.select_slider(
+                    "Exit combination depth",
+                    options=[1, 2, 3, 4],
+                    value=mc.get('exit_depth', 1),
+                    help="Best 1 = test individually. Best 2+ = test combinations.",
+                    key="mass_exit_depth")
+
+            # TF Confluence tab
+            with var_tabs[5]:
+                st.markdown("**Select TF confluences for auto-search**")
+                all_triggers = get_all_triggers(enabled_groups)
+                # Show interpreter-based conditions (not entry/exit triggers)
+                for group in enabled_groups:
+                    if not group.enabled:
+                        continue
+                    interp_keys = []
+                    from confluence_groups import TEMPLATES as _CG_TEMPLATES
+                    tmpl = _CG_TEMPLATES.get(group.base_template, {})
+                    outputs = tmpl.get('outputs', [])
+                    interps = tmpl.get('interpreters', [])
+                    if not interps or not outputs:
+                        continue
+                    st.caption(f"**{group.name}**")
+                    for interp in interps:
+                        for output in outputs:
+                            # Build confluence record format: {tf}-{INTERP}-{STATE}
+                            # Use placeholder TF since it varies per search
+                            conf_key = f"_TF_-{interp}-{output}"
+                            display = f"{interp}: {output}"
+                            if st.checkbox(display,
+                                           value=conf_key in mc.get('tf_confluences', []),
+                                           key=f"mass_tfc_{group.id}_{interp}_{output}"):
+                                if conf_key not in mc.get('tf_confluences', []):
+                                    mc.setdefault('tf_confluences', []).append(conf_key)
+                            else:
+                                if conf_key in mc.get('tf_confluences', []):
+                                    mc['tf_confluences'].remove(conf_key)
+                mc['tf_confluence_depth'] = st.select_slider(
+                    "TF confluence depth",
+                    options=[1, 2, 3, 4],
+                    value=mc.get('tf_confluence_depth', 2),
+                    key="mass_tf_conf_depth")
+
+            # General Confluence tab
+            with var_tabs[6]:
+                st.markdown("**Select general confluences**")
+                from general_packs import load_general_packs as _load_gp
+                all_gp = _load_gp()
+                for gp in all_gp:
+                    if not gp.enabled:
+                        continue
+                    from general_packs import TEMPLATES as _GP_TEMPLATES
+                    gp_tmpl = _GP_TEMPLATES.get(gp.base_template, {})
+                    gp_outputs = gp_tmpl.get('outputs', [])
+                    if not gp_outputs:
+                        continue
+                    st.caption(f"**{gp.name}**")
+                    for output in gp_outputs:
+                        conf_key = f"GEN-{gp.id}-{output}"
+                        display = f"{gp.name}: {output}"
+                        if st.checkbox(display,
+                                       value=conf_key in mc.get('general_confluences', []),
+                                       key=f"mass_gc_{gp.id}_{output}"):
+                            if conf_key not in mc.get('general_confluences', []):
+                                mc.setdefault('general_confluences', []).append(conf_key)
+                        else:
+                            if conf_key in mc.get('general_confluences', []):
+                                mc['general_confluences'].remove(conf_key)
+                mc['general_confluence_depth'] = st.select_slider(
+                    "General confluence depth",
+                    options=[1, 2, 3, 4],
+                    value=mc.get('general_confluence_depth', 1),
+                    key="mass_gen_conf_depth")
+
+            # Risk Management tab
+            with var_tabs[7]:
+                st.markdown("**Select risk management packs**")
+                from risk_management_packs import (
+                    load_risk_management_packs,
+                    get_enabled_risk_management_packs,
+                )
+                all_rm = load_risk_management_packs()
+                enabled_rm = get_enabled_risk_management_packs(all_rm)
+                selected_rm = []
+                for rm in enabled_rm:
+                    if st.checkbox(f"{rm.name}", value=rm.id in mc.get('rm_packs', []),
+                                   key=f"mass_rm_{rm.id}"):
+                        selected_rm.append(rm.id)
+                mc['rm_packs'] = selected_rm
+
+        n_vars = (len(mc.get('entry_triggers', [])) + len(mc.get('exit_triggers', []))
+                  + len(mc.get('tf_confluences', [])) + len(mc.get('rm_packs', [])))
+        st.caption(f"{n_vars} variables selected")
+
+    # --- Required Performance ---
+    with s2c3:
+        with st.popover("Required Performance", use_container_width=True):
+            st.markdown("**Minimum requirements to include a result**")
+            rp = mc.get('required_performance', {})
+            rp['min_trades'] = st.number_input("Min trades", min_value=1, max_value=500,
+                                                value=rp.get('min_trades', 10),
+                                                key="mass_rp_trades")
+            _wr = st.number_input("Min win rate %", min_value=0.0, max_value=100.0,
+                                   value=float(rp.get('min_win_rate') or 0),
+                                   step=5.0, key="mass_rp_wr")
+            rp['min_win_rate'] = _wr if _wr > 0 else None
+            _pf = st.number_input("Min profit factor", min_value=0.0, max_value=20.0,
+                                   value=float(rp.get('min_profit_factor') or 0),
+                                   step=0.25, key="mass_rp_pf")
+            rp['min_profit_factor'] = _pf if _pf > 0 else None
+            _dr = st.number_input("Min daily R", min_value=-10.0, max_value=10.0,
+                                   value=float(rp.get('min_daily_r') or 0),
+                                   step=0.05, key="mass_rp_dr")
+            rp['min_daily_r'] = _dr if _dr > 0 else None
+            _r2 = st.number_input("Min R²", min_value=0.0, max_value=1.0,
+                                   value=float(rp.get('min_r_squared') or 0),
+                                   step=0.1, key="mass_rp_r2")
+            rp['min_r_squared'] = _r2 if _r2 > 0 else None
+            mc['required_performance'] = rp
+
+        st.caption(f"Min {rp.get('min_trades', 10)} trades")
+
+    # --- Analyze Button ---
+    with s2c4:
+        can_analyze = (len(mc.get('tickers', [])) > 0
+                       and len(mc.get('entry_triggers', [])) > 0
+                       and (len(mc.get('exit_triggers', [])) > 0
+                            or len(mc.get('rm_packs', [])) > 0))
+        analyze_clicked = st.button(
+            "Analyze", type="primary",
+            use_container_width=True,
+            disabled=not can_analyze)
+        if not can_analyze:
+            st.caption("Select tickers + triggers")
+
+    # =====================================================================
+    # Section 3: Preview + Progress
+    # =====================================================================
+    est = estimate_combinations(mc)
+
+    preview_parts = []
+    if est['n_tickers'] > 0:
+        preview_parts.append(f"{est['n_tickers']} tickers")
+    if est['n_timeframes'] > 0:
+        preview_parts.append(f"{est['n_timeframes']} TFs")
+    if est['n_directions'] > 0:
+        preview_parts.append(f"{est['n_directions']} dirs")
+    if est['n_entries'] > 0:
+        preview_parts.append(f"{est['n_entries']} entries")
+    if est['n_exit_combos'] > 0:
+        preview_parts.append(f"{est['n_exit_combos']} exit combos")
+    if est['n_rm_packs'] > 0:
+        preview_parts.append(f"{est['n_rm_packs']} RM packs")
+
+    st.caption(
+        f"**Preview:** {' × '.join(preview_parts)} = "
+        f"**{est['base_configs']:,}** base configs · "
+        f"**{est['total_evaluations']:,}** total evaluations · "
+        f"Est. time: **{format_time_estimate(est['est_seconds'])}**"
+    )
+
+    # Progress bar (shown during/after analysis)
+    _search_status = st.session_state.get('mass_search_status', 'idle')
+    if _search_status == 'running':
+        _prog = st.session_state.get('mass_search_progress', {})
+        _step = _prog.get('current_step', 0)
+        _total = _prog.get('total_steps', 1)
+        _label = _prog.get('current_label', '')
+        st.progress(_step / max(_total, 1),
+                    text=f"Analyzing {_label} — {_step:,} / {_total:,}")
+    elif _search_status == 'completed':
+        _results = st.session_state.get('mass_results', [])
+        st.success(f"Complete — **{len(_results)}** strategies found")
+
+    if analyze_clicked:
+        st.info("Analysis engine will be connected in Phase 33B. "
+                "Search configuration is saved and ready.")
+
+    # =====================================================================
+    # Section 4 & 5: Post-Analysis Filters + Result Cards (Phase 33D)
+    # =====================================================================
+    _results = st.session_state.get('mass_results', [])
+    if _results:
+        st.divider()
+        # Section 4: Filters
+        f1, f2, f3, f4, f5 = st.columns(5)
+        with f1:
+            _sort = st.selectbox("Sort by", ["Daily R", "Win Rate", "Profit Factor",
+                                              "R²", "Total R", "Trades"],
+                                  key="mass_sort")
+        with f2:
+            _filt_wr = st.number_input("Min WR%", min_value=0.0, max_value=100.0,
+                                        value=0.0, step=5.0, key="mass_filt_wr")
+        with f3:
+            _filt_pf = st.number_input("Min PF", min_value=0.0, max_value=20.0,
+                                        value=0.0, step=0.25, key="mass_filt_pf")
+        with f4:
+            _filt_trades = st.number_input("Min Trades", min_value=0, max_value=500,
+                                            value=0, key="mass_filt_trades")
+        with f5:
+            _filt_r2 = st.number_input("Min R²", min_value=0.0, max_value=1.0,
+                                        value=0.0, step=0.1, key="mass_filt_r2")
+
+        # Section 5: Result cards (placeholder — full rendering in Phase 33D)
+        st.caption(f"Showing {len(_results)} results")
+        for i, result in enumerate(_results[:20]):
+            kpis = result.get('kpis', {})
+            cfg = result.get('config', {})
+            with st.container(border=True):
+                rc1, rc2 = st.columns([3, 1])
+                with rc1:
+                    st.markdown(f"**{cfg.get('symbol', '?')}** · {cfg.get('timeframe', '?')} · "
+                                f"{cfg.get('direction', '?')} · {cfg.get('entry_trigger_name', '?')}")
+                    st.caption(f"Trades: {kpis.get('total_trades', 0)} · "
+                               f"WR: {kpis.get('win_rate', 0):.1f}% · "
+                               f"PF: {kpis.get('profit_factor', 0):.2f} · "
+                               f"Daily R: {kpis.get('daily_r', 0):+.2f} · "
+                               f"R²: {kpis.get('r_squared', 0):.2f}")
+                with rc2:
+                    status = result.get('status', 'active')
+                    if status == 'saved':
+                        st.button("Saved", key=f"mass_save_{i}", disabled=True)
+                    else:
+                        if st.button("Save to My Strategies", key=f"mass_save_{i}"):
+                            st.info("Save flow will be connected in Phase 33D.")
+                    if status == 'passed':
+                        if st.button("Un-pass", key=f"mass_pass_{i}"):
+                            result['status'] = 'active'
+                            st.rerun()
+                    else:
+                        if st.button("Pass", key=f"mass_pass_{i}", type="secondary"):
+                            result['status'] = 'passed'
+                            st.rerun()
+
+
+def render_mass_strategy_results():
+    """Render the Mass Strategy Results page — view saved search history."""
+    from db import load_mass_searches, delete_mass_search
+
+    st.header("Mass Strategy Results")
+
+    searches = load_mass_searches()
+
+    if not searches:
+        st.info("No mass searches yet. Go to **Mass Builder** to create one.")
+        return
+
+    for search in searches:
+        status = search.get('status', 'pending')
+        name = search.get('name', 'Untitled')
+        created = search.get('created_at', '')[:16].replace('T', ' ')
+        results = search.get('results', [])
+        n_results = len(results)
+
+        # Status indicator
+        if status == 'completed':
+            icon = "🟢"
+        elif status == 'running':
+            icon = "🟡"
+        elif status == 'failed':
+            icon = "🔴"
+        elif status == 'cancelled':
+            icon = "🟠"
+        else:
+            icon = "⚪"
+
+        with st.expander(f"{icon} **{name}** — {n_results} results — {created}"):
+            # Config summary
+            config = search.get('config', {})
+            tickers = config.get('tickers', [])
+            tfs = config.get('timeframes', [])
+            dirs = config.get('directions', [])
+            st.caption(f"Tickers: {', '.join(tickers[:5])}{'...' if len(tickers) > 5 else ''} · "
+                       f"TFs: {', '.join(tfs)} · Dirs: {', '.join(dirs)}")
+
+            if status == 'running':
+                prog = search.get('progress', {})
+                step = prog.get('current_step', 0)
+                total = prog.get('total_steps', 1)
+                st.progress(step / max(total, 1),
+                            text=f"{step:,} / {total:,}")
+
+            # Results preview
+            if n_results > 0:
+                for i, result in enumerate(results[:10]):
+                    kpis = result.get('kpis', {})
+                    cfg = result.get('config', {})
+                    st.caption(
+                        f"#{i+1} {cfg.get('symbol', '?')} {cfg.get('timeframe', '?')} "
+                        f"{cfg.get('direction', '?')} — "
+                        f"WR: {kpis.get('win_rate', 0):.1f}% · "
+                        f"PF: {kpis.get('profit_factor', 0):.2f} · "
+                        f"Daily R: {kpis.get('daily_r', 0):+.2f}")
+                if n_results > 10:
+                    st.caption(f"... and {n_results - 10} more")
+
+            # Actions
+            ac1, ac2, ac3 = st.columns(3)
+            with ac1:
+                if st.button("Load in Builder", key=f"mass_load_{search.get('id')}"):
+                    st.session_state.mass_config = config
+                    st.session_state.mass_results = results
+                    st.session_state.mass_search_id = search.get('id')
+                    st.session_state.mass_search_name = name
+                    st.session_state.nav_target = "Mass Builder"
+                    st.rerun()
+            with ac3:
+                if st.button("Delete", key=f"mass_del_{search.get('id')}",
+                             type="secondary"):
+                    delete_mass_search(search.get('id'))
+                    st.rerun()
+
 
 def render_portfolios():
     """Route to portfolio list, detail, or builder view."""
