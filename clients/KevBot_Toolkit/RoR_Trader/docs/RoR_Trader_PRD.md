@@ -2642,16 +2642,16 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 
 ---
 
-### Planned: Strategy Builder Performance Optimization
+### Strategy Builder Performance Optimization — COMPLETED 2026-03-16
 
-**Problem:** The Strategy Builder reruns expensive operations too frequently. Every UI interaction (adding/removing a confluence, applying filters, clicking analyze) triggers `st.rerun()`, which re-executes `prepare_data_with_indicators()` and `_unified_trades()` from scratch — even though the data and strategy config haven't changed.
+**Problem:** The Strategy Builder reran expensive operations (`prepare_data_with_indicators()` + `_unified_trades()`) on every UI interaction — filter changes, confluence add/remove, auto-search toggle, etc. — causing a multi-second "Loading market data" spinner on every click.
 
-**Root cause:** While `prepare_data_with_indicators` has `@st.cache_data(ttl=3600)` (which helps when params match), the trade generation via `_unified_trades()` is uncached and runs on every rerun. Analysis functions like `analyze_confluences()` also re-run unnecessarily.
-
-**Planned approach:**
-- [ ] Cache `df` and `trades` in `session_state` keyed by a config hash; only regenerate when strategy parameters actually change (symbol, timeframe, triggers, stops, etc.)
-- [ ] Skip re-analysis when only display filters change (filter/sort operations should not trigger backtests)
-- [ ] Evaluate using Streamlit callbacks or fragment-based updates instead of full `st.rerun()` for simple state changes
+**Solution:**
+- [x] `_builder_config_hash()` computes a hash from data-affecting params (symbol, TF, dates, session, triggers, stops, targets, direction). Display-only keys (name, risk_per_trade, starting_balance, selected_confluences) are excluded.
+- [x] `df`, `trades`, `bar_cache` cached in `session_state` keyed by hash. On rerun, if hash matches cached data → skip expensive operations entirely.
+- [x] Smart Load Data button: `Load Data` (first load) → `✓ Loaded` (disabled, cache current) → `Reload` (primary, params changed). Visual stale-data warning when params change but user hasn't reloaded.
+- [x] Display-only actions (confluence add/remove, filter apply, auto-search toggle) now use cached data instantly — no spinner, no delay.
+- [x] Cache cleared on strategy edit load and new strategy creation to ensure fresh data.
 
 ---
 
