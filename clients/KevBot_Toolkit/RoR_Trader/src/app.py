@@ -10118,7 +10118,9 @@ def render_mass_strategy_builder():
             # Exit Triggers tab
             with var_tabs[4]:
                 st.markdown("**Select exit triggers to test**")
-                all_exits = get_exit_triggers(enabled_groups)
+                # Use all triggers (same as Strategy Builder exit picker)
+                _all_tdefs = get_all_triggers(enabled_groups)
+                all_exits = {tid: f"{tdef.name}" for tid, tdef in _all_tdefs.items()}
                 selected_exits = []
                 for cid, name in all_exits.items():
                     if st.checkbox(name, value=cid in mc.get('exit_triggers', []),
