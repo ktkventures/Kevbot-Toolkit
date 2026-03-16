@@ -10311,8 +10311,41 @@ def render_mass_strategy_builder():
         st.success(f"Complete — **{len(_results)}** strategies found")
 
     if analyze_clicked:
-        st.info("Analysis engine will be connected in Phase 33B. "
-                "Search configuration is saved and ready.")
+        from mass_builder import run_mass_search
+        _progress_bar = st.progress(0, text="Starting analysis...")
+        _results_placeholder = st.empty()
+
+        def _on_progress(current, total, label):
+            pct = current / max(total, 1)
+            _progress_bar.progress(pct, text=f"Analyzing {label} — {current:,} / {total:,}")
+
+        try:
+            results = run_mass_search(mc, progress_callback=_on_progress)
+            st.session_state.mass_results = results
+            st.session_state.mass_search_status = 'completed'
+            _progress_bar.progress(1.0, text=f"Complete — {len(results)} strategies found")
+            # Auto-save results
+            search = {
+                'id': st.session_state.get('mass_search_id', new_search_id()),
+                'name': search_name,
+                'status': 'completed',
+                'config': dict(mc),
+                'results': results,
+                'progress': {},
+                'summary': {
+                    'results_stored': len(results),
+                    'best_daily_r': max((r['kpis'].get('daily_r', 0)
+                                         for r in results), default=0),
+                },
+            }
+            save_mass_search(search)
+            st.session_state.mass_search_id = search['id']
+            st.rerun()
+        except Exception as exc:
+            _progress_bar.empty()
+            st.error(f"Analysis failed: {exc}")
+            import logging as _ms_log
+            _ms_log.getLogger(__name__).exception("Mass search failed")
 
     # =====================================================================
     # Section 4 & 5: Post-Analysis Filters + Result Cards (Phase 33D)
