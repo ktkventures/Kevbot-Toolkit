@@ -4482,6 +4482,35 @@ def _is_within_days(timestamp_str: str, days: int) -> bool:
         return False
 
 
+def _builder_config_hash(config: dict, data_feed: str) -> str:
+    """Compute a short hash from data-affecting strategy builder parameters.
+
+    Changes to these parameters require a full data reload + trade regeneration.
+    Display-only keys (name, risk_per_trade, starting_balance) are excluded.
+    """
+    import hashlib
+    key_parts = {
+        'symbol': config.get('symbol'),
+        'timeframe': config.get('timeframe'),
+        'direction': config.get('direction'),
+        'data_days': config.get('data_days'),
+        'data_seed': config.get('data_seed'),
+        'lookback_mode': config.get('lookback_mode'),
+        'lookback_start_date': config.get('lookback_start_date'),
+        'lookback_end_date': config.get('lookback_end_date'),
+        'bar_count': config.get('bar_count'),
+        'trading_session': config.get('trading_session'),
+        'entry_trigger': config.get('entry_trigger'),
+        'exit_triggers': sorted(config.get('exit_triggers', [])),
+        'stop_config': config.get('stop_config'),
+        'target_config': config.get('target_config'),
+        'bar_count_exit': config.get('bar_count_exit'),
+        'data_feed': data_feed,
+    }
+    raw = json.dumps(key_parts, sort_keys=True, default=str)
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
 def render_strategy_builder():
     """Render the single-page strategy builder with sidebar config panel."""
 
@@ -4631,7 +4660,7 @@ def render_strategy_builder():
 
     with r1c8:
         st.write("")  # vertical spacer to align button
-        load_clicked = st.button("Load Data", type="primary", use_container_width=True)
+        _load_btn_slot = st.empty()
 
     # Bar estimate (computed now, rendered after validation via placeholder)
     est_bars = estimate_bar_count(data_days, timeframe, session=trading_session,
@@ -5147,9 +5176,29 @@ def render_strategy_builder():
             'backtest_signals': edit_config.get('webhook_config', {}).get('backtest_signals', []),
         }
 
-    # Handle Load Data
+    # =========================================================================
+    # CONFIG HASH — determines if data reload is needed
+    # =========================================================================
+    _current_hash = _builder_config_hash(config, _get_data_feed())
+    _stored_hash = st.session_state.get('_builder_hash')
+    _has_loaded = st.session_state.get('builder_data_loaded', False)
+    _has_cache = (st.session_state.get('_builder_df') is not None
+                  and st.session_state.get('_builder_trades') is not None)
+    _needs_reload = not _has_cache or _stored_hash != _current_hash
+
+    # Render the Load Data button with smart state
+    with _load_btn_slot:
+        if not _has_loaded or _needs_reload:
+            load_clicked = st.button(
+                "Load Data" if not _has_loaded else "Reload",
+                type="primary", use_container_width=True)
+        else:
+            load_clicked = False
+            st.button("✓ Loaded", type="secondary", disabled=True,
+                      use_container_width=True)
+
+    # Handle Load Data click
     if load_clicked:
-        # Block large datasets on Railway to prevent OOM crashes
         from db import USE_DB as _load_use_db
         if _load_use_db and est_bars > MAX_BARS_CLOUD:
             st.error(f"Dataset too large (~{est_bars:,} bars). Max {MAX_BARS_CLOUD:,} bars on cloud. "
@@ -5157,13 +5206,18 @@ def render_strategy_builder():
             return
         st.session_state.builder_data_loaded = True
         st.session_state.strategy_config = config
+        st.session_state._builder_hash = _current_hash
+        # Clear cached data so the main section reloads fresh
+        st.session_state._builder_df = None
+        st.session_state._builder_trades = None
+        st.session_state.builder_bar_cache = None
+        st.session_state.builder_cache_metadata = None
+        # Clear analysis caches
         st.session_state.entry_trigger_results = None
         st.session_state.exit_trigger_results = None
         st.session_state.auto_exit_results = None
         st.session_state.sl_results = None
         st.session_state.tp_results = None
-        st.session_state.builder_bar_cache = None
-        st.session_state.builder_cache_metadata = None
         st.rerun()
 
     # =========================================================================
@@ -5176,7 +5230,7 @@ def render_strategy_builder():
     # Keep strategy_config in sync with sidebar for the edit flow
     st.session_state.strategy_config = config
 
-    # Header with strategy name
+    # Header with strategy name + stale data indicator
     if _is_webhook_origin:
         st.markdown(f"### {strategy_name}")
         st.caption(f"{symbol} | {direction} | Webhook Inbound")
@@ -5188,6 +5242,9 @@ def render_strategy_builder():
         exit_str = " / ".join(exit_parts) if exit_parts else "?"
         st.markdown(f"### {strategy_name}")
         st.caption(f"{symbol} | {direction} | {entry_name} → {exit_str}")
+
+    if _needs_reload and _has_cache:
+        st.warning("Strategy parameters have changed. Click **Reload** to update data and trades.", icon="⚠️")
 
     # Load data and generate trades
     selected = st.session_state.selected_confluences
@@ -5205,7 +5262,30 @@ def render_strategy_builder():
         if len(selected) > 0 and len(trades) > 0 and 'confluence_records' in trades.columns:
             mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
             filtered_trades = trades[mask]
+    elif _has_cache and not _needs_reload:
+        # Use cached data — skip expensive operations
+        df = st.session_state._builder_df
+        trades = st.session_state._builder_trades
+        st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+        if len(selected) > 0 and len(trades) > 0:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
+        else:
+            filtered_trades = trades
+    elif _has_cache and _needs_reload:
+        # Config changed but user hasn't clicked Reload — show stale cached data
+        df = st.session_state._builder_df
+        trades = st.session_state._builder_trades
+        st.caption(f"Loaded {len(df):,} bars *(stale — click Reload)*")
+        general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
+        if len(selected) > 0 and len(trades) > 0:
+            mask = trades["confluence_records"].apply(lambda r: isinstance(r, set) and selected.issubset(r))
+            filtered_trades = trades[mask]
+        else:
+            filtered_trades = trades
     else:
+        # Fresh load (first time after clicking Load Data)
         sec_tfs = _get_secondary_tfs(timeframe)
         with st.spinner("Loading market data and running analysis..."):
             df = prepare_data_with_indicators(symbol, data_days, data_seed,
@@ -5219,25 +5299,29 @@ def render_strategy_builder():
                 st.error(f"No data available for **{symbol}**. Check that the ticker is valid on Alpaca.")
                 return
 
-            st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
             trades = _unified_trades(df, config)
 
             # Pre-compute bar cache for fast analyzer replays
-            if st.session_state.get('builder_bar_cache') is None:
-                try:
-                    from unified_engine import precompute_bar_cache
-                    sec_tf_map = get_secondary_tf_map(df)
-                    enabled_gen = gp_module.get_enabled_general_packs(
-                        gp_module.load_general_packs())
-                    _cache, _meta = precompute_bar_cache(
-                        df, config, general_packs=enabled_gen,
-                        secondary_tf_map=sec_tf_map if sec_tf_map else None)
-                    st.session_state.builder_bar_cache = _cache
-                    st.session_state.builder_cache_metadata = _meta
-                except Exception:
-                    st.session_state.builder_bar_cache = None
-                    st.session_state.builder_cache_metadata = None
+            try:
+                from unified_engine import precompute_bar_cache
+                sec_tf_map = get_secondary_tf_map(df)
+                enabled_gen = gp_module.get_enabled_general_packs(
+                    gp_module.load_general_packs())
+                _cache, _meta = precompute_bar_cache(
+                    df, config, general_packs=enabled_gen,
+                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                st.session_state.builder_bar_cache = _cache
+                st.session_state.builder_cache_metadata = _meta
+            except Exception:
+                st.session_state.builder_bar_cache = None
+                st.session_state.builder_cache_metadata = None
 
+        # Store in session state for subsequent reruns
+        st.session_state._builder_df = df
+        st.session_state._builder_trades = trades
+        st.session_state._builder_hash = _current_hash
+
+        st.caption(f"Loaded {len(df):,} bars for **{symbol}** ({timeframe}, {trading_session}) via {get_data_source(_get_data_feed())}")
         general_cols = get_enabled_gp_columns(df.columns) if len(df) > 0 else []
 
         # Apply confluence filter
@@ -9825,6 +9909,12 @@ def load_strategy_into_builder(strat: dict):
     gen_confs = set(strat.get('general_confluences', []))
     st.session_state.selected_confluences = tf_confs | gen_confs
     st.session_state.builder_data_loaded = True
+    # Clear cached builder data so the strategy loads fresh
+    st.session_state._builder_df = None
+    st.session_state._builder_trades = None
+    st.session_state._builder_hash = None
+    st.session_state.builder_bar_cache = None
+    st.session_state.builder_cache_metadata = None
     st.session_state.viewing_strategy_id = None
     st.session_state.confirm_edit_id = None
     st.session_state.nav_target = "Strategy Builder"
