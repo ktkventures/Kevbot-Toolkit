@@ -13406,13 +13406,15 @@ def build_confluence_heatmap_pane(
             data.append({"time": t, "value": hist_value, "color": color})
 
         if data:
+            # Short label: INTERP (TF): NEEDED_STATE
+            _short_state = needed_state.replace('FULL_', '').replace('_', ' ')
             if is_general:
-                label = interp_key.replace('_', ' ').title()
+                label = f"{interp_key.replace('_', ' ').title()}: {_short_state}"
             elif is_cross_tf:
-                label = f"{interp_key} ({rec_tf.upper()})"
+                label = f"{interp_key} ({rec_tf.upper()}): {_short_state}"
             else:
-                label = interp_key
-            condition_labels.append(label)
+                label = f"{interp_key}: {_short_state}"
+            condition_labels.append((label, hist_value))
             series.append({
                 "type": "Histogram",
                 "data": data,
@@ -13448,6 +13450,27 @@ def build_confluence_heatmap_pane(
                 }
             })
 
+    # Add floating label series — invisible Line at each row's y-level
+    # with lastValueVisible=True so LWC renders the title as a badge
+    # in the right margin.
+    if series:
+        last_time = series[0]["data"][-1]["time"]
+        for label_text, y_val in condition_labels:
+            series.append({
+                "type": "Line",
+                "data": [{"time": last_time, "value": y_val - 0.5}],
+                "options": {
+                    "color": "rgba(255,255,255,0.0)",
+                    "lineVisible": False,
+                    "pointMarkersVisible": False,
+                    "lastValueVisible": True,
+                    "priceLineVisible": False,
+                    "crosshairMarkerVisible": False,
+                    "title": label_text,
+                    "priceFormat": {"type": "price", "precision": 0, "minMove": 1},
+                }
+            })
+
     height = max(60, 25 * n + 20)
 
     return {
@@ -13455,17 +13478,23 @@ def build_confluence_heatmap_pane(
             "layout": {
                 "background": {"color": "#1E1E1E"},
                 "textColor": "#DDD",
+                "fontSize": 9,
             },
             "grid": {
                 "vertLines": {"color": "#2B2B2B"},
                 "horzLines": {"color": "transparent"},
             },
-            "rightPriceScale": {"visible": False},
+            "rightPriceScale": {
+                "visible": True,
+                "borderColor": "transparent",
+                "textColor": "transparent",
+                "scaleMargins": {"top": 0.05, "bottom": 0.05},
+            },
             "height": height,
             "crosshair": {"mode": 0},
         },
         "series": series,
-        "_heatmap_labels": condition_labels,
+        "_heatmap_labels": [lbl for lbl, _ in condition_labels],
     }
 
 
