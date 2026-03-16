@@ -9936,6 +9936,57 @@ def load_strategy_into_builder(strat: dict):
 # MASS STRATEGY BUILDER
 # =============================================================================
 
+def _save_mass_result_to_strategies(result: dict, result_index: int):
+    """Save a mass search result as a strategy in My Strategies."""
+    from datetime import datetime, timezone
+    cfg = result.get('config', {})
+
+    # Build strategy in the same format as Strategy Builder save
+    existing = load_strategies()
+    next_id = max((s.get('id', 0) for s in existing), default=0) + 1
+
+    strategy = {
+        'id': next_id,
+        'name': f"{cfg.get('symbol', '?')} {cfg.get('direction', '?')} - Mass #{result_index + 1}",
+        'symbol': cfg.get('symbol', ''),
+        'asset_type': cfg.get('asset_type', 'equity'),
+        'direction': cfg.get('direction', 'LONG'),
+        'timeframe': cfg.get('timeframe', '1Min'),
+        'trading_session': cfg.get('trading_session', 'RTH'),
+        'entry_trigger': cfg.get('entry_trigger', ''),
+        'entry_trigger_confluence_id': cfg.get('entry_trigger_confluence_id', ''),
+        'entry_trigger_name': cfg.get('entry_trigger_name', ''),
+        'exit_triggers': cfg.get('exit_triggers', []),
+        'exit_trigger_confluence_ids': cfg.get('exit_trigger_confluence_ids', []),
+        'exit_trigger_names': cfg.get('exit_trigger_names', []),
+        'exit_trigger': cfg.get('exit_trigger', ''),
+        'exit_trigger_confluence_id': cfg.get('exit_trigger_confluence_id', ''),
+        'exit_trigger_name': cfg.get('exit_trigger_name', ''),
+        'bar_count_exit': cfg.get('bar_count_exit'),
+        'risk_per_trade': cfg.get('risk_per_trade', 100.0),
+        'stop_config': cfg.get('stop_config', {}),
+        'target_config': cfg.get('target_config'),
+        'stop_atr_mult': cfg.get('stop_config', {}).get('atr_mult', 1.5),
+        'starting_balance': cfg.get('starting_balance', 10000.0),
+        'data_days': cfg.get('data_days', 90),
+        'lookback_mode': cfg.get('lookback_mode', 'Days'),
+        'lookback_start_date': cfg.get('lookback_start_date'),
+        'lookback_end_date': cfg.get('lookback_end_date'),
+        'confluence': cfg.get('confluence', []),
+        'general_confluences': cfg.get('general_confluences', []),
+        'strategy_origin': 'standard',
+        'stored_kpis': result.get('kpis', {}),
+        'forward_test_start': datetime.now(timezone.utc).isoformat(),
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+    existing.append(strategy)
+    save_strategies(existing)
+    result['status'] = 'saved'
+    result['saved_strategy_id'] = next_id
+    st.toast(f"Strategy saved: **{strategy['name']}**")
+
+
 def render_mass_strategy_builder():
     """Render the Mass Strategy Builder page — configure and run bulk strategy searches."""
     from mass_builder import (
@@ -10297,68 +10348,80 @@ def render_mass_strategy_builder():
         f"Est. time: **{format_time_estimate(est['est_seconds'])}**"
     )
 
-    # Progress bar (shown during/after analysis)
-    _search_status = st.session_state.get('mass_search_status', 'idle')
-    if _search_status == 'running':
-        _prog = st.session_state.get('mass_search_progress', {})
+    # =====================================================================
+    # Section 3b: Progress + Analyze
+    # =====================================================================
+    from mass_builder import (
+        start_mass_search_async, get_search_progress, is_search_running,
+        cancel_search,
+    )
+    _active_search_id = st.session_state.get('mass_active_search_id')
+
+    # Check if a background search is running
+    if _active_search_id and is_search_running(_active_search_id):
+        _prog = get_search_progress(_active_search_id)
         _step = _prog.get('current_step', 0)
-        _total = _prog.get('total_steps', 1)
+        _total = max(_prog.get('total_steps', 1), 1)
         _label = _prog.get('current_label', '')
-        st.progress(_step / max(_total, 1),
+        st.progress(_step / _total,
                     text=f"Analyzing {_label} — {_step:,} / {_total:,}")
-    elif _search_status == 'completed':
-        _results = st.session_state.get('mass_results', [])
-        st.success(f"Complete — **{len(_results)}** strategies found")
+        if st.button("Cancel", type="secondary"):
+            cancel_search(_active_search_id)
+            st.session_state.mass_active_search_id = None
+            st.rerun()
+        # Auto-refresh to poll progress
+        _time_mod = __import__('time')
+        _time_mod.sleep(2)
+        st.rerun()
+    elif _active_search_id and not is_search_running(_active_search_id):
+        # Search just finished — load results from DB
+        _final_prog = get_search_progress(_active_search_id)
+        _final_status = _final_prog.get('status', 'completed')
+        if _final_status == 'completed':
+            _saved = get_mass_search(_active_search_id)
+            if _saved:
+                st.session_state.mass_results = _saved.get('results', [])
+            st.success(f"Complete — **{len(st.session_state.get('mass_results', []))}** strategies found")
+        elif _final_status == 'cancelled':
+            st.warning("Search was cancelled.")
+        elif _final_status == 'failed':
+            st.error(f"Search failed: {_final_prog.get('error', 'Unknown error')}")
+        st.session_state.mass_active_search_id = None
+    elif st.session_state.get('mass_results'):
+        st.success(f"**{len(st.session_state.mass_results)}** strategies found")
 
     if analyze_clicked:
-        from mass_builder import run_mass_search
-        _progress_bar = st.progress(0, text="Starting analysis...")
-        _results_placeholder = st.empty()
-
-        def _on_progress(current, total, label):
-            pct = current / max(total, 1)
-            _progress_bar.progress(pct, text=f"Analyzing {label} — {current:,} / {total:,}")
-
-        try:
-            results = run_mass_search(mc, progress_callback=_on_progress)
-            st.session_state.mass_results = results
-            st.session_state.mass_search_status = 'completed'
-            _progress_bar.progress(1.0, text=f"Complete — {len(results)} strategies found")
-            # Auto-save results
-            search = {
-                'id': st.session_state.get('mass_search_id', new_search_id()),
-                'name': search_name,
-                'status': 'completed',
-                'config': dict(mc),
-                'results': results,
-                'progress': {},
-                'summary': {
-                    'results_stored': len(results),
-                    'best_daily_r': max((r['kpis'].get('daily_r', 0)
-                                         for r in results), default=0),
-                },
-            }
-            save_mass_search(search)
-            st.session_state.mass_search_id = search['id']
-            st.rerun()
-        except Exception as exc:
-            _progress_bar.empty()
-            st.error(f"Analysis failed: {exc}")
-            import logging as _ms_log
-            _ms_log.getLogger(__name__).exception("Mass search failed")
+        # Create search record and launch background thread
+        _sid = st.session_state.get('mass_search_id', new_search_id())
+        st.session_state.mass_search_id = _sid
+        search = {
+            'id': _sid,
+            'name': search_name,
+            'status': 'running',
+            'config': dict(mc),
+            'results': [],
+            'progress': {},
+            'summary': {},
+        }
+        save_mass_search(search)
+        start_mass_search_async(_sid, mc)
+        st.session_state.mass_active_search_id = _sid
+        st.session_state.mass_results = []
+        st.rerun()
 
     # =====================================================================
-    # Section 4 & 5: Post-Analysis Filters + Result Cards (Phase 33D)
+    # Section 4: Post-Analysis Filters
     # =====================================================================
     _results = st.session_state.get('mass_results', [])
     if _results:
         st.divider()
-        # Section 4: Filters
-        f1, f2, f3, f4, f5 = st.columns(5)
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
+        _sort_options = {"Daily R": "daily_r", "Win Rate": "win_rate",
+                         "Profit Factor": "profit_factor", "R²": "r_squared",
+                         "Total R": "total_r", "Trades": "total_trades"}
         with f1:
-            _sort = st.selectbox("Sort by", ["Daily R", "Win Rate", "Profit Factor",
-                                              "R²", "Total R", "Trades"],
-                                  key="mass_sort")
+            _sort_label = st.selectbox("Sort by", list(_sort_options.keys()),
+                                        key="mass_sort")
         with f2:
             _filt_wr = st.number_input("Min WR%", min_value=0.0, max_value=100.0,
                                         value=0.0, step=5.0, key="mass_filt_wr")
@@ -10371,35 +10434,132 @@ def render_mass_strategy_builder():
         with f5:
             _filt_r2 = st.number_input("Min R²", min_value=0.0, max_value=1.0,
                                         value=0.0, step=0.1, key="mass_filt_r2")
+        with f6:
+            _show_passed = st.checkbox("Show passed", value=False, key="mass_show_passed")
 
-        # Section 5: Result cards (placeholder — full rendering in Phase 33D)
-        st.caption(f"Showing {len(_results)} results")
-        for i, result in enumerate(_results[:20]):
+        # Apply filters
+        _sort_key = _sort_options[_sort_label]
+        filtered = []
+        for r in _results:
+            kpis = r.get('kpis', {})
+            if r.get('status') == 'passed' and not _show_passed:
+                continue
+            if _filt_wr > 0 and kpis.get('win_rate', 0) < _filt_wr:
+                continue
+            if _filt_pf > 0 and kpis.get('profit_factor', 0) < _filt_pf:
+                continue
+            if _filt_trades > 0 and kpis.get('total_trades', 0) < _filt_trades:
+                continue
+            if _filt_r2 > 0 and kpis.get('r_squared', 0) < _filt_r2:
+                continue
+            filtered.append(r)
+        filtered.sort(key=lambda r: r.get('kpis', {}).get(_sort_key, -999),
+                       reverse=True)
+
+        st.caption(f"Showing {len(filtered)} of {len(_results)} results")
+
+        # =================================================================
+        # Section 5: Result Cards
+        # =================================================================
+        import plotly.graph_objects as go
+
+        for i, result in enumerate(filtered[:50]):
             kpis = result.get('kpis', {})
             cfg = result.get('config', {})
+            status = result.get('status', 'active')
+            is_passed = status == 'passed'
+
             with st.container(border=True):
-                rc1, rc2 = st.columns([3, 1])
-                with rc1:
-                    st.markdown(f"**{cfg.get('symbol', '?')}** · {cfg.get('timeframe', '?')} · "
-                                f"{cfg.get('direction', '?')} · {cfg.get('entry_trigger_name', '?')}")
-                    st.caption(f"Trades: {kpis.get('total_trades', 0)} · "
-                               f"WR: {kpis.get('win_rate', 0):.1f}% · "
-                               f"PF: {kpis.get('profit_factor', 0):.2f} · "
-                               f"Daily R: {kpis.get('daily_r', 0):+.2f} · "
-                               f"R²: {kpis.get('r_squared', 0):.2f}")
-                with rc2:
-                    status = result.get('status', 'active')
-                    if status == 'saved':
-                        st.button("Saved", key=f"mass_save_{i}", disabled=True)
+                # Card header + equity curve
+                hdr_col, chart_col = st.columns([2, 1])
+
+                with hdr_col:
+                    # Title line
+                    _sym = cfg.get('symbol', '?')
+                    _tf = cfg.get('timeframe', '?')
+                    _dir = cfg.get('direction', '?')
+                    _rank = f"#{i+1}"
+
+                    if is_passed:
+                        st.markdown(f"~~**{_sym}** · {_tf} · {_dir}~~ {_rank}")
                     else:
-                        if st.button("Save to My Strategies", key=f"mass_save_{i}"):
-                            st.info("Save flow will be connected in Phase 33D.")
-                    if status == 'passed':
-                        if st.button("Un-pass", key=f"mass_pass_{i}"):
+                        st.markdown(f"**{_sym}** · {_tf} · {_dir} {_rank}")
+
+                    # Entry/Exit
+                    _entry_name = cfg.get('entry_trigger_name', '?')
+                    _exit_names = cfg.get('exit_trigger_names', [])
+                    _exit_str = ' / '.join(_exit_names) if _exit_names else '?'
+                    st.caption(f"Entry: {_entry_name} → Exit: {_exit_str}")
+
+                    # Stop/Target
+                    _stop = cfg.get('stop_config', {})
+                    _target = cfg.get('target_config')
+                    _stop_str = f"{_stop.get('method', '?')} {_stop.get('atr_mult', '')}"
+                    _tgt_str = (f"{_target.get('method', '?')} {_target.get('rr_ratio', _target.get('atr_mult', ''))}"
+                                if _target else "None")
+                    st.caption(f"Stop: {_stop_str.strip()} · Target: {_tgt_str.strip()}")
+
+                    # Confluence
+                    _conf_str = result.get('confluence_str', '')
+                    if _conf_str and _conf_str != 'None':
+                        st.caption(f"Confluence: {_conf_str}")
+
+                    # KPI row
+                    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+                    k1.metric("Trades", kpis.get('total_trades', 0))
+                    k2.metric("WR", f"{kpis.get('win_rate', 0):.1f}%")
+                    _pf = kpis.get('profit_factor', 0)
+                    k3.metric("PF", "∞" if _pf == float('inf') else f"{_pf:.2f}")
+                    k4.metric("Avg R", f"{kpis.get('avg_r', 0):+.2f}")
+                    k5.metric("Total R", f"{kpis.get('total_r', 0):+.1f}")
+                    k6.metric("Daily R", f"{kpis.get('daily_r', 0):+.2f}")
+                    k7.metric("R²", f"{kpis.get('r_squared', 0):.2f}")
+                    k8.metric("Max DD", f"{kpis.get('max_r_drawdown', 0):+.1f}R")
+
+                with chart_col:
+                    # Equity curve sparkline
+                    eq_curve = result.get('equity_curve', [])
+                    if eq_curve and len(eq_curve) > 1:
+                        fig = go.Figure(go.Scatter(
+                            y=eq_curve, mode='lines',
+                            line=dict(color='#4CAF50' if eq_curve[-1] > 0 else '#f44336',
+                                      width=1.5),
+                            fill='tozeroy',
+                            fillcolor='rgba(76,175,80,0.1)' if eq_curve[-1] > 0 else 'rgba(244,67,54,0.1)',
+                        ))
+                        fig.update_layout(
+                            height=120, margin=dict(l=0, r=0, t=0, b=0),
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            xaxis=dict(visible=False),
+                            yaxis=dict(visible=False),
+                            showlegend=False,
+                        )
+                        st.plotly_chart(fig, use_container_width=True,
+                                        key=f"mass_eq_{i}")
+                    else:
+                        st.caption("No equity curve")
+
+                # Action buttons
+                btn1, btn2, btn3 = st.columns([1, 1, 3])
+                with btn1:
+                    if status == 'saved':
+                        st.button("Saved", key=f"mass_sv_{i}",
+                                  disabled=True, use_container_width=True)
+                    else:
+                        if st.button("Save Strategy", key=f"mass_sv_{i}",
+                                     type="primary", use_container_width=True):
+                            _save_mass_result_to_strategies(result, i)
+                            st.rerun()
+                with btn2:
+                    if is_passed:
+                        if st.button("Un-pass", key=f"mass_ps_{i}",
+                                     use_container_width=True):
                             result['status'] = 'active'
                             st.rerun()
                     else:
-                        if st.button("Pass", key=f"mass_pass_{i}", type="secondary"):
+                        if st.button("Pass", key=f"mass_ps_{i}",
+                                     type="secondary", use_container_width=True):
                             result['status'] = 'passed'
                             st.rerun()
 

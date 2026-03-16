@@ -494,6 +494,148 @@ def run_mass_search(
     return results[:max_results]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BACKGROUND EXECUTION
+# ═══════════════════════════════════════════════════════════════════════════
+
+import threading
+import time as _time
+
+# Thread-safe shared state for progress reporting.
+# Key: search_id → dict with progress info.
+_active_searches: Dict[str, dict] = {}
+_search_lock = threading.Lock()
+
+
+def get_search_progress(search_id: str) -> dict:
+    """Get current progress for a running search (thread-safe)."""
+    with _search_lock:
+        return dict(_active_searches.get(search_id, {}))
+
+
+def is_search_running(search_id: str) -> bool:
+    with _search_lock:
+        info = _active_searches.get(search_id, {})
+        return info.get('status') == 'running'
+
+
+def cancel_search(search_id: str):
+    """Signal a running search to stop."""
+    with _search_lock:
+        if search_id in _active_searches:
+            _active_searches[search_id]['cancelled'] = True
+
+
+def start_mass_search_async(search_id: str, search_config: dict):
+    """Launch a mass search in a background daemon thread.
+
+    Progress is written to _active_searches (in-memory, polled by UI)
+    and periodically flushed to the database.
+    """
+    with _search_lock:
+        _active_searches[search_id] = {
+            'status': 'running',
+            'current_step': 0,
+            'total_steps': 0,
+            'current_label': 'Starting...',
+            'results_so_far': 0,
+            'started_at': datetime.now(timezone.utc).isoformat(),
+            'cancelled': False,
+        }
+
+    def _worker():
+        try:
+            from db import save_mass_search, update_mass_search
+
+            last_db_flush = _time.monotonic()
+
+            def _progress(step, total, label):
+                with _search_lock:
+                    info = _active_searches.get(search_id, {})
+                    if info.get('cancelled'):
+                        raise _CancelledError()
+                    info['current_step'] = step
+                    info['total_steps'] = total
+                    info['current_label'] = label
+
+                # Flush to DB every 10 seconds
+                nonlocal last_db_flush
+                now = _time.monotonic()
+                if now - last_db_flush > 10:
+                    last_db_flush = now
+                    try:
+                        update_mass_search(search_id, {
+                            'status': 'running',
+                            'progress': {
+                                'current_step': step,
+                                'total_steps': total,
+                                'current_label': label,
+                            },
+                        })
+                    except Exception:
+                        pass
+
+            results = run_mass_search(search_config, progress_callback=_progress)
+
+            # Save final results
+            with _search_lock:
+                if search_id in _active_searches:
+                    _active_searches[search_id]['status'] = 'completed'
+                    _active_searches[search_id]['results_so_far'] = len(results)
+
+            update_mass_search(search_id, {
+                'status': 'completed',
+                'results': results,
+                'progress': {},
+                'summary': {
+                    'results_stored': len(results),
+                    'best_daily_r': max(
+                        (r['kpis'].get('daily_r', 0) for r in results),
+                        default=0),
+                },
+            })
+            logger.info("Mass search %s completed: %d results", search_id, len(results))
+
+        except _CancelledError:
+            with _search_lock:
+                if search_id in _active_searches:
+                    _active_searches[search_id]['status'] = 'cancelled'
+            try:
+                from db import update_mass_search
+                update_mass_search(search_id, {'status': 'cancelled'})
+            except Exception:
+                pass
+            logger.info("Mass search %s cancelled", search_id)
+
+        except Exception as exc:
+            with _search_lock:
+                if search_id in _active_searches:
+                    _active_searches[search_id]['status'] = 'failed'
+                    _active_searches[search_id]['error'] = str(exc)
+            try:
+                from db import update_mass_search
+                update_mass_search(search_id, {'status': 'failed'})
+            except Exception:
+                pass
+            logger.exception("Mass search %s failed", search_id)
+
+        finally:
+            # Clean up after a delay so the UI can read final status
+            def _cleanup():
+                _time.sleep(60)
+                with _search_lock:
+                    _active_searches.pop(search_id, None)
+            threading.Thread(target=_cleanup, daemon=True).start()
+
+    thread = threading.Thread(target=_worker, daemon=True, name=f"mass_search_{search_id}")
+    thread.start()
+    return thread
+
+
+class _CancelledError(Exception):
+    pass
+
+
 TICKER_PRESETS = {
     "S&P Top 10": ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BRK.B", "LLY", "AVGO", "JPM"],
     "Tech": ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "AMD", "CRM", "ORCL", "ADBE"],
