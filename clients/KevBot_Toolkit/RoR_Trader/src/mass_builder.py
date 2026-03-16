@@ -250,9 +250,7 @@ def run_mass_search(
         get_enabled_groups, get_all_triggers, load_confluence_groups,
     )
     from risk_management_packs import load_risk_management_packs
-    from unified_engine import (
-        run_unified_backtest, precompute_bar_cache, run_trades_from_cache,
-    )
+    from unified_engine import run_unified_backtest
     import general_packs as gp_module
 
     enabled_groups = get_enabled_groups(load_confluence_groups())
@@ -361,43 +359,10 @@ def run_mass_search(
             period_trading_days = count_trading_days(df)
             logger.info("Mass search: %s/%s — %d bars loaded", symbol, tf, len(df))
 
-            # ── Level 1b: Precompute BROAD bar_cache for ALL triggers ──
-            # Build a mega-config referencing all selected triggers so the
-            # cache contains every trigger boolean. run_trades_from_cache()
-            # then replays in milliseconds per combo.
-            _first_entry = list(all_entry_bases.values())[0] if all_entry_bases else ''
-            _first_entry_cid = list(all_entry_bases.keys())[0] if all_entry_bases else ''
-            _all_exit_base_list = list(all_exit_bases.values())
-            _all_exit_cid_list = list(all_exit_bases.keys())
-            mega_config = {
-                'symbol': symbol,
-                'timeframe': tf,
-                'direction': 'LONG',
-                'trading_session': sym_session,
-                'entry_trigger': _first_entry,
-                'entry_trigger_confluence_id': _first_entry_cid,
-                'exit_triggers': _all_exit_base_list,
-                'exit_trigger_confluence_ids': _all_exit_cid_list,
-                'exit_trigger': _all_exit_base_list[0] if _all_exit_base_list else '',
-                'exit_trigger_confluence_id': _all_exit_cid_list[0] if _all_exit_cid_list else '',
-                'stop_config': {"method": "atr", "atr_mult": 1.5},
-                'target_config': None,
-                'bar_count_exit': None,
-            }
-
-            bar_cache = None
-            cache_meta = None
-            try:
-                bar_cache, cache_meta = precompute_bar_cache(
-                    df, mega_config, general_packs=enabled_gen,
-                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
-                _avail = cache_meta.get('available_triggers', set())
-                logger.info("Mass search: %s/%s — bar_cache ready, %d triggers: %s",
-                            symbol, tf, len(_avail),
-                            sorted(_avail)[:10])
-            except Exception as exc:
-                logger.warning("Mass search: bar_cache failed %s/%s: %s — "
-                               "falling back to full backtests", symbol, tf, exc)
+            logger.info("Mass search: %s/%s — ready for %d direction × %d entry "
+                        "× %d exit × %d RM combos",
+                        symbol, tf, len(directions), len(entry_cids),
+                        len(exit_combos), len(rm_pack_ids))
 
             for direction in directions:
                 for entry_cid in entry_cids:
@@ -460,21 +425,17 @@ def run_mass_search(
                                 asset_type=asset_type,
                             )
 
-                            # ── Level 2: Run trades (bar_cache replay or full) ──
+                            # ── Level 2: Run full backtest ──
                             try:
-                                if bar_cache and cache_meta:
-                                    trades_df = run_trades_from_cache(
-                                        bar_cache, config, cache_meta)
-                                else:
-                                    trades_df, _ = run_unified_backtest(
-                                        df, config,
-                                        general_packs=enabled_gen,
-                                        secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                                trades_df, _ = run_unified_backtest(
+                                    df, config,
+                                    general_packs=enabled_gen,
+                                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
                             except Exception as exc:
                                 logger.warning("Mass search: backtest failed "
-                                               "%s %s %s entry=%s: %s",
+                                               "%s %s %s entry=%s exit=%s: %s",
                                                symbol, tf, direction,
-                                               entry_base, exc)
+                                               entry_base, exit_bases, exc)
                                 if progress_callback:
                                     progress_callback(step, total_steps, label)
                                 continue
@@ -483,6 +444,14 @@ def run_mass_search(
                                 trades_df = pd.DataFrame()
 
                             n_trades = len(trades_df)
+
+                            # Log first few combos for debugging
+                            if step <= 5 or (step % 50 == 0):
+                                logger.info(
+                                    "Mass search: step %d/%d %s %s %s "
+                                    "entry=%s exit=%s → %d trades",
+                                    step, total_steps, symbol, tf, direction,
+                                    entry_base, exit_bases, n_trades)
 
                             if n_trades < min_trades:
                                 if progress_callback:
@@ -558,9 +527,8 @@ def run_mass_search(
                             if progress_callback:
                                 progress_callback(step, total_steps, label)
 
-            # Release bar_cache after this (symbol, TF) group to free memory
-            bar_cache = None
-            cache_meta = None
+            logger.info("Mass search: %s/%s group complete, %d results so far",
+                        symbol, tf, len(results))
 
     # Sort by daily_r descending, trim to max_results
     results.sort(key=lambda r: r.get('kpis', {}).get('daily_r', -999),
