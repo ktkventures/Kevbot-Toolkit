@@ -10499,7 +10499,14 @@ def render_mass_strategy_builder():
     # Section 3b: Progress + Analyze (synchronous with progress bar)
     # =====================================================================
     if st.session_state.get('mass_results'):
-        st.success(f"**{len(st.session_state.mass_results)}** strategies found")
+        _mr = st.session_state.mass_results
+        st.success(f"**{len(_mr)}** strategies found")
+        # Debug: show first result's raw KPIs
+        if _mr and _mr[0].get('kpis'):
+            _first_k = _mr[0]['kpis']
+            st.caption(f"Top result KPIs: trades={_first_k.get('total_trades')}, "
+                       f"WR={_first_k.get('win_rate')}, PF={_first_k.get('profit_factor')}, "
+                       f"DR={_first_k.get('daily_r')}, R²={_first_k.get('r_squared')}")
 
     if analyze_clicked:
         from mass_builder import run_mass_search
