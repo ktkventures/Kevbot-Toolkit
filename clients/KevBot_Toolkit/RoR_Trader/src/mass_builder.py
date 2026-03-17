@@ -283,6 +283,8 @@ def run_mass_search(
     start_date = date_range.get('start')
     end_date = date_range.get('end')
     data_seed = 42
+    logger.info("Mass search config: data_days=%d, date_range=%s, start=%s, end=%s",
+                data_days, date_range, start_date, end_date)
 
     # Resolve session
     session = search_config.get('session', 'RTH')

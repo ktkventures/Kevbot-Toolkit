@@ -7535,6 +7535,11 @@ def render_live_backtest(strat: dict):
         st.error("No data available for this symbol.")
         return
 
+    # Show actual data range loaded
+    _actual_start = df.index[0].strftime('%b %d, %Y') if len(df) > 0 else '?'
+    _actual_end = df.index[-1].strftime('%b %d, %Y') if len(df) > 0 else '?'
+    st.caption(f"Backtest range: {_actual_start} — {_actual_end} · {len(df):,} bars")
+
     # Trade generation (cached in session state per strategy)
     bt_cache_key = f"bt_trades_{strat['id']}"
     if bt_cache_key not in st.session_state:
@@ -10496,12 +10501,24 @@ def render_mass_strategy_builder():
     if est['n_exit_combos'] > 0:
         preview_parts.append(f"{est['n_exit_combos']} exit combos")
 
+    # Show configured date range prominently
+    _dr = mc.get('date_range', {})
+    if _dr.get('mode') == 'range' and _dr.get('start') and _dr.get('end'):
+        _range_display = f"Date range: {_dr['start']} to {_dr['end']}"
+    else:
+        _cfg_days = _dr.get('days', 90)
+        from datetime import timedelta as _td
+        _approx_start = (datetime.now() - _td(days=_cfg_days)).strftime('%b %d, %Y')
+        _approx_end = datetime.now().strftime('%b %d, %Y')
+        _range_display = f"Last {_cfg_days} days (~{_approx_start} to {_approx_end})"
+
     st.caption(
         f"**Preview:** {' × '.join(preview_parts)} = "
         f"**{est['base_configs']:,}** base configs · "
         f"**{est['total_evaluations']:,}** total evaluations · "
         f"Est. time: **{format_time_estimate(est['est_seconds'])}**"
     )
+    st.caption(f"**Data range:** {_range_display}")
 
     # =====================================================================
     # Section 3b: Progress + Analyze (synchronous with progress bar)
@@ -10689,6 +10706,12 @@ def render_mass_strategy_builder():
                     _conf_str = result.get('confluence_str', '')
                     if _conf_str and _conf_str != 'None':
                         st.caption(f"Confluence: {_conf_str}")
+
+                    # Date range
+                    _bt_s = cfg.get('backtest_start_date', '')
+                    _bt_e = cfg.get('backtest_end_date', '')
+                    if _bt_s and _bt_e:
+                        st.caption(f"Range: {_bt_s[:10]} to {_bt_e[:10]}")
 
                     # KPI row
                     k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
