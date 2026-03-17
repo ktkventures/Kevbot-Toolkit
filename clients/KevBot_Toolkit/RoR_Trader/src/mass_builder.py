@@ -506,6 +506,7 @@ def run_mass_search(
                             risk_per_trade=config.get('risk_per_trade', 100),
                             total_trading_days=period_trading_days)
 
+                        _diag['combos_passed_perf'] += 1
                         if meets_required_performance(base_kpis, required_perf):
                             results.append({
                                 'config': dict(config),
@@ -519,11 +520,13 @@ def run_mass_search(
                         if ('confluence_records' in trades_df.columns
                                 and n_trades >= min_trades):
                             try:
+                                # top_n per base config scales with max_results
+                                _top_n_per_base = min(50, max(20, max_results // max(total_steps, 1)))
                                 best = find_best_combinations(
                                     trades_df,
                                     max_depth=tf_conf_depth,
                                     min_trades=min_trades,
-                                    top_n=20,
+                                    top_n=_top_n_per_base,
                                     starting_balance=config.get(
                                         'starting_balance', 10000),
                                     risk_per_trade=config.get(
