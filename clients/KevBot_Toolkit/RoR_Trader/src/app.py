@@ -9942,11 +9942,7 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
     cfg = result.get('config', {})
 
     # Build strategy in the same format as Strategy Builder save
-    existing = load_strategies()
-    next_id = max((s.get('id', 0) for s in existing), default=0) + 1
-
     strategy = {
-        'id': next_id,
         'name': f"{cfg.get('symbol', '?')} {cfg.get('direction', '?')} - Mass #{result_index + 1}",
         'symbol': cfg.get('symbol', ''),
         'asset_type': cfg.get('asset_type', 'equity'),
@@ -9980,10 +9976,9 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
 
-    existing.append(strategy)
-    save_strategies(existing)
+    save_strategy(strategy)
     result['status'] = 'saved'
-    result['saved_strategy_id'] = next_id
+    result['saved_strategy_id'] = strategy['id']
     st.toast(f"Strategy saved: **{strategy['name']}**")
 
 
