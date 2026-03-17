@@ -2675,45 +2675,60 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - **Date Range** — lookback days / date range picker
 - **Timeframes** — checkboxes for each available TF (1Min, 5Min, 15Min, etc.)
 - **Direction** — Long, Short, or both
-- **Entry Triggers** — checkboxes from enabled confluence packs
-- **Exit Triggers** — checkboxes + depth selector (best 1 / best 2 / best 3 / best 4 combined). Default: best 1 (test individually)
+- **Entry Triggers** — checkboxes from enabled confluence packs (with execution type tags `[C]`/`[L0]`/`[HM]` etc.)
+- **Exit Triggers** — checkboxes (all triggers, same as Strategy Builder) + depth selector (best 1/2/3/4 combined). Bar count exits automatically separated from signal exits.
 - **TF Confluences** — checkboxes from enabled confluence packs + depth selector (max factors 1–4)
 - **General Confluences** — checkboxes from enabled general packs
-- **Stop Loss / Take Profit** — checkboxes from enabled Risk Management packs (each RM pack defines its own stop/target config)
+- **Stop Loss** — Strategy Builder-style config: method dropdown (ATR/Fixed$/Pct%/Swing), params, trailing stop, breakeven stop
+- **Take Profit** — Strategy Builder-style config: method dropdown (None/R:R/ATR/Fixed$/Pct%/Swing), params
+
+**Required Performance popover:**
+- **Prioritize by** — metric the engine sorts final results by (Daily R, Win Rate, PF, R², Avg R, Total R)
+- **Max results** — cap on total results returned (default 500)
+- Min thresholds: trades, win rate, profit factor, daily R, R²
 
 **Combination engine:**
-- Groups by (symbol, timeframe, session) to minimize `prepare_data_with_indicators()` calls (one per group, cached)
-- Within each group: precompute `bar_cache` once, then iterate over (direction × entry × exit_combo × RM_pack) using fast `run_trades_from_cache()` replay
-- For each base config that meets minimum trade count: auto-search TF + General confluences up to selected depth
+- Groups by (symbol, timeframe, session) to minimize `prepare_data_with_indicators()` calls (one per group, `@st.cache_data`)
+- Within each group: `run_unified_backtest()` per (direction × entry × exit_combo) with single stop/target config
+- Bar count exits properly separated from signal exits (mirrors Strategy Builder logic)
+- For each base config that meets minimum trade count: auto-search TF + General confluences via `find_best_combinations()` up to selected depth
+- Confluence results per base config scale with max_results (20–50 per base, capped)
 - Pre-filter at each level by Required Performance thresholds
-- Store top N results per search (configurable, default ~500)
+- Final sort by user-chosen priority metric, trim to max_results
+- Diagnostic counters track: data loads/failures, backtests run/failed, zero-trade combos, below-min combos, direction skips
 
-**Background execution:**
-- Click Analyze → job starts in background thread
-- Progress written to DB (cloud) or JSON file (desktop)
-- User can navigate away; results appear on Mass Strategy Results page when complete
-- Railway: throttle concurrent backtests to avoid OOM
+**Execution model:**
+- Synchronous with live progress bar (runs in Streamlit process)
+- Results auto-saved on completion to Supabase (`mass_searches` table) or local JSON
+- Diagnostic summary displayed after completion
 
 **Result cards include:**
 - KPIs: trades, win rate, PF, avg R, total R, daily R, R², max R drawdown
-- Equity curve sparkline (cumulative R series — small data, just R-multiples per trade)
+- Plotly equity curve sparkline (cumulative R series, green/red fill)
 - Config summary: ticker, TF, direction, entry trigger, exit triggers, confluences, stop/target
 - `Save to My Strategies` button → creates a full strategy in My Strategies (identical to Strategy Builder output)
 - `Pass` toggle → grays out card (reversible visual indicator)
+- Post-analysis filters: sort by 6 KPI options, min thresholds, show/hide passed
 
 **Mass Strategy Results page:**
-- List of saved searches with name, date, status (running/completed), result count
-- Click to expand → shows result cards with same layout as builder
-- Filter/sort controls persist per search
+- Flat card layout: search name, result count, date
+- Load / Copy / Delete buttons per search
+- Copy duplicates search config (without results) for iterative refinement
 
-**Phases:**
+**Implementation status (2026-03-17):**
 
-| Sub-Phase | Scope |
-|-----------|-------|
-| **33A** | Data model + storage (mass_searches table/JSON, result schema). UI skeleton for both pages. Select Tickers + Select Variables modals. Combination count preview. |
-| **33B** | Combination engine — group-by optimization, bar_cache iteration, auto-search confluences within each combo, Required Performance pre-filter. |
-| **33C** | Background execution + progress tracking, Railway throttling, partial results as they arrive. |
-| **33D** | Result cards — equity curve sparklines, Save to My Strategies, Pass toggle, post-analysis KPI filters/sort, search history on Results page. |
+| Sub-Phase | Status |
+|-----------|--------|
+| **33A** | COMPLETE — UI skeleton, data model, Select Variables modals (9 tabs), Supabase migration |
+| **33B** | COMPLETE — Combination engine, `run_unified_backtest()` per combo, confluence auto-search, bar_count exit separation, diagnostic counters |
+| **33C** | COMPLETE (simplified) — Synchronous execution with live progress bar. Background threading deferred (JWT context issues). |
+| **33D** | COMPLETE — Result cards with equity curves, Save to My Strategies, Pass toggle, post-analysis filters, search history |
+
+**Known limitations / future work:**
+- Bar_cache optimization deferred — each combo runs full `run_unified_backtest()` (~1-2s each). Per-trigger-set cache could make this 10-50x faster.
+- Background threading needs JWT propagation fix for Supabase user context. Currently runs synchronously (blocks page during analysis).
+- Stop/Target not iterable yet — single config per search. Future: RM pack-style variations for bulk stop/target testing.
+- Railway ephemeral filesystem — results persist via Supabase `mass_searches` table (migration required).
 
 **Full implementation spec:** `docs/Mass_Strategy_Builder_Spec.md`
 
