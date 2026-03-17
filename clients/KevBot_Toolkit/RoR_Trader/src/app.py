@@ -10099,7 +10099,7 @@ def render_mass_strategy_builder():
         with st.popover("Select Variables", use_container_width=True):
             var_tabs = st.tabs(["Date Range", "Timeframes", "Direction",
                                 "Entry", "Exit", "TF Confluence",
-                                "General", "Risk Mgmt"])
+                                "General", "Stop Loss", "Take Profit"])
 
             # Date Range tab
             with var_tabs[0]:
@@ -10261,21 +10261,53 @@ def render_mass_strategy_builder():
                     value=mc.get('general_confluence_depth', 1),
                     key="mass_gen_conf_depth")
 
-            # Risk Management tab
+            # Stop Loss tab
             with var_tabs[7]:
-                st.markdown("**Select risk management packs**")
+                st.markdown("**Select stop loss configurations to test**")
                 from risk_management_packs import (
                     load_risk_management_packs,
                     get_enabled_risk_management_packs,
                 )
                 all_rm = load_risk_management_packs()
                 enabled_rm = get_enabled_risk_management_packs(all_rm)
-                selected_rm = []
+                # Show RM packs that have stop configs
+                selected_rm = list(mc.get('rm_packs', []))
                 for rm in enabled_rm:
-                    if st.checkbox(f"{rm.name}", value=rm.id in mc.get('rm_packs', []),
-                                   key=f"mass_rm_{rm.id}"):
-                        selected_rm.append(rm.id)
+                    stop_cfg = rm.get_stop_config()
+                    _summary = f"{rm.name} — {stop_cfg.get('method', '?')}"
+                    if stop_cfg.get('atr_mult'):
+                        _summary += f" {stop_cfg['atr_mult']}x"
+                    elif stop_cfg.get('percentage'):
+                        _summary += f" {stop_cfg['percentage']}%"
+                    if st.checkbox(_summary,
+                                   value=rm.id in selected_rm,
+                                   key=f"mass_sl_{rm.id}"):
+                        if rm.id not in selected_rm:
+                            selected_rm.append(rm.id)
+                    else:
+                        if rm.id in selected_rm:
+                            selected_rm.remove(rm.id)
                 mc['rm_packs'] = selected_rm
+
+            # Take Profit tab
+            with var_tabs[8]:
+                st.markdown("**Take profit is configured per RM pack**")
+                st.caption("Each risk management pack above includes both stop loss "
+                           "and take profit settings. Select packs in the Stop Loss tab.")
+                if enabled_rm:
+                    for rm in enabled_rm:
+                        tgt = rm.get_target_config()
+                        if tgt:
+                            _tgt_summary = f"{rm.name} — {tgt.get('method', '?')}"
+                            if tgt.get('rr_ratio'):
+                                _tgt_summary += f" {tgt['rr_ratio']}:1 RR"
+                            elif tgt.get('atr_mult'):
+                                _tgt_summary += f" {tgt['atr_mult']}x ATR"
+                            st.caption(_tgt_summary)
+                        else:
+                            st.caption(f"{rm.name} — No target (stop only)")
+                else:
+                    st.info("No risk management packs enabled.")
 
         n_vars = (len(mc.get('entry_triggers', [])) + len(mc.get('exit_triggers', []))
                   + len(mc.get('tf_confluences', [])) + len(mc.get('rm_packs', [])))
@@ -10349,65 +10381,50 @@ def render_mass_strategy_builder():
     )
 
     # =====================================================================
-    # Section 3b: Progress + Analyze
+    # Section 3b: Progress + Analyze (synchronous with progress bar)
     # =====================================================================
-    from mass_builder import (
-        start_mass_search_async, get_search_progress, is_search_running,
-        cancel_search,
-    )
-    _active_search_id = st.session_state.get('mass_active_search_id')
-
-    # Check if a background search is running
-    if _active_search_id and is_search_running(_active_search_id):
-        _prog = get_search_progress(_active_search_id)
-        _step = _prog.get('current_step', 0)
-        _total = max(_prog.get('total_steps', 1), 1)
-        _label = _prog.get('current_label', '')
-        st.progress(_step / _total,
-                    text=f"Analyzing {_label} — {_step:,} / {_total:,}")
-        if st.button("Cancel", type="secondary"):
-            cancel_search(_active_search_id)
-            st.session_state.mass_active_search_id = None
-            st.rerun()
-        # Auto-refresh to poll progress
-        _time_mod = __import__('time')
-        _time_mod.sleep(2)
-        st.rerun()
-    elif _active_search_id and not is_search_running(_active_search_id):
-        # Search just finished — load results from DB
-        _final_prog = get_search_progress(_active_search_id)
-        _final_status = _final_prog.get('status', 'completed')
-        if _final_status == 'completed':
-            _saved = get_mass_search(_active_search_id)
-            if _saved:
-                st.session_state.mass_results = _saved.get('results', [])
-            st.success(f"Complete — **{len(st.session_state.get('mass_results', []))}** strategies found")
-        elif _final_status == 'cancelled':
-            st.warning("Search was cancelled.")
-        elif _final_status == 'failed':
-            st.error(f"Search failed: {_final_prog.get('error', 'Unknown error')}")
-        st.session_state.mass_active_search_id = None
-    elif st.session_state.get('mass_results'):
+    if st.session_state.get('mass_results'):
         st.success(f"**{len(st.session_state.mass_results)}** strategies found")
 
     if analyze_clicked:
-        # Create search record and launch background thread
-        _sid = st.session_state.get('mass_search_id', new_search_id())
-        st.session_state.mass_search_id = _sid
-        search = {
-            'id': _sid,
-            'name': search_name,
-            'status': 'running',
-            'config': dict(mc),
-            'results': [],
-            'progress': {},
-            'summary': {},
-        }
-        save_mass_search(search)
-        start_mass_search_async(_sid, mc)
-        st.session_state.mass_active_search_id = _sid
-        st.session_state.mass_results = []
-        st.rerun()
+        from mass_builder import run_mass_search
+        _progress_bar = st.progress(0, text="Starting analysis...")
+        _diag_area = st.empty()
+
+        def _on_progress(current, total, label):
+            pct = current / max(total, 1)
+            _progress_bar.progress(pct,
+                                   text=f"Analyzing {label} — {current:,} / {total:,}")
+
+        try:
+            results = run_mass_search(mc, progress_callback=_on_progress)
+            st.session_state.mass_results = results
+            _progress_bar.progress(1.0, text=f"Complete — {len(results)} strategies found")
+
+            # Auto-save results
+            _sid = st.session_state.get('mass_search_id', new_search_id())
+            st.session_state.mass_search_id = _sid
+            search = {
+                'id': _sid,
+                'name': search_name,
+                'status': 'completed',
+                'config': dict(mc),
+                'results': results,
+                'progress': {},
+                'summary': {
+                    'results_stored': len(results),
+                    'best_daily_r': max(
+                        (r['kpis'].get('daily_r', 0) for r in results),
+                        default=0) if results else 0,
+                },
+            }
+            save_mass_search(search)
+            st.rerun()
+        except Exception as exc:
+            _progress_bar.empty()
+            st.error(f"Analysis failed: {exc}")
+            import traceback
+            _diag_area.code(traceback.format_exc())
 
     # =====================================================================
     # Section 4: Post-Analysis Filters
