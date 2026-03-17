@@ -2728,9 +2728,38 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - Bar_cache optimization deferred — each combo runs full `run_unified_backtest()` (~1-2s each). Per-trigger-set cache could make this 10-50x faster.
 - Background threading needs JWT propagation fix for Supabase user context. Currently runs synchronously (blocks page during analysis).
 - Stop/Target not iterable yet — single config per search. Future: RM pack-style variations for bulk stop/target testing.
+- **Indicator warmup in backtests** — see Known Issues below.
 - Railway ephemeral filesystem — results persist via Supabase `mass_searches` table (migration required).
 
 **Full implementation spec:** `docs/Mass_Strategy_Builder_Spec.md`
+
+---
+
+## Known Issues To Address
+
+### Indicator Warmup in Backtests
+
+**Problem:** The unified engine's `IncrementalIndicatorEngine` seeds EMAs with the first bar's close price and converges incrementally. This means the first ~200 bars of any backtest have inaccurate indicator values (EMAs haven't converged, MACD is unreliable, etc.). Triggers that fire during this warmup period may produce trades based on incorrect indicator states.
+
+**Impact by configuration:**
+
+| Config | Bars loaded | Warmup bars (~200) as % | Risk |
+|--------|------------|-------------------------|------|
+| 90 days, 1Min | ~23,000 | < 1% | Low — negligible impact |
+| 90 days, 5Min | ~4,700 | ~4% | Low |
+| 90 days, 15Min | ~1,560 | ~13% | Moderate |
+| 90 days, 1Hour | ~195 | ~100% | **High — EMAs never converge** |
+| 30 days, 15Min | ~520 | ~38% | **High** |
+| 30 days, 1Hour | ~65 | **300% — insufficient data** | **Critical** |
+
+**Current mitigations:**
+- Forward test view loads `data_days * 2` for warmup before the backtest window
+- Ralph (live engine) calls `warmup(df)` with historical data before processing live ticks
+- Strategy Builder loads the exact requested range — no extra warmup
+
+**Proposed fix:** Load extra warmup bars before the backtest window in all contexts (Strategy Builder, Mass Builder). The warmup bars are used only for indicator convergence — trades generated during warmup are excluded from backtest results. The number of warmup bars should be at least `max(EMA_long_period, MACD_slow_period + MACD_signal_period)` — typically ~200 bars for standard settings.
+
+**Priority:** Medium. Low risk for typical 1Min/5Min configurations with 90+ days. Becomes significant for coarser timeframes (15Min+) or shorter lookback windows (30 days). Should be addressed before users build strategies on 1Hour or 4Hour timeframes.
 
 ---
 
