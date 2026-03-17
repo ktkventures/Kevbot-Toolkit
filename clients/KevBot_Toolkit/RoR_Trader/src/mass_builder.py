@@ -144,6 +144,8 @@ def build_strategy_config(
     asset_type: str = 'equity',
     risk_per_trade: float = 100.0,
     starting_balance: float = 10000.0,
+    backtest_start_date: Optional[str] = None,
+    backtest_end_date: Optional[str] = None,
 ) -> dict:
     """Build a strategy config dict compatible with _unified_trades() and save flow."""
     lookback_mode = date_range.get('mode', 'days')
@@ -175,6 +177,8 @@ def build_strategy_config(
         'lookback_mode': lookback_mode,
         'lookback_start_date': start_date,
         'lookback_end_date': end_date,
+        'backtest_start_date': backtest_start_date,
+        'backtest_end_date': backtest_end_date,
         'strategy_origin': 'standard',
     }
 
@@ -363,7 +367,11 @@ def run_mass_search(
             _diag['data_loads'] += 1
             sec_tf_map = get_secondary_tf_map(df)
             period_trading_days = count_trading_days(df)
-            logger.info("Mass search: %s/%s — %d bars loaded", symbol, tf, len(df))
+            # Pin backtest dates from actual DataFrame
+            _bt_start_iso = df.index[0].isoformat()
+            _bt_end_iso = df.index[-1].isoformat()
+            logger.info("Mass search: %s/%s — %d bars loaded (%s to %s)",
+                        symbol, tf, len(df), _bt_start_iso[:10], _bt_end_iso[:10])
 
             for direction in directions:
                 for entry_cid in entry_cids:
@@ -433,6 +441,8 @@ def run_mass_search(
                             target_config=target_config,
                             date_range=date_range,
                             asset_type=asset_type,
+                            backtest_start_date=_bt_start_iso,
+                            backtest_end_date=_bt_end_iso,
                         )
 
                         # ── Level 2: Run full backtest ──

@@ -6583,10 +6583,11 @@ def render_strategy_list():
     with filter_cols[2]:
         data_view = st.selectbox(
             "Data View",
-            ["All Data", "Last 7 Days", "Last 30 Days", "Last 90 Days",
-             "Backtest Only", "Forward Test Only"],
+            ["Strategy Default", "All Data", "Last 7 Days", "Last 30 Days",
+             "Last 90 Days", "Backtest Only", "Forward Test Only"],
             key="strat_data_view",
-            help="Filter which trades are used for KPIs and equity curves",
+            help="Strategy Default = backtest window + forward test trades. "
+                 "Other views filter by recency or phase.",
         )
     with filter_cols[3]:
         sort_option = st.selectbox(
@@ -6618,7 +6619,15 @@ def render_strategy_list():
                 continue
 
             # Apply data view filter
-            if data_view == "Last 7 Days":
+            if data_view == "Strategy Default":
+                _bt_start = strat.get('backtest_start_date')
+                if _bt_start:
+                    _start_ts = pd.Timestamp(_bt_start)
+                    if _start_ts.tz is None:
+                        _start_ts = _start_ts.tz_localize('UTC')
+                    trades_df = trades_df[trades_df['entry_time'] >= _start_ts]
+                # else: no pinned date => show all trades (graceful fallback)
+            elif data_view == "Last 7 Days":
                 trades_df = trades_df[trades_df['exit_time'] > _now - pd.Timedelta(days=7)]
             elif data_view == "Last 30 Days":
                 trades_df = trades_df[trades_df['exit_time'] > _now - pd.Timedelta(days=30)]
@@ -9969,6 +9978,8 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
         'lookback_mode': cfg.get('lookback_mode', 'Days'),
         'lookback_start_date': cfg.get('lookback_start_date'),
         'lookback_end_date': cfg.get('lookback_end_date'),
+        'backtest_start_date': cfg.get('backtest_start_date'),
+        'backtest_end_date': cfg.get('backtest_end_date'),
         'confluence': cfg.get('confluence', []),
         'general_confluences': cfg.get('general_confluences', []),
         'strategy_origin': 'standard',
