@@ -11017,6 +11017,45 @@ def render_portfolio_list():
                 if strat_names:
                     st.caption(", ".join(strat_names) + ("..." if n_strats > 4 else ""))
 
+                # Action buttons — render EARLY so they're always visible
+                # (equity curves and compliance checks below can be slow)
+                btn_cols = st.columns(4)
+                with btn_cols[0]:
+                    if st.button("View", key=f"port_view_{pid}"):
+                        st.session_state.viewing_portfolio_id = pid
+                        st.rerun()
+                with btn_cols[1]:
+                    if st.button("Edit", key=f"port_edit_{pid}"):
+                        st.session_state.editing_portfolio_id = pid
+                        st.session_state.portfolio_builder_strategies = []
+                        st.session_state.builder_recommendations = None
+                        st.session_state.pop('_builder_initialized', None)
+                        st.rerun()
+                with btn_cols[2]:
+                    if st.button("Clone", key=f"port_clone_{pid}"):
+                        new = duplicate_portfolio(pid)
+                        if new:
+                            st.toast(f"Cloned as '{new['name']}'")
+                            st.rerun()
+                with btn_cols[3]:
+                    if st.button("Delete", key=f"port_del_{pid}", type="secondary"):
+                        st.session_state.confirm_delete_portfolio_id = pid
+                        st.rerun()
+
+                # Inline delete confirmation
+                if st.session_state.get('confirm_delete_portfolio_id') == pid:
+                    st.warning(f"Delete '{port['name']}'? This cannot be undone.")
+                    dc = st.columns(2)
+                    with dc[0]:
+                        if st.button("Yes, Delete", key=f"port_cdel_{pid}", type="primary"):
+                            delete_portfolio(pid)
+                            st.session_state.confirm_delete_portfolio_id = None
+                            st.rerun()
+                    with dc[1]:
+                        if st.button("Cancel", key=f"port_ccan_{pid}"):
+                            st.session_state.confirm_delete_portfolio_id = None
+                            st.rerun()
+
                 # Mini equity curve (full card width) — from persisted data
                 if eq_data and len(eq_data.get('exit_times', [])) > 0:
                     try:
@@ -11069,44 +11108,6 @@ def render_portfolio_list():
                     elif rs:
                         st.caption(f"Reqs: {rs['name']}")
 
-                # Action buttons
-                btn_cols = st.columns(4)
-                with btn_cols[0]:
-                    if st.button("View", key=f"port_view_{pid}"):
-                        st.session_state.viewing_portfolio_id = pid
-                        st.rerun()
-                with btn_cols[1]:
-                    if st.button("Edit", key=f"port_edit_{pid}"):
-                        st.session_state.editing_portfolio_id = pid
-                        st.session_state.portfolio_builder_strategies = []
-                        st.session_state.builder_recommendations = None
-                        st.session_state.pop('_builder_initialized', None)
-                        st.rerun()
-                with btn_cols[2]:
-                    if st.button("Clone", key=f"port_clone_{pid}"):
-                        new = duplicate_portfolio(pid)
-                        if new:
-                            st.toast(f"Cloned as '{new['name']}'")
-                            st.rerun()
-                with btn_cols[3]:
-                    if st.button("Delete", key=f"port_del_{pid}", type="secondary"):
-                        st.session_state.confirm_delete_portfolio_id = pid
-                        st.rerun()
-
-                # Inline delete confirmation
-                if st.session_state.confirm_delete_portfolio_id == pid:
-                    st.warning(f"Delete '{port['name']}'? This cannot be undone.")
-                    dc = st.columns(2)
-                    with dc[0]:
-                        if st.button("Yes, Delete", key=f"port_cdel_{pid}", type="primary"):
-                            delete_portfolio(pid)
-                            st.session_state.pop(f"port_data_{pid}", None)
-                            st.session_state.confirm_delete_portfolio_id = None
-                            st.rerun()
-                    with dc[1]:
-                        if st.button("Cancel", key=f"port_cancel_del_{pid}"):
-                            st.session_state.confirm_delete_portfolio_id = None
-                            st.rerun()
 
 
 def get_cached_strategy_trades(strat):
