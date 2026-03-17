@@ -10261,53 +10261,149 @@ def render_mass_strategy_builder():
                     value=mc.get('general_confluence_depth', 1),
                     key="mass_gen_conf_depth")
 
-            # Stop Loss tab
+            # Stop Loss tab (mirrors Strategy Builder's stop config)
             with var_tabs[7]:
-                st.markdown("**Select stop loss configurations to test**")
-                from risk_management_packs import (
-                    load_risk_management_packs,
-                    get_enabled_risk_management_packs,
-                )
-                all_rm = load_risk_management_packs()
-                enabled_rm = get_enabled_risk_management_packs(all_rm)
-                # Show RM packs that have stop configs
-                selected_rm = list(mc.get('rm_packs', []))
-                for rm in enabled_rm:
-                    stop_cfg = rm.get_stop_config()
-                    _summary = f"{rm.name} — {stop_cfg.get('method', '?')}"
-                    if stop_cfg.get('atr_mult'):
-                        _summary += f" {stop_cfg['atr_mult']}x"
-                    elif stop_cfg.get('percentage'):
-                        _summary += f" {stop_cfg['percentage']}%"
-                    if st.checkbox(_summary,
-                                   value=rm.id in selected_rm,
-                                   key=f"mass_sl_{rm.id}"):
-                        if rm.id not in selected_rm:
-                            selected_rm.append(rm.id)
-                    else:
-                        if rm.id in selected_rm:
-                            selected_rm.remove(rm.id)
-                mc['rm_packs'] = selected_rm
+                _stop_methods = ["ATR", "Fixed $", "Pct %", "Swing"]
+                _stop_keys = ["atr", "fixed_dollar", "percentage", "swing"]
+                _saved_sl = mc.get('stop_config') or {"method": "atr", "atr_mult": 1.5}
+                _sl_method = _saved_sl.get('method', 'atr')
+                _sl_idx = _stop_keys.index(_sl_method) if _sl_method in _stop_keys else 0
 
-            # Take Profit tab
+                _sl_sel = st.selectbox("Stop Loss Method", range(len(_stop_methods)),
+                                       index=_sl_idx,
+                                       format_func=lambda i: _stop_methods[i],
+                                       key="mass_sl_method")
+                _sl_key = _stop_keys[_sl_sel]
+                _sl_cfg = {"method": _sl_key}
+
+                if _sl_key == "atr":
+                    _sl_cfg["atr_mult"] = st.number_input(
+                        "ATR×", min_value=0.5, max_value=5.0,
+                        value=float(_saved_sl.get('atr_mult', 1.5)),
+                        step=0.1, key="mass_sl_atr")
+                elif _sl_key == "fixed_dollar":
+                    _sl_cfg["dollar_amount"] = st.number_input(
+                        "$", min_value=0.01, max_value=100.0,
+                        value=float(_saved_sl.get('dollar_amount', 1.0)),
+                        step=0.1, key="mass_sl_dollar")
+                elif _sl_key == "percentage":
+                    _sl_cfg["percentage"] = st.number_input(
+                        "%", min_value=0.01, max_value=10.0,
+                        value=float(_saved_sl.get('percentage', 0.5)),
+                        step=0.05, key="mass_sl_pct")
+                elif _sl_key == "swing":
+                    _sl_cfg["lookback"] = st.number_input(
+                        "Lookback", min_value=2, max_value=50,
+                        value=int(_saved_sl.get('lookback', 5)),
+                        step=1, key="mass_sl_lookback")
+                    _sl_cfg["padding"] = st.number_input(
+                        "Pad $", min_value=0.0, max_value=10.0,
+                        value=float(_saved_sl.get('padding', 0.05)),
+                        step=0.01, key="mass_sl_padding")
+
+                # Trailing stop
+                _saved_trail = _saved_sl.get('trailing', {})
+                if st.checkbox("Trailing Stop",
+                               value=_saved_trail.get('enabled', False),
+                               key="mass_trail_enabled"):
+                    _trail_methods = ["ATR", "Fixed $", "Pct %"]
+                    _trail_keys = ["atr", "fixed_dollar", "percentage"]
+                    _tr_method = _saved_trail.get('method', 'atr')
+                    _tr_idx = _trail_keys.index(_tr_method) if _tr_method in _trail_keys else 0
+                    _tr_sel = st.selectbox("Trail Method", range(len(_trail_methods)),
+                                           index=_tr_idx,
+                                           format_func=lambda i: _trail_methods[i],
+                                           key="mass_trail_method")
+                    _tr_key = _trail_keys[_tr_sel]
+                    _trail_cfg = {"enabled": True, "method": _tr_key}
+                    if _tr_key == "atr":
+                        _trail_cfg["atr_mult"] = st.number_input(
+                            "Trail ATR×", min_value=0.3, max_value=5.0,
+                            value=float(_saved_trail.get('atr_mult', 1.0)),
+                            step=0.1, key="mass_trail_atr")
+                    elif _tr_key == "fixed_dollar":
+                        _trail_cfg["dollar_amount"] = st.number_input(
+                            "Trail $", min_value=0.01, max_value=100.0,
+                            value=float(_saved_trail.get('dollar_amount', 0.50)),
+                            step=0.05, key="mass_trail_dollar")
+                    elif _tr_key == "percentage":
+                        _trail_cfg["percentage"] = st.number_input(
+                            "Trail %", min_value=0.01, max_value=10.0,
+                            value=float(_saved_trail.get('percentage', 0.3)),
+                            step=0.05, key="mass_trail_pct")
+                    _trail_cfg["activation_r"] = st.number_input(
+                        "Activation (R)", min_value=0.0, max_value=5.0,
+                        value=float(_saved_trail.get('activation_r', 0.5)),
+                        step=0.1, key="mass_trail_activation")
+                    _sl_cfg["trailing"] = _trail_cfg
+
+                # Breakeven stop
+                _saved_be = _saved_sl.get('breakeven', {})
+                if st.checkbox("Breakeven Stop",
+                               value=_saved_be.get('enabled', False),
+                               key="mass_be_enabled"):
+                    _sl_cfg["breakeven"] = {
+                        "enabled": True,
+                        "activation_r": st.number_input(
+                            "BE Activation (R)", min_value=0.1, max_value=5.0,
+                            value=float(_saved_be.get('activation_r', 1.0)),
+                            step=0.1, key="mass_be_activation"),
+                        "offset": st.number_input(
+                            "BE Offset ($)", min_value=0.0, max_value=2.0,
+                            value=float(_saved_be.get('offset', 0.0)),
+                            step=0.01, key="mass_be_offset"),
+                    }
+
+                mc['stop_config'] = _sl_cfg
+
+            # Take Profit tab (mirrors Strategy Builder's target config)
             with var_tabs[8]:
-                st.markdown("**Take profit is configured per RM pack**")
-                st.caption("Each risk management pack above includes both stop loss "
-                           "and take profit settings. Select packs in the Stop Loss tab.")
-                if enabled_rm:
-                    for rm in enabled_rm:
-                        tgt = rm.get_target_config()
-                        if tgt:
-                            _tgt_summary = f"{rm.name} — {tgt.get('method', '?')}"
-                            if tgt.get('rr_ratio'):
-                                _tgt_summary += f" {tgt['rr_ratio']}:1 RR"
-                            elif tgt.get('atr_mult'):
-                                _tgt_summary += f" {tgt['atr_mult']}x ATR"
-                            st.caption(_tgt_summary)
-                        else:
-                            st.caption(f"{rm.name} — No target (stop only)")
+                _tgt_methods = ["None", "R:R", "ATR", "Fixed $", "Pct %", "Swing"]
+                _tgt_keys = [None, "risk_reward", "atr", "fixed_dollar", "percentage", "swing"]
+                _saved_tgt = mc.get('target_config') or {}
+                _tgt_method = _saved_tgt.get('method') if _saved_tgt else None
+                _tgt_idx = _tgt_keys.index(_tgt_method) if _tgt_method in _tgt_keys else 0
+
+                _tgt_sel = st.selectbox("Target Method", range(len(_tgt_methods)),
+                                         index=_tgt_idx,
+                                         format_func=lambda i: _tgt_methods[i],
+                                         key="mass_tgt_method")
+                _tgt_key = _tgt_keys[_tgt_sel]
+
+                if _tgt_key is None:
+                    mc['target_config'] = None
                 else:
-                    st.info("No risk management packs enabled.")
+                    _tgt_cfg = {"method": _tgt_key}
+                    if _tgt_key == "risk_reward":
+                        _tgt_cfg["rr_ratio"] = st.number_input(
+                            "R:R", min_value=0.5, max_value=10.0,
+                            value=float(_saved_tgt.get('rr_ratio', 2.0)),
+                            step=0.5, key="mass_tgt_rr")
+                    elif _tgt_key == "atr":
+                        _tgt_cfg["atr_mult"] = st.number_input(
+                            "ATR×", min_value=0.5, max_value=10.0,
+                            value=float(_saved_tgt.get('atr_mult', 2.0)),
+                            step=0.1, key="mass_tgt_atr")
+                    elif _tgt_key == "fixed_dollar":
+                        _tgt_cfg["dollar_amount"] = st.number_input(
+                            "$", min_value=0.01, max_value=100.0,
+                            value=float(_saved_tgt.get('dollar_amount', 2.0)),
+                            step=0.1, key="mass_tgt_dollar")
+                    elif _tgt_key == "percentage":
+                        _tgt_cfg["percentage"] = st.number_input(
+                            "%", min_value=0.01, max_value=20.0,
+                            value=float(_saved_tgt.get('percentage', 1.0)),
+                            step=0.05, key="mass_tgt_pct")
+                    elif _tgt_key == "swing":
+                        _tgt_cfg["lookback"] = st.number_input(
+                            "Lookback", min_value=2, max_value=50,
+                            value=int(_saved_tgt.get('lookback', 5)),
+                            step=1, key="mass_tgt_lookback")
+                        _tgt_cfg["padding"] = st.number_input(
+                            "Pad $", min_value=0.0, max_value=10.0,
+                            value=float(_saved_tgt.get('padding', 0.05)),
+                            step=0.01, key="mass_tgt_padding")
+                    mc['target_config'] = _tgt_cfg
 
         n_vars = (len(mc.get('entry_triggers', [])) + len(mc.get('exit_triggers', []))
                   + len(mc.get('tf_confluences', [])) + len(mc.get('rm_packs', [])))
@@ -10370,8 +10466,6 @@ def render_mass_strategy_builder():
         preview_parts.append(f"{est['n_entries']} entries")
     if est['n_exit_combos'] > 0:
         preview_parts.append(f"{est['n_exit_combos']} exit combos")
-    if est['n_rm_packs'] > 0:
-        preview_parts.append(f"{est['n_rm_packs']} RM packs")
 
     st.caption(
         f"**Preview:** {' × '.join(preview_parts)} = "
@@ -10476,17 +10570,19 @@ def render_mass_strategy_builder():
         st.caption(f"Showing {len(filtered)} of {len(_results)} results")
 
         # =================================================================
-        # Section 5: Result Cards
+        # Section 5: Result Cards (2-column layout like My Strategies)
         # =================================================================
         import plotly.graph_objects as go
 
+        _card_cols = st.columns(2)
         for i, result in enumerate(filtered[:50]):
             kpis = result.get('kpis', {})
             cfg = result.get('config', {})
             status = result.get('status', 'active')
             is_passed = status == 'passed'
 
-            with st.container(border=True):
+            with _card_cols[i % 2]:
+              with st.container(border=True):
                 # Card header + equity curve
                 hdr_col, chart_col = st.columns([2, 1])
 

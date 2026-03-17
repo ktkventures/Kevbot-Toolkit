@@ -36,14 +36,13 @@ def estimate_combinations(config: dict) -> dict:
     n_tfs = max(len(config.get('timeframes', [])), 1)
     n_dirs = max(len(config.get('directions', [])), 1)
     n_entries = max(len(config.get('entry_triggers', [])), 1)
-    n_rm = max(len(config.get('rm_packs', [])), 1)
 
     # Exit combinations
     n_exits_raw = len(config.get('exit_triggers', []))
     exit_depth = config.get('exit_depth', 1)
     n_exit_combos = _n_choose_up_to(n_exits_raw, exit_depth)
 
-    base_configs = n_tickers * n_tfs * n_dirs * n_entries * n_exit_combos * n_rm
+    base_configs = n_tickers * n_tfs * n_dirs * n_entries * n_exit_combos
 
     # Confluence combinations per base config
     n_tf_conf = len(config.get('tf_confluences', []))
@@ -72,7 +71,6 @@ def estimate_combinations(config: dict) -> dict:
         'n_directions': n_dirs,
         'n_entries': n_entries,
         'n_exit_combos': n_exit_combos,
-        'n_rm_packs': n_rm,
         'base_configs': base_configs,
         'confluence_combos_per_base': confluence_combos,
         'total_evaluations': total,
@@ -266,12 +264,15 @@ def run_mass_search(
     entry_cids = search_config.get('entry_triggers', [])
     exit_cids_raw = search_config.get('exit_triggers', [])
     exit_depth = search_config.get('exit_depth', 1)
-    rm_pack_ids = search_config.get('rm_packs', [])
     date_range = search_config.get('date_range', {'mode': 'days', 'days': 90})
     required_perf = search_config.get('required_performance', {})
     max_results = search_config.get('max_results', 500)
     tf_conf_depth = search_config.get('tf_confluence_depth', 2)
     gen_conf_depth = search_config.get('general_confluence_depth', 1)
+
+    # Single stop/target config (same for all combos in this search)
+    stop_config = search_config.get('stop_config') or {"method": "atr", "atr_mult": 1.5}
+    target_config = search_config.get('target_config')
 
     # Resolve date range
     data_days = date_range.get('days', 90)
@@ -286,10 +287,6 @@ def run_mass_search(
     exit_combos = generate_exit_combos(exit_cids_raw, exit_depth)
     if not exit_combos or exit_combos == [[]]:
         exit_combos = [[]]
-
-    # If no RM packs selected, use a default
-    if not rm_pack_ids:
-        rm_pack_ids = ['_default']
 
     # Pre-resolve ALL trigger base IDs for the mega-config
     all_entry_bases = {}
@@ -313,16 +310,15 @@ def run_mass_search(
 
     # Count total base configs for progress
     total_steps = (len(tickers) * len(timeframes) * len(directions)
-                   * len(entry_cids) * len(exit_combos) * len(rm_pack_ids))
+                   * len(entry_cids) * len(exit_combos))
     step = 0
     results = []
     min_trades = required_perf.get('min_trades', 10)
 
     logger.info("Mass search: %d tickers × %d TFs × %d dirs × %d entries "
-                "× %d exit_combos × %d RM = %d base configs",
+                "× %d exit_combos = %d base configs",
                 len(tickers), len(timeframes), len(directions),
-                len(entry_cids), len(exit_combos), len(rm_pack_ids),
-                total_steps)
+                len(entry_cids), len(exit_combos), total_steps)
 
     for symbol in tickers:
         asset_type = 'crypto' if '/' in symbol else 'equity'
@@ -342,7 +338,7 @@ def run_mass_search(
                 logger.warning("Mass search: data load failed %s/%s: %s",
                                symbol, tf, exc)
                 step += (len(directions) * len(entry_cids)
-                         * len(exit_combos) * len(rm_pack_ids))
+                         * len(exit_combos))
                 if progress_callback:
                     progress_callback(step, total_steps, f"{symbol} {tf} — skipped")
                 continue
@@ -350,7 +346,7 @@ def run_mass_search(
             if len(df) == 0:
                 logger.info("Mass search: %s/%s — 0 bars, skipping", symbol, tf)
                 step += (len(directions) * len(entry_cids)
-                         * len(exit_combos) * len(rm_pack_ids))
+                         * len(exit_combos))
                 if progress_callback:
                     progress_callback(step, total_steps, f"{symbol} {tf} — no data")
                 continue
@@ -359,16 +355,11 @@ def run_mass_search(
             period_trading_days = count_trading_days(df)
             logger.info("Mass search: %s/%s — %d bars loaded", symbol, tf, len(df))
 
-            logger.info("Mass search: %s/%s — ready for %d direction × %d entry "
-                        "× %d exit × %d RM combos",
-                        symbol, tf, len(directions), len(entry_cids),
-                        len(exit_combos), len(rm_pack_ids))
-
             for direction in directions:
                 for entry_cid in entry_cids:
                     entry_tdef = all_trigger_defs.get(entry_cid)
                     if not entry_tdef:
-                        step += len(exit_combos) * len(rm_pack_ids)
+                        step += len(exit_combos)
                         continue
                     entry_base = all_entry_bases.get(entry_cid, '')
                     entry_name = all_entry_names.get(entry_cid, '?')
@@ -376,7 +367,7 @@ def run_mass_search(
                     # Direction compatibility
                     if (entry_tdef.direction != 'BOTH'
                             and entry_tdef.direction != direction):
-                        step += len(exit_combos) * len(rm_pack_ids)
+                        step += len(exit_combos)
                         continue
 
                     for exit_combo in exit_combos:
@@ -394,23 +385,13 @@ def run_mass_search(
                             exit_names.append(en)
                             exit_cid_list.append(ecid)
                         if not valid_exits:
-                            step += len(rm_pack_ids)
+                            step += 1
                             continue
 
-                        for rm_id in rm_pack_ids:
-                            step += 1
-                            label = f"{symbol} {tf} {direction}"
+                        step += 1
+                        label = f"{symbol} {tf} {direction}"
 
-                            rm_pack = rm_pack_map.get(rm_id)
-                            if rm_pack:
-                                stop_config = rm_pack.get_stop_config()
-                                target_config = rm_pack.get_target_config()
-                            else:
-                                stop_config = {"method": "atr", "atr_mult": 1.5}
-                                target_config = {"method": "risk_reward",
-                                                 "rr_ratio": 2.0}
-
-                            config = build_strategy_config(
+                        config = build_strategy_config(
                                 symbol=symbol, timeframe=tf,
                                 direction=direction, session=sym_session,
                                 entry_cid=entry_cid, entry_base=entry_base,
