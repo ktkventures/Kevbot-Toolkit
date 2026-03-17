@@ -10570,19 +10570,17 @@ def render_mass_strategy_builder():
         st.caption(f"Showing {len(filtered)} of {len(_results)} results")
 
         # =================================================================
-        # Section 5: Result Cards (2-column layout like My Strategies)
+        # Section 5: Result Cards
         # =================================================================
         import plotly.graph_objects as go
 
-        _card_cols = st.columns(2)
         for i, result in enumerate(filtered[:50]):
             kpis = result.get('kpis', {})
             cfg = result.get('config', {})
             status = result.get('status', 'active')
             is_passed = status == 'passed'
 
-            with _card_cols[i % 2]:
-              with st.container(border=True):
+            with st.container(border=True):
                 # Card header + equity curve
                 hdr_col, chart_col = st.columns([2, 1])
 
