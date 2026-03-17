@@ -6713,7 +6713,8 @@ def render_strategy_list():
                     eq_data = extract_equity_curve_data(trades, boundary_dt=boundary)
                     strat['equity_curve_data'] = eq_data
                     # Backfill missing KPIs
-                    sk = strat.setdefault('kpis', {})
+                    sk = strat.get('kpis') or {}
+                    strat['kpis'] = sk
                     if 'max_r_drawdown' not in sk:
                         cr = trades["r_multiple"].cumsum().values
                         sk['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
