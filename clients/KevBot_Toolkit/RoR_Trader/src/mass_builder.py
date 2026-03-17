@@ -439,6 +439,29 @@ def run_mass_search(
 
                         n_trades = len(trades_df)
 
+                        if step <= 3:
+                            # Detailed debug for first few combos
+                            logger.info(
+                                "Mass search: step %d CONFIG: entry=%s "
+                                "entry_cid=%s exit=%s exit_cids=%s "
+                                "stop=%s target=%s direction=%s",
+                                step, config.get('entry_trigger'),
+                                config.get('entry_trigger_confluence_id'),
+                                config.get('exit_triggers'),
+                                config.get('exit_trigger_confluence_ids'),
+                                config.get('stop_config'),
+                                config.get('target_config'),
+                                config.get('direction'))
+                            if n_trades > 0:
+                                _sample = trades_df.head(3)
+                                for _, t in _sample.iterrows():
+                                    logger.info(
+                                        "  Trade: entry=%s r=%.2f win=%s "
+                                        "exit_reason=%s",
+                                        t.get('entry_trigger', '?'),
+                                        t.get('r_multiple', 0),
+                                        t.get('win', '?'),
+                                        t.get('exit_reason', '?'))
                         if step <= 5 or (step % 50 == 0):
                             logger.info(
                                 "Mass search: step %d/%d %s %s %s "

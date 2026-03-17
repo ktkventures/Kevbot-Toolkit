@@ -10510,6 +10510,21 @@ def render_mass_strategy_builder():
             st.caption(f"Results with WR > 0: {_n_winners}/{len(_mr)} · "
                        f"PF > 1: {_n_pf_pos}/{len(_mr)} · "
                        f"Best WR: {_best_wr:.1f}% · Best PF: {_best_pf:.2f}")
+            # Debug: show first result's full config for comparison
+            with st.expander("Debug: First result config"):
+                _cfg0 = _mr[0].get('config', {})
+                st.json({
+                    'entry_trigger': _cfg0.get('entry_trigger'),
+                    'entry_trigger_confluence_id': _cfg0.get('entry_trigger_confluence_id'),
+                    'exit_triggers': _cfg0.get('exit_triggers'),
+                    'exit_trigger_confluence_ids': _cfg0.get('exit_trigger_confluence_ids'),
+                    'direction': _cfg0.get('direction'),
+                    'stop_config': _cfg0.get('stop_config'),
+                    'target_config': _cfg0.get('target_config'),
+                    'timeframe': _cfg0.get('timeframe'),
+                    'symbol': _cfg0.get('symbol'),
+                    'kpis': _mr[0].get('kpis', {}),
+                })
 
     if analyze_clicked:
         from mass_builder import run_mass_search
