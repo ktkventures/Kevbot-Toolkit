@@ -2763,6 +2763,56 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 
 ---
 
+### Phase 34: Stop Loss & Take Profit Packs — PLANNED
+
+**Goal:** Restructure stop loss and take profit configuration into pack-based templates (like TF Confluence packs), enabling variation creation and bulk iteration in the Mass Strategy Builder.
+
+**Motivation:** Currently stop/target configs are set directly in the Strategy Builder with no way to save reusable variations. Users must manually adjust parameters each time. The Mass Builder can only use one stop/target config per search — it cannot iterate over variations. By treating stop/target as packs with templates and variations, users can create "Swing (Default)", "Swing (Tight)", "ATR 1.5x", "ATR 2.0x" etc. and iterate over them like any other variable.
+
+**Two new Confluence Pack pages:**
+1. **Stop Loss Packs** — templates: ATR, Fixed $, Percentage, Swing. Each template has default parameters + user-created variations. Optional trailing stop and breakeven stop settings per pack.
+2. **Take Profit Packs** — templates: None, R:R, ATR, Fixed $, Percentage, Swing. Each template has default parameters + user-created variations.
+
+**Migration plan (safe, non-breaking):**
+1. Create new `stop_loss_packs` and `take_profit_packs` data structures (following ConfluenceGroup pattern)
+2. Create default packs from current Risk Management pack templates
+3. Add new pages to Confluence Packs navigation
+4. Update Strategy Builder and Mass Builder to reference packs (with fallback to raw `stop_config`/`target_config` for backwards compatibility)
+5. Mass Builder: add Stop Loss and Take Profit as iterable variables (checkboxes, like entry/exit triggers)
+6. Migrate existing strategies: add `stop_pack_id` / `target_pack_id` fields alongside existing `stop_config` / `target_config` (both formats supported)
+7. Once validated: deprecate Risk Management packs page
+
+**Key constraint:** Existing strategies must continue to work unchanged. The unified engine reads `stop_config` / `target_config` dicts — packs are a UI/config layer that produces those same dicts. No engine changes needed.
+
+**Priority:** Medium. Not blocking live trading. Current strategies work fine with direct configs.
+
+---
+
+### Phase 35: Capital Efficiency Metric (ROI) — PLANNED
+
+**Goal:** Add a KPI that measures return relative to capital deployed, helping users compare strategies across different price points. Two strategies with identical R-multiple performance differ in capital efficiency if one trades a $500 stock vs a $20 stock.
+
+**Motivation:** R-multiples measure edge (return per unit of risk) but don't account for how much buying power is consumed. A user with a $25K prop firm account gets more portfolio diversification from strategies on $20 stocks than $500 stocks, even with identical R performance.
+
+**Proposed metrics:**
+- **Daily ROI %** = `(daily_r × risk_per_trade) / avg_position_cost × 100` — daily return as percentage of capital tied up per trade
+- **R per $1K deployed** = `daily_r / (avg_entry_price × shares_per_trade / 1000)` — normalizes edge by capital required
+- **Capital efficiency ratio** = `total_r / (avg_entry_price × 100)` — R generated per $100 of stock price
+
+**Display locations:**
+- Strategy Builder KPI row (new metric)
+- My Strategies cards (new column)
+- Mass Builder result cards and sort options
+- Portfolio analysis (aggregate across strategies)
+
+**Data requirements:** `avg_entry_price` from trades DataFrame (already available). `risk_per_trade` from strategy config (already available).
+
+**Key constraint:** Pure display/KPI addition. No changes to engine, triggers, or alerts. Zero risk to execution reliability.
+
+**Priority:** Low. Nice-to-have for portfolio construction optimization. Not blocking live trading.
+
+---
+
 ## Known Issues To Address
 
 ### Indicator Warmup in Backtests
