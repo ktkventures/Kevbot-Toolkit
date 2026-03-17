@@ -4342,7 +4342,7 @@ def render_dashboard():
 
     with left_col:
         # Best Performing Strategy (by Total R)
-        best_strat = max(strategies, key=lambda s: s.get('kpis', {}).get('total_r', 0))
+        best_strat = max(strategies, key=lambda s: (s.get('kpis') or {}).get('total_r', 0))
         best_kpis = best_strat.get('kpis', {})
 
         st.subheader("Top Strategy")
@@ -6726,7 +6726,7 @@ def render_strategy_list():
                     update_strategy(sid, strat)
 
             # Backfill max_r_drawdown from persisted curve if still missing
-            kpis = strat.get('kpis', {})
+            kpis = strat.get('kpis') or {}
             if 'max_r_drawdown' not in kpis and eq_data and len(eq_data.get('cumulative_r', [])) >= 2:
                 cr = np.array(eq_data['cumulative_r'])
                 kpis['max_r_drawdown'] = round(float((cr - np.maximum.accumulate(cr)).min()), 2)
@@ -10499,10 +10499,10 @@ def render_mass_strategy_builder():
         st.success(f"**{len(_mr)}** strategies found")
         # Debug: show distribution of results
         if _mr:
-            _n_winners = sum(1 for r in _mr if r.get('kpis', {}).get('win_rate', 0) > 0)
-            _n_pf_pos = sum(1 for r in _mr if r.get('kpis', {}).get('profit_factor', 0) > 1)
-            _best_wr = max((r.get('kpis', {}).get('win_rate', 0) for r in _mr), default=0)
-            _best_pf = max((r.get('kpis', {}).get('profit_factor', 0) for r in _mr), default=0)
+            _n_winners = sum(1 for r in _mr if (r.get('kpis') or {}).get('win_rate', 0) > 0)
+            _n_pf_pos = sum(1 for r in _mr if (r.get('kpis') or {}).get('profit_factor', 0) > 1)
+            _best_wr = max(((r.get('kpis') or {}).get('win_rate', 0) for r in _mr), default=0)
+            _best_pf = max(((r.get('kpis') or {}).get('profit_factor', 0) for r in _mr), default=0)
             st.caption(f"Results with WR > 0: {_n_winners}/{len(_mr)} · "
                        f"PF > 1: {_n_pf_pos}/{len(_mr)} · "
                        f"Best WR: {_best_wr:.1f}% · Best PF: {_best_pf:.2f}")
@@ -10627,7 +10627,7 @@ def render_mass_strategy_builder():
             if _filt_r2 > 0 and kpis.get('r_squared', 0) < _filt_r2:
                 continue
             filtered.append(r)
-        filtered.sort(key=lambda r: r.get('kpis', {}).get(_sort_key, -999),
+        filtered.sort(key=lambda r: (r.get('kpis') or {}).get(_sort_key, -999),
                        reverse=True)
 
         st.caption(f"Showing {len(filtered)} of {len(_results)} results")
