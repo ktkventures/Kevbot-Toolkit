@@ -8059,7 +8059,16 @@ def render_forward_test_view(strat: dict):
         boundary_ts = boundary_dt
         if df.index.tz is not None and boundary_ts.tzinfo is None:
             boundary_ts = pd.Timestamp(boundary_dt).tz_localize(df.index.tz)
-        bt_trading_days = count_trading_days(df.loc[df.index < boundary_ts])
+        # Use pinned backtest start to exclude warmup period from day count
+        _bt_start_str = strat.get('backtest_start_date')
+        if _bt_start_str:
+            _bt_start_ts = pd.Timestamp(datetime.fromisoformat(_bt_start_str))
+            if df.index.tz is not None and _bt_start_ts.tz is None:
+                _bt_start_ts = _bt_start_ts.tz_localize(df.index.tz)
+            bt_df = df.loc[(df.index >= _bt_start_ts) & (df.index < boundary_ts)]
+        else:
+            bt_df = df.loc[df.index < boundary_ts]
+        bt_trading_days = count_trading_days(bt_df)
         fw_trading_days = count_trading_days(df.loc[df.index >= boundary_ts])
     else:
         # Webhook strategies: estimate trading days from trade timestamps
