@@ -10501,12 +10501,15 @@ def render_mass_strategy_builder():
     if st.session_state.get('mass_results'):
         _mr = st.session_state.mass_results
         st.success(f"**{len(_mr)}** strategies found")
-        # Debug: show first result's raw KPIs
-        if _mr and _mr[0].get('kpis'):
-            _first_k = _mr[0]['kpis']
-            st.caption(f"Top result KPIs: trades={_first_k.get('total_trades')}, "
-                       f"WR={_first_k.get('win_rate')}, PF={_first_k.get('profit_factor')}, "
-                       f"DR={_first_k.get('daily_r')}, R²={_first_k.get('r_squared')}")
+        # Debug: show distribution of results
+        if _mr:
+            _n_winners = sum(1 for r in _mr if r.get('kpis', {}).get('win_rate', 0) > 0)
+            _n_pf_pos = sum(1 for r in _mr if r.get('kpis', {}).get('profit_factor', 0) > 1)
+            _best_wr = max((r.get('kpis', {}).get('win_rate', 0) for r in _mr), default=0)
+            _best_pf = max((r.get('kpis', {}).get('profit_factor', 0) for r in _mr), default=0)
+            st.caption(f"Results with WR > 0: {_n_winners}/{len(_mr)} · "
+                       f"PF > 1: {_n_pf_pos}/{len(_mr)} · "
+                       f"Best WR: {_best_wr:.1f}% · Best PF: {_best_pf:.2f}")
 
     if analyze_clicked:
         from mass_builder import run_mass_search
