@@ -9978,7 +9978,7 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
 
     save_strategy(strategy)
     result['status'] = 'saved'
-    result['saved_strategy_id'] = strategy['id']
+    result['saved_strategy_id'] = strategy.get('id', 0)
     st.toast(f"Strategy saved: **{strategy['name']}**")
 
 
