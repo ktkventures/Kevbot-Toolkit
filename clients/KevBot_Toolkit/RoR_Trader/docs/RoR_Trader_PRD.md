@@ -2752,6 +2752,10 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - [x] `backtest_start_date`/`backtest_end_date` pinned from `df.index[0]`/`df.index[-1]` at search time
 - [x] Forward test view warmup trade trimming + correct trading days count
 - [x] Mass search persistence via Supabase `mass_searches` table + JSON fallback
+- [x] Session selector added to Mass Builder (RTH/Pre-Market/After Hours/Extended Hours, auto-24/7 for crypto)
+- [x] Strategy hydration: Save to My Strategies now runs backtest to generate `stored_trades` + `equity_curve_data`, ensuring full compatibility with portfolios, compliance checks, and card rendering
+- [x] Strategy Default data view: new default on My Strategies page, filters to backtest window + forward test trades
+- [x] Trading days count excludes warmup period (was showing 124d instead of ~63d for 90-day backtest)
 
 **Known limitations / future work:**
 - Bar_cache optimization deferred — each combo runs full `run_unified_backtest()` (~1-2s each). Per-trigger-set cache could make this 10-50x faster.
