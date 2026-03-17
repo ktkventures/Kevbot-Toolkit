@@ -7535,10 +7535,15 @@ def render_live_backtest(strat: dict):
         st.error("No data available for this symbol.")
         return
 
-    # Show actual data range loaded
+    # Show actual data range loaded + debug pinned dates
     _actual_start = df.index[0].strftime('%b %d, %Y') if len(df) > 0 else '?'
     _actual_end = df.index[-1].strftime('%b %d, %Y') if len(df) > 0 else '?'
-    st.caption(f"Backtest range: {_actual_start} — {_actual_end} · {len(df):,} bars")
+    _pinned_s = strat.get('backtest_start_date', 'None')
+    _pinned_e = strat.get('backtest_end_date', 'None')
+    st.caption(f"Backtest range: {_actual_start} — {_actual_end} · {len(df):,} bars · "
+               f"Pinned: {str(_pinned_s)[:10] if _pinned_s != 'None' else 'None'} to "
+               f"{str(_pinned_e)[:10] if _pinned_e != 'None' else 'None'} · "
+               f"data_days={data_days}")
 
     # Trade generation (cached in session state per strategy)
     bt_cache_key = f"bt_trades_{strat['id']}"
