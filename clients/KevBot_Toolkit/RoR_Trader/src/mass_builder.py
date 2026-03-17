@@ -462,7 +462,7 @@ def run_mass_search(
                                     trades_df,
                                     max_depth=tf_conf_depth,
                                     min_trades=min_trades,
-                                    top_n=5,
+                                    top_n=20,
                                     starting_balance=config.get(
                                         'starting_balance', 10000),
                                     risk_per_trade=config.get(
@@ -510,8 +510,9 @@ def run_mass_search(
             logger.info("Mass search: %s/%s group complete, %d results so far",
                         symbol, tf, len(results))
 
-    # Sort by daily_r descending, trim to max_results
-    results.sort(key=lambda r: r.get('kpis', {}).get('daily_r', -999),
+    # Sort by user's chosen metric, trim to max_results
+    _sort_metric = required_perf.get('sort_by', 'daily_r')
+    results.sort(key=lambda r: r.get('kpis', {}).get(_sort_metric, -999),
                  reverse=True)
     return results[:max_results]
 

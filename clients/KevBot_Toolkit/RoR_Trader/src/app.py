@@ -10414,6 +10414,27 @@ def render_mass_strategy_builder():
         with st.popover("Required Performance", use_container_width=True):
             st.markdown("**Minimum requirements to include a result**")
             rp = mc.get('required_performance', {})
+
+            # Primary sort metric — what the engine optimizes for
+            _sort_options = {"Daily R": "daily_r", "Win Rate": "win_rate",
+                             "Profit Factor": "profit_factor", "R²": "r_squared",
+                             "Avg R": "avg_r", "Total R": "total_r"}
+            _saved_sort = rp.get('sort_by', 'daily_r')
+            _sort_labels = list(_sort_options.keys())
+            _sort_vals = list(_sort_options.values())
+            _sort_idx = _sort_vals.index(_saved_sort) if _saved_sort in _sort_vals else 0
+            _sel_sort = st.selectbox("Prioritize by", _sort_labels,
+                                      index=_sort_idx, key="mass_rp_sort")
+            rp['sort_by'] = _sort_options[_sel_sort]
+
+            # Max results to return
+            mc['max_results'] = st.number_input(
+                "Max results", min_value=10, max_value=5000,
+                value=mc.get('max_results', 500), step=50,
+                key="mass_rp_max_results")
+
+            st.divider()
+            st.markdown("**Minimum thresholds**")
             rp['min_trades'] = st.number_input("Min trades", min_value=1, max_value=500,
                                                 value=rp.get('min_trades', 10),
                                                 key="mass_rp_trades")
@@ -10435,7 +10456,7 @@ def render_mass_strategy_builder():
             rp['min_r_squared'] = _r2 if _r2 > 0 else None
             mc['required_performance'] = rp
 
-        st.caption(f"Min {rp.get('min_trades', 10)} trades")
+        st.caption(f"Sort: {_sel_sort} · Min {rp.get('min_trades', 10)} trades · Max {mc.get('max_results', 500)} results")
 
     # --- Analyze Button ---
     with s2c4:
@@ -10677,7 +10698,8 @@ def render_mass_strategy_builder():
 
 def render_mass_strategy_results():
     """Render the Mass Strategy Results page — view saved search history."""
-    from db import load_mass_searches, delete_mass_search
+    from db import load_mass_searches, delete_mass_search, save_mass_search
+    from mass_builder import new_search_id
 
     st.header("Mass Strategy Results")
 
@@ -10688,68 +10710,48 @@ def render_mass_strategy_results():
         return
 
     for search in searches:
-        status = search.get('status', 'pending')
+        sid = search.get('id', '')
         name = search.get('name', 'Untitled')
         created = search.get('created_at', '')[:16].replace('T', ' ')
         results = search.get('results', [])
         n_results = len(results)
+        config = search.get('config', {})
+        tickers = config.get('tickers', [])
 
-        # Status indicator
-        if status == 'completed':
-            icon = "🟢"
-        elif status == 'running':
-            icon = "🟡"
-        elif status == 'failed':
-            icon = "🔴"
-        elif status == 'cancelled':
-            icon = "🟠"
-        else:
-            icon = "⚪"
-
-        with st.expander(f"{icon} **{name}** — {n_results} results — {created}"):
-            # Config summary
-            config = search.get('config', {})
-            tickers = config.get('tickers', [])
-            tfs = config.get('timeframes', [])
-            dirs = config.get('directions', [])
-            st.caption(f"Tickers: {', '.join(tickers[:5])}{'...' if len(tickers) > 5 else ''} · "
-                       f"TFs: {', '.join(tfs)} · Dirs: {', '.join(dirs)}")
-
-            if status == 'running':
-                prog = search.get('progress', {})
-                step = prog.get('current_step', 0)
-                total = prog.get('total_steps', 1)
-                st.progress(step / max(total, 1),
-                            text=f"{step:,} / {total:,}")
-
-            # Results preview
-            if n_results > 0:
-                for i, result in enumerate(results[:10]):
-                    kpis = result.get('kpis', {})
-                    cfg = result.get('config', {})
-                    st.caption(
-                        f"#{i+1} {cfg.get('symbol', '?')} {cfg.get('timeframe', '?')} "
-                        f"{cfg.get('direction', '?')} — "
-                        f"WR: {kpis.get('win_rate', 0):.1f}% · "
-                        f"PF: {kpis.get('profit_factor', 0):.2f} · "
-                        f"Daily R: {kpis.get('daily_r', 0):+.2f}")
-                if n_results > 10:
-                    st.caption(f"... and {n_results - 10} more")
-
-            # Actions
-            ac1, ac2, ac3 = st.columns(3)
-            with ac1:
-                if st.button("Load in Builder", key=f"mass_load_{search.get('id')}"):
+        with st.container(border=True):
+            tc1, tc2, tc3, tc4, tc5 = st.columns([3, 1, 1, 1, 1])
+            with tc1:
+                _ticker_str = ', '.join(tickers[:4])
+                if len(tickers) > 4:
+                    _ticker_str += f" +{len(tickers) - 4}"
+                st.markdown(f"**{name}**")
+                st.caption(f"{n_results} results · {_ticker_str} · {created}")
+            with tc2:
+                if st.button("Load", key=f"msr_load_{sid}",
+                             use_container_width=True):
                     st.session_state.mass_config = config
                     st.session_state.mass_results = results
-                    st.session_state.mass_search_id = search.get('id')
+                    st.session_state.mass_search_id = sid
                     st.session_state.mass_search_name = name
                     st.session_state.nav_target = "Mass Builder"
                     st.rerun()
-            with ac3:
-                if st.button("Delete", key=f"mass_del_{search.get('id')}",
-                             type="secondary"):
-                    delete_mass_search(search.get('id'))
+            with tc3:
+                if st.button("Copy", key=f"msr_copy_{sid}",
+                             use_container_width=True):
+                    new_id = new_search_id()
+                    copy = dict(search)
+                    copy['id'] = new_id
+                    copy['name'] = f"{name} (copy)"
+                    copy['results'] = []
+                    copy['created_at'] = None
+                    save_mass_search(copy)
+                    st.rerun()
+            with tc4:
+                pass
+            with tc5:
+                if st.button("Delete", key=f"msr_del_{sid}",
+                             type="secondary", use_container_width=True):
+                    delete_mass_search(sid)
                     st.rerun()
 
 
