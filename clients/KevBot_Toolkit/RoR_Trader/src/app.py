@@ -9983,6 +9983,7 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
         'confluence': cfg.get('confluence', []),
         'general_confluences': cfg.get('general_confluences', []),
         'strategy_origin': 'standard',
+        'kpis': result.get('kpis', {}),
         'stored_kpis': result.get('kpis', {}),
         'forward_test_start': datetime.now(timezone.utc).isoformat(),
         'created_at': datetime.now(timezone.utc).isoformat(),
