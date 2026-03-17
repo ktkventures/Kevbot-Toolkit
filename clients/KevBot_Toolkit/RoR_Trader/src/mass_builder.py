@@ -385,8 +385,21 @@ def run_mass_search(
                         exit_bases = []
                         exit_names = []
                         exit_cid_list = []
+                        bar_count_exit_value = None
                         valid_exits = True
                         for ecid in exit_combo:
+                            # Separate bar_count exits from signal exits
+                            # (same logic as Strategy Builder lines 5088-5105)
+                            _is_bar_count = False
+                            for _g in enabled_groups:
+                                if (_g.get_trigger_id("exit") == ecid
+                                        and _g.base_template == "bar_count"):
+                                    bar_count_exit_value = _g.parameters.get(
+                                        "candle_count", 4)
+                                    _is_bar_count = True
+                                    break
+                            if _is_bar_count:
+                                continue  # Don't add to signal exits
                             eb = all_exit_bases.get(ecid)
                             en = all_exit_names.get(ecid)
                             if eb is None:
@@ -395,7 +408,12 @@ def run_mass_search(
                             exit_bases.append(eb)
                             exit_names.append(en)
                             exit_cid_list.append(ecid)
+
+                        # Need at least signal exits OR bar_count exit
                         if not valid_exits:
+                            step += 1
+                            continue
+                        if not exit_bases and bar_count_exit_value is None:
                             step += 1
                             continue
 
@@ -410,7 +428,7 @@ def run_mass_search(
                             exit_cids=exit_cid_list,
                             exit_bases=exit_bases,
                             exit_names=exit_names,
-                            bar_count_exit=None,
+                            bar_count_exit=bar_count_exit_value,
                             stop_config=stop_config,
                             target_config=target_config,
                             date_range=date_range,
