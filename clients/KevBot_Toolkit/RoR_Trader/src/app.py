@@ -10062,6 +10062,7 @@ def render_mass_strategy_builder():
             'general_confluences': [],
             'general_confluence_depth': 1,
             'rm_packs': [],
+            'session': 'RTH',
             'date_range': {'mode': 'days', 'days': 90},
             'required_performance': {
                 'min_trades': 10,
@@ -10148,6 +10149,22 @@ def render_mass_strategy_builder():
 
             # Date Range tab
             with var_tabs[0]:
+                # Session selector (affects VWAP, data filtering)
+                _has_crypto = any('/' in t for t in mc.get('tickers', []))
+                if _has_crypto:
+                    st.text_input("Session", value="24/7", disabled=True,
+                                  help="Crypto markets trade 24/7")
+                    mc['session'] = '24/7'
+                else:
+                    _saved_sess = mc.get('session', 'RTH')
+                    _sess_idx = TRADING_SESSIONS.index(_saved_sess) if _saved_sess in TRADING_SESSIONS else 0
+                    _sess = st.selectbox("Session", TRADING_SESSIONS,
+                                          index=_sess_idx, key="mass_session",
+                                          help="RTH: 9:30-4PM ET · Pre-Market: 4-9:30AM · "
+                                               "After Hours: 4-8PM · Extended: 4AM-8PM")
+                    mc['session'] = _sess
+
+                st.divider()
                 dr_mode = st.radio("Lookback mode",
                                    ["Days", "Date Range"],
                                    index=0 if mc['date_range'].get('mode') == 'days' else 1,
