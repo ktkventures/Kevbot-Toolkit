@@ -2715,6 +2715,24 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - Load / Copy / Delete buttons per search
 - Copy duplicates search config (without results) for iterative refinement
 
+**Save to My Strategies:**
+- Creates identical strategy format to Strategy Builder save (same config keys, same `save_strategy()` path)
+- Includes `kpis`, `stored_kpis`, `backtest_start_date`, `backtest_end_date`, `forward_test_start`
+- Saved strategies work in all existing flows: detail page, portfolios, alerts, live chart, forward testing
+
+**Strategy Default data view (My Strategies page):**
+- New default data view option: "Strategy Default"
+- Filters trades to `entry_time >= backtest_start_date` (backtest window + forward test trades)
+- Equity curves and KPIs reflect the strategy's intended backtest window, not all available data
+- Legacy strategies without pinned dates gracefully fall back to "All Data"
+
+**Date range consistency fixes:**
+- Forward test view now trims warmup trades (before `backtest_start_date`) from backtest results
+- Data range display shows pinned backtest start, not raw `df.index[0]` (which includes warmup)
+- Trading days count excludes warmup period
+- Mass Builder result cards show pinned date range
+- Mass Builder preview shows configured date range before analysis runs
+
 **Implementation status (2026-03-17):**
 
 | Sub-Phase | Status |
@@ -2724,12 +2742,22 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 | **33C** | COMPLETE (simplified) — Synchronous execution with live progress bar. Background threading deferred (JWT context issues). |
 | **33D** | COMPLETE — Result cards with equity curves, Save to My Strategies, Pass toggle, post-analysis filters, search history |
 
+**Post-implementation fixes (2026-03-17):**
+- [x] Exit triggers: use `get_all_triggers()` (same as Strategy Builder), not `get_exit_triggers()` (EXIT-only subset)
+- [x] Execution type tags (`[C]`/`[L0]`/`[HM]` etc.) on entry and exit trigger checkboxes
+- [x] Bar count exits separated from signal exits (mirrors Strategy Builder logic)
+- [x] JWT context propagated to background thread for Supabase user data access
+- [x] KPIs saved as both `kpis` and `stored_kpis` (My Strategies cards read `kpis`)
+- [x] Null-safe `(s.get('kpis') or {})` pattern across dashboard, My Strategies, Mass Builder
+- [x] `backtest_start_date`/`backtest_end_date` pinned from `df.index[0]`/`df.index[-1]` at search time
+- [x] Forward test view warmup trade trimming + correct trading days count
+- [x] Mass search persistence via Supabase `mass_searches` table + JSON fallback
+
 **Known limitations / future work:**
 - Bar_cache optimization deferred — each combo runs full `run_unified_backtest()` (~1-2s each). Per-trigger-set cache could make this 10-50x faster.
 - Background threading needs JWT propagation fix for Supabase user context. Currently runs synchronously (blocks page during analysis).
 - Stop/Target not iterable yet — single config per search. Future: RM pack-style variations for bulk stop/target testing.
 - **Indicator warmup in backtests** — see Known Issues below.
-- Railway ephemeral filesystem — results persist via Supabase `mass_searches` table (migration required).
 
 **Full implementation spec:** `docs/Mass_Strategy_Builder_Spec.md`
 
