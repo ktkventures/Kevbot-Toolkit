@@ -867,6 +867,17 @@ def prepare_forward_test_data(strat: dict, data_days_override: int = None):
     trades = _unified_trades(df, strat)
 
     backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+
+    # Trim backtest trades to the pinned backtest window (exclude warmup-period trades).
+    # The extra data before backtest_start_date is loaded for indicator warmup only —
+    # trades generated in that warmup period shouldn't appear in the backtest results.
+    _bt_start = strat.get('backtest_start_date')
+    if _bt_start and len(backtest_trades) > 0:
+        _bt_start_ts = pd.Timestamp(_bt_start)
+        if _bt_start_ts.tz is None and backtest_trades['entry_time'].dt.tz is not None:
+            _bt_start_ts = _bt_start_ts.tz_localize('UTC')
+        backtest_trades = backtest_trades[backtest_trades['entry_time'] >= _bt_start_ts]
+
     return df, backtest_trades, forward_trades, forward_test_start_dt
 
 
@@ -8055,7 +8066,14 @@ def render_forward_test_view(strat: dict):
         bt_trading_days = len(set(str(t['exit_time'])[:10] for t in backtest_trades.to_dict('records'))) if len(backtest_trades) > 0 else 0
         fw_trading_days = len(set(str(t['exit_time'])[:10] for t in forward_trades.to_dict('records'))) if len(forward_trades) > 0 else 0
 
-    _ft_data_start = df.index[0].strftime('%b %d, %Y') if len(df) > 0 else '?'
+    # Show backtest start from pinned date (not df.index[0] which includes warmup)
+    _bt_start_str = strat.get('backtest_start_date')
+    if _bt_start_str:
+        _ft_data_start = datetime.fromisoformat(_bt_start_str).strftime('%b %d, %Y')
+    elif len(df) > 0:
+        _ft_data_start = df.index[0].strftime('%b %d, %Y')
+    else:
+        _ft_data_start = '?'
     _ft_data_end = df.index[-1].strftime('%b %d, %Y') if len(df) > 0 else '?'
     st.caption(
         f"Data range: {_ft_data_start} — {_ft_data_end} · "
