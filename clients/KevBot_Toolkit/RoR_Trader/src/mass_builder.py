@@ -314,6 +314,14 @@ def run_mass_search(
     step = 0
     results = []
     min_trades = required_perf.get('min_trades', 10)
+    # Diagnostics counters
+    _diag = {
+        'data_loads': 0, 'data_failures': 0,
+        'backtests_run': 0, 'backtests_failed': 0,
+        'combos_with_trades': 0, 'combos_zero_trades': 0,
+        'combos_below_min': 0, 'combos_passed_perf': 0,
+        'confluence_results': 0, 'direction_skips': 0,
+    }
 
     logger.info("Mass search: %d tickers × %d TFs × %d dirs × %d entries "
                 "× %d exit_combos = %d base configs",
@@ -335,6 +343,7 @@ def run_mass_search(
                     timeframe=tf, data_feed=data_feed,
                     session=sym_session, secondary_tfs=sec_tfs)
             except Exception as exc:
+                _diag['data_failures'] += 1
                 logger.warning("Mass search: data load failed %s/%s: %s",
                                symbol, tf, exc)
                 step += (len(directions) * len(entry_cids)
@@ -351,6 +360,7 @@ def run_mass_search(
                     progress_callback(step, total_steps, f"{symbol} {tf} — no data")
                 continue
 
+            _diag['data_loads'] += 1
             sec_tf_map = get_secondary_tf_map(df)
             period_trading_days = count_trading_days(df)
             logger.info("Mass search: %s/%s — %d bars loaded", symbol, tf, len(df))
@@ -367,6 +377,7 @@ def run_mass_search(
                     # Direction compatibility
                     if (entry_tdef.direction != 'BOTH'
                             and entry_tdef.direction != direction):
+                        _diag['direction_skips'] += len(exit_combos)
                         step += len(exit_combos)
                         continue
 
@@ -407,12 +418,14 @@ def run_mass_search(
                         )
 
                         # ── Level 2: Run full backtest ──
+                        _diag['backtests_run'] += 1
                         try:
                             trades_df, _ = run_unified_backtest(
                                 df, config,
                                 general_packs=enabled_gen,
                                 secondary_tf_map=sec_tf_map if sec_tf_map else None)
                         except Exception as exc:
+                            _diag['backtests_failed'] += 1
                             logger.warning("Mass search: backtest failed "
                                            "%s %s %s entry=%s exit=%s: %s",
                                            symbol, tf, direction,
@@ -432,6 +445,13 @@ def run_mass_search(
                                 "entry=%s exit=%s → %d trades",
                                 step, total_steps, symbol, tf, direction,
                                 entry_base, exit_bases, n_trades)
+
+                        if n_trades == 0:
+                            _diag['combos_zero_trades'] += 1
+                        elif n_trades < min_trades:
+                            _diag['combos_below_min'] += 1
+                        else:
+                            _diag['combos_with_trades'] += 1
 
                         if n_trades < min_trades:
                             if progress_callback:
@@ -514,7 +534,13 @@ def run_mass_search(
     _sort_metric = required_perf.get('sort_by', 'daily_r')
     results.sort(key=lambda r: r.get('kpis', {}).get(_sort_metric, -999),
                  reverse=True)
-    return results[:max_results]
+
+    _diag['total_results_before_trim'] = len(results)
+    logger.info("Mass search complete: %s", _diag)
+
+    trimmed = results[:max_results]
+    # Attach diagnostics to the result set
+    return trimmed, _diag
 
 
 # ═══════════════════════════════════════════════════════════════════════════

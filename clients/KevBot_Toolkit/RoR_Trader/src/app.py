@@ -10512,9 +10512,29 @@ def render_mass_strategy_builder():
                                    text=f"Analyzing {label} — {current:,} / {total:,}")
 
         try:
-            results = run_mass_search(mc, progress_callback=_on_progress)
+            results, _search_diag = run_mass_search(mc, progress_callback=_on_progress)
             st.session_state.mass_results = results
             _progress_bar.progress(1.0, text=f"Complete — {len(results)} strategies found")
+
+            # Show diagnostics
+            _diag_parts = []
+            if _search_diag.get('data_loads'):
+                _diag_parts.append(f"Data loaded: {_search_diag['data_loads']} groups")
+            if _search_diag.get('data_failures'):
+                _diag_parts.append(f"Data failures: {_search_diag['data_failures']}")
+            if _search_diag.get('backtests_run'):
+                _diag_parts.append(f"Backtests: {_search_diag['backtests_run']}")
+            if _search_diag.get('backtests_failed'):
+                _diag_parts.append(f"Failed: {_search_diag['backtests_failed']}")
+            if _search_diag.get('combos_zero_trades'):
+                _diag_parts.append(f"Zero trades: {_search_diag['combos_zero_trades']}")
+            if _search_diag.get('combos_below_min'):
+                _diag_parts.append(f"Below min trades: {_search_diag['combos_below_min']}")
+            if _search_diag.get('combos_with_trades'):
+                _diag_parts.append(f"Passed min trades: {_search_diag['combos_with_trades']}")
+            if _search_diag.get('direction_skips'):
+                _diag_parts.append(f"Direction skips: {_search_diag['direction_skips']}")
+            _diag_area.caption(" · ".join(_diag_parts))
 
             # Auto-save results
             _sid = st.session_state.get('mass_search_id', new_search_id())
@@ -10531,6 +10551,7 @@ def render_mass_strategy_builder():
                     'best_daily_r': max(
                         (r['kpis'].get('daily_r', 0) for r in results),
                         default=0) if results else 0,
+                    'diagnostics': _search_diag,
                 },
             }
             save_mass_search(search)
