@@ -392,121 +392,120 @@ def run_mass_search(
                         label = f"{symbol} {tf} {direction}"
 
                         config = build_strategy_config(
-                                symbol=symbol, timeframe=tf,
-                                direction=direction, session=sym_session,
-                                entry_cid=entry_cid, entry_base=entry_base,
-                                entry_name=entry_name,
-                                exit_cids=exit_cid_list,
-                                exit_bases=exit_bases,
-                                exit_names=exit_names,
-                                bar_count_exit=None,
-                                stop_config=stop_config,
-                                target_config=target_config,
-                                date_range=date_range,
-                                asset_type=asset_type,
-                            )
+                            symbol=symbol, timeframe=tf,
+                            direction=direction, session=sym_session,
+                            entry_cid=entry_cid, entry_base=entry_base,
+                            entry_name=entry_name,
+                            exit_cids=exit_cid_list,
+                            exit_bases=exit_bases,
+                            exit_names=exit_names,
+                            bar_count_exit=None,
+                            stop_config=stop_config,
+                            target_config=target_config,
+                            date_range=date_range,
+                            asset_type=asset_type,
+                        )
 
-                            # ── Level 2: Run full backtest ──
-                            try:
-                                trades_df, _ = run_unified_backtest(
-                                    df, config,
-                                    general_packs=enabled_gen,
-                                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
-                            except Exception as exc:
-                                logger.warning("Mass search: backtest failed "
-                                               "%s %s %s entry=%s exit=%s: %s",
-                                               symbol, tf, direction,
-                                               entry_base, exit_bases, exc)
-                                if progress_callback:
-                                    progress_callback(step, total_steps, label)
-                                continue
-
-                            if not isinstance(trades_df, pd.DataFrame):
-                                trades_df = pd.DataFrame()
-
-                            n_trades = len(trades_df)
-
-                            # Log first few combos for debugging
-                            if step <= 5 or (step % 50 == 0):
-                                logger.info(
-                                    "Mass search: step %d/%d %s %s %s "
-                                    "entry=%s exit=%s → %d trades",
-                                    step, total_steps, symbol, tf, direction,
-                                    entry_base, exit_bases, n_trades)
-
-                            if n_trades < min_trades:
-                                if progress_callback:
-                                    progress_callback(step, total_steps, label)
-                                continue
-
-                            # KPIs on base trades (no confluence filter)
-                            base_kpis = calculate_kpis(
-                                trades_df,
-                                starting_balance=config.get('starting_balance', 10000),
-                                risk_per_trade=config.get('risk_per_trade', 100),
-                                total_trading_days=period_trading_days)
-
-                            if meets_required_performance(base_kpis, required_perf):
-                                results.append({
-                                    'config': dict(config),
-                                    'kpis': base_kpis,
-                                    'equity_curve': build_equity_curve(trades_df),
-                                    'status': 'active',
-                                    'confluence_str': 'None',
-                                })
-
-                            # ── Level 3: Auto-search confluences ──
-                            if ('confluence_records' in trades_df.columns
-                                    and n_trades >= min_trades):
-                                try:
-                                    best = find_best_combinations(
-                                        trades_df,
-                                        max_depth=tf_conf_depth,
-                                        min_trades=min_trades,
-                                        top_n=5,
-                                        starting_balance=config.get(
-                                            'starting_balance', 10000),
-                                        risk_per_trade=config.get(
-                                            'risk_per_trade', 100),
-                                        total_trading_days=period_trading_days,
-                                    )
-                                    if len(best) > 0:
-                                        for _, row in best.iterrows():
-                                            combo_kpis = {
-                                                k: row[k] for k in base_kpis
-                                                if k in row.index
-                                            }
-                                            if not meets_required_performance(
-                                                    combo_kpis, required_perf):
-                                                continue
-                                            combo_set = row['combination']
-                                            conf_config = dict(config)
-                                            tf_confs = [c for c in combo_set
-                                                        if not c.startswith('GEN-')]
-                                            gen_confs = [c for c in combo_set
-                                                         if c.startswith('GEN-')]
-                                            conf_config['confluence'] = tf_confs
-                                            conf_config['general_confluences'] = gen_confs
-                                            mask = trades_df['confluence_records'].apply(
-                                                lambda r: isinstance(r, set)
-                                                and combo_set.issubset(r))
-                                            filtered = trades_df[mask]
-                                            results.append({
-                                                'config': conf_config,
-                                                'kpis': combo_kpis,
-                                                'equity_curve': build_equity_curve(
-                                                    filtered),
-                                                'status': 'active',
-                                                'confluence_str': row.get(
-                                                    'combo_str', ''),
-                                            })
-                                except Exception as exc:
-                                    logger.warning(
-                                        "Mass search: confluence search "
-                                        "failed %s: %s", label, exc)
-
+                        # ── Level 2: Run full backtest ──
+                        try:
+                            trades_df, _ = run_unified_backtest(
+                                df, config,
+                                general_packs=enabled_gen,
+                                secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                        except Exception as exc:
+                            logger.warning("Mass search: backtest failed "
+                                           "%s %s %s entry=%s exit=%s: %s",
+                                           symbol, tf, direction,
+                                           entry_base, exit_bases, exc)
                             if progress_callback:
                                 progress_callback(step, total_steps, label)
+                            continue
+
+                        if not isinstance(trades_df, pd.DataFrame):
+                            trades_df = pd.DataFrame()
+
+                        n_trades = len(trades_df)
+
+                        if step <= 5 or (step % 50 == 0):
+                            logger.info(
+                                "Mass search: step %d/%d %s %s %s "
+                                "entry=%s exit=%s → %d trades",
+                                step, total_steps, symbol, tf, direction,
+                                entry_base, exit_bases, n_trades)
+
+                        if n_trades < min_trades:
+                            if progress_callback:
+                                progress_callback(step, total_steps, label)
+                            continue
+
+                        # KPIs on base trades (no confluence filter)
+                        base_kpis = calculate_kpis(
+                            trades_df,
+                            starting_balance=config.get('starting_balance', 10000),
+                            risk_per_trade=config.get('risk_per_trade', 100),
+                            total_trading_days=period_trading_days)
+
+                        if meets_required_performance(base_kpis, required_perf):
+                            results.append({
+                                'config': dict(config),
+                                'kpis': base_kpis,
+                                'equity_curve': build_equity_curve(trades_df),
+                                'status': 'active',
+                                'confluence_str': 'None',
+                            })
+
+                        # ── Level 3: Auto-search confluences ──
+                        if ('confluence_records' in trades_df.columns
+                                and n_trades >= min_trades):
+                            try:
+                                best = find_best_combinations(
+                                    trades_df,
+                                    max_depth=tf_conf_depth,
+                                    min_trades=min_trades,
+                                    top_n=5,
+                                    starting_balance=config.get(
+                                        'starting_balance', 10000),
+                                    risk_per_trade=config.get(
+                                        'risk_per_trade', 100),
+                                    total_trading_days=period_trading_days,
+                                )
+                                if len(best) > 0:
+                                    for _, row in best.iterrows():
+                                        combo_kpis = {
+                                            k: row[k] for k in base_kpis
+                                            if k in row.index
+                                        }
+                                        if not meets_required_performance(
+                                                combo_kpis, required_perf):
+                                            continue
+                                        combo_set = row['combination']
+                                        conf_config = dict(config)
+                                        tf_confs = [c for c in combo_set
+                                                    if not c.startswith('GEN-')]
+                                        gen_confs = [c for c in combo_set
+                                                     if c.startswith('GEN-')]
+                                        conf_config['confluence'] = tf_confs
+                                        conf_config['general_confluences'] = gen_confs
+                                        mask = trades_df['confluence_records'].apply(
+                                            lambda r: isinstance(r, set)
+                                            and combo_set.issubset(r))
+                                        filtered = trades_df[mask]
+                                        results.append({
+                                            'config': conf_config,
+                                            'kpis': combo_kpis,
+                                            'equity_curve': build_equity_curve(
+                                                filtered),
+                                            'status': 'active',
+                                            'confluence_str': row.get(
+                                                'combo_str', ''),
+                                        })
+                            except Exception as exc:
+                                logger.warning(
+                                    "Mass search: confluence search "
+                                    "failed %s: %s", label, exc)
+
+                        if progress_callback:
+                            progress_callback(step, total_steps, label)
 
             logger.info("Mass search: %s/%s group complete, %d results so far",
                         symbol, tf, len(results))
