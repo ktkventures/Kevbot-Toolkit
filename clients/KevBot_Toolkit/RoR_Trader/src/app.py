@@ -9984,9 +9984,46 @@ def load_strategy_into_builder(strat: dict):
 # =============================================================================
 
 def _save_mass_result_to_strategies(result: dict, result_index: int):
-    """Save a mass search result as a strategy in My Strategies."""
+    """Save a mass search result as a strategy in My Strategies.
+
+    Hydrates the strategy with stored_trades and equity_curve_data by
+    running the backtest — same data the Strategy Builder saves. This
+    ensures the strategy is fully compatible with portfolios, compliance
+    checks, and equity curve rendering without recomputation.
+    """
     from datetime import datetime, timezone
     cfg = result.get('config', {})
+
+    # Hydrate: run backtest to generate stored_trades + equity_curve_data
+    _hydrated_trades = None
+    _hydrated_eq = None
+    try:
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+        _req_labels = get_required_tfs_from_confluence(cfg.get('confluence', []))
+        _sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in _req_labels))
+        _bt_start = None
+        _bt_end = None
+        if cfg.get('backtest_start_date'):
+            _bt_start = datetime.fromisoformat(cfg['backtest_start_date'])
+        if cfg.get('backtest_end_date'):
+            _bt_end = datetime.fromisoformat(cfg['backtest_end_date'])
+
+        _df = prepare_data_with_indicators(
+            cfg.get('symbol', ''), cfg.get('data_days', 90), 42,
+            start_date=_bt_start, end_date=_bt_end,
+            timeframe=cfg.get('timeframe', '1Min'),
+            data_feed=_get_data_feed(),
+            session=cfg.get('trading_session', 'RTH'),
+            secondary_tfs=_sec_tfs)
+
+        if len(_df) > 0:
+            _trades = _unified_trades(_df, cfg)
+            if isinstance(_trades, pd.DataFrame) and len(_trades) > 0:
+                _hydrated_trades = _extract_minimal_trades(_trades)
+                _hydrated_eq = extract_equity_curve_data(
+                    _trades, boundary_dt=datetime.now(timezone.utc))
+    except Exception:
+        pass  # Fall through — strategy saves without hydration
 
     # Build strategy in the same format as Strategy Builder save
     strategy = {
@@ -10022,6 +10059,8 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
         'strategy_origin': 'standard',
         'kpis': result.get('kpis', {}),
         'stored_kpis': result.get('kpis', {}),
+        'stored_trades': _hydrated_trades,
+        'equity_curve_data': _hydrated_eq,
         'forward_test_start': datetime.now(timezone.utc).isoformat(),
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
