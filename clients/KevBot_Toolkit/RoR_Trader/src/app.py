@@ -11547,10 +11547,29 @@ def render_portfolio_builder():
             'requirement_set_id': req_set_id if req_set_id else None,
         }
 
-        # Compute and cache KPIs + equity curve
-        save_data = get_portfolio_trades(portfolio, get_strategy_by_id, get_strategy_trades)
+        # Pre-cache any strategies that aren't already cached
+        _save_progress = st.progress(0.0, text="Preparing strategy data...")
+        _needs_fetch = []
+        for _ps in builder_strategies:
+            _s = get_strategy_by_id(_ps['strategy_id'])
+            if _s:
+                result = _get_fast_strategy_trades(_s)
+                if result is not None:
+                    st.session_state.strategy_trades_cache[_s['id']] = result
+                else:
+                    _needs_fetch.append(_s)
+
+        for _fi, _s in enumerate(_needs_fetch):
+            _save_progress.progress(
+                (_fi + 1) / (len(_needs_fetch) + 1),
+                text=f"Computing trades for {_s.get('name', '')} ({_fi+1}/{len(_needs_fetch)})...")
+            get_cached_strategy_trades(_s)
+
+        _save_progress.progress(0.9, text="Computing portfolio metrics...")
+        save_data = get_portfolio_trades(portfolio, get_strategy_by_id, get_cached_strategy_trades)
         portfolio['cached_kpis'] = calculate_portfolio_kpis(portfolio, save_data['combined_trades'], save_data['daily_pnl'])
         portfolio['equity_curve_data'] = extract_portfolio_equity_curve_data(save_data['combined_trades'])
+        _save_progress.progress(1.0, text="Saving...")
 
         if is_edit:
             update_portfolio(editing_id, portfolio)
