@@ -6585,17 +6585,24 @@ def render_strategy_list():
 
     # --- Multi-select mode ---
     _select_mode = st.session_state.get('_strat_select_mode', False)
-    _selected_ids = st.session_state.get('_strat_selected_ids', set())
+
+    # Derive selected IDs from checkbox widget keys (Streamlit manages state)
+    _selected_ids = set()
+    if _select_mode:
+        for s in strategies:
+            if st.session_state.get(f"sel_{s.get('id', 0)}", False):
+                _selected_ids.add(s.get('id', 0))
 
     _sel_toggle_cols = st.columns([6, 1])
     with _sel_toggle_cols[1]:
         if st.button("Select" if not _select_mode else "Cancel", key="toggle_select_mode"):
             if _select_mode:
                 st.session_state._strat_select_mode = False
-                st.session_state._strat_selected_ids = set()
+                # Clear checkbox widget keys
+                for s in strategies:
+                    st.session_state.pop(f"sel_{s.get('id', 0)}", None)
             else:
                 st.session_state._strat_select_mode = True
-                st.session_state._strat_selected_ids = set()
             st.rerun()
 
     # --- Bulk action bar ---
@@ -6619,7 +6626,8 @@ def render_strategy_list():
                 st.session_state.editing_portfolio_id = None
                 st.session_state.pop('_builder_initialized', None)
                 st.session_state._strat_select_mode = False
-                st.session_state._strat_selected_ids = set()
+                for _sid in _selected_ids:
+                    st.session_state.pop(f"sel_{_sid}", None)
                 st.session_state.nav_target = "Portfolios"
                 st.toast(f"Loading {len(_bulk_list)} strategies into portfolio builder")
                 st.rerun()
@@ -6641,7 +6649,8 @@ def render_strategy_list():
                         st.session_state.pop(_k, None)
                 st.session_state._confirm_bulk_delete = False
                 st.session_state._strat_select_mode = False
-                st.session_state._strat_selected_ids = set()
+                for _sid in _selected_ids:
+                    st.session_state.pop(f"sel_{_sid}", None)
                 st.toast(f"Deleted {len(_del_names)} strategies.")
                 st.rerun()
         with _bd_cols[1]:
@@ -6830,18 +6839,8 @@ def render_strategy_list():
             with st.container(border=True):
                 # Selection checkbox (select mode only)
                 if _select_mode:
-                    _is_selected = sid in _selected_ids
-                    _chk = st.checkbox(
-                        strat['name'], value=_is_selected,
-                        key=f"sel_{sid}", label_visibility="collapsed")
-                    if _chk and sid not in _selected_ids:
-                        _selected_ids.add(sid)
-                        st.session_state._strat_selected_ids = _selected_ids
-                        st.rerun()
-                    elif not _chk and sid in _selected_ids:
-                        _selected_ids.discard(sid)
-                        st.session_state._strat_selected_ids = _selected_ids
-                        st.rerun()
+                    st.checkbox(strat['name'], key=f"sel_{sid}",
+                                label_visibility="collapsed")
 
                 # Name
                 st.markdown(f"#### {strat['name']}")
