@@ -2817,6 +2817,46 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 
 ---
 
+### Phase 36: Strategy Tags & Bulk Actions — COMPLETED 2026-03-18
+
+**Goal:** Add tagging, multi-select, and bulk operations to My Strategies to support high-volume strategy management workflows (e.g., mass-testing dozens of strategies and organizing them into portfolios).
+
+**Motivation:** When mass-testing many ticker/confluence combinations, users accumulate dozens of strategies quickly. Without tags or bulk actions, organizing them into portfolios requires adding strategies one by one, and cleaning up rejects requires deleting one at a time.
+
+**Features implemented:**
+
+**Strategy Tags:**
+- Small inline pill-shaped tags rendered below the strategy name on each card
+- Tags managed via a "Tags" popover button on each card (add/remove)
+- Tags stored as `tags: list[str]` in strategy config JSONB (no DB migration needed)
+- Tag filter added to the My Strategies filter bar (Ticker | Direction | Tag | Data View | Sort)
+- Tags are lowercase, deduplicated, and persist across sessions
+
+**Multi-Select Mode:**
+- "Select" button in the top-right toggles selection mode on/off
+- Checkboxes appear on each strategy card in select mode
+- Selection state managed natively by Streamlit widget keys (no manual set tracking)
+- "Cancel" button exits select mode and clears all checkbox states
+
+**Bulk Actions (shown when strategies are selected):**
+- **Delete Selected** — confirmation dialog listing strategy names, then bulk delete with cache cleanup
+- **Create Portfolio** — pre-loads selected strategies into the portfolio builder with their `risk_per_trade` values, navigates to Portfolios page
+
+**Performance fix (critical):**
+- `get_cached_strategy_trades()` now checks `stored_trades` before falling back to full backtest
+- Previously, every portfolio page navigation triggered `prepare_data_with_indicators()` for each strategy (minutes per strategy on 90-day 1-min data)
+- All portfolio paths (builder, save, list, detail, compliance) go through this single function — fixing it once fixed everything
+- Portfolio save now shows a progress bar: "Computing trades for [name]..." → "Computing portfolio metrics..." → "Saving..."
+- Portfolio builder shows a loading indicator during initial strategy data load
+
+**Post-implementation fixes:**
+- [x] Checkbox selection: replaced manual set + `st.rerun()` with Streamlit-native widget state derivation
+- [x] Portfolio save: switched from `get_strategy_trades` (full backtest) to `get_cached_strategy_trades` (stored_trades fast path)
+- [x] Portfolio list: fixed migration fallback and compliance check to use cached trades
+- [x] Root cause fix: `get_cached_strategy_trades` now checks `stored_trades` first (instant) before falling back to `get_strategy_trades` (full backtest)
+
+---
+
 ## Known Issues To Address
 
 ### Indicator Warmup in Backtests
