@@ -6583,8 +6583,72 @@ def render_strategy_list():
         st.info("No strategies saved yet. Create one in the Strategy Builder!")
         return
 
+    # --- Multi-select mode ---
+    _select_mode = st.session_state.get('_strat_select_mode', False)
+    _selected_ids = st.session_state.get('_strat_selected_ids', set())
+
+    _sel_toggle_cols = st.columns([6, 1])
+    with _sel_toggle_cols[1]:
+        if st.button("Select" if not _select_mode else "Cancel", key="toggle_select_mode"):
+            if _select_mode:
+                st.session_state._strat_select_mode = False
+                st.session_state._strat_selected_ids = set()
+            else:
+                st.session_state._strat_select_mode = True
+                st.session_state._strat_selected_ids = set()
+            st.rerun()
+
+    # --- Bulk action bar ---
+    if _select_mode and _selected_ids:
+        _ba_cols = st.columns([2, 2, 2, 6])
+        with _ba_cols[0]:
+            st.caption(f"{len(_selected_ids)} selected")
+        with _ba_cols[1]:
+            if st.button("Delete Selected", type="secondary", key="bulk_delete"):
+                st.session_state._confirm_bulk_delete = True
+                st.rerun()
+        with _ba_cols[2]:
+            if st.button("Create Portfolio", type="primary", key="bulk_portfolio"):
+                _sel_strats = [s for s in strategies if s.get('id') in _selected_ids]
+                st.session_state.portfolio_builder_strategies = [
+                    {'strategy_id': s['id'], 'risk_per_trade': s.get('risk_per_trade', 100.0)}
+                    for s in _sel_strats
+                ]
+                st.session_state.creating_portfolio = True
+                st.session_state.editing_portfolio_id = None
+                st.session_state.pop('_builder_initialized', None)
+                st.session_state._strat_select_mode = False
+                st.session_state._strat_selected_ids = set()
+                st.session_state.nav_target = "Portfolios"
+                st.rerun()
+
+    # --- Bulk delete confirmation ---
+    if st.session_state.get('_confirm_bulk_delete', False):
+        _del_names = [s['name'] for s in strategies if s.get('id') in _selected_ids]
+        st.warning(f"Delete {len(_del_names)} strategies? This cannot be undone.\n\n" +
+                   ", ".join(_del_names[:10]) + ("..." if len(_del_names) > 10 else ""))
+        _bd_cols = st.columns([1, 1, 6])
+        with _bd_cols[0]:
+            if st.button("Yes, Delete All", key="confirm_bulk_del", type="primary"):
+                for _del_sid in list(_selected_ids):
+                    delete_strategy(_del_sid)
+                    st.session_state.strategy_trades_cache.pop(_del_sid, None)
+                    st.session_state.pop(f"bt_trades_{_del_sid}", None)
+                    st.session_state.pop(f"ft_data_{_del_sid}", None)
+                    for _k in [k for k in st.session_state if k.startswith(f"bt_ext_{_del_sid}_") or k.startswith(f"ft_ext_{_del_sid}_")]:
+                        st.session_state.pop(_k, None)
+                st.session_state._confirm_bulk_delete = False
+                st.session_state._strat_select_mode = False
+                st.session_state._strat_selected_ids = set()
+                st.toast(f"Deleted {len(_del_names)} strategies.")
+                st.rerun()
+        with _bd_cols[1]:
+            if st.button("Cancel", key="cancel_bulk_del"):
+                st.session_state._confirm_bulk_delete = False
+                st.rerun()
+
     # --- Filter & Sort Bar ---
-    filter_cols = st.columns([1, 1, 1, 2])
+    filter_cols = st.columns([1, 1, 1, 1, 2])
 
     with filter_cols[0]:
         _used_tickers = sorted(set(s.get('symbol', '') for s in strategies if s.get('symbol')))
@@ -6592,6 +6656,9 @@ def render_strategy_list():
     with filter_cols[1]:
         direction_filter = st.selectbox("Direction", ["All", "LONG", "SHORT"], key="strat_filter_dir")
     with filter_cols[2]:
+        _all_tags = sorted(set(t for s in strategies for t in s.get('tags', [])))
+        tag_filter = st.selectbox("Tag", ["All"] + _all_tags, key="strat_filter_tag")
+    with filter_cols[3]:
         data_view = st.selectbox(
             "Data View",
             ["Strategy Default", "All Data", "Last 7 Days", "Last 30 Days",
@@ -6600,7 +6667,7 @@ def render_strategy_list():
             help="Strategy Default = backtest window + forward test trades. "
                  "Other views filter by recency or phase.",
         )
-    with filter_cols[3]:
+    with filter_cols[4]:
         sort_option = st.selectbox(
             "Sort By",
             ["Newest First", "Oldest First", "Name A-Z", "Win Rate (High)", "Profit Factor (High)", "Total R (High)", "Daily R (High)", "Max R DD (Best)"],
@@ -6612,6 +6679,8 @@ def render_strategy_list():
         strategies = [s for s in strategies if s.get('symbol') == ticker_filter]
     if direction_filter != "All":
         strategies = [s for s in strategies if s.get('direction') == direction_filter]
+    if tag_filter != "All":
+        strategies = [s for s in strategies if tag_filter in s.get('tags', [])]
 
     # --- Data View filtering (computed before sort so KPI-based sorts reflect filter) ---
     _data_view_active = data_view != "All Data"
@@ -6757,8 +6826,37 @@ def render_strategy_list():
 
         with grid_cols[i % 2]:
             with st.container(border=True):
+                # Selection checkbox (select mode only)
+                if _select_mode:
+                    _is_selected = sid in _selected_ids
+                    _chk = st.checkbox(
+                        strat['name'], value=_is_selected,
+                        key=f"sel_{sid}", label_visibility="collapsed")
+                    if _chk and sid not in _selected_ids:
+                        _selected_ids.add(sid)
+                        st.session_state._strat_selected_ids = _selected_ids
+                        st.rerun()
+                    elif not _chk and sid in _selected_ids:
+                        _selected_ids.discard(sid)
+                        st.session_state._strat_selected_ids = _selected_ids
+                        st.rerun()
+
                 # Name
                 st.markdown(f"#### {strat['name']}")
+
+                # Tags (small inline pills with remove buttons)
+                _strat_tags = strat.get('tags', [])
+                if _strat_tags:
+                    _tag_html_parts = []
+                    for _ti, _tag in enumerate(_strat_tags):
+                        _tag_html_parts.append(
+                            f'<span style="display:inline-block;background:#2a2a2a;color:#ccc;'
+                            f'padding:1px 6px;margin:0 3px 2px 0;border-radius:10px;'
+                            f'font-size:0.72em;line-height:1.4;">{_tag}</span>'
+                        )
+                    st.markdown(
+                        f'<div style="margin:-8px 0 2px 0;">{"".join(_tag_html_parts)}</div>',
+                        unsafe_allow_html=True)
 
                 # Symbol / Direction / Session / Duration segments / Monitoring
                 _caption_parts = [f"{strat['symbol']} {strat['direction']}"]
@@ -6848,7 +6946,7 @@ def render_strategy_list():
                         st.rerun()
 
                 # Action buttons
-                btn_cols = st.columns(4)
+                btn_cols = st.columns(5)
                 with btn_cols[0]:
                     if st.button("View", key=f"view_{sid}"):
                         st.session_state.viewing_strategy_id = sid
@@ -6866,6 +6964,31 @@ def render_strategy_list():
                     if st.button("Delete", key=f"del_{sid}", type="secondary"):
                         st.session_state.confirm_delete_id = sid
                         st.rerun()
+                with btn_cols[4]:
+                    with st.popover("Tags", use_container_width=True):
+                        # Remove existing tags
+                        for _ti, _tag in enumerate(list(_strat_tags)):
+                            _rc1, _rc2 = st.columns([4, 1])
+                            _rc1.caption(_tag)
+                            if _rc2.button("x", key=f"rm_tag_{sid}_{_ti}"):
+                                _strat_tags.remove(_tag)
+                                strat['tags'] = _strat_tags
+                                update_strategy(sid, strat)
+                                st.rerun()
+                        # Add new tag
+                        _new_tag = st.text_input(
+                            "Add tag", key=f"add_tag_input_{sid}",
+                            placeholder="e.g. momentum, batch-1",
+                            label_visibility="collapsed")
+                        if st.button("Add", key=f"add_tag_btn_{sid}",
+                                     disabled=not (_new_tag and _new_tag.strip())):
+                            _clean_tag = _new_tag.strip().lower()
+                            if _clean_tag not in _strat_tags:
+                                _strat_tags.append(_clean_tag)
+                                strat['tags'] = _strat_tags
+                                update_strategy(sid, strat)
+                                st.session_state.pop(f"add_tag_input_{sid}", None)
+                                st.rerun()
 
                 # Inline delete confirmation
                 if st.session_state.confirm_delete_id == sid:
