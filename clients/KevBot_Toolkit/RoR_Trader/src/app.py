@@ -11093,7 +11093,7 @@ def render_portfolio_list():
         if eq_data is None and kpis and kpis.get('total_trades', 0) > 0:
             # Migration fallback: compute + persist for next load
             try:
-                port_data = get_portfolio_trades(port, _strat_by_id.get, get_strategy_trades)
+                port_data = get_portfolio_trades(port, _strat_by_id.get, get_cached_strategy_trades)
                 eq_data = extract_portfolio_equity_curve_data(port_data['combined_trades'])
                 port['equity_curve_data'] = eq_data
                 update_portfolio(pid, port)
@@ -11222,7 +11222,7 @@ def render_portfolio_list():
                         try:
                             # Lazy-load portfolio trades only for compliance check
                             if port_data is None:
-                                port_data = get_portfolio_trades(port, get_strategy_by_id, get_strategy_trades)
+                                port_data = get_portfolio_trades(port, get_strategy_by_id, get_cached_strategy_trades)
                             eval_result = evaluate_requirement_set(rs, port, kpis, port_data['daily_pnl'])
                             passed = sum(1 for r in eval_result['rules'] if r['passed'])
                             total = len(eval_result['rules'])
