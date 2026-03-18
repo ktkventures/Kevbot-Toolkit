@@ -6629,7 +6629,6 @@ def render_strategy_list():
                 for _sid in _selected_ids:
                     st.session_state.pop(f"sel_{_sid}", None)
                 st.session_state.nav_target = "Portfolios"
-                st.toast(f"Loading {len(_bulk_list)} strategies into portfolio builder")
                 st.rerun()
 
     # --- Bulk delete confirmation ---
@@ -11235,10 +11234,16 @@ def render_portfolio_list():
 
 
 def get_cached_strategy_trades(strat):
-    """Get strategy trades with session state caching."""
+    """Get strategy trades with session state caching. Uses stored_trades when available."""
     sid = strat['id']
     if sid not in st.session_state.strategy_trades_cache:
-        st.session_state.strategy_trades_cache[sid] = get_strategy_trades(strat)
+        # Fast path: use persisted stored_trades (instant, no backtest)
+        stored = strat.get('stored_trades')
+        if stored:
+            st.session_state.strategy_trades_cache[sid] = _trades_df_from_stored(stored)
+        else:
+            # Slow path: full backtest (only for strategies without stored_trades)
+            st.session_state.strategy_trades_cache[sid] = get_strategy_trades(strat)
     return st.session_state.strategy_trades_cache[sid]
 
 
@@ -11346,7 +11351,10 @@ def render_portfolio_builder():
     data = None
     kpis = None
     if builder_strategies:
+        _builder_load_msg = st.empty()
+        _builder_load_msg.info(f"Loading {len(builder_strategies)} strategies...")
         data = get_portfolio_trades(preview_portfolio, get_strategy_by_id, get_cached_strategy_trades)
+        _builder_load_msg.empty()
         if len(data['combined_trades']) > 0:
             kpis = calculate_portfolio_kpis(preview_portfolio, data['combined_trades'], data['daily_pnl'])
 
