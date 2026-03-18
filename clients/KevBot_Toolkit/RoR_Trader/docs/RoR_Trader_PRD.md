@@ -2560,6 +2560,82 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 - [ ] **31C:** Per-second bar support — subscribe to Polygon per-second bars for L-type intra-bar trigger detection; evaluate whether this replaces tick-level processing
 - [ ] **31D:** Remove Alpaca market data dependencies — drop `alpaca-py` data subscriptions, `EXCLUDED_TRADE_CONDITIONS`, `_reconcile_bars()`, tick-based BarBuilder logic
 - [ ] **31E:** Sub-minute backtesting — expose 10-second/30-second timeframes in Strategy Builder; update unified engine to handle sub-minute bar data
+- [ ] **31F:** HiFi Backtest — sub-bar resolution via selective zoom (see below)
+- [ ] **31G:** Confluence execution modes — `confirmed` vs `hifi` (see below)
+
+#### Phase 31F–31G: HiFi Backtest (Sub-Bar Resolution)
+
+**Goal:** Improve backtest fidelity by "zooming in" to 1-second candles on ambiguous bars — bars where the 1-minute OHLC doesn't tell the full story. This closes the three biggest gaps between backtest and live trading.
+
+**Motivation:** The unified engine processes backtests bar-by-bar using only OHLC data. This creates fidelity gaps:
+
+1. **Stop/Target Ambiguity** — When a bar hits both stop and target, the engine hardcodes "stop wins" (`check_exit()` checks stop before target). In reality, one hit first — we just can't tell from OHLC.
+2. **L-Type Fill Imprecision** — L0/L1 entries fill at the indicator level (e.g., VWAP), but we don't know *when* in the bar it was crossed. The actual live fill could differ due to momentum.
+3. **Same-Bar Suppression** — L-type entries suppress stop/target checks on the entry bar (`same_bar_ltype` guard) because we can't tell if the stop was hit before or after entry. Sub-bar data eliminates this guard.
+4. **Cross-TF Confluence Timing** — The forward-shift fix delays secondary TF state by one full period. With 1-second data, we can know the *exact second* a higher-TF bar closes and use the state from that point.
+
+**Approach: Selective Zoom (Two-Pass Backtest)**
+
+Rather than backtesting everything at 1-second resolution (~2.1M bars for 90 days of 1-min data), use a targeted two-pass approach:
+
+**Pass 1 (fast):** Run normal bar-by-bar backtest on the primary timeframe. Identify "ambiguous bars" where:
+- An L-type entry fired
+- A stop or target was hit
+- Both stop AND target were reachable on the same bar (high >= target, low <= stop)
+- An HM/HL entry was pending confirmation
+- A cross-TF confluence condition changed state near a period boundary
+
+**Pass 2 (targeted):** For ONLY the ambiguous bars (typically 60-100 bars across 30-50 trades):
+- Fetch 1-second OHLCV data for that bar's time window from Polygon REST API
+- Walk through 60 one-second bars sequentially
+- For stop/target: first level hit wins (replaces hardcoded stop priority)
+- For L-type entries: find exact second of level cross, record that price
+- For same-bar stops: determine if stop was hit before or after entry second
+- For cross-TF: determine exact second the higher-TF bar closed, use correct state
+
+**Performance:** ~60-100 API calls for a typical 90-day backtest with 30-50 trades. Polygon rate limit (100 calls/min on Advanced plan) means this adds under a minute. 1-second data cached per symbol per day (~1MB/day/ticker) so subsequent backtests are instant.
+
+**Confluence Execution Modes:**
+
+Per-strategy setting controlling how cross-TF confluence is evaluated:
+- **`confirmed`** (default, current behavior) — Uses previous closed bar of the secondary timeframe. Conservative, avoids look-ahead. Some traders prefer this because they only act on confirmed states.
+- **`hifi`** — Uses the real-time state at the second of entry, determined by 1-second zoom data. More accurate simulation of what a live trader or alert engine would see at the moment of entry.
+
+This is a strategy-level setting (not per-condition) to avoid confusion. Both modes remain available because they represent different trading philosophies, not just different precision levels.
+
+**UI Changes:**
+
+- **Strategy Builder:** "Confluence Mode" selector (Confirmed / HiFi) — only visible when Polygon integration is active
+- **Strategy Builder:** "Enable HiFi Backtest" toggle — runs two-pass backtest with zoom resolution
+- **Strategy Cards:** Small "HiFi" badge next to the BT duration when `hifi_mode: true`
+- **Backtest Results:** "Zoom Events" count showing how many bars were resolved via zoom
+- **Mass Builder:** HiFi as an iterable variable — test same strategy with and without to compare impact
+- **Progress bar:** "Resolving 23 ambiguous bars..." during Pass 2
+
+**Data Caching:**
+- Cache 1-second data in local files: `zoom_{symbol}_{date}.pkl`
+- One full trading day of 1-second data ≈ 1MB per ticker
+- Shared across strategies for the same symbol — cache once, reuse everywhere
+- Cloud (Railway): cache in Supabase storage or ephemeral disk; invalidation by date
+
+**Strategy Config Fields:**
+- `hifi_mode: bool` — enables two-pass backtest with zoom resolution
+- `confluence_exec_mode: str` — `"confirmed"` (default) or `"hifi"`
+- Neither field is in `OPTIMIZABLE_PARAMS` initially — changing them resets forward test since trade outcomes change
+
+**What HiFi Does NOT Solve:**
+- Slippage modeling (order book depth not captured in OHLCV)
+- Market impact (backtest assumes infinite liquidity)
+- Bid/ask spread (1-second bars are still mid-price OHLCV)
+- These are acceptable — the goal is second-level resolution, not exchange microstructure simulation
+
+**Safety Notes:**
+- HiFi is backtest-only — the live Ralph engine already has tick-level fidelity
+- Create a backup branch before implementation (touching unified_engine.py and data_loader.py)
+- No changes to alert execution or position management — HiFi only affects backtest trade records
+- Forward test and live tracking are unaffected
+
+**Priority:** Medium-High. Depends on 31A (Polygon REST client). Should be designed alongside 31A-31E so the caching layer and API client account for 1-second bar requirements from the start.
 
 ---
 
