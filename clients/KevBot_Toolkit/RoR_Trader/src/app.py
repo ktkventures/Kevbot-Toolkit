@@ -6610,16 +6610,18 @@ def render_strategy_list():
         with _ba_cols[2]:
             if st.button("Create Portfolio", type="primary", key="bulk_portfolio"):
                 _sel_strats = [s for s in strategies if s.get('id') in _selected_ids]
-                st.session_state.portfolio_builder_strategies = [
+                _bulk_list = [
                     {'strategy_id': s['id'], 'risk_per_trade': s.get('risk_per_trade', 100.0)}
                     for s in _sel_strats
                 ]
+                st.session_state.portfolio_builder_strategies = _bulk_list
                 st.session_state.creating_portfolio = True
                 st.session_state.editing_portfolio_id = None
                 st.session_state.pop('_builder_initialized', None)
                 st.session_state._strat_select_mode = False
                 st.session_state._strat_selected_ids = set()
                 st.session_state.nav_target = "Portfolios"
+                st.toast(f"Loading {len(_bulk_list)} strategies into portfolio builder")
                 st.rerun()
 
     # --- Bulk delete confirmation ---
