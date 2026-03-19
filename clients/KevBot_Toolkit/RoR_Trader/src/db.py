@@ -281,22 +281,33 @@ def get_portfolio_by_id_db(portfolio_id: int) -> dict | None:
     return result.data if result else None
 
 
+# Fields stored in portfolio dicts but NOT as DB columns.
+# Strip before sending to PostgREST to avoid schema errors.
+_PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode'}
+
+
+def _strip_non_db_fields(d: dict) -> dict:
+    return {k: v for k, v in d.items() if k not in _PORTFOLIO_NON_DB_FIELDS}
+
+
 def save_portfolio_db(portfolio: dict) -> dict:
     """Insert a new portfolio. Returns the saved portfolio."""
-    portfolio['user_id'] = get_current_user_id()
-    portfolio.pop('id', None)
+    payload = _strip_non_db_fields(portfolio)
+    payload['user_id'] = get_current_user_id()
+    payload.pop('id', None)
     client = get_client()
-    result = client.table('portfolios').insert(portfolio).execute()
+    result = client.table('portfolios').insert(payload).execute()
     return result.data[0]
 
 
 def update_portfolio_db(portfolio_id: int, updated: dict) -> dict | None:
     """Update a portfolio by ID."""
-    updated.pop('user_id', None)
-    updated.pop('id', None)
+    payload = _strip_non_db_fields(updated)
+    payload.pop('user_id', None)
+    payload.pop('id', None)
     client = get_client()
     result = client.table('portfolios') \
-        .update(updated) \
+        .update(payload) \
         .eq('id', portfolio_id) \
         .execute()
     return result.data[0] if result.data else None
