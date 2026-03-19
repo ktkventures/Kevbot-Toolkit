@@ -9,9 +9,10 @@ drawdown analysis, correlation, and prop firm compliance checking.
 import json
 import os
 import copy
+import math
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1278,3 +1279,647 @@ def get_portfolio_alert_context(strategy_id: int) -> list:
                 break
 
     return context
+
+
+# =============================================================================
+# PHASE 37: PORTFOLIO LIVE DASHBOARD — DATA & COMPUTATION
+# =============================================================================
+
+
+def compute_strategy_r_distribution(stored_trades: list,
+                                     forward_test_start: str = None) -> dict:
+    """Extract backtest R distribution statistics from stored trades.
+
+    Filters to trades before forward_test_start (backtest portion only).
+    Returns {avg_r, std_r, var_r, n_trades, median_r}.
+    """
+    if not stored_trades:
+        return {'avg_r': 0, 'std_r': 0, 'var_r': 0, 'n_trades': 0, 'median_r': 0}
+
+    r_values = []
+    ft_dt = None
+    if forward_test_start:
+        try:
+            ft_dt = datetime.fromisoformat(forward_test_start)
+            if ft_dt.tzinfo:
+                ft_dt = ft_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            ft_dt = None
+
+    for t in stored_trades:
+        if ft_dt:
+            try:
+                entry_dt = datetime.fromisoformat(t.get('entry_time', ''))
+                if entry_dt.tzinfo:
+                    entry_dt = entry_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                if entry_dt >= ft_dt:
+                    continue  # skip forward-test trades
+            except (ValueError, TypeError):
+                continue
+        r_values.append(t.get('r_multiple', 0))
+
+    if not r_values:
+        return {'avg_r': 0, 'std_r': 0, 'var_r': 0, 'n_trades': 0, 'median_r': 0}
+
+    arr = np.array(r_values, dtype=float)
+    return {
+        'avg_r': float(np.mean(arr)),
+        'std_r': float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0,
+        'var_r': float(np.var(arr, ddof=1)) if len(arr) > 1 else 0.0,
+        'n_trades': len(arr),
+        'median_r': float(np.median(arr)),
+    }
+
+
+def get_portfolio_alert_trades(portfolio: dict,
+                                get_strategy_fn: Callable) -> dict:
+    """Aggregate alert-based trades across all portfolio strategies.
+
+    Reads each strategy's live_executions (populated by match_alerts_to_trades)
+    and pairs entry+exit executions into unified trade records with dollar P&L,
+    quantity, and buying power calculations.
+
+    Args:
+        portfolio: Portfolio dict with 'strategies' list.
+        get_strategy_fn: Callable(strategy_id) -> strategy dict or None.
+
+    Returns:
+        {
+            'alert_trades': list of trade dicts,
+            'open_positions': list of open position dicts,
+            'strategies_with_data': set of strategy_ids that have live_executions,
+        }
+    """
+    alert_trades = []
+    open_positions = []
+    strategies_with_data = set()
+
+    for alloc in portfolio.get('strategies', []):
+        sid = alloc.get('strategy_id')
+        risk_per_trade = alloc.get('risk_per_trade', 100.0)
+        strat = get_strategy_fn(sid)
+        if strat is None:
+            continue
+
+        live_execs = strat.get('live_executions', [])
+        stored = strat.get('stored_trades', [])
+        if not live_execs:
+            continue
+
+        strategies_with_data.add(sid)
+        strategy_name = strat.get('name', f'Strategy {sid}')
+        symbol = strat.get('symbol', '')
+        direction = strat.get('direction', 'LONG')
+
+        # Build entry/exit maps keyed by matched_trade_index
+        entry_execs = {}
+        exit_execs = {}
+        for ex in live_execs:
+            tidx = ex.get('matched_trade_index')
+            if tidx is None:
+                continue
+            if ex.get('type') == 'entry':
+                entry_execs[tidx] = ex
+            elif ex.get('type') == 'exit':
+                exit_execs[tidx] = ex
+
+        # Build paired trades (both entry and exit present)
+        for tidx in sorted(entry_execs.keys()):
+            entry_ex = entry_execs[tidx]
+            exit_ex = exit_execs.get(tidx)
+
+            # Get stored trade for theoretical values
+            stored_trade = stored[tidx] if tidx < len(stored) else {}
+
+            entry_price = entry_ex.get('alert_price', 0)
+            theoretical_entry = entry_ex.get('theoretical_price', entry_price)
+            stop_price = stored_trade.get('stop_price', 0)
+            per_share_risk = abs(theoretical_entry - stop_price) if stop_price else 0
+
+            entry_slip = entry_ex.get('slippage_r', 0)
+
+            if exit_ex:
+                # Completed trade
+                exit_price = exit_ex.get('alert_price', 0)
+                theoretical_exit = exit_ex.get('theoretical_price', exit_price)
+                exit_slip = exit_ex.get('slippage_r', 0)
+                stored_r = stored_trade.get('r_multiple', 0)
+                adjusted_r = stored_r - entry_slip - exit_slip
+
+                quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
+                buying_power_used = quantity * entry_price
+
+                alert_trades.append({
+                    'strategy_id': sid,
+                    'strategy_name': strategy_name,
+                    'symbol': symbol,
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'theoretical_entry': theoretical_entry,
+                    'theoretical_exit': theoretical_exit,
+                    'entry_time': entry_ex.get('alert_timestamp', ''),
+                    'exit_time': exit_ex.get('alert_timestamp', ''),
+                    'exit_reason': stored_trade.get('exit_reason', ''),
+                    'r_multiple': adjusted_r,
+                    'entry_slippage_r': entry_slip,
+                    'exit_slippage_r': exit_slip,
+                    'risk_per_trade': risk_per_trade,
+                    'dollar_pnl': adjusted_r * risk_per_trade,
+                    'quantity': quantity,
+                    'buying_power_used': buying_power_used,
+                    'matched': True,
+                    'phantom': False,
+                    'exec_type': stored_trade.get('exec_type', 'C'),
+                })
+            else:
+                # Open position — entry without matching exit
+                quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
+                open_positions.append({
+                    'strategy_id': sid,
+                    'strategy_name': strategy_name,
+                    'symbol': symbol,
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'entry_time': entry_ex.get('alert_timestamp', ''),
+                    'risk_per_trade': risk_per_trade,
+                    'quantity': quantity,
+                    'buying_power_used': quantity * entry_price,
+                    'stop_price': stop_price,
+                })
+
+    # Sort completed trades by exit_time
+    alert_trades.sort(key=lambda t: t.get('exit_time', ''))
+    # Assign sequential trade numbers
+    for i, t in enumerate(alert_trades):
+        t['trade_number'] = i + 1
+
+    return {
+        'alert_trades': alert_trades,
+        'open_positions': open_positions,
+        'strategies_with_data': strategies_with_data,
+    }
+
+
+def compute_portfolio_benchmark(portfolio: dict,
+                                 get_strategy_fn: Callable,
+                                 get_trades_fn: Callable = None,
+                                 filter_strategy_id: int = None,
+                                 max_trades: int = 200) -> dict:
+    """Compute the "Plan" line and confidence bands from backtest R distributions.
+
+    The X-axis is trade number (not calendar date). Each trade's expected
+    contribution is the weighted average of each strategy's backtest avg_r,
+    weighted by trade frequency. Confidence bands widen as sqrt(N).
+
+    Args:
+        portfolio: Portfolio dict.
+        get_strategy_fn: Callable(sid) -> strategy dict.
+        get_trades_fn: Optional callable(strat) -> trades DataFrame (unused,
+            kept for API consistency — we read stored_trades directly).
+        filter_strategy_id: If set, compute benchmark for a single strategy only.
+        max_trades: Maximum trade number for the X-axis.
+
+    Returns dict with plan_cumulative_pnl, bands, per_strategy stats, etc.
+    """
+    per_strategy = {}
+
+    for alloc in portfolio.get('strategies', []):
+        sid = alloc.get('strategy_id')
+        risk = alloc.get('risk_per_trade', 100.0)
+        if filter_strategy_id is not None and sid != filter_strategy_id:
+            continue
+
+        strat = get_strategy_fn(sid)
+        if strat is None:
+            continue
+
+        stored = strat.get('stored_trades', [])
+        ft_start = strat.get('forward_test_start')
+        dist = compute_strategy_r_distribution(stored, ft_start)
+
+        if dist['n_trades'] == 0:
+            continue
+
+        # Estimate trade frequency (trades per trading day)
+        # Use backtest trading days from stored trades
+        bt_dates = set()
+        ft_dt = None
+        if ft_start:
+            try:
+                ft_dt = datetime.fromisoformat(ft_start)
+                if ft_dt.tzinfo:
+                    ft_dt = ft_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except (ValueError, TypeError):
+                ft_dt = None
+
+        for t in stored:
+            try:
+                dt = datetime.fromisoformat(t.get('exit_time', t.get('entry_time', '')))
+                if dt.tzinfo:
+                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                if ft_dt and dt >= ft_dt:
+                    continue
+                bt_dates.add(dt.date())
+            except (ValueError, TypeError):
+                continue
+
+        trading_days = max(len(bt_dates), 1)
+        trade_freq = dist['n_trades'] / trading_days
+
+        per_strategy[sid] = {
+            'avg_r': dist['avg_r'],
+            'std_r': dist['std_r'],
+            'var_r': dist['var_r'],
+            'n_bt_trades': dist['n_trades'],
+            'trade_frequency': trade_freq,
+            'risk_per_trade': risk,
+            'strategy_name': strat.get('name', f'Strategy {sid}'),
+        }
+
+    if not per_strategy:
+        return {
+            'plan_cumulative_pnl': [],
+            'upper_1sd': [], 'lower_1sd': [],
+            'upper_2sd': [], 'lower_2sd': [],
+            'per_strategy': {},
+            'total_expected_trades': 0,
+        }
+
+    # Compute combined expected step and variance per trade
+    total_freq = sum(s['trade_frequency'] for s in per_strategy.values())
+    if total_freq == 0:
+        total_freq = 1.0
+
+    expected_dollar_step = 0.0
+    per_trade_dollar_var = 0.0
+    for s in per_strategy.values():
+        weight = s['trade_frequency'] / total_freq
+        expected_dollar_step += s['avg_r'] * s['risk_per_trade'] * weight
+        per_trade_dollar_var += (s['risk_per_trade'] ** 2) * s['var_r'] * weight
+
+    # Build plan line and bands
+    plan = []
+    upper_1sd = []
+    lower_1sd = []
+    upper_2sd = []
+    lower_2sd = []
+
+    for n in range(1, max_trades + 1):
+        cumulative_plan = n * expected_dollar_step
+        cumulative_std = math.sqrt(n * per_trade_dollar_var) if per_trade_dollar_var > 0 else 0
+        plan.append(cumulative_plan)
+        upper_1sd.append(cumulative_plan + 1.0 * cumulative_std)
+        lower_1sd.append(cumulative_plan - 1.0 * cumulative_std)
+        upper_2sd.append(cumulative_plan + 2.0 * cumulative_std)
+        lower_2sd.append(cumulative_plan - 2.0 * cumulative_std)
+
+    return {
+        'plan_cumulative_pnl': plan,
+        'upper_1sd': upper_1sd,
+        'lower_1sd': lower_1sd,
+        'upper_2sd': upper_2sd,
+        'lower_2sd': lower_2sd,
+        'per_strategy': per_strategy,
+        'total_expected_trades': max_trades,
+        'expected_dollar_step': expected_dollar_step,
+        'per_trade_dollar_var': per_trade_dollar_var,
+    }
+
+
+def classify_strategy_health(actual_trades: list,
+                              benchmark: dict,
+                              strategy_id: int,
+                              correlation_matrix: pd.DataFrame = None) -> dict:
+    """Classify a strategy's live performance health vs backtest expectations.
+
+    Returns {status, message, deviation_sd, recommendation}.
+    """
+    strat_trades = [t for t in actual_trades if t.get('strategy_id') == strategy_id]
+    n = len(strat_trades)
+
+    strat_bench = benchmark.get('per_strategy', {}).get(strategy_id)
+    if strat_bench is None:
+        return {
+            'status': 'no_benchmark',
+            'message': 'No backtest data available',
+            'deviation_sd': 0,
+            'recommendation': '',
+        }
+
+    if n < 10:
+        return {
+            'status': 'insufficient_data',
+            'message': f'Need 10+ alert trades ({n} so far)',
+            'deviation_sd': 0,
+            'recommendation': 'Keep monitoring — not enough data for assessment',
+        }
+
+    actual_cumulative_r = sum(t.get('r_multiple', 0) for t in strat_trades)
+    expected_r = strat_bench['avg_r'] * n
+    expected_std = strat_bench['std_r'] * math.sqrt(n) if strat_bench['std_r'] > 0 else 0
+
+    deviation_sd = ((actual_cumulative_r - expected_r) / expected_std) if expected_std > 0 else 0
+
+    # Check correlation with other strategies
+    corr_note = ''
+    if correlation_matrix is not None:
+        strat_name = strat_bench.get('strategy_name', '')
+        if strat_name in correlation_matrix.columns:
+            for other_name in correlation_matrix.columns:
+                if other_name == strat_name:
+                    continue
+                corr_val = correlation_matrix.loc[strat_name, other_name]
+                if abs(corr_val) > 0.7:
+                    corr_note = f'Highly correlated ({corr_val:.2f}) with {other_name}'
+                    break
+
+    if deviation_sd > 1.5:
+        status = 'outperforming'
+        message = f'{deviation_sd:+.1f} SD above expected'
+        recommendation = 'Consider increasing risk per trade'
+    elif deviation_sd < -1.5:
+        status = 'underperforming'
+        message = f'{deviation_sd:+.1f} SD below expected'
+        recommendation = 'Review strategy — may be overfit or market regime has shifted'
+    else:
+        status = 'on_track'
+        message = 'Performing within expected range'
+        recommendation = 'No action needed'
+
+    if corr_note:
+        recommendation += f'. {corr_note}'
+
+    return {
+        'status': status,
+        'message': message,
+        'deviation_sd': round(deviation_sd, 2),
+        'recommendation': recommendation,
+    }
+
+
+# =============================================================================
+# PHASE 37E: CHANGE LOG & DAILY JOURNAL
+# =============================================================================
+
+MAX_CHANGE_LOG_ENTRIES = 500
+
+
+def add_change_log_entry(portfolio: dict, change_type: str,
+                          details: dict, description: str):
+    """Append a change log entry to the portfolio.
+
+    Args:
+        portfolio: Portfolio dict (modified in-place).
+        change_type: One of 'strategy_added', 'strategy_removed',
+            'risk_adjusted', 'requirement_set_changed', 'portfolio_created'.
+        details: Type-specific dict (e.g., strategy_id, old_value, new_value).
+        description: Human-readable summary.
+    """
+    if 'change_log' not in portfolio:
+        portfolio['change_log'] = []
+
+    log = portfolio['change_log']
+
+    entry_id = max((e.get('id', 0) for e in log), default=0) + 1
+
+    log.append({
+        'id': entry_id,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'change_type': change_type,
+        'details': details,
+        'description': description,
+    })
+
+    # Trim to max entries
+    if len(log) > MAX_CHANGE_LOG_ENTRIES:
+        portfolio['change_log'] = log[-MAX_CHANGE_LOG_ENTRIES:]
+
+
+def compute_daily_journal(alert_trades: list,
+                           change_log: list = None) -> list:
+    """Generate daily summaries from alert trades and portfolio changes.
+
+    Returns list of dicts sorted by date descending:
+        {date, daily_pnl, n_trades, strategies_traded, changes}
+    """
+    from collections import defaultdict
+
+    daily = defaultdict(lambda: {'pnl': 0, 'trades': 0, 'strategies': set(), 'changes': []})
+
+    for t in alert_trades:
+        exit_time = t.get('exit_time', '')
+        if not exit_time:
+            continue
+        try:
+            dt = datetime.fromisoformat(exit_time)
+            date_str = dt.strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            continue
+        daily[date_str]['pnl'] += t.get('dollar_pnl', 0)
+        daily[date_str]['trades'] += 1
+        daily[date_str]['strategies'].add(t.get('strategy_name', ''))
+
+    if change_log:
+        for entry in change_log:
+            ts = entry.get('timestamp', '')
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(ts)
+                date_str = dt.strftime('%Y-%m-%d')
+            except (ValueError, TypeError):
+                continue
+            daily[date_str]['changes'].append(entry)
+
+    result = []
+    for date_str, info in daily.items():
+        result.append({
+            'date': date_str,
+            'daily_pnl': info['pnl'],
+            'n_trades': info['trades'],
+            'strategies_traded': sorted(info['strategies']),
+            'changes': info['changes'],
+        })
+
+    result.sort(key=lambda x: x['date'], reverse=True)
+    return result
+
+
+# =============================================================================
+# PHASE 37D: BUYING POWER TRACKER & ANOMALY DETECTION
+# =============================================================================
+
+
+def compute_alert_buying_power(alert_trades: list, open_positions: list,
+                                account_balance: float) -> dict:
+    """Compute intra-trade buying power timeline from alert-based trades.
+
+    Uses the account balance (from Account tab ledger) as the authority,
+    minus capital committed to open positions.
+
+    Returns dict with timeline events, current buying power, and alerts.
+    """
+    events = []
+
+    for t in alert_trades:
+        bp_used = t.get('buying_power_used', 0)
+        # Entry event — reduces buying power
+        events.append({
+            'time': t.get('entry_time', ''),
+            'event_type': 'entry',
+            'capital_change': bp_used,
+            'strategy': t.get('strategy_name', ''),
+            'symbol': t.get('symbol', ''),
+        })
+        # Exit event — restores buying power
+        events.append({
+            'time': t.get('exit_time', ''),
+            'event_type': 'exit',
+            'capital_change': -bp_used,
+            'strategy': t.get('strategy_name', ''),
+            'symbol': t.get('symbol', ''),
+        })
+
+    # Sort by time
+    events.sort(key=lambda e: e.get('time', ''))
+
+    # Build timeline
+    timeline = []
+    capital_deployed = 0
+    realized_pnl = 0
+    concurrent = 0
+    max_deployed = 0
+    max_concurrent = 0
+    insufficient_events = []
+    trade_idx = 0
+
+    for ev in events:
+        if ev['event_type'] == 'entry':
+            capital_deployed += ev['capital_change']
+            concurrent += 1
+        else:
+            capital_deployed -= abs(ev['capital_change'])
+            concurrent -= 1
+            # Add realized P&L from the trade
+            if trade_idx < len(alert_trades):
+                realized_pnl += alert_trades[trade_idx].get('dollar_pnl', 0)
+                trade_idx += 1
+
+        capital_deployed = max(capital_deployed, 0)
+        concurrent = max(concurrent, 0)
+        buying_power = account_balance + realized_pnl - capital_deployed
+        max_deployed = max(max_deployed, capital_deployed)
+        max_concurrent = max(max_concurrent, concurrent)
+
+        timeline.append({
+            'time': ev.get('time', ''),
+            'buying_power': buying_power,
+            'capital_deployed': capital_deployed,
+            'concurrent_positions': concurrent,
+            'event_type': ev['event_type'],
+            'strategy': ev.get('strategy', ''),
+        })
+
+        if buying_power < 0:
+            insufficient_events.append({
+                'time': ev.get('time', ''),
+                'shortfall': abs(buying_power),
+                'strategy': ev.get('strategy', ''),
+            })
+
+    # Current state: account open positions
+    open_capital = sum(p.get('buying_power_used', 0) for p in open_positions)
+    current_bp = account_balance + realized_pnl - open_capital
+
+    return {
+        'timeline': timeline,
+        'current_buying_power': current_bp,
+        'insufficient_events': insufficient_events,
+        'peak_capital_deployed': max_deployed,
+        'max_concurrent_positions': max_concurrent,
+        'open_capital_committed': open_capital,
+    }
+
+
+def detect_portfolio_anomalies(alert_trades: list, open_positions: list,
+                                portfolio: dict,
+                                get_strategy_fn: Callable = None) -> list:
+    """Detect anomalous conditions in the portfolio's live trading.
+
+    Returns list of anomaly dicts with type, severity, description, details.
+    """
+    anomalies = []
+
+    # 1. Overexposure: multiple open positions on the same symbol
+    symbol_positions = {}
+    for pos in open_positions:
+        sym = pos.get('symbol', '')
+        if sym not in symbol_positions:
+            symbol_positions[sym] = []
+        symbol_positions[sym].append(pos)
+
+    for sym, positions in symbol_positions.items():
+        if len(positions) > 1:
+            total_qty = sum(p.get('quantity', 0) for p in positions)
+            strat_names = [p.get('strategy_name', '') for p in positions]
+            anomalies.append({
+                'type': 'overexposure',
+                'severity': 'HIGH',
+                'symbol': sym,
+                'description': f"Multiple open positions on {sym} from {len(positions)} strategies",
+                'details': {
+                    'strategies': strat_names,
+                    'total_quantity': total_qty,
+                    'positions': positions,
+                },
+                'suggested_action': f"Review {sym} exposure across strategies",
+            })
+
+    # 2. Phantom trades: alert trades that didn't match forward test
+    phantom_count = sum(1 for t in alert_trades if t.get('phantom', False))
+    if phantom_count > 0:
+        anomalies.append({
+            'type': 'phantom_trade',
+            'severity': 'MEDIUM',
+            'symbol': '',
+            'description': f"{phantom_count} phantom trade(s) detected — alerts fired without matching forward test trades",
+            'details': {'count': phantom_count},
+            'suggested_action': "Review alert matching and strategy configuration",
+        })
+
+    # 3. Long holds: open positions held much longer than expected
+    for pos in open_positions:
+        entry_time = pos.get('entry_time', '')
+        if not entry_time:
+            continue
+        try:
+            entry_dt = datetime.fromisoformat(entry_time)
+            duration_hours = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
+
+            # Get strategy for expected hold time
+            sid = pos.get('strategy_id')
+            if get_strategy_fn and sid:
+                strat = get_strategy_fn(sid)
+                if strat:
+                    from ralph_engine import TIMEFRAME_SECONDS
+                    tf_seconds = TIMEFRAME_SECONDS.get(strat.get('timeframe', '1Min'), 60)
+                    bar_count_exit = strat.get('bar_count_exit', 20)
+                    expected_hours = (tf_seconds * bar_count_exit) / 3600
+                    if duration_hours > expected_hours * 2:
+                        anomalies.append({
+                            'type': 'long_hold',
+                            'severity': 'MEDIUM',
+                            'symbol': pos.get('symbol', ''),
+                            'description': f"{pos.get('strategy_name', '')}: {pos.get('symbol', '')} held for {duration_hours:.1f}h (expected max: {expected_hours:.1f}h)",
+                            'details': {
+                                'strategy_id': sid,
+                                'duration_hours': duration_hours,
+                                'expected_hours': expected_hours,
+                            },
+                            'suggested_action': "Check if exit signal was missed",
+                        })
+        except (ValueError, TypeError):
+            continue
+
+    return anomalies

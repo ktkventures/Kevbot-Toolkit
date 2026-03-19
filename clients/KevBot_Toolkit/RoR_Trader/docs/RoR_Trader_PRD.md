@@ -2933,6 +2933,81 @@ This is a strategy-level setting (not per-condition) to avoid confusion. Both mo
 
 ---
 
+### Phase 37: Portfolio Live Dashboard & Active Management — IN PROGRESS
+
+**Goal:** Transform the portfolio detail page from a backtest-only view into an active portfolio management dashboard. The backtest becomes the benchmark/plan; alert-based trades become reality. Answer: "Is my portfolio on track?"
+
+**Motivation:** With strategies live and firing alerts via Ralph engine + webhooks, the portfolio page needs to reflect real performance — not just historical backtests. Users need to see actual trades, compare to expectations, track buying power, and catch anomalies early.
+
+**Sub-phases:**
+
+##### Phase 37A: Portfolio Alert Trade Aggregation (Data Foundation)
+- [ ] `get_portfolio_alert_trades()` — aggregate `live_executions` across all portfolio strategies into unified trade dataset
+- [ ] Each alert trade: strategy context, entry/exit prices (alert + theoretical), slippage, R-multiple, dollar P&L, quantity, buying power used, matched/phantom flag
+- [ ] `compute_strategy_r_distribution()` — extract backtest R distribution (avg, std, variance) per strategy
+- [ ] `get_portfolio_strategy_alerts_bulk()` — single-pass alert loading for portfolio strategies
+
+##### Phase 37B: Benchmark & Confidence Bands Engine
+- [ ] `compute_portfolio_benchmark()` — "Plan" line + confidence bands from backtest R distributions
+- [ ] Trade-based X-axis (not calendar): cumulative expected R stepping up per trade
+- [ ] Confidence bands: 1SD (68%) and 2SD (95%), widening with sqrt(N)
+- [ ] Strategy filter support: "All Strategies" or individual strategy view
+- [ ] `classify_strategy_health()` — on_track / outperforming / underperforming / insufficient_data / correlated
+
+##### Phase 37C: Live Dashboard Tab — Core UI
+- [ ] New "Live Dashboard" tab (first tab on portfolio detail page)
+- [ ] Strategy filter dropdown (All Strategies + each individual)
+- [ ] Alert-based equity curve with plan line + confidence bands (Plotly)
+- [ ] KPI row: Total Alert Trades, Win Rate, Total P&L, vs Plan Delta
+- [ ] Trade history table: strategy, symbol, direction, entry/exit prices, exit reason, quantity, BP used, R, P&L, matched/phantom
+- [ ] "View Chart" button per trade → `@st.dialog` modal with price chart zoomed to trade window
+- [ ] Open positions summary (strategies currently IN_POSITION)
+
+##### Phase 37D: Buying Power Tracker & Anomaly Detection
+- [ ] `compute_alert_buying_power()` — intra-trade buying power timeline from alert trades + account balance
+- [ ] Buying power chart (area chart, reference line at 0)
+- [ ] Insufficient capital event detection and warning banners
+- [ ] `detect_portfolio_anomalies()` — overexposure (same symbol), phantom trades, buying power exceeded, long holds
+- [ ] Anomaly cards with severity badges, "Cover" button placeholder
+- [ ] `buying_power_mode` portfolio setting: scale_down / force_one / reject
+
+##### Phase 37E: Account Tab Enhancements — Change Log & Journal
+- [ ] `add_change_log_entry()` — auto-record strategy added/removed, risk adjusted, requirement set changed
+- [ ] Change log instrumented in portfolio save/edit flow
+- [ ] "Change History" expander in Account tab with type badges
+- [ ] `compute_daily_journal()` — auto-generated daily P&L + trade count + changes
+- [ ] "Daily Journal" expander with date navigator and editable notes per date
+- [ ] Change log entries appear as informational ledger rows
+
+##### Phase 37F: Strategies Tab Enhancements & Cover Webhook
+- [ ] Three-line equity curves per strategy: BT (gray dashed) + FW (blue) + Alert (green)
+- [ ] Health badge per strategy from `classify_strategy_health()` with recommendation text
+- [ ] "View Strategy" button → navigate to strategy detail page
+- [ ] "View Chart" button → modal with current price chart
+- [ ] `send_cover_webhook()` — one-click close for excess positions
+- [ ] Cover webhook settings in Webhooks tab (URL, template, enable toggle)
+
+##### Phase 37G: Alert Tracking Liberalization (Optional)
+- [ ] Strategies with `alert_tracking_enabled=True` record alerts regardless of portfolio membership
+- [ ] Portfolio-linked strategies get processing priority in Ralph engine
+- [ ] Non-portfolio alerts: skip webhook delivery but still record and update `live_executions`
+
+**Schema changes (portfolio dict, backward-compatible):**
+- `change_log: list` — audit trail of portfolio changes
+- `buying_power_mode: str` — 'scale_down' | 'force_one' | 'reject'
+- `journal_entries: dict` — date-keyed editable journal with auto-summaries
+
+**Key design decisions:**
+- **Data source = alerts** — no broker API; alert executions are the source of truth
+- **Trade-based X-axis** — benchmark uses trade number, not calendar date; normalizes for trade frequency differences
+- **Dynamic benchmark** — recomputes as portfolio composition changes
+- **Confidence bands** — cumulative variance model, bands widen as sqrt(N trades)
+- **Account balance = buying power authority** — position sizing uses Account tab's current balance
+
+**Build order:** A → B → C → E → D → F → G
+
+---
+
 ## Known Issues To Address
 
 ### Indicator Warmup in Backtests

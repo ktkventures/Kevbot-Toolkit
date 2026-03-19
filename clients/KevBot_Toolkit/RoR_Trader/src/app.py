@@ -92,6 +92,14 @@ from portfolios import (
     add_ledger_entry,
     remove_ledger_entry,
     get_balance_history,
+    get_portfolio_alert_trades,
+    compute_portfolio_benchmark,
+    classify_strategy_health,
+    compute_strategy_r_distribution,
+    add_change_log_entry,
+    compute_daily_journal,
+    compute_alert_buying_power,
+    detect_portfolio_anomalies,
 )
 from alerts import (
     load_alert_config,
@@ -11580,10 +11588,59 @@ def render_portfolio_builder():
         _save_progress.progress(1.0, text="Saving...")
 
         if is_edit:
+            # Detect changes for change log
+            _old_port = get_portfolio_by_id(editing_id)
+            if _old_port:
+                # Preserve existing change_log, account, journal
+                portfolio['change_log'] = _old_port.get('change_log', [])
+                portfolio['account'] = _old_port.get('account', {})
+                portfolio['journal_entries'] = _old_port.get('journal_entries', {})
+                portfolio['buying_power_mode'] = _old_port.get('buying_power_mode', 'scale_down')
+
+                _old_sids = {s['strategy_id'] for s in _old_port.get('strategies', [])}
+                _new_sids = {s['strategy_id'] for s in builder_strategies}
+                _old_risks = {s['strategy_id']: s['risk_per_trade'] for s in _old_port.get('strategies', [])}
+                _new_risks = {s['strategy_id']: s['risk_per_trade'] for s in builder_strategies}
+
+                for _sid in _new_sids - _old_sids:
+                    _sname = get_strategy_by_id(_sid)
+                    _sname = _sname.get('name', f'Strategy {_sid}') if _sname else f'Strategy {_sid}'
+                    add_change_log_entry(portfolio, 'strategy_added',
+                                         {'strategy_id': _sid, 'strategy_name': _sname,
+                                          'risk_per_trade': _new_risks.get(_sid)},
+                                         f"Added {_sname} (${_new_risks.get(_sid, 0):,.0f}/trade)")
+
+                for _sid in _old_sids - _new_sids:
+                    _sname = get_strategy_by_id(_sid)
+                    _sname = _sname.get('name', f'Strategy {_sid}') if _sname else f'Strategy {_sid}'
+                    add_change_log_entry(portfolio, 'strategy_removed',
+                                         {'strategy_id': _sid, 'strategy_name': _sname},
+                                         f"Removed {_sname}")
+
+                for _sid in _new_sids & _old_sids:
+                    if _new_risks.get(_sid) != _old_risks.get(_sid):
+                        _sname = get_strategy_by_id(_sid)
+                        _sname = _sname.get('name', f'Strategy {_sid}') if _sname else f'Strategy {_sid}'
+                        add_change_log_entry(portfolio, 'risk_adjusted',
+                                             {'strategy_id': _sid, 'strategy_name': _sname,
+                                              'old_value': _old_risks.get(_sid),
+                                              'new_value': _new_risks.get(_sid)},
+                                             f"{_sname}: ${_old_risks.get(_sid, 0):,.0f} → ${_new_risks.get(_sid, 0):,.0f}/trade")
+
+                _old_req = _old_port.get('requirement_set_id')
+                _new_req = portfolio.get('requirement_set_id')
+                if _old_req != _new_req:
+                    add_change_log_entry(portfolio, 'requirement_set_changed',
+                                         {'old_value': _old_req, 'new_value': _new_req},
+                                         f"Requirement set changed")
+
             update_portfolio(editing_id, portfolio)
             st.session_state.pop(f"port_data_{editing_id}", None)
+            st.session_state.pop(f"port_alert_data_{editing_id}", None)
             st.toast("Portfolio updated!")
         else:
+            add_change_log_entry(portfolio, 'portfolio_created', {},
+                                 f"Portfolio '{portfolio['name']}' created")
             save_portfolio(portfolio)
             st.toast("Portfolio saved!")
 
@@ -11624,6 +11681,10 @@ def render_portfolio_detail(portfolio_id: int):
     with action_cols[0]:
         if st.button("Refresh", key="pdetail_refresh", help="Recompute portfolio analytics"):
             st.session_state.pop(f"port_data_{portfolio_id}", None)
+            st.session_state.pop(f"port_alert_data_{portfolio_id}", None)
+            # Clear benchmark caches
+            for _k in [k for k in list(st.session_state) if k.startswith(f"port_benchmark_{portfolio_id}_")]:
+                st.session_state.pop(_k, None)
             for _alloc in port.get('strategies', []):
                 _sid = _alloc.get('strategy_id')
                 if _sid:
@@ -11685,10 +11746,19 @@ def render_portfolio_detail(portfolio_id: int):
 
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
 
+    # Compute alert data (cached in session state)
+    _alert_cache_key = f"port_alert_data_{port['id']}"
+    if _alert_cache_key not in st.session_state:
+        st.session_state[_alert_cache_key] = get_portfolio_alert_trades(port, get_strategy_by_id)
+    alert_data = st.session_state[_alert_cache_key]
+
     # Tabs
-    tab_perf, tab_strats, tab_prop, tab_account, tab_webhooks, tab_deploy = st.tabs(
-        ["Performance", "Strategies", "Prop Firm Check", "Account", "Webhooks", "Deploy"]
+    tab_live, tab_perf, tab_strats, tab_prop, tab_account, tab_webhooks, tab_deploy = st.tabs(
+        ["Live Dashboard", "Performance", "Strategies", "Prop Firm Check", "Account", "Webhooks", "Deploy"]
     )
+
+    with tab_live:
+        render_portfolio_live_dashboard(port, alert_data, data)
 
     with tab_perf:
         render_portfolio_performance(port, kpis, data, drawdown)
@@ -11709,13 +11779,377 @@ def render_portfolio_detail(portfolio_id: int):
         render_portfolio_deploy(port)
 
 
-def _render_risk_analytics(port, data, key_prefix="perf"):
-    """Render capital utilization, Daily P&L vs Limits, Worst-Case Analysis,
-    and Monte Carlo sections.
+# =============================================================================
+# PHASE 37C: LIVE DASHBOARD TAB
+# =============================================================================
 
-    Shared by the Performance tab and the portfolio builder.
-    key_prefix avoids Streamlit widget key collisions between callers.
-    """
+
+@st.dialog("Trade Detail", width="large")
+def _trade_detail_modal(trade: dict):
+    """Show trade details with a simple price chart in a modal dialog."""
+    st.markdown(f"**{trade['strategy_name']}** — {trade['symbol']} {trade['direction']}")
+
+    # Trade info
+    info_cols = st.columns(4)
+    info_cols[0].metric("Entry", f"${trade['entry_price']:,.2f}")
+    info_cols[1].metric("Exit", f"${trade['exit_price']:,.2f}")
+    info_cols[2].metric("R-Multiple", f"{trade['r_multiple']:+.2f}R")
+    info_cols[3].metric("P&L", f"${trade['dollar_pnl']:+,.2f}")
+
+    detail_cols = st.columns(4)
+    detail_cols[0].caption(f"Entry: {trade.get('entry_time', '')[:16]}")
+    detail_cols[1].caption(f"Exit: {trade.get('exit_time', '')[:16]}")
+    detail_cols[2].caption(f"Exit Reason: {trade.get('exit_reason', 'N/A')}")
+    detail_cols[3].caption(f"Qty: {trade.get('quantity', 0)} | BP: ${trade.get('buying_power_used', 0):,.0f}")
+
+    st.caption(f"Entry Slippage: {trade.get('entry_slippage_r', 0):+.3f}R | "
+               f"Exit Slippage: {trade.get('exit_slippage_r', 0):+.3f}R | "
+               f"Exec Type: {trade.get('exec_type', 'C')}")
+
+    # Try to load price data for a simple chart
+    try:
+        from data_loader import load_latest_bars
+        strat = get_strategy_by_id(trade['strategy_id'])
+        if strat:
+            tf = strat.get('timeframe', '1Min')
+            session = strat.get('session', 'regular')
+            # Load ~200 bars of data around the trade
+            from datetime import timedelta
+            entry_dt = datetime.fromisoformat(trade['entry_time'])
+            bars_before = 50
+            bars_after = 50
+            from ralph_engine import TIMEFRAME_SECONDS
+            tf_seconds = TIMEFRAME_SECONDS.get(tf, 60)
+            start_dt = entry_dt - timedelta(seconds=tf_seconds * bars_before)
+            end_dt = entry_dt + timedelta(seconds=tf_seconds * (bars_after + 100))
+
+            df = load_latest_bars(trade['symbol'], tf, session=session, limit=200)
+            if df is not None and len(df) > 0:
+                # Filter to trade window
+                try:
+                    entry_ts = pd.Timestamp(trade['entry_time'])
+                    exit_ts = pd.Timestamp(trade['exit_time'])
+                    if entry_ts.tzinfo is None and df.index.tzinfo is not None:
+                        entry_ts = entry_ts.tz_localize('UTC')
+                        exit_ts = exit_ts.tz_localize('UTC')
+                    elif entry_ts.tzinfo is not None and df.index.tzinfo is None:
+                        entry_ts = entry_ts.tz_localize(None)
+                        exit_ts = exit_ts.tz_localize(None)
+
+                    # Show ±30 bars around the trade
+                    mask = (df.index >= entry_ts - pd.Timedelta(seconds=tf_seconds * 30)) & \
+                           (df.index <= exit_ts + pd.Timedelta(seconds=tf_seconds * 30))
+                    window = df[mask] if mask.any() else df.tail(100)
+                except Exception:
+                    window = df.tail(100)
+
+                if len(window) > 0:
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=window.index,
+                        open=window['open'], high=window['high'],
+                        low=window['low'], close=window['close'],
+                        increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+                    )])
+                    # Entry marker
+                    fig.add_trace(go.Scatter(
+                        x=[entry_ts], y=[trade['entry_price']],
+                        mode='markers', marker=dict(symbol='triangle-up', size=14, color='#2196F3'),
+                        name='Entry', showlegend=True,
+                    ))
+                    # Exit marker
+                    exit_color = '#4CAF50' if trade['r_multiple'] > 0 else '#f44336'
+                    fig.add_trace(go.Scatter(
+                        x=[exit_ts], y=[trade['exit_price']],
+                        mode='markers', marker=dict(symbol='triangle-down', size=14, color=exit_color),
+                        name='Exit', showlegend=True,
+                    ))
+                    fig.update_layout(
+                        height=400, margin=dict(l=0, r=0, t=10, b=0),
+                        xaxis_rangeslider_visible=False,
+                        yaxis_title='Price ($)',
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Could not load price data for this time window.")
+            else:
+                st.info("Price data not available for this symbol.")
+    except Exception as e:
+        st.caption(f"Could not load chart: {e}")
+
+
+def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
+    """Render the Live Dashboard tab — alert-based performance vs benchmark."""
+    pid = port['id']
+    alert_trades = alert_data.get('alert_trades', [])
+    open_positions = alert_data.get('open_positions', [])
+
+    # --- Strategy filter ---
+    strategy_names = {}
+    for alloc in port.get('strategies', []):
+        sid = alloc['strategy_id']
+        strat = get_strategy_by_id(sid)
+        if strat:
+            strategy_names[sid] = strat.get('name', f'Strategy {sid}')
+
+    filter_options = ["All Strategies"] + [f"{name} ({sid})" for sid, name in strategy_names.items()]
+    selected_filter = st.selectbox("View", filter_options, key=f"live_dash_filter_{pid}")
+
+    filter_sid = None
+    if selected_filter != "All Strategies":
+        # Extract strategy ID from "Name (ID)" format
+        try:
+            filter_sid = int(selected_filter.split('(')[-1].rstrip(')'))
+        except (ValueError, IndexError):
+            pass
+
+    # Filter trades by strategy if needed
+    filtered_trades = alert_trades
+    if filter_sid is not None:
+        filtered_trades = [t for t in alert_trades if t.get('strategy_id') == filter_sid]
+
+    # --- Empty state ---
+    if not alert_trades:
+        st.info("No alert-based trades yet. Enable alert tracking on your strategies "
+                "and ensure the alert monitor is running to see live performance data here.")
+        # Still show the benchmark/plan line even with no actual trades
+        _render_live_benchmark_chart(port, [], filter_sid, pid)
+        return
+
+    # --- KPI row ---
+    n_trades = len(filtered_trades)
+    wins = sum(1 for t in filtered_trades if t.get('r_multiple', 0) > 0)
+    total_pnl = sum(t.get('dollar_pnl', 0) for t in filtered_trades)
+    win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
+
+    # Compute plan delta
+    bench_key = f"port_benchmark_{pid}_{filter_sid}"
+    if bench_key not in st.session_state:
+        st.session_state[bench_key] = compute_portfolio_benchmark(
+            port, get_strategy_by_id, filter_strategy_id=filter_sid
+        )
+    bench = st.session_state[bench_key]
+
+    expected_pnl = bench['plan_cumulative_pnl'][n_trades - 1] if n_trades <= len(bench.get('plan_cumulative_pnl', [])) else 0
+    plan_delta = total_pnl - expected_pnl
+
+    kpi_cols = st.columns(5)
+    kpi_cols[0].metric("Alert Trades", n_trades)
+    kpi_cols[1].metric("Win Rate", f"{win_rate:.1f}%")
+    kpi_cols[2].metric("Total P&L", f"${total_pnl:+,.0f}")
+    kpi_cols[3].metric("Expected P&L", f"${expected_pnl:+,.0f}")
+    kpi_cols[4].metric("vs Plan", f"${plan_delta:+,.0f}",
+                       delta=f"{'above' if plan_delta >= 0 else 'below'} plan",
+                       delta_color="normal" if plan_delta >= 0 else "inverse")
+
+    # --- Equity curve with benchmark ---
+    _render_live_benchmark_chart(port, filtered_trades, filter_sid, pid)
+
+    # --- Open positions ---
+    if open_positions:
+        filtered_open = open_positions
+        if filter_sid is not None:
+            filtered_open = [p for p in open_positions if p.get('strategy_id') == filter_sid]
+        if filtered_open:
+            st.subheader("Open Positions")
+            for pos in filtered_open:
+                with st.container(border=True):
+                    pos_cols = st.columns([2, 1, 1, 1, 1])
+                    pos_cols[0].markdown(f"**{pos['strategy_name']}** — {pos['symbol']} {pos['direction']}")
+                    pos_cols[1].caption(f"Entry: ${pos['entry_price']:,.2f}")
+                    entry_time = pos.get('entry_time', '')
+                    if entry_time:
+                        try:
+                            dur = datetime.now(timezone.utc) - datetime.fromisoformat(entry_time)
+                            hours = dur.total_seconds() / 3600
+                            pos_cols[2].caption(f"Duration: {hours:.1f}h")
+                        except Exception:
+                            pos_cols[2].caption("Duration: N/A")
+                    pos_cols[3].caption(f"Qty: {pos.get('quantity', 0)}")
+                    pos_cols[4].caption(f"BP Used: ${pos.get('buying_power_used', 0):,.0f}")
+
+    # --- Trade history table ---
+    st.subheader("Trade History")
+    if filtered_trades:
+        for trade in reversed(filtered_trades):  # Most recent first
+            with st.container(border=True):
+                t_cols = st.columns([0.4, 1.5, 0.8, 0.6, 0.8, 0.8, 0.9, 0.6, 0.7, 0.7, 0.7, 0.8])
+                t_cols[0].caption(f"#{trade['trade_number']}")
+                t_cols[1].caption(f"{trade['strategy_name']}")
+                t_cols[2].caption(f"{trade['symbol']}")
+                t_cols[3].caption(f"{trade['direction'][:1]}")
+                t_cols[4].caption(f"${trade['entry_price']:,.2f}")
+                t_cols[5].caption(f"${trade['exit_price']:,.2f}")
+                t_cols[6].caption(f"{trade.get('exit_reason', '')[:12]}")
+                t_cols[7].caption(f"{trade.get('quantity', 0)}")
+                r_val = trade.get('r_multiple', 0)
+                r_color = "green" if r_val > 0 else "red" if r_val < 0 else "gray"
+                t_cols[8].markdown(f":{r_color}[{r_val:+.2f}R]")
+                pnl = trade.get('dollar_pnl', 0)
+                pnl_color = "green" if pnl > 0 else "red" if pnl < 0 else "gray"
+                t_cols[9].markdown(f":{pnl_color}[${pnl:+,.0f}]")
+                status = ":green[Matched]" if trade.get('matched') else ":orange[Phantom]"
+                t_cols[10].markdown(status)
+                with t_cols[11]:
+                    if st.button("Chart", key=f"trade_chart_{pid}_{trade['trade_number']}",
+                                 help="View price chart for this trade"):
+                        _trade_detail_modal(trade)
+    else:
+        st.caption("No trades match the current filter.")
+
+    # --- Buying Power Tracker ---
+    if alert_trades:
+        account = get_account(port)
+        account_balance = compute_account_balance(account)
+        if account_balance <= 0:
+            account_balance = port.get('starting_balance', 10000)
+
+        bp_data = compute_alert_buying_power(alert_trades, open_positions, account_balance)
+
+        with st.expander("Buying Power Tracker", expanded=False):
+            bp_cols = st.columns(4)
+            bp_cols[0].metric("Current Buying Power", f"${bp_data['current_buying_power']:,.0f}")
+            bp_cols[1].metric("Peak Capital Deployed", f"${bp_data['peak_capital_deployed']:,.0f}")
+            bp_cols[2].metric("Open Capital Committed", f"${bp_data['open_capital_committed']:,.0f}")
+            bp_cols[3].metric("Max Concurrent Positions", bp_data['max_concurrent_positions'])
+
+            if bp_data['insufficient_events']:
+                st.warning(f"{len(bp_data['insufficient_events'])} trade(s) exceeded available buying power!")
+
+            # Timeline chart
+            if bp_data['timeline']:
+                tl = bp_data['timeline']
+                fig_bp = go.Figure()
+                times = [e['time'] for e in tl]
+                bps = [e['buying_power'] for e in tl]
+                fig_bp.add_trace(go.Scatter(
+                    x=times, y=bps, mode='lines', fill='tozeroy',
+                    line=dict(color='#2196F3', width=2),
+                    fillcolor='rgba(33, 150, 243, 0.1)',
+                    name='Buying Power',
+                ))
+                fig_bp.add_hline(y=0, line_dash="dash", line_color="#f44336", opacity=0.5,
+                                 annotation_text="Insufficient Capital")
+                fig_bp.update_layout(
+                    height=250, margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title='', yaxis_title='Buying Power ($)',
+                    yaxis=dict(tickformat='$,.0f'),
+                )
+                st.plotly_chart(fig_bp, use_container_width=True)
+
+    # --- Anomaly Detection ---
+    if alert_trades or open_positions:
+        anomalies = detect_portfolio_anomalies(
+            alert_trades, open_positions, port, get_strategy_by_id
+        )
+        if anomalies:
+            st.subheader("Anomalies")
+            for anom in anomalies:
+                severity_badge = ":red[HIGH]" if anom['severity'] == 'HIGH' else ":orange[MEDIUM]"
+                with st.container(border=True):
+                    st.markdown(f"{severity_badge} **{anom['type'].replace('_', ' ').title()}** — {anom['description']}")
+                    st.caption(anom.get('suggested_action', ''))
+
+
+def _render_live_benchmark_chart(port: dict, trades: list, filter_sid, pid: int):
+    """Render the alert-based equity curve with plan line and confidence bands."""
+    bench_key = f"port_benchmark_{pid}_{filter_sid}"
+    if bench_key not in st.session_state:
+        st.session_state[bench_key] = compute_portfolio_benchmark(
+            port, get_strategy_by_id, filter_strategy_id=filter_sid
+        )
+    bench = st.session_state[bench_key]
+
+    if not bench.get('plan_cumulative_pnl'):
+        st.info("No backtest data available to build benchmark. "
+                "Ensure strategies have completed backtests with stored trades.")
+        return
+
+    st.subheader("Performance vs Plan")
+
+    fig = go.Figure()
+
+    plan = bench['plan_cumulative_pnl']
+    max_n = max(len(trades) + 20, 50)  # Show at least 50 trades ahead
+    max_n = min(max_n, len(plan))
+    x_range = list(range(1, max_n + 1))
+
+    # 2SD band (lightest)
+    fig.add_trace(go.Scatter(
+        x=x_range, y=[bench['upper_2sd'][i] for i in range(max_n)],
+        mode='lines', line=dict(width=0), showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_range, y=[bench['lower_2sd'][i] for i in range(max_n)],
+        mode='lines', line=dict(width=0), fill='tonexty',
+        fillcolor='rgba(33, 150, 243, 0.08)', name='95% Band (2SD)',
+    ))
+
+    # 1SD band (medium)
+    fig.add_trace(go.Scatter(
+        x=x_range, y=[bench['upper_1sd'][i] for i in range(max_n)],
+        mode='lines', line=dict(width=0), showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_range, y=[bench['lower_1sd'][i] for i in range(max_n)],
+        mode='lines', line=dict(width=0), fill='tonexty',
+        fillcolor='rgba(33, 150, 243, 0.18)', name='68% Band (1SD)',
+    ))
+
+    # Plan line
+    fig.add_trace(go.Scatter(
+        x=x_range, y=[plan[i] for i in range(max_n)],
+        mode='lines', name='Plan',
+        line=dict(color='white', width=2, dash='dash'),
+    ))
+
+    # Actual line (if trades exist)
+    if trades:
+        actual_cum_pnl = []
+        running = 0
+        for t in trades:
+            running += t.get('dollar_pnl', 0)
+            actual_cum_pnl.append(running)
+
+        actual_x = list(range(1, len(actual_cum_pnl) + 1))
+
+        # Color segments based on band position
+        # For simplicity, use a single color based on final position
+        final_pnl = actual_cum_pnl[-1] if actual_cum_pnl else 0
+        n_final = len(actual_cum_pnl)
+        if n_final <= len(plan):
+            upper_1 = bench['upper_1sd'][n_final - 1]
+            lower_1 = bench['lower_1sd'][n_final - 1]
+            upper_2 = bench['upper_2sd'][n_final - 1]
+            lower_2 = bench['lower_2sd'][n_final - 1]
+            if final_pnl > upper_2 or final_pnl < lower_2:
+                line_color = '#f44336'  # Red — outside 2SD
+            elif final_pnl > upper_1 or final_pnl < lower_1:
+                line_color = '#FF9800'  # Orange — between 1SD and 2SD
+            else:
+                line_color = '#4CAF50'  # Green — within 1SD
+        else:
+            line_color = '#2196F3'  # Blue fallback
+
+        fig.add_trace(go.Scatter(
+            x=actual_x, y=actual_cum_pnl,
+            mode='lines+markers', name='Actual',
+            line=dict(color=line_color, width=3),
+            marker=dict(size=5),
+        ))
+
+    # Zero line
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+
+    fig.update_layout(
+        height=400, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title='Trade #', yaxis_title='Cumulative P&L ($)',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02),
+        yaxis=dict(tickformat='$,.0f'),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
     daily = data['daily_pnl']
     starting_balance = port.get('starting_balance', 10000.0)
 
@@ -12081,7 +12515,19 @@ def render_portfolio_performance(port, kpis, data, drawdown):
 
 
 def render_portfolio_strategies(port, data):
-    """Render the Strategies tab."""
+    """Render the Strategies tab with health badges, nav buttons, and alert equity overlay."""
+    pid = port['id']
+
+    # Get alert data and benchmark for health classification
+    _alert_cache_key = f"port_alert_data_{pid}"
+    _alert_data = st.session_state.get(_alert_cache_key, {})
+    _alert_trades = _alert_data.get('alert_trades', [])
+
+    _bench_key = f"port_benchmark_{pid}_None"
+    if _bench_key not in st.session_state:
+        st.session_state[_bench_key] = compute_portfolio_benchmark(port, get_strategy_by_id)
+    _bench = st.session_state[_bench_key]
+
     for ps in port.get('strategies', []):
         sid = ps['strategy_id']
         strat = get_strategy_by_id(sid)
@@ -12091,10 +12537,25 @@ def render_portfolio_strategies(port, data):
                 st.warning(f"Strategy ID {sid} not found (may have been deleted).")
                 continue
 
+            # Health badge
+            health = classify_strategy_health(_alert_trades, _bench, sid)
+            _health_badges = {
+                'on_track': ':green[On Track]',
+                'outperforming': ':blue[Outperforming]',
+                'underperforming': ':red[Underperforming]',
+                'insufficient_data': ':gray[Insufficient Data]',
+                'no_benchmark': ':gray[No Benchmark]',
+            }
+            _badge = _health_badges.get(health['status'], ':gray[Unknown]')
+
             col1, col2 = st.columns([3, 2])
             with col1:
-                st.markdown(f"**{strat['name']}**")
+                st.markdown(f"**{strat['name']}** {_badge}")
                 st.caption(f"{strat['symbol']} | {strat['direction']} | Risk: \\${ps['risk_per_trade']:.0f}/trade")
+
+                # Health recommendation
+                if health.get('recommendation'):
+                    st.caption(f"*{health['recommendation']}*")
 
                 # Per-strategy KPIs
                 strat_trades = data['strategy_trades'].get(sid)
@@ -12110,9 +12571,114 @@ def render_portfolio_strategies(port, data):
                 else:
                     st.caption("No trades generated.")
 
+                # Action buttons
+                btn_cols = st.columns([1, 1, 4])
+                with btn_cols[0]:
+                    if st.button("View Strategy", key=f"port_view_strat_{pid}_{sid}",
+                                 help="Go to strategy detail page"):
+                        st.session_state.viewing_strategy_id = sid
+                        st.session_state.viewing_portfolio_id = None
+                        st.session_state.active_page = "My Strategies"
+                        st.rerun()
+                with btn_cols[1]:
+                    if st.button("View Chart", key=f"port_chart_strat_{pid}_{sid}",
+                                 help="Show current price chart"):
+                        _show_strategy_chart_modal(strat)
+
             with col2:
                 if strat_trades is not None and len(strat_trades) > 0:
-                    render_mini_equity_curve(strat_trades, key=f"port_strat_eq_{sid}")
+                    # Enhanced mini equity curve with alert overlay
+                    _strat_alert_trades = [t for t in _alert_trades if t.get('strategy_id') == sid]
+                    if _strat_alert_trades:
+                        _render_enhanced_mini_equity(strat_trades, _strat_alert_trades, strat, key=f"port_strat_eq_{sid}")
+                    else:
+                        render_mini_equity_curve(strat_trades, key=f"port_strat_eq_{sid}")
+
+
+@st.dialog("Strategy Chart", width="large")
+def _show_strategy_chart_modal(strat: dict):
+    """Show current price chart for a strategy in a modal."""
+    st.markdown(f"**{strat['name']}** — {strat['symbol']} {strat['direction']} ({strat.get('timeframe', '1Min')})")
+    try:
+        from data_loader import load_latest_bars
+        df = load_latest_bars(strat['symbol'], strat.get('timeframe', '1Min'),
+                              session=strat.get('session', 'regular'), limit=200)
+        if df is not None and len(df) > 0:
+            window = df.tail(100)
+            fig = go.Figure(data=[go.Candlestick(
+                x=window.index,
+                open=window['open'], high=window['high'],
+                low=window['low'], close=window['close'],
+                increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+            )])
+            fig.update_layout(
+                height=400, margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_rangeslider_visible=False,
+                yaxis_title='Price ($)',
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Last bar: {window.index[-1]} | Close: ${window['close'].iloc[-1]:,.2f}")
+        else:
+            st.info("Price data not available.")
+    except Exception as e:
+        st.caption(f"Could not load chart: {e}")
+
+
+def _render_enhanced_mini_equity(strat_trades, alert_trades_for_strat, strat, key=""):
+    """Render mini equity curve with BT (gray dashed) + Alert (green) overlay."""
+    fig = go.Figure()
+
+    # Backtest line (gray dashed)
+    if len(strat_trades) > 0:
+        sorted_t = strat_trades.sort_values('exit_time')
+        cum_r = sorted_t['r_multiple'].cumsum()
+        fig.add_trace(go.Scatter(
+            x=list(range(1, len(cum_r) + 1)), y=cum_r,
+            mode='lines', name='Backtest',
+            line=dict(color='gray', width=1, dash='dot'),
+        ))
+
+    # Forward test portion (if applicable)
+    ft_start = strat.get('forward_test_start')
+    if ft_start and len(strat_trades) > 0:
+        try:
+            ft_dt = pd.Timestamp(ft_start)
+            if ft_dt.tzinfo is None and sorted_t['exit_time'].dt.tz is not None:
+                ft_dt = ft_dt.tz_localize('UTC')
+            ft_mask = sorted_t['exit_time'] >= ft_dt
+            if ft_mask.any():
+                ft_idx_start = ft_mask.idxmax()
+                ft_portion = sorted_t.loc[ft_idx_start:]
+                ft_cum_r = ft_portion['r_multiple'].cumsum() + cum_r.iloc[ft_mask.values.argmax() - 1] if ft_mask.values.argmax() > 0 else ft_portion['r_multiple'].cumsum()
+                x_start = int(ft_mask.values.argmax()) + 1
+                fig.add_trace(go.Scatter(
+                    x=list(range(x_start, x_start + len(ft_cum_r))), y=ft_cum_r,
+                    mode='lines', name='Forward Test',
+                    line=dict(color='#2196F3', width=1.5),
+                ))
+        except Exception:
+            pass
+
+    # Alert line (green)
+    if alert_trades_for_strat:
+        alert_cum_r = []
+        running = 0
+        for t in alert_trades_for_strat:
+            running += t.get('r_multiple', 0)
+            alert_cum_r.append(running)
+        fig.add_trace(go.Scatter(
+            x=list(range(1, len(alert_cum_r) + 1)), y=alert_cum_r,
+            mode='lines', name='Alerts',
+            line=dict(color='#4CAF50', width=2),
+        ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+    fig.update_layout(
+        height=100, margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False,
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+    )
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
 def render_portfolio_prop_firm(port, kpis, daily_pnl):
@@ -13357,6 +13923,68 @@ def render_portfolio_account(port: dict, portfolio_id: int):
     if notes:
         with st.expander("Preview", expanded=True):
             st.markdown(notes)
+
+    # --- Change History ---
+    change_log = port.get('change_log', [])
+    if change_log:
+        st.markdown("---")
+        with st.expander(f"Change History ({len(change_log)} entries)", expanded=False):
+            _type_badges = {
+                'strategy_added': ':blue[Strategy Added]',
+                'strategy_removed': ':red[Strategy Removed]',
+                'risk_adjusted': ':orange[Risk Adjusted]',
+                'requirement_set_changed': ':green[Requirement Changed]',
+                'portfolio_created': ':violet[Created]',
+            }
+            for entry in reversed(change_log[-50:]):  # Show last 50
+                _badge = _type_badges.get(entry.get('change_type', ''), ':gray[Change]')
+                _ts = entry.get('timestamp', '')[:16].replace('T', ' ')
+                st.markdown(f"{_badge} — {entry.get('description', '')}  \n"
+                            f":gray[{_ts}]")
+
+    # --- Daily Journal ---
+    _alert_cache_key = f"port_alert_data_{portfolio_id}"
+    _alert_data = st.session_state.get(_alert_cache_key, {})
+    _alert_trades = _alert_data.get('alert_trades', [])
+
+    if _alert_trades or change_log:
+        st.markdown("---")
+        with st.expander("Daily Journal", expanded=False):
+            journal = compute_daily_journal(_alert_trades, change_log)
+            if not journal:
+                st.caption("No daily entries yet.")
+            else:
+                # Date selector
+                date_options = [j['date'] for j in journal]
+                if date_options:
+                    selected_date = st.selectbox("Date", date_options, key=f"journal_date_{portfolio_id}")
+                    day_entry = next((j for j in journal if j['date'] == selected_date), None)
+                    if day_entry:
+                        j_cols = st.columns(3)
+                        j_cols[0].metric("Daily P&L", f"${day_entry['daily_pnl']:+,.2f}")
+                        j_cols[1].metric("Trades", day_entry['n_trades'])
+                        j_cols[2].caption(f"Strategies: {', '.join(day_entry['strategies_traded']) or 'None'}")
+
+                        if day_entry['changes']:
+                            st.caption("**Changes on this date:**")
+                            for ch in day_entry['changes']:
+                                st.caption(f"- {ch.get('description', '')}")
+
+                        # Editable notes per date
+                        journal_entries = port.get('journal_entries', {})
+                        existing_note = journal_entries.get(selected_date, {}).get('notes', '')
+                        new_note = st.text_area("Notes for this date", value=existing_note,
+                                                height=100, key=f"journal_note_{portfolio_id}_{selected_date}")
+                        if st.button("Save Journal Note", key=f"save_journal_{portfolio_id}_{selected_date}"):
+                            if 'journal_entries' not in port:
+                                port['journal_entries'] = {}
+                            port['journal_entries'][selected_date] = {
+                                'notes': new_note,
+                                'auto_summary': f"P&L: ${day_entry['daily_pnl']:+,.2f}, {day_entry['n_trades']} trades",
+                            }
+                            update_portfolio(portfolio_id, port)
+                            st.toast("Journal note saved")
+                            st.rerun()
 
 
 # =============================================================================

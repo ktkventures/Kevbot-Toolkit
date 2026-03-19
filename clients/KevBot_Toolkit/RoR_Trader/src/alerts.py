@@ -448,6 +448,21 @@ def load_alerts(limit: int = 100) -> list:
     return alerts[:limit]
 
 
+def get_portfolio_strategy_alerts_bulk(strategy_ids: set, limit: int = 10000) -> dict:
+    """Load alerts for multiple strategies in a single pass.
+
+    Returns {strategy_id: [alerts]} dict. More efficient than calling
+    load_alerts() per strategy (avoids N+1 loading).
+    """
+    all_alerts = load_alerts(limit=limit)
+    result = {sid: [] for sid in strategy_ids}
+    for a in all_alerts:
+        sid = a.get('strategy_id')
+        if sid in result:
+            result[sid].append(a)
+    return result
+
+
 def _save_all_alerts(alerts: list):
     """Save full alerts list to file (atomic write to prevent partial reads).
 
@@ -1027,6 +1042,63 @@ def send_webhook(url: str, alert: dict, custom_payload: str = None) -> dict:
                 continue
 
     return {"success": False, "status_code": last_status, "error": last_error, "payload_sent": payload_str}
+
+
+def send_cover_webhook(portfolio: dict, symbol: str, direction: str,
+                        quantity: int, cover_config: dict) -> dict:
+    """Send a cover/close webhook to close excess positions.
+
+    Args:
+        portfolio: Portfolio dict.
+        symbol: Ticker symbol.
+        direction: 'LONG' or 'SHORT' (the position direction to close).
+        quantity: Number of shares to close.
+        cover_config: Dict with 'url' and 'payload_template' keys.
+
+    Returns send_webhook() result dict.
+    """
+    url = cover_config.get('url', '')
+    template = cover_config.get('payload_template', '')
+
+    # Build close action based on direction
+    action = 'sell' if direction == 'LONG' else 'buy'
+
+    # Substitute placeholders in template
+    if template:
+        rendered = template.replace('{{symbol}}', symbol)
+        rendered = rendered.replace('{{quantity}}', str(quantity))
+        rendered = rendered.replace('{{direction}}', direction)
+        rendered = rendered.replace('{{action}}', action)
+        rendered = rendered.replace('{{portfolio_name}}', portfolio.get('name', ''))
+    else:
+        rendered = json.dumps({
+            "action": action,
+            "symbol": symbol,
+            "quantity": quantity,
+            "reason": "cover_excess",
+            "portfolio": portfolio.get('name', ''),
+        })
+
+    # Record as alert
+    cover_alert = {
+        'type': 'manual_cover',
+        'symbol': symbol,
+        'direction': direction,
+        'strategy_id': None,
+        'strategy_name': f'Cover {symbol}',
+        'source': 'portfolio_dashboard',
+        'data': {
+            'quantity': quantity,
+            'action': action,
+            'portfolio_id': portfolio.get('id'),
+        },
+    }
+    try:
+        save_alert(cover_alert)
+    except Exception:
+        pass  # Don't block the webhook on alert save failure
+
+    return send_webhook(url, cover_alert, custom_payload=rendered)
 
 
 # =============================================================================
