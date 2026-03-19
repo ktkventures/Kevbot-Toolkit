@@ -12149,7 +12149,13 @@ def _render_live_benchmark_chart(port: dict, trades: list, filter_sid, pid: int)
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _render_risk_analytics(port, data, key_prefix="perf"):
+    """Render capital utilization, Daily P&L vs Limits, Worst-Case Analysis,
+    and Monte Carlo sections.
 
+    Shared by the Performance tab and the portfolio builder.
+    key_prefix avoids Streamlit widget key collisions between callers.
+    """
     daily = data['daily_pnl']
     starting_balance = port.get('starting_balance', 10000.0)
 
