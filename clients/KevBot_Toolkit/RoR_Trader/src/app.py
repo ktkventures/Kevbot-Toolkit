@@ -13815,6 +13815,59 @@ def _render_inbound_webhooks_tab():
 # PORTFOLIO ACCOUNT MANAGEMENT
 # =============================================================================
 
+@st.dialog("Daily Detail", width="large")
+def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
+                                 daily_auto: dict, ledger: list):
+    """Show trade-by-trade breakdown and portfolio changes for a specific day."""
+    st.markdown(f"### {date_str}")
+
+    # Clean up session state trigger
+    st.session_state.pop(f"_show_daily_detail_{portfolio_id}", None)
+
+    tab_trades, tab_changes = st.tabs(["Trades", "Portfolio Changes"])
+
+    with tab_trades:
+        day_info = daily_auto.get(date_str, {})
+        trade_entries = day_info.get('entries', [])
+        if trade_entries:
+            total_pnl = sum(e.get('amount', 0) for e in trade_entries)
+            st.metric("Day Total P&L", f"${total_pnl:+,.2f}")
+
+            # Trade-by-trade table
+            hdr = st.columns([2, 3, 2])
+            hdr[0].caption("**#**")
+            hdr[1].caption("**Note**")
+            hdr[2].caption("**P&L**")
+            for i, entry in enumerate(trade_entries, 1):
+                r = st.columns([2, 3, 2])
+                r[0].caption(str(i))
+                r[1].caption(entry.get('note', ''))
+                amt = entry.get('amount', 0)
+                color = "green" if amt > 0 else "red" if amt < 0 else "gray"
+                r[2].markdown(f":{color}[${amt:+,.2f}]")
+        else:
+            st.caption("No trading P&L entries for this date.")
+
+    with tab_changes:
+        day_changes = [c for c in port.get('change_log', [])
+                       if c.get('timestamp', '')[:10] == date_str]
+        if day_changes:
+            _type_badges = {
+                'strategy_added': ':blue[Strategy Added]',
+                'strategy_removed': ':red[Strategy Removed]',
+                'risk_adjusted': ':orange[Risk Adjusted]',
+                'requirement_set_changed': ':green[Requirement Changed]',
+                'portfolio_created': ':violet[Created]',
+            }
+            for entry in day_changes:
+                _badge = _type_badges.get(entry.get('change_type', ''), ':gray[Change]')
+                _ts = entry.get('timestamp', '')[:16].replace('T', ' ')
+                st.markdown(f"{_badge} — {entry.get('description', '')}  \n"
+                            f":gray[{_ts}]")
+        else:
+            st.caption("No portfolio changes on this date.")
+
+
 def render_portfolio_account(port: dict, portfolio_id: int):
     """Render the Account Management tab for a portfolio."""
     account = get_account(port)
@@ -13883,10 +13936,56 @@ def render_portfolio_account(port: dict, portfolio_id: int):
                 st.toast(f"Withdrawal of ${wd_amount:,.2f} recorded")
                 st.rerun()
 
-    # Ledger table
+    # Ledger table — aggregates auto trading_pnl entries by day
     if ledger:
         st.markdown("**Ledger**")
         ledger_sorted = sorted(ledger, key=lambda e: e.get('date', ''), reverse=True)
+
+        # Separate manual entries from auto trading P&L entries
+        manual_entries = [e for e in ledger_sorted if not e.get('auto')]
+        auto_entries = [e for e in ledger_sorted if e.get('auto')]
+
+        # Aggregate auto entries by date
+        from collections import defaultdict
+        daily_auto = defaultdict(lambda: {'amount': 0, 'count': 0, 'entries': []})
+        for e in auto_entries:
+            d = e.get('date', 'Unknown')
+            daily_auto[d]['amount'] += e.get('amount', 0)
+            daily_auto[d]['count'] += 1
+            daily_auto[d]['entries'].append(e)
+
+        # Build combined display rows: manual entries + daily aggregates
+        display_rows = []
+        for e in manual_entries:
+            display_rows.append({
+                'date': e.get('date', ''),
+                'type': e.get('type', '').replace('_', ' ').title(),
+                'amount': e.get('amount', 0),
+                'note': e.get('note', ''),
+                'is_daily': False,
+                'entry': e,
+            })
+        for d, info in daily_auto.items():
+            # Get change log entries for this date
+            _day_changes = [c for c in port.get('change_log', [])
+                           if c.get('timestamp', '')[:10] == d]
+            n_changes = len(_day_changes)
+            note = f"{info['count']} trade(s)"
+            if n_changes > 0:
+                note += f", {n_changes} change(s)"
+            display_rows.append({
+                'date': d,
+                'type': 'Daily Trading P&L',
+                'amount': info['amount'],
+                'note': note,
+                'is_daily': True,
+                'trade_entries': info['entries'],
+                'changes': _day_changes,
+                'trade_count': info['count'],
+            })
+
+        display_rows.sort(key=lambda r: r['date'], reverse=True)
+
         # Header row
         hdr = st.columns([2, 2, 2, 3, 1])
         hdr[0].markdown("**Date**")
@@ -13894,36 +13993,47 @@ def render_portfolio_account(port: dict, portfolio_id: int):
         hdr[2].markdown("**Amount**")
         hdr[3].markdown("**Note**")
         hdr[4].markdown("**Action**")
-        for entry in ledger_sorted:
-            eid = entry.get('id', 0)
-            amount = entry.get('amount', 0)
-            entry_type = entry.get('type', '')
-            type_label = entry_type.replace('_', ' ').title()
-            if entry.get('auto'):
-                type_label += " (auto)"
+
+        for row_data in display_rows:
             row = st.columns([2, 2, 2, 3, 1])
-            row[0].write(entry.get('date', ''))
-            row[1].write(type_label)
-            row[2].write(f"${amount:+,.2f}")
-            row[3].write(entry.get('note', ''))
+            row[0].write(row_data['date'])
+            row[1].write(row_data['type'])
+            _amt = row_data['amount']
+            _amt_color = "green" if _amt > 0 else "red" if _amt < 0 else "gray"
+            row[2].markdown(f":{_amt_color}[${_amt:+,.2f}]")
+            row[3].write(row_data['note'])
+
             with row[4]:
-                if st.session_state.confirm_delete_ledger_id == eid:
-                    cc = st.columns(2)
-                    with cc[0]:
-                        if st.button("Yes", key=f"ledger_yes_{eid}", type="primary"):
-                            remove_ledger_entry(port, eid)
-                            update_portfolio(portfolio_id, port)
-                            st.session_state.confirm_delete_ledger_id = None
-                            st.toast("Ledger entry removed")
-                            st.rerun()
-                    with cc[1]:
-                        if st.button("No", key=f"ledger_no_{eid}"):
-                            st.session_state.confirm_delete_ledger_id = None
-                            st.rerun()
-                else:
-                    if st.button("🗑", key=f"ledger_del_{eid}"):
-                        st.session_state.confirm_delete_ledger_id = eid
+                if row_data['is_daily']:
+                    # Details button → modal
+                    if st.button("Details", key=f"daily_detail_{portfolio_id}_{row_data['date']}"):
+                        st.session_state[f"_show_daily_detail_{portfolio_id}"] = row_data['date']
                         st.rerun()
+                else:
+                    # Delete button for manual entries
+                    eid = row_data['entry'].get('id', 0)
+                    if st.session_state.confirm_delete_ledger_id == eid:
+                        cc = st.columns(2)
+                        with cc[0]:
+                            if st.button("Yes", key=f"ledger_yes_{eid}", type="primary"):
+                                remove_ledger_entry(port, eid)
+                                update_portfolio(portfolio_id, port)
+                                st.session_state.confirm_delete_ledger_id = None
+                                st.toast("Ledger entry removed")
+                                st.rerun()
+                        with cc[1]:
+                            if st.button("No", key=f"ledger_no_{eid}"):
+                                st.session_state.confirm_delete_ledger_id = None
+                                st.rerun()
+                    else:
+                        if st.button("🗑", key=f"ledger_del_{eid}"):
+                            st.session_state.confirm_delete_ledger_id = eid
+                            st.rerun()
+
+        # Daily detail modal
+        _detail_date = st.session_state.get(f"_show_daily_detail_{portfolio_id}")
+        if _detail_date:
+            _render_daily_detail_modal(port, portfolio_id, _detail_date, daily_auto, ledger)
 
     # Trading Notes
     st.markdown("---")
@@ -14057,6 +14167,58 @@ def render_portfolio_webhooks(port: dict):
         add_portfolio_webhook(portfolio_id, new_wh)
         st.toast("Webhook added")
         st.rerun()
+
+    # --- Cover/Close Webhook ---
+    st.divider()
+    with st.expander("Cover/Close Webhook", expanded=False):
+        st.caption("Configure a webhook for closing erroneous or excess positions. "
+                   "When an anomaly is detected on the Live Dashboard, you can send a close "
+                   "order via this webhook with one click.")
+
+        cover_cfg = port_cfg.get('cover_webhook', {})
+        cover_url = st.text_input("Cover Webhook URL",
+                                  value=cover_cfg.get('url', ''),
+                                  placeholder="https://your-broker-api.com/close",
+                                  key=f"cover_url_{portfolio_id}")
+        cover_enabled = st.toggle("Enabled",
+                                  value=cover_cfg.get('enabled', False),
+                                  key=f"cover_enabled_{portfolio_id}")
+
+        st.caption("**Payload Template** — Use placeholders: `{{symbol}}`, `{{quantity}}`, "
+                   "`{{direction}}`, `{{action}}` (buy/sell), `{{portfolio_name}}`")
+        cover_template = st.text_area("Payload (JSON)",
+                                      value=cover_cfg.get('payload_template', ''),
+                                      height=120,
+                                      placeholder='{\n  "action": "{{action}}",\n  "symbol": "{{symbol}}",\n  "quantity": {{quantity}}\n}',
+                                      key=f"cover_template_{portfolio_id}")
+
+        cover_cols = st.columns([1, 1, 4])
+        with cover_cols[0]:
+            if st.button("Save", key=f"save_cover_{portfolio_id}", type="primary"):
+                new_cfg = dict(port_cfg)
+                new_cfg['cover_webhook'] = {
+                    'url': cover_url,
+                    'enabled': cover_enabled,
+                    'payload_template': cover_template,
+                }
+                set_portfolio_alert_config(portfolio_id, new_cfg)
+                st.toast("Cover webhook settings saved")
+                st.rerun()
+
+        with cover_cols[1]:
+            if st.button("Test", key=f"test_cover_{portfolio_id}"):
+                if cover_url:
+                    from alerts import send_cover_webhook
+                    test_result = send_cover_webhook(
+                        port, symbol="TEST", direction="LONG",
+                        quantity=1, cover_config={'url': cover_url, 'payload_template': cover_template}
+                    )
+                    if test_result.get('success'):
+                        st.success(f"Test sent! Status: {test_result.get('status_code')}")
+                    else:
+                        st.error(f"Test failed: {test_result.get('error')}")
+                else:
+                    st.warning("Enter a URL first.")
 
     # Recent alerts for this portfolio
     st.divider()
