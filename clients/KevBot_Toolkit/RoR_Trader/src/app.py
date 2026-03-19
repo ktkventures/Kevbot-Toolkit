@@ -11852,7 +11852,7 @@ def _trade_detail_modal(trade: dict):
             start_dt = entry_dt - timedelta(seconds=tf_seconds * bars_before)
             end_dt = entry_dt + timedelta(seconds=tf_seconds * (bars_after + 100))
 
-            df = load_latest_bars(trade['symbol'], tf, session=session, limit=200)
+            df = load_latest_bars(trade['symbol'], bars=200, timeframe=tf, session=session)
             if df is not None and len(df) > 0:
                 # Filter to trade window
                 try:
@@ -11976,6 +11976,20 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
     # --- Trade history table ---
     st.subheader("Trade History")
     if filtered_trades:
+        # Header row
+        _hdr = st.columns([0.4, 1.5, 0.8, 0.6, 0.8, 0.8, 0.9, 0.6, 0.7, 0.7, 0.7, 0.8])
+        _hdr[0].caption("**#**")
+        _hdr[1].caption("**Strategy**")
+        _hdr[2].caption("**Symbol**")
+        _hdr[3].caption("**Dir**")
+        _hdr[4].caption("**Entry**")
+        _hdr[5].caption("**Exit**")
+        _hdr[6].caption("**Reason**")
+        _hdr[7].caption("**Qty**")
+        _hdr[8].caption("**R**")
+        _hdr[9].caption("**P&L**")
+        _hdr[10].caption("**Status**")
+        _hdr[11].caption("**Chart**")
         for trade in reversed(filtered_trades):  # Most recent first
             with st.container(border=True):
                 t_cols = st.columns([0.4, 1.5, 0.8, 0.6, 0.8, 0.8, 0.9, 0.6, 0.7, 0.7, 0.7, 0.8])
@@ -12655,8 +12669,9 @@ def _show_strategy_chart_modal(strat: dict):
     st.markdown(f"**{strat['name']}** — {strat['symbol']} {strat['direction']} ({strat.get('timeframe', '1Min')})")
     try:
         from data_loader import load_latest_bars
-        df = load_latest_bars(strat['symbol'], strat.get('timeframe', '1Min'),
-                              session=strat.get('session', 'regular'), limit=200)
+        df = load_latest_bars(strat['symbol'], bars=200,
+                              timeframe=strat.get('timeframe', '1Min'),
+                              session=strat.get('session', 'regular'))
         if df is not None and len(df) > 0:
             window = df.tail(100)
             fig = go.Figure(data=[go.Candlestick(
