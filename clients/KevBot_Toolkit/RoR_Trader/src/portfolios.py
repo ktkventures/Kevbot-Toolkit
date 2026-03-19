@@ -1331,28 +1331,112 @@ def compute_strategy_r_distribution(stored_trades: list,
     }
 
 
+def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
+                                   risk_per_trade: float) -> tuple:
+    """Pair raw entry+exit alerts chronologically into trade records.
+
+    Used as a fallback when live_executions aren't available.
+    Returns (trades_list, open_positions_list).
+    """
+    sid = strategy.get('id')
+    strategy_name = strategy.get('name', f'Strategy {sid}')
+    symbol = strategy.get('symbol', '')
+    direction = strategy.get('direction', 'LONG')
+
+    # Filter to this strategy's entry/exit signals
+    strat_alerts = [a for a in alerts
+                    if a.get('strategy_id') == sid
+                    and a.get('type') in ('entry_signal', 'exit_signal')]
+    strat_alerts.sort(key=lambda a: a.get('timestamp', ''))
+
+    trades = []
+    open_positions = []
+    pending_entry = None
+
+    for alert in strat_alerts:
+        if alert.get('type') == 'entry_signal':
+            pending_entry = alert
+        elif alert.get('type') == 'exit_signal' and pending_entry is not None:
+            entry_price = pending_entry.get('price', 0)
+            exit_price = alert.get('price', 0)
+            stop_price = pending_entry.get('stop_price', 0)
+            per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
+
+            if per_share_risk > 0:
+                if direction == 'LONG':
+                    r_multiple = (exit_price - entry_price) / per_share_risk
+                else:
+                    r_multiple = (entry_price - exit_price) / per_share_risk
+            else:
+                r_multiple = 0
+
+            quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
+            buying_power_used = quantity * entry_price
+
+            trades.append({
+                'strategy_id': sid,
+                'strategy_name': strategy_name,
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'theoretical_entry': entry_price,
+                'theoretical_exit': exit_price,
+                'entry_time': pending_entry.get('timestamp', ''),
+                'exit_time': alert.get('timestamp', ''),
+                'exit_reason': alert.get('trigger', ''),
+                'r_multiple': round(r_multiple, 4),
+                'entry_slippage_r': 0,
+                'exit_slippage_r': 0,
+                'risk_per_trade': risk_per_trade,
+                'dollar_pnl': round(r_multiple * risk_per_trade, 2),
+                'quantity': quantity,
+                'buying_power_used': buying_power_used,
+                'matched': True,
+                'phantom': False,
+                'exec_type': 'C',
+                'data_source': 'raw_alerts',
+            })
+            pending_entry = None
+
+    if pending_entry is not None:
+        entry_price = pending_entry.get('price', 0)
+        stop_price = pending_entry.get('stop_price', 0)
+        per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
+        quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
+        open_positions.append({
+            'strategy_id': sid,
+            'strategy_name': strategy_name,
+            'symbol': symbol,
+            'direction': direction,
+            'entry_price': entry_price,
+            'entry_time': pending_entry.get('timestamp', ''),
+            'risk_per_trade': risk_per_trade,
+            'quantity': quantity,
+            'buying_power_used': quantity * entry_price,
+            'stop_price': stop_price,
+        })
+
+    return trades, open_positions
+
+
 def get_portfolio_alert_trades(portfolio: dict,
                                 get_strategy_fn: Callable) -> dict:
     """Aggregate alert-based trades across all portfolio strategies.
 
-    Reads each strategy's live_executions (populated by match_alerts_to_trades)
-    and pairs entry+exit executions into unified trade records with dollar P&L,
-    quantity, and buying power calculations.
+    Primary source: live_executions on each strategy (has slippage data).
+    Fallback: raw alerts from alerts DB/file, paired chronologically.
 
     Args:
         portfolio: Portfolio dict with 'strategies' list.
         get_strategy_fn: Callable(strategy_id) -> strategy dict or None.
 
-    Returns:
-        {
-            'alert_trades': list of trade dicts,
-            'open_positions': list of open position dicts,
-            'strategies_with_data': set of strategy_ids that have live_executions,
-        }
+    Returns dict with alert_trades, open_positions, strategies_with_data.
     """
     alert_trades = []
     open_positions = []
     strategies_with_data = set()
+    strategies_needing_fallback = []
 
     for alloc in portfolio.get('strategies', []):
         sid = alloc.get('strategy_id')
@@ -1363,94 +1447,105 @@ def get_portfolio_alert_trades(portfolio: dict,
 
         live_execs = strat.get('live_executions', [])
         stored = strat.get('stored_trades', [])
-        if not live_execs:
-            continue
 
-        strategies_with_data.add(sid)
-        strategy_name = strat.get('name', f'Strategy {sid}')
-        symbol = strat.get('symbol', '')
-        direction = strat.get('direction', 'LONG')
+        if live_execs:
+            # Primary path: use live_executions (has slippage data)
+            strategies_with_data.add(sid)
+            strategy_name = strat.get('name', f'Strategy {sid}')
+            symbol = strat.get('symbol', '')
+            direction = strat.get('direction', 'LONG')
 
-        # Build entry/exit maps keyed by matched_trade_index
-        entry_execs = {}
-        exit_execs = {}
-        for ex in live_execs:
-            tidx = ex.get('matched_trade_index')
-            if tidx is None:
-                continue
-            if ex.get('type') == 'entry':
-                entry_execs[tidx] = ex
-            elif ex.get('type') == 'exit':
-                exit_execs[tidx] = ex
+            entry_execs = {}
+            exit_execs = {}
+            for ex in live_execs:
+                tidx = ex.get('matched_trade_index')
+                if tidx is None:
+                    continue
+                if ex.get('type') == 'entry':
+                    entry_execs[tidx] = ex
+                elif ex.get('type') == 'exit':
+                    exit_execs[tidx] = ex
 
-        # Build paired trades (both entry and exit present)
-        for tidx in sorted(entry_execs.keys()):
-            entry_ex = entry_execs[tidx]
-            exit_ex = exit_execs.get(tidx)
+            for tidx in sorted(entry_execs.keys()):
+                entry_ex = entry_execs[tidx]
+                exit_ex = exit_execs.get(tidx)
+                stored_trade = stored[tidx] if tidx < len(stored) else {}
 
-            # Get stored trade for theoretical values
-            stored_trade = stored[tidx] if tidx < len(stored) else {}
+                entry_price = entry_ex.get('alert_price', 0)
+                theoretical_entry = entry_ex.get('theoretical_price', entry_price)
+                stop_price = stored_trade.get('stop_price', 0)
+                per_share_risk = abs(theoretical_entry - stop_price) if stop_price else 0
+                entry_slip = entry_ex.get('slippage_r', 0)
 
-            entry_price = entry_ex.get('alert_price', 0)
-            theoretical_entry = entry_ex.get('theoretical_price', entry_price)
-            stop_price = stored_trade.get('stop_price', 0)
-            per_share_risk = abs(theoretical_entry - stop_price) if stop_price else 0
+                if exit_ex:
+                    exit_price = exit_ex.get('alert_price', 0)
+                    theoretical_exit = exit_ex.get('theoretical_price', exit_price)
+                    exit_slip = exit_ex.get('slippage_r', 0)
+                    stored_r = stored_trade.get('r_multiple', 0)
+                    adjusted_r = stored_r - entry_slip - exit_slip
+                    quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
 
-            entry_slip = entry_ex.get('slippage_r', 0)
+                    alert_trades.append({
+                        'strategy_id': sid,
+                        'strategy_name': strategy_name,
+                        'symbol': symbol,
+                        'direction': direction,
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'theoretical_entry': theoretical_entry,
+                        'theoretical_exit': theoretical_exit,
+                        'entry_time': entry_ex.get('alert_timestamp', ''),
+                        'exit_time': exit_ex.get('alert_timestamp', ''),
+                        'exit_reason': stored_trade.get('exit_reason', ''),
+                        'r_multiple': adjusted_r,
+                        'entry_slippage_r': entry_slip,
+                        'exit_slippage_r': exit_slip,
+                        'risk_per_trade': risk_per_trade,
+                        'dollar_pnl': adjusted_r * risk_per_trade,
+                        'quantity': quantity,
+                        'buying_power_used': quantity * entry_price,
+                        'matched': True,
+                        'phantom': False,
+                        'exec_type': stored_trade.get('exec_type', 'C'),
+                        'data_source': 'live_executions',
+                    })
+                else:
+                    quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
+                    open_positions.append({
+                        'strategy_id': sid,
+                        'strategy_name': strategy_name,
+                        'symbol': symbol,
+                        'direction': direction,
+                        'entry_price': entry_price,
+                        'entry_time': entry_ex.get('alert_timestamp', ''),
+                        'risk_per_trade': risk_per_trade,
+                        'quantity': quantity,
+                        'buying_power_used': quantity * entry_price,
+                        'stop_price': stop_price,
+                    })
+        else:
+            # No live_executions — queue for raw alert fallback
+            strategies_needing_fallback.append((alloc, strat))
 
-            if exit_ex:
-                # Completed trade
-                exit_price = exit_ex.get('alert_price', 0)
-                theoretical_exit = exit_ex.get('theoretical_price', exit_price)
-                exit_slip = exit_ex.get('slippage_r', 0)
-                stored_r = stored_trade.get('r_multiple', 0)
-                adjusted_r = stored_r - entry_slip - exit_slip
+    # Fallback: pair raw alerts for strategies without live_executions
+    if strategies_needing_fallback:
+        from alerts import get_alerts_for_portfolio
+        pid = portfolio.get('id')
+        raw_alerts = get_alerts_for_portfolio(pid, limit=10000) if pid else []
 
-                quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
-                buying_power_used = quantity * entry_price
-
-                alert_trades.append({
-                    'strategy_id': sid,
-                    'strategy_name': strategy_name,
-                    'symbol': symbol,
-                    'direction': direction,
-                    'entry_price': entry_price,
-                    'exit_price': exit_price,
-                    'theoretical_entry': theoretical_entry,
-                    'theoretical_exit': theoretical_exit,
-                    'entry_time': entry_ex.get('alert_timestamp', ''),
-                    'exit_time': exit_ex.get('alert_timestamp', ''),
-                    'exit_reason': stored_trade.get('exit_reason', ''),
-                    'r_multiple': adjusted_r,
-                    'entry_slippage_r': entry_slip,
-                    'exit_slippage_r': exit_slip,
-                    'risk_per_trade': risk_per_trade,
-                    'dollar_pnl': adjusted_r * risk_per_trade,
-                    'quantity': quantity,
-                    'buying_power_used': buying_power_used,
-                    'matched': True,
-                    'phantom': False,
-                    'exec_type': stored_trade.get('exec_type', 'C'),
-                })
-            else:
-                # Open position — entry without matching exit
-                quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
-                open_positions.append({
-                    'strategy_id': sid,
-                    'strategy_name': strategy_name,
-                    'symbol': symbol,
-                    'direction': direction,
-                    'entry_price': entry_price,
-                    'entry_time': entry_ex.get('alert_timestamp', ''),
-                    'risk_per_trade': risk_per_trade,
-                    'quantity': quantity,
-                    'buying_power_used': quantity * entry_price,
-                    'stop_price': stop_price,
-                })
+        for alloc, strat in strategies_needing_fallback:
+            sid = alloc.get('strategy_id')
+            risk_per_trade = alloc.get('risk_per_trade', 100.0)
+            trades, opens = _pair_raw_alerts_for_strategy(
+                raw_alerts, strat, risk_per_trade
+            )
+            if trades or opens:
+                strategies_with_data.add(sid)
+                alert_trades.extend(trades)
+                open_positions.extend(opens)
 
     # Sort completed trades by exit_time
     alert_trades.sort(key=lambda t: t.get('exit_time', ''))
-    # Assign sequential trade numbers
     for i, t in enumerate(alert_trades):
         t['trade_number'] = i + 1
 

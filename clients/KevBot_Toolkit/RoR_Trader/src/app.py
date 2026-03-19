@@ -11644,6 +11644,14 @@ def render_portfolio_builder():
             save_portfolio(portfolio)
             st.toast("Portfolio saved!")
 
+        # Auto-enable alert tracking for all portfolio strategies
+        for _ps in builder_strategies:
+            _sid = _ps.get('strategy_id')
+            _s = get_strategy_by_id(_sid)
+            if _s and not _s.get('alert_tracking_enabled'):
+                _s['alert_tracking_enabled'] = True
+                update_strategy(_sid, _s)
+
         st.session_state.creating_portfolio = False
         st.session_state.editing_portfolio_id = None
         st.session_state.portfolio_builder_strategies = []
@@ -11677,7 +11685,7 @@ def render_portfolio_detail(portfolio_id: int):
     st.caption(meta)
 
     # Action bar
-    action_cols = st.columns([0.8, 1, 1, 1, 4.2])
+    action_cols = st.columns([0.8, 1.3, 1, 1, 1, 2.9])
     with action_cols[0]:
         if st.button("Refresh", key="pdetail_refresh", help="Recompute portfolio analytics"):
             st.session_state.pop(f"port_data_{portfolio_id}", None)
@@ -11697,17 +11705,41 @@ def render_portfolio_detail(portfolio_id: int):
             st.toast("Portfolio data refreshed.")
             st.rerun()
     with action_cols[1]:
+        if st.button("Update Strategies", key="pdetail_update_strats",
+                      help="Refresh all strategy data & match alerts"):
+            _update_progress = st.progress(0.0, text="Updating strategies...")
+            _strats_list = port.get('strategies', [])
+            for _ui, _alloc in enumerate(_strats_list):
+                _sid = _alloc.get('strategy_id')
+                _s = get_strategy_by_id(_sid)
+                if _s:
+                    _update_progress.progress(
+                        (_ui + 1) / (len(_strats_list) + 1),
+                        text=f"Updating {_s.get('name', '')}...")
+                    # Auto-enable alert tracking
+                    if not _s.get('alert_tracking_enabled'):
+                        _s['alert_tracking_enabled'] = True
+                        update_strategy(_sid, _s)
+                    refresh_strategy_data(_sid)
+            _update_progress.progress(1.0, text="Done!")
+            # Clear caches
+            st.session_state.pop(f"port_data_{portfolio_id}", None)
+            for _k in [k for k in list(st.session_state) if k.startswith(f"port_benchmark_{portfolio_id}_")]:
+                st.session_state.pop(_k, None)
+            st.toast("All strategies updated with latest alert data.")
+            st.rerun()
+    with action_cols[2]:
         if st.button("Edit Portfolio", key="pdetail_edit"):
             st.session_state.editing_portfolio_id = portfolio_id
             st.session_state.viewing_portfolio_id = None
             st.rerun()
-    with action_cols[2]:
+    with action_cols[3]:
         if st.button("Clone", key="pdetail_clone"):
             new = duplicate_portfolio(portfolio_id)
             if new:
                 st.toast(f"Cloned as '{new['name']}'")
                 st.rerun()
-    with action_cols[3]:
+    with action_cols[4]:
         if st.button("Delete", key="pdetail_del", type="secondary"):
             st.session_state.confirm_delete_portfolio_id = portfolio_id
             st.rerun()
@@ -11746,11 +11778,8 @@ def render_portfolio_detail(portfolio_id: int):
 
     drawdown = compute_drawdown_series(data['combined_trades'], port['starting_balance'])
 
-    # Compute alert data (cached in session state)
-    _alert_cache_key = f"port_alert_data_{port['id']}"
-    if _alert_cache_key not in st.session_state:
-        st.session_state[_alert_cache_key] = get_portfolio_alert_trades(port, get_strategy_by_id)
-    alert_data = st.session_state[_alert_cache_key]
+    # Compute alert data fresh each render (reads from DB/file, no stale cache)
+    alert_data = get_portfolio_alert_trades(port, get_strategy_by_id)
 
     # Tabs
     tab_live, tab_perf, tab_strats, tab_prop, tab_account, tab_webhooks, tab_deploy = st.tabs(
@@ -11944,29 +11973,6 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
     # --- Equity curve with benchmark ---
     _render_live_benchmark_chart(port, filtered_trades, filter_sid, pid)
 
-    # --- Open positions ---
-    if open_positions:
-        filtered_open = open_positions
-        if filter_sid is not None:
-            filtered_open = [p for p in open_positions if p.get('strategy_id') == filter_sid]
-        if filtered_open:
-            st.subheader("Open Positions")
-            for pos in filtered_open:
-                with st.container(border=True):
-                    pos_cols = st.columns([2, 1, 1, 1, 1])
-                    pos_cols[0].markdown(f"**{pos['strategy_name']}** — {pos['symbol']} {pos['direction']}")
-                    pos_cols[1].caption(f"Entry: ${pos['entry_price']:,.2f}")
-                    entry_time = pos.get('entry_time', '')
-                    if entry_time:
-                        try:
-                            dur = datetime.now(timezone.utc) - datetime.fromisoformat(entry_time)
-                            hours = dur.total_seconds() / 3600
-                            pos_cols[2].caption(f"Duration: {hours:.1f}h")
-                        except Exception:
-                            pos_cols[2].caption("Duration: N/A")
-                    pos_cols[3].caption(f"Qty: {pos.get('quantity', 0)}")
-                    pos_cols[4].caption(f"BP Used: ${pos.get('buying_power_used', 0):,.0f}")
-
     # --- Trade history table ---
     st.subheader("Trade History")
     if filtered_trades:
@@ -11996,14 +12002,58 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
     else:
         st.caption("No trades match the current filter.")
 
-    # --- Buying Power Tracker ---
-    if alert_trades:
+    # --- Live Monitor (auto-refreshing) ---
+    _render_live_monitor_fragment(port)
+
+
+@st.fragment(run_every=10)
+def _render_live_monitor_fragment(port: dict):
+    """Auto-refreshing fragment for open positions, buying power, and anomaly detection.
+
+    Reloads alert data every 10 seconds to detect new positions and anomalies.
+    """
+    # Restore thread-local user context (required for DB mode fragments)
+    from db import USE_DB as _lm_use_db
+    if _lm_use_db:
+        from db import set_current_user, get_current_token
+        if not get_current_token():
+            _user = st.session_state.get('auth_user')
+            _token = st.session_state.get('auth_access_token', '')
+            if _user and _token:
+                set_current_user(_user['id'], _token)
+
+    # Re-fetch alert data fresh
+    fresh_data = get_portfolio_alert_trades(port, get_strategy_by_id)
+    _trades = fresh_data.get('alert_trades', [])
+    _open = fresh_data.get('open_positions', [])
+
+    # --- Open Positions ---
+    if _open:
+        st.subheader("Open Positions")
+        for pos in _open:
+            with st.container(border=True):
+                pos_cols = st.columns([2, 1, 1, 1, 1])
+                pos_cols[0].markdown(f"**{pos['strategy_name']}** — {pos['symbol']} {pos['direction']}")
+                pos_cols[1].caption(f"Entry: ${pos['entry_price']:,.2f}")
+                entry_time = pos.get('entry_time', '')
+                if entry_time:
+                    try:
+                        dur = datetime.now(timezone.utc) - datetime.fromisoformat(entry_time)
+                        hours = dur.total_seconds() / 3600
+                        pos_cols[2].caption(f"Duration: {hours:.1f}h")
+                    except Exception:
+                        pos_cols[2].caption("Duration: N/A")
+                pos_cols[3].caption(f"Qty: {pos.get('quantity', 0)}")
+                pos_cols[4].caption(f"BP Used: ${pos.get('buying_power_used', 0):,.0f}")
+
+    # --- Buying Power ---
+    if _trades:
         account = get_account(port)
         account_balance = compute_account_balance(account)
         if account_balance <= 0:
             account_balance = port.get('starting_balance', 10000)
 
-        bp_data = compute_alert_buying_power(alert_trades, open_positions, account_balance)
+        bp_data = compute_alert_buying_power(_trades, _open, account_balance)
 
         with st.expander("Buying Power Tracker", expanded=False):
             bp_cols = st.columns(4)
@@ -12015,7 +12065,6 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
             if bp_data['insufficient_events']:
                 st.warning(f"{len(bp_data['insufficient_events'])} trade(s) exceeded available buying power!")
 
-            # Timeline chart
             if bp_data['timeline']:
                 tl = bp_data['timeline']
                 fig_bp = go.Figure()
@@ -12037,9 +12086,9 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
                 st.plotly_chart(fig_bp, use_container_width=True)
 
     # --- Anomaly Detection ---
-    if alert_trades or open_positions:
+    if _trades or _open:
         anomalies = detect_portfolio_anomalies(
-            alert_trades, open_positions, port, get_strategy_by_id
+            _trades, _open, port, get_strategy_by_id
         )
         if anomalies:
             st.subheader("Anomalies")
@@ -12524,9 +12573,8 @@ def render_portfolio_strategies(port, data):
     """Render the Strategies tab with health badges, nav buttons, and alert equity overlay."""
     pid = port['id']
 
-    # Get alert data and benchmark for health classification
-    _alert_cache_key = f"port_alert_data_{pid}"
-    _alert_data = st.session_state.get(_alert_cache_key, {})
+    # Get alert data for health classification (fresh each render)
+    _alert_data = get_portfolio_alert_trades(port, get_strategy_by_id)
     _alert_trades = _alert_data.get('alert_trades', [])
 
     _bench_key = f"port_benchmark_{pid}_None"
@@ -13949,8 +13997,7 @@ def render_portfolio_account(port: dict, portfolio_id: int):
                             f":gray[{_ts}]")
 
     # --- Daily Journal ---
-    _alert_cache_key = f"port_alert_data_{portfolio_id}"
-    _alert_data = st.session_state.get(_alert_cache_key, {})
+    _alert_data = get_portfolio_alert_trades(port, get_strategy_by_id)
     _alert_trades = _alert_data.get('alert_trades', [])
 
     if _alert_trades or change_log:
