@@ -1362,9 +1362,6 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
         except (ValueError, TypeError):
             return default
 
-    # Pre-compute fallback stop from strategy config (ATR-based)
-    _strat_stop_atr_mult = _safe_float(strategy.get('stop_atr_mult', 0))
-
     for alert in strat_alerts:
         if alert.get('type') == 'entry_signal':
             pending_entry = alert
@@ -1372,16 +1369,6 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
             entry_price = _safe_float(pending_entry.get('price'))
             exit_price = _safe_float(alert.get('price'))
             stop_price = _safe_float(pending_entry.get('stop_price'))
-
-            # If stop_price missing, try to compute from ATR on the entry alert
-            if not stop_price and entry_price:
-                _atr = _safe_float(pending_entry.get('atr'))
-                if _atr and _strat_stop_atr_mult:
-                    if direction == 'LONG':
-                        stop_price = entry_price - (_atr * _strat_stop_atr_mult)
-                    else:
-                        stop_price = entry_price + (_atr * _strat_stop_atr_mult)
-
             per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
 
             if per_share_risk > 0:
@@ -1431,13 +1418,6 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
     if pending_entry is not None:
         entry_price = _safe_float(pending_entry.get('price'))
         stop_price = _safe_float(pending_entry.get('stop_price'))
-        if not stop_price and entry_price:
-            _atr = _safe_float(pending_entry.get('atr'))
-            if _atr and _strat_stop_atr_mult:
-                if direction == 'LONG':
-                    stop_price = entry_price - (_atr * _strat_stop_atr_mult)
-                else:
-                    stop_price = entry_price + (_atr * _strat_stop_atr_mult)
         per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
         quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
         open_positions.append({

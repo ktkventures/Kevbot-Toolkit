@@ -1441,7 +1441,11 @@ def extract_equity_curve_data(trades: pd.DataFrame, boundary_dt=None) -> dict:
 
 
 def _extract_minimal_trades(trades: pd.DataFrame) -> list:
-    """Extract minimal trade records for persistent storage."""
+    """Extract minimal trade records for persistent storage.
+
+    Includes exit_reason, stop_price, and exec_type for portfolio
+    Live Dashboard trade history (Phase 37).
+    """
     if len(trades) == 0:
         return []
     records = []
@@ -1458,6 +1462,12 @@ def _extract_minimal_trades(trades: pd.DataFrame) -> list:
             rec["entry_price"] = round(float(row["entry_price"]), 4)
         if "exit_price" in row and pd.notna(row["exit_price"]):
             rec["exit_price"] = round(float(row["exit_price"]), 4)
+        if "stop_price" in row and pd.notna(row["stop_price"]):
+            rec["stop_price"] = round(float(row["stop_price"]), 4)
+        if "exit_reason" in row and pd.notna(row["exit_reason"]):
+            rec["exit_reason"] = str(row["exit_reason"])
+        if "exec_type" in row and pd.notna(row["exec_type"]):
+            rec["exec_type"] = str(row["exec_type"])
         records.append(rec)
     return records
 
@@ -13849,8 +13859,9 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
             st.caption("No trading P&L entries for this date.")
 
     with tab_changes:
+        # Match changes by display-timezone date (not raw UTC)
         day_changes = [c for c in port.get('change_log', [])
-                       if c.get('timestamp', '')[:10] == date_str]
+                       if format_display_ts(c.get('timestamp', ''), date_only=True) == date_str]
         if day_changes:
             _type_badges = {
                 'strategy_added': ':blue[Strategy Added]',
@@ -13861,7 +13872,7 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
             }
             for entry in day_changes:
                 _badge = _type_badges.get(entry.get('change_type', ''), ':gray[Change]')
-                _ts = entry.get('timestamp', '')[:16].replace('T', ' ')
+                _ts = format_display_ts(entry.get('timestamp', ''))
                 st.markdown(f"{_badge} — {entry.get('description', '')}  \n"
                             f":gray[{_ts}]")
         else:
@@ -13981,7 +13992,7 @@ def render_portfolio_account(port: dict, portfolio_id: int):
         for d, info in daily_auto.items():
             # Get change log entries for this date
             _day_changes = [c for c in port.get('change_log', [])
-                           if c.get('timestamp', '')[:10] == d]
+                           if format_display_ts(c.get('timestamp', ''), date_only=True) == d]
             n_changes = len(_day_changes)
             _has_notes = bool(port.get('journal_entries', {}).get(d, {}).get('notes'))
             note = f"{info['count']} trade(s)"
@@ -14083,7 +14094,7 @@ def render_portfolio_account(port: dict, portfolio_id: int):
             }
             for entry in reversed(change_log[-50:]):  # Show last 50
                 _badge = _type_badges.get(entry.get('change_type', ''), ':gray[Change]')
-                _ts = entry.get('timestamp', '')[:16].replace('T', ' ')
+                _ts = format_display_ts(entry.get('timestamp', ''))
                 st.markdown(f"{_badge} — {entry.get('description', '')}  \n"
                             f":gray[{_ts}]")
 
@@ -14141,58 +14152,6 @@ def render_portfolio_webhooks(port: dict):
         add_portfolio_webhook(portfolio_id, new_wh)
         st.toast("Webhook added")
         st.rerun()
-
-    # --- Cover/Close Webhook ---
-    st.divider()
-    with st.expander("Cover/Close Webhook", expanded=False):
-        st.caption("Configure a webhook for closing erroneous or excess positions. "
-                   "When an anomaly is detected on the Live Dashboard, you can send a close "
-                   "order via this webhook with one click.")
-
-        cover_cfg = port_cfg.get('cover_webhook', {})
-        cover_url = st.text_input("Cover Webhook URL",
-                                  value=cover_cfg.get('url', ''),
-                                  placeholder="https://your-broker-api.com/close",
-                                  key=f"cover_url_{portfolio_id}")
-        cover_enabled = st.toggle("Enabled",
-                                  value=cover_cfg.get('enabled', False),
-                                  key=f"cover_enabled_{portfolio_id}")
-
-        st.caption("**Payload Template** — Use placeholders: `{{symbol}}`, `{{quantity}}`, "
-                   "`{{direction}}`, `{{action}}` (buy/sell), `{{portfolio_name}}`")
-        cover_template = st.text_area("Payload (JSON)",
-                                      value=cover_cfg.get('payload_template', ''),
-                                      height=120,
-                                      placeholder='{\n  "action": "{{action}}",\n  "symbol": "{{symbol}}",\n  "quantity": {{quantity}}\n}',
-                                      key=f"cover_template_{portfolio_id}")
-
-        cover_cols = st.columns([1, 1, 4])
-        with cover_cols[0]:
-            if st.button("Save", key=f"save_cover_{portfolio_id}", type="primary"):
-                new_cfg = dict(port_cfg)
-                new_cfg['cover_webhook'] = {
-                    'url': cover_url,
-                    'enabled': cover_enabled,
-                    'payload_template': cover_template,
-                }
-                set_portfolio_alert_config(portfolio_id, new_cfg)
-                st.toast("Cover webhook settings saved")
-                st.rerun()
-
-        with cover_cols[1]:
-            if st.button("Test", key=f"test_cover_{portfolio_id}"):
-                if cover_url:
-                    from alerts import send_cover_webhook
-                    test_result = send_cover_webhook(
-                        port, symbol="TEST", direction="LONG",
-                        quantity=1, cover_config={'url': cover_url, 'payload_template': cover_template}
-                    )
-                    if test_result.get('success'):
-                        st.success(f"Test sent! Status: {test_result.get('status_code')}")
-                    else:
-                        st.error(f"Test failed: {test_result.get('error')}")
-                else:
-                    st.warning("Enter a URL first.")
 
     # Recent alerts for this portfolio
     st.divider()
