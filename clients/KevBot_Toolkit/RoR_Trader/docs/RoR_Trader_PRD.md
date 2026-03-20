@@ -3006,6 +3006,13 @@ This is a strategy-level setting (not per-condition) to avoid confusion. Both mo
 
 **Build order:** A → B → C → E → D → F → G
 
+**Phase 37 QA — Nice-to-haves for future:**
+- [ ] Redirect to portfolio detail page after edit/save instead of portfolio list
+- [ ] Equity curve x-axis selector (by day vs by trade number) — dropdown wherever equity curves exist
+- [ ] Trade detail modal: use full TradingView-style chart (render_price_chart) with indicators, confluence heatmap, +/x markers, entry/exit trigger labels — reuse strategy live chart rendering
+- [ ] Webhook system rework: template-based per-account webhooks with event-type-specific payloads (C, L0/L1, HM/HL), cover/close via existing exit webhooks with quantity-specific orders
+- [ ] Cover erroneous positions: use strategy's existing long-exit/short-exit webhook with specific quantity rather than a separate cover webhook; auto-detect position direction and fire appropriate exit event
+
 ---
 
 ## Known Issues To Address

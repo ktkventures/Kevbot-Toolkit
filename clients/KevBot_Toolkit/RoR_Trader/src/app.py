@@ -11973,7 +11973,10 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
     # --- Equity curve with benchmark ---
     _render_live_benchmark_chart(port, filtered_trades, filter_sid, pid)
 
-    # --- Trade history table ---
+    # --- Live Monitor (auto-refreshing) — above trade history ---
+    _render_live_monitor_fragment(port)
+
+    # --- Trade history table (scrollable) ---
     st.subheader("Trade History")
     if filtered_trades:
         # Header row
@@ -11991,35 +11994,34 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
         _hdr[10].caption("**P&L**")
         _hdr[11].caption("**Status**")
         _hdr[12].caption("**Chart**")
-        for trade in reversed(filtered_trades):  # Most recent first
-            with st.container(border=True):
-                t_cols = st.columns([0.4, 1.3, 0.7, 0.5, 0.8, 0.8, 0.8, 0.5, 0.5, 0.6, 0.6, 0.6, 0.7])
-                t_cols[0].caption(f"#{trade['trade_number']}")
-                t_cols[1].caption(f"{trade['strategy_name']}")
-                t_cols[2].caption(f"{trade['symbol']}")
-                t_cols[3].caption(f"{trade['direction'][:1]}")
-                t_cols[4].caption(f"${trade['entry_price']:,.2f}")
-                t_cols[5].caption(f"${trade['exit_price']:,.2f}")
-                t_cols[6].caption(f"{trade.get('exit_reason', '')[:12]}")
-                t_cols[7].caption(f"{trade.get('planned_quantity', trade.get('quantity', 0))}")
-                t_cols[8].caption(f"{trade.get('quantity', 0)}")
-                r_val = trade.get('r_multiple', 0)
-                r_color = "green" if r_val > 0 else "red" if r_val < 0 else "gray"
-                t_cols[9].markdown(f":{r_color}[{r_val:+.2f}R]")
-                pnl = trade.get('dollar_pnl', 0)
-                pnl_color = "green" if pnl > 0 else "red" if pnl < 0 else "gray"
-                t_cols[10].markdown(f":{pnl_color}[${pnl:+,.0f}]")
-                status = ":green[Matched]" if trade.get('matched') else ":orange[Phantom]"
-                t_cols[11].markdown(status)
-                with t_cols[12]:
-                    if st.button("Chart", key=f"trade_chart_{pid}_{trade['trade_number']}",
-                                 help="View price chart for this trade"):
-                        _trade_detail_modal(trade)
+        with st.container(height=500):
+            for trade in reversed(filtered_trades):  # Most recent first
+                with st.container(border=True):
+                    t_cols = st.columns([0.4, 1.3, 0.7, 0.5, 0.8, 0.8, 0.8, 0.5, 0.5, 0.6, 0.6, 0.6, 0.7])
+                    t_cols[0].caption(f"#{trade['trade_number']}")
+                    t_cols[1].caption(f"{trade['strategy_name']}")
+                    t_cols[2].caption(f"{trade['symbol']}")
+                    t_cols[3].caption(f"{trade['direction'][:1]}")
+                    t_cols[4].caption(f"${trade['entry_price']:,.2f}")
+                    t_cols[5].caption(f"${trade['exit_price']:,.2f}")
+                    _reason = trade.get('exit_reason', '') or trade.get('trigger', '') or 'signal'
+                    t_cols[6].caption(f"{_reason[:12]}")
+                    t_cols[7].caption(f"{trade.get('planned_quantity', trade.get('quantity', 0))}")
+                    t_cols[8].caption(f"{trade.get('quantity', 0)}")
+                    r_val = trade.get('r_multiple', 0)
+                    r_color = "green" if r_val > 0 else "red" if r_val < 0 else "gray"
+                    t_cols[9].markdown(f":{r_color}[{r_val:+.2f}R]")
+                    pnl = trade.get('dollar_pnl', 0)
+                    pnl_color = "green" if pnl > 0 else "red" if pnl < 0 else "gray"
+                    t_cols[10].markdown(f":{pnl_color}[${pnl:+,.0f}]")
+                    status = ":green[Matched]" if trade.get('matched') else ":orange[Phantom]"
+                    t_cols[11].markdown(status)
+                    with t_cols[12]:
+                        if st.button("Chart", key=f"trade_chart_{pid}_{trade['trade_number']}",
+                                     help="View price chart for this trade"):
+                            _trade_detail_modal(trade)
     else:
         st.caption("No trades match the current filter.")
-
-    # --- Live Monitor (auto-refreshing) ---
-    _render_live_monitor_fragment(port)
 
 
 @st.fragment(run_every=10)
