@@ -273,6 +273,43 @@ class BarBuilder:
         if len(self.history) > MAX_HISTORY:
             self.history = self.history.iloc[-MAX_HISTORY:]
 
+    def accept_bar(self, bar_dict: dict) -> dict:
+        """Accept a pre-built bar (from Polygon WebSocket).
+
+        Appends to history, increments bar count, gap-fills missing bars.
+        Returns the bar dict for downstream consumption.
+        """
+        bar_ts = pd.Timestamp(bar_dict['timestamp'])
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.tz_localize('UTC')
+        bar_start = self._align_to_period(bar_ts.to_pydatetime())
+
+        # Gap-fill if there are missing bars between last history and this bar
+        if len(self.history) > 0:
+            last_ts = self.history.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            last_period = self._align_to_period(last_ts.to_pydatetime())
+            expected_next = last_period + timedelta(seconds=self.tf_seconds)
+            fill_close = self.history['close'].iloc[-1]
+            gap_ts = expected_next
+            while gap_ts < bar_start:
+                self._append_to_history({
+                    'timestamp': gap_ts.isoformat(),
+                    'open': fill_close, 'high': fill_close,
+                    'low': fill_close, 'close': fill_close,
+                    'volume': 0,
+                })
+                self._bar_count += 1
+                gap_ts += timedelta(seconds=self.tf_seconds)
+
+        # Append the actual bar
+        self._append_to_history(bar_dict)
+        self._bar_count += 1
+        # Clear partial since this bar is complete
+        self._partial = None
+        return bar_dict
+
     def force_close_stale_bar(self, now: datetime) -> Optional[dict]:
         """Close the partial bar if wall-clock time has passed bar_end.
 
@@ -1026,6 +1063,77 @@ class SymbolHub:
                         self._mtf_confluence[tf_seconds] = own_records
                         break
 
+    def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
+                        alert_callback: Callable = None,
+                        config: dict = None,
+                        auditor: 'FidelityAuditor' = None):
+        """Handle a pre-aggregated bar from Polygon WebSocket.
+
+        Bypasses tick aggregation — the bar arrives already complete.
+        Routes through the same monitor pipeline as tick-built bars.
+        """
+        builder = self.builders.get(tf_seconds)
+        if builder is None:
+            return
+
+        timestamp = pd.Timestamp(bar_dict['timestamp'])
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize('UTC')
+        self.last_tick_time = timestamp.to_pydatetime()
+        self.tick_count += 1
+
+        # Accept the pre-built bar into the builder (handles gap-fill)
+        builder.accept_bar(bar_dict)
+
+        # Update shared confluence buffer (shadow engines first)
+        shadow = self._shadow_engines.get(tf_seconds)
+        if shadow and shadow.indicators._initialized:
+            self._mtf_confluence[tf_seconds] = shadow.on_bar_close(bar_dict)
+
+        # Run all monitors for this timeframe
+        for monitor in self.monitors.values():
+            if monitor.tf_seconds != tf_seconds:
+                continue
+            if not _is_in_session(self.last_tick_time, monitor.session):
+                continue
+
+            signals, audit_data = monitor.on_bar_close(
+                bar_dict, builder._bar_count,
+                mtf_confluence=self._mtf_confluence)
+
+            pos_state = audit_data.get('position_state', '?')
+            trigger_bools = audit_data.get('trigger_booleans', {})
+            active_triggers = [k for k, v in trigger_bools.items() if v]
+            logger.info("BAR_CLOSE(polygon) strat=%s bar=%d close=%.2f pos=%s "
+                        "signals=%d triggers=%s",
+                        monitor.strat_id, builder._bar_count,
+                        bar_dict['close'], pos_state,
+                        len(signals) if signals else 0,
+                        active_triggers if active_triggers else "none")
+
+            if signals and alert_callback:
+                for sig in signals:
+                    alert_callback(sig, monitor.strategy, config)
+
+            if auditor:
+                auditor.log_bar_close(
+                    symbol=self.symbol, tf_seconds=tf_seconds,
+                    bar=bar_dict,
+                    indicator_values=audit_data['indicator_values'],
+                    trigger_booleans=audit_data['trigger_booleans'],
+                    interpreter_states=audit_data['interpreter_states'],
+                    positions={monitor.strat_id: audit_data['position_state']},
+                )
+
+        # Publish real monitor's confluence
+        if not self._shadow_engines.get(tf_seconds):
+            for m in self.monitors.values():
+                if m.tf_seconds == tf_seconds:
+                    own_records = {r for r in m._current_confluence
+                                   if not r.startswith('GEN-')}
+                    self._mtf_confluence[tf_seconds] = own_records
+                    break
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SESSION CHECK
@@ -1172,9 +1280,21 @@ class RalphEngine:
         logger.info("Ralph engine starting: %d strategies, %d symbols",
                      len(strategies), len(self.hubs))
 
-        # Run the async event loop
+        # Run the async event loop — choose data provider
+        from dotenv import load_dotenv as _ld
+        _ld(_SCRIPT_DIR / '.env', override=True)
+        _data_provider = os.getenv("DATA_PROVIDER", "auto").lower()
+        _polygon_key = os.getenv("POLYGON_API_KEY", "")
+        _use_polygon = _data_provider in ("polygon", "auto") and bool(
+            _polygon_key and not _polygon_key.startswith("YOUR_"))
+
         try:
-            asyncio.run(self._stream_data())
+            if _use_polygon:
+                logger.info("Using Polygon.io data provider")
+                asyncio.run(self._stream_data_polygon(_polygon_key))
+            else:
+                logger.info("Using Alpaca data provider")
+                asyncio.run(self._stream_data())
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt — shutting down")
         except Exception as e:
@@ -1354,6 +1474,201 @@ class RalphEngine:
         except Exception as e:
             logger.error("Alert dispatch failed for %s (%s): %s",
                          strategy.get('name', '?'), signal.get('type', '?'), e)
+
+    async def _stream_data_polygon(self, api_key: str):
+        """Subscribe to Polygon.io pre-aggregated bar WebSocket + periodic tasks.
+
+        Polygon's AM.{ticker} channel delivers completed minute bars.
+        No tick aggregation needed — bars arrive pre-built with OHLCV.
+        """
+        self._event_loop = asyncio.get_running_loop()
+
+        import websockets
+
+        # Launch independent periodic task loop
+        periodic_task = asyncio.ensure_future(self._periodic_tasks_loop())
+
+        backoff = 5
+        max_backoff = 120
+
+        async def _interruptible_sleep(seconds):
+            for _ in range(int(seconds)):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
+
+        try:
+            while self._running:
+                all_symbols = list(self.hubs.keys())
+                stock_symbols = [s for s in all_symbols if '/' not in s]
+                crypto_symbols = [s for s in all_symbols if '/' in s]
+                self._subscribed_symbols = all_symbols
+
+                # Build subscription channels
+                # AM.{ticker} = per-minute aggregates (stocks)
+                # XA.X:{BASE}{QUOTE} = per-minute aggregates (crypto)
+                stock_channels = [f"AM.{s}" for s in stock_symbols]
+                crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
+                all_channels = stock_channels + crypto_channels
+
+                if not all_channels:
+                    logger.warning("No symbols to subscribe — sleeping")
+                    await _interruptible_sleep(10)
+                    continue
+
+                # Determine WebSocket URLs needed
+                ws_tasks = []
+
+                async def _run_polygon_ws(ws_url, channels, is_crypto=False):
+                    """Connect to Polygon WS, auth, subscribe, and consume bars."""
+                    async with websockets.connect(
+                        ws_url,
+                        ping_interval=10,
+                        ping_timeout=180,
+                        max_queue=1024,
+                    ) as ws:
+                        # Wait for connection message
+                        msg = await ws.recv()
+                        logger.debug("Polygon WS connect: %s", str(msg)[:200])
+
+                        # Auth
+                        await ws.send(json.dumps({
+                            "action": "auth", "params": api_key
+                        }))
+                        auth_resp = await ws.recv()
+                        auth_data = json.loads(auth_resp)
+                        if isinstance(auth_data, list):
+                            auth_data = auth_data[0]
+                        if auth_data.get('status') != 'auth_success':
+                            raise ValueError(f"Polygon auth failed: {auth_data}")
+                        logger.info("Polygon WS authenticated (%s)",
+                                    "crypto" if is_crypto else "stocks")
+
+                        # Subscribe
+                        await ws.send(json.dumps({
+                            "action": "subscribe",
+                            "params": ",".join(channels)
+                        }))
+                        sub_resp = await ws.recv()
+                        logger.info("Polygon subscribed to %d channels: %s",
+                                    len(channels), str(sub_resp)[:200])
+
+                        if not self._ws_confirmed:
+                            self._ws_confirmed = True
+                            backoff = 5
+                            self._write_status(running=True, connected=True)
+
+                        # Consume bars
+                        async for raw_msg in ws:
+                            if not self._running:
+                                break
+                            try:
+                                events = json.loads(raw_msg)
+                                if not isinstance(events, list):
+                                    events = [events]
+                                for ev in events:
+                                    ev_type = ev.get('ev', '')
+                                    if ev_type not in ('AM', 'XA'):
+                                        continue  # skip status/other messages
+
+                                    # Parse the bar
+                                    sym_raw = ev.get('sym', ev.get('pair', ''))
+                                    if is_crypto and sym_raw.startswith('X:'):
+                                        # Convert X:BTCUSD → BTC/USD
+                                        base = sym_raw[2:]
+                                        if base.endswith('USD'):
+                                            sym_raw = base[:-3] + '/USD'
+                                        else:
+                                            sym_raw = base
+
+                                    hub = self.hubs.get(sym_raw)
+                                    if hub is None:
+                                        continue
+
+                                    # Build bar dict in our standard format
+                                    bar_ts = datetime.fromtimestamp(
+                                        ev.get('s', ev.get('e', 0)) / 1000,
+                                        tz=timezone.utc
+                                    )
+                                    bar_dict = {
+                                        'timestamp': bar_ts.isoformat(),
+                                        'open': ev.get('o', 0),
+                                        'high': ev.get('h', 0),
+                                        'low': ev.get('l', 0),
+                                        'close': ev.get('c', 0),
+                                        'volume': ev.get('v', 0),
+                                    }
+
+                                    # Route to hub — use 60s (1 minute) for AM bars
+                                    tf_seconds = 60
+                                    hub.on_polygon_bar(
+                                        bar_dict, tf_seconds,
+                                        alert_callback=self._on_alert,
+                                        config=self._config,
+                                        auditor=self.auditor,
+                                    )
+                            except json.JSONDecodeError:
+                                logger.warning("Polygon WS bad JSON: %s",
+                                               str(raw_msg)[:100])
+                            except Exception as e:
+                                logger.warning("Polygon bar processing error: %s", e)
+
+                try:
+                    tasks = []
+                    if stock_channels:
+                        tasks.append(_run_polygon_ws(
+                            "wss://socket.polygon.io/stocks",
+                            stock_channels, is_crypto=False))
+                    if crypto_channels:
+                        tasks.append(_run_polygon_ws(
+                            "wss://socket.polygon.io/crypto",
+                            crypto_channels, is_crypto=True))
+
+                    done, pending = await asyncio.wait(
+                        [asyncio.ensure_future(t) for t in tasks],
+                        return_when=asyncio.FIRST_EXCEPTION)
+                    for p in pending:
+                        p.cancel()
+                    for d in done:
+                        if d.exception():
+                            raise d.exception()
+
+                except (websockets.WebSocketException, ConnectionError) as e:
+                    self._ws_confirmed = False
+                    self._write_status(running=True, connected=False)
+                    if not self._running:
+                        break
+                    logger.warning("Polygon WS disconnected: %s — reconnect "
+                                   "in %ds", e, backoff)
+                    await _interruptible_sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+
+                except ValueError as e:
+                    self._ws_confirmed = False
+                    self._write_status(running=True, connected=False)
+                    if not self._running:
+                        break
+                    logger.error("Polygon auth/subscribe error: %s — "
+                                 "retrying in %ds", e, backoff)
+                    await _interruptible_sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+
+                except Exception as e:
+                    self._ws_confirmed = False
+                    self._write_status(running=True, connected=False)
+                    if not self._running:
+                        break
+                    logger.warning("Polygon stream error: %s — reconnect "
+                                   "in %ds", e, backoff)
+                    await _interruptible_sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+
+        finally:
+            periodic_task.cancel()
+            try:
+                await periodic_task
+            except asyncio.CancelledError:
+                pass
 
     async def _stream_data(self):
         """Subscribe to Alpaca real-time trade data + run periodic tasks."""
@@ -1746,7 +2061,15 @@ class RalphEngine:
                     pass
 
     def _reconcile_bars(self):
-        """Fetch recent bars from REST API to correct tick-built bar drift."""
+        """Fetch recent bars from REST API to correct tick-built bar drift.
+
+        No-op when using Polygon data provider (WS bars = REST bars by construction).
+        """
+        _dp = os.getenv("DATA_PROVIDER", "auto").lower()
+        _pk = os.getenv("POLYGON_API_KEY", "")
+        if _dp in ("polygon", "auto") and _pk and not _pk.startswith("YOUR_"):
+            return  # Polygon WS bars match REST — no reconciliation needed
+
         try:
             from data_loader import load_market_data
         except ImportError:
