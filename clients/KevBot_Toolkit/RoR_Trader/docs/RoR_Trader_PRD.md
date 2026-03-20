@@ -3006,12 +3006,41 @@ This is a strategy-level setting (not per-condition) to avoid confusion. Both mo
 
 **Build order:** A → B → C → E → D → F → G
 
-**Phase 37 QA — Nice-to-haves for future:**
+**Phase 37 Implementation Status (as of 2026-03-19):**
+
+Phases 37A-37F deployed to production. Multiple QA rounds completed. Core features working:
+- [x] Live Dashboard tab with Performance vs Plan chart (confidence bands, plan line, actual line)
+- [x] Strategy filter dropdown (All + individual)
+- [x] KPI row (Alert Trades, Win Rate, Total P&L, Expected P&L, vs Plan)
+- [x] Trade history table with headers, scrollable container
+- [x] Trade detail modal (simple Plotly chart — TradingView-style upgrade deferred)
+- [x] Open Positions section (with empty state)
+- [x] Buying Power Tracker expander
+- [x] Anomaly Detection section (with empty state)
+- [x] Strategy health badges + recommendations on Strategies tab
+- [x] View Strategy / View Chart buttons on Strategies tab
+- [x] Equity curves on Strategies tab using standard BT/FW/Alert three-segment style
+- [x] Change History section in Account tab (auto-logged portfolio changes)
+- [x] Daily ledger aggregation (daily rows with Details modal: Trades + Changes + Notes tabs)
+- [x] Auto-enable alert_tracking_enabled on portfolio save
+- [x] "Update Strategies" button on portfolio detail page
+- [x] Raw alert fallback for strategies without live_executions
+- [x] Auto-refresh fragment for open positions / anomalies (10s interval)
+
+**Remaining bugs (next session):**
+- [ ] **Trade history exit_reason blank + qty=1**: `_extract_minimal_trades()` was expanded to persist `exit_reason`/`stop_price`/`exec_type`, but existing strategies need a FULL re-backtest (not just Update Strategies from cache) to repopulate. Trade #1 shows correct data (likely from `live_executions` path) while trades 2-15 come from raw alert fallback where these fields are missing. Need to investigate: is Update Strategies actually re-running the backtest, or is it serving cached minimal `stored_trades`?
+- [ ] **Custom notes not persisting**: `journal_entries` is in `_PORTFOLIO_NON_DB_FIELDS` and nested in `account._p37_journal_entries` for DB storage. Toast says "saved" but notes vanish on reload — the `_restore_portfolio_from_db()` function may not be restoring correctly, or the save path isn't nesting properly.
+- [ ] **Summary column not showing "has notes"**: Related to notes not persisting above.
+- [ ] Rename "Note" column to "Summary" in ledger
+
+**Nice-to-haves for future:**
 - [ ] Redirect to portfolio detail page after edit/save instead of portfolio list
 - [ ] Equity curve x-axis selector (by day vs by trade number) — dropdown wherever equity curves exist
 - [ ] Trade detail modal: use full TradingView-style chart (render_price_chart) with indicators, confluence heatmap, +/x markers, entry/exit trigger labels — reuse strategy live chart rendering
 - [ ] Webhook system rework: template-based per-account webhooks with event-type-specific payloads (C, L0/L1, HM/HL), cover/close via existing exit webhooks with quantity-specific orders
 - [ ] Cover erroneous positions: use strategy's existing long-exit/short-exit webhook with specific quantity rather than a separate cover webhook; auto-detect position direction and fire appropriate exit event
+- [ ] Performance vs Plan P&L: default to planned quantity, add dropdown to switch between planned/executed quantity view
+- [ ] QA open positions and anomaly sections with live data when positions are active during market hours
 
 ---
 
