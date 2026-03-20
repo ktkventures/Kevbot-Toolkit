@@ -2566,12 +2566,22 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 **Phase 31A-31E Status (as of 2026-03-20):**
 All on `dev` branch (not yet merged to main). Backup: `main-backup-pre-31`. Spec: `docs/Implementation_Spec_Phase_31.md`.
 
-**Pending user verification before merge to main:**
-- Strategy Builder backtests using Polygon data
-- Ralph engine live monitoring via Polygon WS during market hours
-- Live Dashboard trades from Polygon-sourced alerts
-- Sub-minute timeframes visible in Strategy Builder
-- Railway dev environment deployment with POLYGON_API_KEY env var
+**User verification completed 2026-03-20:**
+- [x] Strategy Builder backtests using Polygon data — confirmed, including sub-minute (30Sec, 10Sec)
+- [x] Ralph engine live monitoring via Polygon WS — confirmed, alerts firing, webhooks delivering
+- [x] Live Dashboard trades from Polygon-sourced alerts — confirmed, KPIs consistent after full rebacktest
+- [x] Sub-minute timeframes visible in Strategy Builder — confirmed, 30Sec and 10Sec strategies created
+- [x] Railway dev environment deployment with POLYGON_API_KEY — confirmed, 12 symbols streaming
+- [x] UI labels show Polygon.io everywhere (sidebar, settings, dashboard)
+- [x] No regressions on Performance, My Strategies, Prop Firm, Account, Webhooks tabs
+
+**Minor polish items (deferred):**
+- [ ] Sub-minute candle hover: show seconds in timestamp (currently only hour:minute)
+- [ ] Trade history: entry/exit times should use user's display timezone
+- [ ] Trade history: exec_type column shows trigger prefix (RV/UT) instead of C/L0/L1
+- [ ] 10-second strategy save slow (high bar count — may need progress indicator or optimization)
+
+**Ready for merge to main** — all core functionality verified on dev.
 
 #### Phase 31F–31G: HiFi Backtest (Sub-Bar Resolution)
 
