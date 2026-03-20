@@ -13907,16 +13907,28 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
                                 height=150, key=f"daily_note_{portfolio_id}_{date_str}",
                                 placeholder="Add your thoughts, observations, or context for this trading day...")
         if st.button("Save Note", key=f"save_daily_note_{portfolio_id}_{date_str}", type="primary"):
-            if 'journal_entries' not in port:
-                port['journal_entries'] = {}
-            port['journal_entries'][date_str] = {'notes': new_note}
-            update_portfolio(portfolio_id, port)
-            st.toast("Note saved")
+            # Hand off to parent page via session state (dialogs can't reliably persist DB writes)
+            st.session_state[f"_pending_note_{portfolio_id}"] = {
+                'date': date_str,
+                'notes': new_note,
+            }
             st.rerun()
 
 
 def render_portfolio_account(port: dict, portfolio_id: int):
     """Render the Account Management tab for a portfolio."""
+    # Handle pending note saves from daily detail modal (dialog can't reliably write to DB)
+    _pending_note_key = f"_pending_note_{portfolio_id}"
+    if _pending_note_key in st.session_state:
+        _pending = st.session_state.pop(_pending_note_key)
+        if 'journal_entries' not in port:
+            port['journal_entries'] = {}
+        port['journal_entries'][_pending['date']] = {'notes': _pending['notes']}
+        update_portfolio(portfolio_id, port)
+        # Reload port fresh from DB to get the persisted version
+        port = get_portfolio_by_id(portfolio_id)
+        st.toast("Note saved")
+
     account = get_account(port)
     ledger = account.get('ledger', [])
     current_balance = compute_account_balance(account)
