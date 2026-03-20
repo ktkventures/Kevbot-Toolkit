@@ -2554,14 +2554,24 @@ The unified engine's bar-by-bar architecture caused a regression in Strategy Bui
 
 **Pricing:** Polygon.io Advanced plan ($199/mo) includes WebSocket streaming + unlimited REST API. Starter ($29/mo) may suffice for REST-only historical data during development.
 
-**Implementation Phases (not yet started):**
-- [ ] **31A:** Polygon REST integration in `data_loader.py` — historical bars with sub-minute support; parallel to existing Alpaca calls for validation
-- [ ] **31B:** Polygon WebSocket integration in `ralph_engine.py` — replace Alpaca trade stream + BarBuilder with Polygon per-minute bar stream
-- [ ] **31C:** Per-second bar support — subscribe to Polygon per-second bars for L-type intra-bar trigger detection; evaluate whether this replaces tick-level processing
-- [ ] **31D:** Remove Alpaca market data dependencies — drop `alpaca-py` data subscriptions, `EXCLUDED_TRADE_CONDITIONS`, `_reconcile_bars()`, tick-based BarBuilder logic
-- [ ] **31E:** Sub-minute backtesting — expose 10-second/30-second timeframes in Strategy Builder; update unified engine to handle sub-minute bar data
+**Implementation Phases:**
+- [x] **31A:** Polygon REST integration in `data_loader.py` — COMPLETED 2026-03-20. Perfect parity with Alpaca (390 bars, $0.00 price diff on SPY 1Min). Sub-minute bars (30Sec) working. Dual-mode routing via DATA_PROVIDER env var.
+- [x] **31B:** Polygon WebSocket integration in `ralph_engine.py` — COMPLETED 2026-03-20. Pre-aggregated AM.{ticker} bars, live-verified during market hours. Crypto WS requires separate subscription (graceful fallback). BarBuilder.accept_bar() for pre-built bars.
+- [x] **31C:** Per-second bar support — COMPLETED 2026-03-20. A.{ticker} channel for L-type intra-bar detection. SymbolHub.on_second_bar() checks high/low against trigger levels. Only subscribes for symbols with L-type strategies.
+- [x] **31D:** Polygon default provider — COMPLETED 2026-03-20. DATA_PROVIDER defaults to "polygon". is_data_configured() added. Worker passes POLYGON_API_KEY to engine threads. Reconciliation no-op for Polygon. Alpaca kept as fallback.
+- [x] **31E:** Sub-minute backtesting — COMPLETED 2026-03-20. SUB_MINUTE_TIMEFRAMES cleared when Polygon configured. Sub-minute resample rules added. 30Sec bars (1,503/day) verified via Polygon REST.
 - [ ] **31F:** HiFi Backtest — sub-bar resolution via selective zoom (see below)
 - [ ] **31G:** Confluence execution modes — `confirmed` vs `hifi` (see below)
+
+**Phase 31A-31E Status (as of 2026-03-20):**
+All on `dev` branch (not yet merged to main). Backup: `main-backup-pre-31`. Spec: `docs/Implementation_Spec_Phase_31.md`.
+
+**Pending user verification before merge to main:**
+- Strategy Builder backtests using Polygon data
+- Ralph engine live monitoring via Polygon WS during market hours
+- Live Dashboard trades from Polygon-sourced alerts
+- Sub-minute timeframes visible in Strategy Builder
+- Railway dev environment deployment with POLYGON_API_KEY env var
 
 #### Phase 31F–31G: HiFi Backtest (Sub-Bar Resolution)
 
