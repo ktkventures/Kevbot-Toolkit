@@ -2933,7 +2933,7 @@ This is a strategy-level setting (not per-condition) to avoid confusion. Both mo
 
 ---
 
-### Phase 37: Portfolio Live Dashboard & Active Management — IN PROGRESS
+### Phase 37: Portfolio Live Dashboard & Active Management — COMPLETED 2026-03-20
 
 **Goal:** Transform the portfolio detail page from a backtest-only view into an active portfolio management dashboard. The backtest becomes the benchmark/plan; alert-based trades become reality. Answer: "Is my portfolio on track?"
 
@@ -3027,11 +3027,14 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - [x] Raw alert fallback for strategies without live_executions
 - [x] Auto-refresh fragment for open positions / anomalies (10s interval)
 
-**Remaining bugs (next session):**
-- [ ] **Trade history exit_reason blank + qty=1**: `_extract_minimal_trades()` was expanded to persist `exit_reason`/`stop_price`/`exec_type`, but existing strategies need a FULL re-backtest (not just Update Strategies from cache) to repopulate. Trade #1 shows correct data (likely from `live_executions` path) while trades 2-15 come from raw alert fallback where these fields are missing. Need to investigate: is Update Strategies actually re-running the backtest, or is it serving cached minimal `stored_trades`?
-- [ ] **Custom notes not persisting**: `journal_entries` is in `_PORTFOLIO_NON_DB_FIELDS` and nested in `account._p37_journal_entries` for DB storage. Toast says "saved" but notes vanish on reload — the `_restore_portfolio_from_db()` function may not be restoring correctly, or the save path isn't nesting properly.
-- [ ] **Summary column not showing "has notes"**: Related to notes not persisting above.
-- [ ] Rename "Note" column to "Summary" in ledger
+**Resolved bugs:**
+- [x] Custom notes persisting — fixed via session-state handoff pattern (`@st.dialog` can't reliably write to DB)
+- [x] Summary column "has notes" indicator — works after notes persistence fix
+- [x] Renamed "Note" column to "Summary" in ledger
+- [x] Full Rebacktest button added (clears stored_trades, forces cold-start rebuild)
+
+**Known limitations (accepted):**
+- Older alert trades (before Phase 37 deployment) show qty=1 and "signal" as exit reason because raw alert fallback doesn't have stop_price/exit_reason. New trades going forward have proper data via expanded `_extract_minimal_trades()`.
 
 **Nice-to-haves for future:**
 - [ ] Redirect to portfolio detail page after edit/save instead of portfolio list
