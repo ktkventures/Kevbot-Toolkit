@@ -3047,6 +3047,62 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 
 ---
 
+### Phase 38: Frontend Migration — PLANNING (Not Started)
+
+**Goal:** Migrate the frontend from Streamlit to a modern web framework for better UX, performance, and maintainability. The Python backend (strategy engine, alert system, portfolio computation) stays — only the UI layer changes.
+
+**Motivation:** Streamlit limitations encountered during development:
+- Session drops on page reload (no persistent auth)
+- `@st.dialog` can't reliably persist data (workaround required)
+- Widget key conflicts prevent post-render state modification (nav_target workaround)
+- `@st.fragment` requires JWT thread-local restoration hacks
+- 18K+ line single-file app with no routing (entire page re-executes on every interaction)
+- Limited charting (lightweight-charts bolted on, no native TradingView support)
+- No client-side interactivity (every click round-trips to server)
+
+**Proposed stack (to be discussed and finalized):**
+- **Frontend:** Next.js (React) — dominant in fintech (Robinhood, Webull use React). Largest ecosystem, best charting support, most documentation. TradingView official React library for charts.
+- **Backend API:** FastAPI (Python) — wraps existing computation functions as REST/WebSocket endpoints. Minimal rewrite — portfolios.py, alerts.py, unified_engine.py, ralph_engine.py become API handlers.
+- **Auth:** Supabase Auth (already in use) — persistent sessions via cookies/localStorage. No more logout on reload.
+- **Real-time:** WebSocket from FastAPI → React for live chart updates, alert notifications, position monitoring.
+- **Styling:** Tailwind CSS with theme system (CSS custom properties). User-selectable themes (dark/light/custom accent colors, Steam-style).
+- **Charting:** TradingView Advanced Charts (official React widget) — replaces all custom lightweight-charts hacks.
+
+**Approach:**
+1. **Branch:** `frontend-migration` or `dev` — Streamlit stays functional on `main` throughout
+2. **Frontend-first:** Build UI shell with mock/placeholder data. Get layout, navigation, page structure, and visual design approved BEFORE wiring in real data.
+3. **API layer:** Wrap existing Python functions in FastAPI endpoints. Minimal logic changes.
+4. **Wire up:** Connect React pages to real API endpoints, replace mock data.
+5. **QA & cutover:** Run both in parallel, verify feature parity, then switch.
+
+**Open decisions:**
+- [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)
+- [ ] Research what TradingView and popular fintech tools use and why
+- [ ] Theme system: how customizable? Preset themes vs full color picker?
+- [ ] Which pages to migrate first (Strategy Builder + Portfolio Detail = highest value)
+- [ ] Mobile responsiveness: how important at launch?
+- [ ] Hosting: keep Railway? Or move to Vercel (frontend) + Railway (API)?
+
+**Estimated effort:**
+- Backend API wrapping: 1-2 weeks
+- Frontend UI shell (no data): 2-3 weeks
+- Wiring + integration: 2-3 weeks
+- QA + polish: 1-2 weeks
+- Total: ~6-10 weeks (can be phased)
+
+**Expected benefits:**
+- ~40-50% less time debugging UI quirks (no more Streamlit workarounds)
+- ~30% faster feature development once foundation is set
+- Persistent auth sessions (no logout on reload)
+- Native TradingView charting (no hacks)
+- User-selectable themes and visual customization
+- Proper component architecture (reusable, testable, independent renders)
+- Client-side interactivity (instant UI responses, no server round-trips for every click)
+
+**When to start:** After Phase 31 (Polygon.io) — that's pure backend and works the same regardless of frontend. Migrate before building more complex UI features (webhook rework, scanner) so they're built correctly the first time.
+
+---
+
 ## Known Issues To Address
 
 ### Indicator Warmup in Backtests
