@@ -290,9 +290,11 @@ def _prepare_portfolio_for_db(d: dict) -> dict:
     """Prepare portfolio dict for DB storage.
 
     Moves non-DB fields into the 'account' JSONB column so they persist
-    without requiring DB schema changes.
+    without requiring DB schema changes. Uses deep copy to avoid mutating
+    the original dict.
     """
-    payload = dict(d)
+    import copy as _copy
+    payload = _copy.deepcopy(d)
     account = payload.get('account', {})
     if not isinstance(account, dict):
         account = {}
@@ -311,6 +313,13 @@ def _restore_portfolio_from_db(row: dict) -> dict:
     if not row:
         return row
     account = row.get('account', {})
+    # PostgREST may return JSONB as a string
+    if isinstance(account, str):
+        try:
+            account = json.loads(account)
+            row['account'] = account
+        except (json.JSONDecodeError, TypeError):
+            account = {}
     if isinstance(account, dict):
         for field in _PORTFOLIO_NON_DB_FIELDS:
             db_key = f'_p37_{field}'

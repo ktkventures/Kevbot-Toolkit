@@ -11695,11 +11695,10 @@ def render_portfolio_detail(portfolio_id: int):
     st.caption(meta)
 
     # Action bar
-    action_cols = st.columns([0.8, 1.3, 1, 1, 1, 2.9])
+    action_cols = st.columns([0.8, 1.3, 1.3, 1, 1, 1, 1.5])
     with action_cols[0]:
         if st.button("Refresh", key="pdetail_refresh", help="Recompute portfolio analytics"):
             st.session_state.pop(f"port_data_{portfolio_id}", None)
-            st.session_state.pop(f"port_alert_data_{portfolio_id}", None)
             # Clear benchmark caches
             for _k in [k for k in list(st.session_state) if k.startswith(f"port_benchmark_{portfolio_id}_")]:
                 st.session_state.pop(_k, None)
@@ -11716,7 +11715,7 @@ def render_portfolio_detail(portfolio_id: int):
             st.rerun()
     with action_cols[1]:
         if st.button("Update Strategies", key="pdetail_update_strats",
-                      help="Refresh all strategy data & match alerts"):
+                      help="Incremental refresh — adds new trades"):
             _update_progress = st.progress(0.0, text="Updating strategies...")
             _strats_list = port.get('strategies', [])
             for _ui, _alloc in enumerate(_strats_list):
@@ -11726,17 +11725,40 @@ def render_portfolio_detail(portfolio_id: int):
                     _update_progress.progress(
                         (_ui + 1) / (len(_strats_list) + 1),
                         text=f"Updating {_s.get('name', '')}...")
-                    # Auto-enable alert tracking
                     if not _s.get('alert_tracking_enabled'):
                         _s['alert_tracking_enabled'] = True
                         update_strategy(_sid, _s)
                     refresh_strategy_data(_sid)
             _update_progress.progress(1.0, text="Done!")
-            # Clear caches
             st.session_state.pop(f"port_data_{portfolio_id}", None)
             for _k in [k for k in list(st.session_state) if k.startswith(f"port_benchmark_{portfolio_id}_")]:
                 st.session_state.pop(_k, None)
             st.toast("All strategies updated with latest alert data.")
+            st.rerun()
+    with action_cols[2]:
+        if st.button("Full Rebacktest", key="pdetail_full_rebacktest",
+                      help="Re-run full backtest on all strategies (slower, rebuilds all trade data)"):
+            _update_progress = st.progress(0.0, text="Full rebacktest...")
+            _strats_list = port.get('strategies', [])
+            for _ui, _alloc in enumerate(_strats_list):
+                _sid = _alloc.get('strategy_id')
+                _s = get_strategy_by_id(_sid)
+                if _s:
+                    _update_progress.progress(
+                        (_ui + 1) / (len(_strats_list) + 1),
+                        text=f"Rebacktesting {_s.get('name', '')}...")
+                    if not _s.get('alert_tracking_enabled'):
+                        _s['alert_tracking_enabled'] = True
+                    # Clear stored_trades to force cold start (full rebacktest)
+                    _s['stored_trades'] = None
+                    update_strategy(_sid, _s)
+                    st.session_state.strategy_trades_cache.pop(_sid, None)
+                    refresh_strategy_data(_sid)
+            _update_progress.progress(1.0, text="Done!")
+            st.session_state.pop(f"port_data_{portfolio_id}", None)
+            for _k in [k for k in list(st.session_state) if k.startswith(f"port_benchmark_{portfolio_id}_")]:
+                st.session_state.pop(_k, None)
+            st.toast("Full rebacktest complete — all trade data rebuilt.")
             st.rerun()
     with action_cols[2]:
         if st.button("Edit Portfolio", key="pdetail_edit"):
@@ -14018,7 +14040,7 @@ def render_portfolio_account(port: dict, portfolio_id: int):
         hdr[0].markdown("**Date**")
         hdr[1].markdown("**Type**")
         hdr[2].markdown("**Amount**")
-        hdr[3].markdown("**Note**")
+        hdr[3].markdown("**Summary**")
         hdr[4].markdown("**Action**")
 
         for row_data in display_rows:
