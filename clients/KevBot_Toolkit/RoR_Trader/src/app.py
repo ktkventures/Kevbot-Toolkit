@@ -4198,17 +4198,17 @@ def main():
                 render_logout_button()
 
         from db import USE_DB as _sidebar_use_db
-        if _sidebar_use_db:
-            # Cloud mode: always show Alpaca (worker handles streaming)
+        from data_loader import is_polygon_configured as _is_poly, is_data_configured as _is_data
+        if _is_poly():
+            st.success("Polygon.io — Live market data")
+        elif _sidebar_use_db:
             _sidebar_feed = _get_data_feed().upper()
             st.success(f"Alpaca {_sidebar_feed} — Live market data")
-        elif is_alpaca_configured():
+        elif _is_data():
             data_source = get_data_source(_get_data_feed())
             st.success(f"{data_source}")
-            st.caption("IEX: single exchange \u00b7 SIP: consolidated (all exchanges)")
         else:
-            data_source = get_data_source(_get_data_feed())
-            st.warning(f"{data_source}")
+            st.warning("Mock Data — No data provider configured")
 
         # ── Position Monitor ──
         _all_strats = load_strategies()
@@ -4448,12 +4448,15 @@ def render_dashboard():
 
         # Data source
         from db import USE_DB as _dash_use_db
-        if is_alpaca_configured():
-            st.markdown(":green[Alpaca API] — Live market data")
+        from data_loader import is_polygon_configured as _dash_poly
+        if _dash_poly():
+            st.markdown(":green[Polygon.io] — Live market data")
+        elif is_alpaca_configured():
+            st.markdown(":green[Alpaca] — Live market data")
         elif _dash_use_db:
-            st.markdown(":green[Alpaca API] — Live data via worker")
+            st.markdown(":green[Live data via worker]")
         else:
-            st.markdown(":orange[Mock Data] — Configure Alpaca for live data")
+            st.markdown(":orange[Mock Data] — Configure data provider")
 
         # Alert engine status — in DB mode, always read from DB (no local engine_status.json)
         if _dash_use_db:
@@ -14667,98 +14670,53 @@ def render_settings():
 
     # --- Development (mock data only — hide in cloud/DB mode) ---
     from db import USE_DB as _dev_use_db
-    if not is_alpaca_configured() and not _dev_use_db:
-        st.divider()
-        st.subheader("Development")
-        data_seed = st.number_input(
-            "Default Data Seed",
-            value=st.session_state.get('global_data_seed', 42),
-            key="settings_data_seed",
-            help="Default random seed for mock data generation. Change for different random price patterns.",
-        )
-        st.session_state['global_data_seed'] = data_seed
-
     # --- Connections ---
     st.divider()
     st.subheader("Connections")
 
     from db import USE_DB as _settings_use_db
+    from data_loader import is_polygon_configured as _set_poly, is_data_configured as _set_data, POLYGON_API_KEY as _set_poly_key
 
-    if _settings_use_db:
-        # DB mode: Alpaca keys are system-level (env vars on Railway worker service)
-        # The web app may not have them directly, but the worker does
-        conn_col1, conn_col2 = st.columns(2)
-        with conn_col1:
-            st.markdown("**Alpaca API**")
-            # In cloud mode, check engine status to determine if Alpaca is connected
+    conn_col1, conn_col2 = st.columns(2)
+    with conn_col1:
+        st.markdown("**Market Data Provider**")
+        if _set_poly():
+            _masked_key = _set_poly_key[:4] + "..." + _set_poly_key[-4:] if _set_poly_key and len(_set_poly_key) > 8 else "****"
+            st.markdown(f'Status: <span style="color:#4CAF50">\u25cf Polygon.io Connected</span>', unsafe_allow_html=True)
+            st.text_input("API Key", value=_masked_key, disabled=True, key="conn_poly_key")
+        elif is_alpaca_configured():
+            st.markdown(f'Status: <span style="color:#FF9800">\u25cf Alpaca (Legacy)</span>', unsafe_allow_html=True)
+            st.caption("Consider upgrading to Polygon.io for higher fidelity data.")
+        else:
+            st.markdown(f'Status: <span style="color:#9E9E9E">\u25cf Not Configured</span>', unsafe_allow_html=True)
+            st.caption("Set POLYGON_API_KEY in environment variables to connect.")
+
+    with conn_col2:
+        st.markdown("**Engine Status**")
+        if _settings_use_db:
             _db_eng_status = load_monitor_status()
-            _alpaca_ok = is_alpaca_configured() or _db_eng_status.get('connected') or _db_eng_status.get('running')
-            _status_color = "#4CAF50" if _alpaca_ok else "#9E9E9E"
-            _alpaca_label = "Connected (via worker)" if _alpaca_ok else "Not Configured"
-            st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_label}</span>', unsafe_allow_html=True)
-            if not _alpaca_ok:
-                st.caption("Alpaca API keys are configured by the system administrator.")
-
-        with conn_col2:
-            st.markdown("**Data Feed**")
-            _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
-            _feed_keys = ["iex", "sip"]
-            _saved_feed = st.session_state.get('data_feed', 'sip')
-            _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
-            _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
-                                 help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
-            st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
-
-            # Show engine status from DB (reuse status fetched above for Alpaca check)
-            _db_status = _db_eng_status
-            _is_streaming = _db_status.get('connected') or _db_status.get('streaming_connected')
+            _is_streaming = _db_eng_status.get('connected') or _db_eng_status.get('streaming_connected')
             if _is_streaming:
-                sym_count = len(_db_status.get('symbols', []))
-                ticks = _db_status.get('tick_count', 0)
-                st.success(f"Ralph Engine: Streaming | {sym_count} symbols | {ticks:,} ticks")
-            elif _db_status.get('running'):
+                sym_count = len(_db_eng_status.get('symbols', []))
+                ticks = _db_eng_status.get('tick_count', 0)
+                _provider = "Polygon.io" if _set_poly() else "Alpaca"
+                st.success(f"Ralph Engine: Streaming via {_provider} | {sym_count} symbols | {ticks:,} ticks")
+            elif _db_eng_status.get('running'):
                 st.warning("Ralph Engine: Connecting...")
-            elif _db_status.get('desired_state') == 'running':
+            elif _db_eng_status.get('desired_state') == 'running':
                 st.info("Engine starting...")
             else:
                 st.caption("Enable monitoring on the Alerts & Signals page to start the engine.")
-    else:
-        # Local mode: keys from .env
-        conn_col1, conn_col2 = st.columns(2)
-        with conn_col1:
-            st.markdown("**Alpaca API**")
-            _alpaca_status = "Connected" if is_alpaca_configured() else "Not Configured"
-            _status_color = "#4CAF50" if is_alpaca_configured() else "#9E9E9E"
-            st.markdown(f'Status: <span style="color:{_status_color}">\u25cf {_alpaca_status}</span>', unsafe_allow_html=True)
-
-            if is_alpaca_configured():
-                from data_loader import ALPACA_API_KEY
-                _masked = ALPACA_API_KEY[:4] + "..." + ALPACA_API_KEY[-4:] if ALPACA_API_KEY and len(ALPACA_API_KEY) > 8 else "****"
-                st.text_input("API Key", value=_masked, disabled=True, key="conn_api_key")
+        else:
+            es = _read_ralph_status()
+            if es.get('running'):
+                sym_count = len(es.get('symbols', []))
+                ticks = es.get('tick_count', 0)
+                mode = "Connected" if es.get('connected') else "Reconnecting"
+                _provider = "Polygon.io" if _set_poly() else "Alpaca"
+                st.success(f"Ralph Engine: {mode} via {_provider} | {sym_count} symbols | {ticks:,} ticks")
             else:
-                st.caption("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables to connect.")
-
-        with conn_col2:
-            st.markdown("**Data Feed**")
-            _feed_options = ["IEX (Free)", "SIP ($99/mo)"]
-            _feed_keys = ["iex", "sip"]
-            _saved_feed = st.session_state.get('data_feed', 'sip')
-            _feed_idx = _feed_keys.index(_saved_feed) if _saved_feed in _feed_keys else 0
-            _sel_feed = st.radio("Feed", _feed_options, index=_feed_idx, key="settings_data_feed",
-                                 help="IEX: Free, 30 symbols, basic quotes. SIP: $99/mo, all symbols, real-time.")
-            st.session_state['data_feed'] = _feed_keys[_feed_options.index(_sel_feed)]
-
-            if st.session_state['data_feed'] == 'sip':
-                es = _read_ralph_status()
-                if es.get('running'):
-                    sym_count = len(es.get('symbols', []))
-                    ticks = es.get('tick_count', 0)
-                    mode = "Connected" if es.get('connected') else "Reconnecting"
-                    st.success(f"Ralph Engine: {mode} | {sym_count} symbols | {ticks:,} ticks")
-                else:
-                    st.caption("Engine will start when you click Start Monitor on the Alerts page.")
-            else:
-                st.caption("Real-time engine requires SIP data feed.")
+                st.caption("Engine will start when you click Start Monitor on the Alerts page.")
 
     # --- Save Settings ---
     st.divider()
