@@ -1134,6 +1134,50 @@ class SymbolHub:
                     self._mtf_confluence[tf_seconds] = own_records
                     break
 
+    def on_second_bar(self, bar_dict: dict,
+                       alert_callback: Callable = None,
+                       config: dict = None):
+        """Handle a per-second bar from Polygon A. channel for L-type detection.
+
+        Checks the high and low of each 1-second bar against intra-bar
+        trigger levels. This replaces per-tick L-type detection with
+        per-second detection (60x fewer evaluations, captures extremes).
+        """
+        ts = bar_dict.get('timestamp', '')
+        high = bar_dict.get('high', 0)
+        low = bar_dict.get('low', 0)
+
+        if not high or not low:
+            return
+
+        # Find which TF's bar_count to use (use the primary 60s builder)
+        builder = self.builders.get(60)
+        if builder is None:
+            return
+        bar_count = builder._bar_count
+
+        for monitor in self.monitors.values():
+            if not monitor.indicators._initialized:
+                continue
+            if not _is_in_session(
+                datetime.fromisoformat(ts) if isinstance(ts, str) and ts else datetime.now(timezone.utc),
+                monitor.session
+            ):
+                continue
+
+            # Check high price (catches upward level crosses)
+            signals_high = monitor.on_tick(high, ts, bar_count)
+            if signals_high and alert_callback:
+                for sig in signals_high:
+                    alert_callback(sig, monitor.strategy, config)
+                continue  # Don't double-fire on same second
+
+            # Check low price (catches downward level crosses)
+            signals_low = monitor.on_tick(low, ts, bar_count)
+            if signals_low and alert_callback:
+                for sig in signals_low:
+                    alert_callback(sig, monitor.strategy, config)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SESSION CHECK
@@ -1506,9 +1550,23 @@ class RalphEngine:
 
                 # Build subscription channels
                 # AM.{ticker} = per-minute aggregates (stocks)
+                # A.{ticker} = per-second aggregates (for L-type intra-bar detection)
                 # XA.X:{BASE}{QUOTE} = per-minute aggregates (crypto)
                 stock_channels = [f"AM.{s}" for s in stock_symbols]
                 crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
+
+                # Add per-second channels for symbols with L-type strategies
+                for sym in stock_symbols:
+                    hub = self.hubs.get(sym)
+                    if hub:
+                        has_ltype = any(
+                            any(t in _IB_L_TYPE_TRIGGERS
+                                for t in getattr(m, '_intrabar_triggers', set()))
+                            for m in hub.monitors.values()
+                        )
+                        if has_ltype:
+                            stock_channels.append(f"A.{sym}")
+
                 all_channels = stock_channels + crypto_channels
 
                 if not all_channels:
@@ -1573,13 +1631,12 @@ class RalphEngine:
                                     events = [events]
                                 for ev in events:
                                     ev_type = ev.get('ev', '')
-                                    if ev_type not in ('AM', 'XA'):
+                                    if ev_type not in ('AM', 'XA', 'A', 'XAS'):
                                         continue  # skip status/other messages
 
-                                    # Parse the bar
+                                    # Parse the symbol
                                     sym_raw = ev.get('sym', ev.get('pair', ''))
                                     if is_crypto and sym_raw.startswith('X:'):
-                                        # Convert X:BTCUSD → BTC/USD
                                         base = sym_raw[2:]
                                         if base.endswith('USD'):
                                             sym_raw = base[:-3] + '/USD'
@@ -1590,7 +1647,7 @@ class RalphEngine:
                                     if hub is None:
                                         continue
 
-                                    # Build bar dict in our standard format
+                                    # Build bar dict in standard format
                                     bar_ts = datetime.fromtimestamp(
                                         ev.get('s', ev.get('e', 0)) / 1000,
                                         tz=timezone.utc
@@ -1604,14 +1661,22 @@ class RalphEngine:
                                         'volume': ev.get('v', 0),
                                     }
 
-                                    # Route to hub — use 60s (1 minute) for AM bars
-                                    tf_seconds = 60
-                                    hub.on_polygon_bar(
-                                        bar_dict, tf_seconds,
-                                        alert_callback=self._on_alert,
-                                        config=self._config,
-                                        auditor=self.auditor,
-                                    )
+                                    if ev_type in ('A', 'XAS'):
+                                        # Per-second bar → L-type intra-bar detection
+                                        hub.on_second_bar(
+                                            bar_dict,
+                                            alert_callback=self._on_alert,
+                                            config=self._config,
+                                        )
+                                    else:
+                                        # Per-minute bar → full bar-close processing
+                                        tf_seconds = 60
+                                        hub.on_polygon_bar(
+                                            bar_dict, tf_seconds,
+                                            alert_callback=self._on_alert,
+                                            config=self._config,
+                                            auditor=self.auditor,
+                                        )
                             except json.JSONDecodeError:
                                 logger.warning("Polygon WS bad JSON: %s",
                                                str(raw_msg)[:100])
