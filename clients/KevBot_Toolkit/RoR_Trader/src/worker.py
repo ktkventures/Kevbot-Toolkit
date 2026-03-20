@@ -226,10 +226,14 @@ class DBRalphEngine:
         self._config = config
         self._config_updated_at = config.pop('_updated_at', '')
 
-        # Set Alpaca keys in environment for this thread
+        # Set API keys in environment for this thread
         os.environ['ALPACA_API_KEY'] = self.alpaca_keys.get('api_key', '')
         os.environ['ALPACA_SECRET_KEY'] = self.alpaca_keys.get('secret_key', '')
         os.environ['ALPACA_DATA_FEED'] = self.alpaca_keys.get('data_feed', 'sip')
+        # Polygon.io key (system-level env var on Railway)
+        if os.getenv('POLYGON_API_KEY'):
+            os.environ['POLYGON_API_KEY'] = os.getenv('POLYGON_API_KEY')
+        os.environ['DATA_PROVIDER'] = os.getenv('DATA_PROVIDER', 'polygon')
 
         engine = RalphEngine()
         self._engine = engine

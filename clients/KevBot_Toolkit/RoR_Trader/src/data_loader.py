@@ -31,7 +31,12 @@ ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 # Polygon.io / Massive credentials
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
-DATA_PROVIDER = os.getenv("DATA_PROVIDER", "auto")  # "polygon", "alpaca", "auto"
+DATA_PROVIDER = os.getenv("DATA_PROVIDER", "polygon")  # "polygon", "alpaca", "auto"
+
+
+def is_data_configured() -> bool:
+    """Check if any market data provider is configured (Polygon or Alpaca)."""
+    return is_polygon_configured() or is_alpaca_configured()
 
 
 def is_alpaca_configured() -> bool:
@@ -607,8 +612,9 @@ MTF_AVAILABLE_TIMEFRAMES = [
     "1Hour", "2Hour", "4Hour", "1Day",
 ]
 
-# Sub-minute timeframes that require streaming engine (no REST API / backtest support)
-SUB_MINUTE_TIMEFRAMES = {"5Sec", "10Sec", "15Sec", "30Sec"}
+# Sub-minute timeframes — Polygon REST supports these natively;
+# Alpaca REST does not (streaming only). Empty set when Polygon configured.
+SUB_MINUTE_TIMEFRAMES = set() if is_polygon_configured() else {"5Sec", "10Sec", "15Sec", "30Sec"}
 
 
 def get_tf_label(timeframe: str) -> str:
@@ -644,6 +650,7 @@ def get_required_tfs_from_confluence(confluence_records) -> set:
 
 # Mapping from canonical timeframe strings to pandas resample rules
 _RESAMPLE_RULES = {
+    "5Sec": "5s", "10Sec": "10s", "15Sec": "15s", "30Sec": "30s",
     "2Min": "2min", "3Min": "3min", "5Min": "5min",
     "10Min": "10min", "15Min": "15min", "30Min": "30min",
     "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
