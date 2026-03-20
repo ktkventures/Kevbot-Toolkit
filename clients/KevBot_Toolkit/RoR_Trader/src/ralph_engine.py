@@ -1540,6 +1540,11 @@ class RalphEngine:
                         if isinstance(auth_data, list):
                             auth_data = auth_data[0]
                         if auth_data.get('status') != 'auth_success':
+                            if is_crypto:
+                                logger.warning("Polygon crypto WS auth failed: %s "
+                                               "— crypto requires separate subscription. "
+                                               "Crypto symbols will not stream.", auth_data)
+                                return  # Exit gracefully, don't crash stock stream
                             raise ValueError(f"Polygon auth failed: {auth_data}")
                         logger.info("Polygon WS authenticated (%s)",
                                     "crypto" if is_crypto else "stocks")
