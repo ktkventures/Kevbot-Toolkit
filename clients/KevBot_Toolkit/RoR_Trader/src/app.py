@@ -11985,8 +11985,8 @@ def render_portfolio_live_dashboard(port: dict, alert_data: dict, data: dict):
         _hdr[4].caption("**Entry**")
         _hdr[5].caption("**Exit**")
         _hdr[6].caption("**Reason**")
-        _hdr[7].caption("**Plan**")
-        _hdr[8].caption("**Exec**")
+        _hdr[7].caption("**P Qty**")
+        _hdr[8].caption("**E Qty**")
         _hdr[9].caption("**R**")
         _hdr[10].caption("**P&L**")
         _hdr[11].caption("**Status**")
@@ -12652,8 +12652,7 @@ def render_portfolio_strategies(port, data):
                                  help="Go to strategy detail page"):
                         st.session_state.viewing_strategy_id = sid
                         st.session_state.viewing_portfolio_id = None
-                        st.session_state.main_nav = "Strategies"
-                        st.session_state.sub_nav_strategies = "My Strategies"
+                        st.session_state.nav_target = "My Strategies"
                         st.rerun()
                 with btn_cols[1]:
                     if st.button("View Chart", key=f"port_chart_strat_{pid}_{sid}",
@@ -13824,7 +13823,7 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
     # Clean up session state trigger
     st.session_state.pop(f"_show_daily_detail_{portfolio_id}", None)
 
-    tab_trades, tab_changes = st.tabs(["Trades", "Portfolio Changes"])
+    tab_trades, tab_changes, tab_notes = st.tabs(["Trades", "Portfolio Changes", "Notes"])
 
     with tab_trades:
         day_info = daily_auto.get(date_str, {})
@@ -13833,7 +13832,6 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
             total_pnl = sum(e.get('amount', 0) for e in trade_entries)
             st.metric("Day Total P&L", f"${total_pnl:+,.2f}")
 
-            # Trade-by-trade table
             hdr = st.columns([2, 3, 2])
             hdr[0].caption("**#**")
             hdr[1].caption("**Note**")
@@ -13866,6 +13864,19 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
                             f":gray[{_ts}]")
         else:
             st.caption("No portfolio changes on this date.")
+
+    with tab_notes:
+        journal_entries = port.get('journal_entries', {})
+        existing_note = journal_entries.get(date_str, {}).get('notes', '')
+        new_note = st.text_area("Notes for this date", value=existing_note,
+                                height=150, key=f"daily_note_{portfolio_id}_{date_str}",
+                                placeholder="Add your thoughts, observations, or context for this trading day...")
+        if st.button("Save Note", key=f"save_daily_note_{portfolio_id}_{date_str}", type="primary"):
+            if 'journal_entries' not in port:
+                port['journal_entries'] = {}
+            port['journal_entries'][date_str] = {'notes': new_note}
+            update_portfolio(portfolio_id, port)
+            st.toast("Note saved")
 
 
 def render_portfolio_account(port: dict, portfolio_id: int):
@@ -13970,9 +13981,12 @@ def render_portfolio_account(port: dict, portfolio_id: int):
             _day_changes = [c for c in port.get('change_log', [])
                            if c.get('timestamp', '')[:10] == d]
             n_changes = len(_day_changes)
+            _has_notes = bool(port.get('journal_entries', {}).get(d, {}).get('notes'))
             note = f"{info['count']} trade(s)"
             if n_changes > 0:
                 note += f", {n_changes} change(s)"
+            if _has_notes:
+                note += ", has notes"
             display_rows.append({
                 'date': d,
                 'type': 'Daily Trading P&L',
@@ -14071,48 +14085,6 @@ def render_portfolio_account(port: dict, portfolio_id: int):
                 st.markdown(f"{_badge} — {entry.get('description', '')}  \n"
                             f":gray[{_ts}]")
 
-    # --- Daily Journal ---
-    _alert_data = get_portfolio_alert_trades(port, get_strategy_by_id)
-    _alert_trades = _alert_data.get('alert_trades', [])
-
-    if _alert_trades or change_log:
-        st.markdown("---")
-        with st.expander("Daily Journal", expanded=False):
-            journal = compute_daily_journal(_alert_trades, change_log)
-            if not journal:
-                st.caption("No daily entries yet.")
-            else:
-                # Date selector
-                date_options = [j['date'] for j in journal]
-                if date_options:
-                    selected_date = st.selectbox("Date", date_options, key=f"journal_date_{portfolio_id}")
-                    day_entry = next((j for j in journal if j['date'] == selected_date), None)
-                    if day_entry:
-                        j_cols = st.columns(3)
-                        j_cols[0].metric("Daily P&L", f"${day_entry['daily_pnl']:+,.2f}")
-                        j_cols[1].metric("Trades", day_entry['n_trades'])
-                        j_cols[2].caption(f"Strategies: {', '.join(day_entry['strategies_traded']) or 'None'}")
-
-                        if day_entry['changes']:
-                            st.caption("**Changes on this date:**")
-                            for ch in day_entry['changes']:
-                                st.caption(f"- {ch.get('description', '')}")
-
-                        # Editable notes per date
-                        journal_entries = port.get('journal_entries', {})
-                        existing_note = journal_entries.get(selected_date, {}).get('notes', '')
-                        new_note = st.text_area("Notes for this date", value=existing_note,
-                                                height=100, key=f"journal_note_{portfolio_id}_{selected_date}")
-                        if st.button("Save Journal Note", key=f"save_journal_{portfolio_id}_{selected_date}"):
-                            if 'journal_entries' not in port:
-                                port['journal_entries'] = {}
-                            port['journal_entries'][selected_date] = {
-                                'notes': new_note,
-                                'auto_summary': f"P&L: ${day_entry['daily_pnl']:+,.2f}, {day_entry['n_trades']} trades",
-                            }
-                            update_portfolio(portfolio_id, port)
-                            st.toast("Journal note saved")
-                            st.rerun()
 
 
 # =============================================================================

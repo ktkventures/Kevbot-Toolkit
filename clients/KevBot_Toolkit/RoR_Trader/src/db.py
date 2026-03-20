@@ -267,7 +267,7 @@ def load_portfolios_db() -> list:
         .select('*') \
         .order('id') \
         .execute()
-    return result.data
+    return [_restore_portfolio_from_db(r) for r in result.data]
 
 
 def get_portfolio_by_id_db(portfolio_id: int) -> dict | None:
@@ -278,31 +278,60 @@ def get_portfolio_by_id_db(portfolio_id: int) -> dict | None:
         .eq('id', portfolio_id) \
         .maybe_single() \
         .execute()
-    return result.data if result else None
+    return _restore_portfolio_from_db(result.data) if result and result.data else None
 
 
 # Fields stored in portfolio dicts but NOT as DB columns.
-# Strip before sending to PostgREST to avoid schema errors.
+# These get nested inside the 'account' JSONB column for DB persistence.
 _PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode'}
 
 
-def _strip_non_db_fields(d: dict) -> dict:
-    return {k: v for k, v in d.items() if k not in _PORTFOLIO_NON_DB_FIELDS}
+def _prepare_portfolio_for_db(d: dict) -> dict:
+    """Prepare portfolio dict for DB storage.
+
+    Moves non-DB fields into the 'account' JSONB column so they persist
+    without requiring DB schema changes.
+    """
+    payload = dict(d)
+    account = payload.get('account', {})
+    if not isinstance(account, dict):
+        account = {}
+
+    # Nest non-DB fields inside account
+    for field in _PORTFOLIO_NON_DB_FIELDS:
+        if field in payload:
+            account[f'_p37_{field}'] = payload.pop(field)
+
+    payload['account'] = account
+    return payload
+
+
+def _restore_portfolio_from_db(row: dict) -> dict:
+    """Restore non-DB fields from the account JSONB column back to top level."""
+    if not row:
+        return row
+    account = row.get('account', {})
+    if isinstance(account, dict):
+        for field in _PORTFOLIO_NON_DB_FIELDS:
+            db_key = f'_p37_{field}'
+            if db_key in account:
+                row[field] = account.pop(db_key)
+    return row
 
 
 def save_portfolio_db(portfolio: dict) -> dict:
     """Insert a new portfolio. Returns the saved portfolio."""
-    payload = _strip_non_db_fields(portfolio)
+    payload = _prepare_portfolio_for_db(portfolio)
     payload['user_id'] = get_current_user_id()
     payload.pop('id', None)
     client = get_client()
     result = client.table('portfolios').insert(payload).execute()
-    return result.data[0]
+    return _restore_portfolio_from_db(result.data[0]) if result.data else {}
 
 
 def update_portfolio_db(portfolio_id: int, updated: dict) -> dict | None:
     """Update a portfolio by ID."""
-    payload = _strip_non_db_fields(updated)
+    payload = _prepare_portfolio_for_db(updated)
     payload.pop('user_id', None)
     payload.pop('id', None)
     client = get_client()
@@ -310,7 +339,7 @@ def update_portfolio_db(portfolio_id: int, updated: dict) -> dict | None:
         .update(payload) \
         .eq('id', portfolio_id) \
         .execute()
-    return result.data[0] if result.data else None
+    return _restore_portfolio_from_db(result.data[0]) if result.data else None
 
 
 def delete_portfolio_db(portfolio_id: int) -> bool:

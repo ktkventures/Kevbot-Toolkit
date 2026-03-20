@@ -1353,13 +1353,22 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
     open_positions = []
     pending_entry = None
 
+    def _safe_float(val, default=0.0):
+        """Convert value to float safely (handles strings, None)."""
+        if val is None or val == '':
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
     for alert in strat_alerts:
         if alert.get('type') == 'entry_signal':
             pending_entry = alert
         elif alert.get('type') == 'exit_signal' and pending_entry is not None:
-            entry_price = pending_entry.get('price', 0)
-            exit_price = alert.get('price', 0)
-            stop_price = pending_entry.get('stop_price', 0)
+            entry_price = _safe_float(pending_entry.get('price'))
+            exit_price = _safe_float(alert.get('price'))
+            stop_price = _safe_float(pending_entry.get('stop_price'))
             per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
 
             if per_share_risk > 0:
@@ -1373,6 +1382,9 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
             quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
             buying_power_used = quantity * entry_price
 
+            # Exit reason: try trigger, then bar_time-based label
+            exit_reason = alert.get('trigger', '') or alert.get('exit_reason', '') or ''
+
             trades.append({
                 'strategy_id': sid,
                 'strategy_name': strategy_name,
@@ -1384,7 +1396,7 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'theoretical_exit': exit_price,
                 'entry_time': pending_entry.get('timestamp', ''),
                 'exit_time': alert.get('timestamp', ''),
-                'exit_reason': alert.get('trigger', ''),
+                'exit_reason': exit_reason,
                 'r_multiple': round(r_multiple, 4),
                 'entry_slippage_r': 0,
                 'exit_slippage_r': 0,
@@ -1395,14 +1407,14 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'buying_power_used': buying_power_used,
                 'matched': True,
                 'phantom': False,
-                'exec_type': 'C',
+                'exec_type': pending_entry.get('trigger', 'C')[:2] if pending_entry.get('trigger') else 'C',
                 'data_source': 'raw_alerts',
             })
             pending_entry = None
 
     if pending_entry is not None:
-        entry_price = pending_entry.get('price', 0)
-        stop_price = pending_entry.get('stop_price', 0)
+        entry_price = _safe_float(pending_entry.get('price'))
+        stop_price = _safe_float(pending_entry.get('stop_price'))
         per_share_risk = abs(entry_price - stop_price) if stop_price and entry_price else 0
         quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
         open_positions.append({
