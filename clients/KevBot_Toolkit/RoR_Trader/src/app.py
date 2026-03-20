@@ -13912,6 +13912,7 @@ def _render_daily_detail_modal(port: dict, portfolio_id: int, date_str: str,
             port['journal_entries'][date_str] = {'notes': new_note}
             update_portfolio(portfolio_id, port)
             st.toast("Note saved")
+            st.rerun()
 
 
 def render_portfolio_account(port: dict, portfolio_id: int):
