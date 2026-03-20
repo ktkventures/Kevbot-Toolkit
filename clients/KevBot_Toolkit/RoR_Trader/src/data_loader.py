@@ -3,8 +3,9 @@ Data Loader for RoR Trader
 ===========================
 
 Handles loading market data from:
-1. Alpaca API (if credentials configured)
-2. Mock data (fallback for development)
+1. Polygon.io / Massive (preferred, if POLYGON_API_KEY configured)
+2. Alpaca API (legacy fallback)
+3. Mock data (development fallback)
 
 Usage:
     from data_loader import load_market_data, is_alpaca_configured
@@ -13,17 +14,24 @@ Usage:
 """
 
 import os
+import logging
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
+
+logger = logging.getLogger(__name__)
 
 # Check for Alpaca credentials
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+
+# Polygon.io / Massive credentials
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+DATA_PROVIDER = os.getenv("DATA_PROVIDER", "auto")  # "polygon", "alpaca", "auto"
 
 
 def is_alpaca_configured() -> bool:
@@ -291,6 +299,216 @@ def load_from_mock(
     return pd.DataFrame()
 
 
+# =============================================================================
+# POLYGON.IO / MASSIVE — REST API (Phase 31A)
+# =============================================================================
+
+POLYGON_BASE_URL = "https://api.polygon.io"
+
+
+def is_polygon_configured() -> bool:
+    """Check if Polygon.io API key is configured."""
+    return bool(POLYGON_API_KEY and not POLYGON_API_KEY.startswith("YOUR_"))
+
+
+def _to_polygon_ticker(symbol: str) -> str:
+    """Convert app symbol format to Polygon ticker format.
+
+    'BTC/USD' → 'X:BTCUSD', 'SPY' → 'SPY'
+    """
+    if "/" in symbol:
+        return "X:" + symbol.replace("/", "")
+    return symbol
+
+
+def _from_polygon_ticker(ticker: str) -> str:
+    """Convert Polygon ticker to app symbol format.
+
+    'X:BTCUSD' → 'BTC/USD', 'SPY' → 'SPY'
+    """
+    if ticker.startswith("X:"):
+        base = ticker[2:]
+        # Common crypto pairs: assume 3-letter base + USD
+        if base.endswith("USD"):
+            return base[:-3] + "/USD"
+        return base
+    return ticker
+
+
+def _polygon_timespan(timeframe: str) -> tuple:
+    """Convert app timeframe string to Polygon (multiplier, timespan).
+
+    '1Min' → (1, 'minute'), '5Sec' → (5, 'second'), '1Hour' → (1, 'hour')
+    """
+    _map = {
+        "5Sec": (5, "second"), "10Sec": (10, "second"),
+        "15Sec": (15, "second"), "30Sec": (30, "second"),
+        "1Min": (1, "minute"), "2Min": (2, "minute"),
+        "3Min": (3, "minute"), "5Min": (5, "minute"),
+        "10Min": (10, "minute"), "15Min": (15, "minute"),
+        "30Min": (30, "minute"),
+        "1Hour": (1, "hour"), "2Hour": (2, "hour"), "4Hour": (4, "hour"),
+        "1Day": (1, "day"), "1Week": (1, "week"), "1Month": (1, "month"),
+    }
+    return _map.get(timeframe, (1, "minute"))
+
+
+def _polygon_bars_to_df(results: list) -> pd.DataFrame:
+    """Convert Polygon API bar results to our standard DataFrame format.
+
+    Polygon fields: v(volume), vw(vwap), o(open), c(close), h(high), l(low),
+                    t(timestamp ms), n(trade_count)
+    """
+    if not results:
+        return pd.DataFrame()
+
+    records = []
+    for bar in results:
+        ts = pd.Timestamp(bar['t'], unit='ms', tz='UTC')
+        records.append({
+            'open': bar.get('o', 0),
+            'high': bar.get('h', 0),
+            'low': bar.get('l', 0),
+            'close': bar.get('c', 0),
+            'volume': bar.get('v', 0),
+            'vwap': bar.get('vw', 0),
+            'trade_count': bar.get('n', 0),
+        })
+
+    df = pd.DataFrame(records)
+    timestamps = [pd.Timestamp(bar['t'], unit='ms', tz='UTC') for bar in results]
+    df.index = pd.DatetimeIndex(timestamps, name='timestamp')
+    df.sort_index(inplace=True)
+    return df
+
+
+def _polygon_fetch_bars(ticker: str, multiplier: int, timespan: str,
+                         from_date: str, to_date: str) -> list:
+    """Fetch bars from Polygon REST API with pagination.
+
+    Returns list of bar dicts. Handles next_url pagination automatically.
+    """
+    import requests
+
+    all_results = []
+    url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
+    params = {
+        'apiKey': POLYGON_API_KEY,
+        'limit': 50000,
+        'sort': 'asc',
+        'adjusted': 'true',
+    }
+
+    while url:
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            if resp.status_code == 429:
+                # Rate limited — wait and retry
+                import time
+                time.sleep(1)
+                continue
+            if resp.status_code != 200:
+                logger.warning(f"Polygon API error {resp.status_code}: {resp.text[:200]}")
+                return all_results
+
+            data = resp.json()
+            results = data.get('results', [])
+            all_results.extend(results)
+
+            # Follow pagination
+            next_url = data.get('next_url')
+            if next_url:
+                # next_url is a full URL; just append apiKey
+                url = next_url
+                params = {'apiKey': POLYGON_API_KEY}
+            else:
+                url = None
+        except Exception as e:
+            logger.warning(f"Polygon fetch error: {e}")
+            break
+
+    return all_results
+
+
+def load_from_polygon(
+    symbol: str,
+    days: int = 30,
+    timeframe: str = "1Min",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    session: str = "RTH",
+) -> Optional[pd.DataFrame]:
+    """Load historical bars from Polygon.io REST API for stocks.
+
+    Returns DataFrame with standard columns (open, high, low, close, volume,
+    vwap, trade_count) and UTC DatetimeIndex, or None on failure.
+    """
+    ticker = _to_polygon_ticker(symbol)
+    multiplier, timespan = _polygon_timespan(timeframe)
+
+    if end_date:
+        to_dt = end_date
+    else:
+        to_dt = datetime.now(timezone.utc)
+
+    if start_date:
+        from_dt = start_date
+    else:
+        from_dt = to_dt - timedelta(days=days)
+
+    from_str = from_dt.strftime('%Y-%m-%d')
+    to_str = to_dt.strftime('%Y-%m-%d')
+
+    results = _polygon_fetch_bars(ticker, multiplier, timespan, from_str, to_str)
+    if not results:
+        return None
+
+    df = _polygon_bars_to_df(results)
+    if len(df) == 0:
+        return None
+
+    # Apply session filtering (same as Alpaca path)
+    if session and session != "24/7":
+        df = _filter_session(df, session)
+
+    return df if len(df) > 0 else None
+
+
+def load_from_polygon_crypto(
+    symbol: str,
+    days: int = 30,
+    timeframe: str = "1Min",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> Optional[pd.DataFrame]:
+    """Load historical bars from Polygon.io REST API for crypto.
+
+    Crypto tickers use X:BTCUSD format. No session filtering (24/7).
+    """
+    ticker = _to_polygon_ticker(symbol)
+    multiplier, timespan = _polygon_timespan(timeframe)
+
+    if end_date:
+        to_dt = end_date
+    else:
+        to_dt = datetime.now(timezone.utc)
+
+    if start_date:
+        from_dt = start_date
+    else:
+        from_dt = to_dt - timedelta(days=days)
+
+    from_str = from_dt.strftime('%Y-%m-%d')
+    to_str = to_dt.strftime('%Y-%m-%d')
+
+    results = _polygon_fetch_bars(ticker, multiplier, timespan, from_str, to_str)
+    if not results:
+        return None
+
+    df = _polygon_bars_to_df(results)
+    return df if len(df) > 0 else None
+
+
 # Tracks what source was actually used on the last load_market_data call
 _last_actual_source: str = "Unknown"
 
@@ -325,8 +543,26 @@ def load_market_data(
     """
     global _last_actual_source
 
-    # Try Alpaca first (unless forced to use mock)
-    if not force_mock and is_alpaca_configured():
+    _use_polygon = DATA_PROVIDER in ("polygon", "auto") and is_polygon_configured()
+    _use_alpaca = DATA_PROVIDER in ("alpaca", "auto") and is_alpaca_configured()
+
+    # Try Polygon first (unless forced to mock or provider is alpaca-only)
+    if not force_mock and _use_polygon:
+        if is_crypto(symbol):
+            df = load_from_polygon_crypto(symbol, days, timeframe,
+                                           start_date=start_date, end_date=end_date)
+            if df is not None and len(df) > 0:
+                _last_actual_source = "Polygon Crypto"
+                return df
+        else:
+            df = load_from_polygon(symbol, days, timeframe, start_date=start_date,
+                                    end_date=end_date, session=session)
+            if df is not None and len(df) > 0:
+                _last_actual_source = "Polygon"
+                return df
+
+    # Alpaca fallback
+    if not force_mock and _use_alpaca:
         if is_crypto(symbol):
             df = load_from_alpaca_crypto(symbol, days, timeframe,
                                          start_date=start_date, end_date=end_date)
