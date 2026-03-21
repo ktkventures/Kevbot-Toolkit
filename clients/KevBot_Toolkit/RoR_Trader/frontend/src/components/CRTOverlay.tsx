@@ -57,26 +57,36 @@ export default function CRTOverlay() {
       {/* ===== NEON TOKYO: Rain + Neon glow ===== */}
       {theme === 'neon-tokyo' && (
         <>
-          {/* Rain streaks */}
+          {/* Rain streaks — bold neon rain */}
           <div style={{
             position: 'fixed', inset: 0, zIndex: 99997, pointerEvents: 'none',
             overflow: 'hidden',
           }}>
-            {Array.from({ length: 60 }).map((_, i) => (
-              <div
-                key={i}
-                style={{
-                  position: 'absolute',
-                  left: `${Math.random() * 100}%`,
-                  top: `-${Math.random() * 20}%`,
-                  width: '1px',
-                  height: `${15 + Math.random() * 25}px`,
-                  background: `linear-gradient(to bottom, transparent, rgba(255, 48, 144, ${0.15 + Math.random() * 0.15}), transparent)`,
-                  animation: `rainFall ${0.8 + Math.random() * 0.6}s linear ${Math.random() * 2}s infinite`,
-                  opacity: 0.6 + Math.random() * 0.4,
-                }}
-              />
-            ))}
+            {Array.from({ length: 80 }).map((_, i) => {
+              const left = (i * 1.25 + (i % 3) * 7.5) % 100;
+              const height = 30 + (i % 5) * 15;
+              const speed = 0.6 + (i % 4) * 0.2;
+              const delay = (i * 0.15) % 2.5;
+              const opacity = 0.4 + (i % 3) * 0.2;
+              const pink = i % 3 === 0;
+              return (
+                <div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    left: `${left}%`,
+                    top: '-5%',
+                    width: pink ? '2px' : '1px',
+                    height: `${height}px`,
+                    background: pink
+                      ? `linear-gradient(to bottom, transparent, rgba(255, 48, 144, 0.5), rgba(255, 48, 144, 0.2), transparent)`
+                      : `linear-gradient(to bottom, transparent, rgba(48, 192, 255, 0.3), rgba(48, 192, 255, 0.1), transparent)`,
+                    animation: `rainFall ${speed}s linear ${delay}s infinite`,
+                    opacity,
+                  }}
+                />
+              );
+            })}
           </div>
           {/* Neon sign pulse on sidebar edge */}
           <div style={{
@@ -88,19 +98,60 @@ export default function CRTOverlay() {
         </>
       )}
 
-      {/* ===== LIGHTNING STORM: Flash + Storm ===== */}
+      {/* ===== LIGHTNING STORM: Stars + Clouds + Flash ===== */}
       {theme === 'lightning' && (
         <>
+          {/* Star field */}
+          <div style={{
+            position: 'fixed', inset: 0, zIndex: 99995, pointerEvents: 'none',
+          }}>
+            {Array.from({ length: 60 }).map((_, i) => (
+              <div
+                key={`star-${i}`}
+                style={{
+                  position: 'absolute',
+                  left: `${(i * 1.7 + (i % 7) * 13) % 100}%`,
+                  top: `${(i * 2.3 + (i % 5) * 17) % 100}%`,
+                  width: i % 5 === 0 ? 2 : 1,
+                  height: i % 5 === 0 ? 2 : 1,
+                  borderRadius: '50%',
+                  background: 'rgba(200, 210, 255, 0.7)',
+                  animation: `sparkle ${3 + (i % 4) * 1.5}s ease-in-out ${(i * 0.3) % 5}s infinite`,
+                }}
+              />
+            ))}
+          </div>
+          {/* Cloud layer — dark drifting shapes */}
+          <div style={{
+            position: 'fixed', inset: 0, zIndex: 99996, pointerEvents: 'none', overflow: 'hidden',
+          }}>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div
+                key={`cloud-${i}`}
+                style={{
+                  position: 'absolute',
+                  left: `${i * 20}%`,
+                  top: `${5 + i * 8}%`,
+                  width: 600 + i * 100,
+                  height: 150 + i * 30,
+                  borderRadius: '50%',
+                  background: `radial-gradient(ellipse, rgba(15, 12, 35, ${0.5 + i * 0.05}) 0%, transparent 70%)`,
+                  filter: 'blur(30px)',
+                  animation: `float${(i % 4) + 1} ${40 + i * 8}s ease-in-out ${i * 3}s infinite alternate`,
+                }}
+              />
+            ))}
+          </div>
           {/* Lightning flash overlay */}
           <div style={{
             position: 'fixed', inset: 0, zIndex: 99999, pointerEvents: 'none',
-            background: flash ? 'rgba(200, 210, 255, 0.25)' : 'transparent',
+            background: flash ? 'rgba(200, 210, 255, 0.3)' : 'transparent',
             transition: flash ? 'none' : 'background 0.3s ease-out',
           }} />
           {/* Storm vignette */}
           <div style={{
             position: 'fixed', inset: 0, zIndex: 99997, pointerEvents: 'none',
-            background: 'radial-gradient(ellipse at center, transparent 40%, rgba(10, 8, 30, 0.4) 100%)',
+            background: 'radial-gradient(ellipse at center, transparent 30%, rgba(6, 5, 15, 0.5) 100%)',
           }} />
           {/* Lightning bolt (appears during flash) */}
           {flash && (
@@ -231,7 +282,7 @@ export default function CRTOverlay() {
           0% { transform: translateY(0) translateX(0) scale(1); opacity: 0; }
           10% { opacity: 1; }
           90% { opacity: 1; }
-          100% { transform: translateY(-110vh) translateX(${Math.random() > 0.5 ? '' : '-'}${20 + Math.random() * 40}px) scale(0.5); opacity: 0; }
+          100% { transform: translateY(-110vh) translateX(30px) scale(0.5); opacity: 0; }
         }
 
         @keyframes sparkle {
