@@ -207,4 +207,162 @@ body {
   background-image: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, transparent 40%, rgba(255,255,255,0.15) 100%);
 }
 
+/* ===== THEME: Neon Tokyo ===== */
+[data-theme="neon-tokyo"] {
+  --bg-primary: #0a0010;
+  --bg-secondary: rgba(15, 5, 25, 0.92);
+  --bg-card: rgba(30, 10, 50, 0.7);
+  --bg-card-hover: rgba(40, 15, 65, 0.8);
+  --bg-input: rgba(20, 5, 35, 0.85);
+  --border: rgba(255, 50, 150, 0.15);
+  --border-hover: rgba(255, 50, 150, 0.30);
+  --text-primary: #f0d0ff;
+  --text-secondary: #c080e0;
+  --text-muted: #7040a0;
+  --accent: #ff3090;
+  --accent-hover: #e02080;
+  --accent-muted: rgba(255, 48, 144, 0.15);
+  --green: #40f080;
+  --green-muted: rgba(64, 240, 128, 0.12);
+  --red: #ff3050;
+  --red-muted: rgba(255, 48, 80, 0.12);
+  --orange: #ffb030;
+  --orange-muted: rgba(255, 176, 48, 0.12);
+  --blue: #30c0ff;
+  --purple: #c040ff;
+  --teal: #30f0e0;
+  --sidebar-bg: rgba(10, 2, 20, 0.95);
+  --logo-color: #ff3090;
+  --card-shadow: 0 0 20px rgba(255, 48, 144, 0.08), 0 0 40px rgba(48, 192, 255, 0.04);
+  --card-backdrop: blur(12px);
+  --body-bg-image: none;
+}
+
+[data-theme="neon-tokyo"] .rounded-xl {
+  box-shadow: 0 0 1px rgba(255, 48, 144, 0.4), inset 0 0 15px rgba(255, 48, 144, 0.03);
+}
+
+[data-theme="neon-tokyo"] h1,
+[data-theme="neon-tokyo"] h2 {
+  text-shadow: 0 0 15px rgba(255, 48, 144, 0.4), 0 0 30px rgba(255, 48, 144, 0.2);
+}
+
+/* ===== THEME: Lightning Storm ===== */
+[data-theme="lightning"] {
+  --bg-primary: #06050f;
+  --bg-secondary: rgba(12, 10, 25, 0.92);
+  --bg-card: rgba(20, 16, 40, 0.75);
+  --bg-card-hover: rgba(28, 22, 55, 0.85);
+  --bg-input: rgba(15, 12, 30, 0.9);
+  --border: rgba(100, 120, 255, 0.12);
+  --border-hover: rgba(120, 140, 255, 0.25);
+  --text-primary: #d0d4f0;
+  --text-secondary: #8088c0;
+  --text-muted: #505088;
+  --accent: #6080ff;
+  --accent-hover: #5070ee;
+  --accent-muted: rgba(96, 128, 255, 0.12);
+  --green: #50e890;
+  --green-muted: rgba(80, 232, 144, 0.12);
+  --red: #ff5060;
+  --red-muted: rgba(255, 80, 96, 0.12);
+  --orange: #f0a030;
+  --orange-muted: rgba(240, 160, 48, 0.12);
+  --blue: #6080ff;
+  --purple: #a060ff;
+  --teal: #40d0e0;
+  --sidebar-bg: rgba(8, 6, 18, 0.95);
+  --logo-color: #6080ff;
+  --card-shadow: 0 0 15px rgba(96, 128, 255, 0.05);
+  --card-backdrop: blur(10px);
+  --body-bg-image: none;
+}
+
+[data-theme="lightning"] h1,
+[data-theme="lightning"] h2 {
+  text-shadow: 0 0 8px rgba(96, 128, 255, 0.3);
+}
+
+/* ===== THEME: Kawaii Trader ===== */
+[data-theme="kawaii"] {
+  --bg-primary: #fff0f8;
+  --bg-secondary: rgba(255, 230, 245, 0.95);
+  --bg-card: rgba(255, 255, 255, 0.7);
+  --bg-card-hover: rgba(255, 255, 255, 0.85);
+  --bg-input: rgba(255, 240, 250, 0.9);
+  --border: rgba(255, 100, 180, 0.15);
+  --border-hover: rgba(255, 100, 180, 0.30);
+  --text-primary: #4a2040;
+  --text-secondary: #8a4078;
+  --text-muted: #c080a8;
+  --accent: #ff60a0;
+  --accent-hover: #e85090;
+  --accent-muted: rgba(255, 96, 160, 0.12);
+  --green: #40c890;
+  --green-muted: rgba(64, 200, 144, 0.15);
+  --red: #ff5070;
+  --red-muted: rgba(255, 80, 112, 0.12);
+  --orange: #ffb040;
+  --orange-muted: rgba(255, 176, 64, 0.12);
+  --blue: #60a0ff;
+  --purple: #b060ff;
+  --teal: #40d0c0;
+  --sidebar-bg: rgba(255, 228, 245, 0.95);
+  --logo-color: #ff60a0;
+  --card-shadow: 0 4px 20px rgba(255, 100, 180, 0.08);
+  --card-backdrop: blur(16px);
+  --body-bg-image: none;
+}
+
+[data-theme="kawaii"] .rounded-xl {
+  border-radius: 16px !important;
+}
+
+[data-theme="kawaii"] button {
+  border-radius: 12px !important;
+}
+
+/* ===== THEME: Tron Grid ===== */
+[data-theme="tron"] {
+  --bg-primary: #000008;
+  --bg-secondary: rgba(0, 4, 16, 0.95);
+  --bg-card: rgba(0, 10, 30, 0.8);
+  --bg-card-hover: rgba(0, 15, 40, 0.9);
+  --bg-input: rgba(0, 6, 20, 0.9);
+  --border: rgba(0, 220, 255, 0.15);
+  --border-hover: rgba(0, 220, 255, 0.30);
+  --text-primary: #c0f0ff;
+  --text-secondary: #60b8d0;
+  --text-muted: #307080;
+  --accent: #00dcff;
+  --accent-hover: #00c4e8;
+  --accent-muted: rgba(0, 220, 255, 0.10);
+  --green: #00ff80;
+  --green-muted: rgba(0, 255, 128, 0.10);
+  --red: #ff3040;
+  --red-muted: rgba(255, 48, 64, 0.10);
+  --orange: #ff8800;
+  --orange-muted: rgba(255, 136, 0, 0.10);
+  --blue: #00dcff;
+  --purple: #8040ff;
+  --teal: #00dcff;
+  --sidebar-bg: rgba(0, 2, 10, 0.98);
+  --logo-color: #00dcff;
+  --card-shadow: 0 0 15px rgba(0, 220, 255, 0.06), inset 0 1px 0 rgba(0, 220, 255, 0.08);
+  --card-backdrop: blur(8px);
+  --body-bg-image: none;
+}
+
+[data-theme="tron"] .rounded-xl {
+  box-shadow: 0 0 1px rgba(0, 220, 255, 0.5), 0 0 10px rgba(0, 220, 255, 0.05);
+}
+
+[data-theme="tron"] h1,
+[data-theme="tron"] h2,
+[data-theme="tron"] h3 {
+  text-shadow: 0 0 10px rgba(0, 220, 255, 0.3), 0 0 20px rgba(0, 220, 255, 0.15);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* Animated backgrounds handled by AnimatedBackground.tsx component */

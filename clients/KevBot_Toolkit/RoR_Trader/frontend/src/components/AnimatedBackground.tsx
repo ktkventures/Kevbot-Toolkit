@@ -43,6 +43,25 @@ const themeOrbs: Record<string, Orb[]> = {
     { id: 1, size: 500, x: 50, y: 50, color: 'rgba(48, 232, 104, 0.04)', duration: 30, delay: 0, path: 'float2' },
     { id: 2, size: 300, x: 25, y: 30, color: 'rgba(48, 232, 104, 0.03)', duration: 25, delay: 5, path: 'float1' },
   ],
+  'neon-tokyo': [
+    { id: 1, size: 600, x: 20, y: 80, color: 'rgba(255, 48, 144, 0.12)', duration: 18, delay: 0, path: 'float1' },
+    { id: 2, size: 500, x: 75, y: 20, color: 'rgba(48, 192, 255, 0.10)', duration: 22, delay: 3, path: 'float3' },
+    { id: 3, size: 400, x: 50, y: 50, color: 'rgba(192, 64, 255, 0.08)', duration: 20, delay: 6, path: 'float4' },
+  ],
+  lightning: [
+    { id: 1, size: 800, x: 40, y: 30, color: 'rgba(40, 30, 80, 0.25)', duration: 35, delay: 0, path: 'float1' },
+    { id: 2, size: 700, x: 70, y: 60, color: 'rgba(30, 25, 70, 0.20)', duration: 40, delay: 5, path: 'float2' },
+    { id: 3, size: 500, x: 20, y: 70, color: 'rgba(50, 40, 90, 0.15)', duration: 30, delay: 8, path: 'float3' },
+  ],
+  kawaii: [
+    { id: 1, size: 600, x: 75, y: 25, color: 'rgba(255, 150, 200, 0.12)', duration: 25, delay: 0, path: 'float1' },
+    { id: 2, size: 500, x: 25, y: 70, color: 'rgba(200, 150, 255, 0.10)', duration: 30, delay: 3, path: 'float3' },
+    { id: 3, size: 400, x: 55, y: 45, color: 'rgba(150, 230, 200, 0.08)', duration: 28, delay: 6, path: 'float2' },
+  ],
+  tron: [
+    { id: 1, size: 500, x: 60, y: 30, color: 'rgba(0, 220, 255, 0.06)', duration: 30, delay: 0, path: 'float1' },
+    { id: 2, size: 400, x: 30, y: 60, color: 'rgba(128, 64, 255, 0.04)', duration: 25, delay: 5, path: 'float2' },
+  ],
 };
 
 export default function AnimatedBackground() {

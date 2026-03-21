@@ -52,6 +52,34 @@ const themes: ThemeOption[] = [
     preview: ['#e8f4ff', 'rgba(255,255,255,0.55)', '#1890ff'],
     tier: 'immersive',
   },
+  {
+    id: 'neon-tokyo',
+    name: 'Neon Tokyo',
+    description: 'Rain-soaked streets, neon signs, hot pink — trading from Akihabara',
+    preview: ['#0a0010', '#1e0a32', '#ff3090'],
+    tier: 'immersive',
+  },
+  {
+    id: 'lightning',
+    name: 'Lightning Storm',
+    description: 'Random strikes, electric flashes — Raiden approves this terminal',
+    preview: ['#06050f', '#14102a', '#6080ff'],
+    tier: 'immersive',
+  },
+  {
+    id: 'kawaii',
+    name: 'Kawaii Trader',
+    description: 'Pastel pink, floating bubbles, sparkles — aggressively cute',
+    preview: ['#fff0f8', 'rgba(255,255,255,0.7)', '#ff60a0'],
+    tier: 'immersive',
+  },
+  {
+    id: 'tron',
+    name: 'Tron Grid',
+    description: 'Perspective grid, cyan glow, scan lines — inside the Grid',
+    preview: ['#000008', '#000a1e', '#00dcff'],
+    tier: 'immersive',
+  },
 ];
 
 export default function ThemeSwitcher() {
