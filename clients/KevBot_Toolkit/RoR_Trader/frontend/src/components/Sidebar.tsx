@@ -2,29 +2,76 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useState } from 'react';
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: string;
+  children?: { href: string; label: string }[];
+}
+
+const navItems: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: '◈' },
-  { href: '/strategy-builder', label: 'Strategy Builder', icon: '⚡' },
-  { href: '/strategies', label: 'My Strategies', icon: '◆' },
-  { href: '/portfolios', label: 'Portfolios', icon: '▦' },
-  { href: '/alerts', label: 'Alerts & Signals', icon: '◉' },
+  {
+    href: '/confluence-packs', label: 'Confluence Packs', icon: '◇',
+    children: [
+      { href: '/confluence-packs/tf-confluence', label: 'TF Confluence' },
+      { href: '/confluence-packs/general', label: 'General' },
+      { href: '/confluence-packs/risk-management', label: 'Risk Management' },
+      { href: '/confluence-packs/user-packs', label: 'User Packs' },
+      { href: '/confluence-packs/pack-builder', label: 'Pack Builder' },
+      { href: '/confluence-packs/timeframes', label: 'Timeframes' },
+    ],
+  },
+  {
+    href: '/strategies', label: 'Strategies', icon: '⚡',
+    children: [
+      { href: '/strategy-builder', label: 'Strategy Builder' },
+      { href: '/strategies', label: 'My Strategies' },
+      { href: '/mass-builder', label: 'Mass Builder' },
+      { href: '/mass-results', label: 'Mass Results' },
+    ],
+  },
+  {
+    href: '/portfolios', label: 'Portfolios', icon: '▦',
+    children: [
+      { href: '/portfolios', label: 'My Portfolios' },
+      { href: '/portfolio-requirements', label: 'Requirements' },
+    ],
+  },
+  {
+    href: '/alerts', label: 'Alerts', icon: '◉',
+    children: [
+      { href: '/alerts', label: 'Alerts & Signals' },
+      { href: '/alerts/webhook-templates', label: 'Webhook Templates' },
+    ],
+  },
   { href: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const isActive = (href: string) =>
+    pathname === href || (href !== '/' && pathname?.startsWith(href + '/'));
+
+  const isSectionActive = (item: NavItem) =>
+    isActive(item.href) || item.children?.some((c) => isActive(c.href));
+
+  const toggleExpand = (label: string) =>
+    setExpanded((prev) => ({ ...prev, [label]: !prev[label] }));
 
   return (
     <aside
-      className="fixed left-0 top-0 h-full flex flex-col border-r"
+      className="fixed left-0 top-0 h-full flex flex-col border-r overflow-y-auto"
       style={{
         width: 'var(--sidebar-width)',
         background: 'var(--bg-secondary)',
         borderColor: 'var(--border)',
       }}
     >
-      {/* Logo */}
       <div className="px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
         <h1 className="text-lg font-bold" style={{ color: 'var(--accent)' }}>
           RoR Trader
@@ -34,34 +81,70 @@ export default function Sidebar() {
         </p>
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 py-3 px-2">
         {navItems.map((item) => {
-          const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
+          const active = isSectionActive(item);
+          const isOpen = expanded[item.label] ?? active;
+
+          if (!item.children) {
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg mb-0.5 text-sm transition-colors"
+                style={{
+                  background: isActive(item.href) ? 'var(--accent-muted)' : 'transparent',
+                  color: isActive(item.href) ? 'var(--accent)' : 'var(--text-secondary)',
+                }}
+              >
+                <span className="text-base">{item.icon}</span>
+                {item.label}
+              </Link>
+            );
+          }
+
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-3 px-3 py-2.5 rounded-lg mb-0.5 text-sm transition-colors"
-              style={{
-                background: isActive ? 'var(--accent-muted)' : 'transparent',
-                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-            >
-              <span className="text-base">{item.icon}</span>
-              {item.label}
-            </Link>
+            <div key={item.label} className="mb-0.5">
+              <button
+                onClick={() => toggleExpand(item.label)}
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-colors"
+                style={{
+                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                }}
+              >
+                <span className="flex items-center gap-3">
+                  <span className="text-base">{item.icon}</span>
+                  {item.label}
+                </span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {isOpen ? '▾' : '▸'}
+                </span>
+              </button>
+              {isOpen && (
+                <div className="ml-8 mt-0.5 space-y-0.5">
+                  {item.children.map((child) => (
+                    <Link
+                      key={child.href}
+                      href={child.href}
+                      className="block px-3 py-1.5 rounded text-xs transition-colors"
+                      style={{
+                        color: isActive(child.href) ? 'var(--accent)' : 'var(--text-muted)',
+                        background: isActive(child.href) ? 'var(--accent-muted)' : 'transparent',
+                      }}
+                    >
+                      {child.label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })}
       </nav>
 
-      {/* Status footer */}
       <div className="px-4 py-3 border-t" style={{ borderColor: 'var(--border)' }}>
         <div className="flex items-center gap-2">
-          <span
-            className="w-2 h-2 rounded-full"
-            style={{ background: 'var(--green)' }}
-          />
+          <span className="w-2 h-2 rounded-full" style={{ background: 'var(--green)' }} />
           <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
             Polygon.io — Live
           </span>
