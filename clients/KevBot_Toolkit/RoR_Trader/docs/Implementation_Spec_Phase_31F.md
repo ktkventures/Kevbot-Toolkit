@@ -170,6 +170,20 @@ Parameters live on the **confluence pack** (not the strategy), in four self-cont
 31F-2 and 31F-3 are sequential (both modify Pass 2).
 31F-6 should be available as early as possible for verification.
 
+### Cascading Drill-Down for Larger Timeframes
+
+For HiFi resolution, the drill-down depth depends on the primary timeframe:
+
+| Primary TF | Drill-Down Strategy | Bars to Walk |
+|-----------|--------------------|----|
+| 1Min–15Min | Direct to 1-second | 60–900 bars |
+| 30Min | Direct to 1-second | 1,800 bars (borderline, still OK) |
+| 1Hour | Cascade: first to 1-minute (60 bars), then ambiguous minute to 1-second (60 bars) | 60 + 60 = 120 bars |
+| 4Hour | Cascade: to 1-minute, then to 1-second | Same pattern |
+| 1Day | Cascade: to 1-minute (390 bars RTH), then to 1-second | 390 + 60 = 450 bars |
+
+Rule: if primary TF > 15Min, use two-step cascade. Two API calls instead of one giant one.
+
 ---
 
 ## 5. What Success Looks Like

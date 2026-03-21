@@ -2583,7 +2583,23 @@ All on `dev` branch (not yet merged to main). Backup: `main-backup-pre-31`. Spec
 
 **Ready for merge to main** — all core functionality verified on dev.
 
-#### Phase 31F–31G: HiFi Backtest (Sub-Bar Resolution)
+#### Phase 31F–31G: HiFi Backtest & Fidelity System — PLANNING (2026-03-20)
+
+**Spec:** `docs/Implementation_Spec_Phase_31F.md`
+**Playbook:** `docs/Execution_and_Fidelity_Playbook.md` (source of truth for all execution types and naming conventions)
+
+**Key decisions made:**
+- Four execution types: `[C]` Close, `[L]` Level, `[LC]` Level-Close, `[CC]` Close-Close
+- Execution parameters live on confluence pack templates (four self-contained sections per pack)
+- HiFi default on all exit bars + non-`[C]` entry bars (3-20s overhead)
+- `[PB]`/`[CB]` confluence fidelity tags for cross-TF conditions
+- Tag renames: L1→L, HM→LC, HL→LC (display only, logic unchanged)
+- Cascading drill-down for larger TFs (1Hour+ → 1Min → 1Sec)
+- Pass 1 (current engine) untouched, Pass 2 (HiFi) is additive
+
+**Sub-phases:** 31F-1 (tag rename), 31F-2 (stop/target HiFi), 31F-3 (entry fill HiFi), 31F-4 (pack editor UI), 31F-5 (CB confluence), 31F-6 (QA harness)
+
+#### Original HiFi Backtest Design (Reference)
 
 **Goal:** Improve backtest fidelity by "zooming in" to 1-second candles on ambiguous bars — bars where the 1-minute OHLC doesn't tell the full story. This closes the three biggest gaps between backtest and live trading.
 
@@ -3067,7 +3083,7 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 
 ---
 
-### Phase 38: Frontend Migration — PLANNING (Not Started)
+### Phase 38: Frontend Migration — DESIGN IN PROGRESS (2026-03-20)
 
 **Goal:** Migrate the frontend from Streamlit to a modern web framework for better UX, performance, and maintainability. The Python backend (strategy engine, alert system, portfolio computation) stays — only the UI layer changes.
 
