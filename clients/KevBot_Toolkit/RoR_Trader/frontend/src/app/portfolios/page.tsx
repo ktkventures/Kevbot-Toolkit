@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Card from '@/components/Card';
 
 export default function Portfolios() {
@@ -19,7 +20,8 @@ export default function Portfolios() {
           { name: 'My Portfolio', strategies: 8, balance: 80000, pnl: 2847, dd: -1.8, wr: 58.3 },
           { name: 'Growth Portfolio', strategies: 5, balance: 50000, pnl: 1205, dd: -2.4, wr: 52.1 },
         ].map((port, i) => (
-          <Card key={i} className="cursor-pointer hover:border-opacity-50">
+          <Link key={i} href={`/portfolios/${i + 1}`}>
+          <Card className="cursor-pointer hover:border-opacity-50">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-lg">{port.name}</h3>
@@ -63,6 +65,7 @@ export default function Portfolios() {
               </div>
             </div>
           </Card>
+          </Link>
         ))}
       </div>
     </div>

@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Card from '@/components/Card';
 
 const mockStrategies = [
@@ -93,9 +94,9 @@ export default function Strategies() {
 
               {/* Action buttons */}
               <div className="flex gap-2 ml-4">
-                <button className="px-3 py-1.5 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                <Link href={`/strategies/${i + 1}`} className="px-3 py-1.5 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
                   View
-                </button>
+                </Link>
                 <button className="px-3 py-1.5 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
                   Edit
                 </button>

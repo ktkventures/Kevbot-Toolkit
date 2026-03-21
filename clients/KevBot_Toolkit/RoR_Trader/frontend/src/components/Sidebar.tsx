@@ -47,7 +47,15 @@ const navItems: NavItem[] = [
       { href: '/alerts/webhook-templates', label: 'Webhook Templates' },
     ],
   },
-  { href: '/settings', label: 'Settings', icon: '⚙' },
+  {
+    href: '/settings', label: 'Settings', icon: '⚙',
+    children: [
+      { href: '/settings/themes', label: 'Themes' },
+      { href: '/settings/display', label: 'Display' },
+      { href: '/settings/connections', label: 'Connections' },
+      { href: '/settings/account', label: 'Account' },
+    ],
+  },
 ];
 
 export default function Sidebar() {
@@ -68,12 +76,15 @@ export default function Sidebar() {
       className="fixed left-0 top-0 h-full flex flex-col border-r overflow-y-auto"
       style={{
         width: 'var(--sidebar-width)',
-        background: 'var(--bg-secondary)',
+        background: 'var(--sidebar-bg)',
         borderColor: 'var(--border)',
+        backdropFilter: 'var(--card-backdrop)',
+        WebkitBackdropFilter: 'var(--card-backdrop)',
+        zIndex: 2,
       }}
     >
       <div className="px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
-        <h1 className="text-lg font-bold" style={{ color: 'var(--accent)' }}>
+        <h1 className="text-lg font-bold" style={{ color: 'var(--logo-color)' }}>
           RoR Trader
         </h1>
         <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>

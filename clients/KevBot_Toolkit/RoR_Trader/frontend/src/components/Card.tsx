@@ -10,6 +10,9 @@ export default function Card({ children, className = '' }: CardProps) {
       style={{
         background: 'var(--bg-card)',
         borderColor: 'var(--border)',
+        boxShadow: 'var(--card-shadow)',
+        backdropFilter: 'var(--card-backdrop)',
+        WebkitBackdropFilter: 'var(--card-backdrop)',
       }}
     >
       {children}

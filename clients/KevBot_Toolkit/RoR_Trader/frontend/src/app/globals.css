@@ -2,7 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ===== DEFAULT THEME: Dark ===== */
+:root, [data-theme="dark"] {
   --bg-primary: #0a0a12;
   --bg-secondary: #12121e;
   --bg-card: #1a1a2e;
@@ -10,15 +11,12 @@
   --bg-input: #16162a;
   --border: #2a2a40;
   --border-hover: #3a3a55;
-
   --text-primary: #e8e8f0;
   --text-secondary: #9898b0;
   --text-muted: #606078;
-
   --accent: #2196F3;
   --accent-hover: #1e88e5;
   --accent-muted: rgba(33, 150, 243, 0.15);
-
   --green: #4CAF50;
   --green-muted: rgba(76, 175, 80, 0.15);
   --red: #f44336;
@@ -28,9 +26,78 @@
   --blue: #2196F3;
   --purple: #AB47BC;
   --teal: #26C6DA;
-
   --sidebar-width: 240px;
   --topbar-height: 56px;
+  --sidebar-bg: var(--bg-secondary);
+  --logo-color: var(--accent);
+  --card-shadow: none;
+  --card-backdrop: none;
+  --body-bg-image: none;
+}
+
+/* ===== THEME: Cyberpunk Lion ===== */
+[data-theme="cyberpunk-lion"] {
+  --bg-primary: #0d0a08;
+  --bg-secondary: #1a1208;
+  --bg-card: #261c0e;
+  --bg-card-hover: #332610;
+  --bg-input: #1e1508;
+  --border: #4a3520;
+  --border-hover: #6b4e2e;
+  --text-primary: #f5e6c8;
+  --text-secondary: #c4a66a;
+  --text-muted: #8a6d3b;
+  --accent: #ff8c00;
+  --accent-hover: #e67e00;
+  --accent-muted: rgba(255, 140, 0, 0.2);
+  --green: #7cb342;
+  --green-muted: rgba(124, 179, 66, 0.2);
+  --red: #e53935;
+  --red-muted: rgba(229, 57, 53, 0.2);
+  --orange: #ffab00;
+  --orange-muted: rgba(255, 171, 0, 0.2);
+  --blue: #ff8c00;
+  --purple: #e040fb;
+  --teal: #00e5ff;
+  --sidebar-bg: linear-gradient(180deg, #1a1208 0%, #0d0a08 50%, #1a0a10 100%);
+  --logo-color: #ff8c00;
+  --card-shadow: 0 0 20px rgba(255, 140, 0, 0.05);
+  --card-backdrop: none;
+  --body-bg-image: radial-gradient(ellipse at 20% 80%, rgba(255, 140, 0, 0.04) 0%, transparent 50%),
+                   radial-gradient(ellipse at 80% 20%, rgba(224, 64, 251, 0.03) 0%, transparent 50%);
+}
+
+/* ===== THEME: Crystal Glass ===== */
+[data-theme="crystal"] {
+  --bg-primary: #080818;
+  --bg-secondary: rgba(15, 15, 35, 0.85);
+  --bg-card: rgba(25, 25, 55, 0.6);
+  --bg-card-hover: rgba(35, 35, 70, 0.7);
+  --bg-input: rgba(15, 15, 40, 0.8);
+  --border: rgba(100, 120, 200, 0.15);
+  --border-hover: rgba(120, 140, 220, 0.25);
+  --text-primary: #e0e4f0;
+  --text-secondary: #8890b8;
+  --text-muted: #505878;
+  --accent: #7c9df5;
+  --accent-hover: #6b8de5;
+  --accent-muted: rgba(124, 157, 245, 0.12);
+  --green: #6dd5a0;
+  --green-muted: rgba(109, 213, 160, 0.12);
+  --red: #f06878;
+  --red-muted: rgba(240, 104, 120, 0.12);
+  --orange: #f0b060;
+  --orange-muted: rgba(240, 176, 96, 0.12);
+  --blue: #7c9df5;
+  --purple: #b388f5;
+  --teal: #68d8e8;
+  --sidebar-bg: rgba(12, 12, 30, 0.9);
+  --logo-color: #7c9df5;
+  --card-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+  --card-backdrop: blur(12px);
+  --body-bg-image: radial-gradient(ellipse at 30% 20%, rgba(124, 157, 245, 0.08) 0%, transparent 50%),
+                   radial-gradient(ellipse at 70% 70%, rgba(179, 136, 245, 0.06) 0%, transparent 50%),
+                   radial-gradient(ellipse at 50% 50%, rgba(104, 216, 232, 0.04) 0%, transparent 60%);
 }
 
 * {
@@ -39,24 +106,105 @@
   padding: 0;
 }
 
-body {
+html {
   background: var(--bg-primary);
+}
+
+body {
+  background: transparent;
   color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  position: relative;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+/* ===== THEME: Fortress of Solitude (Light) ===== */
+[data-theme="fortress"] {
+  --bg-primary: #e8f4ff;
+  --bg-secondary: rgba(220, 238, 255, 0.9);
+  --bg-card: rgba(255, 255, 255, 0.55);
+  --bg-card-hover: rgba(255, 255, 255, 0.7);
+  --bg-input: rgba(230, 244, 255, 0.8);
+  --border: rgba(80, 160, 240, 0.18);
+  --border-hover: rgba(60, 140, 220, 0.30);
+  --text-primary: #0a2a4a;
+  --text-secondary: #2a5a8a;
+  --text-muted: #5a8ab8;
+  --accent: #1890ff;
+  --accent-hover: #0a7ae6;
+  --accent-muted: rgba(24, 144, 255, 0.10);
+  --green: #10b860;
+  --green-muted: rgba(16, 184, 96, 0.10);
+  --red: #e83050;
+  --red-muted: rgba(232, 48, 80, 0.10);
+  --orange: #e89020;
+  --orange-muted: rgba(232, 144, 32, 0.10);
+  --blue: #1890ff;
+  --purple: #6060e0;
+  --teal: #10b8d0;
+  --sidebar-bg: rgba(215, 235, 255, 0.92);
+  --logo-color: #1060c0;
+  --card-shadow: 0 4px 30px rgba(80, 160, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --card-backdrop: blur(20px) saturate(1.3);
+  --body-bg-image: none;
 }
-::-webkit-scrollbar-track {
-  background: var(--bg-primary);
+
+/* ===== THEME: Pip-Boy (Fallout) ===== */
+[data-theme="pipboy"] {
+  --bg-primary: #0a0c08;
+  --bg-secondary: #0e120a;
+  --bg-card: rgba(16, 24, 12, 0.9);
+  --bg-card-hover: rgba(22, 32, 16, 0.95);
+  --bg-input: rgba(12, 18, 8, 0.95);
+  --border: rgba(30, 200, 60, 0.15);
+  --border-hover: rgba(40, 220, 80, 0.25);
+  --text-primary: #30e868;
+  --text-secondary: #20b848;
+  --text-muted: #188030;
+  --accent: #30e868;
+  --accent-hover: #28d058;
+  --accent-muted: rgba(48, 232, 104, 0.1);
+  --green: #30e868;
+  --green-muted: rgba(48, 232, 104, 0.1);
+  --red: #e83030;
+  --red-muted: rgba(232, 48, 48, 0.15);
+  --orange: #e8c830;
+  --orange-muted: rgba(232, 200, 48, 0.1);
+  --blue: #30e868;
+  --purple: #30e868;
+  --teal: #30e868;
+  --sidebar-bg: rgba(8, 12, 6, 0.95);
+  --logo-color: #30e868;
+  --card-shadow: 0 0 15px rgba(48, 232, 104, 0.04), inset 0 1px 0 rgba(48, 232, 104, 0.05);
+  --card-backdrop: none;
+  --body-bg-image: none;
 }
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
+
+/* Pip-Boy CRT effects — handled by PipBoyOverlay component since
+   body::before/::after don't reliably render in all browsers with
+   Next.js body management */
+
+/* Pip-Boy text glow */
+[data-theme="pipboy"] h1,
+[data-theme="pipboy"] h2,
+[data-theme="pipboy"] h3 {
+  text-shadow: 0 0 10px rgba(48, 232, 104, 0.4), 0 0 20px rgba(48, 232, 104, 0.2);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--border-hover);
+
+/* Pip-Boy card border glow */
+[data-theme="pipboy"] .rounded-xl {
+  box-shadow: 0 0 8px rgba(48, 232, 104, 0.06), inset 0 0 8px rgba(48, 232, 104, 0.03);
 }
+
+/* Fortress card glass shine — bright, icy sheen */
+[data-theme="fortress"] .rounded-xl {
+  background-image: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, transparent 40%, rgba(255,255,255,0.15) 100%);
+}
+
+/* Animated backgrounds handled by AnimatedBackground.tsx component */
