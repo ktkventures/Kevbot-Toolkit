@@ -1,88 +1,50 @@
 'use client';
 
-import PageHeader from '@/components/PageHeader';
-import TabBar from '@/components/TabBar';
-import Card from '@/components/Card';
-import MetricCard from '@/components/MetricCard';
-import ChartPlaceholder from '@/components/ChartPlaceholder';
+import VersionedPage from '@/components/VersionedPage';
+import V1 from './versions/V1';
+import V2 from './versions/V2';
+import V3 from './versions/V3';
+import V4 from './versions/V4';
 
-const TABS = [
-  'Equity & KPIs', 'Extended', 'Price Chart', 'Live Chart',
-  'Trade History', 'Confluence Analysis', 'Configuration', 'Alerts', 'Alert Analysis',
+const versions = [
+  {
+    meta: {
+      id: 'v1-initial',
+      name: 'Initial Scaffold',
+      description: '9-tab detail view with equity curve, KPI metrics, price/live charts, trade history, confluence analysis, configuration, alerts, and alert analysis.',
+      rationale: 'First pass covering all strategy detail tabs with placeholder content for charts and tables.',
+    },
+    component: V1,
+  },
+  {
+    meta: {
+      id: 'v2-full-parity',
+      name: 'Full Parity',
+      description: 'All 9 tabs fully populated: KPIs, extended analysis, charts, trade history, confluence analysis, config, alerts.',
+      rationale: 'Complete Streamlit strategy detail. Every tab has real content: primary + secondary KPIs, backtest vs forward equity curves, sortable trade history with exec type badges, confluence state analysis, full read-only config display, alert configuration panel, and alert accuracy analysis.',
+    },
+    component: V2,
+  },
+  {
+    meta: {
+      id: 'v3-streamlined',
+      name: 'Streamlined',
+      description: '3 tabs instead of 9: Overview (KPIs + equity + chart + config), Trades (history + confluence/ToD/DoW analysis as collapsibles), Monitoring (alerts + live chart + accuracy). Inline KPI strip in header.',
+      rationale: 'Answers the 3 trader questions: "Is this strategy good?" (Overview), "What are the trades doing?" (Trades), "Is it running correctly?" (Monitoring). Extended KPIs, price chart, and config merged into Overview. Confluence analysis, time-of-day, and day-of-week analysis collapsed by default under Trades. Alert config and accuracy merged into Monitoring.',
+    },
+    component: V3,
+  },
+  {
+    meta: {
+      id: 'v4-creative',
+      name: 'Creative',
+      description: 'Visual analytics dashboard with health score ring, strategy DNA radar, trade timeline, DoW x ToD heatmap, equity curve with market regime overlay, risk/reward scatter, confluence effectiveness bars, live position widget, and AI-style smart summary.',
+      rationale: 'The "wow factor" version. Circular health score (0-100) with segmented ring for WR/DD/consistency/risk. Interactive trade timeline with hover tooltips. Performance heatmap reveals best trading windows. Equity curve with bull/bear/neutral regime bands. Strategy DNA radar chart shows character fingerprint. Live position widget with animated status and risk bar. Confluence effectiveness bars rank condition contributions. Risk/reward scatter plots trade distribution. Smart summary provides actionable AI-style narrative.',
+    },
+    component: V4,
+  },
 ];
 
-export default function StrategyDetail() {
-  return (
-    <div>
-      <PageHeader
-        title="NVDA LONG - Mass #2"
-        subtitle="NVDA | LONG | 1Min | RTH | [C] EMA Price Cross Up"
-        backHref="/strategies"
-        actions={
-          <>
-            <button className="px-3 py-1.5 rounded-lg text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Refresh</button>
-            <button className="px-3 py-1.5 rounded-lg text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Edit</button>
-            <button className="px-3 py-1.5 rounded-lg text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Clone</button>
-            <button className="px-3 py-1.5 rounded-lg text-sm" style={{ background: 'var(--red-muted)', color: 'var(--red)' }}>Delete</button>
-          </>
-        }
-      />
-
-      <TabBar tabs={TABS}>
-        {(tab) => (
-          <div>
-            {tab === 'Equity & KPIs' && (
-              <div>
-                <div className="grid grid-cols-8 gap-3 mb-6">
-                  {[
-                    { l: 'Trades', v: '224' }, { l: 'Win Rate', v: '54.0%' },
-                    { l: 'PF', v: '2.05' }, { l: 'Avg R', v: '+0.42' },
-                    { l: 'Total R', v: '+94.1' }, { l: 'Daily R', v: '+1.95' },
-                    { l: 'R²', v: '0.91' }, { l: 'Max DD', v: '-4.5R' },
-                  ].map((k, i) => <MetricCard key={i} label={k.l} value={k.v} />)}
-                </div>
-                <Card><ChartPlaceholder label="Equity Curve — BT (blue) + FW (orange) + Alerts (green)" height={300} /></Card>
-              </div>
-            )}
-            {tab === 'Price Chart' && (
-              <Card><ChartPlaceholder label="TradingView OHLC + indicators + trade markers (+/x)" height={500} /></Card>
-            )}
-            {tab === 'Live Chart' && (
-              <Card><ChartPlaceholder label="Live Chart — auto-refreshing via Polygon WS" height={500} /></Card>
-            )}
-            {tab === 'Trade History' && (
-              <Card>
-                <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>Trade history with entry/exit details, R-multiples, and execution types.</p>
-                <ChartPlaceholder label="Trade table placeholder" height={200} />
-              </Card>
-            )}
-            {tab === 'Confluence Analysis' && (
-              <Card><p style={{ color: 'var(--text-muted)' }}>Per-group indicator charts with trade markers and interpreter state timelines.</p></Card>
-            )}
-            {tab === 'Configuration' && (
-              <Card>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <h4 className="text-sm font-medium mb-3">Strategy Setup</h4>
-                    {['Ticker: NVDA', 'Direction: LONG', 'Timeframe: 1Min', 'Entry: [C] EMA Price Cross Up', 'Exit: 4-bar exit', 'Stop: Swing (5 bars, $0.03 pad)'].map((s, i) => (
-                      <p key={i} className="text-sm py-1" style={{ color: 'var(--text-secondary)' }}>{s}</p>
-                    ))}
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-medium mb-3">Confluence Conditions</h4>
-                    {['5M-RVOL-HIGH (Default) [PB]', '1D-MACD_LINE-BULL (Default) [PB]'].map((c, i) => (
-                      <p key={i} className="text-sm py-1" style={{ color: 'var(--text-secondary)' }}>{c}</p>
-                    ))}
-                  </div>
-                </div>
-              </Card>
-            )}
-            {!['Equity & KPIs', 'Price Chart', 'Live Chart', 'Trade History', 'Confluence Analysis', 'Configuration'].includes(tab) && (
-              <Card><p style={{ color: 'var(--text-muted)' }}>{tab} — content placeholder</p></Card>
-            )}
-          </div>
-        )}
-      </TabBar>
-    </div>
-  );
+export default function StrategyDetailPage() {
+  return <VersionedPage pageKey="strategy-detail" versions={versions} />;
 }

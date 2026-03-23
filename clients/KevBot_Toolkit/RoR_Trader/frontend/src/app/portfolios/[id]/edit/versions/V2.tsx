@@ -1,0 +1,1014 @@
+'use client';
+
+import { useState, useMemo, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import Card from '@/components/Card';
+import PageHeader from '@/components/PageHeader';
+import MetricCard from '@/components/MetricCard';
+
+/* ========================================================================= */
+/* MOCK DATA                                                                  */
+/* ========================================================================= */
+
+const STRATEGY_COLORS = ['var(--green)', 'var(--blue)', 'var(--orange)', 'var(--red)', '#AB47BC', '#26C6DA'];
+
+interface StrategyData {
+  id: string;
+  name: string;
+  symbol: string;
+  direction: string;
+  displayName: string;
+  trades: number;
+  winRate: number;
+  pf: number;
+  totalR: number;
+  maxDD: number;
+  avgR: number;
+  equityCurve: number[];
+}
+
+const ALL_STRATEGIES: StrategyData[] = [
+  {
+    id: 's1', name: 'Mass #2', symbol: 'NVDA', direction: 'LONG',
+    displayName: 'NVDA LONG — Mass #2',
+    trades: 224, winRate: 54.0, pf: 2.05, totalR: 94.1, maxDD: -4.5, avgR: 0.42,
+    equityCurve: [0, 5, 8, 6, 15, 20, 28, 25, 35, 40, 45, 52, 58, 65, 70, 78, 85, 92],
+  },
+  {
+    id: 's2', name: 'Mass #1', symbol: 'SPY', direction: 'LONG',
+    displayName: 'SPY LONG — Mass #1',
+    trades: 186, winRate: 52.1, pf: 1.78, totalR: 61.2, maxDD: -3.8, avgR: 0.33,
+    equityCurve: [0, 3, 5, 4, 10, 15, 18, 20, 25, 30, 32, 38, 42, 48, 52, 56, 62, 68],
+  },
+  {
+    id: 's3', name: 'Mass #5', symbol: 'AAPL', direction: 'LONG',
+    displayName: 'AAPL LONG — Mass #5',
+    trades: 142, winRate: 56.3, pf: 1.92, totalR: 48.5, maxDD: -2.9, avgR: 0.34,
+    equityCurve: [0, 2, 4, 6, 8, 12, 15, 18, 22, 28, 30, 35, 38, 42, 48, 52, 58, 62],
+  },
+  {
+    id: 's4', name: 'Mass #5', symbol: 'TSLA', direction: 'LONG',
+    displayName: 'TSLA LONG — Mass #5',
+    trades: 198, winRate: 48.5, pf: 1.65, totalR: 38.2, maxDD: -6.1, avgR: 0.19,
+    equityCurve: [0, 4, 2, 8, 5, 12, 18, 14, 22, 25, 20, 28, 32, 35, 30, 38, 42, 48],
+  },
+  {
+    id: 's5', name: 'Mass #13', symbol: 'META', direction: 'LONG',
+    displayName: 'META LONG — Mass #13',
+    trades: 168, winRate: 55.4, pf: 1.88, totalR: 52.8, maxDD: -3.4, avgR: 0.31,
+    equityCurve: [0, 3, 7, 10, 14, 18, 22, 25, 30, 34, 38, 42, 45, 50, 55, 60, 65, 70],
+  },
+  {
+    id: 's6', name: 'Mass #7', symbol: 'AMZN', direction: 'LONG',
+    displayName: 'AMZN LONG — Mass #7',
+    trades: 155, winRate: 53.5, pf: 1.82, totalR: 44.6, maxDD: -3.1, avgR: 0.29,
+    equityCurve: [0, 2, 5, 8, 12, 16, 20, 23, 26, 30, 34, 38, 40, 44, 48, 52, 56, 60],
+  },
+];
+
+const REQUIREMENT_SETS = ['None', 'TTP 50k', 'FTMO 100k', 'Apex 150k'];
+
+interface PortfolioStrategy {
+  id: string;
+  name: string;
+  symbol: string;
+  direction: string;
+  displayName: string;
+  riskPerTrade: number;
+  trades: number;
+  winRate: number;
+  pf: number;
+  totalR: number;
+  maxDD: number;
+  avgR: number;
+  equityCurve: number[];
+}
+
+interface Recommendation {
+  id: string;
+  name: string;
+  symbol: string;
+  direction: string;
+  displayName: string;
+  pnlImpact: string;
+  ddImpact: string;
+  correlation: number;
+  trades: number;
+  winRate: number;
+  pf: number;
+  totalR: number;
+  maxDD: number;
+  avgR: number;
+  equityCurve: number[];
+}
+
+const RECOMMENDATIONS: Recommendation[] = [
+  {
+    id: 's5', name: 'Mass #13', symbol: 'META', direction: 'LONG',
+    displayName: 'META LONG — Mass #13',
+    pnlImpact: '+$420', ddImpact: '-0.3%', correlation: 0.32,
+    trades: 168, winRate: 55.4, pf: 1.88, totalR: 52.8, maxDD: -3.4, avgR: 0.31,
+    equityCurve: [0, 3, 7, 10, 14, 18, 22, 25, 30, 34, 38, 42, 45, 50, 55, 60, 65, 70],
+  },
+  {
+    id: 's6', name: 'Mass #7', symbol: 'AMZN', direction: 'LONG',
+    displayName: 'AMZN LONG — Mass #7',
+    pnlImpact: '+$310', ddImpact: '+0.1%', correlation: 0.45,
+    trades: 155, winRate: 53.5, pf: 1.82, totalR: 44.6, maxDD: -3.1, avgR: 0.29,
+    equityCurve: [0, 2, 5, 8, 12, 16, 20, 23, 26, 30, 34, 38, 40, 44, 48, 52, 56, 60],
+  },
+  {
+    id: 's7', name: 'Mass #4', symbol: 'GOOGL', direction: 'LONG',
+    displayName: 'GOOGL LONG — Mass #4',
+    pnlImpact: '+$185', ddImpact: '-0.1%', correlation: 0.28,
+    trades: 132, winRate: 54.5, pf: 1.71, totalR: 35.2, maxDD: -2.8, avgR: 0.27,
+    equityCurve: [0, 2, 4, 6, 8, 10, 14, 16, 18, 22, 24, 28, 30, 32, 36, 40, 44, 48],
+  },
+];
+
+// Pre-filled mock data for editing (simulates loaded portfolio)
+const INITIAL_PORTFOLIO = {
+  name: 'Momentum Alpha',
+  startingBalance: 80000,
+  riskScaling: 85,
+  requirementSet: 'TTP 50k',
+  strategies: [
+    { ...ALL_STRATEGIES[0], riskPerTrade: 120 },
+    { ...ALL_STRATEGIES[1], riskPerTrade: 200 },
+    { ...ALL_STRATEGIES[2], riskPerTrade: 90 },
+    { ...ALL_STRATEGIES[3], riskPerTrade: 80 },
+  ] as PortfolioStrategy[],
+};
+
+/* ========================================================================= */
+/* HELPERS                                                                    */
+/* ========================================================================= */
+
+function buildEquityPath(curve: number[], maxVal: number, svgWidth: number, svgHeight: number, padTop: number, padBot: number): string {
+  if (curve.length === 0) return '';
+  const usableHeight = svgHeight - padTop - padBot;
+  const stepX = svgWidth / (curve.length - 1);
+  return curve.map((val, i) => {
+    const x = i * stepX;
+    const y = padTop + usableHeight - (val / maxVal) * usableHeight;
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+}
+
+function buildCombinedCurve(strategies: PortfolioStrategy[], balance: number, riskScaling: number): number[] {
+  if (strategies.length === 0) return [];
+  const maxLen = Math.max(...strategies.map(s => s.equityCurve.length));
+  const combined: number[] = [];
+  for (let i = 0; i < maxLen; i++) {
+    let total = 0;
+    for (const s of strategies) {
+      const idx = Math.min(i, s.equityCurve.length - 1);
+      const scaledVal = s.equityCurve[idx] * (s.riskPerTrade / 100);
+      total += scaledVal * (1 + riskScaling / 100 * 0.5);
+    }
+    combined.push(total);
+  }
+  return combined;
+}
+
+function buildDrawdownCurve(combined: number[]): number[] {
+  if (combined.length === 0) return [];
+  const dd: number[] = [];
+  let peak = 0;
+  for (const val of combined) {
+    if (val > peak) peak = val;
+    const drawdown = peak > 0 ? ((val - peak) / peak) * 100 : 0;
+    dd.push(drawdown);
+  }
+  return dd;
+}
+
+function buildDrawdownPath(ddCurve: number[], minDD: number, svgWidth: number, svgHeight: number, padTop: number): string {
+  if (ddCurve.length === 0) return '';
+  const stepX = svgWidth / (ddCurve.length - 1);
+  const usable = svgHeight - padTop - 10;
+  return ddCurve.map((val, i) => {
+    const x = i * stepX;
+    const y = padTop + (val / minDD) * usable;
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+}
+
+/* ========================================================================= */
+/* STYLES                                                                     */
+/* ========================================================================= */
+
+const inputStyle: React.CSSProperties = {
+  background: 'var(--bg-input)',
+  border: '1px solid var(--border)',
+  color: 'var(--text-primary)',
+  borderRadius: '0.5rem',
+  padding: '0.5rem 0.75rem',
+  fontSize: '0.875rem',
+  width: '100%',
+  outline: 'none',
+};
+
+const selectStyle: React.CSSProperties = {
+  ...inputStyle,
+  cursor: 'pointer',
+  appearance: 'none' as const,
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 5l3 3 3-3'/%3E%3C/svg%3E")`,
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: 'right 0.75rem center',
+  paddingRight: '2rem',
+};
+
+/* ========================================================================= */
+/* COMPONENT                                                                  */
+/* ========================================================================= */
+
+export default function PortfolioEditV2() {
+  const router = useRouter();
+  const initialRef = useRef(INITIAL_PORTFOLIO);
+
+  // --- Settings state (pre-filled) ---
+  const [portfolioName, setPortfolioName] = useState(INITIAL_PORTFOLIO.name);
+  const [startingBalance, setStartingBalance] = useState(INITIAL_PORTFOLIO.startingBalance);
+  const [riskScaling, setRiskScaling] = useState(INITIAL_PORTFOLIO.riskScaling);
+  const [requirementSet, setRequirementSet] = useState(INITIAL_PORTFOLIO.requirementSet);
+
+  // --- Strategy builder state ---
+  const [selectedStrategy, setSelectedStrategy] = useState('');
+  const [riskPerTrade, setRiskPerTrade] = useState('100');
+  const [strategies, setStrategies] = useState<PortfolioStrategy[]>(
+    [...INITIAL_PORTFOLIO.strategies]
+  );
+
+  // --- Recommendations state ---
+  const [showRecommendations, setShowRecommendations] = useState(false);
+  const [recsAnalyzed, setRecsAnalyzed] = useState(false);
+
+  // --- Change tracking ---
+  const hasChanges = useMemo(() => {
+    const init = initialRef.current;
+    if (portfolioName !== init.name) return true;
+    if (startingBalance !== init.startingBalance) return true;
+    if (riskScaling !== init.riskScaling) return true;
+    if (requirementSet !== init.requirementSet) return true;
+    if (strategies.length !== init.strategies.length) return true;
+    for (let i = 0; i < strategies.length; i++) {
+      if (strategies[i].id !== init.strategies[i].id) return true;
+      if (strategies[i].riskPerTrade !== init.strategies[i].riskPerTrade) return true;
+    }
+    return false;
+  }, [portfolioName, startingBalance, riskScaling, requirementSet, strategies]);
+
+  // --- Computed values ---
+  const availableForAdd = useMemo(
+    () => ALL_STRATEGIES.filter(s => !strategies.find(st => st.id === s.id)),
+    [strategies]
+  );
+
+  const combinedCurve = useMemo(
+    () => buildCombinedCurve(strategies, startingBalance, riskScaling),
+    [strategies, startingBalance, riskScaling]
+  );
+
+  const drawdownCurve = useMemo(
+    () => buildDrawdownCurve(combinedCurve),
+    [combinedCurve]
+  );
+
+  const metrics = useMemo(() => {
+    if (strategies.length === 0) {
+      return { trades: 0, winRate: 0, pf: 0, totalPnl: 0, finalBalance: 0, maxDD: 0 };
+    }
+    const totalTrades = strategies.reduce((sum, s) => sum + s.trades, 0);
+    const weightedWR = strategies.reduce((sum, s) => sum + s.winRate * s.trades, 0) / totalTrades;
+    const weightedPF = strategies.reduce((sum, s) => sum + s.pf * s.riskPerTrade, 0)
+      / strategies.reduce((sum, s) => sum + s.riskPerTrade, 0);
+    const totalPnl = strategies.reduce((sum, s) => sum + s.totalR * s.riskPerTrade, 0);
+    const scaledPnl = totalPnl * (1 + riskScaling / 100 * 0.5);
+    const finalBalance = startingBalance + scaledPnl;
+    const maxDD = Math.min(...strategies.map(s => s.maxDD));
+    return { trades: totalTrades, winRate: weightedWR, pf: weightedPF, totalPnl: scaledPnl, finalBalance, maxDD };
+  }, [strategies, startingBalance, riskScaling]);
+
+  const riskSummary = useMemo(() => {
+    if (strategies.length === 0) {
+      return { totalRiskPerDay: 0, maxDailyLoss: 0, worstCase: 0, capitalUtil: 0 };
+    }
+    const totalRiskPerTrade = strategies.reduce((sum, s) => sum + s.riskPerTrade, 0);
+    const totalRiskPerDay = totalRiskPerTrade * 3;
+    const maxDailyLoss = totalRiskPerDay * 2;
+    const worstCase = totalRiskPerTrade * strategies.length;
+    const capitalUtil = (totalRiskPerTrade / startingBalance) * 100;
+    return { totalRiskPerDay, maxDailyLoss, worstCase, capitalUtil };
+  }, [strategies, startingBalance]);
+
+  // --- Handlers ---
+  const handleAddStrategy = useCallback(() => {
+    if (!selectedStrategy) return;
+    const stratData = ALL_STRATEGIES.find(s => s.id === selectedStrategy);
+    if (!stratData || strategies.find(s => s.id === selectedStrategy)) return;
+    setStrategies(prev => [...prev, { ...stratData, riskPerTrade: Number(riskPerTrade) || 100 }]);
+    setSelectedStrategy('');
+    setRiskPerTrade('100');
+    setRecsAnalyzed(false);
+  }, [selectedStrategy, riskPerTrade, strategies]);
+
+  const handleRemoveStrategy = useCallback((id: string) => {
+    setStrategies(prev => prev.filter(s => s.id !== id));
+    setRecsAnalyzed(false);
+  }, []);
+
+  const handleStrategyRiskChange = useCallback((id: string, newRisk: string) => {
+    setStrategies(prev => prev.map(s =>
+      s.id === id ? { ...s, riskPerTrade: Number(newRisk) || 0 } : s
+    ));
+  }, []);
+
+  const handleMoveStrategy = useCallback((idx: number, direction: 'up' | 'down') => {
+    setStrategies(prev => {
+      const arr = [...prev];
+      const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= arr.length) return prev;
+      [arr[idx], arr[targetIdx]] = [arr[targetIdx], arr[idx]];
+      return arr;
+    });
+  }, []);
+
+  const handleAddRecommendation = useCallback((rec: Recommendation) => {
+    if (strategies.find(s => s.id === rec.id)) return;
+    setStrategies(prev => [...prev, {
+      id: rec.id,
+      name: rec.name,
+      symbol: rec.symbol,
+      direction: rec.direction,
+      displayName: rec.displayName,
+      riskPerTrade: 100,
+      trades: rec.trades,
+      winRate: rec.winRate,
+      pf: rec.pf,
+      totalR: rec.totalR,
+      maxDD: rec.maxDD,
+      avgR: rec.avgR,
+      equityCurve: rec.equityCurve,
+    }]);
+  }, [strategies]);
+
+  const handleAnalyze = useCallback(() => {
+    setRecsAnalyzed(true);
+    setShowRecommendations(true);
+  }, []);
+
+  const handleResetChanges = useCallback(() => {
+    const init = initialRef.current;
+    setPortfolioName(init.name);
+    setStartingBalance(init.startingBalance);
+    setRiskScaling(init.riskScaling);
+    setRequirementSet(init.requirementSet);
+    setStrategies([...init.strategies]);
+    setRecsAnalyzed(false);
+    setShowRecommendations(false);
+  }, []);
+
+  // --- SVG chart calculations ---
+  const svgW = 500;
+  const svgH = 280;
+  const padTop = 30;
+  const padBot = 10;
+  const maxEquityVal = Math.max(1, ...combinedCurve, ...strategies.flatMap(s => s.equityCurve.map(v => v * (s.riskPerTrade / 100))));
+  const minDD = Math.min(-0.1, ...drawdownCurve);
+
+  const combinedPath = buildEquityPath(combinedCurve, maxEquityVal, svgW, svgH, padTop, padBot);
+  const combinedFillPath = combinedPath ? `${combinedPath} L${svgW},${svgH} L0,${svgH} Z` : '';
+  const ddPath = buildDrawdownPath(drawdownCurve, minDD, svgW, 180, 10);
+  const ddFillPath = ddPath ? `${ddPath} L${svgW},10 L0,10 Z` : '';
+
+  // --- Filtered recommendations ---
+  const filteredRecs = RECOMMENDATIONS.filter(r => !strategies.find(s => s.id === r.id));
+
+  // --- Change indicator dot ---
+  const ChangeDot = () => (
+    <span
+      style={{
+        display: 'inline-block',
+        width: 6,
+        height: 6,
+        borderRadius: '50%',
+        background: 'var(--orange)',
+        marginLeft: '0.375rem',
+        verticalAlign: 'middle',
+      }}
+      title="Modified"
+    />
+  );
+
+  return (
+    <div>
+      <PageHeader
+        title="Edit Portfolio"
+        subtitle={`Modifying: ${initialRef.current.name}`}
+        backHref="/portfolios/1"
+        actions={
+          hasChanges ? (
+            <span
+              className="text-xs px-2.5 py-1 rounded-full"
+              style={{ background: 'var(--orange)', color: 'white', opacity: 0.9 }}
+            >
+              Unsaved changes
+            </span>
+          ) : undefined
+        }
+      />
+
+      {/* ============ Settings Section ============ */}
+      <Card className="mb-6">
+        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
+          Portfolio Settings
+          {hasChanges && <ChangeDot />}
+        </h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+          <div>
+            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>
+              Portfolio Name
+              {portfolioName !== initialRef.current.name && <ChangeDot />}
+            </label>
+            <input
+              type="text"
+              placeholder="My Portfolio"
+              value={portfolioName}
+              onChange={(e) => setPortfolioName(e.target.value)}
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>
+              Starting Balance ($)
+              {startingBalance !== initialRef.current.startingBalance && <ChangeDot />}
+            </label>
+            <input
+              type="number"
+              min={1000}
+              step={1000}
+              placeholder="25000"
+              value={startingBalance}
+              onChange={(e) => setStartingBalance(Number(e.target.value) || 1000)}
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>
+              Risk Scaling: {riskScaling}%
+              {riskScaling !== initialRef.current.riskScaling && <ChangeDot />}
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={riskScaling}
+              onChange={(e) => setRiskScaling(Number(e.target.value))}
+              style={{ width: '100%', accentColor: 'var(--accent)' }}
+            />
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.3 }}>
+              0% = fixed risk per trade. 100% = risk scales 1:1 with account growth.
+            </p>
+          </div>
+          <div>
+            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>
+              Requirement Set
+              {requirementSet !== initialRef.current.requirementSet && <ChangeDot />}
+            </label>
+            <select
+              value={requirementSet}
+              onChange={(e) => setRequirementSet(e.target.value)}
+              style={selectStyle}
+            >
+              {REQUIREMENT_SETS.map(r => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Card>
+
+      {/* ============ Live Metrics Section ============ */}
+      {strategies.length > 0 ? (
+        <div className="grid grid-cols-6 gap-3 mb-6">
+          <MetricCard label="Trades" value={metrics.trades.toLocaleString()} />
+          <MetricCard label="Win Rate" value={`${metrics.winRate.toFixed(1)}%`} />
+          <MetricCard label="Profit Factor" value={metrics.pf.toFixed(2)} />
+          <MetricCard
+            label="Total P&L"
+            value={`${metrics.totalPnl >= 0 ? '+' : ''}$${Math.abs(metrics.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            delta={`${metrics.totalPnl >= 0 ? '+' : '-'}$${Math.abs(metrics.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            positive={metrics.totalPnl >= 0}
+          />
+          <MetricCard
+            label="Final Balance"
+            value={`$${metrics.finalBalance.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+          />
+          <MetricCard
+            label="Max Drawdown"
+            value={`${metrics.maxDD.toFixed(1)}%`}
+            delta={`${metrics.maxDD.toFixed(1)}%`}
+            positive={false}
+          />
+        </div>
+      ) : (
+        <Card className="mb-6">
+          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            Add strategies to see portfolio analytics.
+          </p>
+        </Card>
+      )}
+
+      {/* ============ Two-column layout ============ */}
+      <div className="grid grid-cols-5 gap-6 mb-6">
+        {/* Left column (60%) - Charts */}
+        <div className="col-span-3">
+          {/* Combined Equity Curve */}
+          <Card className="mb-4">
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Combined Equity Curve</h3>
+            {strategies.length > 0 ? (
+              <div className="rounded-lg p-4" style={{ background: 'var(--bg-input)', height: 350 }}>
+                <svg width="100%" height="100%" viewBox={`0 0 ${svgW} ${svgH}`} preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="eqGradEditV2" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.25" />
+                      <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  {/* Grid lines */}
+                  <line x1="0" y1="70" x2={svgW} y2="70" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="4,4" />
+                  <line x1="0" y1="140" x2={svgW} y2="140" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="4,4" />
+                  <line x1="0" y1="210" x2={svgW} y2="210" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="4,4" />
+
+                  {/* Individual strategy lines (dotted) */}
+                  {strategies.map((s, i) => {
+                    const scaledCurve = s.equityCurve.map(v => v * (s.riskPerTrade / 100));
+                    const path = buildEquityPath(scaledCurve, maxEquityVal, svgW, svgH, padTop, padBot);
+                    return (
+                      <path
+                        key={s.id}
+                        d={path}
+                        fill="none"
+                        stroke={STRATEGY_COLORS[i % STRATEGY_COLORS.length]}
+                        strokeWidth="1.5"
+                        strokeDasharray="4,3"
+                        opacity="0.6"
+                      />
+                    );
+                  })}
+
+                  {/* Combined equity curve - filled area */}
+                  {combinedFillPath && (
+                    <path d={combinedFillPath} fill="url(#eqGradEditV2)" stroke="none" />
+                  )}
+                  {/* Combined equity curve - solid line */}
+                  {combinedPath && (
+                    <path d={combinedPath} fill="none" stroke="var(--accent)" strokeWidth="2.5" />
+                  )}
+                </svg>
+              </div>
+            ) : (
+              <div
+                className="rounded-lg flex items-center justify-center"
+                style={{ background: 'var(--bg-input)', height: 350 }}
+              >
+                <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Add strategies to see equity curve</span>
+              </div>
+            )}
+
+            {/* Chart Legend */}
+            {strategies.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', marginTop: '0.75rem', paddingLeft: '0.25rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <div style={{ width: 24, height: 3, background: 'var(--accent)', borderRadius: 2 }} />
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Combined</span>
+                </div>
+                {strategies.map((s, i) => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                    <div style={{
+                      width: 24, height: 2,
+                      background: STRATEGY_COLORS[i % STRATEGY_COLORS.length],
+                      borderRadius: 2,
+                      opacity: 0.7,
+                      backgroundImage: `repeating-linear-gradient(90deg, ${STRATEGY_COLORS[i % STRATEGY_COLORS.length]} 0px, ${STRATEGY_COLORS[i % STRATEGY_COLORS.length]} 4px, transparent 4px, transparent 7px)`,
+                    }} />
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.symbol}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Drawdown Chart */}
+          <Card>
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Drawdown Analysis</h3>
+            {strategies.length > 0 && drawdownCurve.length > 0 ? (
+              <div className="rounded-lg p-4" style={{ background: 'var(--bg-input)', height: 200 }}>
+                <svg width="100%" height="100%" viewBox={`0 0 ${svgW} 180`} preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="ddGradEditV2" x1="0" y1="1" x2="0" y2="0">
+                      <stop offset="0%" stopColor="var(--red)" stopOpacity="0.2" />
+                      <stop offset="100%" stopColor="var(--red)" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  {/* Zero line */}
+                  <line x1="0" y1="10" x2={svgW} y2="10" stroke="var(--border)" strokeWidth="0.5" />
+                  {/* Drawdown fill */}
+                  {ddFillPath && <path d={ddFillPath} fill="url(#ddGradEditV2)" stroke="none" />}
+                  {/* Drawdown line */}
+                  {ddPath && <path d={ddPath} fill="none" stroke="var(--red)" strokeWidth="1.5" />}
+                  {/* Label */}
+                  <text x={svgW - 5} y={25} fill="var(--text-muted)" fontSize="10" textAnchor="end">
+                    Peak: {metrics.maxDD.toFixed(1)}%
+                  </text>
+                </svg>
+              </div>
+            ) : (
+              <div
+                className="rounded-lg flex items-center justify-center"
+                style={{ background: 'var(--bg-input)', height: 200 }}
+              >
+                <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Drawdown curve will appear here</span>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Right column (40%) - Strategy Management */}
+        <div className="col-span-2" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {/* Add Strategy */}
+          <Card>
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Add Strategy</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div>
+                <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>Strategy</label>
+                <select
+                  value={selectedStrategy}
+                  onChange={(e) => setSelectedStrategy(e.target.value)}
+                  style={selectStyle}
+                  disabled={availableForAdd.length === 0}
+                >
+                  <option value="">
+                    {availableForAdd.length === 0 ? 'All strategies added' : 'Select a strategy...'}
+                  </option>
+                  {availableForAdd.map(s => (
+                    <option key={s.id} value={s.id}>{s.displayName}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>Risk Per Trade ($)</label>
+                <input
+                  type="number"
+                  min={1}
+                  step={10}
+                  placeholder="$100"
+                  value={riskPerTrade}
+                  onChange={(e) => setRiskPerTrade(e.target.value)}
+                  style={inputStyle}
+                  disabled={availableForAdd.length === 0}
+                />
+              </div>
+              <button
+                onClick={handleAddStrategy}
+                className="w-full py-2 rounded-lg text-sm font-medium transition-opacity"
+                style={{
+                  background: 'var(--accent)',
+                  color: 'white',
+                  opacity: selectedStrategy ? 1 : 0.5,
+                  cursor: selectedStrategy ? 'pointer' : 'not-allowed',
+                }}
+                disabled={!selectedStrategy || availableForAdd.length === 0}
+              >
+                Add Strategy
+              </button>
+            </div>
+          </Card>
+
+          {/* Current Strategies */}
+          <Card>
+            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+              Current Strategies
+              <span className="ml-2 text-xs" style={{ color: 'var(--text-muted)' }}>({strategies.length})</span>
+            </h3>
+            {strategies.length === 0 ? (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No strategies added yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {strategies.map((s, idx) => {
+                  const riskPct = startingBalance > 0 ? ((s.riskPerTrade / startingBalance) * 100).toFixed(1) : '0.0';
+                  // Check if this strategy existed in initial and if its risk changed
+                  const initStrat = initialRef.current.strategies.find(is => is.id === s.id);
+                  const isNewlyAdded = !initStrat;
+                  const riskChanged = initStrat && s.riskPerTrade !== initStrat.riskPerTrade;
+                  return (
+                    <div
+                      key={s.id}
+                      className="rounded-lg p-3"
+                      style={{
+                        background: 'var(--bg-input)',
+                        border: `1px solid ${isNewlyAdded ? 'var(--green)' : riskChanged ? 'var(--orange)' : 'var(--border)'}`,
+                      }}
+                    >
+                      {/* Row 1: Name + badge + reorder + remove */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.375rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              width: 8, height: 8, borderRadius: '50%',
+                              background: STRATEGY_COLORS[idx % STRATEGY_COLORS.length],
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span className="text-sm font-medium" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {s.name}
+                          </span>
+                          <span
+                            className="text-xs px-1.5 py-0.5 rounded"
+                            style={{ background: 'var(--accent-muted)', color: 'var(--accent)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                          >
+                            {s.symbol}
+                          </span>
+                          {isNewlyAdded && (
+                            <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--green)', color: 'white', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                              New
+                            </span>
+                          )}
+                          {riskChanged && (
+                            <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--orange)', color: 'white', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                              Modified
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.125rem', flexShrink: 0 }}>
+                          <button
+                            onClick={() => handleMoveStrategy(idx, 'up')}
+                            disabled={idx === 0}
+                            className="w-5 h-5 rounded flex items-center justify-center text-xs"
+                            style={{
+                              color: idx === 0 ? 'var(--border)' : 'var(--text-muted)',
+                              background: 'transparent',
+                              cursor: idx === 0 ? 'default' : 'pointer',
+                            }}
+                            title="Move up"
+                          >
+                            &#9650;
+                          </button>
+                          <button
+                            onClick={() => handleMoveStrategy(idx, 'down')}
+                            disabled={idx === strategies.length - 1}
+                            className="w-5 h-5 rounded flex items-center justify-center text-xs"
+                            style={{
+                              color: idx === strategies.length - 1 ? 'var(--border)' : 'var(--text-muted)',
+                              background: 'transparent',
+                              cursor: idx === strategies.length - 1 ? 'default' : 'pointer',
+                            }}
+                            title="Move down"
+                          >
+                            &#9660;
+                          </button>
+                          <button
+                            onClick={() => handleRemoveStrategy(s.id)}
+                            className="w-5 h-5 rounded flex items-center justify-center text-xs transition-colors ml-1"
+                            style={{ color: 'var(--red)', background: 'transparent', flexShrink: 0 }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--red-muted)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                            title="Remove strategy"
+                          >
+                            x
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Row 2: KPI summary */}
+                      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.375rem' }}>
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.trades} trades</span>
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.winRate.toFixed(1)}% WR</span>
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>PF {s.pf.toFixed(2)}</span>
+                        <span className="text-xs" style={{ color: s.totalR >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {s.totalR >= 0 ? '+' : ''}{s.totalR.toFixed(1)}R
+                        </span>
+                      </div>
+
+                      {/* Row 3: Risk input + position sizing */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>$</span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={10}
+                          value={s.riskPerTrade}
+                          onChange={(e) => handleStrategyRiskChange(s.id, e.target.value)}
+                          style={{
+                            ...inputStyle,
+                            width: '70px',
+                            padding: '0.25rem 0.5rem',
+                            textAlign: 'right' as const,
+                          }}
+                        />
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>/trade</span>
+                        <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>
+                          At ${s.riskPerTrade}/trade with ${startingBalance.toLocaleString()} balance = {riskPct}% risk
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          {/* Strategy Recommendations */}
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Strategy Recommendations
+              </h3>
+              {recsAnalyzed && (
+                <button
+                  onClick={() => setShowRecommendations(!showRecommendations)}
+                  className="text-xs px-2 py-1 rounded"
+                  style={{ color: 'var(--text-muted)', background: 'transparent' }}
+                >
+                  {showRecommendations ? 'Hide' : 'Show'}
+                </button>
+              )}
+            </div>
+
+            {strategies.length > 0 && (
+              <button
+                onClick={handleAnalyze}
+                className="w-full py-1.5 rounded-lg text-xs font-medium mb-3 transition-colors"
+                style={{
+                  background: recsAnalyzed ? 'var(--bg-input)' : 'var(--accent-muted)',
+                  color: recsAnalyzed ? 'var(--text-muted)' : 'var(--accent)',
+                  border: recsAnalyzed ? '1px solid var(--border)' : 'none',
+                }}
+              >
+                {recsAnalyzed ? 'Re-analyze Portfolio' : 'Analyze Portfolio'}
+              </button>
+            )}
+
+            {!recsAnalyzed && strategies.length > 0 && (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Click Analyze to get strategy recommendations based on portfolio correlation and risk analysis.
+              </p>
+            )}
+
+            {strategies.length === 0 && (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Add strategies first to get recommendations.
+              </p>
+            )}
+
+            {recsAnalyzed && showRecommendations && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {filteredRecs.length > 0 ? filteredRecs.map((rec) => (
+                  <div
+                    key={rec.id}
+                    className="rounded-lg p-3"
+                    style={{
+                      background: 'var(--bg-input)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.375rem' }}>
+                      <span className="text-sm font-medium">{rec.displayName}</span>
+                      <button
+                        onClick={() => handleAddRecommendation(rec)}
+                        className="text-xs px-2.5 py-1 rounded font-medium"
+                        style={{ background: 'var(--accent)', color: 'white' }}
+                      >
+                        Add
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                      <span className="text-xs" style={{ color: 'var(--green)' }}>
+                        {rec.pnlImpact} P&L
+                      </span>
+                      <span className="text-xs" style={{ color: rec.ddImpact.startsWith('+') ? 'var(--red)' : 'var(--green)' }}>
+                        {rec.ddImpact} DD
+                      </span>
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        Corr: {rec.correlation.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                )) : (
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    All recommendations have been added.
+                  </p>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {/* Risk Summary Card */}
+          {strategies.length > 0 && (
+            <Card>
+              <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Risk Summary</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Risk Per Day (est.)</span>
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                    ${riskSummary.totalRiskPerDay.toLocaleString()}
+                  </span>
+                </div>
+                <div style={{ height: 1, background: 'var(--border)' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Max Daily Loss Exposure</span>
+                  <span className="text-sm font-medium" style={{ color: 'var(--red)' }}>
+                    -${riskSummary.maxDailyLoss.toLocaleString()}
+                  </span>
+                </div>
+                <div style={{ height: 1, background: 'var(--border)' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Case Scenario</span>
+                  <span className="text-sm font-medium" style={{ color: 'var(--red)' }}>
+                    -${riskSummary.worstCase.toLocaleString()}
+                  </span>
+                </div>
+                <div style={{ height: 1, background: 'var(--border)' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Capital Utilization</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: 60, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        width: `${Math.min(100, riskSummary.capitalUtil)}%`,
+                        height: '100%',
+                        background: riskSummary.capitalUtil > 5 ? 'var(--red)' : riskSummary.capitalUtil > 2 ? 'var(--orange)' : 'var(--green)',
+                        borderRadius: 3,
+                      }} />
+                    </div>
+                    <span className="text-sm font-medium" style={{
+                      color: riskSummary.capitalUtil > 5 ? 'var(--red)' : riskSummary.capitalUtil > 2 ? 'var(--orange)' : 'var(--green)',
+                    }}>
+                      {riskSummary.capitalUtil.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* ============ Bottom Action Bar ============ */}
+      <div
+        className="rounded-xl border p-4"
+        style={{
+          background: 'var(--bg-card)',
+          borderColor: 'var(--border)',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '0.75rem',
+        }}
+      >
+        <button
+          onClick={() => router.push('/portfolios/1')}
+          className="px-4 py-2 rounded-lg text-sm font-medium"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleResetChanges}
+          className="px-4 py-2 rounded-lg text-sm font-medium transition-opacity"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-secondary)',
+            opacity: hasChanges ? 1 : 0.5,
+            cursor: hasChanges ? 'pointer' : 'not-allowed',
+          }}
+          disabled={!hasChanges}
+        >
+          Reset Changes
+        </button>
+        <button
+          className="px-6 py-2 rounded-lg text-sm font-medium transition-opacity"
+          style={{
+            background: 'var(--accent)',
+            color: 'white',
+            opacity: strategies.length > 0 ? 1 : 0.5,
+            cursor: strategies.length > 0 ? 'pointer' : 'not-allowed',
+          }}
+          disabled={strategies.length === 0}
+        >
+          Update Portfolio
+        </button>
+      </div>
+    </div>
+  );
+}

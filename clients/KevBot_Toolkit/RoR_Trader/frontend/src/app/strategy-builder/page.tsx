@@ -1,118 +1,50 @@
-import Card from '@/components/Card';
+'use client';
 
-export default function StrategyBuilder() {
-  return (
-    <div>
-      <h1 className="text-2xl font-bold mb-6">Strategy Builder</h1>
+import VersionedPage from '@/components/VersionedPage';
+import V1 from './versions/V1';
+import V2 from './versions/V2';
+import V3 from './versions/V3';
+import V4 from './versions/V4';
 
-      <div className="grid grid-cols-3 gap-6">
-        {/* Left: Configuration */}
-        <div className="col-span-1 space-y-4">
-          <Card>
-            <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
-              Configuration
-            </h3>
-            {[
-              { label: 'Ticker', placeholder: 'SPY' },
-              { label: 'Direction', placeholder: 'LONG' },
-              { label: 'Timeframe', placeholder: '1Min' },
-              { label: 'Session', placeholder: 'RTH' },
-            ].map((field, i) => (
-              <div key={i} className="mb-3">
-                <label className="text-xs mb-1 block" style={{ color: 'var(--text-muted)' }}>
-                  {field.label}
-                </label>
-                <input
-                  className="w-full px-3 py-2 rounded-lg text-sm"
-                  style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  placeholder={field.placeholder}
-                />
-              </div>
-            ))}
-          </Card>
+const versions = [
+  {
+    meta: {
+      id: 'v1-initial',
+      name: 'Initial Scaffold',
+      description: 'Three-column layout with config inputs, entry trigger, confluence conditions on the left; price chart and equity curve with KPIs on the right.',
+      rationale: 'First pass focused on establishing the core strategy builder layout with all major sections represented as placeholders.',
+    },
+    component: V1,
+  },
+  {
+    meta: {
+      id: 'v2-full-parity',
+      name: 'Full Parity',
+      description: 'Complete Streamlit feature set: trigger search, exit config, confluence scoring, advanced KPIs, trade history.',
+      rationale: 'Includes every feature from the Streamlit Strategy Builder: searchable trigger picker grouped by pack, full exit strategy config (swing/fixed stops, TP, opposite signal, bar count), confluence scoring with weights, two-row KPI dashboard, trade history table, and advanced analysis section. Nothing removed from Streamlit.',
+    },
+    component: V2,
+  },
+  {
+    meta: {
+      id: 'v3-streamlined',
+      name: 'Streamlined',
+      description: 'Single scrollable page: compact config bar, trigger chip selector, collapsed exit config, inline confluence chips, stacked KPIs + equity + price chart + trade history. No tabs, no analysis sidebar.',
+      rationale: 'Removes build-time friction. Trigger/exit drill-down analysis moved to Strategy Detail (post-save). Confluence scoring, asset type selector, lookback mode, and Markov motor removed from builder. Config-to-results feedback loop is now: configure -> run -> scroll to see everything. Exit config shows a one-line summary, expandable on demand.',
+    },
+    component: V3,
+  },
+  {
+    meta: {
+      id: 'v4-creative',
+      name: 'Creative',
+      description: 'Visual pipeline builder with interactive node graph, Strategy DNA radar chart, confidence gauge, AI insight cards, risk calculator, interactive equity curve with hover tooltips, quick presets, and live indicator sparkline previews.',
+      rationale: 'The wow-factor version. Strategy building visualized as an interactive data pipeline. Strategy DNA radar chart shows the character of the strategy (aggression, selectivity, speed, consistency, risk control, trend alignment). Confidence gauge scores the strategy based on trade count, win rate, profit factor, and confluence depth. Risk calculator projects daily/monthly returns at a given account size. AI insight card provides mock suggestions. Quick presets auto-fill entire strategies with one click.',
+    },
+    component: V4,
+  },
+];
 
-          <Card>
-            <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
-              Entry Trigger
-            </h3>
-            <select
-              className="w-full px-3 py-2 rounded-lg text-sm mb-3"
-              style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-            >
-              <option>[C] EMA Price Cross Up</option>
-              <option>[L] VWAP Cross</option>
-              <option>[LC] UT Bot Buy</option>
-            </select>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              Execution type determines when the entry fires and how it&apos;s confirmed.
-            </p>
-          </Card>
-
-          <Card>
-            <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
-              Confluence Conditions
-            </h3>
-            <div className="space-y-2">
-              {['5M-EMA_STACK-BULL (Default) [PB]', '1D-MACD_LINE-BULL (Default) [PB]'].map((cond, i) => (
-                <div
-                  key={i}
-                  className="px-3 py-2 rounded-lg text-xs flex items-center justify-between"
-                  style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
-                >
-                  <span style={{ color: 'var(--text-secondary)' }}>{cond}</span>
-                  <span style={{ color: 'var(--text-muted)' }}>x</span>
-                </div>
-              ))}
-            </div>
-            <button
-              className="mt-3 text-xs px-3 py-1.5 rounded"
-              style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}
-            >
-              + Add Condition
-            </button>
-          </Card>
-        </div>
-
-        {/* Right: Results */}
-        <div className="col-span-2 space-y-4">
-          <Card>
-            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-              Price Chart
-            </h3>
-            <div
-              className="rounded-lg flex items-center justify-center"
-              style={{ background: 'var(--bg-input)', height: 400 }}
-            >
-              <span style={{ color: 'var(--text-muted)' }}>TradingView chart — OHLC + indicators + trade markers</span>
-            </div>
-          </Card>
-
-          <Card>
-            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-              Equity Curve & KPIs
-            </h3>
-            <div className="grid grid-cols-4 gap-3 mb-4">
-              {[
-                { label: 'Win Rate', value: '62.5%' },
-                { label: 'Profit Factor', value: '2.84' },
-                { label: 'Daily R', value: '+1.92' },
-                { label: 'Trades', value: '147' },
-              ].map((kpi, i) => (
-                <div key={i} className="text-center">
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
-                  <p className="text-lg font-semibold">{kpi.value}</p>
-                </div>
-              ))}
-            </div>
-            <div
-              className="rounded-lg flex items-center justify-center"
-              style={{ background: 'var(--bg-input)', height: 200 }}
-            >
-              <span style={{ color: 'var(--text-muted)' }}>Equity curve placeholder</span>
-            </div>
-          </Card>
-        </div>
-      </div>
-    </div>
-  );
+export default function StrategyBuilderPage() {
+  return <VersionedPage pageKey="strategy-builder" versions={versions} />;
 }

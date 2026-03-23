@@ -1,29 +1,60 @@
-import Card from '@/components/Card';
+'use client';
 
-export default function DisplaySettings() {
-  return (
-    <div>
-      <h1 className="text-2xl font-bold mb-6">Display</h1>
-      <div className="max-w-2xl space-y-6">
-        <Card>
-          <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>Preferences</h3>
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs mb-1 block" style={{ color: 'var(--text-muted)' }}>Timezone</label>
-              <select className="w-full px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
-                <option>US/Mountain</option><option>US/Eastern</option><option>US/Pacific</option><option>UTC</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs mb-1 block" style={{ color: 'var(--text-muted)' }}>Date Format</label>
-              <select className="w-full px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
-                <option>YYYY-MM-DD</option><option>MM/DD/YYYY</option><option>DD/MM/YYYY</option>
-              </select>
-            </div>
-          </div>
-        </Card>
-        <button className="w-full px-4 py-2.5 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: 'white' }}>Save Settings</button>
-      </div>
-    </div>
-  );
+import VersionedPage from '@/components/VersionedPage';
+import V1 from './versions/V1';
+import V2 from './versions/V2';
+import V3 from './versions/V3';
+import V4 from './versions/V4';
+import V5 from './versions/V5';
+
+const versions = [
+  {
+    meta: {
+      id: 'v1-initial',
+      name: 'Initial Scaffold',
+      description: 'Display preferences form with timezone and date format selectors.',
+      rationale: 'Basic settings form layout for user display customization options.',
+    },
+    component: V1,
+  },
+  {
+    meta: {
+      id: 'v2-full-parity',
+      name: 'Full Parity',
+      description: 'Complete display settings: timezone, date format, number format (1,000 vs 1.000), currency symbol, chart defaults (candle style, timeframe, grid lines), and table density selector with live preview.',
+      rationale: 'All display preferences in organized sections with a table density preview showing how compact/comfortable/spacious affects row height.',
+    },
+    component: V2,
+  },
+  {
+    meta: {
+      id: 'v3-streamlined',
+      name: 'Streamlined',
+      description: 'Just timezone and date format with inline selectors on a single card.',
+      rationale: 'Bare minimum display settings — two dropdowns, no save button, no extra options. Instant and minimal.',
+    },
+    component: V3,
+  },
+  {
+    meta: {
+      id: 'v4-creative',
+      name: 'Creative',
+      description: 'Visual preference builder with two-column layout: controls on the left, live preview on the right showing how dates, prices, P&L, and tables render with current settings.',
+      rationale: 'Every setting change instantly updates the live preview panel — formatted dates, currency values, number separators, and a sample table with the selected density. See exactly how your data will look before saving.',
+    },
+    component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-tabbed',
+      name: 'Tabbed',
+      description: 'V4 reorganized with tab navigation: Charts, Formatting, Components, Tables. Each tab pairs its controls with a contextual preview.',
+      rationale: 'Addresses V4 feeling disjointed — now when you\'re adjusting chart settings, only the chart preview shows. When adjusting exec type styling, only the component preview shows. Same settings, better focus. Added chart library selector, candle color themes, and richer trade history table preview.',
+    },
+    component: V5,
+  },
+];
+
+export default function SettingsDisplayPage() {
+  return <VersionedPage pageKey="settings-display" versions={versions} />;
 }

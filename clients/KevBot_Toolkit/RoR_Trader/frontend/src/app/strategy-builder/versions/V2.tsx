@@ -1,0 +1,2424 @@
+'use client';
+
+import { useState, useMemo, useCallback } from 'react';
+import Card from '@/components/Card';
+import MetricCard from '@/components/MetricCard';
+import ChartPlaceholder from '@/components/ChartPlaceholder';
+import TabBar from '@/components/TabBar';
+import Modal from '@/components/Modal';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface TriggerDef {
+  id: string;
+  name: string;
+  execType: 'C' | 'L0' | 'L1' | 'HM' | 'HL';
+  pack: string;
+}
+
+interface ConfluenceCondition {
+  id: string;
+  label: string;
+  pack: string;
+}
+
+interface TradeRow {
+  id: number;
+  entryTime: string;
+  exitTime: string;
+  direction: 'LONG' | 'SHORT';
+  entryPrice: number;
+  exitPrice: number;
+  rMultiple: number;
+  execType: string;
+  exitReason: string;
+  confluences: string;
+}
+
+interface KPIs {
+  winRate: number;
+  profitFactor: number;
+  dailyR: number;
+  totalTrades: number;
+  avgWin: number;
+  avgLoss: number;
+  maxDrawdown: number;
+  recoveryFactor: number;
+  sharpeRatio: number;
+  expectancy: number;
+  totalR: number;
+  avgR: number;
+  rSquared: number;
+  maxRDrawdown: number;
+}
+
+// ---------------------------------------------------------------------------
+// Mock Data
+// ---------------------------------------------------------------------------
+
+const TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '4H', '1D'];
+const DIRECTIONS = ['LONG', 'SHORT'];
+const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
+const ASSET_TYPES = ['Equity', 'Crypto'];
+const LOOKBACK_MODES = ['Days', 'Bars/Candles', 'Date Range'];
+const STOP_METHODS = ['ATR', 'Fixed $', 'Pct %', 'Swing'];
+const TARGET_METHODS = ['None', 'R:R', 'ATR', 'Fixed $', 'Pct %', 'Swing'];
+
+const MOCK_TRIGGERS: TriggerDef[] = [
+  // EMA Stack pack
+  { id: 'ema-price-cross-up', name: 'EMA Price Cross Up', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-price-cross-down', name: 'EMA Price Cross Down', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-fan-open-bull', name: 'EMA Fan Open Bull', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-fan-open-bear', name: 'EMA Fan Open Bear', execType: 'C', pack: 'EMA Stack (Default)' },
+  // MACD pack
+  { id: 'macd-cross-bull', name: 'MACD Cross Bull', execType: 'C', pack: 'MACD Line (Default)' },
+  { id: 'macd-cross-bear', name: 'MACD Cross Bear', execType: 'C', pack: 'MACD Line (Default)' },
+  { id: 'macd-zero-cross-up', name: 'MACD Zero Cross Up', execType: 'C', pack: 'MACD Line (Default)' },
+  // VWAP pack
+  { id: 'vwap-cross-up', name: 'VWAP Cross Up', execType: 'L0', pack: 'VWAP (Default)' },
+  { id: 'vwap-cross-down', name: 'VWAP Cross Down', execType: 'L0', pack: 'VWAP (Default)' },
+  // RSI pack
+  { id: 'rsi-oversold-exit', name: 'RSI Oversold Exit', execType: 'C', pack: 'RSI (Default)' },
+  { id: 'rsi-overbought-exit', name: 'RSI Overbought Exit', execType: 'C', pack: 'RSI (Default)' },
+  // UT Bot pack
+  { id: 'ut-bot-buy', name: 'UT Bot Buy', execType: 'HM', pack: 'UT Bot (Custom)' },
+  { id: 'ut-bot-sell', name: 'UT Bot Sell', execType: 'HM', pack: 'UT Bot (Custom)' },
+  // Supertrend pack
+  { id: 'supertrend-flip-bull', name: 'Supertrend Flip Bull', execType: 'L1', pack: 'Supertrend (Default)' },
+  { id: 'supertrend-flip-bear', name: 'Supertrend Flip Bear', execType: 'L1', pack: 'Supertrend (Default)' },
+  // Bar Count
+  { id: 'bar-count-exit-4', name: '4-Bar Exit', execType: 'C', pack: 'Bar Count Exit' },
+  // Hybrid Limit
+  { id: 'keltner-bounce-long', name: 'Keltner Bounce Long', execType: 'HL', pack: 'Keltner Channel (Custom)' },
+  { id: 'keltner-bounce-short', name: 'Keltner Bounce Short', execType: 'HL', pack: 'Keltner Channel (Custom)' },
+];
+
+const MOCK_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = [
+  { id: '5M-EMA_STACK-BULL', label: '5M EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '5M-EMA_STACK-SML', label: '5M EMA Stack S>M>L', pack: 'EMA Stack (Default)' },
+  { id: '15M-EMA_STACK-BULL', label: '15M EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '1H-EMA_STACK-BULL', label: '1H EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '1D-MACD_LINE-BULL', label: '1D MACD Line Bullish', pack: 'MACD Line (Default)' },
+  { id: '1D-MACD_LINE-BEAR', label: '1D MACD Line Bearish', pack: 'MACD Line (Default)' },
+  { id: '5M-MACD_LINE-BULL', label: '5M MACD Line Bullish', pack: 'MACD Line (Default)' },
+  { id: '1H-VWAP_POS-ABOVE', label: '1H Above VWAP', pack: 'VWAP (Default)' },
+  { id: '1H-VWAP_POS-BELOW', label: '1H Below VWAP', pack: 'VWAP (Default)' },
+  { id: '5M-RSI_ZONE-NEUTRAL', label: '5M RSI Neutral Zone', pack: 'RSI (Default)' },
+  { id: '1D-RSI_ZONE-BULL', label: '1D RSI Bullish Zone', pack: 'RSI (Default)' },
+  { id: '15M-SUPERTREND-BULL', label: '15M Supertrend Bullish', pack: 'Supertrend (Default)' },
+  { id: '1H-SUPERTREND-BULL', label: '1H Supertrend Bullish', pack: 'Supertrend (Default)' },
+];
+
+const MOCK_GENERAL_CONDITIONS: ConfluenceCondition[] = [
+  { id: 'GEN-TOD-NY_MORNING', label: 'NY Morning (9:30-11:30)', pack: 'Time of Day' },
+  { id: 'GEN-TOD-NY_AFTERNOON', label: 'NY Afternoon (13:00-15:30)', pack: 'Time of Day' },
+  { id: 'GEN-DOW-MON_TUE_WED', label: 'Mon/Tue/Wed', pack: 'Day of Week' },
+  { id: 'GEN-DOW-TUE_THU', label: 'Tue/Thu', pack: 'Day of Week' },
+  { id: 'GEN-SESSION-RTH', label: 'Regular Trading Hours', pack: 'Session Filter' },
+];
+
+const MOCK_KPIS: KPIs = {
+  winRate: 58.3,
+  profitFactor: 2.14,
+  dailyR: 0.47,
+  totalTrades: 127,
+  avgWin: 1.82,
+  avgLoss: -0.94,
+  maxDrawdown: -4.2,
+  recoveryFactor: 3.8,
+  sharpeRatio: 1.67,
+  expectancy: 0.53,
+  totalR: 28.4,
+  avgR: 0.22,
+  rSquared: 0.87,
+  maxRDrawdown: -6.1,
+};
+
+const MOCK_TRADES: TradeRow[] = [
+  { id: 1, entryTime: '03/18 09:35', exitTime: '03/18 10:12', direction: 'LONG', entryPrice: 567.42, exitPrice: 569.18, rMultiple: 1.84, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
+  { id: 2, entryTime: '03/18 10:45', exitTime: '03/18 11:30', direction: 'LONG', entryPrice: 568.90, exitPrice: 567.15, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '5M-EMA_STACK-BULL' },
+  { id: 3, entryTime: '03/18 13:15', exitTime: '03/18 14:02', direction: 'LONG', entryPrice: 567.80, exitPrice: 570.25, rMultiple: 2.56, execType: 'L0', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 4, entryTime: '03/19 09:32', exitTime: '03/19 09:58', direction: 'LONG', entryPrice: 571.10, exitPrice: 570.20, rMultiple: -0.85, execType: 'HM', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 5, entryTime: '03/19 10:15', exitTime: '03/19 11:45', direction: 'LONG', entryPrice: 570.55, exitPrice: 573.40, rMultiple: 3.12, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 6, entryTime: '03/19 13:05', exitTime: '03/19 13:42', direction: 'LONG', entryPrice: 572.80, exitPrice: 573.60, rMultiple: 0.84, execType: 'C', exitReason: 'bar_count', confluences: '5M-EMA_STACK-BULL' },
+  { id: 7, entryTime: '03/19 14:10', exitTime: '03/19 15:15', direction: 'LONG', entryPrice: 573.20, exitPrice: 572.05, rMultiple: -1.00, execType: 'L1', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 8, entryTime: '03/20 09:35', exitTime: '03/20 10:50', direction: 'LONG', entryPrice: 570.15, exitPrice: 572.90, rMultiple: 2.89, execType: 'C', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
+  { id: 9, entryTime: '03/20 11:20', exitTime: '03/20 12:05', direction: 'LONG', entryPrice: 572.45, exitPrice: 573.80, rMultiple: 1.41, execType: 'HM', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 10, entryTime: '03/20 13:30', exitTime: '03/20 14:45', direction: 'LONG', entryPrice: 573.10, exitPrice: 571.90, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 11, entryTime: '03/20 15:00', exitTime: '03/20 15:45', direction: 'LONG', entryPrice: 572.20, exitPrice: 574.50, rMultiple: 2.41, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 12, entryTime: '03/21 09:33', exitTime: '03/21 10:20', direction: 'LONG', entryPrice: 574.80, exitPrice: 575.95, rMultiple: 1.20, execType: 'L0', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL' },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const EXEC_TYPE_COLORS: Record<string, string> = {
+  C: 'var(--blue)',
+  L0: 'var(--green)',
+  L1: 'var(--orange)',
+  HM: 'var(--accent)',
+  HL: 'var(--red)',
+};
+
+function ExecBadge({ type }: { type: string }) {
+  return (
+    <span
+      className="inline-flex items-center justify-center px-1.5 py-0.5 rounded text-[10px] font-mono font-bold leading-none"
+      style={{
+        color: EXEC_TYPE_COLORS[type] || 'var(--text-muted)',
+        background: `color-mix(in srgb, ${EXEC_TYPE_COLORS[type] || 'var(--text-muted)'} 15%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${EXEC_TYPE_COLORS[type] || 'var(--text-muted)'} 30%, transparent)`,
+      }}
+    >
+      [{type}]
+    </span>
+  );
+}
+
+function ExitReasonBadge({ reason }: { reason: string }) {
+  const colors: Record<string, string> = {
+    signal: 'var(--green)',
+    target: 'var(--green)',
+    stop: 'var(--red)',
+    bar_count: 'var(--orange)',
+  };
+  const c = colors[reason] || 'var(--text-muted)';
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+      style={{
+        color: c,
+        background: `color-mix(in srgb, ${c} 12%, transparent)`,
+      }}
+    >
+      {reason}
+    </span>
+  );
+}
+
+function ConditionPill({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: () => void;
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-secondary)',
+      }}
+    >
+      {label}
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="ml-0.5 hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          x
+        </button>
+      )}
+    </span>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>
+      {children}
+    </label>
+  );
+}
+
+function SelectInput({
+  options,
+  value,
+  onChange,
+}: {
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      className="w-full px-3 py-2 rounded-lg text-sm"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-primary)',
+      }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  suffix,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        className="w-full px-3 py-2 rounded-lg text-sm"
+        style={{
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-primary)',
+        }}
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+      />
+      {suffix && (
+        <span className="text-xs whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+          {suffix}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <input
+      type="text"
+      className="w-full px-3 py-2 rounded-lg text-sm"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-primary)',
+      }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  );
+}
+
+function PrimaryButton({
+  children,
+  onClick,
+  disabled,
+  fullWidth,
+  size = 'md',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  fullWidth?: boolean;
+  size?: 'sm' | 'md' | 'lg';
+}) {
+  const py = size === 'sm' ? 'py-1.5' : size === 'lg' ? 'py-3' : 'py-2';
+  const text = size === 'sm' ? 'text-xs' : size === 'lg' ? 'text-base' : 'text-sm';
+  return (
+    <button
+      className={`${py} px-4 rounded-lg font-medium ${text} transition-all ${fullWidth ? 'w-full' : ''}`}
+      style={{
+        background: disabled ? 'var(--bg-input)' : 'var(--accent)',
+        color: disabled ? 'var(--text-muted)' : '#000',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+      }}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryButton({
+  children,
+  onClick,
+  size = 'sm',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  size?: 'sm' | 'md';
+}) {
+  const py = size === 'sm' ? 'py-1' : 'py-2';
+  const text = size === 'sm' ? 'text-xs' : 'text-sm';
+  return (
+    <button
+      className={`${py} px-3 rounded-lg ${text} transition-all`}
+      style={{
+        background: 'var(--accent-muted)',
+        color: 'var(--accent)',
+      }}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function TriggerGroupedList({
+  triggers,
+  searchQuery,
+  selectedId,
+  onSelect,
+}: {
+  triggers: TriggerDef[];
+  searchQuery: string;
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    if (!searchQuery) return triggers;
+    const q = searchQuery.toLowerCase();
+    return triggers.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.pack.toLowerCase().includes(q) ||
+        t.execType.toLowerCase().includes(q)
+    );
+  }, [triggers, searchQuery]);
+
+  const grouped = useMemo(() => {
+    const map: Record<string, TriggerDef[]> = {};
+    for (const t of filtered) {
+      if (!map[t.pack]) map[t.pack] = [];
+      map[t.pack].push(t);
+    }
+    return map;
+  }, [filtered]);
+
+  return (
+    <div
+      className="space-y-1 overflow-y-auto pr-1"
+      style={{ maxHeight: 320 }}
+    >
+      {Object.entries(grouped).map(([pack, trigs]) => (
+        <div key={pack}>
+          <div
+            className="text-[10px] font-semibold uppercase tracking-wider px-2 py-1.5 sticky top-0"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-card)' }}
+          >
+            {pack}
+          </div>
+          {trigs.map((t) => (
+            <button
+              key={t.id}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+              style={{
+                background: t.id === selectedId ? 'var(--accent-muted)' : 'transparent',
+                color: t.id === selectedId ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onSelect(t.id)}
+            >
+              <ExecBadge type={t.execType} />
+              <span className="flex-1">{t.name}</span>
+              {t.id === selectedId && (
+                <span className="text-[10px]" style={{ color: 'var(--accent)' }}>
+                  selected
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      ))}
+      {Object.keys(grouped).length === 0 && (
+        <p className="text-xs p-3" style={{ color: 'var(--text-muted)' }}>
+          No triggers match your search.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ConfluencePickerModal({
+  isOpen,
+  onClose,
+  conditions,
+  selected,
+  onToggle,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  conditions: ConfluenceCondition[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+
+  const filtered = useMemo(() => {
+    if (!search) return conditions;
+    const q = search.toLowerCase();
+    return conditions.filter(
+      (c) => c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.pack.toLowerCase().includes(q)
+    );
+  }, [conditions, search]);
+
+  const grouped = useMemo(() => {
+    const map: Record<string, ConfluenceCondition[]> = {};
+    for (const c of filtered) {
+      if (!map[c.pack]) map[c.pack] = [];
+      map[c.pack].push(c);
+    }
+    return map;
+  }, [filtered]);
+
+  return (
+    <Modal title="Add Confluence Conditions" isOpen={isOpen} onClose={onClose} width="560px">
+      <TextInput value={search} onChange={setSearch} placeholder="Search conditions..." />
+      <div className="mt-4 space-y-1 overflow-y-auto" style={{ maxHeight: 400 }}>
+        {Object.entries(grouped).map(([pack, conds]) => (
+          <div key={pack}>
+            <div
+              className="text-[10px] font-semibold uppercase tracking-wider px-2 py-1.5 sticky top-0"
+              style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}
+            >
+              {pack}
+            </div>
+            {conds.map((c) => {
+              const active = selected.has(c.id);
+              return (
+                <button
+                  key={c.id}
+                  className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                  style={{
+                    background: active ? 'var(--accent-muted)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  }}
+                  onClick={() => onToggle(c.id)}
+                >
+                  <span
+                    className="w-4 h-4 rounded border flex items-center justify-center text-[10px]"
+                    style={{
+                      borderColor: active ? 'var(--accent)' : 'var(--border)',
+                      background: active ? 'var(--accent)' : 'transparent',
+                      color: active ? '#000' : 'transparent',
+                    }}
+                  >
+                    {active ? '\u2713' : ''}
+                  </span>
+                  <span className="flex-1">{c.label}</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    {c.id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+        {Object.keys(grouped).length === 0 && (
+          <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            No conditions match your search.
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function KPIDashboard({ kpis, backtestRan }: { kpis: KPIs; backtestRan: boolean }) {
+  if (!backtestRan) return null;
+
+  return (
+    <div className="space-y-3">
+      {/* Primary KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
+        <MetricCard label="Trades" value={String(kpis.totalTrades)} />
+        <MetricCard
+          label="Win Rate"
+          value={`${kpis.winRate.toFixed(1)}%`}
+          positive={kpis.winRate > 50}
+        />
+        <MetricCard
+          label="Profit Factor"
+          value={kpis.profitFactor.toFixed(2)}
+          positive={kpis.profitFactor > 1}
+        />
+        <MetricCard
+          label="Avg R"
+          value={`${kpis.avgR >= 0 ? '+' : ''}${kpis.avgR.toFixed(2)}`}
+          positive={kpis.avgR > 0}
+        />
+        <MetricCard
+          label="Total R"
+          value={`${kpis.totalR >= 0 ? '+' : ''}${kpis.totalR.toFixed(1)}`}
+          positive={kpis.totalR > 0}
+        />
+        <MetricCard
+          label="Daily R"
+          value={`${kpis.dailyR >= 0 ? '+' : ''}${kpis.dailyR.toFixed(2)}`}
+          positive={kpis.dailyR > 0}
+        />
+        <MetricCard
+          label="R-Squared"
+          value={kpis.rSquared.toFixed(2)}
+          positive={kpis.rSquared > 0.7}
+        />
+        <MetricCard
+          label="Max R DD"
+          value={`${kpis.maxRDrawdown.toFixed(1)}R`}
+          positive={false}
+        />
+      </div>
+      {/* Secondary KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <MetricCard
+          label="Avg Win"
+          value={`+${kpis.avgWin.toFixed(2)}R`}
+          positive
+        />
+        <MetricCard label="Avg Loss" value={`${kpis.avgLoss.toFixed(2)}R`} />
+        <MetricCard
+          label="Max Drawdown"
+          value={`${kpis.maxDrawdown.toFixed(1)}%`}
+        />
+        <MetricCard
+          label="Recovery Factor"
+          value={kpis.recoveryFactor.toFixed(2)}
+          positive={kpis.recoveryFactor > 2}
+        />
+        <MetricCard
+          label="Sharpe Ratio"
+          value={kpis.sharpeRatio.toFixed(2)}
+          positive={kpis.sharpeRatio > 1}
+        />
+        <MetricCard
+          label="Expectancy"
+          value={`${kpis.expectancy >= 0 ? '+' : ''}${kpis.expectancy.toFixed(2)}R`}
+          positive={kpis.expectancy > 0}
+        />
+      </div>
+    </div>
+  );
+}
+
+function OptimizableVariables({
+  entryTrigger,
+  exitTriggers,
+  selectedConditions,
+  generalConditions,
+  stopMethod,
+  stopConfig,
+  targetMethod,
+  targetConfig,
+  allTriggers,
+  allConditions,
+  allGeneralConditions,
+  onRemoveCondition,
+  onRemoveGeneral,
+  onRemoveExit,
+}: {
+  entryTrigger: string;
+  exitTriggers: string[];
+  selectedConditions: Set<string>;
+  generalConditions: Set<string>;
+  stopMethod: string;
+  stopConfig: Record<string, number>;
+  targetMethod: string;
+  targetConfig: Record<string, number>;
+  allTriggers: TriggerDef[];
+  allConditions: ConfluenceCondition[];
+  allGeneralConditions: ConfluenceCondition[];
+  onRemoveCondition: (id: string) => void;
+  onRemoveGeneral: (id: string) => void;
+  onRemoveExit: (idx: number) => void;
+}) {
+  const entryDef = allTriggers.find((t) => t.id === entryTrigger);
+
+  function formatStopDisplay() {
+    if (stopMethod === 'ATR') return `ATR x${stopConfig.atrMult?.toFixed(1) || '1.5'}`;
+    if (stopMethod === 'Fixed $') return `$${stopConfig.dollarAmount?.toFixed(2) || '1.00'}`;
+    if (stopMethod === 'Pct %') return `${stopConfig.percentage?.toFixed(2) || '0.50'}%`;
+    if (stopMethod === 'Swing') return `Swing ${stopConfig.lookback || 5} bars`;
+    return stopMethod;
+  }
+
+  function formatTargetDisplay() {
+    if (targetMethod === 'None') return 'None';
+    if (targetMethod === 'R:R') return `${targetConfig.rrRatio?.toFixed(1) || '2.0'}R`;
+    if (targetMethod === 'ATR') return `ATR x${targetConfig.atrMult?.toFixed(1) || '2.0'}`;
+    if (targetMethod === 'Fixed $') return `$${targetConfig.dollarAmount?.toFixed(2) || '2.00'}`;
+    if (targetMethod === 'Pct %') return `${targetConfig.percentage?.toFixed(2) || '1.00'}%`;
+    if (targetMethod === 'Swing') return `Swing ${targetConfig.lookback || 5} bars`;
+    return targetMethod;
+  }
+
+  return (
+    <Card>
+      <div
+        className="text-xs font-medium mb-3 flex items-center justify-between"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <span>Optimizable Variables</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {/* Entry */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Entry
+          </div>
+          {entryDef ? (
+            <div className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+              <ExecBadge type={entryDef.execType} />
+              <span className="italic">{entryDef.name}</span>
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* Exit(s) */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Exit(s)
+          </div>
+          {exitTriggers.length > 0 ? (
+            <div className="space-y-1">
+              {exitTriggers.map((eid, idx) => {
+                const eDef = allTriggers.find((t) => t.id === eid);
+                return (
+                  <div key={eid} className="flex items-center gap-1 text-xs group">
+                    {eDef && <ExecBadge type={eDef.execType} />}
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {eDef?.name || eid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveExit(idx)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* TF Conditions */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            TF Conditions
+          </div>
+          {selectedConditions.size > 0 ? (
+            <div className="space-y-1">
+              {Array.from(selectedConditions).sort().map((cid) => {
+                const cDef = allConditions.find((c) => c.id === cid);
+                return (
+                  <div key={cid} className="flex items-center gap-1 text-xs group">
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {cDef?.label || cid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveCondition(cid)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* General */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            General
+          </div>
+          {generalConditions.size > 0 ? (
+            <div className="space-y-1">
+              {Array.from(generalConditions).sort().map((gid) => {
+                const gDef = allGeneralConditions.find((c) => c.id === gid);
+                return (
+                  <div key={gid} className="flex items-center gap-1 text-xs group">
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {gDef?.label || gid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveGeneral(gid)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* Stop Loss */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Stop Loss
+          </div>
+          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
+            {formatStopDisplay()}
+          </span>
+        </div>
+
+        {/* Take Profit */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Take Profit
+          </div>
+          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
+            {formatTargetDisplay()}
+          </span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function TradeHistoryTable({ trades }: { trades: TradeRow[] }) {
+  const [sortCol, setSortCol] = useState<keyof TradeRow>('id');
+  const [sortAsc, setSortAsc] = useState(true);
+
+  const sorted = useMemo(() => {
+    const arr = [...trades];
+    arr.sort((a, b) => {
+      const av = a[sortCol];
+      const bv = b[sortCol];
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return sortAsc ? av - bv : bv - av;
+      }
+      return sortAsc
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+    return arr;
+  }, [trades, sortCol, sortAsc]);
+
+  function handleSort(col: keyof TradeRow) {
+    if (sortCol === col) {
+      setSortAsc(!sortAsc);
+    } else {
+      setSortCol(col);
+      setSortAsc(true);
+    }
+  }
+
+  const columns: { key: keyof TradeRow; label: string; align?: 'right' | 'center' }[] = [
+    { key: 'id', label: '#', align: 'center' },
+    { key: 'entryTime', label: 'Entry Time' },
+    { key: 'exitTime', label: 'Exit Time' },
+    { key: 'direction', label: 'Dir', align: 'center' },
+    { key: 'entryPrice', label: 'Entry $', align: 'right' },
+    { key: 'exitPrice', label: 'Exit $', align: 'right' },
+    { key: 'rMultiple', label: 'P&L (R)', align: 'right' },
+    { key: 'execType', label: 'Exec', align: 'center' },
+    { key: 'exitReason', label: 'Exit Reason', align: 'center' },
+  ];
+
+  const sortIndicator = (col: keyof TradeRow) => {
+    if (sortCol !== col) return '';
+    return sortAsc ? ' \u2191' : ' \u2193';
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {columns.map((col) => (
+              <th
+                key={col.key}
+                className={`px-2 py-2 font-medium cursor-pointer hover:opacity-80 transition-opacity whitespace-nowrap ${
+                  col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
+                }`}
+                style={{ color: 'var(--text-muted)' }}
+                onClick={() => handleSort(col.key)}
+              >
+                {col.label}{sortIndicator(col.key)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((trade) => (
+            <tr
+              key={trade.id}
+              className="hover:opacity-90 transition-opacity"
+              style={{ borderBottom: '1px solid var(--border)' }}
+            >
+              <td className="px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>
+                {trade.id}
+              </td>
+              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                {trade.entryTime}
+              </td>
+              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                {trade.exitTime}
+              </td>
+              <td className="px-2 py-2 text-center">
+                <span
+                  className="text-[10px] font-medium"
+                  style={{ color: trade.direction === 'LONG' ? 'var(--green)' : 'var(--red)' }}
+                >
+                  {trade.direction}
+                </span>
+              </td>
+              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
+                ${trade.entryPrice.toFixed(2)}
+              </td>
+              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
+                ${trade.exitPrice.toFixed(2)}
+              </td>
+              <td className="px-2 py-2 text-right font-mono font-medium">
+                <span style={{ color: trade.rMultiple >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {trade.rMultiple >= 0 ? '+' : ''}{trade.rMultiple.toFixed(2)}
+                </span>
+              </td>
+              <td className="px-2 py-2 text-center">
+                <ExecBadge type={trade.execType} />
+              </td>
+              <td className="px-2 py-2 text-center">
+                <ExitReasonBadge reason={trade.exitReason} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AdvancedAnalysis() {
+  const [expanded, setExpanded] = useState(false);
+
+  // Mock analysis data
+  const winStreaks = [3, 5, 2, 4, 7, 3, 2, 6];
+  const lossStreaks = [1, 2, 1, 3, 1, 2, 1, 1];
+  const todPerformance = [
+    { hour: '09:30-10:00', trades: 28, winRate: 64.3, avgR: 0.42 },
+    { hour: '10:00-11:00', trades: 31, winRate: 54.8, avgR: 0.18 },
+    { hour: '11:00-12:00', trades: 22, winRate: 59.1, avgR: 0.31 },
+    { hour: '13:00-14:00', trades: 24, winRate: 62.5, avgR: 0.38 },
+    { hour: '14:00-15:00', trades: 15, winRate: 46.7, avgR: -0.12 },
+    { hour: '15:00-16:00', trades: 7, winRate: 71.4, avgR: 0.65 },
+  ];
+  const dowPerformance = [
+    { day: 'Monday', trades: 26, winRate: 57.7, avgR: 0.22 },
+    { day: 'Tuesday', trades: 29, winRate: 62.1, avgR: 0.41 },
+    { day: 'Wednesday', trades: 28, winRate: 60.7, avgR: 0.35 },
+    { day: 'Thursday', trades: 25, winRate: 52.0, avgR: 0.08 },
+    { day: 'Friday', trades: 19, winRate: 57.9, avgR: 0.28 },
+  ];
+
+  return (
+    <Card>
+      <button
+        className="w-full flex items-center justify-between text-sm font-medium"
+        style={{ color: 'var(--text-secondary)' }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>Advanced Analysis</span>
+        <span
+          className="text-xs transition-transform"
+          style={{
+            color: 'var(--text-muted)',
+            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+          }}
+        >
+          v
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="mt-4 space-y-6">
+          {/* Win/Loss Streaks */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Win/Loss Streaks
+            </h4>
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  Win Streaks
+                </div>
+                <div className="flex items-end gap-1" style={{ height: 60 }}>
+                  {winStreaks.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-t"
+                      style={{
+                        height: `${(s / Math.max(...winStreaks)) * 100}%`,
+                        background: 'var(--green)',
+                        opacity: 0.6 + (s / Math.max(...winStreaks)) * 0.4,
+                        minHeight: 4,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Max: {Math.max(...winStreaks)}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Avg: {(winStreaks.reduce((a, b) => a + b, 0) / winStreaks.length).toFixed(1)}
+                  </span>
+                </div>
+              </div>
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  Loss Streaks
+                </div>
+                <div className="flex items-end gap-1" style={{ height: 60 }}>
+                  {lossStreaks.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-t"
+                      style={{
+                        height: `${(s / Math.max(...lossStreaks)) * 100}%`,
+                        background: 'var(--red)',
+                        opacity: 0.6 + (s / Math.max(...lossStreaks)) * 0.4,
+                        minHeight: 4,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Max: {Math.max(...lossStreaks)}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Avg: {(lossStreaks.reduce((a, b) => a + b, 0) / lossStreaks.length).toFixed(1)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Time of Day Performance */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Time of Day Performance
+            </h4>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th className="text-left px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Hour</th>
+                    <th className="text-center px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Trades</th>
+                    <th className="text-center px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Win Rate</th>
+                    <th className="text-right px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg R</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {todPerformance.map((row) => (
+                    <tr key={row.hour} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>{row.hour}</td>
+                      <td className="px-2 py-1.5 text-center" style={{ color: 'var(--text-secondary)' }}>{row.trades}</td>
+                      <td className="px-2 py-1.5 text-center">
+                        <span style={{ color: row.winRate > 55 ? 'var(--green)' : row.winRate < 50 ? 'var(--red)' : 'var(--text-secondary)' }}>
+                          {row.winRate.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono">
+                        <span style={{ color: row.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {row.avgR >= 0 ? '+' : ''}{row.avgR.toFixed(2)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Day of Week Performance */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Day of Week Performance
+            </h4>
+            <div className="grid grid-cols-5 gap-2">
+              {dowPerformance.map((row) => (
+                <div
+                  key={row.day}
+                  className="rounded-lg border p-3 text-center"
+                  style={{
+                    background: 'var(--bg-input)',
+                    borderColor: row.avgR > 0.3 ? 'var(--green)' : row.avgR < 0 ? 'var(--red)' : 'var(--border)',
+                    borderWidth: row.avgR > 0.3 || row.avgR < 0 ? 2 : 1,
+                  }}
+                >
+                  <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {row.day.slice(0, 3)}
+                  </div>
+                  <div className="text-sm font-semibold" style={{ color: row.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {row.avgR >= 0 ? '+' : ''}{row.avgR.toFixed(2)}R
+                  </div>
+                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    {row.trades} trades | {row.winRate.toFixed(0)}%
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Markov Motor */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Markov Motor Analysis
+            </h4>
+            <div className="grid grid-cols-2 gap-4">
+              <div
+                className="rounded-lg border p-3"
+                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
+              >
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  After Win
+                </div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
+                  <span style={{ color: 'var(--green)' }}>62.4%</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
+                  <span style={{ color: 'var(--red)' }}>37.6%</span>
+                </div>
+                <div
+                  className="mt-2 h-2 rounded-full overflow-hidden"
+                  style={{ background: 'var(--red-muted)' }}
+                >
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: '62.4%', background: 'var(--green)' }}
+                  />
+                </div>
+              </div>
+              <div
+                className="rounded-lg border p-3"
+                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
+              >
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  After Loss
+                </div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
+                  <span style={{ color: 'var(--green)' }}>55.1%</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
+                  <span style={{ color: 'var(--red)' }}>44.9%</span>
+                </div>
+                <div
+                  className="mt-2 h-2 rounded-full overflow-hidden"
+                  style={{ background: 'var(--red-muted)' }}
+                >
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: '55.1%', background: 'var(--green)' }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer Drill-Down Tab Content
+// ---------------------------------------------------------------------------
+
+interface AnalyzerResult {
+  triggerId: string;
+  triggerName: string;
+  execType: string;
+  totalTrades: number;
+  profitFactor: number;
+  winRate: number;
+  avgR: number;
+  dailyR: number;
+  rSquared: number;
+}
+
+const MOCK_ENTRY_ANALYSIS: AnalyzerResult[] = [
+  { triggerId: 'ema-price-cross-up', triggerName: 'EMA Price Cross Up', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+  { triggerId: 'macd-cross-bull', triggerName: 'MACD Cross Bull', execType: 'C', totalTrades: 98, profitFactor: 1.89, winRate: 55.1, avgR: 0.18, dailyR: 0.35, rSquared: 0.81 },
+  { triggerId: 'vwap-cross-up', triggerName: 'VWAP Cross Up', execType: 'L0', totalTrades: 142, profitFactor: 1.62, winRate: 52.8, avgR: 0.11, dailyR: 0.28, rSquared: 0.74 },
+  { triggerId: 'ut-bot-buy', triggerName: 'UT Bot Buy', execType: 'HM', totalTrades: 83, profitFactor: 2.41, winRate: 61.4, avgR: 0.34, dailyR: 0.52, rSquared: 0.89 },
+  { triggerId: 'supertrend-flip-bull', triggerName: 'Supertrend Flip Bull', execType: 'L1', totalTrades: 67, profitFactor: 1.95, winRate: 56.7, avgR: 0.21, dailyR: 0.31, rSquared: 0.78 },
+  { triggerId: 'keltner-bounce-long', triggerName: 'Keltner Bounce Long', execType: 'HL', totalTrades: 54, profitFactor: 2.28, winRate: 59.3, avgR: 0.29, dailyR: 0.42, rSquared: 0.84 },
+];
+
+const MOCK_EXIT_ANALYSIS: AnalyzerResult[] = [
+  { triggerId: 'ema-price-cross-down', triggerName: 'EMA Price Cross Down', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+  { triggerId: 'macd-cross-bear', triggerName: 'MACD Cross Bear', execType: 'C', totalTrades: 112, profitFactor: 1.72, winRate: 53.6, avgR: 0.14, dailyR: 0.32, rSquared: 0.76 },
+  { triggerId: 'supertrend-flip-bear', triggerName: 'Supertrend Flip Bear', execType: 'L1', totalTrades: 89, profitFactor: 2.05, winRate: 57.3, avgR: 0.26, dailyR: 0.41, rSquared: 0.82 },
+  { triggerId: 'rsi-overbought-exit', triggerName: 'RSI Overbought Exit', execType: 'C', totalTrades: 76, profitFactor: 1.58, winRate: 51.3, avgR: 0.09, dailyR: 0.18, rSquared: 0.69 },
+  { triggerId: 'bar-count-exit-4', triggerName: '4-Bar Exit', execType: 'C', totalTrades: 127, profitFactor: 1.45, winRate: 50.4, avgR: 0.07, dailyR: 0.15, rSquared: 0.62 },
+];
+
+function AnalyzerResultCard({
+  result,
+  isCurrent,
+  actionLabel,
+  onAction,
+}: {
+  result: AnalyzerResult;
+  isCurrent: boolean;
+  actionLabel: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div
+      className="rounded-lg border p-3"
+      style={{
+        background: isCurrent ? 'var(--accent-muted)' : 'var(--bg-card)',
+        borderColor: isCurrent ? 'var(--accent)' : 'var(--border)',
+      }}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <ExecBadge type={result.execType} />
+          <span
+            className={`text-sm ${isCurrent ? 'font-semibold' : ''}`}
+            style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-primary)' }}
+          >
+            {result.triggerName}
+          </span>
+          {isCurrent && (
+            <span className="text-[10px] italic" style={{ color: 'var(--accent)' }}>
+              (current)
+            </span>
+          )}
+        </div>
+        {!isCurrent && onAction && (
+          <SecondaryButton onClick={onAction}>{actionLabel}</SecondaryButton>
+        )}
+      </div>
+      <div className="grid grid-cols-6 gap-2">
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.totalTrades}</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.profitFactor.toFixed(1)}</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.winRate.toFixed(1)}%</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+          <div className="text-xs" style={{ color: result.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+            {result.avgR >= 0 ? '+' : ''}{result.avgR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+          <div className="text-xs" style={{ color: result.dailyR > 0 ? 'var(--green)' : 'var(--red)' }}>
+            {result.dailyR >= 0 ? '+' : ''}{result.dailyR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.rSquared.toFixed(2)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Confluence Scoring
+// ---------------------------------------------------------------------------
+
+function ConfluenceScoringPanel({
+  conditions,
+  weights,
+  onWeightChange,
+  depthLimit,
+  onDepthLimitChange,
+  scoringEnabled,
+  onScoringToggle,
+}: {
+  conditions: Set<string>;
+  weights: Record<string, number>;
+  onWeightChange: (id: string, weight: number) => void;
+  depthLimit: number;
+  onDepthLimitChange: (v: number) => void;
+  scoringEnabled: boolean;
+  onScoringToggle: (v: boolean) => void;
+}) {
+  if (conditions.size === 0) return null;
+
+  const allConditions = [...MOCK_CONFLUENCE_CONDITIONS, ...MOCK_GENERAL_CONDITIONS];
+
+  return (
+    <div className="mt-3 space-y-3">
+      {/* Scoring toggle + Depth limit */}
+      <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+          <input
+            type="checkbox"
+            checked={scoringEnabled}
+            onChange={(e) => onScoringToggle(e.target.checked)}
+            className="accent-[var(--accent)]"
+          />
+          Confluence Scoring
+        </label>
+        <div className="flex items-center gap-1.5 text-xs">
+          <span style={{ color: 'var(--text-muted)' }}>Depth Limit:</span>
+          <input
+            type="number"
+            min={0}
+            max={conditions.size}
+            value={depthLimit}
+            onChange={(e) => onDepthLimitChange(parseInt(e.target.value) || 0)}
+            className="w-12 px-2 py-1 rounded text-xs text-center"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <span style={{ color: 'var(--text-muted)' }}>/ {conditions.size}</span>
+        </div>
+      </div>
+
+      {/* Weight sliders */}
+      {scoringEnabled && (
+        <div className="space-y-2">
+          {Array.from(conditions).sort().map((cid) => {
+            const cDef = allConditions.find((c) => c.id === cid);
+            const weight = weights[cid] ?? 50;
+            return (
+              <div key={cid} className="flex items-center gap-3">
+                <span className="text-xs flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                  {cDef?.label || cid}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={weight}
+                  onChange={(e) => onWeightChange(cid, parseInt(e.target.value))}
+                  className="w-24"
+                  style={{ accentColor: 'var(--accent)' }}
+                />
+                <span
+                  className="text-[10px] w-8 text-right font-mono"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {weight}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
+
+export default function StrategyBuilderV2() {
+  // ---- Config State ----
+  const [symbol, setSymbol] = useState('SPY');
+  const [assetType, setAssetType] = useState('Equity');
+  const [direction, setDirection] = useState('LONG');
+  const [timeframe, setTimeframe] = useState('5Min');
+  const [session, setSession] = useState('RTH');
+  const [lookbackMode, setLookbackMode] = useState('Days');
+  const [lookbackDays, setLookbackDays] = useState(30);
+  const [lookbackBars, setLookbackBars] = useState(1000);
+  const [strategyName, setStrategyName] = useState('SPY LONG - 1');
+
+  // ---- Entry/Exit ----
+  const [entryTrigger, setEntryTrigger] = useState('ema-price-cross-up');
+  const [exitTriggers, setExitTriggers] = useState<string[]>(['ema-price-cross-down']);
+  const [triggerSearch, setTriggerSearch] = useState('');
+
+  // ---- Stop Loss ----
+  const [stopMethod, setStopMethod] = useState('ATR');
+  const [stopConfig, setStopConfig] = useState<Record<string, number>>({ atrMult: 1.5 });
+  const [trailingEnabled, setTrailingEnabled] = useState(false);
+  const [trailMethod, setTrailMethod] = useState('ATR');
+  const [trailConfig, setTrailConfig] = useState<Record<string, number>>({ atrMult: 1.0, activationR: 0.5 });
+  const [breakevenEnabled, setBreakevenEnabled] = useState(false);
+  const [beConfig, setBeConfig] = useState<Record<string, number>>({ activationR: 1.0, offset: 0 });
+
+  // ---- Target ----
+  const [targetMethod, setTargetMethod] = useState('R:R');
+  const [targetConfig, setTargetConfig] = useState<Record<string, number>>({ rrRatio: 2.0 });
+
+  // ---- Confluence ----
+  const [selectedConditions, setSelectedConditions] = useState<Set<string>>(
+    new Set(['5M-EMA_STACK-BULL', '1D-MACD_LINE-BULL'])
+  );
+  const [selectedGenerals, setSelectedGenerals] = useState<Set<string>>(new Set());
+  const [confluenceModalOpen, setConfluenceModalOpen] = useState(false);
+  const [generalModalOpen, setGeneralModalOpen] = useState(false);
+  const [scoringEnabled, setScoringEnabled] = useState(false);
+  const [confluenceWeights, setConfluenceWeights] = useState<Record<string, number>>({});
+  const [depthLimit, setDepthLimit] = useState(0);
+
+  // ---- Backtest State ----
+  const [backtestRan, setBacktestRan] = useState(false);
+  const [configExpanded, setConfigExpanded] = useState(false);
+
+  // ---- Analysis State ----
+  const [entryAnalysisRan, setEntryAnalysisRan] = useState(false);
+  const [exitAnalysisRan, setExitAnalysisRan] = useState(false);
+  const [analyzerSearch, setAnalyzerSearch] = useState('');
+
+  // Compute derived values
+  const estimatedBars = useMemo(() => {
+    const barsPerDay = timeframe === '1Min' ? 390 : timeframe === '5Min' ? 78 : timeframe === '15Min' ? 26 : timeframe === '1H' ? 7 : timeframe === '4H' ? 2 : 1;
+    const sessionMult = session === 'RTH' ? 1 : session === 'Extended' ? 2.4 : session === '24/7' ? 3.7 : 1.5;
+    if (lookbackMode === 'Bars/Candles') return lookbackBars;
+    return Math.round(lookbackDays * barsPerDay * sessionMult);
+  }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);
+
+  const entryDef = MOCK_TRIGGERS.find((t) => t.id === entryTrigger);
+
+  const exitDefs = useMemo(
+    () => exitTriggers.map((eid) => MOCK_TRIGGERS.find((t) => t.id === eid)).filter(Boolean) as TriggerDef[],
+    [exitTriggers]
+  );
+
+  // Handlers
+  const handleRunBacktest = useCallback(() => {
+    setBacktestRan(true);
+  }, []);
+
+  const handleToggleCondition = useCallback((id: string) => {
+    setSelectedConditions((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleToggleGeneral = useCallback((id: string) => {
+    setSelectedGenerals((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleRemoveExit = useCallback((idx: number) => {
+    setExitTriggers((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleWeightChange = useCallback((id: string, weight: number) => {
+    setConfluenceWeights((prev) => ({ ...prev, [id]: weight }));
+  }, []);
+
+  const allSelected = useMemo(
+    () => new Set(Array.from(selectedConditions).concat(Array.from(selectedGenerals))),
+    [selectedConditions, selectedGenerals]
+  );
+
+  // ---------------------------------------------------------------------------
+  // RENDER
+  // ---------------------------------------------------------------------------
+
+  return (
+    <div>
+      {/* ================================================================= */}
+      {/* TOP ROW: Core config fields in a horizontal bar                   */}
+      {/* ================================================================= */}
+      <Card className="mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 gap-3">
+          {/* Asset Type */}
+          <div>
+            <SectionLabel>Asset</SectionLabel>
+            <SelectInput options={ASSET_TYPES} value={assetType} onChange={(v) => {
+              setAssetType(v);
+              if (v === 'Crypto') {
+                setSession('24/7');
+                if (symbol === 'SPY') setSymbol('BTC/USD');
+              } else {
+                setSession('RTH');
+                if (symbol === 'BTC/USD') setSymbol('SPY');
+              }
+            }} />
+          </div>
+
+          {/* Ticker */}
+          <div>
+            <SectionLabel>Ticker</SectionLabel>
+            <TextInput
+              value={symbol}
+              onChange={(v) => setSymbol(v.toUpperCase())}
+              placeholder={assetType === 'Crypto' ? 'BTC/USD' : 'SPY'}
+            />
+          </div>
+
+          {/* Timeframe */}
+          <div>
+            <SectionLabel>Timeframe</SectionLabel>
+            <SelectInput options={TIMEFRAMES} value={timeframe} onChange={setTimeframe} />
+          </div>
+
+          {/* Direction */}
+          <div>
+            <SectionLabel>Direction</SectionLabel>
+            <SelectInput options={DIRECTIONS} value={direction} onChange={setDirection} />
+          </div>
+
+          {/* Session */}
+          <div>
+            <SectionLabel>Session</SectionLabel>
+            {assetType === 'Crypto' ? (
+              <input
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text-muted)',
+                }}
+                value="24/7"
+                disabled
+              />
+            ) : (
+              <SelectInput options={SESSIONS} value={session} onChange={setSession} />
+            )}
+          </div>
+
+          {/* Lookback Mode */}
+          <div>
+            <SectionLabel>Lookback</SectionLabel>
+            <SelectInput options={LOOKBACK_MODES} value={lookbackMode} onChange={setLookbackMode} />
+          </div>
+
+          {/* Lookback Value */}
+          <div>
+            <SectionLabel>{lookbackMode === 'Bars/Candles' ? 'Bars' : 'Days'}</SectionLabel>
+            <NumberInput
+              value={lookbackMode === 'Bars/Candles' ? lookbackBars : lookbackDays}
+              onChange={lookbackMode === 'Bars/Candles' ? setLookbackBars : setLookbackDays}
+              min={lookbackMode === 'Bars/Candles' ? 100 : 7}
+              max={lookbackMode === 'Bars/Candles' ? 500000 : 1825}
+              step={lookbackMode === 'Bars/Candles' ? 100 : 7}
+            />
+          </div>
+
+          {/* Strategy Name */}
+          <div className="xl:col-span-2">
+            <SectionLabel>Name</SectionLabel>
+            <TextInput value={strategyName} onChange={setStrategyName} />
+          </div>
+
+          {/* Load Data */}
+          <div className="flex items-end">
+            <PrimaryButton fullWidth onClick={handleRunBacktest}>
+              {backtestRan ? 'Reload' : 'Load Data'}
+            </PrimaryButton>
+          </div>
+        </div>
+        {/* Status line */}
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            ~{estimatedBars.toLocaleString()} bars
+          </span>
+          {estimatedBars > 200000 && (
+            <span className="text-xs" style={{ color: 'var(--red)' }}>
+              Very large dataset -- may be slow
+            </span>
+          )}
+          {estimatedBars > 50000 && estimatedBars <= 200000 && (
+            <span className="text-xs" style={{ color: 'var(--orange)' }}>
+              Large dataset
+            </span>
+          )}
+        </div>
+      </Card>
+
+      {/* ================================================================= */}
+      {/* STRATEGY CONFIG EXPANDER: Entry, Exit, Stop, Target               */}
+      {/* ================================================================= */}
+      <Card className="mb-4">
+        <button
+          className="w-full flex items-center justify-between text-sm font-medium"
+          style={{ color: 'var(--text-secondary)' }}
+          onClick={() => setConfigExpanded(!configExpanded)}
+        >
+          <div className="flex items-center gap-3">
+            <span>Strategy Config</span>
+            {/* Quick summary when collapsed */}
+            {!configExpanded && entryDef && (
+              <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                <ExecBadge type={entryDef.execType} />{' '}
+                {entryDef.name} {'\u2192'}{' '}
+                {exitDefs.map((e) => e.name).join(' / ') || 'No exit'}{' '}
+                | Stop: {stopMethod}{' '}
+                | Target: {targetMethod}
+              </span>
+            )}
+          </div>
+          <span
+            className="text-xs transition-transform"
+            style={{
+              color: 'var(--text-muted)',
+              transform: configExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+            }}
+          >
+            v
+          </span>
+        </button>
+
+        {configExpanded && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Entry Trigger */}
+            <div>
+              <SectionLabel>Entry Trigger</SectionLabel>
+              <TextInput
+                value={triggerSearch}
+                onChange={setTriggerSearch}
+                placeholder="Search triggers..."
+              />
+              <div className="mt-2">
+                <TriggerGroupedList
+                  triggers={MOCK_TRIGGERS.filter((t) => {
+                    // Show direction-appropriate triggers
+                    if (direction === 'LONG') {
+                      return !t.name.toLowerCase().includes('down') &&
+                             !t.name.toLowerCase().includes('bear') &&
+                             !t.name.toLowerCase().includes('sell') &&
+                             !t.name.toLowerCase().includes('short') &&
+                             !t.name.toLowerCase().includes('overbought');
+                    }
+                    return !t.name.toLowerCase().includes('up') &&
+                           !t.name.toLowerCase().includes('bull') &&
+                           !t.name.toLowerCase().includes('buy') &&
+                           !t.name.toLowerCase().includes('long') &&
+                           !t.name.toLowerCase().includes('oversold');
+                  })}
+                  searchQuery={triggerSearch}
+                  selectedId={entryTrigger}
+                  onSelect={setEntryTrigger}
+                />
+              </div>
+            </div>
+
+            {/* Exit Trigger(s) */}
+            <div>
+              <SectionLabel>
+                Exit Trigger(s){' '}
+                <span style={{ color: 'var(--text-muted)' }}>({exitTriggers.length}/3)</span>
+              </SectionLabel>
+              {exitTriggers.length > 0 && (
+                <div className="space-y-1 mb-2">
+                  {exitTriggers.map((eid, idx) => {
+                    const eDef = MOCK_TRIGGERS.find((t) => t.id === eid);
+                    return (
+                      <div
+                        key={eid}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs"
+                        style={{
+                          background: 'var(--accent-muted)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        {eDef && <ExecBadge type={eDef.execType} />}
+                        <span className="flex-1" style={{ color: 'var(--text-secondary)' }}>
+                          {eDef?.name || eid}
+                        </span>
+                        <button
+                          className="text-[10px] hover:opacity-70"
+                          style={{ color: 'var(--text-muted)' }}
+                          onClick={() => handleRemoveExit(idx)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="mt-1">
+                <TriggerGroupedList
+                  triggers={MOCK_TRIGGERS.filter((t) => {
+                    // Show direction-appropriate exit triggers
+                    if (direction === 'LONG') {
+                      return !t.name.toLowerCase().includes('up') &&
+                             !t.name.toLowerCase().includes('bull') &&
+                             !t.name.toLowerCase().includes('buy') &&
+                             !t.name.toLowerCase().includes('long') &&
+                             !t.name.toLowerCase().includes('oversold');
+                    }
+                    return !t.name.toLowerCase().includes('down') &&
+                           !t.name.toLowerCase().includes('bear') &&
+                           !t.name.toLowerCase().includes('sell') &&
+                           !t.name.toLowerCase().includes('short') &&
+                           !t.name.toLowerCase().includes('overbought');
+                  })}
+                  searchQuery=""
+                  selectedId=""
+                  onSelect={(id) => {
+                    if (exitTriggers.length < 3 && !exitTriggers.includes(id)) {
+                      setExitTriggers((prev) => [...prev, id]);
+                    }
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Stop Loss */}
+            <div>
+              <SectionLabel>Stop Loss</SectionLabel>
+              <SelectInput options={STOP_METHODS} value={stopMethod} onChange={(v) => {
+                setStopMethod(v);
+                if (v === 'ATR') setStopConfig({ atrMult: 1.5 });
+                else if (v === 'Fixed $') setStopConfig({ dollarAmount: 1.0 });
+                else if (v === 'Pct %') setStopConfig({ percentage: 0.5 });
+                else if (v === 'Swing') setStopConfig({ lookback: 5, padding: 0.05 });
+              }} />
+              <div className="mt-2 space-y-2">
+                {stopMethod === 'ATR' && (
+                  <div>
+                    <SectionLabel>ATR Multiplier</SectionLabel>
+                    <NumberInput value={stopConfig.atrMult ?? 1.5} onChange={(v) => setStopConfig({ ...stopConfig, atrMult: v })} min={0.5} max={5} step={0.1} suffix="x" />
+                  </div>
+                )}
+                {stopMethod === 'Fixed $' && (
+                  <div>
+                    <SectionLabel>Dollar Amount</SectionLabel>
+                    <NumberInput value={stopConfig.dollarAmount ?? 1} onChange={(v) => setStopConfig({ ...stopConfig, dollarAmount: v })} min={0.01} max={100} step={0.1} suffix="$" />
+                  </div>
+                )}
+                {stopMethod === 'Pct %' && (
+                  <div>
+                    <SectionLabel>Percentage</SectionLabel>
+                    <NumberInput value={stopConfig.percentage ?? 0.5} onChange={(v) => setStopConfig({ ...stopConfig, percentage: v })} min={0.01} max={10} step={0.05} suffix="%" />
+                  </div>
+                )}
+                {stopMethod === 'Swing' && (
+                  <>
+                    <div>
+                      <SectionLabel>Lookback Bars</SectionLabel>
+                      <NumberInput value={stopConfig.lookback ?? 5} onChange={(v) => setStopConfig({ ...stopConfig, lookback: v })} min={2} max={50} step={1} />
+                    </div>
+                    <div>
+                      <SectionLabel>Padding ($)</SectionLabel>
+                      <NumberInput value={stopConfig.padding ?? 0.05} onChange={(v) => setStopConfig({ ...stopConfig, padding: v })} min={0} max={10} step={0.01} suffix="$" />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Trailing Stop */}
+              <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={trailingEnabled}
+                    onChange={(e) => setTrailingEnabled(e.target.checked)}
+                    className="accent-[var(--accent)]"
+                  />
+                  Trailing Stop
+                </label>
+                {trailingEnabled && (
+                  <div className="mt-2 space-y-2 pl-5">
+                    <SelectInput
+                      options={['ATR', 'Fixed $', 'Pct %']}
+                      value={trailMethod}
+                      onChange={setTrailMethod}
+                    />
+                    {trailMethod === 'ATR' && (
+                      <NumberInput value={trailConfig.atrMult ?? 1} onChange={(v) => setTrailConfig({ ...trailConfig, atrMult: v })} min={0.3} max={5} step={0.1} suffix="x" />
+                    )}
+                    {trailMethod === 'Fixed $' && (
+                      <NumberInput value={trailConfig.dollarAmount ?? 0.5} onChange={(v) => setTrailConfig({ ...trailConfig, dollarAmount: v })} min={0.01} max={100} step={0.05} suffix="$" />
+                    )}
+                    {trailMethod === 'Pct %' && (
+                      <NumberInput value={trailConfig.percentage ?? 0.3} onChange={(v) => setTrailConfig({ ...trailConfig, percentage: v })} min={0.01} max={10} step={0.05} suffix="%" />
+                    )}
+                    <div>
+                      <SectionLabel>Activation (R)</SectionLabel>
+                      <NumberInput value={trailConfig.activationR ?? 0.5} onChange={(v) => setTrailConfig({ ...trailConfig, activationR: v })} min={0} max={5} step={0.1} suffix="R" />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Breakeven Stop */}
+              <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={breakevenEnabled}
+                    onChange={(e) => setBreakevenEnabled(e.target.checked)}
+                    className="accent-[var(--accent)]"
+                  />
+                  Breakeven Stop
+                </label>
+                {breakevenEnabled && (
+                  <div className="mt-2 space-y-2 pl-5">
+                    <div>
+                      <SectionLabel>BE Activation (R)</SectionLabel>
+                      <NumberInput value={beConfig.activationR ?? 1} onChange={(v) => setBeConfig({ ...beConfig, activationR: v })} min={0.1} max={5} step={0.1} suffix="R" />
+                    </div>
+                    <div>
+                      <SectionLabel>BE Offset ($)</SectionLabel>
+                      <NumberInput value={beConfig.offset ?? 0} onChange={(v) => setBeConfig({ ...beConfig, offset: v })} min={0} max={2} step={0.01} suffix="$" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Target */}
+            <div>
+              <SectionLabel>Target</SectionLabel>
+              <SelectInput options={TARGET_METHODS} value={targetMethod} onChange={(v) => {
+                setTargetMethod(v);
+                if (v === 'R:R') setTargetConfig({ rrRatio: 2.0 });
+                else if (v === 'ATR') setTargetConfig({ atrMult: 2.0 });
+                else if (v === 'Fixed $') setTargetConfig({ dollarAmount: 2.0 });
+                else if (v === 'Pct %') setTargetConfig({ percentage: 1.0 });
+                else if (v === 'Swing') setTargetConfig({ lookback: 5, padding: 0.05 });
+                else setTargetConfig({});
+              }} />
+              <div className="mt-2 space-y-2">
+                {targetMethod === 'R:R' && (
+                  <div>
+                    <SectionLabel>Risk:Reward Ratio</SectionLabel>
+                    <NumberInput value={targetConfig.rrRatio ?? 2} onChange={(v) => setTargetConfig({ ...targetConfig, rrRatio: v })} min={0.5} max={10} step={0.5} suffix="R" />
+                  </div>
+                )}
+                {targetMethod === 'ATR' && (
+                  <div>
+                    <SectionLabel>ATR Multiplier</SectionLabel>
+                    <NumberInput value={targetConfig.atrMult ?? 2} onChange={(v) => setTargetConfig({ ...targetConfig, atrMult: v })} min={0.5} max={10} step={0.1} suffix="x" />
+                  </div>
+                )}
+                {targetMethod === 'Fixed $' && (
+                  <div>
+                    <SectionLabel>Dollar Amount</SectionLabel>
+                    <NumberInput value={targetConfig.dollarAmount ?? 2} onChange={(v) => setTargetConfig({ ...targetConfig, dollarAmount: v })} min={0.01} max={100} step={0.1} suffix="$" />
+                  </div>
+                )}
+                {targetMethod === 'Pct %' && (
+                  <div>
+                    <SectionLabel>Percentage</SectionLabel>
+                    <NumberInput value={targetConfig.percentage ?? 1} onChange={(v) => setTargetConfig({ ...targetConfig, percentage: v })} min={0.01} max={20} step={0.05} suffix="%" />
+                  </div>
+                )}
+                {targetMethod === 'Swing' && (
+                  <>
+                    <div>
+                      <SectionLabel>Lookback Bars</SectionLabel>
+                      <NumberInput value={targetConfig.lookback ?? 5} onChange={(v) => setTargetConfig({ ...targetConfig, lookback: v })} min={2} max={50} step={1} />
+                    </div>
+                    <div>
+                      <SectionLabel>Padding ($)</SectionLabel>
+                      <NumberInput value={targetConfig.padding ?? 0.05} onChange={(v) => setTargetConfig({ ...targetConfig, padding: v })} min={0} max={10} step={0.01} suffix="$" />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* ================================================================= */}
+      {/* PRE-BACKTEST PROMPT                                               */}
+      {/* ================================================================= */}
+      {!backtestRan && (
+        <Card className="text-center py-12">
+          <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+            Select your settings above, then click <strong>Load Data</strong> to begin analysis.
+          </p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {symbol} | {direction} | {timeframe} | ~{estimatedBars.toLocaleString()} bars
+          </p>
+        </Card>
+      )}
+
+      {/* ================================================================= */}
+      {/* POST-BACKTEST: KPIs, Charts, Analysis Tabs                        */}
+      {/* ================================================================= */}
+      {backtestRan && (
+        <>
+          {/* Strategy Summary Header */}
+          <div className="mb-4">
+            <h2 className="text-xl font-bold">{strategyName}</h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {symbol} | {direction} |{' '}
+              {entryDef ? (
+                <><ExecBadge type={entryDef.execType} /> {entryDef.name}</>
+              ) : '?'}{' '}
+              {'\u2192'} {exitDefs.map((e) => e.name).join(' / ') || '?'}
+            </p>
+          </div>
+
+          {/* KPIs */}
+          <KPIDashboard kpis={MOCK_KPIS} backtestRan={backtestRan} />
+
+          {/* Optimizable Variables */}
+          <div className="mt-4">
+            <OptimizableVariables
+              entryTrigger={entryTrigger}
+              exitTriggers={exitTriggers}
+              selectedConditions={selectedConditions}
+              generalConditions={selectedGenerals}
+              stopMethod={stopMethod}
+              stopConfig={stopConfig}
+              targetMethod={targetMethod}
+              targetConfig={targetConfig}
+              allTriggers={MOCK_TRIGGERS}
+              allConditions={MOCK_CONFLUENCE_CONDITIONS}
+              allGeneralConditions={MOCK_GENERAL_CONDITIONS}
+              onRemoveCondition={(id) => handleToggleCondition(id)}
+              onRemoveGeneral={(id) => handleToggleGeneral(id)}
+              onRemoveExit={handleRemoveExit}
+            />
+          </div>
+
+          {/* Main Content: Charts (left) + Analysis Tabs (right) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+            {/* =========================================== */}
+            {/* LEFT: Charts                                */}
+            {/* =========================================== */}
+            <div className="space-y-4">
+              <Card>
+                <TabBar tabs={['Equity Curve', 'Price Chart']}>
+                  {(tab) =>
+                    tab === 'Equity Curve' ? (
+                      <div>
+                        <ChartPlaceholder
+                          label="Equity curve -- cumulative R over time with high-water mark"
+                          height={380}
+                        />
+                        <div className="mt-2 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <span>
+                            <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: '#2196F3' }} />
+                            Equity
+                          </span>
+                          <span>
+                            <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: 'green', opacity: 0.5 }} />
+                            High Water Mark
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {MOCK_TRADES.length} trades on {symbol} ({direction})
+                          </span>
+                        </div>
+                        <ChartPlaceholder
+                          label="OHLC candlestick chart with indicator overlays + trade entry/exit markers"
+                          height={380}
+                        />
+                      </div>
+                    )
+                  }
+                </TabBar>
+              </Card>
+
+              {/* Trade History */}
+              <Card>
+                <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+                  Trade History
+                </h3>
+                <TradeHistoryTable trades={MOCK_TRADES} />
+              </Card>
+
+              {/* Advanced Analysis */}
+              <AdvancedAnalysis />
+            </div>
+
+            {/* =========================================== */}
+            {/* RIGHT: Analysis Tabs                        */}
+            {/* =========================================== */}
+            <div>
+              <Card>
+                <TabBar tabs={['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit']}>
+                  {(tab) => {
+                    // ---- ENTRY TAB ----
+                    if (tab === 'Entry') {
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput
+                                value={analyzerSearch}
+                                onChange={setAnalyzerSearch}
+                                placeholder="Search entry triggers..."
+                              />
+                            </div>
+                            <PrimaryButton onClick={() => setEntryAnalysisRan(true)}>
+                              Analyze
+                            </PrimaryButton>
+                          </div>
+                          {entryDef && (
+                            <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                              Current: <ExecBadge type={entryDef.execType} />{' '}
+                              <strong>{entryDef.name}</strong>
+                            </p>
+                          )}
+                          {entryAnalysisRan ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 480 }}>
+                              {MOCK_ENTRY_ANALYSIS.filter((r) =>
+                                !analyzerSearch || r.triggerName.toLowerCase().includes(analyzerSearch.toLowerCase())
+                              ).map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.triggerId}
+                                  result={result}
+                                  isCurrent={result.triggerId === entryTrigger}
+                                  actionLabel="Replace"
+                                  onAction={() => setEntryTrigger(result.triggerId)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare all available entry triggers using the current strategy config.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // ---- EXIT TAB ----
+                    if (tab === 'Exit') {
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput
+                                value=""
+                                onChange={() => {}}
+                                placeholder="Search exit triggers..."
+                              />
+                            </div>
+                            <PrimaryButton onClick={() => setExitAnalysisRan(true)}>
+                              Analyze
+                            </PrimaryButton>
+                          </div>
+                          {/* Active exit tags */}
+                          {exitTriggers.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {exitTriggers.map((eid, idx) => {
+                                const eDef = MOCK_TRIGGERS.find((t) => t.id === eid);
+                                return (
+                                  <ConditionPill
+                                    key={eid}
+                                    label={eDef?.name || eid}
+                                    onRemove={() => handleRemoveExit(idx)}
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                          {exitAnalysisRan ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 480 }}>
+                              {MOCK_EXIT_ANALYSIS.map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.triggerId}
+                                  result={result}
+                                  isCurrent={exitTriggers.includes(result.triggerId)}
+                                  actionLabel="Add"
+                                  onAction={() => {
+                                    if (exitTriggers.length < 3 && !exitTriggers.includes(result.triggerId)) {
+                                      setExitTriggers((prev) => [...prev, result.triggerId]);
+                                    }
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare individual exit triggers against the current entry.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // ---- TF CONDITIONS TAB ----
+                    if (tab === 'TF Conditions') {
+                      const tfSelected = Array.from(selectedConditions).sort();
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput
+                                value=""
+                                onChange={() => {}}
+                                placeholder="Search indicators..."
+                              />
+                            </div>
+                            <SecondaryButton onClick={() => setConfluenceModalOpen(true)} size="md">
+                              + Add
+                            </SecondaryButton>
+                          </div>
+                          {/* Active TF condition pills */}
+                          {tfSelected.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {tfSelected.map((cid) => {
+                                const cDef = MOCK_CONFLUENCE_CONDITIONS.find((c) => c.id === cid);
+                                return (
+                                  <ConditionPill
+                                    key={cid}
+                                    label={cDef?.label || cid}
+                                    onRemove={() => handleToggleCondition(cid)}
+                                  />
+                                );
+                              })}
+                              <button
+                                className="text-xs px-2 py-1 rounded"
+                                style={{ color: 'var(--red)', background: 'var(--red-muted)' }}
+                                onClick={() => setSelectedConditions(new Set())}
+                              >
+                                Clear TF
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Confluence drill-down results (mock) */}
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 400 }}>
+                            {MOCK_CONFLUENCE_CONDITIONS.map((cond) => {
+                              const isActive = selectedConditions.has(cond.id);
+                              return (
+                                <div
+                                  key={cond.id}
+                                  className="rounded-lg border p-3"
+                                  style={{
+                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
+                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                                  }}
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span
+                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
+                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
+                                    >
+                                      {cond.label}
+                                      {isActive && (
+                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
+                                          (active)
+                                        </span>
+                                      )}
+                                    </span>
+                                    {!isActive && (
+                                      <SecondaryButton onClick={() => handleToggleCondition(cond.id)}>
+                                        Add
+                                      </SecondaryButton>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-6 gap-2">
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(40 + Math.random() * 80)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.2 + Math.random() * 1.8).toFixed(1)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(48 + Math.random() * 18).toFixed(1)}%</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.05 + Math.random() * 0.4).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.1 + Math.random() * 0.5).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.6 + Math.random() * 0.3).toFixed(2)}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Scoring panel */}
+                          <ConfluenceScoringPanel
+                            conditions={allSelected}
+                            weights={confluenceWeights}
+                            onWeightChange={handleWeightChange}
+                            depthLimit={depthLimit}
+                            onDepthLimitChange={setDepthLimit}
+                            scoringEnabled={scoringEnabled}
+                            onScoringToggle={setScoringEnabled}
+                          />
+                        </div>
+                      );
+                    }
+
+                    // ---- GENERAL TAB ----
+                    if (tab === 'General') {
+                      const genSelected = Array.from(selectedGenerals).sort();
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput
+                                value=""
+                                onChange={() => {}}
+                                placeholder="Search general conditions..."
+                              />
+                            </div>
+                            <SecondaryButton onClick={() => setGeneralModalOpen(true)} size="md">
+                              + Add
+                            </SecondaryButton>
+                          </div>
+                          {/* Active general pills */}
+                          {genSelected.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {genSelected.map((gid) => {
+                                const gDef = MOCK_GENERAL_CONDITIONS.find((c) => c.id === gid);
+                                return (
+                                  <ConditionPill
+                                    key={gid}
+                                    label={gDef?.label || gid}
+                                    onRemove={() => handleToggleGeneral(gid)}
+                                  />
+                                );
+                              })}
+                              <button
+                                className="text-xs px-2 py-1 rounded"
+                                style={{ color: 'var(--red)', background: 'var(--red-muted)' }}
+                                onClick={() => setSelectedGenerals(new Set())}
+                              >
+                                Clear Gen
+                              </button>
+                            </div>
+                          )}
+
+                          {/* General condition drill-down */}
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 400 }}>
+                            {MOCK_GENERAL_CONDITIONS.map((cond) => {
+                              const isActive = selectedGenerals.has(cond.id);
+                              return (
+                                <div
+                                  key={cond.id}
+                                  className="rounded-lg border p-3"
+                                  style={{
+                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
+                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                                  }}
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span
+                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
+                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
+                                    >
+                                      {cond.label}
+                                      {isActive && (
+                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
+                                          (active)
+                                        </span>
+                                      )}
+                                    </span>
+                                    {!isActive && (
+                                      <SecondaryButton onClick={() => handleToggleGeneral(cond.id)}>
+                                        Add
+                                      </SecondaryButton>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-6 gap-2">
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(30 + Math.random() * 60)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.3 + Math.random() * 1.5).toFixed(1)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(50 + Math.random() * 15).toFixed(1)}%</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.08 + Math.random() * 0.35).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.12 + Math.random() * 0.4).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.55 + Math.random() * 0.35).toFixed(2)}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // ---- STOP LOSS TAB ----
+                    if (tab === 'Stop Loss') {
+                      const stopResults: AnalyzerResult[] = [
+                        { triggerId: 'atr-1.0', triggerName: 'ATR x1.0', execType: 'C', totalTrades: 127, profitFactor: 1.82, winRate: 54.3, avgR: 0.15, dailyR: 0.32, rSquared: 0.79 },
+                        { triggerId: 'atr-1.5', triggerName: 'ATR x1.5 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+                        { triggerId: 'atr-2.0', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.31, winRate: 61.4, avgR: 0.28, dailyR: 0.53, rSquared: 0.84 },
+                        { triggerId: 'swing-5', triggerName: 'Swing 5-bar', execType: 'C', totalTrades: 127, profitFactor: 2.08, winRate: 57.5, avgR: 0.20, dailyR: 0.41, rSquared: 0.82 },
+                        { triggerId: 'fixed-1', triggerName: 'Fixed $1.00', execType: 'C', totalTrades: 127, profitFactor: 1.65, winRate: 52.0, avgR: 0.10, dailyR: 0.22, rSquared: 0.71 },
+                      ];
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput value="" onChange={() => {}} placeholder="Search stop configs..." />
+                            </div>
+                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                          </div>
+                          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                            Current: <strong>{stopMethod} {stopMethod === 'ATR' ? `x${(stopConfig.atrMult ?? 1.5).toFixed(1)}` : ''}</strong>
+                          </p>
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 480 }}>
+                            {stopResults.map((result) => (
+                              <AnalyzerResultCard
+                                key={result.triggerId}
+                                result={result}
+                                isCurrent={result.triggerId === 'atr-1.5'}
+                                actionLabel="Replace"
+                                onAction={() => {}}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // ---- TAKE PROFIT TAB ----
+                    if (tab === 'Take Profit') {
+                      const tpResults: AnalyzerResult[] = [
+                        { triggerId: 'tp-none', triggerName: 'None (signal exit)', execType: 'C', totalTrades: 127, profitFactor: 1.95, winRate: 55.1, avgR: 0.18, dailyR: 0.38, rSquared: 0.80 },
+                        { triggerId: 'tp-1.5r', triggerName: 'R:R 1.5', execType: 'C', totalTrades: 127, profitFactor: 1.78, winRate: 52.8, avgR: 0.14, dailyR: 0.30, rSquared: 0.75 },
+                        { triggerId: 'tp-2r', triggerName: 'R:R 2.0 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+                        { triggerId: 'tp-3r', triggerName: 'R:R 3.0', execType: 'C', totalTrades: 112, profitFactor: 2.42, winRate: 42.9, avgR: 0.25, dailyR: 0.44, rSquared: 0.83 },
+                        { triggerId: 'tp-atr2', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.18, winRate: 56.7, avgR: 0.21, dailyR: 0.43, rSquared: 0.85 },
+                      ];
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput value="" onChange={() => {}} placeholder="Search target configs..." />
+                            </div>
+                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                          </div>
+                          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                            Current: <strong>{targetMethod === 'None' ? 'None (signal exit)' : `${targetMethod} ${targetMethod === 'R:R' ? (targetConfig.rrRatio ?? 2).toFixed(1) : ''}`}</strong>
+                          </p>
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 480 }}>
+                            {tpResults.map((result) => (
+                              <AnalyzerResultCard
+                                key={result.triggerId}
+                                result={result}
+                                isCurrent={result.triggerId === 'tp-2r'}
+                                actionLabel="Replace"
+                                onAction={() => {}}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  }}
+                </TabBar>
+              </Card>
+            </div>
+          </div>
+
+          {/* ================================================================= */}
+          {/* SAVE STRATEGY                                                      */}
+          {/* ================================================================= */}
+          <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+            <div className="flex justify-center">
+              <PrimaryButton size="lg" onClick={() => {}}>
+                Save Strategy
+              </PrimaryButton>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODALS                                                             */}
+      {/* ================================================================= */}
+      <ConfluencePickerModal
+        isOpen={confluenceModalOpen}
+        onClose={() => setConfluenceModalOpen(false)}
+        conditions={MOCK_CONFLUENCE_CONDITIONS}
+        selected={selectedConditions}
+        onToggle={handleToggleCondition}
+      />
+      <ConfluencePickerModal
+        isOpen={generalModalOpen}
+        onClose={() => setGeneralModalOpen(false)}
+        conditions={MOCK_GENERAL_CONDITIONS}
+        selected={selectedGenerals}
+        onToggle={handleToggleGeneral}
+      />
+    </div>
+  );
+}

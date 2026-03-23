@@ -1,73 +1,30 @@
-import Link from 'next/link';
-import Card from '@/components/Card';
+'use client';
 
-export default function Portfolios() {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Portfolios</h1>
-        <button
-          className="px-4 py-2 rounded-lg text-sm font-medium"
-          style={{ background: 'var(--accent)', color: 'white' }}
-        >
-          + New Portfolio
-        </button>
-      </div>
+import VersionedPage from '@/components/VersionedPage';
+import V1 from './versions/V1';
+import V2 from './versions/V2';
 
-      {/* Portfolio cards */}
-      <div className="grid grid-cols-2 gap-6">
-        {[
-          { name: 'My Portfolio', strategies: 8, balance: 80000, pnl: 2847, dd: -1.8, wr: 58.3 },
-          { name: 'Growth Portfolio', strategies: 5, balance: 50000, pnl: 1205, dd: -2.4, wr: 52.1 },
-        ].map((port, i) => (
-          <Link key={i} href={`/portfolios/${i + 1}`}>
-          <Card className="cursor-pointer hover:border-opacity-50">
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <h3 className="font-semibold text-lg">{port.name}</h3>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {port.strategies} strategies | ${port.balance.toLocaleString()} balance
-                </p>
-              </div>
-              <span
-                className="text-xs px-2 py-1 rounded"
-                style={{ background: 'var(--green-muted)', color: 'var(--green)' }}
-              >
-                Active
-              </span>
-            </div>
+const versions = [
+  {
+    meta: {
+      id: 'v1-initial',
+      name: 'Initial Scaffold',
+      description: 'Two-column grid of portfolio cards with mini equity curves, P&L/DD/WR/strategy count KPIs, and active status badges.',
+      rationale: 'First pass establishing the portfolio list with clickable cards that link to detail views.',
+    },
+    component: V1,
+  },
+  {
+    meta: {
+      id: 'v2-full-parity',
+      name: 'Full Parity',
+      description: 'Rich portfolio cards with deploy status, compliance checks, requirement set badges, and full KPIs.',
+      rationale: 'Every Streamlit portfolio list feature: richer cards with live/paper/paused status, deployment indicator, requirement set badge, compliance check (passing/violations), full 6-KPI row, mini equity curves, and Clone/Delete actions alongside View/Edit.',
+    },
+    component: V2,
+  },
+];
 
-            {/* Mini equity curve */}
-            <div
-              className="rounded-lg mb-4"
-              style={{ background: 'var(--bg-input)', height: 80 }}
-            />
-
-            {/* KPIs */}
-            <div className="grid grid-cols-4 gap-3">
-              <div>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>P&L</p>
-                <p className="text-sm font-medium" style={{ color: 'var(--green)' }}>
-                  +${port.pnl.toLocaleString()}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max DD</p>
-                <p className="text-sm font-medium">{port.dd}%</p>
-              </div>
-              <div>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Win Rate</p>
-                <p className="text-sm font-medium">{port.wr}%</p>
-              </div>
-              <div>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Strategies</p>
-                <p className="text-sm font-medium">{port.strategies}</p>
-              </div>
-            </div>
-          </Card>
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
+export default function PortfoliosPage() {
+  return <VersionedPage pageKey="portfolios" versions={versions} />;
 }

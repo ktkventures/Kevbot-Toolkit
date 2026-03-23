@@ -48,12 +48,38 @@ const navItems: NavItem[] = [
     ],
   },
   {
+    href: '/marketplace', label: 'Marketplace', icon: '◆',
+    children: [
+      { href: '/marketplace', label: 'Browse' },
+      { href: '/marketplace/subscriptions', label: 'My Subscriptions' },
+      { href: '/marketplace/prop-firms', label: 'Prop Firm Hub' },
+    ],
+  },
+  {
+    href: '/creator', label: 'Creator', icon: '★',
+    children: [
+      { href: '/creator/dashboard', label: 'Dashboard' },
+      { href: '/creator/earnings', label: 'Earnings & Payouts' },
+      { href: '/creator/publish', label: 'Publish' },
+    ],
+  },
+  { href: '/pricing', label: 'Pricing & Plans', icon: '◎' },
+  {
+    href: '/admin', label: 'Admin', icon: '▣',
+    children: [
+      { href: '/admin', label: 'Platform Overview' },
+      { href: '/admin/users', label: 'Users' },
+      { href: '/admin/curation', label: 'Curation' },
+    ],
+  },
+  {
     href: '/settings', label: 'Settings', icon: '⚙',
     children: [
       { href: '/settings/themes', label: 'Themes' },
       { href: '/settings/display', label: 'Display' },
       { href: '/settings/connections', label: 'Connections' },
       { href: '/settings/account', label: 'Account' },
+      { href: '/settings/profile', label: 'Profile & Roles' },
     ],
   },
 ];
