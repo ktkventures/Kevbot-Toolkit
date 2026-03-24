@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'The "wow factor" version. Circular health score (0-100) with segmented ring for WR/DD/consistency/risk. Interactive trade timeline with hover tooltips. Performance heatmap reveals best trading windows. Equity curve with bull/bear/neutral regime bands. Strategy DNA radar chart shows character fingerprint. Live position widget with animated status and risk bar. Confluence effectiveness bars rank condition contributions. Risk/reward scatter plots trade distribution. Smart summary provides actionable AI-style narrative.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production',
+      description: '6-tab detail view: Equity & KPIs (comparison modes, extended KPIs, advanced analysis), Chart & Trades (merged), Confluence Analysis (per-group), Configuration (pack-aware), Alerts (event types + mapping), Alert Analysis (discrepancies, timing, trade-by-trade).',
+      rationale: 'Forward test and alerts always on. KPI comparison modes (Overall/BT vs FWD/FWD vs Alerts/BT vs Alerts) with Daily ROI and TPD. 3-segment equity curve per display settings V5. Pack-aware variable display matching My Strategies V5. Advanced analysis (Rolling Metrics, Return Distribution, Markov Motor). Full alert analysis with discrepancies, position health, trigger timing, and trade-by-trade slippage.',
+    },
+    component: V5,
   },
 ];
 

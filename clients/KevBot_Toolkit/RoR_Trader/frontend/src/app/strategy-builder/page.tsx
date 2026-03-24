@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'The wow-factor version. Strategy building visualized as an interactive data pipeline. Strategy DNA radar chart shows the character of the strategy (aggression, selectivity, speed, consistency, risk control, trend alignment). Confidence gauge scores the strategy based on trade count, win rate, profit factor, and confluence depth. Risk calculator projects daily/monthly returns at a given account size. AI insight card provides mock suggestions. Quick presets auto-fill entire strategies with one click.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-pack-integrated',
+      name: 'Pack Integrated',
+      description: 'Updated for new pack architecture: stop/target via pack selectors, triggers with [C]/[L]/[LC]/[CC] exec types, all 8 TF templates.',
+      rationale: 'Based on V2 with key changes: stop loss and take profit are now selected from saved packs (not configured inline) — enabling mass backtester iteration. Trigger exec types updated to [C]/[L]/[LC]/[CC] naming. Exec badges use display settings V5 uniform blue. Links to Stop Loss and Take Profit pack management pages.',
+    },
+    component: V5,
   },
 ];
 

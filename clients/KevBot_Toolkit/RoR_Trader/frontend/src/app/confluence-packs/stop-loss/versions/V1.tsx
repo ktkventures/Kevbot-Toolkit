@@ -1,0 +1,535 @@
+'use client';
+
+import { useState, useMemo } from 'react';
+import Card from '@/components/Card';
+import PageHeader from '@/components/PageHeader';
+import TabBar from '@/components/TabBar';
+import ChartPlaceholder from '@/components/ChartPlaceholder';
+import Link from 'next/link';
+
+/* ========================================================================
+   Types
+   ======================================================================== */
+
+interface PackParam {
+  key: string;
+  label: string;
+  type: 'int' | 'float' | 'bool';
+  value: number | boolean;
+  default: number | boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+}
+
+interface StopPack {
+  id: string;
+  templateKey: string;
+  name: string;
+  version: string;
+  tags: string[];
+  enabled: boolean;
+  isDefault: boolean;
+  isSaved: boolean;
+  description: string;
+  params: PackParam[];
+}
+
+/* ========================================================================
+   Template Definitions (mirrors triggers.py + risk_management_packs.py)
+   ======================================================================== */
+
+interface TemplateDef {
+  name: string;
+  tags: string[];
+  description: string;
+  parameters: Omit<PackParam, 'value'>[];
+  stopSummary: (params: PackParam[]) => string;
+}
+
+function pval(params: PackParam[], key: string): number | boolean {
+  return params.find((p) => p.key === key)?.value ?? 0;
+}
+
+const TEMPLATES: Record<string, TemplateDef> = {
+  atr: {
+    name: 'ATR Stop',
+    tags: ['Volatility'],
+    description: 'Stop placed at a multiple of the Average True Range below/above entry',
+    parameters: [
+      { key: 'atr_mult', label: 'ATR Multiplier', type: 'float', default: 1.5, min: 0.5, max: 5.0, step: 0.1, unit: 'x' },
+    ],
+    stopSummary: (p) => `${pval(p, 'atr_mult')}x ATR`,
+  },
+  fixed_dollar: {
+    name: 'Fixed Dollar Stop',
+    tags: ['Fixed'],
+    description: 'Stop placed at a fixed dollar amount from entry price',
+    parameters: [
+      { key: 'dollar_amount', label: 'Dollar Amount', type: 'float', default: 1.0, min: 0.01, max: 100, step: 0.01, unit: '$' },
+    ],
+    stopSummary: (p) => `$${pval(p, 'dollar_amount')} fixed`,
+  },
+  percentage: {
+    name: 'Percentage Stop',
+    tags: ['Fixed'],
+    description: 'Stop placed at a percentage of entry price',
+    parameters: [
+      { key: 'percentage', label: 'Percentage', type: 'float', default: 0.5, min: 0.01, max: 10, step: 0.01, unit: '%' },
+    ],
+    stopSummary: (p) => `${pval(p, 'percentage')}% from entry`,
+  },
+  swing: {
+    name: 'Swing Stop',
+    tags: ['Structure'],
+    description: 'Stop placed at the swing low (long) or swing high (short) over a lookback period, with optional padding',
+    parameters: [
+      { key: 'lookback', label: 'Lookback Bars', type: 'int', default: 5, min: 2, max: 50 },
+      { key: 'padding', label: 'Padding', type: 'float', default: 0.05, min: 0, max: 10, step: 0.01, unit: '$' },
+    ],
+    stopSummary: (p) => `${pval(p, 'lookback')}-bar swing, $${pval(p, 'padding')} pad`,
+  },
+  atr_trailing: {
+    name: 'ATR Trailing Stop',
+    tags: ['Volatility', 'Trailing'],
+    description: 'Initial ATR stop that trails price by an ATR multiple once an R-multiple activation threshold is reached',
+    parameters: [
+      { key: 'initial_atr_mult', label: 'Initial ATR Mult', type: 'float', default: 1.5, min: 0.5, max: 5.0, step: 0.1, unit: 'x' },
+      { key: 'trail_atr_mult', label: 'Trail ATR Mult', type: 'float', default: 1.0, min: 0.5, max: 5.0, step: 0.1, unit: 'x' },
+      { key: 'activation_r', label: 'Activation R', type: 'float', default: 1.0, min: 0.1, max: 5.0, step: 0.1, unit: 'R' },
+    ],
+    stopSummary: (p) => `${pval(p, 'initial_atr_mult')}x ATR \u2192 trail ${pval(p, 'trail_atr_mult')}x @ ${pval(p, 'activation_r')}R`,
+  },
+  breakeven: {
+    name: 'Breakeven Stop',
+    tags: ['Trailing'],
+    description: 'Initial ATR stop that moves to breakeven (entry price + offset) once an R-multiple threshold is reached',
+    parameters: [
+      { key: 'initial_atr_mult', label: 'Initial ATR Mult', type: 'float', default: 1.5, min: 0.5, max: 5.0, step: 0.1, unit: 'x' },
+      { key: 'activation_r', label: 'Activation R', type: 'float', default: 1.0, min: 0.1, max: 5.0, step: 0.1, unit: 'R' },
+      { key: 'offset', label: 'Breakeven Offset', type: 'float', default: 0.05, min: 0, max: 5.0, step: 0.01, unit: '$' },
+    ],
+    stopSummary: (p) => `${pval(p, 'initial_atr_mult')}x ATR \u2192 BE @ ${pval(p, 'activation_r')}R (+$${pval(p, 'offset')})`,
+  },
+};
+
+/* ========================================================================
+   Mock Pack Instances
+   ======================================================================== */
+
+function createDefaultPack(templateKey: string, id: string, version: string): StopPack {
+  const t = TEMPLATES[templateKey];
+  return {
+    id, templateKey, name: t.name, version, tags: t.tags, enabled: true,
+    isDefault: true, isSaved: true, description: t.description,
+    params: t.parameters.map((p) => ({ ...p, value: p.default })),
+  };
+}
+
+const initialPacks: StopPack[] = [
+  createDefaultPack('atr', 'atr-default', 'Default'),
+  { ...createDefaultPack('atr', 'atr-tight', 'Tight'), isDefault: false, params: [{ key: 'atr_mult', label: 'ATR Multiplier', type: 'float', value: 1.0, default: 1.5, min: 0.5, max: 5.0, step: 0.1, unit: 'x' }] },
+  createDefaultPack('fixed_dollar', 'fixed-default', 'Default'),
+  { ...createDefaultPack('percentage', 'pct-default', 'Default'), enabled: false },
+  createDefaultPack('swing', 'swing-default', 'Default'),
+  { ...createDefaultPack('swing', 'swing-wide', 'Wide'), isDefault: false, params: [
+    { key: 'lookback', label: 'Lookback Bars', type: 'int', value: 8, default: 5, min: 2, max: 50 },
+    { key: 'padding', label: 'Padding', type: 'float', value: 0.10, default: 0.05, min: 0, max: 10, step: 0.01, unit: '$' },
+  ]},
+  { ...createDefaultPack('atr_trailing', 'trail-default', 'Default'), enabled: false },
+  { ...createDefaultPack('breakeven', 'be-default', 'Default'), enabled: false },
+];
+
+/* ========================================================================
+   Shared Components
+   ======================================================================== */
+
+const tagColors: Record<string, { color: string; bg: string }> = {
+  Volatility: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+  Fixed: { color: 'var(--blue)', bg: 'var(--blue-muted)' },
+  Structure: { color: 'var(--green)', bg: 'var(--green-muted)' },
+  Trailing: { color: 'var(--accent)', bg: 'var(--accent-muted)' },
+};
+
+function TagBadge({ tag }: { tag: string }) {
+  const s = tagColors[tag] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+  return <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ color: s.color, background: s.bg }}>{tag}</span>;
+}
+
+function Toggle({ enabled, onChange }: { enabled: boolean; onChange: () => void }) {
+  return (
+    <button onClick={(e) => { e.stopPropagation(); onChange(); }} className="w-9 h-5 rounded-full relative flex-shrink-0 transition-colors" style={{ background: enabled ? 'var(--accent)' : 'var(--bg-input)', border: enabled ? 'none' : '1px solid var(--border)' }}>
+      <div className="w-3.5 h-3.5 rounded-full absolute transition-all" style={{ background: enabled ? 'white' : 'var(--text-muted)', top: '3px', left: enabled ? '19px' : '3px' }} />
+    </button>
+  );
+}
+
+/* ========================================================================
+   Detail View Tabs
+   ======================================================================== */
+
+function ParametersTab({ pack }: { pack: StopPack }) {
+  const template = TEMPLATES[pack.templateKey];
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Stop Loss Parameters</h3>
+        {pack.isSaved && (
+          <span className="text-xs px-2 py-1 rounded-lg flex items-center gap-1.5" style={{ background: 'var(--orange-muted)', color: 'var(--orange)' }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></svg>
+            Locked after save
+          </span>
+        )}
+      </div>
+      {pack.isSaved && (
+        <div className="mb-4 px-3 py-2 rounded-lg text-xs" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+          Parameters are locked to protect active strategies. Create a new variation to test different settings.
+        </div>
+      )}
+      <div className="space-y-3">
+        {pack.params.map((param) => (
+          <div key={param.key} className="flex items-center gap-4">
+            <label className="text-sm w-44 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{param.label}</label>
+            <input
+              type="number"
+              className="w-24 px-3 py-2 rounded-lg text-sm text-center font-mono"
+              style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: pack.isSaved ? 'var(--text-muted)' : 'var(--text-primary)', cursor: pack.isSaved ? 'not-allowed' : 'text' }}
+              value={param.value as number}
+              disabled={pack.isSaved}
+              readOnly={pack.isSaved}
+            />
+            {param.unit && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{param.unit}</span>}
+            {param.min !== undefined && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>({param.min}{'\u2013'}{param.max})</span>}
+            {param.value !== param.default && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange-muted)' }}>default: {String(param.default)}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      {!pack.isSaved && (
+        <div className="mt-6 px-3 py-2 rounded-lg text-xs flex items-center gap-2" style={{ background: 'var(--orange-muted)', color: 'var(--orange)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          Once saved, parameters cannot be changed. Use the Preview tab to test, then &quot;Save as Variation&quot; when ready.
+        </div>
+      )}
+      {template && (
+        <div className="mt-6 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Template: <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{template.name}</span>
+            {' \u00b7 '}{template.description}
+          </p>
+          <p className="text-xs mt-1 font-mono" style={{ color: 'var(--text-muted)' }}>
+            Effective: {template.stopSummary(pack.params)}
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function BehaviorTab({ pack }: { pack: StopPack }) {
+  const template = TEMPLATES[pack.templateKey];
+  return (
+    <Card>
+      <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>Stop Loss Behavior</h3>
+      <div className="space-y-4">
+        <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--bg-input)' }}>
+          <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Method: {template.name}</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{template.description}</p>
+        </div>
+        <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--bg-input)' }}>
+          <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Effective Stop</p>
+          <p className="text-sm font-mono" style={{ color: 'var(--accent)' }}>{template.stopSummary(pack.params)}</p>
+        </div>
+        <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--bg-input)' }}>
+          <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Evaluation</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Stop is calculated on entry and checked on every subsequent bar.
+            {pack.tags.includes('Trailing') && ' Stop ratchets in your favor and never moves backward.'}
+            {' '}If price breaches the stop level, position is exited at market (pessimistic fill assumed in backtest).
+          </p>
+        </div>
+        <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--bg-input)' }}>
+          <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Exit Priority</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Stop loss is checked <strong>first</strong> on each bar (highest priority), before take profit, bar count, or signal exits.
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function PreviewTab({ pack }: { pack: StopPack }) {
+  const template = TEMPLATES[pack.templateKey];
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-3 mb-2">
+        {[['NVDA', 'SPY', 'AAPL', 'TSLA'], ['1Min', '5Min', '15Min', '1H'], ['LONG', 'SHORT']].map((opts, i) => (
+          <select key={i} className="px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+            {opts.map((o) => <option key={o}>{o}</option>)}
+          </select>
+        ))}
+      </div>
+      <Card>
+        <ChartPlaceholder label={`Price chart with ${template.name} placement \u2014 ${template.stopSummary(pack.params)}`} height={350} />
+      </Card>
+      <Card>
+        <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Sample Trades</h4>
+        <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+          <div className="grid text-xs font-medium px-3 py-2" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', gridTemplateColumns: '70px 70px 70px 70px 50px 60px', gap: '4px' }}>
+            <span>Entry</span><span>Stop</span><span>Risk</span><span>Exit</span><span>R</span><span>Reason</span>
+          </div>
+          {[
+            { entry: '$487.20', stop: '$485.50', risk: '$1.70', exit: '$485.50', r: '-1.0R', reason: 'Stop' },
+            { entry: '$488.10', stop: '$486.30', risk: '$1.80', exit: '$491.70', r: '+2.0R', reason: 'Target' },
+            { entry: '$490.50', stop: '$488.90', risk: '$1.60', exit: '$489.20', r: '+0.2R', reason: 'Signal' },
+          ].map((row, i) => (
+            <div key={i} className="grid text-xs px-3 py-2 border-t items-center" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)', gridTemplateColumns: '70px 70px 70px 70px 50px 60px', gap: '4px' }}>
+              <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{row.entry}</span>
+              <span className="font-mono" style={{ color: 'var(--red)' }}>{row.stop}</span>
+              <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{row.risk}</span>
+              <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{row.exit}</span>
+              <span className="font-mono font-semibold" style={{ color: row.r.startsWith('-') ? 'var(--red)' : 'var(--green)' }}>{row.r}</span>
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{row.reason}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function CodeTab({ pack }: { pack: StopPack }) {
+  const [showCode, setShowCode] = useState(false);
+  const codeBlockStyle: React.CSSProperties = {
+    background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-secondary)',
+    fontFamily: 'monospace', fontSize: '12px', lineHeight: '1.6', padding: '16px', borderRadius: '8px',
+    whiteSpace: 'pre-wrap', overflowX: 'auto',
+  };
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Active Configuration</h3>
+        <div className="rounded-lg px-4 py-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+          <div className="grid grid-cols-2 gap-y-2 gap-x-8">
+            <div className="flex justify-between"><span className="text-xs" style={{ color: 'var(--text-muted)' }}>method</span><span className="text-xs font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>{pack.templateKey}</span></div>
+            {pack.params.map((p) => (
+              <div key={p.key} className="flex justify-between"><span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.key}</span><span className="text-xs font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>{String(p.value)}</span></div>
+            ))}
+          </div>
+        </div>
+      </Card>
+      <Card>
+        <button className="flex items-center justify-between w-full text-left" onClick={() => setShowCode(!showCode)}>
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Stop Calculation Function</h3>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{showCode ? 'Collapse' : 'Expand'}</span>
+        </button>
+        {showCode && (
+          <div className="mt-3">
+            <pre style={codeBlockStyle}>
+{`def calculate_stop_price(entry_price, direction, row, df, bar_index, stop_config):
+    """
+    Calculate stop loss price using "${pack.templateKey}" method.
+    Config: ${JSON.stringify(Object.fromEntries(pack.params.map((p) => [p.key, p.value])))}
+
+    Returns stop price for the given entry.
+    """
+    # Implementation in triggers.py
+    ...`}
+            </pre>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DangerZoneTab({ pack }: { pack: StopPack }) {
+  return (
+    <Card>
+      <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--red)' }}>Danger Zone</h3>
+      <div className="space-y-6">
+        <div>
+          <label className="text-sm mb-2 block" style={{ color: 'var(--text-secondary)' }}>Rename Variation</label>
+          <div className="flex gap-3">
+            <input className="px-3 py-2 rounded-lg text-sm flex-1" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-primary)', cursor: pack.isDefault ? 'not-allowed' : 'text' }} defaultValue={pack.version} disabled={pack.isDefault} />
+            <button className="px-4 py-2 rounded-lg text-sm" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--bg-card)', border: '1px solid var(--border)', color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-secondary)', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault}>Rename</button>
+          </div>
+          {pack.isDefault && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Default packs cannot be renamed.</p>}
+        </div>
+        <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+          <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>Delete this variation permanently.</p>
+          <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--red)', color: pack.isDefault ? 'var(--text-muted)' : 'white', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault}>Delete Variation</button>
+          {pack.isDefault && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Default packs cannot be deleted.</p>}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ========================================================================
+   Pack Card
+   ======================================================================== */
+
+function PackCard({ pack, onToggle, onDetails, onCopy, hasVariations, isExpanded, onToggleExpand }: {
+  pack: StopPack; onToggle: () => void; onDetails: () => void; onCopy: () => void;
+  hasVariations?: boolean; isExpanded?: boolean; onToggleExpand?: () => void;
+}) {
+  const isVariation = !pack.isDefault;
+  const template = TEMPLATES[pack.templateKey];
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', boxShadow: 'var(--card-shadow)', backdropFilter: 'var(--card-backdrop)', WebkitBackdropFilter: 'var(--card-backdrop)', opacity: pack.enabled ? 1 : 0.6, marginLeft: isVariation ? 24 : 0 }}>
+      {hasVariations ? (
+        <button onClick={(e) => { e.stopPropagation(); onToggleExpand?.(); }} className="w-5 h-5 rounded flex items-center justify-center text-xs flex-shrink-0 transition-transform" style={{ color: 'var(--text-muted)', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>{'\u25B6'}</button>
+      ) : isVariation ? <div className="w-5 flex-shrink-0" /> : null}
+
+      <Toggle enabled={pack.enabled} onChange={onToggle} />
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{pack.name}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-secondary)', background: 'var(--bg-input)' }}>{pack.version}</span>
+          {pack.tags.map((tag) => <TagBadge key={tag} tag={tag} />)}
+        </div>
+        <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+          {template.stopSummary(pack.params)}
+        </p>
+      </div>
+
+      <div className="flex gap-2 flex-shrink-0">
+        <button onClick={onDetails} className="px-3 py-1.5 rounded text-xs font-medium" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>Details</button>
+        <button onClick={onCopy} className="px-3 py-1.5 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Create Variation</button>
+      </div>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Main Component
+   ======================================================================== */
+
+export default function StopLossPacksV1() {
+  const [packs, setPacks] = useState<StopPack[]>(initialPacks);
+  const [detailPack, setDetailPack] = useState<StopPack | null>(null);
+  const [draftPack, setDraftPack] = useState<StopPack | null>(null);
+  const [search, setSearch] = useState('');
+  const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(() => {
+    const keys = initialPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
+    return new Set(Array.from(new Set(keys)));
+  });
+
+  const enabledCount = packs.filter((p) => p.enabled).length;
+  function togglePack(id: string) { setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p))); }
+  function toggleTemplate(key: string) { setExpandedTemplates((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; }); }
+
+  const groupedPacks = useMemo(() => {
+    const groups: { templateKey: string; default: StopPack; variations: StopPack[] }[] = [];
+    for (const pack of packs) { if (pack.isDefault) groups.push({ templateKey: pack.templateKey, default: pack, variations: [] }); }
+    for (const pack of packs) { if (!pack.isDefault) { const g = groups.find((gr) => gr.templateKey === pack.templateKey); if (g) g.variations.push(pack); } }
+    return groups;
+  }, [packs]);
+
+  const filteredGroups = useMemo(() => {
+    if (!search.trim()) return groupedPacks;
+    const q = search.toLowerCase();
+    return groupedPacks.map((g) => ({ ...g, variations: g.variations.filter((v) => v.name.toLowerCase().includes(q) || v.version.toLowerCase().includes(q) || v.tags.some((t) => t.toLowerCase().includes(q))) })).filter((g) => g.default.name.toLowerCase().includes(q) || g.default.tags.some((t) => t.toLowerCase().includes(q)) || g.variations.length > 0);
+  }, [groupedPacks, search]);
+
+  const activePack = draftPack || detailPack;
+  const isDraft = draftPack !== null;
+
+  function handleCopy(source: StopPack) {
+    setDraftPack({ ...source, id: `${source.templateKey}-draft-${Date.now()}`, version: '', isDefault: false, isSaved: false });
+    setDetailPack(null);
+  }
+  function handleSaveVariation() {
+    if (!draftPack || !draftPack.version.trim()) return;
+    const saved = { ...draftPack, isSaved: true, id: `${draftPack.templateKey}-${draftPack.version.toLowerCase().replace(/\s+/g, '-')}` };
+    setPacks((prev) => [...prev, saved]);
+    setDraftPack(null);
+    setDetailPack(saved);
+  }
+
+  if (activePack) {
+    return (
+      <div>
+        <PageHeader
+          title={isDraft ? `New Variation of ${activePack.name}` : `${activePack.name} (${activePack.version})`}
+          subtitle={isDraft ? 'Configure parameters and preview before saving' : activePack.tags.join(' \u00b7 ')}
+          backHref="#"
+          actions={
+            <div className="flex items-center gap-3">
+              {isDraft ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs" style={{ color: 'var(--text-muted)' }}>Name:</label>
+                    <input className="px-2 py-1.5 rounded-lg text-sm w-40" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} placeholder="e.g. Tight, Aggressive" value={activePack.version} onChange={(e) => setDraftPack({ ...activePack, version: e.target.value })} />
+                  </div>
+                  <button onClick={handleSaveVariation} className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: 'white', opacity: activePack.version.trim() ? 1 : 0.5, cursor: activePack.version.trim() ? 'pointer' : 'not-allowed' }} disabled={!activePack.version.trim()}>Save as Variation</button>
+                  <button onClick={() => setDraftPack(null)} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Discard</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => handleCopy(activePack)} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Create Variation</button>
+                  <button onClick={() => setDetailPack(null)} className="px-4 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>Back to Packs</button>
+                </>
+              )}
+            </div>
+          }
+        />
+        {isDraft && (
+          <div className="mb-4 px-4 py-3 rounded-xl flex items-start gap-2" style={{ background: 'var(--orange-muted)', border: '1px solid var(--orange)' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0 mt-0.5" style={{ color: 'var(--orange)' }}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+            <div><p className="text-xs font-medium" style={{ color: 'var(--orange)' }}>Draft mode</p><p className="text-xs" style={{ color: 'var(--text-secondary)' }}>Parameters will be <strong>permanently locked</strong> once saved. Use the Preview tab to test stop placement before saving.</p></div>
+          </div>
+        )}
+        <TabBar tabs={['Parameters', 'Behavior', 'Preview', 'Code', 'Danger Zone']}>
+          {(tab) => (
+            <div>
+              {tab === 'Parameters' && <ParametersTab pack={activePack} />}
+              {tab === 'Behavior' && <BehaviorTab pack={activePack} />}
+              {tab === 'Preview' && <PreviewTab pack={activePack} />}
+              {tab === 'Code' && <CodeTab pack={activePack} />}
+              {tab === 'Danger Zone' && <DangerZoneTab pack={activePack} />}
+            </div>
+          )}
+        </TabBar>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <PageHeader title="Stop Loss Packs" subtitle="Reusable stop loss configurations with locked parameters for consistent backtesting" actions={
+        <Link href="/confluence-packs/pack-builder" className="px-4 py-2 rounded-lg text-sm font-medium inline-flex items-center gap-2" style={{ background: 'var(--accent)', color: 'white' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          Create New Template
+        </Link>
+      } />
+      <div className="flex items-center gap-4 mb-5">
+        <p className="text-sm flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{packs.length} packs, {enabledCount} enabled</p>
+        <div className="flex-1 relative">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+          <input className="w-full pl-9 pr-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} placeholder="Search stop loss packs..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+      </div>
+      <div className="space-y-2">
+        {filteredGroups.map((group) => {
+          const hasVariations = group.variations.length > 0;
+          const isExpanded = expandedTemplates.has(group.templateKey);
+          return (
+            <div key={group.templateKey}>
+              <PackCard pack={group.default} onToggle={() => togglePack(group.default.id)} onDetails={() => setDetailPack(group.default)} onCopy={() => handleCopy(group.default)} hasVariations={hasVariations} isExpanded={isExpanded} onToggleExpand={() => toggleTemplate(group.templateKey)} />
+              {hasVariations && !isExpanded && <button onClick={() => toggleTemplate(group.templateKey)} className="ml-10 mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>{group.variations.length} variation{group.variations.length !== 1 ? 's' : ''}</button>}
+              {isExpanded && group.variations.map((v) => <div key={v.id} className="mt-2"><PackCard pack={v} onToggle={() => togglePack(v.id)} onDetails={() => setDetailPack(v)} onCopy={() => handleCopy(v)} /></div>)}
+            </div>
+          );
+        })}
+        {filteredGroups.length === 0 && <div className="text-center py-12"><p className="text-sm" style={{ color: 'var(--text-muted)' }}>No packs match &quot;{search}&quot;</p></div>}
+      </div>
+    </div>
+  );
+}

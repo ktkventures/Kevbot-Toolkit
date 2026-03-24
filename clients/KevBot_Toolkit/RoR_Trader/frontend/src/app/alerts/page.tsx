@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Visual-first alert management. Dense cockpit layout with animated SVG radar showing symbol signal directions, position cards with real-time R tracking and stop/target progress, terminal-style feed with scanline and flash effects, and strategy config sidebar. No tabs — everything visible at once.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Phase 39)',
+      description: '4-tab alert management: Strategy Alerts (filtered feed + entry/exit pair history with webhook status), Portfolio Alerts (per-portfolio with matched/phantom status), Outbound Webhooks (delivery log with payload inspection, success metrics), Inbound Webhooks (endpoint reference). Engine status strip (non-admin). Admin controls moved to Settings > Connections.',
+      rationale: 'Focuses on what users care about: what alerts fired, what webhooks were sent, and whether they were delivered correctly. Admin engine controls relocated to Connections page. Entry/exit pair history shows the full lifecycle of each trade with webhook delivery status for validation.',
+    },
+    component: V5,
   },
 ];
 

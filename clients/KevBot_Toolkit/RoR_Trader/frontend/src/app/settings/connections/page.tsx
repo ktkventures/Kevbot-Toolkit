@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Visual-first connection management. SVG network map with the app at center and services as clickable nodes. Each connection line shows latency. Node detail panel has uptime stats, hourly health bars, and a terminal-style auto-diagnosis feature for disconnected services.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Engine Status)',
+      description: 'V4 topology diagram + Alert Engine (Ralph) admin module with status, uptime, ticks, symbols, active strategies, restart/disable controls, and monitoring logs terminal.',
+      rationale: 'Moves engine admin controls from Alerts & Signals to Settings > Connections where admin/infrastructure concerns belong. Regular users see engine status on the Alerts page but admin controls live here.',
+    },
+    component: V5,
   },
 ];
 

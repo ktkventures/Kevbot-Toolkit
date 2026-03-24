@@ -957,9 +957,18 @@ export default function DashboardV7() {
     .filter(a => activityFilter === 'all' || a.type === activityFilter)
     .filter(a => !activitySearch || a.message.toLowerCase().includes(activitySearch.toLowerCase()));
 
+  useEffect(() => {
+    const id = 'v7-animation-styles';
+    if (!document.getElementById(id)) {
+      const style = document.createElement('style');
+      style.id = id;
+      style.textContent = ANIMATION_STYLES;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   return (
     <div style={{ animation: 'v7-fade-in 0.3s ease-out' }}>
-      <style>{ANIMATION_STYLES}</style>
 
       {/* ============ HEADER: Title + Portfolio Filter + System Status + Customize ============ */}
       <div className="flex items-start justify-between mb-5">

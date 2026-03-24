@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'The "wow factor" version. Portfolio overview strip aggregates total R, avg WR/PF, best/worst performers across all strategies. Cards feature real SVG equity sparklines with animated draw, mini DNA radar charts showing strategy character, and pulsing live dots for monitored strategies. Comparison mode lets traders select 2 strategies for side-by-side radar overlay and KPI delta table. 6 strategies with richer mock data including R-squared and total R.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-refined',
+      name: 'Refined',
+      description: 'Inline checkbox on each card action row, no select mode toggle, bulk actions bar with Delete Selected + Create Portfolio + Update Portfolio.',
+      rationale: 'Removes the janky select mode toggle. Checkbox is always available on the action button row of each card. Checking any card surfaces the bulk action bar with Delete Selected, Create Portfolio, Update Portfolio, Select All, and Clear. Cleaner workflow for bulk operations.',
+    },
+    component: V5,
   },
 ];
 

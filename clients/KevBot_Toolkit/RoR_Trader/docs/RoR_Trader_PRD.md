@@ -3083,7 +3083,7 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 
 ---
 
-### Phase 38: Frontend Migration — DESIGN IN PROGRESS (2026-03-20)
+### Phase 38: Frontend Migration — DESIGN IN PROGRESS (2026-03-24)
 
 **Goal:** Migrate the frontend from Streamlit to a modern web framework for better UX, performance, and maintainability. The Python backend (strategy engine, alert system, portfolio computation) stays — only the UI layer changes.
 
@@ -3111,6 +3111,21 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 4. **Wire up:** Connect React pages to real API endpoints, replace mock data.
 5. **QA & cutover:** Run both in parallel, verify feature parity, then switch.
 
+**Pages locked (V5 designs approved):**
+- Settings (Themes V1, Display V5, Connections V4, Account V2)
+- Dashboard V6
+- TF Confluence V5, General Packs V5, Stop Loss V1, Take Profit V1
+- Strategy Builder V5
+- My Strategies V5
+- Strategy Detail V5
+- Webhook Templates (List V5, Detail V5) — Phase 39
+- My Portfolios V5
+- Portfolio Detail V5
+- Portfolio New/Edit V5
+- Portfolio Requirements V5 (Trade Qualification Rules, TQ filter on 6 pages)
+- Alerts & Signals V5 (4 tabs, admin to Connections)
+- Settings/Connections V5 (engine admin module)
+
 **Open decisions:**
 - [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)
 - [ ] Research what TradingView and popular fintech tools use and why
@@ -3136,6 +3151,49 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - Client-side interactivity (instant UI responses, no server round-trips for every click)
 
 **When to start:** After Phase 31 (Polygon.io) — that's pure backend and works the same regardless of frontend. Migrate before building more complex UI features (webhook rework, scanner) so they're built correctly the first time.
+
+---
+
+### Phase 39: Webhook Event System Redesign — DESIGN APPROVED, FRONTEND LOCKED (2026-03-24)
+
+**Goal:** Expand the webhook event system from 5 generic events to 11 execution-aware events, introduce account-based webhook templates, and make the full webhook lifecycle transparent to users on the strategy detail page.
+
+**Motivation:** The current 5 events (entry_long, entry_short, exit_long, exit_short, compliance_breach) don't distinguish between market and limit orders and have no concept of cancel events. The new execution type parameters (order_type: market/limit, confirmation steps, hold times) require distinct webhook payloads for each scenario so exchanges like SignalStack can execute the correct order type.
+
+**Reference spec:** `docs/Webhook_Event_System.md` — full event definitions, trigger→webhook mapping, payload placeholders, template structure.
+
+**New event types (11 total):**
+- `entry_long_market`, `entry_long_limit`, `entry_short_market`, `entry_short_limit`
+- `exit_long_market`, `exit_long_limit`, `exit_short_market`, `exit_short_limit`
+- `cancel_long`, `cancel_short`
+- `compliance_breach` (unchanged)
+
+**Webhook events are driven by trigger parameters** (order_type, confirmation settings), not by the execution type label. The execution type ([C], [L], [LC], [CC]) is a convenient shorthand but the actual webhook behavior comes from the pack's trigger configuration.
+
+**Key design decisions:**
+- **Webhooks = actionable exchange instructions.** Only fire when an action is needed. All internal logic (hold times, confirmations, gate checks) is resolved before any webhook leaves the system.
+- **Hold seconds handled internally.** The exchange never sees the hold — webhook fires only after hold completes.
+- **[LC] unconfirmed exit timing:** Fires at bar close when confirmation fails.
+- **Limit timeout sequence:** entry_X_limit → cancel_X → (optional) entry_X_market as fallback. Cancel is harmless if no open orders.
+- **Account-based templates:** User creates one template per exchange/service (e.g., "SignalStack") defining JSON payloads for all 11 event types. Portfolios select a template instead of manually wiring individual webhooks with JSON payloads. One-time setup per exchange.
+- **Strategy Alerts tab transparency:** Strategy detail page shows exactly which webhook events the strategy's triggers will produce, the full entry→exit lifecycle, and last-alert payload values so users can verify the system is sending correct data.
+
+**Migration:** Old 5 event names auto-map to `_market` variants for backward compatibility.
+
+**Scope:**
+- [ ] Expand event type system in alerts.py (5 → 11 events)
+- [ ] Add `order_type` field to alert records (market/limit)
+- [ ] Update `_get_event_key()` in alert_monitor.py to produce new event names
+- [ ] Add cancel event dispatch logic for limit order timeouts
+- [ ] Implement account-based webhook template CRUD (templates define payloads for all 11 events)
+- [ ] Update portfolio webhook UI — template selector replaces individual payload editors
+- [ ] Add `{{order_type}}` and `{{event_type}}` (new format) to placeholder catalog
+- [ ] Migrate existing webhook configs (old event names → new `_market` defaults)
+- [x] Frontend: Strategy detail Alerts tab with execution flow, event table, trigger reference, payload verification — LOCKED V5
+- [x] Frontend: Webhook template list page (account-based cards, create modal with exchange presets) — LOCKED V5
+- [x] Frontend: Webhook template detail page (4 tabs: Event Payloads, Placeholders, Delivery History, Settings) — LOCKED V5
+
+**Depends on:** Phase 31F (execution type parameters must be finalized first)
 
 ---
 

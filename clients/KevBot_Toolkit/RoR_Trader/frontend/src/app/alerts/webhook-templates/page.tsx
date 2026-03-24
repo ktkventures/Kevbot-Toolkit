@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Elevates webhook management into a full development studio. The payload diff view shows template vs rendered side-by-side. The delivery timeline visualizes webhook health at a glance. The response inspector shows exactly what came back from test sends. The placeholder palette makes it easy to build payloads without memorizing variable names.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-account-based',
+      name: 'Account-Based Templates (Phase 39)',
+      description: 'Account-based webhook templates where each template defines JSON payloads for all 11 event types (entry/exit market/limit, cancel, compliance). Templates are tied to an exchange/service. Portfolios select a template instead of manually wiring individual webhooks. Category-filtered event list, inline payload editor with resolved preview, placeholder reference, all-events overview table, and delivery history.',
+      rationale: 'Phase 39 Webhook Event System redesign. Shifts from individual payload templates to account-based templates that cover all event types. One-time setup per exchange, portfolios just pick a template. Driven by the new execution type parameters that require market/limit/cancel differentiation.',
+    },
+    component: V5,
   },
 ];
 

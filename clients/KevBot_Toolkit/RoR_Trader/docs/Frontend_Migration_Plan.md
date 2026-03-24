@@ -15,6 +15,56 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 
 ## Design Review Log
 
+### TF Confluence — LOCKED: V5 (Production)
+- **Decision:** V5 with all production changes.
+- **Key decisions made during iteration:**
+  - **All 8 templates** from backend (EMA Stack, MACD Line, MACD Histogram, VWAP, RVOL, UT Bot, EMA Price Position, Bar Count Exit)
+  - **Parameters lock after save** to protect live strategies/portfolios. Unsaved drafts show warning banner. No save button on Parameters tab — only "Save as Variation" in header.
+  - **Variations via Copy** — "Create Variation" button opens detail view in draft mode with all tabs accessible (including Preview). User sets name + params + trigger params, then saves.
+  - **Nested under defaults** — Variations indent under parent template with expand/collapse chevron inside the card.
+  - **Search bar** for filtering by name, version, or tag.
+  - **Tags on cards** instead of category sections. Multiple tags per pack (e.g., "Moving Averages" + "Trend").
+  - **"Create New Template"** button links to Pack Builder.
+  - **Updated execution types** — `[C]`, `[L]`, `[LC]`, `[CC]` per display settings V5 spec. Single blue color for all exec badges, cyan for fidelity badges, pill-shaped, bracketed.
+  - **Trigger Parameters tab** — source of truth for all execution type settings across the pack. [C] and [L] have standalone settings. [LC] inherits stage 1 from [L], only exposes confirmation/bail. [CC] inherits stage 1 from [C], only exposes confirmation/bail. Bail options: immediate market exit, immediate limit exit, limit exit at breakeven.
+  - **Outputs & Triggers tab** — [PB]/[CB] fidelity badges on outputs header, exec type badges on triggers header. Sentiment badges (bullish/bearish/neutral) replace LONG/SHORT and ENTRY/EXIT labels. Triggers expandable to show variant IDs.
+  - **Card layout** — Row 1: name, version, tags, state count (tooltip with names), trigger count (tooltip with names). Row 2: all locked params in monospace shorthand — indicator params + exec type settings separated by pipe.
+  - **7 tabs in detail view:** Parameters, Trigger Parameters, Plot Settings, Outputs & Triggers, Preview (chart + state timeline + trigger events tables), Code (collapsible indicator/interpreter/Pine Script), Danger Zone.
+
+### General Packs — LOCKED: V5 (Production)
+- **Decision:** V5, adapted from TF Confluence V5 patterns for scalar time-based conditions.
+- **Key decisions:**
+  - **4 templates:** Time of Day, Trading Session, Day of Week, Calendar Filter
+  - Same pack architecture: locked params, nested variations, draft mode, search, "Create New Template" → Pack Builder
+  - **No Plot Settings tab** (scalar conditions, nothing to visualize)
+  - **No Trigger Parameters tab** (bar-close only, no execution type variants)
+  - **No fidelity badges** (PB/CB don't apply to time-based conditions)
+  - **5 tabs:** Parameters (template-specific: time inputs, session dropdown, day toggles, event toggles), Outputs & Triggers, Preview (condition bands + state timeline), Code (evaluator function), Danger Zone
+  - **Binary outputs** (IN_WINDOW/OUT_OF_WINDOW, IN_SESSION/OUT_OF_SESSION, etc.)
+  - **0-2 triggers per template** (Day of Week has none — condition-only gate)
+  - **4 default packs** with mock variations (Power Hour, Midweek Only)
+  - Sentiment badges on triggers (bullish/bearish/neutral)
+
+### Stop Loss Packs — LOCKED: V1 (Production) — NEW PAGE
+- **Decision:** New page at `/confluence-packs/stop-loss`, replacing the stop-loss half of Risk Management.
+- **Key decisions:**
+  - **6 templates:** ATR Stop, Fixed Dollar, Percentage, Swing, ATR Trailing, Breakeven
+  - Same pack architecture: locked params, nested variations, draft mode, search
+  - **5 tabs:** Parameters, Behavior (explains method mechanics + exit priority), Preview (chart + sample trades table), Code, Danger Zone
+  - Cards show effective formula in monospace (e.g., `1.5x ATR`, `5-bar swing, $0.05 pad`)
+  - Trailing/breakeven templates include activation_r threshold + modifier params
+  - Behavior tab explains stop is checked first (highest exit priority, pessimistic fill)
+
+### Take Profit Packs — LOCKED: V1 (Production) — NEW PAGE
+- **Decision:** New page at `/confluence-packs/take-profit`, replacing the take-profit half of Risk Management.
+- **Key decisions:**
+  - **6 templates:** Risk:Reward, ATR Target, Fixed Dollar, Percentage, Swing Target, No Target
+  - Same pack architecture as Stop Loss
+  - R:R template notes dependency on stop loss to calculate risk
+  - "No Target" template for signal/bar-count-only exit strategies
+  - Behavior tab explains take profit is checked second (after stop loss)
+  - Sidebar updated: "Risk Management" replaced with "Stop Loss" and "Take Profit"
+
 ### Settings/Themes — LOCKED: V1
 - **Decision:** V1 as-is, no changes needed.
 - **Notes:** ThemeSwitcher component already works well. Simple and functional.
@@ -45,6 +95,175 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 - **Not included:** Strategy leaderboard, KPI pencil icon (removed — KPI customization handled in Customize modal).
 - **V7 reference:** Detail modals on every widget (equity breakdown, P&L analysis, position context, health deep-dive, market analysis, goal tracking, activity log). Preserved for implementation reference when wiring up backends.
 
+### Strategy Builder — LOCKED: V5 (Pack Integrated)
+- **Decision:** V5 based on V2 Full Parity with pack architecture integration.
+- **Key decisions made during iteration:**
+  - **Strategy Method selector** — card above core config with Standard (active), Inbound Webhook (coming soon), Scanner (coming soon). Backend keys off `strategyMethod` field.
+  - **Stop Loss & Take Profit via pack selectors** — replaces inline slider config. Scrollable list of saved packs (same style as entry/exit trigger lists). Single selection per slot. Links to pack management pages.
+  - **Updated trigger exec types** — `[C]`, `[L]`, `[LC]`, `[CC]` naming. All 8 TF templates represented in mock triggers. Uniform blue badges per display settings V5.
+  - **Symmetric layout** — Left: equity curve/price chart (620px fixed) + trade history. Right: analysis tabs (620px fixed) + advanced analysis.
+  - **Trade history timestamps** include seconds (HH:MM:SS).
+  - **Confluence Depth selector** — pinned to bottom of analysis card. Button group (1-N) per tab. Entry/Stop/Target: max 1. Exit: max 3. TF Conditions/General: max 4. Label: "Individual" for 1, "Combinations of up to N" for 2+.
+  - **Depth-dependent button labels** — Depth 1: "Add" (building up items). Depth 2+: "Replace" (picking a combination). Entry/Stop/Target always "Replace".
+  - **Filter & Sort modal** — accessible via filter icon on every analysis tab toolbar. Sort by (PF, WR, Avg R, Daily R, R², Trades), ascending/descending toggle, 6 minimum threshold fields (Min PF, Min WR, Min Trades, Min R², Min Daily R, Min Avg R).
+  - **Consistent toolbar** across all 6 analysis tabs: Search + Analyze + Filter icon. No "+ Add" buttons on toolbar row.
+  - **Analysis tabs:** Entry, Exit, TF Conditions, General, Stop Loss, Take Profit.
+
+### Strategy Detail — LOCKED: V5 (Production)
+- **Decision:** V5 approved with all feedback incorporated.
+- **Key features in V5:**
+  - **6 tabs** (down from 9): Equity & KPIs, Chart & Trades, Confluence Analysis, Configuration, Alerts, Alert Analysis
+  - Forward test and alerts always on — no separate BT-only view
+  - **KPI comparison modes** matching My Strategies V5: Overall | BT vs FWD | FWD vs Alerts | BT vs Alerts. 7-column table (WR, PF, Daily R, Daily ROI, TPD, Max DD) with delta row.
+  - **Extended KPIs** collapsible (open by default) with 5 sub-tabs: Performance, Risk-Adjusted, Distribution, Drawdown, Streaks
+  - **Date Range + KPI Mode** on same row inside Equity & KPIs tab (not above tabs)
+  - **3-segment equity curve** per display settings V5 (BT blue, FWD orange, Live green overlay). HWM/Edge Check/Confidence Bands toggleable.
+  - **R-distribution** side-by-side BT vs FWD histograms
+  - **Advanced Analysis** collapsible: Rolling Metrics (window slider + metric selector), Return Distribution (histogram/box/violin + stats), Markov Motor (transition matrix + edge decay)
+  - **Chart & Trades merged**: OHLC chart → Position Status module → Current Conditions table → Alert History + Trade History (Backtest) side-by-side → FWD trades (expanded) + BT trades (collapsed)
+  - **Confluence Analysis**: per-group sub-tabs with full-width indicator chart, then Interpreter State Timeline + Trigger Events side-by-side
+  - **Alerts tab — Webhook Execution Flow (Phase 39):**
+    - Webhook execution flow intro (driven by trigger parameters, not execution type labels)
+    - Entry → Exit lifecycle diagram with step-by-step green/red dots and timing descriptions
+    - Webhook Events table: event type, order type, when it fires, conditions (stop loss breach, exit trigger, target, bar count)
+    - Trigger Configuration Webhook Reference: 4-card grid ([C] Bar Close, [L] Level Cross, [LC] Level Cross + Bar Close Confirm, [CC] Bar Close + Next Bar Close Confirm) with exec type badges for educational reference
+    - Available Payload Data: placeholder table showing **last alert values** (not examples) so users can verify system accuracy
+    - Recent Alerts table with new event type names (entry_long_market, etc.) and order type column
+    - Trade-to-Alert mapping with timing deltas
+  - **Alert Analysis**: discrepancies (missed + phantom), 4-column summary metrics (FT All | FT Alerts-On | Alert Actual | Delta), position health with anomalies, trigger timing analysis, trade-by-trade R-multiple + dollar slippage comparison
+  - **Pack-aware variable display** consolidated to 2 lines: entry + exit on line 1 (pipe separated), stop + target + confluence on line 2
+  - **Dual sigma badges** (FWD σ orange | Alert σ green) + pulsing monitored dot
+
+### My Strategies (List) — LOCKED: V5 (Refined)
+- **Decision:** V5 based on V2 with major card and UX overhaul.
+- **Key decisions made during iteration:**
+  - **Inline checkbox** on each card's action row (no select mode toggle). Checking any card surfaces bulk action bar.
+  - **Bulk actions:** Delete Selected, Create Portfolio, Update Portfolio, Add Tag, Select All, Clear.
+  - **3-segment equity curve** per display settings V5: Backtest (blue) → Forward (orange) → Live Alerts (green overlaid on forward x-axis showing slippage). Gradient fills on BT/FWD. Zero line, HWM, forward boundary.
+  - **Viewing preferences row:** KPI Mode, Chart Height (S/M/L/XL), X-axis (Time/Trade #), High Water Mark (On/Off), Edge Check (On/Off), Confidence Bands (On/Off).
+  - **KPI Mode dropdown** with 4 views: Overall (single row), Backtest vs Forward (table with deltas), Forward vs Alerts (table), Backtest vs Alerts (table). Comparison tables show WR, PF, Daily R, Daily ROI, TPD, Max DD with color-coded deltas.
+  - **Daily ROI %** added as 6th KPI — `(avg daily P&L) / (avg capital deployed per trade) × 100`. Capital efficiency metric for portfolio decisions.
+  - **TPD** (Trades Per Day) replaces raw trade count — normalized for apples-to-apples comparison across different time periods.
+  - **Dual sigma badges** in top-right: forward test σ (orange) | alert σ (green). Color-coded: green <1σ, orange 1-2σ, red >2σ.
+  - **Pulsing green dot** replaces "Monitored" text badge. Alerts on by default with toggle on action row.
+  - **Alert accuracy metric** on meta line (green) for strategies with alert tracking.
+  - **Data View filter** — Strategy Default, All Data, Last 7/30/90 Days, Backtest Only, Forward Test Only. Affects KPIs displayed on cards.
+  - **Pack-aware strategy variables** displayed in 4 rows: entry (exec badge + pack > trigger), exit (supports multiple), stop (red) + target (green), confluence ([PB] fidelity badges + condition names). Always shows confluence row ("none" if empty).
+  - **Filter row:** 6-column grid — Ticker, Direction, Tag, Status, Data View, Sort.
+
+### Webhook Templates (List) — LOCKED: V5 (Account-Based, Phase 39)
+- **Decision:** V5 account-based templates replacing V1-V4 individual payload templates.
+- **Key decisions:**
+  - **Account-based templates** — each template is tied to an exchange/service and contains payloads for all 11 webhook event types
+  - **Card grid** with template name, exchange badge, portfolio count, event count, last delivery status dot (Healthy/Error), and URL preview
+  - **Search bar** for filtering by name or exchange
+  - **+ New Template modal** — 3-step: pick exchange preset (SignalStack, TradeThePool, Discord, Slack, Custom) → name → URL. Pre-fills all 11 event payloads with exchange defaults. Navigates to detail page on create.
+  - Cards link to detail page (same pattern as strategies)
+- **Reference spec:** `docs/Webhook_Event_System.md`
+
+### Webhook Template Detail — LOCKED: V5 (Account-Based, Phase 39)
+- **Decision:** V5 detail page with 4 tabs, matching strategy detail page pattern.
+- **Key decisions:**
+  - **Event Payloads tab** — category filter pills (Entry/Exit/Cancel/Compliance with color coding and counts), event list sidebar, payload template editor with resolved preview below, all-events overview table at bottom (clickable rows scroll to editor)
+  - **Placeholders tab** — grouped by category (Signal, Order, Strategy, Portfolio, Indicator, Meta) with copy buttons per placeholder
+  - **Delivery History tab** — 4 summary metric cards (total, success rate, avg latency, last sent), timeline chart placeholder, recent deliveries table with event badges and status dots
+  - **Settings tab** — template config (name, exchange, URL, created/updated dates), portfolio usage list, danger zone with delete
+  - **Header** — back link to list, Edit/Duplicate/Delete buttons, exchange badge, health status dot, portfolio count, URL
+
+### My Portfolios (List) — LOCKED: V5 (Refined, My Strategies Style)
+- **Decision:** V5 matching My Strategies V5 style with portfolio-specific KPIs and combined metrics.
+- **Key decisions:**
+  - **Card layout** matching strategies: pulsing green dot (enabled), name + status badge, sigma badges (FWD σ / Alert σ) top-right, tags below status, meta line (strategy count, balance, scaling %, avg risk, trades/day, webhook template name), strategy pills (symbol + direction), 3-segment equity curve (BT/FWD/Alerts)
+  - **Viewing preferences row** matching strategies: KPIs dropdown (Overall/BT vs FWD/FWD vs Alerts/BT vs Alerts), Chart Height (S/M/L/XL), X-axis (Time/Trade #), HWM, Edge Check, Confidence Bands
+  - **Filter row:** Status, Tag, Sort, Date Range (All Data/Last 7/30/90 Days/Backtest Only/Forward Only/Custom), Custom shows start + end date pickers inline
+  - **KPI modes:** Overall = 6 KPIs (P&L, WR, PF, Max DD %, Avg Daily P&L, Trades). Comparison modes = 6-column table with delta row (P&L, WR, PF, Max DD, Avg Daily)
+  - **Combined Metrics card** between preferences and cards — aggregates all visible portfolios: Total P&L, Combined Balance, ROI, Avg WR, Avg PF, Worst Max DD, Combined Daily P&L, Total Trades, Strategies count. Combined equity curve placeholder. Updates dynamically with filters.
+  - **Requirement set badge** with pass count (green all pass, orange if violations)
+  - **Action row:** View, Edit, Clone, Delete, Tags + Enabled toggle (replaces alert toggle) + bulk select checkbox
+  - **Bulk actions:** Select All, Delete Selected, Clear
+  - **Portfolio-specific KPIs** use dollar amounts (P&L, balance, daily P&L) vs R-multiples on strategies
+
+### Portfolio Detail — LOCKED: V5 (Production)
+- **Decision:** V5 based on V2 Full Parity with Phase 39 webhook integration, risk analytics, and Streamlit parity.
+- **Key decisions:**
+  - **6 tabs** (down from 7): Live Dashboard, Performance, Strategies, Prop Firm Check, Account, Webhooks
+  - **Live Dashboard:**
+    - Visibility disclaimer banner at top: "Dashboard metrics reflect visible strategies from the Strategies tab"
+    - Planned/Executed data toggle on same banner — Planned = unlimited buying power (strategy performance), Executed = actual transactions (buying power constrained)
+    - 5 KPIs: Alert Trades, Win Rate, Total P&L, Expected P&L, vs Plan
+    - Performance vs Plan chart with 1SD/2SD confidence bands
+    - Open Positions table with Status (Matched/Phantom) and Close Early button
+    - Buying Power Tracker: date picker with left/right arrows for day navigation, 24-hour chart, 4 KPIs (starting balance, available, allocated, peak)
+    - Anomaly Detection: category tabs (All / Alert Issues / Performance). Alert Issues = phantom trades, unclosed positions, missed trades. Performance = consecutive losses, etc.
+    - Trade History: 13-column table matching Streamlit (#, Strategy, Symbol, Dir, Entry $, Exit $, Reason, P Qty, E Qty, R, P&L, Status, Chart). Chart button opens modal with trade metrics, execution info, slippage, and focused candlestick chart
+  - **Performance:**
+    - 6 KPIs (Trades, WR, PF, Total P&L, Balance, Max DD)
+    - Combined equity curve: bold white portfolio line + per-strategy dashed colored lines
+    - Drawdown analysis: red area chart with requirement set limit dashed line (e.g., FTMO -10%). Metrics: Max DD ($+%), Profitable Days, Avg Daily P&L with std, Current DD with margin
+    - Daily P&L Distribution + Strategy Correlation Heatmap side by side
+    - Risk Analytics section: Daily Peak Capital Deployed (bar chart by day with account balance threshold line), Daily P&L vs Limits, Worst-Case Analysis (5 KPIs + Top 5 Worst Days table), Monte Carlo Simulation (shuffle mode, sim count, 6 result KPIs, DD distribution + equity confidence bands)
+  - **Strategies:**
+    - Per-strategy cards with: status badge, sigma badges (FWD σ / Alert σ), KPIs (WR, PF, Daily R, Trades, P&L Contribution), 3-segment equity curve
+    - Visible/Hidden toggle (controls Live Dashboard inclusion), Active/Paused toggle (controls webhook firing — alerts still track when paused)
+    - Data View dropdown (All Data / Last 7/30/90 Days / Backtest Only / Forward Only / Custom with date pickers), X-axis toggle (Time / Trade #)
+    - View Strategy, View Chart, Delete buttons
+  - **Prop Firm Check:** Requirement set selector, per-rule compliance cards with progress bars, profit target progress, margin of safety. Future: multi-firm compatibility view.
+  - **Account:** Balance KPIs (Current, Starting, Net Deposits, Trading P&L), Balance History chart (future: auto-adjusting std dev bands on deposit/withdrawal), Deposit/Withdrawal forms side by side, Ledger with daily detail modal, Trading Journal with mood/confidence/notes, Change History with typed badges. Account balance is source of truth for buying power and quantity calculations.
+  - **Webhooks:** Template selector dropdown (Phase 39 account-based templates) + View Template link, Compliance Breach Alerts toggle, Webhook Delivery History table. Deploy status/monitoring/logs removed (better suited for Settings > Connections).
+  - **Header:** Status badge, dual sigma badges, pulsing enabled dot, tags, meta line (strategies, balance, scaling, risk, trades/day, webhook template, requirement set)
+
+### Portfolio New/Edit — LOCKED: V5 (Production)
+- **Decision:** V5 based on V2 Full Parity with Phase 39 webhook template, risk analytics, projection views, and filter modal.
+- **Key decisions:**
+  - **Settings row:** 5-column grid — Name, Starting Balance, Risk Scaling slider, Requirement Set, Webhook Template (defaults to paper account)
+  - **Primary KPIs (rate-based, duration-independent):** Daily Avg P&L, 30-Day Est., Win Rate, PF, Max DD, Trades/Day
+  - **Secondary KPIs (8 metrics):** Monthly Est., Quarterly Est., Annual Est., Annual ROI %, Total Trades, Avg R/Trade, Payoff Ratio, Max Concurrent Positions
+  - **Equity curve dual view:** Backtest (actual historical curves at true dates) vs Projected (normalized day-0 start, daily avg performance, ±1SD/±2SD confidence bands). X-axis toggle (Date / Trade #).
+  - **Projection math (for implementation):** Per-strategy avg R + R variance from backtest trades + trade frequency. Combined at portfolio level weighted by trade frequency. Plan line = N × expected dollar step. Confidence bands = ±σ × √N. Risk scaling compounds over projection horizon. Daily Avg P&L = current-day expectation at current balance/risk. Monthly/quarterly/annual apply compounding.
+  - **View filter consideration (for implementation):** Data View dropdown should affect KPI display (All Data, Last 30/90 Days, Forward Only). Full backtest = baseline, sliced views = analysis. Not a portfolio setting — just a display filter.
+  - **Recommendation filter modal:** Sort by (P&L Impact, DD Impact, Correlation, Win Rate, PF, RODC, Hold Time). Risk assumption input for RODC calc. Min thresholds: Win Rate, PF, Max Correlation, Min RODC. Reset + Apply.
+  - **RODC metric** (Return on Deployed Capital): $/day per $1k deployed. Factors in trade frequency, hold time, risk per trade.
+  - **Risk Summary:** Full-width horizontal card with 4 metrics (Total Risk/Day, Max Daily Loss, Worst Case, Capital Utilization with progress bar)
+  - **Risk Analytics:** Daily Peak Capital Deployed chart, Worst Case Analysis (5 KPIs), Monte Carlo Simulation (shuffle mode, sim count, 6 KPIs, DD distribution + equity confidence bands)
+  - **Existing V2 features kept:** Strategy search/add with risk per trade, combined equity curve with per-strategy dashed lines, drawdown analysis, strategy cards with position sizing, drag-to-reorder, recommendation engine with analyze button
+
+### Portfolio Requirements — LOCKED: V5 (Trade Qualification)
+- **Decision:** V5 based on V3 streamlined inline editing with backend-aligned rule types and Trade Qualification Rules.
+- **Key decisions:**
+  - **Backend-aligned rule types:** Percentage-based (max_daily_loss_pct, max_total_drawdown_pct, daily_pause_pct, min_profit_pct, min_profitable_days, min_trading_days, max_position_size)
+  - **Trade Qualification Rules section** per set: min hold time, min price move, min profit threshold. Orange-themed, visually distinct from compliance rules. Addresses prop firm nuances like TTP's 30-second hold and $0.10 minimum move.
+  - **"Applies To" field** on each TQ rule: Wins only (green), Losses only (red), All trades (gray). TTP rules default to "Wins only" — losses always count, but wins only count if qualified.
+  - **Clone button** on all sets (including built-in). Creates editable copy.
+  - **Built-in set protections:** Lock icon, read-only rules, no delete. "Clone to customize" guidance.
+  - **Rule descriptions:** Info tooltip (ⓘ) on each rule badge
+  - **TQ Filter dropdown** surfaced on 6 pages:
+    - My Strategies: filter row (after Status)
+    - My Portfolios: filter row (after Tag)
+    - Strategy Builder: inside Filter & Sort modal with explainer
+    - Strategy Detail: Date Range + KPI Mode row
+    - Portfolio Detail: Live Dashboard banner (next to Planned/Executed toggle)
+    - Portfolio New: toggle above KPIs (when requirement set selected)
+  - User picks a requirement set → all TQ rules applied as trade filters. "None" = unfiltered.
+  - **Inline editing UX** from V3 preserved: expandable cards, click-to-edit values, inline add/delete
+
+### Alerts & Signals — LOCKED: V5 (Phase 39)
+- **Decision:** V5 with 4 tabs, engine admin moved to Connections.
+- **Key decisions:**
+  - **Engine status strip** at top (read-only, non-admin): running dot, uptime, ticks, symbols, strategies, last update
+  - **Strategy Alerts tab:** Strategy + Type filter dropdowns. Two tables: Chronological Alert Feed (Time, Type, Strategy, Symbol, Price, Exec, Event, P&L, Status) + Alert History Entry/Exit Pairs (paired trades with webhook delivery status codes)
+  - **Portfolio Alerts tab:** Portfolio filter dropdown. Same two-table pattern: Chronological Feed (Time, Portfolio, Strategy, Event, Price, Qty, Matched/Phantom) + Entry/Exit Pairs (Portfolio, Qty, Entry/Exit webhook status, P&L in R and $)
+  - **Outbound Webhooks tab:** 4 summary KPIs (Total Sent, Success Rate, Avg Latency, Failed). Delivery log table with inline-expanding payload view per row (View/Hide toggles a full-width payload row beneath)
+  - **Inbound Webhooks tab:** Placeholder with endpoint URL format, header reference, example payload. To be designed further during implementation.
+  - **Admin controls** (Restart, Disable Monitoring, logs terminal) moved to Settings > Connections V5
+  - **Monitored strategies module** removed (outdated, controls live on Portfolio Detail > Strategies tab via Active/Paused toggle)
+
+### Settings/Connections — LOCKED: V5 (Engine Admin)
+- **Decision:** V5 based on V4 topology diagram + Alert Engine (Ralph) admin module.
+- **Key decisions:**
+  - V4 network topology SVG with clickable nodes, latency labels, connection history, auto-diagnosis kept as-is
+  - Added Alert Engine module: Running status badge, Restart/Disable buttons, 5 KPIs (Uptime, Ticks, Symbols, Active Strategies, Last Update), monitoring logs terminal
+  - Admin-only controls separated from user-facing Alerts page
+
 ### Settings/Account — LOCKED: V2
 - **Decision:** V2 (Full Parity) — profile info, subscription tier, usage stats, API usage, password change, 2FA toggle, data export, sign out.
 - **Notes:** Locked as-is, no changes needed.
@@ -60,14 +279,15 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 
 | Priority | Page | Design Notes | Backend Needed |
 |----------|------|-------------|----------------|
-| 1 | **Settings (all 4)** | Lock in early — themes, display, connections, account affect everything | Auth endpoints, settings CRUD |
-| 2 | **Dashboard** | Landing page, sets the tone for the whole app | Strategy/portfolio summary endpoints |
-| 3 | **TF Confluence** | Must work before Strategy Builder — defines available indicators | Confluence groups CRUD, TEMPLATES registry |
-| 4 | **General Packs** | Time/day/session conditions needed for confluence | General packs CRUD |
-| 5 | **Risk Management** | Stop/target packs needed for strategy config | Risk packs CRUD |
-| 6 | **Strategy Builder** | Most complex, most used page. Heart of the app. | Backtest engine endpoint, data loading, indicator computation |
-| 7 | **My Strategies (list)** | View saved strategies, manage forward testing | Strategy CRUD, stored trades |
-| 8 | **Strategy Detail** | Deep-dive into strategy performance | Trade history, KPI computation, chart data |
+| 1 | **Settings (all 4)** | LOCKED (V1/V5/V4/V2) | Auth endpoints, settings CRUD |
+| 2 | **Dashboard** | LOCKED (V6) | Strategy/portfolio summary endpoints |
+| 3 | **TF Confluence** | LOCKED (V5) | Confluence groups CRUD, TEMPLATES registry |
+| 4 | **General Packs** | LOCKED (V5) | General packs CRUD |
+| 5 | **Stop Loss Packs** | LOCKED (V1) — new page, replaces Risk Management | Stop loss packs CRUD |
+| 6 | **Take Profit Packs** | LOCKED (V1) — new page, replaces Risk Management | Take profit packs CRUD |
+| 7 | **Strategy Builder** | LOCKED (V5) — pack selectors, method card, depth/filter system | Backtest engine endpoint, data loading, indicator computation |
+| 8 | **My Strategies (list)** | LOCKED (V5) — equity curves, KPI modes, sigma badges, pack-aware variables | Strategy CRUD, stored trades |
+| 9 | **Strategy Detail** | V5 IN REVIEW — 6 tabs, full alert analysis, advanced analytics | Trade history, KPI computation, chart data |
 
 **Milestone:** Can build, save, and review strategies in Next.js.
 
@@ -76,11 +296,11 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 
 | Priority | Page | Design Notes | Backend Needed |
 |----------|------|-------------|----------------|
-| 9 | **Portfolio List** | View and manage portfolios | Portfolio CRUD |
-| 10 | **Portfolio New/Edit** | Build portfolios from strategies | Portfolio builder, equity computation, recommendations |
-| 11 | **Portfolio Detail** | All 7 tabs — most complex detail page | Combined analytics, prop firm check, account ledger, deploy |
-| 12 | **Portfolio Requirements** | Prop firm rules engine | Requirement set CRUD, compliance check |
-| 13 | **Alerts & Signals** | Monitor control, alert feed, position tracking | Ralph engine status, alert history, monitor control |
+| 9 | **Portfolio List** | LOCKED (V5) — My Strategies style, combined metrics, tag filter | Portfolio CRUD |
+| 10 | **Portfolio New/Edit** | LOCKED (V5) — dual-view equity, projection KPIs, RODC, webhook template | Portfolio builder, equity computation, recommendations |
+| 11 | **Portfolio Detail** | LOCKED (V5) — 6 tabs, Phase 39 webhooks, risk analytics, Planned/Executed toggle | Combined analytics, prop firm check, account ledger, webhook template selector |
+| 12 | **Portfolio Requirements** | LOCKED (V5) — TQ rules, applies-to field, clone, built-in protections | Requirement set CRUD, compliance check, TQ filtering |
+| 13 | **Alerts & Signals** | LOCKED (V5) — 4 tabs, inline payload expand, admin to Connections | Alert feed, webhook delivery log, entry/exit pairs |
 | 14 | **Webhook Templates** | Webhook payload management | Template CRUD, test delivery |
 
 **Milestone:** Full trading workflow works — build strategies, assemble portfolios, receive alerts, trade via webhooks.
@@ -242,27 +462,23 @@ POST   /api/creator/publish
 
 ---
 
-## Design Iteration Schedule
+## Design Iteration Progress
 
-### Week 1: Foundation
-- Days 1-2: Lock in Settings pages (small, sets patterns)
-- Days 3-4: Lock in Dashboard
-- Days 5-7: Lock in TF Confluence + General Packs + Risk Management
+### COMPLETED — Phase 1A Core Trading Loop (12 pages locked)
+- Settings/Themes (V1), Settings/Display (V5), Settings/Connections (V4), Settings/Account (V2)
+- Dashboard (V6)
+- TF Confluence (V5), General Packs (V5)
+- Stop Loss Packs (V1), Take Profit Packs (V1) — new pages replacing Risk Management
+- Strategy Builder (V5)
+- My Strategies list (V5)
+- Strategy Detail (V5) — IN REVIEW, pending user feedback
 
-### Week 2: Strategy Workflow
-- Days 1-3: Lock in Strategy Builder (most complex, allow extra time)
-- Days 4-5: Lock in My Strategies list + detail
-- Days 6-7: Start FastAPI backend scaffolding
+### THEN — Portfolios & Alerts (6 pages)
+- Portfolio List, Portfolio New/Edit, Portfolio Detail (7 tabs)
+- Portfolio Requirements, Alerts & Signals, Webhook Templates
 
-### Week 3: Portfolios
-- Days 1-2: Lock in Portfolio list + builder
-- Days 3-4: Lock in Portfolio detail (7 tabs)
-- Days 5-7: Lock in Requirements + Alerts + Webhooks
-
-### Week 4: Power Tools + Wiring
-- Days 1-2: Lock in Mass Builder + Results
-- Days 3-4: Lock in remaining pack pages
-- Days 5-7: Begin backend wiring for Phase 1A pages
+### FINALLY — Power Tools (5 pages)
+- Mass Builder, Mass Results, Timeframes, User Packs, Pack Builder
 
 ### Ongoing: Backend Wiring
 - Each locked page gets API endpoints built and wired
@@ -275,7 +491,7 @@ POST   /api/creator/publish
 
 | Phase | Pages | Business Goal | Revenue |
 |-------|-------|--------------|---------|
-| **1A** | Settings, Dashboard, Confluence (3), Strategy Builder, My Strategies | Core trading loop works | Personal profits |
+| **1A** | Settings (4), Dashboard, TF Confluence, General, Stop Loss, Take Profit, Strategy Builder, My Strategies | Core trading loop works | Personal profits |
 | **1B** | Portfolios (4), Requirements, Alerts (2) | Full workflow with alerts | Personal profits |
 | **1C** | Mass Builder/Results, Timeframes, User Packs, Pack Builder | Feature parity | Personal profits |
 | **2** | Admin Dashboard/Curation, Profile & Roles + agent API | AI creates content | Automated portfolio creation |

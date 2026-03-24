@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
@@ -497,9 +497,18 @@ export default function DashboardV5() {
 
   const systemHealthy = MOCK_SYSTEM.polygon && MOCK_SYSTEM.ralph;
 
+  useEffect(() => {
+    const id = 'v5-animation-styles';
+    if (!document.getElementById(id)) {
+      const style = document.createElement('style');
+      style.id = id;
+      style.textContent = ANIMATION_STYLES;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   return (
     <div style={{ animation: 'v5-fade-in 0.3s ease-out' }}>
-      <style>{ANIMATION_STYLES}</style>
 
       {/* ============ HEADER: Title + Customize ============ */}
       <div className="flex items-start justify-between mb-5">

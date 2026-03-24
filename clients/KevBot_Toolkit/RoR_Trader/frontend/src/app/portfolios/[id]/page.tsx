@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Visual-first portfolio dashboard. No tabs — dense Bloomberg-style grid with animated SVG charts (donut, treemap, waterfall, gauges), clickable strategy details, and AI-style rebalancing recommendations. All data visible at a glance.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Phase 39 Aligned)',
+      description: 'V2 Full Parity as baseline with Phase 39 webhook template integration, updated styling, and Streamlit parity audit.',
+      rationale: 'Starting from V2 (most complete) and updating to align with recent design decisions: account-based webhook templates, consistent styling with strategy detail V5, and any missing Streamlit features.',
+    },
+    component: V5,
   },
 ];
 

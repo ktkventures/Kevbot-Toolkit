@@ -18,7 +18,8 @@ const navItems: NavItem[] = [
     children: [
       { href: '/confluence-packs/tf-confluence', label: 'TF Confluence' },
       { href: '/confluence-packs/general', label: 'General' },
-      { href: '/confluence-packs/risk-management', label: 'Risk Management' },
+      { href: '/confluence-packs/stop-loss', label: 'Stop Loss' },
+      { href: '/confluence-packs/take-profit', label: 'Take Profit' },
       { href: '/confluence-packs/user-packs', label: 'User Packs' },
       { href: '/confluence-packs/pack-builder', label: 'Pack Builder' },
       { href: '/confluence-packs/timeframes', label: 'Timeframes' },
@@ -88,8 +89,18 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const isActive = (href: string) =>
-    pathname === href || (href !== '/' && pathname?.startsWith(href + '/'));
+  const isActive = (href: string) => {
+    if (pathname === href) return true;
+    // Only match prefix for paths that aren't also a parent of other nav items
+    // e.g. /alerts shouldn't match /alerts/webhook-templates
+    if (href !== '/' && pathname?.startsWith(href + '/')) {
+      // Check if another child nav item is a better (more specific) match
+      const allChildHrefs = navItems.flatMap((item) => item.children?.map((c) => c.href) ?? []);
+      const hasBetterMatch = allChildHrefs.some((h) => h !== href && pathname?.startsWith(h) && h.startsWith(href));
+      return !hasBetterMatch;
+    }
+    return false;
+  };
 
   const isSectionActive = (item: NavItem) =>
     isActive(item.href) || item.children?.some((c) => isActive(c.href));

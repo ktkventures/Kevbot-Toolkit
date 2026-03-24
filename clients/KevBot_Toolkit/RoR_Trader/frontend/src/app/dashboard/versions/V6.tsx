@@ -603,13 +603,23 @@ export default function DashboardV6() {
     info: { bg: 'var(--blue-muted)', color: 'var(--blue)', icon: 'i' },
   };
 
+  // Inject animation styles on mount (avoids SSR hydration mismatch)
+  useEffect(() => {
+    const id = 'v6-animation-styles';
+    if (!document.getElementById(id)) {
+      const style = document.createElement('style');
+      style.id = id;
+      style.textContent = ANIMATION_STYLES;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   // Determine KPI grid columns based on count
   const kpiGridCols = enabledKpis.length <= 4 ? 'grid-cols-4' :
     enabledKpis.length === 5 ? 'grid-cols-5' : 'grid-cols-6';
 
   return (
-    <div style={{ animation: 'v6-fade-in 0.3s ease-out' }}>
-      <style>{ANIMATION_STYLES}</style>
+    <div style={{ animation: 'v6-fade-in 0.3s ease-out' }} suppressHydrationWarning>
 
       {/* ============ HEADER: Title + Portfolio Filter + System Status + Customize ============ */}
       <div className="flex items-start justify-between mb-5">

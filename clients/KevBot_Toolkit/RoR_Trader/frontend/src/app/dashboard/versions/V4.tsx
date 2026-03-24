@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import MetricCard from '@/components/MetricCard';
@@ -425,9 +425,18 @@ export default function DashboardV4() {
     summary: { bg: 'var(--accent-muted)', color: 'var(--accent)', icon: '\u2211' },
   };
 
+  useEffect(() => {
+    const id = 'v4-animation-styles';
+    if (!document.getElementById(id)) {
+      const style = document.createElement('style');
+      style.id = id;
+      style.textContent = ANIMATION_STYLES;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   return (
     <div style={{ animation: 'fade-in-up 0.3s ease-out' }}>
-      <style>{ANIMATION_STYLES}</style>
 
       {/* ============ HEADER: Briefing + Notifications ============ */}
       <div className="flex items-start justify-between mb-5">

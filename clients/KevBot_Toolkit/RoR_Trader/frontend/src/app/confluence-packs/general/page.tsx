@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'General packs are inherently time-based, so the V4 creative hook is temporal visualization: a timeline that shows when each condition is active throughout the day, plus a weekly calendar that combines day-of-week and calendar filter into one view. The live clock reinforces that these packs gate real-time trading decisions.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production',
+      description: 'All 4 templates, locked params after save, nested variations, search, draft mode with "Save as Variation", tooltips on state/trigger counts.',
+      rationale: 'Adapted from TF Confluence V5 for general packs. Same patterns: locked params, nested variations, search, draft mode, "Create New Template" → Pack Builder. Simplified for scalar conditions: no plot settings tab, no trigger parameters tab (bar-close only), no execution type variants, no fidelity badges. Binary output states, 0-2 triggers per template, template-specific parameter inputs (time ranges, session selects, day toggles, event toggles).',
+    },
+    component: V5,
   },
 ];
 

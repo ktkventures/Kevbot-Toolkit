@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Guided creation experience that breaks portfolio building into digestible steps. Visual strategy picker replaces search/dropdown. Risk gauge and stress scenarios add portfolio-level insight before committing.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Phase 39 Aligned)',
+      description: 'V2 Full Parity + webhook template selector (defaults to paper), capital utilization chart, worst case analysis, Monte Carlo risk simulation.',
+      rationale: 'Adds the three missing risk analytics modules from Streamlit and the Phase 39 webhook template selector. All Streamlit portfolio builder features present.',
+    },
+    component: V5,
   },
 ];
 

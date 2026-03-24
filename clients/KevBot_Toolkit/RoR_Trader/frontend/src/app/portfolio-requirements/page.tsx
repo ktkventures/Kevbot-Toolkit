@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Combines card-based set selection with detailed rule editing. Compliance ring gives at-a-glance health. Simulator runs mock checks. Template marketplace allows one-click import of prop firm presets. Comparison table shows side-by-side firm differences.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Trade Qualification)',
+      description: 'V3 streamlined inline editing + backend-aligned rule types (percentage-based), Trade Qualification Rules section per set (min hold time, min price move, min profit threshold), Clone button, rule descriptions, built-in set protections (lock icon, read-only), daily_pause_pct rule type.',
+      rationale: 'Addresses prop firm nuances like TTP\'s 30-second hold and $0.10 minimum move rules. Trade Qualification Rules are distinct from compliance rules — they determine whether a trade "counts" toward firm P&L rather than whether you pass/fail. Clone enables customization of built-in presets.',
+    },
+    component: V5,
   },
 ];
 
