@@ -5,6 +5,9 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
+import V6 from './versions/V6';
+import V7 from './versions/V7';
 
 const versions = [
   {
@@ -42,6 +45,33 @@ const versions = [
       rationale: 'Pack building is a creative authoring experience. V4 makes it visual and immediate: the logic flow diagram shows how data moves from indicator to condition to output to trigger, the code preview shows what will be generated, and the indicator chart provides instant visual feedback as parameters change. The validation bar gives continuous feedback so builders catch issues before saving.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-prompt-wizard',
+      name: 'Prompt Wizard',
+      description: '5-step wizard: Pack Type & Info → Define Structure → Generate & Copy Prompt → Paste & Validate → Review & Install. Supports TF Confluence and General pack types. Updated exec types [C]/[L]/[LC]/[CC], fidelity badges [PB]/[CB]. 16-point validation checklist (schema, safety, functions, execution, backtest parity). Horizontal stepper, dark code preview, sentiment badges, state transition tracking.',
+      rationale: 'Prompt-based approach for users without AI API. Clean wizard guides through full pack creation with comprehensive validation. Pack type selector adapts the entire wizard (TF = 3 files + all exec types + fidelity; General = 2 files + [C] only + binary outputs).',
+    },
+    component: V5,
+  },
+  {
+    meta: {
+      id: 'v6-revised-wizard',
+      name: 'Revised Wizard (Describe → Generate → Refine)',
+      description: '5-step wizard with revised flow: Pack Info (describe in plain language) → Generate Structure (AI proposes params/outputs/triggers) → Refine Structure (user tweaks) → Generate & Validate Code (paste LLM response, 16-point validation) → Review & Install (Chart Preview with confluence state shading + trigger markers, Parity Simulator for backtest↔live verification, Code preview). Structure generated FROM description rather than defined manually.',
+      rationale: 'Flipped Steps 2+3: users describe first, AI proposes structure, user refines. Much less intimidating than blank-canvas parameter/output/trigger definition. Chart Preview shows real confluence visualization. Parity Simulator replays historical data through both engine paths to verify triggers match between backtest and live.',
+    },
+    component: V6,
+  },
+  {
+    meta: {
+      id: 'v7-api-connected',
+      name: 'API-Connected (AI-Powered)',
+      description: 'Same 5-step wizard as V6 but with built-in AI API integration. Steps 2 and 4 use direct AI calls instead of copy/paste. Three-column layout on generation steps: AI conversation panel (left), code preview (center), validation (right). Auto-fix loop: up to 3 automatic correction attempts when validation fails. Model selector (Claude Sonnet/Opus, GPT-4/4o). Conversation history shows all AI interactions. Same Review & Install with Signal Validation, Parity Simulator, and Request Fix.',
+      rationale: 'Seamless AI-powered flow eliminates manual copy/paste. Auto-fix loop reduces iteration time — system sends validation errors back to AI for surgical correction without regenerating from scratch. Conversation panel provides transparency into what the AI is doing and why.',
+    },
+    component: V7,
   },
 ];
 

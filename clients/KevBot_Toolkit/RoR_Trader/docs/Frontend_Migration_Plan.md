@@ -290,6 +290,25 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
   - Actions: View, Load, Copy, Cancel (running), Delete (inline confirm)
   - Sort by: Newest First, Most Results, Best Daily R
 
+### Pack Builder — LOCKED: V7 (API-Connected, Revised Wizard)
+- **Decision:** V7 API-connected wizard. V5 (original wizard) and V6 (revised prompt-based) preserved as reference.
+- **Key design evolution:**
+  - V5: Original 5-step wizard (Define Structure before prompt — too intimidating for users)
+  - V6: Revised flow (Describe → AI generates structure → user refines → paste code → validate). Added: States rename (from Outputs), exec type params modal (⚙), Signal Validation tab, Parity Simulator with timing table, Request Fix button with surgical context
+  - V7 (locked): Full AI API integration — no copy/paste anywhere. Model selector (Claude Sonnet/Opus, GPT-4/4o). Auto-fix loop (3 attempts). Request Fix sends directly to AI.
+- **5-step wizard flow:**
+  1. **Pack Info** — Pack type (TF Confluence / General), name, category pills, display type (TF only), description, optional Pine Script. Right panel: "How it works" numbered steps + type-specific info (exec types, fidelity, files)
+  2. **Generate Structure** — 3-column: AI conversation (left) + pack summary + generated structure preview (right). AI proposes params/states/triggers from description. Regenerate button.
+  3. **Refine Structure** — Editable params (name/label/type/default/min/max), states (code + description, fidelity badge for TF), triggers (name/sentiment/exec type checkboxes [C][L][LC][CC] with ⚙ params modal/fidelity selector/state transitions). General packs: [C] only, no fidelity, bool/select param types.
+  4. **Generate & Validate Code** — 3-column: AI conversation (left), generated code tabs (center), 16-point validation checklist (right). Auto-Fix button sends failures back to AI (up to 3 iterations). Model selector persists.
+  5. **Review & Install** — 5 tabs: Overview (summary + triggers with all badges), Chart Preview (confluence state shading + trigger markers + heatmap), Signal Validation (signal count, frequency, state coverage, per-trigger breakdown table), Parity Simulator (bar-by-bar replay chart + timing detail table + 4 parity KPIs), Code (collapsible dark terminal sections)
+- **Request Fix** (Step 5): Orange button on action row. Modal with auto-captured context (active tab + pack summary) + user description. V7 sends directly to AI via API. Fix iteration counter. Surgical approach — sends only the issue + current code, not full regeneration.
+- **Exec type params modal:** ⚙ icon per trigger opens modal with parameter sections per checked exec type ([C] reference_bar/order_type, [L] +hold_seconds/limit_duration, [LC] +confirm_bar_offset/bail_action, [CC] locked defaults)
+- **16-point validation:** Schema (5), Safety (3), Functions (3), Execution (3), Backtest (2). Organized in collapsible categories with pass/fail/warn/pending status icons.
+- **Pack types supported:** TF Confluence (3 files: manifest + indicator + interpreter, all exec types, fidelity) and General (2 files: manifest + evaluator, [C] only, binary states, no fidelity)
+- **Parity Simulator:** Ticker/TF/bars selectors → Run Parity Test → bar-by-bar replay showing backtest vs live trigger markers. Timing detail table: Bar #, Timestamp, Trigger, Backtest result, Live result, Match, Delta. 4 KPIs: Total/Matched/Mismatched/Parity Score.
+- **Signal Validation:** Runs pack on 90 days sample data. Total Signals, Avg Bars Between, State Coverage, All States Reached. Per-trigger breakdown table. Signal timeline chart.
+
 ### Settings/Account — LOCKED: V2
 - **Decision:** V2 (Full Parity) — profile info, subscription tier, usage stats, API usage, password change, 2FA toggle, data export, sign out.
 - **Notes:** Locked as-is, no changes needed.
@@ -338,7 +357,7 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 |----------|------|-------------|----------------|
 | 15 | **Mass Builder** | LOCKED (V6) — Strategy-style cards, pack selectors, exec types, TQ filter | Mass backtest endpoint (compute-heavy) |
 | 16 | **Mass Results** | LOCKED (V5) — simple cards, worker progress, queue status | Mass results CRUD |
-| 17 | **Pack Builder** | Build custom indicators | Pack definition CRUD, indicator validation |
+| 17 | **Pack Builder** | LOCKED (V7) — AI-connected wizard, auto-fix, parity simulator, signal validation | Pack definition CRUD, AI API, indicator validation |
 | 18 | **User Packs** | Custom pack management | User pack CRUD |
 | 19 | **Timeframes** | TF configuration | Timeframe settings CRUD |
 

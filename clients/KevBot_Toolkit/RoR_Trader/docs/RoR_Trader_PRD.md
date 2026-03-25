@@ -3127,6 +3127,7 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - Settings/Connections V5 (engine admin module)
 - Mass Builder V6 (strategy-style cards, pack selectors, cost indicators, TQ filter)
 - Mass Results V5 (simple cards, worker progress/queue status)
+- Pack Builder V7 (API-connected wizard: Describe→Generate Structure→Refine→Generate Code→Review & Install. TF+General pack types, auto-fix loop, Signal Validation, Parity Simulator, Request Fix via AI)
 
 **Open decisions:**
 - [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)
