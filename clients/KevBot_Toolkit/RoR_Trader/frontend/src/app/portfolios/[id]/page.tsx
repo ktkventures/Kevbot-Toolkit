@@ -1,7 +1,8 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import VersionedPage from '@/components/VersionedPage';
+import PageSwitch from '@/components/PageSwitch';
+import PortfolioDetailPage from '@/views/PortfolioDetailPage';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
@@ -28,7 +29,13 @@ function WiredV5() {
   return <V5 apiPortfolio={portfolio || undefined} apiAccount={account || undefined} />;
 }
 
-const versions = [
+function LiveDetail() {
+  const params = useParams();
+  const id = params?.id ? Number(params.id) : 0;
+  return <PortfolioDetailPage portfolioId={id} />;
+}
+
+const designVersions = [
   {
     meta: {
       id: 'v1-initial',
@@ -43,7 +50,7 @@ const versions = [
       id: 'v2-full-parity',
       name: 'Full Parity',
       description: 'All 7 tabs with full content: Live Dashboard with benchmark, Performance analytics, Strategy health, Prop Firm compliance, Account ledger, Webhooks, Deploy.',
-      rationale: 'Complete Streamlit portfolio detail. Every tab filled: Live Dashboard with performance vs plan chart and anomaly detection, Performance with combined equity curves and correlation heatmap, Strategies with health indicators and R-distribution, Prop Firm with per-rule compliance cards and progress bars, Account with ledger and journal, Webhooks with delivery history, Deploy with per-strategy monitoring toggles.',
+      rationale: 'Complete Streamlit portfolio detail.',
     },
     component: V2,
   },
@@ -52,7 +59,7 @@ const versions = [
       id: 'v3-streamlined',
       name: 'Streamlined',
       description: '4 tabs: Dashboard (live + performance), Strategies (health cards), Compliance (rules + balance), Settings (webhooks + deploy).',
-      rationale: 'Consolidated 7 tabs to 4. Removed anomaly detection, buying power tracker, Monte Carlo, R-distribution sparklines, account ledger, journal, and webhook delivery history. Focus on performance, compliance, and strategy health.',
+      rationale: 'Consolidated 7 tabs to 4.',
     },
     component: V3,
   },
@@ -60,24 +67,24 @@ const versions = [
     meta: {
       id: 'v4-creative',
       name: 'Creative',
-      description: 'Command center layout: P&L contribution donut, risk allocation treemap, daily P&L calendar heatmap, drawdown waterfall chart, strategy health dot grid, compliance radial gauges, performance vs SPY benchmark, and smart rebalancing suggestions.',
-      rationale: 'Visual-first portfolio dashboard. No tabs — dense Bloomberg-style grid with animated SVG charts (donut, treemap, waterfall, gauges), clickable strategy details, and AI-style rebalancing recommendations. All data visible at a glance.',
+      description: 'Command center layout: P&L contribution donut, risk allocation treemap, daily P&L calendar heatmap.',
+      rationale: 'Visual-first portfolio dashboard.',
     },
     component: V4,
   },
   {
     meta: {
       id: 'v5-production',
-      name: 'Production (Phase 39 Aligned)',
-      description: 'V2 Full Parity as baseline with Phase 39 webhook template integration, updated styling, and Streamlit parity audit.',
-      rationale: 'Starting from V2 (most complete) and updating to align with recent design decisions: account-based webhook templates, consistent styling with strategy detail V5, and any missing Streamlit features.',
+      name: 'Production (Design Ref)',
+      description: 'V2 Full Parity as baseline with Phase 39 webhook template integration.',
+      rationale: 'Design reference with mock data.',
     },
     component: V5,
   },
   {
     meta: {
       id: 'v5-wired',
-      name: 'Production (Live)',
+      name: 'Production (Wired)',
       description: 'Portfolio detail wired to real API data — fetches portfolio and account from FastAPI.',
       rationale: 'Production version with live data.',
     },
@@ -85,6 +92,6 @@ const versions = [
   },
 ];
 
-export default function PortfolioDetailPage() {
-  return <VersionedPage pageKey="portfolio-detail" versions={versions} />;
+export default function Page() {
+  return <PageSwitch live={LiveDetail} versions={designVersions} pageKey="portfolio-detail" />;
 }
