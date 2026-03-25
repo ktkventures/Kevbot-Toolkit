@@ -211,7 +211,12 @@ const selectStyle: React.CSSProperties = {
 /* COMPONENT                                                                  */
 /* ========================================================================= */
 
-export default function PortfolioNewV5() {
+interface PortfolioNewV5Props {
+  apiStrategies?: any[];
+  onCreate?: (portfolio: Record<string, any>) => void;
+}
+
+export default function PortfolioNewV5({ apiStrategies, onCreate }: PortfolioNewV5Props = {}) {
   const router = useRouter();
 
   // --- Settings state ---
@@ -245,9 +250,10 @@ export default function PortfolioNewV5() {
   const [recRiskAssumption, setRecRiskAssumption] = useState('100');
 
   // --- Computed values ---
+  const allStrategyPool = apiStrategies ?? ALL_STRATEGIES;
   const availableForAdd = useMemo(
-    () => ALL_STRATEGIES.filter(s => !strategies.find(st => st.id === s.id)),
-    [strategies]
+    () => allStrategyPool.filter(s => !strategies.find(st => st.id === s.id)),
+    [strategies, allStrategyPool]
   );
 
   const combinedCurve = useMemo(
@@ -322,7 +328,7 @@ export default function PortfolioNewV5() {
   // --- Handlers ---
   const handleAddStrategy = useCallback(() => {
     if (!selectedStrategy) return;
-    const stratData = ALL_STRATEGIES.find(s => s.id === selectedStrategy);
+    const stratData = allStrategyPool.find(s => s.id === selectedStrategy);
     if (!stratData || strategies.find(s => s.id === selectedStrategy)) return;
     setStrategies(prev => [...prev, { ...stratData, riskPerTrade: Number(riskPerTrade) || 100 }]);
     setSelectedStrategy('');

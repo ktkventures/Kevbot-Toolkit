@@ -100,7 +100,14 @@ const TABS = ['Strategy Alerts', 'Portfolio Alerts', 'Outbound Webhooks', 'Inbou
 /* COMPONENT                                                                   */
 /* ========================================================================= */
 
-export default function AlertsSignalsV5() {
+interface AlertsSignalsV5Props {
+  apiAlerts?: any[];
+  apiMonitorStatus?: Record<string, any>;
+  apiAlertConfig?: Record<string, any>;
+  apiEngineState?: Record<string, any>;
+}
+
+export default function AlertsSignalsV5({ apiAlerts, apiMonitorStatus, apiAlertConfig, apiEngineState }: AlertsSignalsV5Props = {}) {
   const [stratFilter, setStratFilter] = useState('All');
   const [portFilter, setPortFilter] = useState('All');
   const [typeFilter, setTypeFilter] = useState('All');

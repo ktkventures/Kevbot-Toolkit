@@ -6,6 +6,53 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useStrategies } from '@/hooks/queries/useStrategies';
+import { useCreatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
+
+/**
+ * Transform API strategy to the StrategyData shape V5 portfolio builder expects.
+ */
+function apiToBuilderStrategy(s: any): any {
+  const kpis = s.kpis || {};
+  return {
+    id: String(s.id),
+    name: s.name || 'Untitled',
+    symbol: s.symbol || '???',
+    direction: s.direction || 'LONG',
+    displayName: `${s.symbol || '???'} ${s.direction || 'LONG'} — ${s.name || 'Untitled'}`,
+    trades: kpis.total_trades ?? 0,
+    winRate: kpis.win_rate ?? 0,
+    pf: kpis.profit_factor ?? 0,
+    totalR: kpis.total_r ?? 0,
+    maxDD: kpis.max_r_drawdown ?? 0,
+    avgR: kpis.avg_r ?? 0,
+    equityCurve: s.equity_curve_data?.cumulative_r || [],
+  };
+}
+
+function WiredV5() {
+  const { data: apiStrategies, isLoading } = useStrategies();
+  const createMutation = useCreatePortfolio();
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading strategies...
+      </div>
+    );
+  }
+
+  const builderStrategies = apiStrategies
+    ? apiStrategies.map(apiToBuilderStrategy)
+    : undefined;
+
+  return (
+    <V5
+      apiStrategies={builderStrategies}
+      onCreate={(portfolio) => createMutation.mutate(portfolio)}
+    />
+  );
+}
 
 const versions = [
   {
@@ -52,6 +99,15 @@ const versions = [
       rationale: 'Adds the three missing risk analytics modules from Streamlit and the Phase 39 webhook template selector. All Streamlit portfolio builder features present.',
     },
     component: V5,
+  },
+  {
+    meta: {
+      id: 'v5-wired',
+      name: 'Production (Live)',
+      description: 'Portfolio builder wired to real API data — strategies fetched from FastAPI, create portfolio via mutation.',
+      rationale: 'Production version with live data.',
+    },
+    component: WiredV5,
   },
 ];
 

@@ -6,6 +6,52 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useWebhookTemplates } from '@/hooks/queries/useWebhooks';
+import { useCreateWebhookTemplate, useDeleteWebhookTemplate } from '@/hooks/mutations/useWebhookMutations';
+
+/**
+ * Transform API webhook template to V5 AccountTemplate shape.
+ */
+function apiToAccountTemplate(t: any): any {
+  return {
+    id: t.id || t.template_id || '',
+    name: t.name || 'Untitled',
+    exchange: t.exchange || t.service || 'Custom',
+    url: t.url || t.webhook_url || '',
+    isDefault: t.is_default ?? false,
+    usedByPortfolios: t.used_by_portfolios ?? 0,
+    eventCount: t.event_count ?? 11,
+    lastDelivery: t.last_delivery ? { time: t.last_delivery.time, status: t.last_delivery.status } : undefined,
+    entryCfg: t.entry_cfg || 'Market',
+    exitCfg: t.exit_cfg || 'Market',
+  };
+}
+
+function WiredV5() {
+  const { data: templates, isLoading } = useWebhookTemplates();
+  const createMutation = useCreateWebhookTemplate();
+  const deleteMutation = useDeleteWebhookTemplate();
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading webhook templates...
+      </div>
+    );
+  }
+
+  const v5Templates = templates
+    ? templates.map(apiToAccountTemplate)
+    : undefined;
+
+  return (
+    <V5
+      apiTemplates={v5Templates}
+      onDelete={(id) => deleteMutation.mutate(id)}
+      onCreate={(template) => createMutation.mutate(template)}
+    />
+  );
+}
 
 const versions = [
   {
@@ -52,6 +98,15 @@ const versions = [
       rationale: 'Phase 39 Webhook Event System redesign. Shifts from individual payload templates to account-based templates that cover all event types. One-time setup per exchange, portfolios just pick a template. Driven by the new execution type parameters that require market/limit/cancel differentiation.',
     },
     component: V5,
+  },
+  {
+    meta: {
+      id: 'v5-wired',
+      name: 'Production (Live)',
+      description: 'Webhook templates wired to real API data from FastAPI webhooks endpoint.',
+      rationale: 'Production version with live data.',
+    },
+    component: WiredV5,
   },
 ];
 

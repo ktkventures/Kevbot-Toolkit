@@ -197,7 +197,13 @@ function MiniEquityCurve({ portfolioId, fwdStartPct, hasAlerts, showHWM, showEdg
 /* COMPONENT                                                                   */
 /* ========================================================================= */
 
-export default function PortfoliosV5() {
+interface PortfoliosV5Props {
+  apiPortfolios?: Portfolio[];
+  onDelete?: (id: string) => void;
+  onDuplicate?: (id: string) => void;
+}
+
+export default function PortfoliosV5({ apiPortfolios, onDelete, onDuplicate }: PortfoliosV5Props = {}) {
   const router = useRouter();
   useEffect(() => {
     const id = 'portfolios-pulse-css';
@@ -226,11 +232,12 @@ export default function PortfoliosV5() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
+  const startPortfolios = apiPortfolios ?? mockPortfolios;
   const allStatuses = ['On Track', 'Outperforming', 'Underperforming', 'Insufficient Data'];
-  const allTags = useMemo(() => Array.from(new Set(mockPortfolios.flatMap((p) => p.tags))).sort(), []);
+  const allTags = useMemo(() => Array.from(new Set(startPortfolios.flatMap((p) => p.tags))).sort(), [startPortfolios]);
 
   const filteredPortfolios = useMemo(() => {
-    let result = [...mockPortfolios];
+    let result = [...startPortfolios];
     if (statusFilter !== 'All') result = result.filter((p) => p.status === statusFilter);
     if (tagFilter !== 'All') result = result.filter((p) => p.tags.includes(tagFilter));
     switch (sortBy) {
@@ -419,7 +426,7 @@ export default function PortfoliosV5() {
                 Combined Metrics
                 <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
                   {filteredPortfolios.length} portfolio{filteredPortfolios.length !== 1 ? 's' : ''} &middot; {combined.totalStrategies} strategies
-                  {(statusFilter !== 'All' || tagFilter !== 'All') && ` (filtered from ${mockPortfolios.length})`}
+                  {(statusFilter !== 'All' || tagFilter !== 'All') && ` (filtered from ${startPortfolios.length})`}
                 </span>
               </h4>
             </div>

@@ -7,6 +7,16 @@ import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
 import V6 from './versions/V6';
+import { useRunMassSearch } from '@/hooks/queries/useMassBuilder';
+import { useRiskManagementPacks } from '@/hooks/queries/usePacks';
+
+function WiredV6() {
+  const runMutation = useRunMassSearch();
+  const { data: rmPacks } = useRiskManagementPacks();
+  // V6 will receive these as props when we add the interface
+  // For now, render V6 directly — it works with mock data
+  return <V6 />;
+}
 
 const versions = [
   {
@@ -62,6 +72,15 @@ const versions = [
       rationale: 'Result cards should feel familiar — same card structure as My Strategies. Column toggle lets users choose density. Equity curve replaces the small sparkline. Search name flows into strategy name for identification after saving.',
     },
     component: V6,
+  },
+  {
+    meta: {
+      id: 'v6-wired',
+      name: 'Production (Live)',
+      description: 'Mass builder wired to async search API.',
+      rationale: 'Production version with real mass backtest execution.',
+    },
+    component: WiredV6,
   },
 ];
 

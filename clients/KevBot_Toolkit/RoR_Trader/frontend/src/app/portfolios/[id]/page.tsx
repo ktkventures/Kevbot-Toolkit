@@ -1,11 +1,32 @@
 'use client';
 
+import { useParams } from 'next/navigation';
 import VersionedPage from '@/components/VersionedPage';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { usePortfolio, usePortfolioAccount } from '@/hooks/queries/usePortfolios';
+
+function WiredV5() {
+  const params = useParams();
+  const portfolioId = params?.id ? Number(params.id) : null;
+  const { data: portfolio, isLoading: portfolioLoading } = usePortfolio(portfolioId);
+  const { data: account, isLoading: accountLoading } = usePortfolioAccount(portfolioId);
+
+  const isLoading = portfolioLoading || accountLoading;
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading portfolio...
+      </div>
+    );
+  }
+
+  return <V5 apiPortfolio={portfolio || undefined} apiAccount={account || undefined} />;
+}
 
 const versions = [
   {
@@ -52,6 +73,15 @@ const versions = [
       rationale: 'Starting from V2 (most complete) and updating to align with recent design decisions: account-based webhook templates, consistent styling with strategy detail V5, and any missing Streamlit features.',
     },
     component: V5,
+  },
+  {
+    meta: {
+      id: 'v5-wired',
+      name: 'Production (Live)',
+      description: 'Portfolio detail wired to real API data — fetches portfolio and account from FastAPI.',
+      rationale: 'Production version with live data.',
+    },
+    component: WiredV5,
   },
 ];
 

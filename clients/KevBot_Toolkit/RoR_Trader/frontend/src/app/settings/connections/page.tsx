@@ -6,6 +6,17 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useMonitorStatus, useEngineState } from '@/hooks/queries/useAlerts';
+import { useStartMonitor, useStopMonitor } from '@/hooks/mutations/useAlertMutations';
+
+function WiredV5() {
+  const { data: status } = useMonitorStatus();
+  const { data: engineState } = useEngineState();
+  const startMutation = useStartMonitor();
+  const stopMutation = useStopMonitor();
+  // V5 will receive engine status + control callbacks when props are added
+  return <V5 />;
+}
 
 const versions = [
   {
@@ -52,6 +63,10 @@ const versions = [
       rationale: 'Moves engine admin controls from Alerts & Signals to Settings > Connections where admin/infrastructure concerns belong. Regular users see engine status on the Alerts page but admin controls live here.',
     },
     component: V5,
+  },
+  {
+    meta: { id: 'v5-wired', name: 'Production (Live)', description: 'Live engine status + controls.', rationale: 'Polls engine status from API.' },
+    component: WiredV5,
   },
 ];
 

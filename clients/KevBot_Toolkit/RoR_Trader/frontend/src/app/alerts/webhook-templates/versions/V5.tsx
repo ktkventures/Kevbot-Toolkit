@@ -136,7 +136,13 @@ function StatusDot({ status }: { status?: number }) {
   );
 }
 
-export default function WebhookTemplatesV5() {
+interface WebhookTemplatesV5Props {
+  apiTemplates?: AccountTemplate[];
+  onDelete?: (id: string) => void;
+  onCreate?: (template: Record<string, any>) => void;
+}
+
+export default function WebhookTemplatesV5({ apiTemplates, onDelete, onCreate }: WebhookTemplatesV5Props = {}) {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -144,7 +150,8 @@ export default function WebhookTemplatesV5() {
   const [newExchange, setNewExchange] = useState('signalstack');
   const [newUrl, setNewUrl] = useState('');
 
-  const filtered = mockTemplates.filter((t) =>
+  const startTemplates = apiTemplates ?? mockTemplates;
+  const filtered = startTemplates.filter((t) =>
     t.name.toLowerCase().includes(search.toLowerCase()) ||
     t.exchange.toLowerCase().includes(search.toLowerCase())
   );

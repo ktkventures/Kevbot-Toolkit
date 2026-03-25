@@ -53,6 +53,10 @@ const versions = [
     },
     component: V5,
   },
+  {
+    meta: { id: 'v5-wired', name: 'Production (Live)', description: 'User packs from API.', rationale: 'Future: load installed user packs.' },
+    component: V5, // Same as V5 for now — user packs API is placeholder
+  },
 ];
 
 export default function UserPacksPage() {

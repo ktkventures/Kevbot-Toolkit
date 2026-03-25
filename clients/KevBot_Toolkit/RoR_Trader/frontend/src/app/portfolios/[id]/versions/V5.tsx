@@ -1742,7 +1742,12 @@ const btnSecondary: React.CSSProperties = {
   padding: '6px 14px', borderRadius: '8px', fontSize: '0.875rem', cursor: 'pointer',
 };
 
-export default function PortfolioDetailV5() {
+interface PortfolioDetailV5Props {
+  apiPortfolio?: any;
+  apiAccount?: any;
+}
+
+export default function PortfolioDetailV5({ apiPortfolio, apiAccount }: PortfolioDetailV5Props = {}) {
   useEffect(() => {
     const id = 'portfolio-detail-pulse-css';
     if (!document.getElementById(id)) {

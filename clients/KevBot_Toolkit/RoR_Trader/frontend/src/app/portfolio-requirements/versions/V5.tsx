@@ -155,8 +155,13 @@ function statusDot(status: 'pass' | 'fail' | 'warning'): string {
 /* COMPONENT                                                                  */
 /* ========================================================================= */
 
-export default function PortfolioRequirementsV5() {
-  const [sets, setSets] = useState<RequirementSet[]>(initialSets);
+interface PortfolioRequirementsV5Props {
+  apiRequirements?: RequirementSet[];
+  onSave?: (sets: RequirementSet[]) => void;
+}
+
+export default function PortfolioRequirementsV5({ apiRequirements, onSave }: PortfolioRequirementsV5Props = {}) {
+  const [sets, setSets] = useState<RequirementSet[]>(apiRequirements ?? initialSets);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 

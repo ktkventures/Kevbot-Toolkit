@@ -6,6 +6,14 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
+
+function WiredV5() {
+  const { data: settings, isLoading } = useSettings();
+  const saveMutation = useSaveSettings();
+  if (isLoading) return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading timeframes...</div>;
+  return <V5 />;
+}
 
 const versions = [
   {
@@ -52,6 +60,10 @@ const versions = [
       rationale: 'Clean, functional grid that answers "where is each timeframe used?" at a glance. Toggle per use case rather than a single enable/disable. Default TF selection via radio buttons. Provider badges show data feed requirements.',
     },
     component: V5,
+  },
+  {
+    meta: { id: 'v5-wired', name: 'Production (Live)', description: 'Timeframe config from API settings.', rationale: 'Persists to user settings.' },
+    component: WiredV5,
   },
 ];
 

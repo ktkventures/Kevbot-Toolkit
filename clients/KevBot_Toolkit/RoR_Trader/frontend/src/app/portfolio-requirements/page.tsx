@@ -6,6 +6,29 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
+
+function WiredV5() {
+  const { data: settings, isLoading } = useSettings();
+  const saveMutation = useSaveSettings();
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading requirements...
+      </div>
+    );
+  }
+
+  // Requirements are stored in settings under the 'requirements' key
+  const apiRequirements = settings?.requirements || undefined;
+
+  const handleSave = (sets: any[]) => {
+    saveMutation.mutate({ ...settings, requirements: sets });
+  };
+
+  return <V5 apiRequirements={apiRequirements} onSave={handleSave} />;
+}
 
 const versions = [
   {
@@ -52,6 +75,15 @@ const versions = [
       rationale: 'Addresses prop firm nuances like TTP\'s 30-second hold and $0.10 minimum move rules. Trade Qualification Rules are distinct from compliance rules — they determine whether a trade "counts" toward firm P&L rather than whether you pass/fail. Clone enables customization of built-in presets.',
     },
     component: V5,
+  },
+  {
+    meta: {
+      id: 'v5-wired',
+      name: 'Production (Live)',
+      description: 'Requirements wired to real API data from FastAPI settings endpoint.',
+      rationale: 'Production version with live data.',
+    },
+    component: WiredV5,
   },
 ];
 

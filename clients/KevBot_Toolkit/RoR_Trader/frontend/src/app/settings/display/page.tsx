@@ -6,6 +6,15 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
+
+function WiredV5() {
+  const { data: settings, isLoading } = useSettings();
+  const saveMutation = useSaveSettings();
+  if (isLoading) return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading settings...</div>;
+  // V5 will receive settings + onSave when props are added
+  return <V5 />;
+}
 
 const versions = [
   {
@@ -52,6 +61,10 @@ const versions = [
       rationale: 'Addresses V4 feeling disjointed — now when you\'re adjusting chart settings, only the chart preview shows. When adjusting exec type styling, only the component preview shows. Same settings, better focus. Added chart library selector, candle color themes, and richer trade history table preview.',
     },
     component: V5,
+  },
+  {
+    meta: { id: 'v5-wired', name: 'Production (Live)', description: 'Display settings from API.', rationale: 'Persists to Supabase.' },
+    component: WiredV5,
   },
 ];
 

@@ -6,6 +6,33 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useAlerts, useMonitorStatus, useAlertConfig, useEngineState } from '@/hooks/queries/useAlerts';
+
+function WiredV5() {
+  const { data: alerts, isLoading: alertsLoading } = useAlerts();
+  const { data: monitorStatus, isLoading: statusLoading } = useMonitorStatus();
+  const { data: alertConfig, isLoading: configLoading } = useAlertConfig();
+  const { data: engineState, isLoading: stateLoading } = useEngineState();
+
+  const isLoading = alertsLoading || statusLoading || configLoading || stateLoading;
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading alerts...
+      </div>
+    );
+  }
+
+  return (
+    <V5
+      apiAlerts={alerts || undefined}
+      apiMonitorStatus={monitorStatus || undefined}
+      apiAlertConfig={alertConfig || undefined}
+      apiEngineState={engineState || undefined}
+    />
+  );
+}
 
 const versions = [
   {
@@ -52,6 +79,15 @@ const versions = [
       rationale: 'Focuses on what users care about: what alerts fired, what webhooks were sent, and whether they were delivered correctly. Admin engine controls relocated to Connections page. Entry/exit pair history shows the full lifecycle of each trade with webhook delivery status for validation.',
     },
     component: V5,
+  },
+  {
+    meta: {
+      id: 'v5-wired',
+      name: 'Production (Live)',
+      description: 'Alerts page wired to real API data — alerts, monitor status, alert config, and engine state from FastAPI.',
+      rationale: 'Production version with live data and auto-refreshing alert feed.',
+    },
+    component: WiredV5,
   },
 ];
 

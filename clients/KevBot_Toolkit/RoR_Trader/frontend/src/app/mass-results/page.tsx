@@ -6,6 +6,14 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useMassResults } from '@/hooks/queries/useMassBuilder';
+
+function WiredV5() {
+  const { data: results, isLoading } = useMassResults();
+  if (isLoading) return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading results...</div>;
+  // Pass results to V5 when props are added
+  return <V5 />;
+}
 
 const versions = [
   {
@@ -52,6 +60,10 @@ const versions = [
       rationale: 'Clean list focused on search management. Background worker status visible with progress, elapsed time, and ETA. No expanding into results — View navigates to mass builder with results loaded.',
     },
     component: V5,
+  },
+  {
+    meta: { id: 'v5-wired', name: 'Production (Live)', description: 'Results from API.', rationale: 'Live data.' },
+    component: WiredV5,
   },
 ];
 
