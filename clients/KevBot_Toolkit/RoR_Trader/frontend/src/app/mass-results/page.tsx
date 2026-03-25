@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'The portfolio builder lets users visually assemble a portfolio from results by clicking "Add to Portfolio" — slots fill with live aggregate stats. The radar comparison overlays multiple strategies on the same chart for instant visual comparison. Best-of badges surface category winners automatically. Each result card is a self-contained unit with all KPIs, sparkline, and action buttons.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Simple + Worker Status)',
+      description: 'Simple non-expandable search cards: name, status badge (completed/running/queued), date, config summary (tickers × TFs × dirs × entries × exits × confluences × stops × targets = evaluations), best KPIs for completed, progress bar with elapsed/ETA for running, queue message for queued. Actions: View, Load, Copy, Cancel (running), Delete.',
+      rationale: 'Clean list focused on search management. Background worker status visible with progress, elapsed time, and ETA. No expanding into results — View navigates to mass builder with results loaded.',
+    },
+    component: V5,
   },
 ];
 

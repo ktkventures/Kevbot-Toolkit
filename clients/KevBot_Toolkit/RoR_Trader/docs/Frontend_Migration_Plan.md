@@ -279,6 +279,17 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
   - **Viewing preferences:** Columns (1/2/3), Chart Height (S/M/L/XL), X-axis (Trade # default / Date), HWM (On/Off)
   - **Search name → strategy name:** Search name appears in result card titles and flows into saved strategy name
 
+### Mass Results — LOCKED: V5 (Simple + Worker Status)
+- **Decision:** V5 simple non-expandable cards with background worker visibility.
+- **Key decisions:**
+  - Non-expandable cards — View navigates to mass builder with results loaded
+  - Config summary line: ticker count, TF count, directions, entries, exits, confluences, stops, targets, total evaluations
+  - **Completed:** status badge with result count + 4 best KPIs (Daily R, WR, PF, R²)
+  - **Running:** progress bar with percentage, current step, elapsed time, ETA. Cancel button.
+  - **Queued:** status message showing what it's waiting for
+  - Actions: View, Load, Copy, Cancel (running), Delete (inline confirm)
+  - Sort by: Newest First, Most Results, Best Daily R
+
 ### Settings/Account — LOCKED: V2
 - **Decision:** V2 (Full Parity) — profile info, subscription tier, usage stats, API usage, password change, 2FA toggle, data export, sign out.
 - **Notes:** Locked as-is, no changes needed.
@@ -326,7 +337,7 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 | Priority | Page | Design Notes | Backend Needed |
 |----------|------|-------------|----------------|
 | 15 | **Mass Builder** | LOCKED (V6) — Strategy-style cards, pack selectors, exec types, TQ filter | Mass backtest endpoint (compute-heavy) |
-| 16 | **Mass Results** | Browse and save mass results | Mass results CRUD |
+| 16 | **Mass Results** | LOCKED (V5) — simple cards, worker progress, queue status | Mass results CRUD |
 | 17 | **Pack Builder** | Build custom indicators | Pack definition CRUD, indicator validation |
 | 18 | **User Packs** | Custom pack management | User pack CRUD |
 | 19 | **Timeframes** | TF configuration | Timeframe settings CRUD |

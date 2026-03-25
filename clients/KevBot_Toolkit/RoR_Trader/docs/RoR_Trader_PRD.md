@@ -3126,6 +3126,7 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - Alerts & Signals V5 (4 tabs, admin to Connections)
 - Settings/Connections V5 (engine admin module)
 - Mass Builder V6 (strategy-style cards, pack selectors, cost indicators, TQ filter)
+- Mass Results V5 (simple cards, worker progress/queue status)
 
 **Open decisions:**
 - [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)
