@@ -231,13 +231,33 @@ function getStrategySD(stratId: string): { fwd: number; alert: number } {
 
 const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.5; } 50% { transform: scale(2.2); opacity: 0; } }`;
 
-export default function StrategiesV5() {
+interface StrategiesV5Props {
+  /** When provided, replaces mockStrategies with real API data */
+  apiStrategies?: Strategy[];
+  /** Called when a strategy is deleted */
+  onDelete?: (id: number) => void;
+  /** Called when a strategy is duplicated */
+  onDuplicate?: (id: number) => void;
+  /** Called on bulk delete */
+  onBulkDelete?: (ids: number[]) => void;
+}
+
+export default function StrategiesV5({
+  apiStrategies,
+  onDelete,
+  onDuplicate,
+  onBulkDelete,
+}: StrategiesV5Props = {}) {
   useEffect(() => {
     const id = 'strategies-pulse-css';
     if (!document.getElementById(id)) {
       const s = document.createElement('style'); s.id = id; s.textContent = PULSE_CSS; document.head.appendChild(s);
     }
   }, []);
+
+  // Use API data when provided, fall back to mocks
+  const strategies = apiStrategies ?? mockStrategies;
+
   // Filter state
   const [tickerFilter, setTickerFilter] = useState('All');
   const [directionFilter, setDirectionFilter] = useState('All');
@@ -261,13 +281,13 @@ export default function StrategiesV5() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
   // Derived filter options
-  const allTickers = useMemo(() => Array.from(new Set(mockStrategies.map((s) => s.symbol))).sort(), []);
-  const allTags = useMemo(() => Array.from(new Set(mockStrategies.flatMap((s) => s.tags))).sort(), []);
+  const allTickers = useMemo(() => Array.from(new Set(strategies.map((s) => s.symbol))).sort(), [strategies]);
+  const allTags = useMemo(() => Array.from(new Set(strategies.flatMap((s) => s.tags))).sort(), [strategies]);
   const allStatuses = ['On Track', 'Outperforming', 'Underperforming', 'Insufficient Data'];
 
   // Filtered + sorted strategies
   const filteredStrategies = useMemo(() => {
-    let result = [...mockStrategies];
+    let result = [...strategies];
     if (tickerFilter !== 'All') result = result.filter((s) => s.symbol === tickerFilter);
     if (directionFilter !== 'All') result = result.filter((s) => s.direction === directionFilter);
     if (tagFilter !== 'All') result = result.filter((s) => s.tags.includes(tagFilter));
@@ -399,7 +419,7 @@ export default function StrategiesV5() {
           Delete {selectedIds.size} strategies? This cannot be undone.
         </p>
         <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
-          {mockStrategies
+          {strategies
             .filter((s) => selectedIds.has(s.id))
             .map((s) => s.name)
             .join(', ')}
@@ -534,7 +554,7 @@ export default function StrategiesV5() {
       <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
         {filteredStrategies.length} strateg{filteredStrategies.length === 1 ? 'y' : 'ies'}
         {(tickerFilter !== 'All' || directionFilter !== 'All' || tagFilter !== 'All' || statusFilter !== 'All')
-          ? ` (filtered from ${mockStrategies.length})`
+          ? ` (filtered from ${strategies.length})`
           : ''}
       </p>
 
@@ -543,11 +563,11 @@ export default function StrategiesV5() {
         <Card>
           <div className="text-center py-12">
             <p className="text-lg mb-2" style={{ color: 'var(--text-secondary)' }}>
-              {mockStrategies.length === 0
+              {strategies.length === 0
                 ? 'No strategies yet. Create your first strategy!'
                 : 'No strategies match the current filters.'}
             </p>
-            {mockStrategies.length === 0 && (
+            {strategies.length === 0 && (
               <button style={btnPrimary}>Go to Strategy Builder</button>
             )}
           </div>

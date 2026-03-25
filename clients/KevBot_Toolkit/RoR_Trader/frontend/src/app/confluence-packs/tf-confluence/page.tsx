@@ -6,6 +6,120 @@ import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
+import { useConfluenceGroups, useConfluenceTemplates } from '@/hooks/queries/usePacks';
+import { useSaveConfluenceGroups } from '@/hooks/mutations/usePackMutations';
+import type { ConfluenceGroupDTO } from '@/hooks/queries/usePacks';
+
+/**
+ * Transform API confluence groups into the TfPack shape V5 expects.
+ * Maps from Python ConfluenceGroup dataclass → V5 TfPack interface.
+ */
+function apiGroupToTfPack(group: ConfluenceGroupDTO, templates: Record<string, any>): any {
+  const template = templates[group.base_template];
+  if (!template) return null;
+
+  // Build params array from template schema + group's stored values
+  const params = Object.entries(template.parameters_schema || {}).map(([key, schema]: [string, any]) => ({
+    key,
+    label: schema.label || key,
+    type: schema.type === 'float' ? 'float' : 'int',
+    value: group.parameters[key] ?? schema.default,
+    default: schema.default,
+    min: schema.min ?? 0,
+    max: schema.max ?? 999,
+  }));
+
+  // Build plot settings
+  const plotSettings = Object.entries(template.plot_schema || {}).map(([key, schema]: [string, any]) => ({
+    key,
+    label: schema.label || key,
+    value: group.plot_settings?.colors?.[key] || schema.default || '#ffffff',
+  }));
+
+  return {
+    id: group.id,
+    templateKey: group.base_template,
+    name: `${template.name} (${group.version})`,
+    version: group.version,
+    tags: [template.category || 'Other'],
+    enabled: group.enabled,
+    isDefault: group.is_default,
+    isSaved: true,
+    params,
+    plotSettings,
+    outputs: Object.entries(template.outputs || {}).map(([code, desc]: [string, any]) => ({
+      code,
+      description: typeof desc === 'string' ? desc : code,
+    })),
+    triggers: (template.triggers || []).map((t: any) => ({
+      id: t.id,
+      name: t.name,
+      sentiment: t.direction === 'LONG' ? 'bullish' : t.direction === 'SHORT' ? 'bearish' : 'neutral',
+      description: t.name,
+      execVariants: {
+        C: { enabled: true, referenceBar: 0, orderType: 'market' },
+        L: { enabled: true, referenceBar: -1, orderType: 'market', holdSeconds: 0 },
+        LC: { enabled: true, referenceBar: -1, orderType: 'market', confirmBarOffset: 0, bailAction: 'exit_market' },
+        CC: { enabled: true, referenceBar: 0, orderType: 'market', confirmBarOffset: 1, bailAction: 'exit_market' },
+      },
+    })),
+  };
+}
+
+/**
+ * Transform TfPack back to API ConfluenceGroupDTO for saving.
+ */
+function tfPackToApiGroup(pack: any): ConfluenceGroupDTO {
+  const parameters: Record<string, unknown> = {};
+  for (const p of pack.params || []) {
+    parameters[p.key] = p.value;
+  }
+  const colors: Record<string, string> = {};
+  for (const ps of pack.plotSettings || []) {
+    colors[ps.key] = ps.value;
+  }
+  return {
+    id: pack.id,
+    base_template: pack.templateKey,
+    version: pack.version,
+    description: '',
+    enabled: pack.enabled,
+    is_default: pack.isDefault,
+    parameters,
+    plot_settings: { colors, line_width: 1, visible: true },
+  };
+}
+
+function WiredV5() {
+  const { data: groups, isLoading: groupsLoading } = useConfluenceGroups();
+  const { data: templates, isLoading: templatesLoading } = useConfluenceTemplates();
+  const saveMutation = useSaveConfluenceGroups();
+
+  const isLoading = groupsLoading || templatesLoading;
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+        Loading confluence groups...
+      </div>
+    );
+  }
+
+  // Transform API data to V5 TfPack format
+  let apiPacks: any[] | undefined;
+  if (groups && templates) {
+    apiPacks = groups
+      .map((g) => apiGroupToTfPack(g, templates))
+      .filter(Boolean);
+  }
+
+  const handleSave = (packs: any[]) => {
+    const apiGroups = packs.map(tfPackToApiGroup);
+    saveMutation.mutate(apiGroups);
+  };
+
+  return <V5 apiPacks={apiPacks} onSave={handleSave} />;
+}
 
 const versions = [
   {
@@ -13,7 +127,7 @@ const versions = [
       id: 'v1-initial',
       name: 'Initial Scaffold',
       description: 'Clean card layout with toggle switches, category tags, and 5-tab detail view.',
-      rationale: 'First pass — focused on getting the core structure right: pack list with enable/disable, basic detail view with Parameters, Plot Settings, Outputs & Triggers, Preview, and Danger Zone tabs. Kept it simple to establish the layout pattern.',
+      rationale: 'First pass — focused on getting the core structure right.',
     },
     component: V1,
   },
@@ -21,8 +135,8 @@ const versions = [
     meta: {
       id: 'v2-full-parity',
       name: 'Full Parity',
-      description: 'Everything from Streamlit, re-designed. 6 tabs including Code, grouped by category, full output descriptions, all trigger metadata.',
-      rationale: 'Direct port of every feature from the Streamlit app. Added: packs grouped by category headers, output descriptions (e.g. "SML = Full Bull Stack"), all trigger details with direction/type/execution/ID, template-specific color pickers, Code tab with parameter config and source preview, interpreter state timeline and trigger events tables in Preview. Nothing removed — if it exists in Streamlit, it\'s here.',
+      description: 'Everything from Streamlit, re-designed.',
+      rationale: 'Direct port of every feature from the Streamlit app.',
     },
     component: V2,
   },
@@ -30,8 +144,8 @@ const versions = [
     meta: {
       id: 'v3-streamlined',
       name: 'Streamlined',
-      description: 'No page navigation. Accordion-style inline editing, category filter pills, overflow menu for rare actions.',
-      rationale: 'Removed friction: no separate detail page, no tabs. Packs expand inline to show parameters + quick reference side-by-side. Plot Settings and Danger Zone moved behind a "..." overflow menu since they\'re rarely used. Category filter pills replace grouping. A trader can scan all packs, tweak a parameter, and move on without ever leaving the page.',
+      description: 'Accordion-style inline editing.',
+      rationale: 'Removed friction.',
     },
     component: V3,
   },
@@ -39,19 +153,19 @@ const versions = [
     meta: {
       id: 'v4-creative',
       name: 'Creative',
-      description: 'Inline SVG indicator previews, live state pulses, state distribution donuts, drag-to-reorder, comparison mode, preset buttons.',
-      rationale: 'Reimagined the page as a live dashboard. Each pack shows its current state with an animated pulse, a donut chart of state distribution, and usage stats (strategies using it, last triggered). Added: drag-to-reorder priority, compare-two-packs mode, quick-configure presets (Scalping/Swing/Position), compact vs rich view toggle, smart grouping by usage. Visual parameter tuning with sliders. The goal: make a trader feel like they\'re looking at a living system, not a config page.',
+      description: 'Live dashboard with SVG previews.',
+      rationale: 'Reimagined as live dashboard.',
     },
     component: V4,
   },
   {
     meta: {
       id: 'v5-production',
-      name: 'Production',
-      description: 'All 8 templates, locked params after save, nested variations, search, updated trigger naming [C]/[L]/[LC]/[CC], trigger params, "Create New Template" → Pack Builder.',
-      rationale: 'Based on V2 structure with key production changes: parameters lock after save to protect live strategies/portfolios, variations nest under their default template (created via Copy), search bar for discovery at scale, tags on cards instead of category sections, updated execution type naming from display settings, trigger-level parameters shown in detail view. "New Pack" replaced with link to Pack Builder for template creation.',
+      name: 'Production (Live)',
+      description: 'All 8 templates, locked params, nested variations — wired to real API data.',
+      rationale: 'Production version with live data from FastAPI.',
     },
-    component: V5,
+    component: WiredV5,
   },
 ];
 

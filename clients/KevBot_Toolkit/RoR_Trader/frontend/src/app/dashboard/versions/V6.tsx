@@ -556,7 +556,19 @@ function usePopover() {
 // Main Component
 // ---------------------------------------------------------------------------
 
-export default function DashboardV6() {
+export interface DashboardV6Props {
+  /** API summary data — used for KPI header display when provided */
+  apiSummary?: {
+    strategy_count: number;
+    portfolio_count: number;
+    monitored_count: number;
+    total_trades: number;
+    total_r: number;
+    avg_win_rate: number;
+  };
+}
+
+export default function DashboardV6({ apiSummary }: DashboardV6Props = {}) {
   const [showCustomize, setShowCustomize] = useState(false);
   const [customizeTab, setCustomizeTab] = useState<'KPIs' | 'Widgets' | 'Quick Actions'>('Widgets');
   const [healthViewTab, setHealthViewTab] = useState<'portfolios' | 'strategies'>('portfolios');

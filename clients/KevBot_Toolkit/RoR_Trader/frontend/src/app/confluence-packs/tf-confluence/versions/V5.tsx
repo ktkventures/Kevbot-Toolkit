@@ -1548,14 +1548,22 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
    Main Component
    ======================================================================== */
 
-export default function TfConfluenceV5() {
-  const [packs, setPacks] = useState<TfPack[]>(initialPacks);
+interface TfConfluenceV5Props {
+  /** When provided, overrides the hardcoded initialPacks with real API data. */
+  apiPacks?: TfPack[];
+  /** Called when packs are modified (enable/disable, create, delete). */
+  onSave?: (packs: TfPack[]) => void;
+}
+
+export default function TfConfluenceV5({ apiPacks, onSave }: TfConfluenceV5Props = {}) {
+  const startPacks = apiPacks ?? initialPacks;
+  const [packs, setPacks] = useState<TfPack[]>(startPacks);
   const [detailPack, setDetailPack] = useState<TfPack | null>(null);
   const [draftPack, setDraftPack] = useState<TfPack | null>(null); // unsaved variation being configured
   const [search, setSearch] = useState('');
   const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(() => {
     // Auto-expand templates that have variations
-    const keys = initialPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
+    const keys = startPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
     return new Set(Array.from(new Set(keys)));
   });
 

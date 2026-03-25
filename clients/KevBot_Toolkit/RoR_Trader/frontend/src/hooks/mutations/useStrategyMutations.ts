@@ -1,0 +1,71 @@
+/**
+ * Strategy mutation hooks — create, update, delete, duplicate, bulk-delete.
+ */
+
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api/client';
+
+export function useCreateStrategy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (strategy: Record<string, any>) =>
+      apiFetch('/api/strategies', {
+        method: 'POST',
+        body: JSON.stringify(strategy),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+    },
+  });
+}
+
+export function useUpdateStrategy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, strategy }: { id: number; strategy: Record<string, any> }) =>
+      apiFetch(`/api/strategies/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(strategy),
+      }),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+      queryClient.invalidateQueries({ queryKey: ['strategy', id] });
+    },
+  });
+}
+
+export function useDeleteStrategy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/strategies/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+    },
+  });
+}
+
+export function useDuplicateStrategy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/strategies/${id}/duplicate`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+    },
+  });
+}
+
+export function useBulkDeleteStrategies() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) =>
+      apiFetch('/api/strategies/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify(ids),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+    },
+  });
+}

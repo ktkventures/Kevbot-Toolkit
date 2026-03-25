@@ -1463,7 +1463,38 @@ function AnalysisToolbar({ search, onSearch, onAnalyze, onFilterClick, placehold
 // Main Component
 // ---------------------------------------------------------------------------
 
-export default function StrategyBuilderV5() {
+export interface BacktestResult {
+  trades: TradeRow[];
+  kpis: KPIs;
+  equityCurve: { trade_number: number; timestamp: string; cumulative_r: number }[];
+  chartData?: any[];
+  totalBars: number;
+  dataSource: string;
+}
+
+export interface StrategyBuilderV5Props {
+  /** Real backtest result from API (overrides mock data when present) */
+  backtestResult?: BacktestResult | null;
+  /** Called when user clicks "Run Backtest" */
+  onRunBacktest?: (config: Record<string, any>) => void;
+  /** Called when user clicks "Save Strategy" */
+  onSave?: (strategy: Record<string, any>) => void;
+  /** Whether a backtest is currently running */
+  isBacktesting?: boolean;
+  /** Real stop loss packs from API */
+  stopPacks?: RiskPack[];
+  /** Real target packs from API */
+  targetPacks?: RiskPack[];
+}
+
+export default function StrategyBuilderV5({
+  backtestResult,
+  onRunBacktest,
+  onSave,
+  isBacktesting,
+  stopPacks,
+  targetPacks,
+}: StrategyBuilderV5Props = {}) {
   // ---- Config State ----
   const [symbol, setSymbol] = useState('SPY');
   const [strategyMethod, setStrategyMethod] = useState<'standard' | 'webhook' | 'scanner'>('standard');
@@ -1524,6 +1555,10 @@ export default function StrategyBuilderV5() {
     return Math.round(lookbackDays * barsPerDay * sessionMult);
   }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);
 
+  // Use API packs when provided, fall back to mocks
+  const activeStopPacks = stopPacks ?? MOCK_STOP_PACKS;
+  const activeTargetPacks = targetPacks ?? MOCK_TARGET_PACKS;
+
   const entryDef = MOCK_TRIGGERS.find((t) => t.id === entryTrigger);
 
   const exitDefs = useMemo(
@@ -1534,7 +1569,19 @@ export default function StrategyBuilderV5() {
   // Handlers
   const handleRunBacktest = useCallback(() => {
     setBacktestRan(true);
-  }, []);
+    if (onRunBacktest) {
+      onRunBacktest({
+        symbol, timeframe, direction, session,
+        days: lookbackDays,
+        lookback_mode: lookbackMode,
+        entry_trigger_confluence_id: entryTrigger,
+        exit_trigger_confluence_ids: exitTriggers,
+        confluence: Array.from(selectedConditions),
+        stop_loss_pack_id: selectedStopPack,
+        take_profit_pack_id: selectedTargetPack,
+      });
+    }
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack]);
 
   const handleToggleCondition = useCallback((id: string) => {
     setSelectedConditions((prev) => {
@@ -1931,7 +1978,7 @@ export default function StrategyBuilderV5() {
           </div>
 
           {/* KPIs */}
-          <KPIDashboard kpis={MOCK_KPIS} backtestRan={backtestRan} />
+          <KPIDashboard kpis={backtestResult?.kpis ?? MOCK_KPIS} backtestRan={backtestRan || !!backtestResult} />
 
           {/* Optimizable Variables */}
           <div className="mt-4">
@@ -2001,7 +2048,7 @@ export default function StrategyBuilderV5() {
                 <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
                   Trade History
                 </h3>
-                <TradeHistoryTable trades={MOCK_TRADES} />
+                <TradeHistoryTable trades={backtestResult?.trades ?? MOCK_TRADES} />
               </Card>
             </div>
 
@@ -2396,8 +2443,23 @@ export default function StrategyBuilderV5() {
           {/* ================================================================= */}
           <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
             <div className="flex justify-center">
-              <PrimaryButton size="lg" onClick={() => {}}>
-                Save Strategy
+              <PrimaryButton size="lg" onClick={() => {
+                if (onSave) {
+                  onSave({
+                    name: strategyName, symbol, direction, timeframe,
+                    trading_session: session,
+                    data_days: lookbackDays, lookback_mode: lookbackMode,
+                    entry_trigger_confluence_id: entryTrigger,
+                    exit_trigger_confluence_ids: exitTriggers,
+                    confluence: Array.from(selectedConditions),
+                    stop_loss_pack_id: selectedStopPack,
+                    take_profit_pack_id: selectedTargetPack,
+                    kpis: backtestResult?.kpis ?? MOCK_KPIS,
+                    stored_trades: backtestResult?.trades ?? [],
+                  });
+                }
+              }}>
+                {onSave ? 'Save Strategy' : 'Save Strategy (Demo)'}
               </PrimaryButton>
             </div>
           </div>

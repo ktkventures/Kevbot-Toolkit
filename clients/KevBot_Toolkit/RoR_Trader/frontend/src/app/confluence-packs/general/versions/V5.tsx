@@ -633,13 +633,19 @@ function PackCard({ pack, onToggle, onDetails, onCopy, hasVariations, isExpanded
    Main Component
    ======================================================================== */
 
-export default function GeneralPacksV5() {
-  const [packs, setPacks] = useState<GeneralPack[]>(initialPacks);
+interface GeneralPacksV5Props {
+  apiPacks?: GeneralPack[];
+  onSave?: (packs: GeneralPack[]) => void;
+}
+
+export default function GeneralPacksV5({ apiPacks, onSave }: GeneralPacksV5Props = {}) {
+  const startPacks = apiPacks ?? initialPacks;
+  const [packs, setPacks] = useState<GeneralPack[]>(startPacks);
   const [detailPack, setDetailPack] = useState<GeneralPack | null>(null);
   const [draftPack, setDraftPack] = useState<GeneralPack | null>(null);
   const [search, setSearch] = useState('');
   const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(() => {
-    const keys = initialPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
+    const keys = startPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
     return new Set(Array.from(new Set(keys)));
   });
 

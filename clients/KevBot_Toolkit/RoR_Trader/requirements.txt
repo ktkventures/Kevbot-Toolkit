@@ -30,3 +30,8 @@ pytz>=2024.1
 
 # Environment Variables
 python-dotenv>=1.0.0
+
+# FastAPI (Phase 38 — API layer for Next.js frontend)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-jose[cryptography]>=3.3.0

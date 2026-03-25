@@ -411,13 +411,19 @@ function PackCard({ pack, onToggle, onDetails, onCopy, hasVariations, isExpanded
    Main Component
    ======================================================================== */
 
-export default function StopLossPacksV1() {
-  const [packs, setPacks] = useState<StopPack[]>(initialPacks);
+interface StopLossPacksV1Props {
+  apiPacks?: StopPack[];
+  onSave?: (packs: StopPack[]) => void;
+}
+
+export default function StopLossPacksV1({ apiPacks, onSave }: StopLossPacksV1Props = {}) {
+  const startPacks = apiPacks ?? initialPacks;
+  const [packs, setPacks] = useState<StopPack[]>(startPacks);
   const [detailPack, setDetailPack] = useState<StopPack | null>(null);
   const [draftPack, setDraftPack] = useState<StopPack | null>(null);
   const [search, setSearch] = useState('');
   const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(() => {
-    const keys = initialPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
+    const keys = startPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
     return new Set(Array.from(new Set(keys)));
   });
 
