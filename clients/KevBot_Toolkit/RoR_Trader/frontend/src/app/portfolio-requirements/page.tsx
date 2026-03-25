@@ -1,92 +1,21 @@
 'use client';
 
-import VersionedPage from '@/components/VersionedPage';
+import PageSwitch from '@/components/PageSwitch';
+import RequirementsPage from '@/views/RequirementsPage';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
-import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
 
-function WiredV5() {
-  const { data: settings, isLoading } = useSettings();
-  const saveMutation = useSaveSettings();
-
-  if (isLoading) {
-    return (
-      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-        Loading requirements...
-      </div>
-    );
-  }
-
-  // Requirements are stored in settings under the 'requirements' key
-  const apiRequirements = settings?.requirements || undefined;
-
-  const handleSave = (sets: any[]) => {
-    saveMutation.mutate({ ...settings, requirements: sets });
-  };
-
-  return <V5 apiRequirements={apiRequirements} onSave={handleSave} />;
-}
-
-const versions = [
-  {
-    meta: {
-      id: 'v1-initial',
-      name: 'Initial Scaffold',
-      description: 'List/editor view for requirement sets with built-in prop firm presets, custom rules, clone, and delete confirmation modal.',
-      rationale: 'First pass — establishes the CRUD pattern for requirement sets with rule type options, value formatting, and built-in vs custom distinction.',
-    },
-    component: V1,
-  },
-  {
-    meta: {
-      id: 'v2-full-parity',
-      name: 'Full Parity',
-      description: 'Enhanced requirements: progress bars per rule, prop firm preset quick-create modal (TTP/FTMO/Topstep), portfolio usage indicators, rule validation hints, compliance preview modal, export as JSON, and tabbed filtering.',
-      rationale: 'Matches Streamlit requirements page plus visual enhancements — progress tracking, one-click presets, and compliance checking.',
-    },
-    component: V2,
-  },
-  {
-    meta: {
-      id: 'v3-streamlined',
-      name: 'Streamlined',
-      description: 'Single-view inline editing: expandable requirement set cards with compact rule badges (pass/fail dots), click-to-edit values, inline add-rule form, and inline delete confirmation. No page transitions, no modals for editing.',
-      rationale: 'Minimal friction — all editing happens in place without navigating to a separate editor view. Removes presets, compliance preview, and import/export for a focused experience.',
-    },
-    component: V3,
-  },
-  {
-    meta: {
-      id: 'v4-creative',
-      name: 'Creative',
-      description: 'Visual rule builder with compliance ring scores, traffic light severity indicators, progress bars per rule, compliance simulator, template marketplace modal, prop firm comparison table, and categorized rule badges (Loss/Activity/Risk/Targets).',
-      rationale: 'Combines card-based set selection with detailed rule editing. Compliance ring gives at-a-glance health. Simulator runs mock checks. Template marketplace allows one-click import of prop firm presets. Comparison table shows side-by-side firm differences.',
-    },
-    component: V4,
-  },
-  {
-    meta: {
-      id: 'v5-production',
-      name: 'Production (Trade Qualification)',
-      description: 'V3 streamlined inline editing + backend-aligned rule types (percentage-based), Trade Qualification Rules section per set (min hold time, min price move, min profit threshold), Clone button, rule descriptions, built-in set protections (lock icon, read-only), daily_pause_pct rule type.',
-      rationale: 'Addresses prop firm nuances like TTP\'s 30-second hold and $0.10 minimum move rules. Trade Qualification Rules are distinct from compliance rules — they determine whether a trade "counts" toward firm P&L rather than whether you pass/fail. Clone enables customization of built-in presets.',
-    },
-    component: V5,
-  },
-  {
-    meta: {
-      id: 'v5-wired',
-      name: 'Production (Live)',
-      description: 'Requirements wired to real API data from FastAPI settings endpoint.',
-      rationale: 'Production version with live data.',
-    },
-    component: WiredV5,
-  },
+const designVersions = [
+  { meta: { id: 'v1', name: 'V1 Initial', description: 'List/editor view for requirement sets.', rationale: '' }, component: V1 },
+  { meta: { id: 'v2', name: 'V2 Full Parity', description: 'Enhanced with progress bars and presets.', rationale: '' }, component: V2 },
+  { meta: { id: 'v3', name: 'V3 Streamlined', description: 'Inline editing, no modals.', rationale: '' }, component: V3 },
+  { meta: { id: 'v4', name: 'V4 Creative', description: 'Visual rule builder with compliance rings.', rationale: '' }, component: V4 },
+  { meta: { id: 'v5', name: 'V5 Trade Qualification', description: 'Production design with TQ rules.', rationale: '' }, component: V5 },
 ];
 
-export default function PortfolioRequirementsPage() {
-  return <VersionedPage pageKey="portfolio-requirements" versions={versions} />;
+export default function Page() {
+  return <PageSwitch live={RequirementsPage} versions={designVersions} pageKey="portfolio-requirements" />;
 }

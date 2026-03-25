@@ -81,6 +81,29 @@ export const useDisplayStore = create<DisplayStore>()(
   )
 );
 
+// =============================================================================
+// VIEW MODE — Toggle between Live (API data) and Design Reference (mock data)
+// =============================================================================
+
+export type ViewMode = 'live' | 'design';
+
+interface ViewModeStore {
+  mode: ViewMode;
+  setMode: (mode: ViewMode) => void;
+  toggle: () => void;
+}
+
+export const useViewMode = create<ViewModeStore>()(
+  persist(
+    (set, get) => ({
+      mode: 'live' as ViewMode,
+      setMode: (mode) => set({ mode }),
+      toggle: () => set({ mode: get().mode === 'live' ? 'design' : 'live' }),
+    }),
+    { name: 'ror-view-mode' }
+  )
+);
+
 /**
  * StoreProvider — no-op wrapper for now.
  * Zustand stores don't need a provider, but this keeps the layout pattern

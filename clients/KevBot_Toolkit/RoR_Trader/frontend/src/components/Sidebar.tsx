@@ -3,6 +3,34 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import { useViewMode } from '@/providers/StoreProvider';
+
+function ViewModeToggle() {
+  const { mode, toggle } = useViewMode();
+  return (
+    <button
+      onClick={toggle}
+      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors"
+      style={{
+        background: mode === 'design' ? '#FF980020' : 'var(--green)10',
+        border: `1px solid ${mode === 'design' ? '#FF980040' : 'var(--green)30'}`,
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className="w-2 h-2 rounded-full"
+          style={{ background: mode === 'live' ? 'var(--green)' : '#FF9800' }}
+        />
+        <span style={{ color: mode === 'live' ? 'var(--green)' : '#FF9800', fontWeight: 600 }}>
+          {mode === 'live' ? 'Live' : 'Design Ref'}
+        </span>
+      </div>
+      <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
+        {mode === 'live' ? 'API Data' : 'Mock Data'}
+      </span>
+    </button>
+  );
+}
 
 interface NavItem {
   href: string;
@@ -189,6 +217,11 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      {/* View mode toggle */}
+      <div className="px-4 py-2 border-t" style={{ borderColor: 'var(--border)' }}>
+        <ViewModeToggle />
+      </div>
 
       <div className="px-4 py-3 border-t" style={{ borderColor: 'var(--border)' }}>
         <div className="flex items-center gap-2">
