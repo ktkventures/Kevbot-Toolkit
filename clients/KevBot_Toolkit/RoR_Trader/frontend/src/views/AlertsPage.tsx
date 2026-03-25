@@ -49,11 +49,21 @@ function EventBadge({ event }: { event: string }) {
   );
 }
 
+function StatusDot({ code }: { code: number }) {
+  const ok = code >= 200 && code < 300;
+  return (
+    <span className="flex items-center gap-1">
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: ok ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
+      <span className="text-xs font-mono" style={{ color: ok ? 'var(--green)' : 'var(--red)' }}>{code}</span>
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Tabs
+// Tabs (V5 4-tab layout)
 // ---------------------------------------------------------------------------
 
-const TABS = ['Strategy Alerts', 'Outbound Webhooks', 'Inbound Webhooks'];
+const TABS = ['Strategy Alerts', 'Portfolio Alerts', 'Outbound Webhooks', 'Inbound Webhooks'];
 
 // ---------------------------------------------------------------------------
 // Component
@@ -69,6 +79,8 @@ export default function AlertsPage() {
 
   const [stratFilter, setStratFilter] = useState('All');
   const [typeFilter, setTypeFilter] = useState('All');
+  const [portFilter, setPortFilter] = useState('All');
+  const [expandedPayload, setExpandedPayload] = useState<number | null>(null);
 
   // Derive unique strategy names from alerts
   const strategyNames = useMemo(() => {
@@ -76,7 +88,13 @@ export default function AlertsPage() {
     return Array.from(new Set(alerts.map((a: any) => a.strategy || a.strategy_name || ''))).filter(Boolean).sort();
   }, [alerts]);
 
-  // Filter alerts
+  // Derive unique portfolio names from alerts
+  const portfolioNames = useMemo(() => {
+    if (!alerts) return [];
+    return Array.from(new Set(alerts.map((a: any) => a.portfolio || '').filter(Boolean))).sort();
+  }, [alerts]);
+
+  // Filter alerts for strategy tab
   const filteredAlerts = useMemo(() => {
     if (!alerts) return [];
     let result = [...alerts] as any[];
@@ -84,6 +102,20 @@ export default function AlertsPage() {
     if (typeFilter !== 'All') result = result.filter((a) => (a.type || '').toUpperCase() === typeFilter);
     return result;
   }, [alerts, stratFilter, typeFilter]);
+
+  // Filter alerts for portfolio tab
+  const filteredPortfolioAlerts = useMemo(() => {
+    if (!alerts) return [];
+    let result = (alerts as any[]).filter((a) => a.portfolio);
+    if (portFilter !== 'All') result = result.filter((a) => a.portfolio === portFilter);
+    return result;
+  }, [alerts, portFilter]);
+
+  // Webhook delivery log — alerts with webhook status
+  const webhookDeliveries = useMemo(() => {
+    if (!alerts) return [];
+    return (alerts as any[]).filter((a) => a.webhook_status != null || a.webhook_template);
+  }, [alerts]);
 
   // Monitor state
   const isRunning = monitorStatus?.status === 'running' || monitorStatus?.desired_state === 'running';
@@ -127,7 +159,7 @@ export default function AlertsPage() {
     <div>
       <PageHeader
         title="Alerts & Signals"
-        subtitle="Monitor fired alerts, webhook deliveries, and signal activity"
+        subtitle="Monitor fired alerts, webhook deliveries, and signal activity across all strategies and portfolios"
         actions={
           <div className="flex items-center gap-2">
             <span
@@ -141,7 +173,7 @@ export default function AlertsPage() {
         }
       />
 
-      {/* Engine status strip */}
+      {/* Engine status strip — V5: uptime, ticks, symbols, strategies, last tick */}
       <div className="flex items-center gap-4 mb-5 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
         <span className="flex items-center gap-1.5 text-xs">
           <span
@@ -161,6 +193,11 @@ export default function AlertsPage() {
             Uptime: {monitorStatus.uptime}
           </span>
         )}
+        {monitorStatus?.ticks != null && (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Ticks: {Number(monitorStatus.ticks).toLocaleString()}
+          </span>
+        )}
         {monitorStatus?.symbols_count != null && (
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             {monitorStatus.symbols_count} symbols
@@ -169,6 +206,11 @@ export default function AlertsPage() {
         {monitorStatus?.strategies_count != null && (
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             {monitorStatus.strategies_count} strategies
+          </span>
+        )}
+        {monitorStatus?.last_tick && (
+          <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+            Last: {monitorStatus.last_tick}
           </span>
         )}
 
@@ -222,61 +264,153 @@ export default function AlertsPage() {
                     </div>
                   </Card>
                 ) : (
+                  <>
+                    {/* Chronological Alert Feed */}
+                    <Card>
+                      <h4 className="text-sm font-medium mb-3">Chronological Alert Feed</h4>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 800 }}>
+                          <thead>
+                            <tr>
+                              {['Time', 'Type', 'Strategy', 'Symbol', 'Price', 'Exec', 'Event', 'P&L', 'Status'].map((h) => (
+                                <th key={h} style={thStyle}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredAlerts.map((a: any, i: number) => {
+                              const alertType = (a.type || '').toUpperCase();
+                              return (
+                                <tr key={a.id || i}>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                    {a.timestamp || a.time || a.created_at || '--'}
+                                  </td>
+                                  <td style={tdStyle}>
+                                    <span
+                                      className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                                      style={{
+                                        color: alertType === 'ENTRY' ? 'var(--green)' : 'var(--red)',
+                                        background: alertType === 'ENTRY' ? 'var(--green-muted, rgba(76,175,80,0.15))' : 'var(--red-muted, rgba(239,83,80,0.15))',
+                                      }}
+                                    >
+                                      {alertType || '--'}
+                                    </span>
+                                  </td>
+                                  <td style={tdStyle}>{a.strategy || a.strategy_name || '--'}</td>
+                                  <td style={tdStyle}>{a.symbol || '--'}</td>
+                                  <td style={tdStyle}>
+                                    {a.price != null ? `$${Number(a.price).toFixed(2)}` : '--'}
+                                  </td>
+                                  <td style={tdStyle}>
+                                    {a.exec_type ? (
+                                      <span className="text-xs font-mono px-1.5 py-0.5 rounded-full" style={{ color: '#2196F3', background: '#2196F320' }}>
+                                        {a.exec_type}
+                                      </span>
+                                    ) : '--'}
+                                  </td>
+                                  <td style={tdStyle}>
+                                    {a.event ? <EventBadge event={a.event} /> : '--'}
+                                  </td>
+                                  <td style={{
+                                    ...tdStyle,
+                                    color: a.pnl == null ? 'var(--text-muted)' : a.pnl >= 0 ? 'var(--green)' : 'var(--red)',
+                                    fontWeight: a.pnl != null ? 600 : 400,
+                                  }}>
+                                    {a.pnl != null ? `${a.pnl >= 0 ? '+' : ''}${Number(a.pnl).toFixed(1)}R` : '--'}
+                                  </td>
+                                  <td style={tdStyle}>
+                                    <span style={{ color: a.acknowledged ? 'var(--text-muted)' : 'var(--green)' }}>
+                                      {a.acknowledged ? 'Ack' : a.status || 'New'}
+                                    </span>
+                                    {!a.acknowledged && a.id && (
+                                      <button
+                                        className="text-xs ml-2 px-1.5 py-0.5 rounded"
+                                        style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                                        onClick={() => ackMutation.mutate(a.id)}
+                                      >
+                                        Ack
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+
+                    {/* Alert History — entry/exit pairs */}
+                    <Card className="mt-4">
+                      <h4 className="text-sm font-medium mb-3">Alert History (Entry/Exit Pairs)</h4>
+                      <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                        Entry/exit pairs will be matched automatically from the alert feed. Pairs with webhook delivery status are shown when available.
+                      </p>
+                      <div className="text-center py-6" style={{ color: 'var(--text-muted)' }}>
+                        <p className="text-xs">Alert pair matching requires active monitor data.</p>
+                      </div>
+                    </Card>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ================================================================= */}
+            {/* TAB 2: Portfolio Alerts                                           */}
+            {/* ================================================================= */}
+            {tab === 'Portfolio Alerts' && (
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <select style={selectStyle} value={portFilter} onChange={(e) => setPortFilter(e.target.value)}>
+                    <option value="All">Portfolio: All</option>
+                    {portfolioNames.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    {filteredPortfolioAlerts.length} alert{filteredPortfolioAlerts.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+
+                {filteredPortfolioAlerts.length === 0 ? (
+                  <Card>
+                    <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
+                      No portfolio alerts yet. Portfolio-level alerts appear here when strategies within a portfolio fire signals.
+                    </div>
+                  </Card>
+                ) : (
                   <Card>
                     <h4 className="text-sm font-medium mb-3">Chronological Alert Feed</h4>
                     <div style={{ overflowX: 'auto' }}>
-                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 700 }}>
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 750 }}>
                         <thead>
                           <tr>
-                            {['Time', 'Type', 'Strategy', 'Symbol', 'Price', 'Event', 'Status'].map((h) => (
+                            {['Time', 'Portfolio', 'Strategy', 'Event', 'Price', 'Qty', 'Status'].map((h) => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredAlerts.map((a: any, i: number) => {
-                            const alertType = (a.type || '').toUpperCase();
-                            return (
-                              <tr key={a.id || i}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                  {a.timestamp || a.time || a.created_at || '--'}
-                                </td>
-                                <td style={tdStyle}>
-                                  <span
-                                    className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                                    style={{
-                                      color: alertType === 'ENTRY' ? 'var(--green)' : 'var(--red)',
-                                      background: alertType === 'ENTRY' ? 'var(--green-muted, rgba(76,175,80,0.15))' : 'var(--red-muted, rgba(239,83,80,0.15))',
-                                    }}
-                                  >
-                                    {alertType || '--'}
-                                  </span>
-                                </td>
-                                <td style={tdStyle}>{a.strategy || a.strategy_name || '--'}</td>
-                                <td style={tdStyle}>{a.symbol || '--'}</td>
-                                <td style={tdStyle}>
-                                  {a.price != null ? `$${Number(a.price).toFixed(2)}` : '--'}
-                                </td>
-                                <td style={tdStyle}>
-                                  {a.event ? <EventBadge event={a.event} /> : '--'}
-                                </td>
-                                <td style={tdStyle}>
-                                  <span style={{ color: a.acknowledged ? 'var(--text-muted)' : 'var(--green)' }}>
-                                    {a.acknowledged ? 'Ack' : a.status || 'New'}
-                                  </span>
-                                  {!a.acknowledged && a.id && (
-                                    <button
-                                      className="text-xs ml-2 px-1.5 py-0.5 rounded"
-                                      style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}
-                                      onClick={() => ackMutation.mutate(a.id)}
-                                    >
-                                      Ack
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
+                          {filteredPortfolioAlerts.map((a: any, i: number) => (
+                            <tr key={a.id || i}>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                {a.timestamp || a.time || a.created_at || '--'}
+                              </td>
+                              <td style={tdStyle}>{a.portfolio || '--'}</td>
+                              <td style={tdStyle}>{a.strategy || a.strategy_name || '--'}</td>
+                              <td style={tdStyle}>{a.event ? <EventBadge event={a.event} /> : '--'}</td>
+                              <td style={tdStyle}>
+                                {a.price != null ? `$${Number(a.price).toFixed(2)}` : '--'}
+                              </td>
+                              <td style={tdStyle}>{a.qty ?? '--'}</td>
+                              <td style={tdStyle}>
+                                <span className="text-xs px-1.5 py-0.5 rounded" style={{
+                                  background: a.match_status === 'Matched' ? 'var(--green-muted, rgba(76,175,80,0.15))' : 'var(--orange)' + '20',
+                                  color: a.match_status === 'Matched' ? 'var(--green)' : 'var(--orange)',
+                                }}>
+                                  {a.match_status || a.status || '--'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
@@ -286,24 +420,104 @@ export default function AlertsPage() {
             )}
 
             {/* ================================================================= */}
-            {/* TAB 2: Outbound Webhooks                                          */}
+            {/* TAB 3: Outbound Webhooks                                          */}
             {/* ================================================================= */}
             {tab === 'Outbound Webhooks' && (
               <div>
-                <Card>
-                  <div className="text-center py-8">
-                    <p className="text-sm font-medium mb-2">Outbound Webhook Delivery Log</p>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      View delivery history, response codes, and latency for all outbound webhook dispatches.
-                      Configure webhook templates in Settings.
-                    </p>
+                {/* Summary metrics */}
+                {webhookDeliveries.length > 0 && (
+                  <div className="grid grid-cols-4 gap-3 mb-4">
+                    {[
+                      { label: 'Total Sent', value: String(webhookDeliveries.length) },
+                      {
+                        label: 'Success Rate',
+                        value: `${((webhookDeliveries.filter((w: any) => (w.webhook_status || 0) >= 200 && (w.webhook_status || 0) < 300).length / webhookDeliveries.length) * 100).toFixed(0)}%`,
+                      },
+                      {
+                        label: 'Avg Latency',
+                        value: (() => {
+                          const latencies = webhookDeliveries.filter((w: any) => w.webhook_latency != null).map((w: any) => w.webhook_latency);
+                          return latencies.length > 0 ? `${Math.round(latencies.reduce((s: number, v: number) => s + v, 0) / latencies.length)}ms` : '--';
+                        })(),
+                      },
+                      {
+                        label: 'Failed',
+                        value: String(webhookDeliveries.filter((w: any) => (w.webhook_status || 0) >= 400).length),
+                        color: 'var(--red)',
+                      },
+                    ].map((m) => (
+                      <Card key={m.label}>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                        <p className="text-lg font-bold mt-1" style={(m as { color?: string }).color ? { color: (m as { color: string }).color } : undefined}>{m.value}</p>
+                      </Card>
+                    ))}
                   </div>
-                </Card>
+                )}
+
+                {webhookDeliveries.length === 0 ? (
+                  <Card>
+                    <div className="text-center py-8">
+                      <p className="text-sm font-medium mb-2">Outbound Webhook Delivery Log</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        View delivery history, response codes, and latency for all outbound webhook dispatches.
+                        Configure webhook templates in Settings.
+                      </p>
+                    </div>
+                  </Card>
+                ) : (
+                  <Card>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 850 }}>
+                        <thead>
+                          <tr>
+                            {['Time', 'Template', 'Event', 'Strategy', 'Status', 'Latency', 'Payload'].map((h) => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {webhookDeliveries.map((w: any, i: number) => (
+                            <tr key={w.id || i}>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                {w.timestamp || w.time || w.created_at || '--'}
+                              </td>
+                              <td style={tdStyle}>{w.webhook_template || '--'}</td>
+                              <td style={tdStyle}>{w.event ? <EventBadge event={w.event} /> : '--'}</td>
+                              <td style={tdStyle}>{(w.strategy || w.strategy_name || '--').split(' - ')[0]}</td>
+                              <td style={tdStyle}>
+                                {w.webhook_status ? <StatusDot code={w.webhook_status} /> : '--'}
+                              </td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace' }}>
+                                {w.webhook_latency != null ? `${w.webhook_latency}ms` : '--'}
+                              </td>
+                              <td style={tdStyle}>
+                                {w.webhook_payload ? (
+                                  <button
+                                    className="text-xs px-2 py-1 rounded"
+                                    style={{
+                                      background: expandedPayload === i ? 'var(--accent-muted)' : 'var(--bg-input)',
+                                      color: expandedPayload === i ? 'var(--accent)' : 'var(--text-muted)',
+                                      border: '1px solid var(--border)',
+                                      cursor: 'pointer',
+                                    }}
+                                    onClick={() => setExpandedPayload(expandedPayload === i ? null : i)}
+                                  >
+                                    {expandedPayload === i ? 'Hide' : 'View'}
+                                  </button>
+                                ) : '--'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
               </div>
             )}
 
             {/* ================================================================= */}
-            {/* TAB 3: Inbound Webhooks                                           */}
+            {/* TAB 4: Inbound Webhooks                                           */}
             {/* ================================================================= */}
             {tab === 'Inbound Webhooks' && (
               <Card>
