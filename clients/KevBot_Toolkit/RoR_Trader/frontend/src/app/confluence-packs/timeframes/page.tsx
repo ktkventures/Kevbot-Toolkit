@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'Creative experience that helps users understand timeframe relationships visually. The hierarchy tree shows primary/confluence/available groups. The bar density chart makes it intuitive how many bars each TF produces. The recommendation engine suggests optimal TF combos. The data flow diagram shows how confluence data feeds into the primary decision TF.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Use Case Grid)',
+      description: 'Grid table with 17 timeframes × 4 use case columns (Strategy Primary, TF Confluence, Mass Builder, Chart Display). Checkbox toggles per cell. Default TF radio selector. Bars/day column. Provider support badges (All/Polygon/Stream). Sub-minute timeframes dimmed with badge. Summary cards showing enabled counts per use case.',
+      rationale: 'Clean, functional grid that answers "where is each timeframe used?" at a glance. Toggle per use case rather than a single enable/disable. Default TF selection via radio buttons. Provider badges show data feed requirements.',
+    },
+    component: V5,
   },
 ];
 

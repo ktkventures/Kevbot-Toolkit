@@ -309,6 +309,27 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 - **Parity Simulator:** Ticker/TF/bars selectors → Run Parity Test → bar-by-bar replay showing backtest vs live trigger markers. Timing detail table: Bar #, Timestamp, Trigger, Backtest result, Live result, Match, Delta. 4 KPIs: Total/Matched/Mismatched/Parity Score.
 - **Signal Validation:** Runs pack on 90 days sample data. Total Signals, Avg Bars Between, State Coverage, All States Reached. Per-trigger breakdown table. Signal timeline chart.
 
+### User Packs — LOCKED: V5 (Validation + Parity)
+- **Decision:** V5 based on V2 with validation/parity tabs and visibility toggle.
+- **Key decisions:**
+  - **8-tab detail view:** Parameters, Plot Settings, States & Triggers (renamed from Outputs), Chart Preview (confluence state shading + trigger markers), Signal Validation (signal count/frequency/coverage/per-trigger breakdown), Parity Simulator (bar-by-bar replay with timing table), Code, Danger Zone
+  - **Visibility toggle:** Private / Public dropdown on both list cards and detail header. Public = available to all users (admin feature, temporary until marketplace). Private = account-only.
+  - **Status badges:** Pack type (TF Confluence / General), category, validation status (passed/warnings/failed), parity score, visibility
+  - **Chart Preview:** Same confluence visualization as Pack Builder — background state shading, trigger arrow markers, Show Confluence / Show Triggers toggles
+  - **Signal Validation & Parity Simulator:** Same as Pack Builder V7 — ongoing health checks for installed packs
+
+### Timeframes — LOCKED: V5 (Use Case Grid)
+- **Decision:** V5 clean grid table with per-use-case toggles.
+- **Key decisions:**
+  - **17 timeframes** (5Sec through 1Month) × **4 use case columns**: Strategy Primary, TF Confluence, Mass Builder, Chart Display
+  - Checkbox toggle per cell — granular control over where each TF is available
+  - **Default TF selector:** Radio buttons in grid + dropdown at top (only primary-enabled TFs)
+  - **Bars/Day column:** RTH bar count for context
+  - **Provider support badges:** All (green), Polygon only (accent), Stream only (muted)
+  - **Sub-minute timeframes** dimmed with orange "sub-min" badge — require Polygon data feed
+  - **Summary cards:** 4 cards showing enabled count per use case
+  - Info note explaining sub-minute and weekly/monthly limitations
+
 ### Settings/Account — LOCKED: V2
 - **Decision:** V2 (Full Parity) — profile info, subscription tier, usage stats, API usage, password change, 2FA toggle, data export, sign out.
 - **Notes:** Locked as-is, no changes needed.
@@ -358,8 +379,8 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 | 15 | **Mass Builder** | LOCKED (V6) — Strategy-style cards, pack selectors, exec types, TQ filter | Mass backtest endpoint (compute-heavy) |
 | 16 | **Mass Results** | LOCKED (V5) — simple cards, worker progress, queue status | Mass results CRUD |
 | 17 | **Pack Builder** | LOCKED (V7) — AI-connected wizard, auto-fix, parity simulator, signal validation | Pack definition CRUD, AI API, indicator validation |
-| 18 | **User Packs** | Custom pack management | User pack CRUD |
-| 19 | **Timeframes** | TF configuration | Timeframe settings CRUD |
+| 18 | **User Packs** | LOCKED (V5) — validation + parity tabs, visibility toggle, 8-tab detail | User pack CRUD |
+| 19 | **Timeframes** | LOCKED (V5) — use case grid, default TF, provider badges | Timeframe settings CRUD |
 
 **Milestone:** Feature parity with Streamlit. Can fully replace it for personal use.
 

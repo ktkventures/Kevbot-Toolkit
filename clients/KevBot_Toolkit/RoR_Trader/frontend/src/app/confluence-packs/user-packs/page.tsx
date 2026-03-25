@@ -5,6 +5,7 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
 
 const versions = [
   {
@@ -42,6 +43,15 @@ const versions = [
       rationale: 'User packs are the user\'s creative expression. V4 adds a marketplace concept to inspire discovery (browse, install, compare) and a leaderboard to motivate quality. Category-specific indicator preview SVGs help users visually identify what each pack does at a glance. Performance tracking with win rate and signal history turns packs from static configs into living, measurable tools.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production (Validation + Parity)',
+      description: 'V2 base updated: "Outputs" → "States", 8-tab detail view (Parameters, Plot Settings, States & Triggers, Chart Preview with confluence visualization, Signal Validation, Parity Simulator, Code, Danger Zone). Added: visibility toggle (private/public), pack type badge (TF/General), validation status badge, parity score badge. Chart Preview shows confluence state shading + trigger markers. Signal Validation and Parity Simulator match Pack Builder V7 for ongoing health checks.',
+      rationale: 'Users need to verify packs continue working correctly after changes. Same Signal Validation and Parity Simulator from Pack Builder available as ongoing health checks. Visibility toggle enables admin-controlled public packs (temporary until marketplace). Consistent naming and badge conventions across all pack-related pages.',
+    },
+    component: V5,
   },
 ];
 
