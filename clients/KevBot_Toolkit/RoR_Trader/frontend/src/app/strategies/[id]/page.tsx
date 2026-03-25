@@ -1,7 +1,8 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import VersionedPage from '@/components/VersionedPage';
+import PageSwitch from '@/components/PageSwitch';
+import StrategyDetailPage from '@/views/StrategyDetailPage';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
@@ -25,7 +26,13 @@ function WiredV5() {
   return <V5 apiStrategy={strategy || undefined} />;
 }
 
-const versions = [
+function LiveDetail() {
+  const params = useParams();
+  const id = params?.id ? Number(params.id) : 0;
+  return <StrategyDetailPage strategyId={id} />;
+}
+
+const designVersions = [
   { meta: { id: 'v1-initial', name: 'Initial Scaffold', description: '9-tab detail view.', rationale: 'First pass.' }, component: V1 },
   { meta: { id: 'v2-full-parity', name: 'Full Parity', description: 'All 9 tabs fully populated.', rationale: 'Complete port.' }, component: V2 },
   { meta: { id: 'v3-streamlined', name: 'Streamlined', description: '3 tabs.', rationale: 'Focused.' }, component: V3 },
@@ -41,6 +48,6 @@ const versions = [
   },
 ];
 
-export default function StrategyDetailPage() {
-  return <VersionedPage pageKey="strategy-detail" versions={versions} />;
+export default function Page() {
+  return <PageSwitch live={LiveDetail} versions={designVersions} pageKey="strategy-detail" />;
 }
