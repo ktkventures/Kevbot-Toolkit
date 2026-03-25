@@ -62,33 +62,11 @@ function stopPackToApiPack(pack: any): RiskManagementPackDTO {
 }
 
 function WiredV1() {
-  const { data: packs, isLoading: packsLoading } = useRiskManagementPacks();
-  const { data: templates, isLoading: templatesLoading } = useRiskManagementTemplates();
-  const saveMutation = useSaveRiskManagementPacks();
-
-  const isLoading = packsLoading || templatesLoading;
-
-  if (isLoading) {
-    return (
-      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-        Loading stop loss packs...
-      </div>
-    );
-  }
-
-  let apiPacks: any[] | undefined;
-  if (packs && templates) {
-    apiPacks = packs
-      .map((p) => apiPackToStopPack(p, templates))
-      .filter(Boolean);
-  }
-
-  const handleSave = (packList: any[]) => {
-    const apiGroups = packList.map(stopPackToApiPack);
-    saveMutation.mutate(apiGroups);
-  };
-
-  return <V1 apiPacks={apiPacks} onSave={handleSave} />;
+  // RM pack templates contain Python callables (stopSummary, build_stop)
+  // that can't be serialized to JSON. V1 depends on these functions for
+  // rendering. For now, render V1 with its own mock data — full wiring
+  // requires refactoring the summary functions to the frontend.
+  return <V1 />;
 }
 
 const versions = [

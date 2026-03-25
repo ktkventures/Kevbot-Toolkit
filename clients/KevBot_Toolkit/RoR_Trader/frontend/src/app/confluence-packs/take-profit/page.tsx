@@ -62,33 +62,10 @@ function targetPackToApiPack(pack: any): RiskManagementPackDTO {
 }
 
 function WiredV1() {
-  const { data: packs, isLoading: packsLoading } = useRiskManagementPacks();
-  const { data: templates, isLoading: templatesLoading } = useRiskManagementTemplates();
-  const saveMutation = useSaveRiskManagementPacks();
-
-  const isLoading = packsLoading || templatesLoading;
-
-  if (isLoading) {
-    return (
-      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-        Loading take profit packs...
-      </div>
-    );
-  }
-
-  let apiPacks: any[] | undefined;
-  if (packs && templates) {
-    apiPacks = packs
-      .map((p) => apiPackToTargetPack(p, templates))
-      .filter(Boolean);
-  }
-
-  const handleSave = (packList: any[]) => {
-    const apiGroups = packList.map(targetPackToApiPack);
-    saveMutation.mutate(apiGroups);
-  };
-
-  return <V1 apiPacks={apiPacks} onSave={handleSave} />;
+  // Same issue as Stop Loss — RM pack templates contain Python callables
+  // (targetSummary, build_target) that can't serialize to JSON.
+  // Render V1 with mock data for now.
+  return <V1 />;
 }
 
 const versions = [
