@@ -379,7 +379,12 @@ function PillTabs({ tabs, active, onChange }: { tabs: string[]; active: string; 
 /* COMPONENT                                                                   */
 /* ========================================================================= */
 
-export default function StrategyDetailV5() {
+export interface StrategyDetailV5Props {
+  /** API strategy data — overrides mock when provided */
+  apiStrategy?: Record<string, any>;
+}
+
+export default function StrategyDetailV5({ apiStrategy }: StrategyDetailV5Props = {}) {
   // Inject pulse CSS
   useEffect(() => {
     const id = 'strategy-detail-pulse-css';
