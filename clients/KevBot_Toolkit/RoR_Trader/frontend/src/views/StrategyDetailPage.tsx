@@ -152,30 +152,52 @@ export default function StrategyDetailPage({ strategyId }: { strategyId: number 
         {s.symbol} &middot; {s.timeframe}{s.trading_session ? ` \u00B7 ${s.trading_session}` : ''}{s.data_days ? ` \u00B7 ${s.data_days}d` : ''}{s.created_at ? ` \u00B7 ${new Date(s.created_at).toLocaleDateString()}` : ''}
       </p>
 
-      {/* Config summary */}
-      {(s.entry_trigger_confluence_id || confluence.length > 0) && (
-        <Card className="mb-4">
-          <div className="flex flex-col gap-2">
-            {s.entry_trigger_confluence_id && (
-              <div className="flex items-center gap-2 flex-wrap text-xs">
-                <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>entry:</span>
-                <span style={{ color: 'var(--text-secondary)' }}>{s.entry_trigger_confluence_id}</span>
-                {s.exit_trigger_confluence_ids?.length ? <>
-                  <span style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
-                  <span style={{ color: 'var(--text-muted)' }}>exit:</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>{s.exit_trigger_confluence_ids.join(', ')}</span>
-                </> : null}
-              </div>
-            )}
-            {confluence.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap text-xs">
-                <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>confluence:</span>
-                {confluence.map((c: string) => <Badge key={c} text={c} color="var(--accent)" />)}
-              </div>
-            )}
+      {/* Strategy Variables (entry/exit/stop/target/confluence) */}
+      <Card className="mb-4">
+        <div className="flex flex-col gap-2">
+          {/* Entry */}
+          {s.entry_trigger_confluence_id && (
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>entry:</span>
+              <span className="px-1.5 py-0.5 rounded-full font-mono font-medium" style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20', fontSize: 10 }}>[C]</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{s.entry_trigger_confluence_id}</span>
+            </div>
+          )}
+          {/* Exit */}
+          {(s.exit_trigger_confluence_ids?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>exit:</span>
+              {s.exit_trigger_confluence_ids!.map((ex: string, i: number) => (
+                <span key={i} className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+                  <span className="px-1.5 py-0.5 rounded-full font-medium mr-1" style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20', fontSize: 10 }}>[C]</span>
+                  {ex}{i < s.exit_trigger_confluence_ids!.length - 1 ? ' , ' : ''}
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Stop + Target */}
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>stop:</span>
+            <span className="px-2 py-0.5 rounded font-mono" style={{ color: 'var(--red)', background: 'var(--red)18' }}>
+              {s.stop_config?.method ? `${s.stop_config.method}${s.stop_config.atr_mult ? ` ${s.stop_config.atr_mult}x` : ''}` : 'None'}
+            </span>
+            <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>target:</span>
+            <span className="px-2 py-0.5 rounded font-mono" style={{ color: 'var(--green)', background: 'var(--green)18' }}>
+              {s.target_config?.method || 'Signal exit only'}
+            </span>
           </div>
-        </Card>
-      )}
+          {/* Confluence */}
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span style={{ color: 'var(--text-muted)', minWidth: 48 }}>confluence:</span>
+            {confluence.length > 0 ? confluence.map((c: string) => (
+              <span key={c} className="flex items-center gap-1 font-mono">
+                <span className="px-1 py-0.5 rounded-full font-medium" style={{ color: '#26C6DA', background: '#26C6DA20', fontSize: 9 }}>[PB]</span>
+                <span className="px-1.5 py-0.5 rounded" style={{ color: 'var(--accent)', background: 'var(--accent)15' }}>{c}</span>
+              </span>
+            )) : <span style={{ color: 'var(--text-muted)' }}>none</span>}
+          </div>
+        </div>
+      </Card>
 
       {/* Tabs */}
       <TabBar tabs={TABS}>{(tab) => (<div>
@@ -232,14 +254,90 @@ export default function StrategyDetailPage({ strategyId }: { strategyId: number 
               <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={hwm} onChange={() => setHwm(!hwm)} /> HWM</label>
             </div>
           </Card>
-          {rVals.length > 0 && <Card className="mb-4"><h4 className="text-sm font-medium mb-3">R-Distribution</h4><DistributionChart values={rVals} height={220} /></Card>}
+          {/* R-Distribution: BT and Forward side by side */}
+          {rVals.length > 0 && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              <Card>
+                <h4 className="text-sm font-medium mb-3" style={{ color: EQ_COLORS.bt }}>Backtest R-Distribution</h4>
+                <DistributionChart values={btTrades.length > 0 ? btTrades.map((t: TradeDTO) => t.r_multiple) : rVals} height={200} />
+              </Card>
+              <Card>
+                <h4 className="text-sm font-medium mb-3" style={{ color: EQ_COLORS.fwd }}>Forward Test R-Distribution</h4>
+                {fwdTrades.length > 0 ? (
+                  <DistributionChart values={fwdTrades.map((t: TradeDTO) => t.r_multiple)} height={200} />
+                ) : (
+                  <div className="flex items-center justify-center" style={{ height: 200, color: 'var(--text-muted)', fontSize: 13 }}>
+                    No forward test trades yet
+                  </div>
+                )}
+              </Card>
+            </div>
+          )}
+
+          {/* Advanced Analysis */}
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium">Advanced Analysis</h4>
+              <button className="text-xs" style={{ color: 'var(--text-muted)' }} onClick={() => setShowExt(!showExt)}>
+                {showExt ? 'Collapse' : 'Expand'}
+              </button>
+            </div>
+            {showExt && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="p-4 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                  <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-primary)' }}>Rolling Metrics</h5>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Rolling win rate, profit factor, and Sharpe ratio over a configurable window.
+                    Reveals how strategy performance evolves over time.
+                  </p>
+                  <div className="mt-3 h-24 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Chart — coming soon</span>
+                  </div>
+                </div>
+                <div className="p-4 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                  <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-primary)' }}>Return Distribution</h5>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Histogram, box plot, and statistical summary of trade returns.
+                    Skewness and kurtosis reveal tail risk characteristics.
+                  </p>
+                  <div className="mt-3 h-24 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Chart — coming soon</span>
+                  </div>
+                </div>
+                <div className="p-4 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                  <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-primary)' }}>Markov Motor</h5>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Win/loss transition matrix, edge decay analysis, and market regime detection.
+                    Shows if the strategy has persistent edge or is mean-reverting.
+                  </p>
+                  <div className="mt-3 h-24 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Chart — coming soon</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </Card>
         </div>)}
 
         {/* TAB 2: Chart & Trades */}
         {tab === TABS[1] && (<div>
-          <Card className="mb-4"><ChartPlaceholder label="TradingChart -- next iteration" height={400} /></Card>
-          <CollapseTrades label="Forward Test Trades" trades={fwdTrades} open={fwdOpen} toggle={() => setFwdOpen(!fwdOpen)} />
-          <CollapseTrades label="Backtest Trades" trades={btTrades} open={btOpen} toggle={() => setBtOpen(!btOpen)} />
+          <Card className="mb-4"><ChartPlaceholder label="Price chart with indicator overlays and trade markers — coming soon" height={400} /></Card>
+          {/* Show FWD/BT split if available, otherwise show all trades */}
+          {(fwdTrades.length > 0 || btTrades.length > 0) ? (<>
+            <CollapseTrades label="Forward Test Trades" trades={fwdTrades} open={fwdOpen} toggle={() => setFwdOpen(!fwdOpen)} />
+            <CollapseTrades label="Backtest Trades" trades={btTrades} open={btOpen} toggle={() => setBtOpen(!btOpen)} />
+          </>) : trades && trades.length > 0 ? (
+            <Card>
+              <h4 className="text-sm font-medium mb-3">Trade History ({trades.length} trades)</h4>
+              <TradeTable trades={trades} />
+            </Card>
+          ) : (
+            <Card>
+              <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
+                No trade data available. Trades are computed from stored_trades or via backtest.
+              </div>
+            </Card>
+          )}
         </div>)}
 
         {/* TAB 3: Confluence Analysis */}

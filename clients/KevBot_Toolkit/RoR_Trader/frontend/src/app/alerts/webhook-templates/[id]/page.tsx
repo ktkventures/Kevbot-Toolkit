@@ -1,20 +1,20 @@
 'use client';
 
-import VersionedPage from '@/components/VersionedPage';
+import { useParams } from 'next/navigation';
+import PageSwitch from '@/components/PageSwitch';
+import WebhookTemplateDetailPage from '@/views/WebhookTemplateDetailPage';
 import V5 from './versions/V5';
 
-const versions = [
-  {
-    meta: {
-      id: 'v5-account-detail',
-      name: 'Account-Based Template Detail (Phase 39)',
-      description: 'Detail view for account-based webhook templates with 4 tabs: Event Payloads (category-filtered editor with resolved preview), Placeholders (grouped reference with copy), Delivery History (metrics + timeline + log), Settings (config + portfolio usage + danger zone).',
-      rationale: 'Phase 39 detail page matching the strategy detail page pattern. Tabs for each concern, category-filtered event payloads, delivery analytics.',
-    },
-    component: V5,
-  },
+function LiveDetail() {
+  const params = useParams();
+  const id = params?.id ? String(params.id) : '';
+  return <WebhookTemplateDetailPage templateId={id} />;
+}
+
+const designVersions = [
+  { meta: { id: 'v5', name: 'V5 Account-Based Detail', description: 'Phase 39 detail page.', rationale: '' }, component: V5 },
 ];
 
-export default function WebhookTemplateDetailPage() {
-  return <VersionedPage pageKey="webhook-template-detail" versions={versions} />;
+export default function Page() {
+  return <PageSwitch live={LiveDetail} versions={designVersions} pageKey="webhook-template-detail" />;
 }
