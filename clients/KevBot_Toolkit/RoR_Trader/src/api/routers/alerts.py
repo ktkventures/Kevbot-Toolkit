@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 # ALERT FEED
 # =============================================================================
 
-@router.get("/")
+@router.get("")
 def list_alerts(
     limit: int = Query(100, ge=1, le=5000),
     user=Depends(get_current_user),

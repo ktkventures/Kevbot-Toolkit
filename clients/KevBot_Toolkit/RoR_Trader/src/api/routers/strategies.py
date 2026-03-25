@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 # CRUD
 # =============================================================================
 
-@router.get("/")
+@router.get("")
 def list_strategies(user=Depends(get_current_user)):
     """Load all strategies for the current user."""
     from db import USE_DB
@@ -35,7 +35,7 @@ def list_strategies(user=Depends(get_current_user)):
     return []
 
 
-@router.post("/")
+@router.post("")
 def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     """Create a new strategy (typically after a backtest).
 

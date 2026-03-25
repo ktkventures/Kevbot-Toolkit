@@ -15,35 +15,51 @@ import { useDeleteStrategy, useDuplicateStrategy, useBulkDeleteStrategies } from
 function apiToV5Strategy(s: any): any {
   const kpis = s.kpis || {};
   const eqData = s.equity_curve_data || {};
+  const totalTrades = kpis.total_trades ?? 0;
   return {
     id: s.id,
     name: s.name || 'Untitled',
     symbol: s.symbol || '???',
     direction: s.direction || 'LONG',
     timeframe: s.timeframe || '1Min',
-    status: s.forward_testing ? 'Forward Testing' : 'Backtest Only',
+    session: s.trading_session || 'RTH',
+    status: s.forward_testing ? 'On Track' : 'Insufficient Data',
     tags: s.tags || [],
-    monitored: s.alert_tracking_enabled || false,
+    // Primary KPIs (backtest)
     winRate: kpis.win_rate ?? 0,
     pf: kpis.profit_factor ?? 0,
     dailyR: kpis.daily_r ?? 0,
     dailyROI: 0,
-    tpd: kpis.total_trades ? kpis.total_trades / Math.max(1, Math.round((kpis.total_trades || 0) / 5)) : 0,
+    trades: totalTrades,
     maxDD: kpis.max_r_drawdown ?? 0,
     totalR: kpis.total_r ?? 0,
     avgR: kpis.avg_r ?? 0,
     rSquared: kpis.r_squared ?? 0,
     btDays: s.data_days || 30,
-    fwdSigma: 0,
-    alertSigma: 0,
-    alertAccuracy: null,
+    // Forward test KPIs (null if no forward test)
+    fwdWinRate: null,
+    fwdPF: null,
+    fwdDailyROI: null,
+    fwdTrades: 0,
+    fwdSince: s.forward_test_start || '',
+    // Alert KPIs (null if no alert tracking)
+    alertWinRate: null,
+    alertPF: null,
+    alertDailyR: null,
+    alertDailyROI: null,
+    alertTrades: 0,
+    alertMaxDD: null,
+    // Config
+    entry: s.entry_trigger_confluence_id || '',
+    exit: s.exit_trigger_confluence_ids || [],
+    stop: s.stop_config?.method || 'ATR',
+    target: s.target_config?.method || 'None',
+    confluence: s.confluence || [],
+    alertTracking: s.alert_tracking_enabled || false,
+    monitored: s.alert_tracking_enabled || false,
+    // Equity curve
     equityCurve: eqData.cumulative_r || [],
     boundaryIndex: eqData.boundary_index ?? null,
-    entry: s.entry_trigger_confluence_id || '',
-    exit: (s.exit_trigger_confluence_ids || []).join(', '),
-    stopSummary: '',
-    targetSummary: '',
-    confluences: (s.confluence || []).join(', '),
   };
 }
 

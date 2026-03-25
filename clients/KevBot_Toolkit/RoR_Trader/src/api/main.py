@@ -8,6 +8,14 @@ and called directly — never modified.
 Run: uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2
 """
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from src/ directory (same as Streamlit)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_env_path, override=True)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,6 +27,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
+        redirect_slashes=False,
     )
 
     # CORS — allow frontend origins

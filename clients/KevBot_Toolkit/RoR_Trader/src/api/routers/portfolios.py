@@ -90,7 +90,7 @@ def _serialize_series(series) -> list:
 # CRUD
 # =============================================================================
 
-@router.get("/")
+@router.get("")
 def list_portfolios(user=Depends(get_current_user)):
     """Load all portfolios for the current user."""
     from db import USE_DB
@@ -107,7 +107,7 @@ def list_portfolios(user=Depends(get_current_user)):
     return []
 
 
-@router.post("/")
+@router.post("")
 def create_portfolio(portfolio: dict = Body(...), user=Depends(get_current_user)):
     """Create a new portfolio."""
     portfolio['created_at'] = datetime.now(timezone.utc).isoformat()

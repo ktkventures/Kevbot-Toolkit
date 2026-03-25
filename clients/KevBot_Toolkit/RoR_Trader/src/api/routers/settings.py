@@ -18,7 +18,7 @@ _SETTINGS_DIR = os.path.join(os.path.dirname(__file__), '..', '..')
 _SETTINGS_FILE = os.path.join(_SETTINGS_DIR, 'settings.json')
 
 
-@router.get("/")
+@router.get("")
 def get_settings(user=Depends(get_current_user)):
     """Load user settings."""
     if USE_DB:
@@ -32,7 +32,7 @@ def get_settings(user=Depends(get_current_user)):
     return {}
 
 
-@router.put("/")
+@router.put("")
 def update_settings(settings: dict = Body(...), user=Depends(get_current_user)):
     """Save user settings."""
     if USE_DB:

@@ -15,14 +15,14 @@ router = APIRouter(prefix="/api/requirements", tags=["requirements"])
 # CRUD
 # =============================================================================
 
-@router.get("/")
+@router.get("")
 def list_requirements(user=Depends(get_current_user)):
     """Load all requirement sets for the current user."""
     from portfolios import load_requirements
     return load_requirements()
 
 
-@router.post("/")
+@router.post("")
 def create_requirement_set(req_set: dict = Body(...), user=Depends(get_current_user)):
     """Create a new requirement set."""
     from portfolios import save_requirement_set
