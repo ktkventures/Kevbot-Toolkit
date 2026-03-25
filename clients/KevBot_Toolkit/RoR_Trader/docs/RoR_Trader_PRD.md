@@ -3125,6 +3125,7 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - Portfolio Requirements V5 (Trade Qualification Rules, TQ filter on 6 pages)
 - Alerts & Signals V5 (4 tabs, admin to Connections)
 - Settings/Connections V5 (engine admin module)
+- Mass Builder V6 (strategy-style cards, pack selectors, cost indicators, TQ filter)
 
 **Open decisions:**
 - [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)

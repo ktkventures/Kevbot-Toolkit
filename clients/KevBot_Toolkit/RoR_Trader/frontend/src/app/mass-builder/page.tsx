@@ -5,6 +5,8 @@ import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
+import V5 from './versions/V5';
+import V6 from './versions/V6';
 
 const versions = [
   {
@@ -42,6 +44,24 @@ const versions = [
       rationale: 'Transforms bulk strategy discovery into an immersive lab experience. The scatter plot makes it instant to spot quality strategies in the "sweet zone". The animated ticker during analysis creates engagement. The heatmap reveals which ticker+TF combos produce the best results. Insight cards surface key findings automatically.',
     },
     component: V4,
+  },
+  {
+    meta: {
+      id: 'v5-production',
+      name: 'Production',
+      description: 'V2 Full Parity refined: updated exec types ([C], [L], [LC], [CC]), stop loss and take profit as pack selectors (matching Strategy Builder V5), Trade Qualification filter in post-analysis filters, consistent styling.',
+      rationale: 'Aligns Mass Builder with recent design decisions: pack-based stop/target selection, correct execution type naming, TQ filter for prop firm compliance preview on bulk results.',
+    },
+    component: V5,
+  },
+  {
+    meta: {
+      id: 'v6-strategy-cards',
+      name: 'Strategy-Style Cards',
+      description: 'V5 config panel + My Strategies-style result cards: 1/2/3 column toggle, equity curve with chart height + HWM controls, pack-aware variable display (entry/exit/stop/target/confluence badges), search name in strategy title. Same KPIs but in My Strategies layout.',
+      rationale: 'Result cards should feel familiar — same card structure as My Strategies. Column toggle lets users choose density. Equity curve replaces the small sparkline. Search name flows into strategy name for identification after saving.',
+    },
+    component: V6,
   },
 ];
 

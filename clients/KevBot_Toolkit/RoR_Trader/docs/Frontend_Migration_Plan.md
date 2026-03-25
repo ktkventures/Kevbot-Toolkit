@@ -264,6 +264,21 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
   - Added Alert Engine module: Running status badge, Restart/Disable buttons, 5 KPIs (Uptime, Ticks, Symbols, Active Strategies, Last Update), monitoring logs terminal
   - Admin-only controls separated from user-facing Alerts page
 
+### Mass Builder — LOCKED: V6 (Strategy-Style Cards)
+- **Decision:** V6 with V5 config panel + My Strategies-style result cards.
+- **Key decisions:**
+  - **9-tab config panel:** Tickers (presets + text input), Timeframes, Direction, Entry, Exit, TF Confluence, General, Stop Loss, Take Profit
+  - **Entry/Exit tabs:** Multi-column grid grouped by Pack > Variation (parenthetical display). Trigger name shown once with inline exec type checkboxes ([C], [L], [LC], [CC]). Scrollable containers.
+  - **TF Confluence tab:** State names with inline fidelity badges ([PB]/[CB]) in cyan. Select All / Clear buttons. "Fast filter" badge.
+  - **General tab:** Simple checkboxes grouped by pack > variation. Select All / Clear. "Fast filter" badge.
+  - **Stop Loss / Take Profit tabs:** Multi-select checkboxes grouped by pack > variation. "Full backtest each" badge.
+  - **Cost indicators:** Orange "Full backtest each" on expensive tabs (Entry, Exit, Stop, Target). Green "Fast filter" on cheap tabs (TF Confluence, General).
+  - **Preview + Required Performance + Analyze:** 3-panel 12-column grid. Preview compact (3 cols). Required Performance 4-column grid with all 7 fields (Prioritize By, Min Trades, Min WR%, Min PF, Min Daily R, Min R², Max Results). Analyze button (2 cols).
+  - **Post-analysis filters:** 8-column row (Sort, Min WR%, Min PF, Min Trades, Min R², TQ filter, Show Passed + count)
+  - **Result cards (V6):** My Strategies-style cards with: rank badge, search name in title, equity curve (S/M/L/XL heights), 2 rows × 4 KPIs (larger text), pack-aware variable display (entry/exit/stop/target/confluence badges), Save/Pass action row
+  - **Viewing preferences:** Columns (1/2/3), Chart Height (S/M/L/XL), X-axis (Trade # default / Date), HWM (On/Off)
+  - **Search name → strategy name:** Search name appears in result card titles and flows into saved strategy name
+
 ### Settings/Account — LOCKED: V2
 - **Decision:** V2 (Full Parity) — profile info, subscription tier, usage stats, API usage, password change, 2FA toggle, data export, sign out.
 - **Notes:** Locked as-is, no changes needed.
@@ -310,11 +325,11 @@ We have 33 pages with 138 version files (V1-V4 each). This document defines the 
 
 | Priority | Page | Design Notes | Backend Needed |
 |----------|------|-------------|----------------|
-| 15 | **Mass Builder** | Bulk strategy discovery | Mass backtest endpoint (compute-heavy) |
+| 15 | **Mass Builder** | LOCKED (V6) — Strategy-style cards, pack selectors, exec types, TQ filter | Mass backtest endpoint (compute-heavy) |
 | 16 | **Mass Results** | Browse and save mass results | Mass results CRUD |
-| 17 | **Timeframes** | TF configuration | Timeframe settings CRUD |
+| 17 | **Pack Builder** | Build custom indicators | Pack definition CRUD, indicator validation |
 | 18 | **User Packs** | Custom pack management | User pack CRUD |
-| 19 | **Pack Builder** | Build custom indicators | Pack definition CRUD, indicator validation |
+| 19 | **Timeframes** | TF configuration | Timeframe settings CRUD |
 
 **Milestone:** Feature parity with Streamlit. Can fully replace it for personal use.
 
@@ -478,7 +493,9 @@ POST   /api/creator/publish
 - Portfolio Requirements, Alerts & Signals, Webhook Templates
 
 ### FINALLY — Power Tools (5 pages)
-- Mass Builder, Mass Results, Timeframes, User Packs, Pack Builder
+- Mass Builder, Mass Results (paired — bulk strategy discovery)
+- Pack Builder, User Packs (paired — custom indicator creation + management)
+- Timeframes (simple config page, lowest priority)
 
 ### Ongoing: Backend Wiring
 - Each locked page gets API endpoints built and wired
