@@ -64,6 +64,7 @@ export default function PortfoliosPage() {
   // Filters
   const [sortBy, setSortBy] = useState('Newest First');
   const [tagFilter, setTagFilter] = useState('All');
+  const [kpiMode, setKpiMode] = useState('Overall');
 
   const allTags = useMemo(() => {
     if (!portfolios) return [];
@@ -79,10 +80,24 @@ export default function PortfoliosPage() {
     }
 
     if (sortBy === 'Newest First') result.sort((a, b) => b.id - a.id);
+    else if (sortBy === 'Oldest First') result.sort((a, b) => a.id - b.id);
     else if (sortBy === 'Name A-Z') result.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    else if (sortBy === 'P&L (High)') result.sort((a, b) => ((b.kpis?.total_pnl || 0) - (a.kpis?.total_pnl || 0)));
+    else if (sortBy === 'Win Rate (High)') result.sort((a, b) => ((b.kpis?.win_rate || 0) - (a.kpis?.win_rate || 0)));
 
     return result;
   }, [portfolios, sortBy, tagFilter]);
+
+  // Combined metrics
+  const combined = useMemo(() => {
+    if (!filtered.length) return null;
+    const totalPnl = filtered.reduce((s, p) => s + (p.kpis?.total_pnl || 0), 0);
+    const avgWR = filtered.reduce((s, p) => s + (p.kpis?.win_rate || 0), 0) / filtered.length;
+    const avgPF = filtered.reduce((s, p) => s + (p.kpis?.profit_factor || 0), 0) / filtered.length;
+    const totalTrades = filtered.reduce((s, p) => s + (p.kpis?.total_trades || 0), 0);
+    const totalStrategies = filtered.reduce((s, p) => s + (p.strategies || []).length, 0);
+    return { totalPnl, avgWR, avgPF, totalTrades, totalStrategies };
+  }, [filtered]);
 
   // ---------------------------------------------------------------------------
   // Loading / Error / Empty states
@@ -156,17 +171,63 @@ export default function PortfoliosPage() {
       />
 
       {/* Filter row */}
-      <div className="flex flex-wrap gap-2 mb-4 mt-4">
+      <div className="flex flex-wrap gap-2 mb-2 mt-4">
         <select style={selectStyle} value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}>
           <option value="All">All Tags</option>
           {allTags.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <select style={selectStyle} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          {['Newest First', 'Name A-Z'].map((s) => (
+          {['Newest First', 'Oldest First', 'Name A-Z', 'P&L (High)', 'Win Rate (High)'].map((s) => (
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
       </div>
+
+      {/* KPI comparison mode selector (from V5) */}
+      <div className="flex items-center gap-4 mb-4 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <div className="flex items-center gap-1.5">
+          <span>KPIs:</span>
+          <select
+            className="px-2 py-1 rounded text-[10px] font-medium"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            value={kpiMode}
+            onChange={(e) => setKpiMode(e.target.value)}
+          >
+            <option value="Overall">Overall</option>
+            <option value="BT vs FWD">Backtest vs Forward</option>
+            <option value="FWD vs Alerts">Forward vs Alerts</option>
+            <option value="BT vs Alerts">Backtest vs Alerts</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Combined Metrics card (from V5) */}
+      {combined && filtered.length > 0 && (
+        <Card className="mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium">
+              Combined Metrics
+              <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                {filtered.length} portfolio{filtered.length !== 1 ? 's' : ''} &middot; {combined.totalStrategies} strategies
+              </span>
+            </h4>
+          </div>
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            {[
+              { label: 'Total P&L', value: fmtDollar(combined.totalPnl), color: combined.totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+              { label: 'Avg Win Rate', value: fmtPct(combined.avgWR) },
+              { label: 'Avg PF', value: combined.avgPF.toFixed(2) },
+              { label: 'Total Trades', value: String(combined.totalTrades) },
+              { label: 'Strategies', value: String(combined.totalStrategies) },
+            ].map((kpi) => (
+              <div key={kpi.label}>
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
+                <p className="text-sm font-bold" style={(kpi as { color?: string }).color ? { color: (kpi as { color: string }).color } : undefined}>{kpi.value}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Empty state */}
       {filtered.length === 0 && (
@@ -194,6 +255,9 @@ export default function PortfoliosPage() {
           const kpis = port.kpis || {};
           const stratCount = (port.strategies || []).length;
           const status = getPortfolioStatus(port);
+          const reqSet = port.requirement_set_id;
+          const reqPassing = port.req_passing;
+          const reqTotal = port.req_total;
 
           return (
             <Card key={port.id}>
@@ -228,23 +292,41 @@ export default function PortfoliosPage() {
                 </div>
               )}
 
-              {/* Meta line */}
+              {/* Meta line with requirement set badge */}
               <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                 {stratCount} strateg{stratCount === 1 ? 'y' : 'ies'}
                 {port.account?.starting_balance != null && (
                   <span> | ${port.account.starting_balance.toLocaleString()} balance</span>
                 )}
-                {port.requirement_set_id && (
-                  <span style={{ color: 'var(--accent)' }}> | Req Set #{port.requirement_set_id}</span>
+                {reqSet && (
+                  <span style={{ color: 'var(--accent)' }}>
+                    {' '}| Req Set #{reqSet}
+                    {reqPassing != null && reqTotal != null && (
+                      <span
+                        className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                        style={{
+                          color: reqPassing === reqTotal ? 'var(--green)' : 'var(--orange)',
+                          background: reqPassing === reqTotal ? 'var(--green)' + '20' : 'var(--orange)' + '20',
+                        }}
+                      >
+                        {reqPassing}/{reqTotal} pass
+                      </span>
+                    )}
+                  </span>
                 )}
               </p>
 
-              {/* Strategy pills */}
+              {/* Strategy pills — symbol + direction */}
               {stratCount > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {(port.strategies || []).slice(0, 5).map((s: any, i: number) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                      {s.symbol || '???'} {s.direction || ''}
+                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                      <span className="font-mono font-medium" style={{ color: 'var(--text-secondary)' }}>{s.symbol || '???'}</span>
+                      {s.direction && (
+                        <span style={{ color: s.direction === 'LONG' ? 'var(--green)' : 'var(--red)', fontSize: '0.6rem' }}>
+                          {s.direction === 'LONG' ? '\u2191' : '\u2193'}
+                        </span>
+                      )}
                     </span>
                   ))}
                   {stratCount > 5 && (
@@ -263,19 +345,37 @@ export default function PortfoliosPage() {
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Equity curve</span>
               </div>
 
-              {/* KPIs */}
+              {/* KPIs — V5-style with comparison mode support */}
               <div className="grid grid-cols-4 gap-2 mb-3">
-                {[
-                  { label: 'WR', value: kpis.win_rate != null ? fmtPct(kpis.win_rate) : '--' },
-                  { label: 'PF', value: kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--' },
-                  { label: 'Total P&L', value: kpis.total_pnl != null ? fmtDollar(kpis.total_pnl) : '--' },
-                  { label: 'Trades', value: kpis.total_trades != null ? String(kpis.total_trades) : '--' },
-                ].map((m) => (
-                  <div key={m.label} className="text-center">
-                    <div className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
-                    <div className="text-sm font-mono font-medium" style={{ color: 'var(--text-primary)' }}>{m.value}</div>
-                  </div>
-                ))}
+                {kpiMode === 'Overall' ? (
+                  <>
+                    {[
+                      { label: 'WR', value: kpis.win_rate != null ? fmtPct(kpis.win_rate) : '--' },
+                      { label: 'PF', value: kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--' },
+                      { label: 'Total P&L', value: kpis.total_pnl != null ? fmtDollar(kpis.total_pnl) : '--' },
+                      { label: 'Trades', value: kpis.total_trades != null ? String(kpis.total_trades) : '--' },
+                    ].map((m) => (
+                      <div key={m.label} className="text-center">
+                        <div className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
+                        <div className="text-sm font-mono font-medium" style={{ color: 'var(--text-primary)' }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {[
+                      { label: 'WR', value: kpis.win_rate != null ? fmtPct(kpis.win_rate) : '--' },
+                      { label: 'PF', value: kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--' },
+                      { label: 'Max DD', value: kpis.max_dd_pct != null ? `${kpis.max_dd_pct.toFixed(1)}%` : '--', color: 'var(--red)' },
+                      { label: 'Trades', value: kpis.total_trades != null ? String(kpis.total_trades) : '--' },
+                    ].map((m) => (
+                      <div key={m.label} className="text-center">
+                        <div className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
+                        <div className="text-sm font-mono font-medium" style={(m as { color?: string }).color ? { color: (m as { color: string }).color } : { color: 'var(--text-primary)' }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
 
               {/* Action row */}

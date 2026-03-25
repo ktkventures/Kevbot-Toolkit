@@ -76,11 +76,49 @@ function Toggle({ enabled, onChange }: { enabled: boolean; onChange: () => void 
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatParamSummary(
+/** Build a human-readable condition logic summary from parameters. */
+function formatConditionLogic(
+  templateKey: string,
   parameters: Record<string, unknown>,
   schema: Record<string, { type: string; default: unknown; label: string }> | undefined,
 ): string {
   if (!schema) return '';
+
+  // Time-of-day: display as "HH:MM-HH:MM ET"
+  if (templateKey === 'time_of_day' || (parameters.start_hour != null && parameters.end_hour != null)) {
+    const sh = String(parameters.start_hour ?? 9).padStart(2, '0');
+    const sm = String(parameters.start_minute ?? 0).padStart(2, '0');
+    const eh = String(parameters.end_hour ?? 16).padStart(2, '0');
+    const em = String(parameters.end_minute ?? 0).padStart(2, '0');
+    return `${sh}:${sm}\u2013${eh}:${em} ET`;
+  }
+
+  if (templateKey === 'trading_session' && parameters.session) {
+    const labels: Record<string, string> = { pre_market: 'Pre-Market (4:00\u20139:30)', regular: 'Regular (9:30\u201316:00)', after_hours: 'After Hours (16:00\u201320:00)', extended: 'Extended (4:00\u201320:00)' };
+    return labels[parameters.session as string] || String(parameters.session);
+  }
+
+  // Day of week: show active days
+  if (templateKey === 'day_of_week') {
+    const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    const shortDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const active = days.map((d, i) => parameters[d] !== false ? shortDays[i] : null).filter(Boolean);
+    return active.join(', ') || 'No days selected';
+  }
+
+  // Calendar filter: show active filters
+  if (templateKey === 'calendar_filter') {
+    const parts: string[] = [];
+    if (parameters.avoid_fomc) parts.push('FOMC');
+    if (parameters.avoid_nfp) parts.push('NFP');
+    if (parameters.avoid_opex) parts.push('OpEx');
+    const buf = parameters.buffer_minutes;
+    return parts.length > 0
+      ? `Avoid: ${parts.join(', ')}${buf ? ` (${buf}min buffer)` : ''}`
+      : 'No filters active';
+  }
+
+  // Fallback: key=value summary
   return Object.entries(schema)
     .map(([key, s]) => {
       const val = parameters[key] ?? s.default;
@@ -88,6 +126,11 @@ function formatParamSummary(
       return `${s.label}: ${val}`;
     })
     .join(', ');
+}
+
+function formatParamSummary(params: Record<string, unknown>, schema: Record<string, { type: string; default: unknown; label: string }> | undefined): string {
+  if (!schema) return '';
+  return Object.entries(schema).map(([k, s]) => { const v = params[k] ?? s.default; return s.type === 'bool' ? `${s.label}: ${v ? 'Y' : 'N'}` : `${s.label}: ${v}`; }).join(', ');
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +339,11 @@ export default function GeneralPacksPage() {
                 <GeneralPackCard
                   pack={defaultPack}
                   template={tmpl}
+                  templateKey={templateKey}
                   enabled={isEnabled(defaultPack)}
                   onToggle={() => handleToggle(defaultPack)}
                   hasVariations={hasVariations}
+                  variationCount={variations.length}
                   isExpanded={isExpanded}
                   onToggleExpand={() => {
                     setExpandedTemplates((prev) => {
@@ -316,6 +361,7 @@ export default function GeneralPacksPage() {
                   key={v.id}
                   pack={v}
                   template={tmpl}
+                  templateKey={templateKey}
                   enabled={isEnabled(v)}
                   onToggle={() => handleToggle(v)}
                   isVariation
@@ -338,31 +384,32 @@ export default function GeneralPacksPage() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Pack Card
-// ---------------------------------------------------------------------------
-
 function GeneralPackCard({
   pack,
   template,
+  templateKey,
   enabled,
   onToggle,
   hasVariations,
+  variationCount,
   isExpanded,
   onToggleExpand,
   isVariation,
 }: {
   pack: GeneralPackDTO;
   template?: GeneralTemplateDTO;
+  templateKey: string;
   enabled: boolean;
   onToggle: () => void;
   hasVariations?: boolean;
+  variationCount?: number;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   isVariation?: boolean;
 }) {
   const name = template?.name || pack.base_template;
   const category = template?.category || 'Other';
+  const conditionSummary = formatConditionLogic(templateKey, pack.parameters, template?.parameters_schema);
   const paramSummary = formatParamSummary(pack.parameters, template?.parameters_schema);
   const outputCount = template?.outputs?.length || 0;
   const triggerCount = template?.triggers?.length || 0;
@@ -409,7 +456,21 @@ function GeneralPackCard({
             {pack.version}
           </span>
           <TagBadge tag={category} />
+          {hasVariations && variationCount != null && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+              +{variationCount} variation{variationCount !== 1 ? 's' : ''}
+            </span>
+          )}
         </div>
+
+        {/* Condition logic summary — template-specific display */}
+        {conditionSummary && (
+          <p className="text-xs font-medium mb-0.5" style={{ color: 'var(--accent)' }}>
+            {conditionSummary}
+          </p>
+        )}
+
+        {/* Raw parameter summary */}
         <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
           {paramSummary}
         </p>

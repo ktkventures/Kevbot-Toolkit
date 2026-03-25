@@ -15,8 +15,32 @@ import { useWebhookTemplates } from '@/hooks/queries/useWebhooks';
 import { useDeleteWebhookTemplate } from '@/hooks/mutations/useWebhookMutations';
 
 // ---------------------------------------------------------------------------
+// Constants — exchange presets matching V5
+// ---------------------------------------------------------------------------
+
+const EXCHANGE_PRESETS: Record<string, { color: string; bg: string }> = {
+  SignalStack: { color: '#2196F3', bg: '#2196F320' },
+  TradeThePool: { color: '#FF9800', bg: '#FF980020' },
+  Discord: { color: '#5865F2', bg: '#5865F220' },
+  Slack: { color: '#4A154B', bg: '#4A154B20' },
+  Custom: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+};
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function ExchangeBadge({ exchange }: { exchange: string }) {
+  const preset = EXCHANGE_PRESETS[exchange] || EXCHANGE_PRESETS.Custom;
+  return (
+    <span
+      className="text-xs font-medium px-2 py-0.5 rounded-full"
+      style={{ color: preset.color, background: preset.bg }}
+    >
+      {exchange}
+    </span>
+  );
+}
 
 function StatusDot({ status }: { status?: number }) {
   if (!status) return <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Never sent</span>;
@@ -93,7 +117,7 @@ export default function WebhookTemplatesPage() {
     <div>
       <PageHeader
         title="Webhook Templates"
-        subtitle="Account-based templates define how your system communicates with each exchange"
+        subtitle="Account-based templates define how your system communicates with each exchange. Each template contains payloads for all 11 webhook event types."
         actions={
           <div className="flex items-center gap-2">
             <span
@@ -115,8 +139,15 @@ export default function WebhookTemplatesPage() {
         }
       />
 
+      {/* Exchange preset legend */}
+      <div className="flex flex-wrap gap-2 mt-4 mb-3">
+        {Object.keys(EXCHANGE_PRESETS).map((name) => (
+          <ExchangeBadge key={name} exchange={name} />
+        ))}
+      </div>
+
       {/* Search */}
-      <div className="mb-5 mt-4">
+      <div className="mb-5">
         <input
           type="text"
           placeholder="Search templates..."
@@ -169,9 +200,7 @@ export default function WebhookTemplatesPage() {
                   <div>
                     <p className="text-sm font-semibold">{tpl.name || 'Untitled'}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xs px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
-                        {exchange}
-                      </span>
+                      <ExchangeBadge exchange={exchange} />
                       {isDefault && (
                         <span className="text-xs px-2 py-0.5 rounded-full" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
                           Default
@@ -200,10 +229,14 @@ export default function WebhookTemplatesPage() {
                   </div>
                 </div>
 
-                {/* URL */}
+                {/* URL preview truncated */}
                 {url && (
-                  <p className="text-xs font-mono mt-3 truncate" style={{ color: 'var(--text-muted)' }}>
-                    {url}
+                  <p
+                    className="text-xs font-mono mt-3 truncate"
+                    style={{ color: 'var(--text-muted)', maxWidth: '100%' }}
+                    title={url}
+                  >
+                    {url.length > 50 ? url.slice(0, 50) + '...' : url}
                   </p>
                 )}
               </Card>

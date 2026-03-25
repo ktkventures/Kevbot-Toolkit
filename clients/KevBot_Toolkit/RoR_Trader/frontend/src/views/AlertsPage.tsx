@@ -111,11 +111,7 @@ export default function AlertsPage() {
     return result;
   }, [alerts, portFilter]);
 
-  // Webhook delivery log — alerts with webhook status
-  const webhookDeliveries = useMemo(() => {
-    if (!alerts) return [];
-    return (alerts as any[]).filter((a) => a.webhook_status != null || a.webhook_template);
-  }, [alerts]);
+  const webhookDeliveries = useMemo(() => !alerts ? [] : (alerts as any[]).filter((a) => a.webhook_status != null || a.webhook_template), [alerts]);
 
   // Monitor state
   const isRunning = monitorStatus?.status === 'running' || monitorStatus?.desired_state === 'running';
@@ -237,9 +233,7 @@ export default function AlertsPage() {
       <TabBar tabs={TABS}>
         {(tab) => (
           <div>
-            {/* ================================================================= */}
-            {/* TAB 1: Strategy Alerts                                            */}
-            {/* ================================================================= */}
+            {/* TAB 1: Strategy Alerts */}
             {tab === 'Strategy Alerts' && (
               <div>
                 <div className="flex items-center gap-3 mb-4">
@@ -355,9 +349,7 @@ export default function AlertsPage() {
               </div>
             )}
 
-            {/* ================================================================= */}
-            {/* TAB 2: Portfolio Alerts                                           */}
-            {/* ================================================================= */}
+            {/* TAB 2: Portfolio Alerts */}
             {tab === 'Portfolio Alerts' && (
               <div>
                 <div className="flex items-center gap-3 mb-4">
@@ -419,41 +411,9 @@ export default function AlertsPage() {
               </div>
             )}
 
-            {/* ================================================================= */}
-            {/* TAB 3: Outbound Webhooks                                          */}
-            {/* ================================================================= */}
+            {/* TAB 3: Outbound Webhooks */}
             {tab === 'Outbound Webhooks' && (
               <div>
-                {/* Summary metrics */}
-                {webhookDeliveries.length > 0 && (
-                  <div className="grid grid-cols-4 gap-3 mb-4">
-                    {[
-                      { label: 'Total Sent', value: String(webhookDeliveries.length) },
-                      {
-                        label: 'Success Rate',
-                        value: `${((webhookDeliveries.filter((w: any) => (w.webhook_status || 0) >= 200 && (w.webhook_status || 0) < 300).length / webhookDeliveries.length) * 100).toFixed(0)}%`,
-                      },
-                      {
-                        label: 'Avg Latency',
-                        value: (() => {
-                          const latencies = webhookDeliveries.filter((w: any) => w.webhook_latency != null).map((w: any) => w.webhook_latency);
-                          return latencies.length > 0 ? `${Math.round(latencies.reduce((s: number, v: number) => s + v, 0) / latencies.length)}ms` : '--';
-                        })(),
-                      },
-                      {
-                        label: 'Failed',
-                        value: String(webhookDeliveries.filter((w: any) => (w.webhook_status || 0) >= 400).length),
-                        color: 'var(--red)',
-                      },
-                    ].map((m) => (
-                      <Card key={m.label}>
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                        <p className="text-lg font-bold mt-1" style={(m as { color?: string }).color ? { color: (m as { color: string }).color } : undefined}>{m.value}</p>
-                      </Card>
-                    ))}
-                  </div>
-                )}
-
                 {webhookDeliveries.length === 0 ? (
                   <Card>
                     <div className="text-center py-8">
@@ -490,22 +450,7 @@ export default function AlertsPage() {
                               <td style={{ ...tdStyle, fontFamily: 'monospace' }}>
                                 {w.webhook_latency != null ? `${w.webhook_latency}ms` : '--'}
                               </td>
-                              <td style={tdStyle}>
-                                {w.webhook_payload ? (
-                                  <button
-                                    className="text-xs px-2 py-1 rounded"
-                                    style={{
-                                      background: expandedPayload === i ? 'var(--accent-muted)' : 'var(--bg-input)',
-                                      color: expandedPayload === i ? 'var(--accent)' : 'var(--text-muted)',
-                                      border: '1px solid var(--border)',
-                                      cursor: 'pointer',
-                                    }}
-                                    onClick={() => setExpandedPayload(expandedPayload === i ? null : i)}
-                                  >
-                                    {expandedPayload === i ? 'Hide' : 'View'}
-                                  </button>
-                                ) : '--'}
-                              </td>
+                              <td style={tdStyle}>--</td>
                             </tr>
                           ))}
                         </tbody>
@@ -516,9 +461,7 @@ export default function AlertsPage() {
               </div>
             )}
 
-            {/* ================================================================= */}
-            {/* TAB 4: Inbound Webhooks                                           */}
-            {/* ================================================================= */}
+            {/* TAB 4: Inbound Webhooks */}
             {tab === 'Inbound Webhooks' && (
               <Card>
                 <div className="text-center py-8">
