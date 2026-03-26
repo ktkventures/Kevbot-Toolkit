@@ -325,7 +325,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
   const extendedKPIs = kpiData?.secondary_kpis || EMPTY_EXTENDED_KPIS;
-  const allTrades = trades || EMPTY_TRADES;
+  // Map API trades (snake_case) to V5 format (camelCase)
+  const allTrades = (trades || EMPTY_TRADES).map((t: any, i: number) => ({
+    id: t.id ?? i + 1,
+    entryTime: t.entry_time || t.entryTime || '--',
+    exitTime: t.exit_time || t.exitTime || '--',
+    entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+    exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+    pnlR: t.r_multiple ?? t.pnlR ?? 0,
+    execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
+    exitReason: t.exit_reason || t.exitReason || '--',
+    isFwd: t.isFwd ?? false,
+  }));
 
   // Inject pulse CSS
   useEffect(() => {
