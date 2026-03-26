@@ -76,14 +76,14 @@ const EMPTY_TRADES: any[] = [];
 
 // {{extended_kpis}} — populated from useStrategyKPIs secondary_kpis
 const EMPTY_EXTENDED_KPIS = {
-  wins: '--', losses: '--', bestTrade: '--', worstTrade: '--',
-  avgWin: '--', avgLoss: '--', payoffRatio: '--', expectedDailyR: '--',
-  sharpe: '--', sortino: '--', calmar: '--', kelly: '--',
-  dailyVaR: '--', cvar: '--', volatility: '--', rSquared: '--',
-  skewness: '--', kurtosis: '--', tailRatio: '--', outlierWinPct: '--', outlierLossPct: '--',
-  maxRDD: '--', recoveryFactor: '--', ulcerIndex: '--', serenityIndex: '--',
-  longestDDTrades: '--', longestDDDays: '--',
-  maxConsecWins: '--', maxConsecLosses: '--',
+  wins: 0, losses: 0, bestTrade: 0, worstTrade: 0,
+  avgWin: 0, avgLoss: 0, payoffRatio: 0, expectedDailyR: 0,
+  sharpe: 0, sortino: 0, calmar: 0, kelly: 0,
+  dailyVaR: 0, cvar: 0, volatility: 0, rSquared: 0,
+  skewness: 0, kurtosis: 0, tailRatio: 0, outlierWinPct: 0, outlierLossPct: 0,
+  maxRDD: 0, recoveryFactor: 0, ulcerIndex: 0, serenityIndex: 0,
+  longestDDTrades: 0, longestDDDays: 0,
+  maxConsecWins: 0, maxConsecLosses: 0,
 };
 
 const mockRollingMetrics = {
