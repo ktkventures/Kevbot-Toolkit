@@ -263,6 +263,16 @@ Replace `{{field_name}}` with real computed data. Working through these on Railw
 
 ---
 
+## Known Issues (2026-03-26)
+
+| Issue | Page | Description | Likely Cause |
+|-------|------|-------------|-------------|
+| Client-side exception on My Strategies | `/strategies` | "Application error: a client-side exception has occurred" when logged in as `kevin-migrate@rortrader.dev`. Does NOT occur for `VandosJohnson@gmail.com` account. | Likely a data shape difference — the migrate account may have strategies with fields that cause the V5 component to crash (null value where .toFixed() is called, or array field that's actually a string). The migrate account has 26 strategies; some may have edge-case data shapes from bulk creation. Debug: check browser console for the specific error, identify which strategy/field causes it. |
+| Production bundle circular dependency | `/strategies` | Importing `apiFetch` from `@/lib/api/client` at module scope causes "Cannot access S before initialization" in production builds. | Workaround: use plain `fetch()` with localStorage token instead. All page.tsx files use `next/dynamic` with `ssr: false`. |
+| Forward test computation slow | `/strategies/[id]` | Loading forward test data takes 10-30 seconds for 1-minute timeframe strategies | Expected — Polygon REST API + full backtest computation. Add caching/stored_trades refresh to mitigate. |
+
+---
+
 ## Key Architectural Decisions
 
 1. **Stop/Target:** Adapter endpoints over existing RM module — no DB migration
