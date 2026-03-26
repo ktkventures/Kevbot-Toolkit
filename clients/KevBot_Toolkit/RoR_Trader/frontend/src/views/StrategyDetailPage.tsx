@@ -597,7 +597,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             <button
               style={{ ...btnSecondary, opacity: refreshMut.isPending ? 0.6 : 1 }}
               disabled={refreshMut.isPending}
-              onClick={() => refreshMut.mutate(strategyId)}
+              onClick={() => { console.log('Refresh clicked, strategyId:', strategyId); alert('Refreshing strategy ' + strategyId + '...'); refreshMut.mutate(strategyId); }}
             >
               {refreshMut.isPending ? 'Refreshing...' : 'Update Data'}
             </button>
