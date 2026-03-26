@@ -45,17 +45,17 @@ The copy-and-wire procedure MUST include a `grep` audit for inline mock data AFT
 ### Batch 1: Core Flow
 | Task | Source Design | View File | Status |
 |------|-------------|-----------|--------|
-| A1.1 | `strategies/versions/V5.tsx` (885 lines) | `views/StrategiesPage.tsx` | Not Started |
-| A1.2 | `strategies/[id]/versions/V5.tsx` (2,177 lines) | `views/StrategyDetailPage.tsx` | Not Started |
+| A1.1 | `strategies/versions/V5.tsx` (885 lines) | `views/StrategiesPage.tsx` | **DONE** |
+| A1.2 | `strategies/[id]/versions/V5.tsx` (2,177 lines) | `views/StrategyDetailPage.tsx` | **DONE** |
 | | | **Kevin QA checkpoint** | |
 
 ### Batch 2: Dashboard + Alerts
 | Task | Source Design | View File | Status |
 |------|-------------|-----------|--------|
-| A2.1 | `dashboard/versions/V7.tsx` (2,492 lines) | `views/DashboardPage.tsx` | Not Started |
-| A2.2 | `alerts/versions/V5.tsx` (450 lines) | `views/AlertsPage.tsx` | Not Started |
-| A2.3 | `alerts/webhook-templates/versions/V5.tsx` (323 lines) | `views/WebhookTemplatesPage.tsx` | Not Started |
-| A2.4 | `alerts/webhook-templates/[id]/versions/V5.tsx` (518 lines) | `views/WebhookTemplateDetailPage.tsx` | Not Started |
+| A2.1 | `dashboard/versions/V7.tsx` (2,492 lines) | `views/DashboardPage.tsx` | **DONE** |
+| A2.2 | `alerts/versions/V5.tsx` (450 lines) | `views/AlertsPage.tsx` | **DONE** |
+| A2.3 | `alerts/webhook-templates/versions/V5.tsx` (323 lines) | `views/WebhookTemplatesPage.tsx` | **DONE** |
+| A2.4 | `alerts/webhook-templates/[id]/versions/V5.tsx` (518 lines) | `views/WebhookTemplateDetailPage.tsx` | **DONE** |
 | | | **Kevin QA checkpoint** | |
 
 ### Batch 3: Confluence Packs
@@ -93,7 +93,7 @@ The copy-and-wire procedure MUST include a `grep` audit for inline mock data AFT
 ### Strategy Builder
 | Task | Source Design | View File | Status |
 |------|-------------|-----------|--------|
-| A0.1 | `strategy-builder/versions/V5.tsx` (2,494 lines) | `views/StrategyBuilderPage.tsx` | **DONE** (V5 copy with API hooks) |
+| A0.1 | `strategy-builder/versions/V5.tsx` (2,494 lines) | `views/StrategyBuilderPage.tsx` | **DONE** |
 
 ---
 
