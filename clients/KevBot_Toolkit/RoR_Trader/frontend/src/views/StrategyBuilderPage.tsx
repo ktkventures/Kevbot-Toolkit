@@ -1,573 +1,2611 @@
 'use client';
 
 /**
- * Strategy Builder — Clean API-first page. V5 design.
- * Strategy method selector, horizontal config bar, expandable config (entry/exit/stop/target packs),
- * confluence pills, symmetric 2-col layout (charts+trades | analysis tabs+advanced),
- * analysis tabs with depth selector, KPI dashboard (2 rows), and save button.
+ * Strategy Builder — Copy of V5.tsx with mock data replaced by API hooks.
  *
- * QA Fix: Trigger selection now uses confluence group triggers from the API
- * instead of plain text inputs.
+ * Mock data references replaced:
+ * - API_TRIGGERS → useConfluenceTriggers() from API
+ * - API_STOP_PACKS / API_TARGET_PACKS → useRiskManagementPacks()
+ * - API_CONFLUENCE_CONDITIONS → useConfluenceGroups() derived
+ * - API_GENERAL_CONDITIONS → useGeneralPacks() derived
+ * - MOCK_KPIS / MOCK_TRADES → useRunBacktest() mutation results
+ * - Save → useCreateStrategy() mutation
  */
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
-import PageHeader from '@/components/PageHeader';
-import TabBar from '@/components/TabBar';
-import ChartPlaceholder from '@/components/ChartPlaceholder';
 import MetricCard from '@/components/MetricCard';
-import { useRunBacktest, BacktestRequest } from '@/hooks/queries/useBacktest';
+import ChartPlaceholder from '@/components/ChartPlaceholder';
+import TabBar from '@/components/TabBar';
+import Modal from '@/components/Modal';
+import { useRunBacktest } from '@/hooks/queries/useBacktest';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
-import { useConfluenceGroups, useConfluenceTriggers, useRiskManagementPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useRiskManagementPacks } from '@/hooks/queries/usePacks';
 
-const TIMEFRAMES = ['1Min', '2Min', '3Min', '5Min', '10Min', '15Min', '30Min', '1Hour', '4Hour', '1Day'];
-const DIRECTIONS: Array<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
-const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
-const ASSET_TYPES = ['Equity', 'Crypto'];
-const ANALYSIS_TABS = ['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit'];
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-const iStyle: React.CSSProperties = { background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '6px 10px', borderRadius: '6px', fontSize: '.8125rem', width: '100%' };
-const Label = ({ children }: { children: React.ReactNode }) => <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>{children}</label>;
-
-function kpi(v: number | undefined, d = 2, s = ''): string {
-  if (v == null) return '--';
-  return `${v >= 0 ? '+' : ''}${v.toFixed(d)}${s}`;
+interface TriggerDef {
+  id: string;
+  name: string;
+  execType: 'C' | 'L' | 'LC' | 'CC';
+  pack: string;
 }
 
-function Pill({ label, onRemove }: { label: string; onRemove?: () => void }) {
+interface ConfluenceCondition {
+  id: string;
+  label: string;
+  pack: string;
+}
+
+interface TradeRow {
+  id: number;
+  entryTime: string;
+  exitTime: string;
+  direction: 'LONG' | 'SHORT';
+  entryPrice: number;
+  exitPrice: number;
+  rMultiple: number;
+  execType: string;
+  exitReason: string;
+  confluences: string;
+}
+
+interface KPIs {
+  winRate: number;
+  profitFactor: number;
+  dailyR: number;
+  totalTrades: number;
+  avgWin: number;
+  avgLoss: number;
+  maxDrawdown: number;
+  recoveryFactor: number;
+  sharpeRatio: number;
+  expectancy: number;
+  totalR: number;
+  avgR: number;
+  rSquared: number;
+  maxRDrawdown: number;
+}
+
+// ---------------------------------------------------------------------------
+// Mock Data
+// ---------------------------------------------------------------------------
+
+const TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '4H', '1D'];
+const DIRECTIONS = ['LONG', 'SHORT'];
+const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
+const ASSET_TYPES = ['Equity', 'Crypto'];
+const LOOKBACK_MODES = ['Days', 'Bars/Candles', 'Date Range'];
+// Stop/Target packs — selectable saved variations
+interface RiskPack { id: string; name: string; version: string; summary: string }
+const API_STOP_PACKS: RiskPack[] = [
+  { id: 'atr-default', name: 'ATR Stop', version: 'Default', summary: '1.5x ATR' },
+  { id: 'atr-tight', name: 'ATR Stop', version: 'Tight', summary: '1.0x ATR' },
+  { id: 'fixed-default', name: 'Fixed Dollar', version: 'Default', summary: '$1.00 fixed' },
+  { id: 'pct-default', name: 'Percentage', version: 'Default', summary: '0.5% from entry' },
+  { id: 'swing-default', name: 'Swing Stop', version: 'Default', summary: '5-bar swing, $0.05 pad' },
+  { id: 'swing-wide', name: 'Swing Stop', version: 'Wide', summary: '8-bar swing, $0.10 pad' },
+  { id: 'trail-default', name: 'ATR Trailing', version: 'Default', summary: '1.5x ATR \u2192 trail 1.0x @ 1.0R' },
+  { id: 'be-default', name: 'Breakeven', version: 'Default', summary: '1.5x ATR \u2192 BE @ 1.0R' },
+];
+const API_TARGET_PACKS: RiskPack[] = [
+  { id: 'rr-default', name: 'Risk:Reward', version: 'Default', summary: '2:1 R:R' },
+  { id: 'rr-3to1', name: 'Risk:Reward', version: '3:1 Aggressive', summary: '3:1 R:R' },
+  { id: 'atr-target-default', name: 'ATR Target', version: 'Default', summary: '2.0x ATR' },
+  { id: 'fixed-target-default', name: 'Fixed Dollar', version: 'Default', summary: '$2.00 fixed' },
+  { id: 'swing-target-default', name: 'Swing Target', version: 'Default', summary: '5-bar swing, $0.05 pad' },
+  { id: 'no-target', name: 'No Target', version: 'Default', summary: 'Exit via stop, signal, or bar count' },
+];
+
+// Each trigger is a base trigger + execution type variant (4 per base trigger)
+const API_TRIGGERS: TriggerDef[] = [
+  // EMA Stack — 4 base triggers × 4 exec types
+  { id: 'ema-cross-bull-c', name: 'Short > Mid Cross', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-cross-bull-l', name: 'Short > Mid Cross', execType: 'L', pack: 'EMA Stack (Default)' },
+  { id: 'ema-cross-bull-lc', name: 'Short > Mid Cross', execType: 'LC', pack: 'EMA Stack (Default)' },
+  { id: 'ema-cross-bull-cc', name: 'Short > Mid Cross', execType: 'CC', pack: 'EMA Stack (Default)' },
+  { id: 'ema-cross-bear-c', name: 'Short < Mid Cross', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-cross-bear-l', name: 'Short < Mid Cross', execType: 'L', pack: 'EMA Stack (Default)' },
+  { id: 'ema-mid-cross-bull-c', name: 'Mid > Long Cross', execType: 'C', pack: 'EMA Stack (Default)' },
+  { id: 'ema-mid-cross-bear-c', name: 'Mid < Long Cross', execType: 'C', pack: 'EMA Stack (Default)' },
+  // MACD Line
+  { id: 'macd-cross-bull-c', name: 'Bullish Cross', execType: 'C', pack: 'MACD Line (Default)' },
+  { id: 'macd-cross-bull-l', name: 'Bullish Cross', execType: 'L', pack: 'MACD Line (Default)' },
+  { id: 'macd-cross-bear-c', name: 'Bearish Cross', execType: 'C', pack: 'MACD Line (Default)' },
+  { id: 'macd-zero-cross-up-c', name: 'Zero Line Cross Up', execType: 'C', pack: 'MACD Line (Default)' },
+  // VWAP — shows all 4 exec types
+  { id: 'vwap-cross-above-c', name: 'Cross Above VWAP', execType: 'C', pack: 'VWAP (Default)' },
+  { id: 'vwap-cross-above-l', name: 'Cross Above VWAP', execType: 'L', pack: 'VWAP (Default)' },
+  { id: 'vwap-cross-above-lc', name: 'Cross Above VWAP', execType: 'LC', pack: 'VWAP (Default)' },
+  { id: 'vwap-cross-below-c', name: 'Cross Below VWAP', execType: 'C', pack: 'VWAP (Default)' },
+  { id: 'vwap-cross-below-l', name: 'Cross Below VWAP', execType: 'L', pack: 'VWAP (Default)' },
+  // UT Bot
+  { id: 'utbot-buy-c', name: 'Buy Signal', execType: 'C', pack: 'UT Bot (Default)' },
+  { id: 'utbot-buy-l', name: 'Buy Signal', execType: 'L', pack: 'UT Bot (Default)' },
+  { id: 'utbot-buy-lc', name: 'Buy Signal', execType: 'LC', pack: 'UT Bot (Default)' },
+  { id: 'utbot-sell-c', name: 'Sell Signal', execType: 'C', pack: 'UT Bot (Default)' },
+  { id: 'utbot-sell-l', name: 'Sell Signal', execType: 'L', pack: 'UT Bot (Default)' },
+  // EMA Price Position
+  { id: 'ema-pp-cross-short-up-c', name: 'Price Cross Short EMA Up', execType: 'C', pack: 'EMA Price Position (Default)' },
+  { id: 'ema-pp-cross-short-up-l', name: 'Price Cross Short EMA Up', execType: 'L', pack: 'EMA Price Position (Default)' },
+  { id: 'ema-pp-cross-short-down-c', name: 'Price Cross Short EMA Down', execType: 'C', pack: 'EMA Price Position (Default)' },
+  { id: 'ema-pp-cross-mid-up-c', name: 'Price Cross Mid EMA Up', execType: 'C', pack: 'EMA Price Position (Default)' },
+  // MACD Histogram
+  { id: 'macd-hist-flip-pos-c', name: 'Histogram Flip Positive', execType: 'C', pack: 'MACD Histogram (Default)' },
+  { id: 'macd-hist-flip-neg-c', name: 'Histogram Flip Negative', execType: 'C', pack: 'MACD Histogram (Default)' },
+  // RVOL
+  { id: 'rvol-spike-c', name: 'Volume Spike', execType: 'C', pack: 'Relative Volume (Default)' },
+  { id: 'rvol-extreme-c', name: 'Extreme Volume', execType: 'C', pack: 'Relative Volume (Default)' },
+  // Bar Count Exit
+  { id: 'bar-count-exit-c', name: 'Bar Count Exit', execType: 'C', pack: 'Bar Count Exit (Default)' },
+];
+
+const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = [
+  { id: '5M-EMA_STACK-BULL', label: '5M EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '5M-EMA_STACK-SML', label: '5M EMA Stack S>M>L', pack: 'EMA Stack (Default)' },
+  { id: '15M-EMA_STACK-BULL', label: '15M EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '1H-EMA_STACK-BULL', label: '1H EMA Stack Bullish', pack: 'EMA Stack (Default)' },
+  { id: '1D-MACD_LINE-BULL', label: '1D MACD Line Bullish', pack: 'MACD Line (Default)' },
+  { id: '1D-MACD_LINE-BEAR', label: '1D MACD Line Bearish', pack: 'MACD Line (Default)' },
+  { id: '5M-MACD_LINE-BULL', label: '5M MACD Line Bullish', pack: 'MACD Line (Default)' },
+  { id: '1H-VWAP_POS-ABOVE', label: '1H Above VWAP', pack: 'VWAP (Default)' },
+  { id: '1H-VWAP_POS-BELOW', label: '1H Below VWAP', pack: 'VWAP (Default)' },
+  { id: '5M-RSI_ZONE-NEUTRAL', label: '5M RSI Neutral Zone', pack: 'RSI (Default)' },
+  { id: '1D-RSI_ZONE-BULL', label: '1D RSI Bullish Zone', pack: 'RSI (Default)' },
+  { id: '15M-SUPERTREND-BULL', label: '15M Supertrend Bullish', pack: 'Supertrend (Default)' },
+  { id: '1H-SUPERTREND-BULL', label: '1H Supertrend Bullish', pack: 'Supertrend (Default)' },
+];
+
+const API_GENERAL_CONDITIONS: ConfluenceCondition[] = [
+  { id: 'GEN-TOD-NY_MORNING', label: 'NY Morning (9:30-11:30)', pack: 'Time of Day' },
+  { id: 'GEN-TOD-NY_AFTERNOON', label: 'NY Afternoon (13:00-15:30)', pack: 'Time of Day' },
+  { id: 'GEN-DOW-MON_TUE_WED', label: 'Mon/Tue/Wed', pack: 'Day of Week' },
+  { id: 'GEN-DOW-TUE_THU', label: 'Tue/Thu', pack: 'Day of Week' },
+  { id: 'GEN-SESSION-RTH', label: 'Regular Trading Hours', pack: 'Session Filter' },
+];
+
+const MOCK_KPIS: KPIs = {
+  winRate: 58.3,
+  profitFactor: 2.14,
+  dailyR: 0.47,
+  totalTrades: 127,
+  avgWin: 1.82,
+  avgLoss: -0.94,
+  maxDrawdown: -4.2,
+  recoveryFactor: 3.8,
+  sharpeRatio: 1.67,
+  expectancy: 0.53,
+  totalR: 28.4,
+  avgR: 0.22,
+  rSquared: 0.87,
+  maxRDrawdown: -6.1,
+};
+
+const MOCK_TRADES: TradeRow[] = [
+  { id: 1, entryTime: '03/18 09:35:12', exitTime: '03/18 10:12:45', direction: 'LONG', entryPrice: 567.42, exitPrice: 569.18, rMultiple: 1.84, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
+  { id: 2, entryTime: '03/18 10:45:03', exitTime: '03/18 11:30:00', direction: 'LONG', entryPrice: 568.90, exitPrice: 567.15, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '5M-EMA_STACK-BULL' },
+  { id: 3, entryTime: '03/18 13:15:27', exitTime: '03/18 14:02:18', direction: 'LONG', entryPrice: 567.80, exitPrice: 570.25, rMultiple: 2.56, execType: 'L', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 4, entryTime: '03/19 09:32:41', exitTime: '03/19 09:58:09', direction: 'LONG', entryPrice: 571.10, exitPrice: 570.20, rMultiple: -0.85, execType: 'LC', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 5, entryTime: '03/19 10:15:00', exitTime: '03/19 11:45:30', direction: 'LONG', entryPrice: 570.55, exitPrice: 573.40, rMultiple: 3.12, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 6, entryTime: '03/19 13:05:22', exitTime: '03/19 13:42:00', direction: 'LONG', entryPrice: 572.80, exitPrice: 573.60, rMultiple: 0.84, execType: 'C', exitReason: 'bar_count', confluences: '5M-EMA_STACK-BULL' },
+  { id: 7, entryTime: '03/19 14:10:15', exitTime: '03/19 15:15:00', direction: 'LONG', entryPrice: 573.20, exitPrice: 572.05, rMultiple: -1.00, execType: 'L', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 8, entryTime: '03/20 09:35:08', exitTime: '03/20 10:50:33', direction: 'LONG', entryPrice: 570.15, exitPrice: 572.90, rMultiple: 2.89, execType: 'C', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
+  { id: 9, entryTime: '03/20 11:20:47', exitTime: '03/20 12:05:12', direction: 'LONG', entryPrice: 572.45, exitPrice: 573.80, rMultiple: 1.41, execType: 'LC', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 10, entryTime: '03/20 13:30:00', exitTime: '03/20 14:45:55', direction: 'LONG', entryPrice: 573.10, exitPrice: 571.90, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
+  { id: 11, entryTime: '03/20 15:00:05', exitTime: '03/20 15:45:30', direction: 'LONG', entryPrice: 572.20, exitPrice: 574.50, rMultiple: 2.41, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
+  { id: 12, entryTime: '03/21 09:33:19', exitTime: '03/21 10:20:42', direction: 'LONG', entryPrice: 574.80, exitPrice: 575.95, rMultiple: 1.20, execType: 'L', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL' },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Display settings V5: uniform blue for all exec types
+const EXEC_BADGE_COLOR = '#2196F3';
+
+function ExecBadge({ type }: { type: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
-      {label}
-      {onRemove && <button onClick={onRemove} className="ml-0.5 hover:opacity-70" style={{ color: 'var(--text-muted)' }}>x</button>}
+    <span
+      className="text-xs font-mono font-medium px-2 py-0.5 rounded-full"
+      style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}
+    >
+      [{type}]
     </span>
   );
 }
 
-function Depth({ depth, max, onChange }: { depth: number; max: number; onChange: (d: number) => void }) {
+function ExitReasonBadge({ reason }: { reason: string }) {
+  const colors: Record<string, string> = {
+    signal: 'var(--green)',
+    target: 'var(--green)',
+    stop: 'var(--red)',
+    bar_count: 'var(--orange)',
+  };
+  const c = colors[reason] || 'var(--text-muted)';
   return (
-    <div className="flex items-center gap-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Depth:</span>
-      <div className="flex gap-1">
-        {Array.from({ length: max }, (_, i) => i + 1).map(n => (
-          <button key={n} onClick={() => onChange(n)} className="w-7 h-7 rounded text-xs font-medium" style={{ background: n === depth ? 'var(--accent)' : 'var(--bg-input)', color: n === depth ? 'white' : 'var(--text-muted)', border: n === depth ? 'none' : '1px solid var(--border)' }}>{n}</button>
-        ))}
-      </div>
-      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{depth === 1 ? 'Individual' : `Up to ${depth}`}</span>
-    </div>
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+      style={{
+        color: c,
+        background: `color-mix(in srgb, ${c} 12%, transparent)`,
+      }}
+    >
+      {reason}
+    </span>
   );
 }
 
-function PackList({ packs, selectedId, onSelect }: { packs: any[]; selectedId: string; onSelect: (id: string) => void }) {
-  const items = [{ id: '', label: 'None (default)' }, ...packs.map((p: any) => ({ id: p.id, label: `${p.base_template || 'Pack'} (${p.version || 'v1'})` }))];
+function ConditionPill({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: () => void;
+}) {
   return (
-    <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
-      {items.map(p => (
-        <button key={p.id} className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors" style={{ background: p.id === selectedId ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'transparent', color: p.id === selectedId ? 'var(--accent)' : 'var(--text-primary)', border: p.id === selectedId ? '1px solid var(--accent)' : '1px solid transparent' }} onClick={() => onSelect(p.id)}>
-          <span className="flex-1 truncate">{p.label}</span>
+    <span
+      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-secondary)',
+      }}
+    >
+      {label}
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="ml-0.5 hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          x
         </button>
+      )}
+    </span>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>
+      {children}
+    </label>
+  );
+}
+
+function SelectInput({
+  options,
+  value,
+  onChange,
+}: {
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      className="w-full px-3 py-2 rounded-lg text-sm"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-primary)',
+      }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
       ))}
+    </select>
+  );
+}
+
+function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  suffix,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        className="w-full px-3 py-2 rounded-lg text-sm"
+        style={{
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-primary)',
+        }}
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+      />
+      {suffix && (
+        <span className="text-xs whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+          {suffix}
+        </span>
+      )}
     </div>
   );
 }
 
-/** Grouped trigger list — shows triggers grouped by pack, with search filtering */
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <input
+      type="text"
+      className="w-full px-3 py-2 rounded-lg text-sm"
+      style={{
+        background: 'var(--bg-input)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-primary)',
+      }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  );
+}
+
+function PrimaryButton({
+  children,
+  onClick,
+  disabled,
+  fullWidth,
+  size = 'md',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  fullWidth?: boolean;
+  size?: 'sm' | 'md' | 'lg';
+}) {
+  const py = size === 'sm' ? 'py-1.5' : size === 'lg' ? 'py-3' : 'py-2';
+  const text = size === 'sm' ? 'text-xs' : size === 'lg' ? 'text-base' : 'text-sm';
+  return (
+    <button
+      className={`${py} px-4 rounded-lg font-medium ${text} transition-all ${fullWidth ? 'w-full' : ''}`}
+      style={{
+        background: disabled ? 'var(--bg-input)' : 'var(--accent)',
+        color: disabled ? 'var(--text-muted)' : '#000',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+      }}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryButton({
+  children,
+  onClick,
+  size = 'sm',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  size?: 'sm' | 'md';
+}) {
+  const py = size === 'sm' ? 'py-1' : 'py-2';
+  const text = size === 'sm' ? 'text-xs' : 'text-sm';
+  return (
+    <button
+      className={`${py} px-3 rounded-lg ${text} transition-all`}
+      style={{
+        background: 'var(--accent-muted)',
+        color: 'var(--accent)',
+      }}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
 function TriggerGroupedList({
   triggers,
   searchQuery,
   selectedId,
   onSelect,
 }: {
-  triggers: Record<string, string>;
+  triggers: TriggerDef[];
   searchQuery: string;
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
   const filtered = useMemo(() => {
-    const entries = Object.entries(triggers);
-    if (!searchQuery) return entries;
+    if (!searchQuery) return triggers;
     const q = searchQuery.toLowerCase();
-    return entries.filter(([id, name]) => id.toLowerCase().includes(q) || name.toLowerCase().includes(q));
+    return triggers.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.pack.toLowerCase().includes(q) ||
+        t.execType.toLowerCase().includes(q)
+    );
   }, [triggers, searchQuery]);
 
-  if (filtered.length === 0) {
-    return <p className="text-xs p-3" style={{ color: 'var(--text-muted)' }}>No triggers available.</p>;
-  }
+  const grouped = useMemo(() => {
+    const map: Record<string, TriggerDef[]> = {};
+    for (const t of filtered) {
+      if (!map[t.pack]) map[t.pack] = [];
+      map[t.pack].push(t);
+    }
+    return map;
+  }, [filtered]);
 
   return (
-    <div className="space-y-0.5 overflow-y-auto pr-1" style={{ maxHeight: 280 }}>
-      {filtered.map(([id, name]) => (
-        <button
-          key={id}
-          className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
-          style={{
-            background: id === selectedId ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'transparent',
-            color: id === selectedId ? 'var(--accent)' : 'var(--text-secondary)',
-          }}
-          onClick={() => onSelect(id)}
-        >
-          <span className="flex-1 truncate">{name}</span>
-          <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{id}</span>
-          {id === selectedId && <span className="text-[10px]" style={{ color: 'var(--accent)' }}>selected</span>}
-        </button>
+    <div
+      className="space-y-1 overflow-y-auto pr-1"
+      style={{ maxHeight: 600 }}
+    >
+      {Object.entries(grouped).map(([pack, trigs]) => (
+        <div key={pack}>
+          <div
+            className="text-[10px] font-semibold uppercase tracking-wider px-2 py-1.5 sticky top-0"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-card)' }}
+          >
+            {pack}
+          </div>
+          {trigs.map((t) => (
+            <button
+              key={t.id}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+              style={{
+                background: t.id === selectedId ? 'var(--accent-muted)' : 'transparent',
+                color: t.id === selectedId ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onSelect(t.id)}
+            >
+              <ExecBadge type={t.execType} />
+              <span className="flex-1">{t.name}</span>
+              {t.id === selectedId && (
+                <span className="text-[10px]" style={{ color: 'var(--accent)' }}>
+                  selected
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       ))}
+      {Object.keys(grouped).length === 0 && (
+        <p className="text-xs p-3" style={{ color: 'var(--text-muted)' }}>
+          No triggers match your search.
+        </p>
+      )}
     </div>
   );
 }
 
-/** Confluence condition picker — checkable list built from confluence groups */
-function ConfluenceConditionPicker({
-  groups,
+function ConfluencePickerModal({
+  isOpen,
+  onClose,
+  conditions,
   selected,
   onToggle,
 }: {
-  groups: any[];
+  isOpen: boolean;
+  onClose: () => void;
+  conditions: ConfluenceCondition[];
   selected: Set<string>;
   onToggle: (id: string) => void;
 }) {
   const [search, setSearch] = useState('');
 
-  // Build conditions from confluence groups: "{TF}-{INTERPRETER}-{STATE}" format
-  // We show the group base_template + version as label context
-  const conditions = useMemo(() => {
-    if (!groups || groups.length === 0) return [];
-    return groups
-      .filter((g: any) => g.enabled !== false)
-      .map((g: any) => ({
-        id: g.id,
-        label: `${g.base_template} (${g.version || 'v1'})`,
-        description: g.description || '',
-      }));
-  }, [groups]);
-
   const filtered = useMemo(() => {
     if (!search) return conditions;
     const q = search.toLowerCase();
-    return conditions.filter(c => c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+    return conditions.filter(
+      (c) => c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q) || c.pack.toLowerCase().includes(q)
+    );
   }, [conditions, search]);
 
-  if (conditions.length === 0) {
-    return <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No confluence groups configured. Create groups in the Confluence Packs page.</p>;
-  }
+  const grouped = useMemo(() => {
+    const map: Record<string, ConfluenceCondition[]> = {};
+    for (const c of filtered) {
+      if (!map[c.pack]) map[c.pack] = [];
+      map[c.pack].push(c);
+    }
+    return map;
+  }, [filtered]);
 
   return (
-    <div>
-      <input
-        type="text"
-        placeholder="Search conditions..."
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        style={{ ...iStyle, marginBottom: 8 }}
-      />
-      <div className="space-y-0.5 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
-        {filtered.map(c => {
-          const active = selected.has(c.id);
-          return (
-            <button
-              key={c.id}
-              className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
-              style={{
-                background: active ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'transparent',
-                color: active ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-              onClick={() => onToggle(c.id)}
+    <Modal title="Add Confluence Conditions" isOpen={isOpen} onClose={onClose} width="560px">
+      <TextInput value={search} onChange={setSearch} placeholder="Search conditions..." />
+      <div className="mt-4 space-y-1 overflow-y-auto" style={{ maxHeight: 400 }}>
+        {Object.entries(grouped).map(([pack, conds]) => (
+          <div key={pack}>
+            <div
+              className="text-[10px] font-semibold uppercase tracking-wider px-2 py-1.5 sticky top-0"
+              style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}
             >
-              <span
-                className="w-4 h-4 rounded border flex items-center justify-center text-[10px] flex-shrink-0"
-                style={{
-                  borderColor: active ? 'var(--accent)' : 'var(--border)',
-                  background: active ? 'var(--accent)' : 'transparent',
-                  color: active ? '#000' : 'transparent',
-                }}
-              >
-                {active ? '\u2713' : ''}
-              </span>
-              <span className="flex-1 truncate">{c.label}</span>
-              <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{c.id}</span>
-            </button>
-          );
-        })}
+              {pack}
+            </div>
+            {conds.map((c) => {
+              const active = selected.has(c.id);
+              return (
+                <button
+                  key={c.id}
+                  className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                  style={{
+                    background: active ? 'var(--accent-muted)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  }}
+                  onClick={() => onToggle(c.id)}
+                >
+                  <span
+                    className="w-4 h-4 rounded border flex items-center justify-center text-[10px]"
+                    style={{
+                      borderColor: active ? 'var(--accent)' : 'var(--border)',
+                      background: active ? 'var(--accent)' : 'transparent',
+                      color: active ? '#000' : 'transparent',
+                    }}
+                  >
+                    {active ? '\u2713' : ''}
+                  </span>
+                  <span className="flex-1">{c.label}</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    {c.id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+        {Object.keys(grouped).length === 0 && (
+          <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            No conditions match your search.
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function KPIDashboard({ kpis, backtestRan }: { kpis: KPIs; backtestRan: boolean }) {
+  if (!backtestRan) return null;
+
+  return (
+    <div className="space-y-3">
+      {/* Primary KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
+        <MetricCard label="Trades" value={String(kpis.totalTrades)} />
+        <MetricCard
+          label="Win Rate"
+          value={`${kpis.winRate.toFixed(1)}%`}
+          positive={kpis.winRate > 50}
+        />
+        <MetricCard
+          label="Profit Factor"
+          value={kpis.profitFactor.toFixed(2)}
+          positive={kpis.profitFactor > 1}
+        />
+        <MetricCard
+          label="Avg R"
+          value={`${kpis.avgR >= 0 ? '+' : ''}${kpis.avgR.toFixed(2)}`}
+          positive={kpis.avgR > 0}
+        />
+        <MetricCard
+          label="Total R"
+          value={`${kpis.totalR >= 0 ? '+' : ''}${kpis.totalR.toFixed(1)}`}
+          positive={kpis.totalR > 0}
+        />
+        <MetricCard
+          label="Daily R"
+          value={`${kpis.dailyR >= 0 ? '+' : ''}${kpis.dailyR.toFixed(2)}`}
+          positive={kpis.dailyR > 0}
+        />
+        <MetricCard
+          label="R-Squared"
+          value={kpis.rSquared.toFixed(2)}
+          positive={kpis.rSquared > 0.7}
+        />
+        <MetricCard
+          label="Max R DD"
+          value={`${kpis.maxRDrawdown.toFixed(1)}R`}
+          positive={false}
+        />
+      </div>
+      {/* Secondary KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <MetricCard
+          label="Avg Win"
+          value={`+${kpis.avgWin.toFixed(2)}R`}
+          positive
+        />
+        <MetricCard label="Avg Loss" value={`${kpis.avgLoss.toFixed(2)}R`} />
+        <MetricCard
+          label="Max Drawdown"
+          value={`${kpis.maxDrawdown.toFixed(1)}%`}
+        />
+        <MetricCard
+          label="Recovery Factor"
+          value={kpis.recoveryFactor.toFixed(2)}
+          positive={kpis.recoveryFactor > 2}
+        />
+        <MetricCard
+          label="Sharpe Ratio"
+          value={kpis.sharpeRatio.toFixed(2)}
+          positive={kpis.sharpeRatio > 1}
+        />
+        <MetricCard
+          label="Expectancy"
+          value={`${kpis.expectancy >= 0 ? '+' : ''}${kpis.expectancy.toFixed(2)}R`}
+          positive={kpis.expectancy > 0}
+        />
       </div>
     </div>
   );
 }
 
+function OptimizableVariables({
+  entryTrigger,
+  exitTriggers,
+  selectedConditions,
+  generalConditions,
+  selectedStopPack,
+  selectedTargetPack,
+  allTriggers,
+  allConditions,
+  allGeneralConditions,
+  onRemoveCondition,
+  onRemoveGeneral,
+  onRemoveExit,
+}: {
+  entryTrigger: string;
+  exitTriggers: string[];
+  selectedConditions: Set<string>;
+  generalConditions: Set<string>;
+  selectedStopPack: string;
+  selectedTargetPack: string;
+  allTriggers: TriggerDef[];
+  allConditions: ConfluenceCondition[];
+  allGeneralConditions: ConfluenceCondition[];
+  onRemoveCondition: (id: string) => void;
+  onRemoveGeneral: (id: string) => void;
+  onRemoveExit: (idx: number) => void;
+}) {
+  const entryDef = allTriggers.find((t) => t.id === entryTrigger);
+  const stopPack = API_STOP_PACKS.find((p) => p.id === selectedStopPack);
+  const targetPack = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack);
+
+  function formatStopDisplay() {
+    return stopPack ? `${stopPack.name} (${stopPack.version})` : 'None';
+  }
+
+  function formatTargetDisplay() {
+    return targetPack ? `${targetPack.name} (${targetPack.version})` : 'None';
+  }
+
+  return (
+    <Card>
+      <div
+        className="text-xs font-medium mb-3 flex items-center justify-between"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <span>Optimizable Variables</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {/* Entry */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Entry
+          </div>
+          {entryDef ? (
+            <div className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+              <ExecBadge type={entryDef.execType} />
+              <span className="italic">{entryDef.name}</span>
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* Exit(s) */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Exit(s)
+          </div>
+          {exitTriggers.length > 0 ? (
+            <div className="space-y-1">
+              {exitTriggers.map((eid, idx) => {
+                const eDef = allTriggers.find((t) => t.id === eid);
+                return (
+                  <div key={eid} className="flex items-center gap-1 text-xs group">
+                    {eDef && <ExecBadge type={eDef.execType} />}
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {eDef?.name || eid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveExit(idx)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* TF Conditions */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            TF Conditions
+          </div>
+          {selectedConditions.size > 0 ? (
+            <div className="space-y-1">
+              {Array.from(selectedConditions).sort().map((cid) => {
+                const cDef = allConditions.find((c) => c.id === cid);
+                return (
+                  <div key={cid} className="flex items-center gap-1 text-xs group">
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {cDef?.label || cid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveCondition(cid)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* General */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            General
+          </div>
+          {generalConditions.size > 0 ? (
+            <div className="space-y-1">
+              {Array.from(generalConditions).sort().map((gid) => {
+                const gDef = allGeneralConditions.find((c) => c.id === gid);
+                return (
+                  <div key={gid} className="flex items-center gap-1 text-xs group">
+                    <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {gDef?.label || gid}
+                    </span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"
+                      style={{ color: 'var(--text-muted)' }}
+                      onClick={() => onRemoveGeneral(gid)}
+                    >
+                      x
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None</span>
+          )}
+        </div>
+
+        {/* Stop Loss */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Stop Loss
+          </div>
+          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
+            {formatStopDisplay()}
+          </span>
+        </div>
+
+        {/* Take Profit */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Take Profit
+          </div>
+          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
+            {formatTargetDisplay()}
+          </span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function TradeHistoryTable({ trades }: { trades: TradeRow[] }) {
+  const [sortCol, setSortCol] = useState<keyof TradeRow>('id');
+  const [sortAsc, setSortAsc] = useState(true);
+
+  const sorted = useMemo(() => {
+    const arr = [...trades];
+    arr.sort((a, b) => {
+      const av = a[sortCol];
+      const bv = b[sortCol];
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return sortAsc ? av - bv : bv - av;
+      }
+      return sortAsc
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+    return arr;
+  }, [trades, sortCol, sortAsc]);
+
+  function handleSort(col: keyof TradeRow) {
+    if (sortCol === col) {
+      setSortAsc(!sortAsc);
+    } else {
+      setSortCol(col);
+      setSortAsc(true);
+    }
+  }
+
+  const columns: { key: keyof TradeRow; label: string; align?: 'right' | 'center' }[] = [
+    { key: 'id', label: '#', align: 'center' },
+    { key: 'entryTime', label: 'Entry Time' },
+    { key: 'exitTime', label: 'Exit Time' },
+    { key: 'direction', label: 'Dir', align: 'center' },
+    { key: 'entryPrice', label: 'Entry $', align: 'right' },
+    { key: 'exitPrice', label: 'Exit $', align: 'right' },
+    { key: 'rMultiple', label: 'P&L (R)', align: 'right' },
+    { key: 'execType', label: 'Exec', align: 'center' },
+    { key: 'exitReason', label: 'Exit Reason', align: 'center' },
+  ];
+
+  const sortIndicator = (col: keyof TradeRow) => {
+    if (sortCol !== col) return '';
+    return sortAsc ? ' \u2191' : ' \u2193';
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {columns.map((col) => (
+              <th
+                key={col.key}
+                className={`px-2 py-2 font-medium cursor-pointer hover:opacity-80 transition-opacity whitespace-nowrap ${
+                  col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
+                }`}
+                style={{ color: 'var(--text-muted)' }}
+                onClick={() => handleSort(col.key)}
+              >
+                {col.label}{sortIndicator(col.key)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((trade) => (
+            <tr
+              key={trade.id}
+              className="hover:opacity-90 transition-opacity"
+              style={{ borderBottom: '1px solid var(--border)' }}
+            >
+              <td className="px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>
+                {trade.id}
+              </td>
+              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                {trade.entryTime}
+              </td>
+              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                {trade.exitTime}
+              </td>
+              <td className="px-2 py-2 text-center">
+                <span
+                  className="text-[10px] font-medium"
+                  style={{ color: trade.direction === 'LONG' ? 'var(--green)' : 'var(--red)' }}
+                >
+                  {trade.direction}
+                </span>
+              </td>
+              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
+                ${trade.entryPrice.toFixed(2)}
+              </td>
+              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
+                ${trade.exitPrice.toFixed(2)}
+              </td>
+              <td className="px-2 py-2 text-right font-mono font-medium">
+                <span style={{ color: trade.rMultiple >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {trade.rMultiple >= 0 ? '+' : ''}{trade.rMultiple.toFixed(2)}
+                </span>
+              </td>
+              <td className="px-2 py-2 text-center">
+                <ExecBadge type={trade.execType} />
+              </td>
+              <td className="px-2 py-2 text-center">
+                <ExitReasonBadge reason={trade.exitReason} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AdvancedAnalysis() {
+  const [expanded, setExpanded] = useState(false);
+
+  // Mock analysis data
+  const winStreaks = [3, 5, 2, 4, 7, 3, 2, 6];
+  const lossStreaks = [1, 2, 1, 3, 1, 2, 1, 1];
+  const todPerformance = [
+    { hour: '09:30-10:00', trades: 28, winRate: 64.3, avgR: 0.42 },
+    { hour: '10:00-11:00', trades: 31, winRate: 54.8, avgR: 0.18 },
+    { hour: '11:00-12:00', trades: 22, winRate: 59.1, avgR: 0.31 },
+    { hour: '13:00-14:00', trades: 24, winRate: 62.5, avgR: 0.38 },
+    { hour: '14:00-15:00', trades: 15, winRate: 46.7, avgR: -0.12 },
+    { hour: '15:00-16:00', trades: 7, winRate: 71.4, avgR: 0.65 },
+  ];
+  const dowPerformance = [
+    { day: 'Monday', trades: 26, winRate: 57.7, avgR: 0.22 },
+    { day: 'Tuesday', trades: 29, winRate: 62.1, avgR: 0.41 },
+    { day: 'Wednesday', trades: 28, winRate: 60.7, avgR: 0.35 },
+    { day: 'Thursday', trades: 25, winRate: 52.0, avgR: 0.08 },
+    { day: 'Friday', trades: 19, winRate: 57.9, avgR: 0.28 },
+  ];
+
+  return (
+    <Card>
+      <button
+        className="w-full flex items-center justify-between text-sm font-medium"
+        style={{ color: 'var(--text-secondary)' }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>Advanced Analysis</span>
+        <span
+          className="text-xs transition-transform"
+          style={{
+            color: 'var(--text-muted)',
+            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+          }}
+        >
+          v
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="mt-4 space-y-6">
+          {/* Win/Loss Streaks */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Win/Loss Streaks
+            </h4>
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  Win Streaks
+                </div>
+                <div className="flex items-end gap-1" style={{ height: 60 }}>
+                  {winStreaks.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-t"
+                      style={{
+                        height: `${(s / Math.max(...winStreaks)) * 100}%`,
+                        background: 'var(--green)',
+                        opacity: 0.6 + (s / Math.max(...winStreaks)) * 0.4,
+                        minHeight: 4,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Max: {Math.max(...winStreaks)}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Avg: {(winStreaks.reduce((a, b) => a + b, 0) / winStreaks.length).toFixed(1)}
+                  </span>
+                </div>
+              </div>
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  Loss Streaks
+                </div>
+                <div className="flex items-end gap-1" style={{ height: 60 }}>
+                  {lossStreaks.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-t"
+                      style={{
+                        height: `${(s / Math.max(...lossStreaks)) * 100}%`,
+                        background: 'var(--red)',
+                        opacity: 0.6 + (s / Math.max(...lossStreaks)) * 0.4,
+                        minHeight: 4,
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Max: {Math.max(...lossStreaks)}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Avg: {(lossStreaks.reduce((a, b) => a + b, 0) / lossStreaks.length).toFixed(1)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Time of Day Performance */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Time of Day Performance
+            </h4>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th className="text-left px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Hour</th>
+                    <th className="text-center px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Trades</th>
+                    <th className="text-center px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Win Rate</th>
+                    <th className="text-right px-2 py-1.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg R</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {todPerformance.map((row) => (
+                    <tr key={row.hour} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>{row.hour}</td>
+                      <td className="px-2 py-1.5 text-center" style={{ color: 'var(--text-secondary)' }}>{row.trades}</td>
+                      <td className="px-2 py-1.5 text-center">
+                        <span style={{ color: row.winRate > 55 ? 'var(--green)' : row.winRate < 50 ? 'var(--red)' : 'var(--text-secondary)' }}>
+                          {row.winRate.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono">
+                        <span style={{ color: row.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {row.avgR >= 0 ? '+' : ''}{row.avgR.toFixed(2)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Day of Week Performance */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Day of Week Performance
+            </h4>
+            <div className="grid grid-cols-5 gap-2">
+              {dowPerformance.map((row) => (
+                <div
+                  key={row.day}
+                  className="rounded-lg border p-3 text-center"
+                  style={{
+                    background: 'var(--bg-input)',
+                    borderColor: row.avgR > 0.3 ? 'var(--green)' : row.avgR < 0 ? 'var(--red)' : 'var(--border)',
+                    borderWidth: row.avgR > 0.3 || row.avgR < 0 ? 2 : 1,
+                  }}
+                >
+                  <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {row.day.slice(0, 3)}
+                  </div>
+                  <div className="text-sm font-semibold" style={{ color: row.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {row.avgR >= 0 ? '+' : ''}{row.avgR.toFixed(2)}R
+                  </div>
+                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    {row.trades} trades | {row.winRate.toFixed(0)}%
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Markov Motor */}
+          <div>
+            <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
+              Markov Motor Analysis
+            </h4>
+            <div className="grid grid-cols-2 gap-4">
+              <div
+                className="rounded-lg border p-3"
+                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
+              >
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  After Win
+                </div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
+                  <span style={{ color: 'var(--green)' }}>62.4%</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
+                  <span style={{ color: 'var(--red)' }}>37.6%</span>
+                </div>
+                <div
+                  className="mt-2 h-2 rounded-full overflow-hidden"
+                  style={{ background: 'var(--red-muted)' }}
+                >
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: '62.4%', background: 'var(--green)' }}
+                  />
+                </div>
+              </div>
+              <div
+                className="rounded-lg border p-3"
+                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
+              >
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                  After Loss
+                </div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
+                  <span style={{ color: 'var(--green)' }}>55.1%</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
+                  <span style={{ color: 'var(--red)' }}>44.9%</span>
+                </div>
+                <div
+                  className="mt-2 h-2 rounded-full overflow-hidden"
+                  style={{ background: 'var(--red-muted)' }}
+                >
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: '55.1%', background: 'var(--green)' }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer Drill-Down Tab Content
+// ---------------------------------------------------------------------------
+
+interface AnalyzerResult {
+  triggerId: string;
+  triggerName: string;
+  execType: string;
+  totalTrades: number;
+  profitFactor: number;
+  winRate: number;
+  avgR: number;
+  dailyR: number;
+  rSquared: number;
+}
+
+const MOCK_ENTRY_ANALYSIS: AnalyzerResult[] = [
+  { triggerId: 'ema-price-cross-up', triggerName: 'EMA Price Cross Up', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+  { triggerId: 'macd-cross-bull', triggerName: 'MACD Cross Bull', execType: 'C', totalTrades: 98, profitFactor: 1.89, winRate: 55.1, avgR: 0.18, dailyR: 0.35, rSquared: 0.81 },
+  { triggerId: 'vwap-cross-up', triggerName: 'VWAP Cross Up', execType: 'L0', totalTrades: 142, profitFactor: 1.62, winRate: 52.8, avgR: 0.11, dailyR: 0.28, rSquared: 0.74 },
+  { triggerId: 'ut-bot-buy', triggerName: 'UT Bot Buy', execType: 'HM', totalTrades: 83, profitFactor: 2.41, winRate: 61.4, avgR: 0.34, dailyR: 0.52, rSquared: 0.89 },
+  { triggerId: 'supertrend-flip-bull', triggerName: 'Supertrend Flip Bull', execType: 'L1', totalTrades: 67, profitFactor: 1.95, winRate: 56.7, avgR: 0.21, dailyR: 0.31, rSquared: 0.78 },
+  { triggerId: 'keltner-bounce-long', triggerName: 'Keltner Bounce Long', execType: 'HL', totalTrades: 54, profitFactor: 2.28, winRate: 59.3, avgR: 0.29, dailyR: 0.42, rSquared: 0.84 },
+];
+
+const MOCK_EXIT_ANALYSIS: AnalyzerResult[] = [
+  { triggerId: 'ema-price-cross-down', triggerName: 'EMA Price Cross Down', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+  { triggerId: 'macd-cross-bear', triggerName: 'MACD Cross Bear', execType: 'C', totalTrades: 112, profitFactor: 1.72, winRate: 53.6, avgR: 0.14, dailyR: 0.32, rSquared: 0.76 },
+  { triggerId: 'supertrend-flip-bear', triggerName: 'Supertrend Flip Bear', execType: 'L1', totalTrades: 89, profitFactor: 2.05, winRate: 57.3, avgR: 0.26, dailyR: 0.41, rSquared: 0.82 },
+  { triggerId: 'rsi-overbought-exit', triggerName: 'RSI Overbought Exit', execType: 'C', totalTrades: 76, profitFactor: 1.58, winRate: 51.3, avgR: 0.09, dailyR: 0.18, rSquared: 0.69 },
+  { triggerId: 'bar-count-exit-4', triggerName: '4-Bar Exit', execType: 'C', totalTrades: 127, profitFactor: 1.45, winRate: 50.4, avgR: 0.07, dailyR: 0.15, rSquared: 0.62 },
+];
+
+function AnalyzerResultCard({
+  result,
+  isCurrent,
+  actionLabel,
+  onAction,
+}: {
+  result: AnalyzerResult;
+  isCurrent: boolean;
+  actionLabel: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div
+      className="rounded-lg border p-3"
+      style={{
+        background: isCurrent ? 'var(--accent-muted)' : 'var(--bg-card)',
+        borderColor: isCurrent ? 'var(--accent)' : 'var(--border)',
+      }}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <ExecBadge type={result.execType} />
+          <span
+            className={`text-sm ${isCurrent ? 'font-semibold' : ''}`}
+            style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-primary)' }}
+          >
+            {result.triggerName}
+          </span>
+          {isCurrent && (
+            <span className="text-[10px] italic" style={{ color: 'var(--accent)' }}>
+              (current)
+            </span>
+          )}
+        </div>
+        {!isCurrent && onAction && (
+          <SecondaryButton onClick={onAction}>{actionLabel}</SecondaryButton>
+        )}
+      </div>
+      <div className="grid grid-cols-6 gap-2">
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.totalTrades}</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.profitFactor.toFixed(1)}</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.winRate.toFixed(1)}%</div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+          <div className="text-xs" style={{ color: result.avgR > 0 ? 'var(--green)' : 'var(--red)' }}>
+            {result.avgR >= 0 ? '+' : ''}{result.avgR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+          <div className="text-xs" style={{ color: result.dailyR > 0 ? 'var(--green)' : 'var(--red)' }}>
+            {result.dailyR >= 0 ? '+' : ''}{result.dailyR.toFixed(2)}
+          </div>
+        </div>
+        <div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.rSquared.toFixed(2)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Depth Selector (button group for confluence depth)
+// ---------------------------------------------------------------------------
+
+function DepthSelector({ depth, maxDepth, onChange }: { depth: number; maxDepth: number; onChange: (d: number) => void }) {
+  return (
+    <div className="flex items-center gap-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Confluence Depth:</span>
+      <div className="flex gap-1">
+        {Array.from({ length: maxDepth }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            onClick={() => onChange(n)}
+            className="w-7 h-7 rounded text-xs font-medium transition-colors"
+            style={{
+              background: n === depth ? 'var(--accent)' : 'var(--bg-input)',
+              color: n === depth ? 'white' : 'var(--text-muted)',
+              border: n === depth ? 'none' : '1px solid var(--border)',
+            }}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        {depth === 1 ? 'Individual' : `Combinations of up to ${depth}`}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Filter & Sort Modal
+// ---------------------------------------------------------------------------
+
+interface FilterConfig {
+  sortBy: string;
+  sortDir: 'asc' | 'desc';
+  minPF: string;
+  minWR: string;
+  minTrades: string;
+  minR2: string;
+  minDailyR: string;
+  minAvgR: string;
+  tqFilter: string;
+}
+
+const defaultFilters: FilterConfig = { sortBy: 'profitFactor', sortDir: 'desc', minPF: '', minWR: '', minTrades: '', minR2: '', minDailyR: '', minAvgR: '', tqFilter: 'None' };
+
+function FilterSortModal({ isOpen, onClose, filters, onApply }: { isOpen: boolean; onClose: () => void; filters: FilterConfig; onApply: (f: FilterConfig) => void }) {
+  const [local, setLocal] = useState<FilterConfig>(filters);
+
+  return (
+    <Modal title="Filter & Sort" isOpen={isOpen} onClose={onClose} width="400px">
+      <div className="space-y-5">
+        {/* Sort */}
+        <div>
+          <label className="text-xs block mb-1.5" style={{ color: 'var(--text-secondary)' }}>Sort by</label>
+          <select
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            value={local.sortBy}
+            onChange={(e) => setLocal({ ...local, sortBy: e.target.value })}
+          >
+            <option value="profitFactor">Profit Factor</option>
+            <option value="winRate">Win Rate</option>
+            <option value="avgR">Avg R</option>
+            <option value="dailyR">Daily R</option>
+            <option value="rSquared">R-Squared</option>
+            <option value="totalTrades">Total Trades</option>
+          </select>
+        </div>
+        <div className="flex gap-3">
+          {(['asc', 'desc'] as const).map((dir) => (
+            <button
+              key={dir}
+              onClick={() => setLocal({ ...local, sortDir: dir })}
+              className="flex-1 py-2 rounded-lg text-xs font-medium"
+              style={{
+                background: local.sortDir === dir ? 'var(--accent-muted)' : 'var(--bg-input)',
+                color: local.sortDir === dir ? 'var(--accent)' : 'var(--text-muted)',
+                border: `1px solid ${local.sortDir === dir ? 'var(--accent)' : 'var(--border)'}`,
+              }}
+            >
+              {dir === 'asc' ? 'Ascending' : 'Descending'}
+            </button>
+          ))}
+        </div>
+
+        {/* Minimum Thresholds */}
+        <div>
+          <label className="text-xs block mb-2" style={{ color: 'var(--text-secondary)' }}>Minimum Thresholds</label>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { key: 'minPF', label: 'Min PF', placeholder: 'e.g. 1.5' },
+              { key: 'minWR', label: 'Min WR %', placeholder: 'e.g. 50' },
+              { key: 'minTrades', label: 'Min Trades', placeholder: 'e.g. 20' },
+              { key: 'minR2', label: 'Min R\u00b2', placeholder: 'e.g. 0.7' },
+              { key: 'minDailyR', label: 'Min Daily R', placeholder: 'e.g. 0.2' },
+              { key: 'minAvgR', label: 'Min Avg R', placeholder: 'e.g. 0.1' },
+            ].map((f) => (
+              <div key={f.key}>
+                <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>{f.label}</label>
+                <input
+                  className="w-full px-2 py-1.5 rounded text-xs font-mono"
+                  style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                  placeholder={f.placeholder}
+                  value={local[f.key as keyof FilterConfig]}
+                  onChange={(e) => setLocal({ ...local, [f.key]: e.target.value })}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Trade Qualification Filter */}
+        <div>
+          <label className="text-xs block mb-1.5" style={{ color: 'var(--text-secondary)' }}>Trade Qualification</label>
+          <select
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            value={local.tqFilter || 'None'}
+            onChange={(e) => setLocal({ ...local, tqFilter: e.target.value })}
+          >
+            <option value="None">None (all trades count)</option>
+            <option value="ttp">Trade The Pool — $50k</option>
+            <option value="ftmo">FTMO — $100k Challenge</option>
+            <option value="topstep">Topstep — $150k Combine</option>
+            <option value="custom">My Custom Rules</option>
+          </select>
+          <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            Applies trade qualification rules from the selected requirement set. See Portfolio Requirements for details on how each rule affects wins, losses, or all trades.
+          </p>
+        </div>
+
+        <button
+          onClick={() => { onApply(local); onClose(); }}
+          className="w-full py-2.5 rounded-lg text-sm font-medium"
+          style={{ background: 'var(--accent)', color: 'white' }}
+        >
+          Apply Filters
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Analysis Toolbar (Search + Analyze + Filter button)
+// ---------------------------------------------------------------------------
+
+function AnalysisToolbar({ search, onSearch, onAnalyze, onFilterClick, placeholder }: {
+  search: string; onSearch: (v: string) => void; onAnalyze: () => void; onFilterClick: () => void; placeholder: string;
+}) {
+  return (
+    <div className="flex gap-2 mb-3">
+      <div className="flex-1">
+        <TextInput value={search} onChange={onSearch} placeholder={placeholder} />
+      </div>
+      <PrimaryButton onClick={onAnalyze}>Analyze</PrimaryButton>
+      <button
+        onClick={onFilterClick}
+        className="px-2.5 py-2 rounded-lg transition-colors"
+        style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+        title="Filter & Sort"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <line x1="4" y1="6" x2="20" y2="6" />
+          <line x1="7" y1="12" x2="17" y2="12" />
+          <line x1="10" y1="18" x2="14" y2="18" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
+
+export interface BacktestResult {
+  trades: TradeRow[];
+  kpis: KPIs;
+  equityCurve: { trade_number: number; timestamp: string; cumulative_r: number }[];
+  chartData?: any[];
+  totalBars: number;
+  dataSource: string;
+}
+
+export interface StrategyBuilderV5Props {
+  /** Real backtest result from API (overrides mock data when present) */
+  backtestResult?: BacktestResult | null;
+  /** Called when user clicks "Run Backtest" */
+  onRunBacktest?: (config: Record<string, any>) => void;
+  /** Called when user clicks "Save Strategy" */
+  onSave?: (strategy: Record<string, any>) => void;
+  /** Whether a backtest is currently running */
+  isBacktesting?: boolean;
+  /** Real stop loss packs from API */
+  stopPacks?: RiskPack[];
+  /** Real target packs from API */
+  targetPacks?: RiskPack[];
+}
+
 export default function StrategyBuilderPage() {
   const router = useRouter();
-  const bt = useRunBacktest();
-  const createMut = useCreateStrategy();
-  const { data: rmPacks } = useRiskManagementPacks();
-  const { data: confluenceGroups } = useConfluenceGroups();
 
-  const [method, setMethod] = useState<'standard' | 'webhook' | 'scanner'>('standard');
-  const [symbol, setSymbol] = useState('');
-  const [asset, setAsset] = useState('Equity');
-  const [tf, setTf] = useState('5Min');
-  const [dir, setDir] = useState<'LONG' | 'SHORT'>('LONG');
-  const [sess, setSess] = useState('RTH');
-  const [days, setDays] = useState(30);
-  const [name, setName] = useState('');
-  const [entry, setEntry] = useState('');
-  const [exitTriggers, setExitTriggers] = useState<string[]>([]);
-  const [confSelected, setConfSelected] = useState<Set<string>>(new Set());
-  const [stopId, setStopId] = useState('');
-  const [tpId, setTpId] = useState('');
-  const [tab, setTab] = useState('Entry');
-  const [exitD, setExitD] = useState(1);
-  const [tfD, setTfD] = useState(1);
-  const [genD, setGenD] = useState(1);
-  const [expanded, setExpanded] = useState(false);
+  // ---- API Hooks ----
+  const backtestMut = useRunBacktest();
+  const createMut = useCreateStrategy();
+  const { data: apiEntryTriggers } = useConfluenceTriggers('LONG');
+  const { data: apiExitTriggers } = useConfluenceTriggers('EXIT');
+  const { data: apiConfluenceGroups } = useConfluenceGroups();
+  const { data: apiGeneralPacks } = useGeneralPacks();
+  const { data: apiRmPacks } = useRiskManagementPacks();
+
+  // Derive trigger/pack/condition lists from API data
+  const API_TRIGGERS: TriggerDef[] = useMemo(() => {
+    if (!apiEntryTriggers && !apiExitTriggers) return API_TRIGGERS;
+    const triggers: TriggerDef[] = [];
+    for (const [id, name] of Object.entries(apiEntryTriggers || {})) {
+      triggers.push({ id, name: String(name), execType: 'C', pack: id.split('_')[0] || 'unknown' });
+    }
+    for (const [id, name] of Object.entries(apiExitTriggers || {})) {
+      if (!triggers.find(t => t.id === id)) {
+        triggers.push({ id, name: String(name), execType: 'C', pack: id.split('_')[0] || 'unknown' });
+      }
+    }
+    return triggers.length > 0 ? triggers : API_TRIGGERS;
+  }, [apiEntryTriggers, apiExitTriggers]);
+
+  const API_STOP_PACKS: RiskPack[] = useMemo(() => {
+    if (!apiRmPacks) return API_STOP_PACKS;
+    return apiRmPacks.map((p: any) => ({
+      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
+      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+    }));
+  }, [apiRmPacks]);
+
+  const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
+    if (!apiRmPacks) return API_TARGET_PACKS;
+    return apiRmPacks.filter((p: any) => p.base_template === 'rr_ratio' || p.base_template?.includes('target'))
+      .map((p: any) => ({
+        id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
+        summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+      }));
+  }, [apiRmPacks]);
+
+  const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
+    if (!apiConfluenceGroups) return API_CONFLUENCE_CONDITIONS;
+    const conds: ConfluenceCondition[] = [];
+    for (const g of apiConfluenceGroups) {
+      // Generate conditions from group outputs (e.g., "1M-EMA_STACK_DEFAULT-SML")
+      conds.push({ id: `1M-${g.id.toUpperCase()}-BULL`, label: `${g.base_template} (${g.version}) — Bullish`, pack: g.base_template });
+      conds.push({ id: `1M-${g.id.toUpperCase()}-BEAR`, label: `${g.base_template} (${g.version}) — Bearish`, pack: g.base_template });
+    }
+    return conds.length > 0 ? conds : API_CONFLUENCE_CONDITIONS;
+  }, [apiConfluenceGroups]);
+
+  const API_GENERAL_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
+    if (!apiGeneralPacks) return API_GENERAL_CONDITIONS;
+    return apiGeneralPacks.map((p: any) => ({
+      id: `GEN-${p.id.toUpperCase()}-IN`,
+      label: `${p.base_template} (${p.version}) — In Window`,
+      pack: p.base_template,
+    }));
+  }, [apiGeneralPacks]);
+
+  // Backtest result from API mutation
+  const backtestResult: BacktestResult | null = useMemo(() => {
+    if (!backtestMut.data) return null;
+    const d = backtestMut.data;
+    return {
+      trades: (d.trades || []).map((t: any, i: number) => ({
+        id: i + 1,
+        entryTime: t.entry_time ? new Date(t.entry_time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+        exitTime: t.exit_time ? new Date(t.exit_time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+        direction: direction as 'LONG' | 'SHORT',
+        entryPrice: t.entry_price || 0, exitPrice: t.exit_price || 0,
+        rMultiple: t.r_multiple || 0, execType: t.exec_type || 'C',
+        exitReason: t.exit_reason || '', confluences: '',
+      })),
+      kpis: {
+        winRate: d.kpis?.win_rate ?? 0, profitFactor: d.kpis?.profit_factor ?? 0,
+        dailyR: d.kpis?.daily_r ?? 0, totalTrades: d.kpis?.total_trades ?? 0,
+        avgWin: d.secondary_kpis?.avg_win_r ?? 0, avgLoss: d.secondary_kpis?.avg_loss_r ?? 0,
+        maxDrawdown: d.kpis?.max_r_drawdown ?? 0, recoveryFactor: d.secondary_kpis?.recovery_factor ?? 0,
+        sharpeRatio: d.secondary_kpis?.sharpe_ratio ?? 0, expectancy: d.kpis?.avg_r ?? 0,
+        totalR: d.kpis?.total_r ?? 0, avgR: d.kpis?.avg_r ?? 0,
+        rSquared: d.kpis?.r_squared ?? 0, maxRDrawdown: d.kpis?.max_r_drawdown ?? 0,
+      },
+      equityCurve: d.equity_curve || [],
+      chartData: d.chart_data, totalBars: d.total_bars || 0, dataSource: d.data_source || '',
+    };
+  }, [backtestMut.data]);
+
+  const isBacktesting = backtestMut.isPending;
+  const onRunBacktest = useCallback((config: Record<string, any>) => {
+    backtestMut.mutate({
+      symbol: config.symbol, timeframe: config.timeframe, direction: config.direction,
+      days: config.days, session: config.session,
+      entry_trigger_confluence_id: config.entry_trigger_confluence_id,
+      exit_trigger_confluence_ids: config.exit_trigger_confluence_ids || [],
+      confluence: config.confluence || [],
+      stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
+      include_chart_data: true,
+    });
+  }, [backtestMut]);
+
+  const onSave = useCallback((strategy: Record<string, any>) => {
+    createMut.mutate(strategy, { onSuccess: () => router.push('/strategies') });
+  }, [createMut, router]);
+
+  // ---- Config State ----
+  const [symbol, setSymbol] = useState('SPY');
+  const [strategyMethod, setStrategyMethod] = useState<'standard' | 'webhook' | 'scanner'>('standard');
+  const [assetType, setAssetType] = useState('Equity');
+  const [direction, setDirection] = useState('LONG');
+  const [timeframe, setTimeframe] = useState('5Min');
+  const [session, setSession] = useState('RTH');
+  const [lookbackMode, setLookbackMode] = useState('Days');
+  const [lookbackDays, setLookbackDays] = useState(30);
+  const [lookbackBars, setLookbackBars] = useState(1000);
+  const [strategyName, setStrategyName] = useState('SPY LONG - 1');
+
+  // ---- Entry/Exit ----
+  const [entryTrigger, setEntryTrigger] = useState('ema-price-cross-up');
+  const [exitTriggers, setExitTriggers] = useState<string[]>(['ema-price-cross-down']);
   const [triggerSearch, setTriggerSearch] = useState('');
 
-  // Fetch triggers based on direction
-  const { data: entryTriggers } = useConfluenceTriggers(dir);
-  const { data: exitTriggerMap } = useConfluenceTriggers('EXIT');
+  // ---- Stop Loss (pack selection) ----
+  const [selectedStopPack, setSelectedStopPack] = useState('atr-default');
 
-  const allPacks = rmPacks || [];
-  const entryTriggerMap = entryTriggers || {};
-  const exitTriggersAvailable = exitTriggerMap || {};
+  // ---- Target (pack selection) ----
+  const [selectedTargetPack, setSelectedTargetPack] = useState('rr-default');
 
-  const estBars = useMemo(() => {
-    const bpd: Record<string, number> = { '1Min': 390, '2Min': 195, '3Min': 130, '5Min': 78, '10Min': 39, '15Min': 26, '30Min': 13, '1Hour': 7, '4Hour': 2, '1Day': 1 };
-    return Math.round(days * (bpd[tf] || 78));
-  }, [days, tf]);
+  // ---- Confluence ----
+  const [selectedConditions, setSelectedConditions] = useState<Set<string>>(
+    new Set(['5M-EMA_STACK-BULL', '1D-MACD_LINE-BULL'])
+  );
+  const [selectedGenerals, setSelectedGenerals] = useState<Set<string>>(new Set());
+  const [confluenceModalOpen, setConfluenceModalOpen] = useState(false);
+  const [generalModalOpen, setGeneralModalOpen] = useState(false);
+  // ---- Depth selectors per tab ----
+  const [entryDepth] = useState(1);
+  const [exitDepth, setExitDepth] = useState(1);
+  const [tfDepth, setTfDepth] = useState(1);
+  const [generalDepth, setGeneralDepth] = useState(1);
+  const [stopDepth] = useState(1);
+  const [targetDepth] = useState(1);
 
-  const canRun = symbol.trim() && entry.trim();
-  const result = bt.data;
-  const kpis = result?.kpis || {};
-  const ran = !!result;
+  // ---- Filter & Sort ----
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [activeAnalysisTab, setActiveAnalysisTab] = useState('Entry');
+  const [filters, setFilters] = useState<FilterConfig>(defaultFilters);
 
-  const confPills = useMemo(() => Array.from(confSelected), [confSelected]);
+  // ---- Backtest State ----
+  const [backtestRan, setBacktestRan] = useState(false);
+  const [configExpanded, setConfigExpanded] = useState(false);
 
-  const run = useCallback(() => {
-    if (!canRun) return;
-    bt.mutate({
-      symbol: symbol.trim().toUpperCase(), timeframe: tf, direction: dir, days, session: sess,
-      entry_trigger_confluence_id: entry.trim(),
-      exit_trigger_confluence_ids: exitTriggers,
-      confluence: confPills,
-      stop_loss_pack_id: stopId || undefined, take_profit_pack_id: tpId || undefined, include_chart_data: false,
-    } as BacktestRequest);
-  }, [canRun, symbol, tf, dir, days, sess, entry, exitTriggers, confPills, stopId, tpId, bt]);
+  // ---- Analysis State ----
+  const [entryAnalysisRan, setEntryAnalysisRan] = useState(false);
+  const [exitAnalysisRan, setExitAnalysisRan] = useState(false);
+  const [analyzerSearch, setAnalyzerSearch] = useState('');
 
-  const save = useCallback(() => {
-    if (!result) return;
-    createMut.mutate({
-      name: name.trim() || `${symbol.toUpperCase()} ${dir} ${tf}`,
-      symbol: symbol.trim().toUpperCase(), timeframe: tf, direction: dir, trading_session: sess, data_days: days,
-      entry_trigger_confluence_id: entry.trim(),
-      exit_trigger_confluence_ids: exitTriggers,
-      confluence: confPills,
-      stop_loss_pack_id: stopId || undefined, take_profit_pack_id: tpId || undefined, kpis: result.kpis,
-    }, { onSuccess: () => router.push('/strategies') });
-  }, [result, name, symbol, tf, dir, sess, days, entry, exitTriggers, confPills, stopId, tpId, createMut, router]);
+  // Compute derived values
+  const estimatedBars = useMemo(() => {
+    const barsPerDay = timeframe === '1Min' ? 390 : timeframe === '5Min' ? 78 : timeframe === '15Min' ? 26 : timeframe === '1H' ? 7 : timeframe === '4H' ? 2 : 1;
+    const sessionMult = session === 'RTH' ? 1 : session === 'Extended' ? 2.4 : session === '24/7' ? 3.7 : 1.5;
+    if (lookbackMode === 'Bars/Candles') return lookbackBars;
+    return Math.round(lookbackDays * barsPerDay * sessionMult);
+  }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);
+
+  // Use API packs when provided, fall back to mocks
+  const activeStopPacks = API_STOP_PACKS;
+  const activeTargetPacks = API_TARGET_PACKS;
+
+  const entryDef = API_TRIGGERS.find((t) => t.id === entryTrigger);
+
+  const exitDefs = useMemo(
+    () => exitTriggers.map((eid) => API_TRIGGERS.find((t) => t.id === eid)).filter(Boolean) as TriggerDef[],
+    [exitTriggers]
+  );
+
+  // Handlers
+  const handleRunBacktest = useCallback(() => {
+    setBacktestRan(true);
+    if (onRunBacktest) {
+      onRunBacktest({
+        symbol, timeframe, direction, session,
+        days: lookbackDays,
+        lookback_mode: lookbackMode,
+        entry_trigger_confluence_id: entryTrigger,
+        exit_trigger_confluence_ids: exitTriggers,
+        confluence: Array.from(selectedConditions),
+        stop_loss_pack_id: selectedStopPack,
+        take_profit_pack_id: selectedTargetPack,
+      });
+    }
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack]);
 
   const handleToggleCondition = useCallback((id: string) => {
-    setConfSelected(prev => {
+    setSelectedConditions((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleToggleGeneral = useCallback((id: string) => {
+    setSelectedGenerals((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
 
   const handleRemoveExit = useCallback((idx: number) => {
-    setExitTriggers(prev => prev.filter((_, i) => i !== idx));
+    setExitTriggers((prev) => prev.filter((_, i) => i !== idx));
   }, []);
 
-  // Entry trigger display name
-  const entryName = entry ? (entryTriggerMap[entry] || entry) : '';
+  const allSelected = useMemo(
+    () => new Set(Array.from(selectedConditions).concat(Array.from(selectedGenerals))),
+    [selectedConditions, selectedGenerals]
+  );
+
+  // ---------------------------------------------------------------------------
+  // RENDER
+  // ---------------------------------------------------------------------------
 
   return (
     <div>
-      <PageHeader title="Strategy Builder" subtitle="Configure, backtest, and save a trading strategy" actions={
-        <span className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5" style={{ background: 'rgba(76,175,80,.15)', color: 'var(--green)' }}><span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />Live</span>
-      } />
-
-      {/* METHOD SELECTOR */}
+      {/* ================================================================= */}
+      {/* STRATEGY METHOD SELECTOR                                          */}
+      {/* ================================================================= */}
       <Card className="mb-4">
         <div className="flex items-center gap-3">
           <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Strategy Method:</span>
           <div className="flex gap-2">
-            {([{ id: 'standard' as const, l: 'Standard', ok: true }, { id: 'webhook' as const, l: 'Inbound Webhook', ok: false }, { id: 'scanner' as const, l: 'Scanner', ok: false }]).map(m => (
-              <button key={m.id} onClick={() => m.ok && setMethod(m.id)} className="px-4 py-2 rounded-lg text-sm font-medium relative" style={{ background: method === m.id ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'var(--bg-input)', color: method === m.id ? 'var(--accent)' : m.ok ? 'var(--text-primary)' : 'var(--text-muted)', border: method === m.id ? '1px solid var(--accent)' : '1px solid var(--border)', cursor: m.ok ? 'pointer' : 'not-allowed', opacity: m.ok ? 1 : 0.6 }}>
-                {m.l}{!m.ok && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Soon</span>}
+            {([
+              { id: 'standard' as const, label: 'Standard', desc: 'Ticker-specific backtesting and alerts', available: true },
+              { id: 'webhook' as const, label: 'Inbound Webhook', desc: 'Fires on incoming webhook signals', available: false },
+              { id: 'scanner' as const, label: 'Scanner', desc: 'Scans across a collection of tickers', available: false },
+            ]).map((method) => (
+              <button
+                key={method.id}
+                onClick={() => method.available && setStrategyMethod(method.id)}
+                className="px-4 py-2 rounded-lg text-sm font-medium transition-colors relative"
+                style={{
+                  background: strategyMethod === method.id ? 'var(--accent-muted)' : 'var(--bg-input)',
+                  color: strategyMethod === method.id ? 'var(--accent)' : method.available ? 'var(--text-primary)' : 'var(--text-muted)',
+                  border: strategyMethod === method.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  cursor: method.available ? 'pointer' : 'not-allowed',
+                  opacity: method.available ? 1 : 0.6,
+                }}
+                title={method.desc}
+              >
+                {method.label}
+                {!method.available && (
+                  <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                    Soon
+                  </span>
+                )}
               </button>
             ))}
           </div>
         </div>
       </Card>
 
-      {/* CONFIG BAR */}
+      {/* ================================================================= */}
+      {/* TOP ROW: Core config fields in a horizontal bar                   */}
+      {/* ================================================================= */}
       <Card className="mb-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-9 gap-3">
-          <div><Label>Asset</Label><select value={asset} onChange={e => { setAsset(e.target.value); if (e.target.value === 'Crypto') setSess('24/7'); else if (sess === '24/7') setSess('RTH'); }} style={iStyle}>{ASSET_TYPES.map(a => <option key={a}>{a}</option>)}</select></div>
-          <div><Label>Ticker</Label><input type="text" placeholder={asset === 'Crypto' ? 'BTC/USD' : 'NVDA'} value={symbol} onChange={e => setSymbol(e.target.value.toUpperCase())} style={iStyle} /></div>
-          <div><Label>Timeframe</Label><select value={tf} onChange={e => setTf(e.target.value)} style={iStyle}>{TIMEFRAMES.map(t => <option key={t}>{t}</option>)}</select></div>
-          <div><Label>Direction</Label><select value={dir} onChange={e => setDir(e.target.value as any)} style={iStyle}>{DIRECTIONS.map(d => <option key={d}>{d}</option>)}</select></div>
-          <div><Label>Session</Label>{asset === 'Crypto' ? <input style={{ ...iStyle, color: 'var(--text-muted)' }} value="24/7" disabled /> : <select value={sess} onChange={e => setSess(e.target.value)} style={iStyle}>{SESSIONS.map(s => <option key={s}>{s}</option>)}</select>}</div>
-          <div><Label>Days</Label><input type="number" min={1} max={365} value={days} onChange={e => setDays(+e.target.value)} style={iStyle} /></div>
-          <div className="xl:col-span-2"><Label>Name</Label><input type="text" placeholder={`${symbol || 'SPY'} ${dir} - 1`} value={name} onChange={e => setName(e.target.value)} style={iStyle} /></div>
-          <div className="flex items-end"><button className="w-full py-2 rounded-lg text-sm font-medium" style={{ background: symbol.trim() ? 'var(--accent)' : 'var(--bg-input)', color: symbol.trim() ? '#000' : 'var(--text-muted)', border: 'none', cursor: symbol.trim() ? 'pointer' : 'not-allowed' }} disabled={!symbol.trim() || bt.isPending} onClick={run}>{bt.isPending ? 'Running Backtest...' : ran ? 'Re-run Backtest' : 'Run Backtest'}</button></div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 gap-3">
+          {/* Asset Type */}
+          <div>
+            <SectionLabel>Asset</SectionLabel>
+            <SelectInput options={ASSET_TYPES} value={assetType} onChange={(v) => {
+              setAssetType(v);
+              if (v === 'Crypto') {
+                setSession('24/7');
+                if (symbol === 'SPY') setSymbol('BTC/USD');
+              } else {
+                setSession('RTH');
+                if (symbol === 'BTC/USD') setSymbol('SPY');
+              }
+            }} />
+          </div>
+
+          {/* Ticker */}
+          <div>
+            <SectionLabel>Ticker</SectionLabel>
+            <TextInput
+              value={symbol}
+              onChange={(v) => setSymbol(v.toUpperCase())}
+              placeholder={assetType === 'Crypto' ? 'BTC/USD' : 'SPY'}
+            />
+          </div>
+
+          {/* Timeframe */}
+          <div>
+            <SectionLabel>Timeframe</SectionLabel>
+            <SelectInput options={TIMEFRAMES} value={timeframe} onChange={setTimeframe} />
+          </div>
+
+          {/* Direction */}
+          <div>
+            <SectionLabel>Direction</SectionLabel>
+            <SelectInput options={DIRECTIONS} value={direction} onChange={setDirection} />
+          </div>
+
+          {/* Session */}
+          <div>
+            <SectionLabel>Session</SectionLabel>
+            {assetType === 'Crypto' ? (
+              <input
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text-muted)',
+                }}
+                value="24/7"
+                disabled
+              />
+            ) : (
+              <SelectInput options={SESSIONS} value={session} onChange={setSession} />
+            )}
+          </div>
+
+          {/* Lookback Mode */}
+          <div>
+            <SectionLabel>Lookback</SectionLabel>
+            <SelectInput options={LOOKBACK_MODES} value={lookbackMode} onChange={setLookbackMode} />
+          </div>
+
+          {/* Lookback Value */}
+          <div>
+            <SectionLabel>{lookbackMode === 'Bars/Candles' ? 'Bars' : 'Days'}</SectionLabel>
+            <NumberInput
+              value={lookbackMode === 'Bars/Candles' ? lookbackBars : lookbackDays}
+              onChange={lookbackMode === 'Bars/Candles' ? setLookbackBars : setLookbackDays}
+              min={lookbackMode === 'Bars/Candles' ? 100 : 7}
+              max={lookbackMode === 'Bars/Candles' ? 500000 : 1825}
+              step={lookbackMode === 'Bars/Candles' ? 100 : 7}
+            />
+          </div>
+
+          {/* Strategy Name */}
+          <div className="xl:col-span-2">
+            <SectionLabel>Name</SectionLabel>
+            <TextInput value={strategyName} onChange={setStrategyName} />
+          </div>
+
+          {/* Load Data */}
+          <div className="flex items-end">
+            <PrimaryButton fullWidth onClick={handleRunBacktest}>
+              {backtestRan ? 'Reload' : 'Load Data'}
+            </PrimaryButton>
+          </div>
         </div>
+        {/* Status line */}
         <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>~{estBars.toLocaleString()} bars</span>
-          {estBars > 200000 && <span className="text-xs" style={{ color: 'var(--red)' }}>Very large dataset</span>}
-          {estBars > 50000 && estBars <= 200000 && <span className="text-xs" style={{ color: 'var(--orange, #FF9800)' }}>Large dataset</span>}
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            ~{estimatedBars.toLocaleString()} bars
+          </span>
+          {estimatedBars > 200000 && (
+            <span className="text-xs" style={{ color: 'var(--red)' }}>
+              Very large dataset -- may be slow
+            </span>
+          )}
+          {estimatedBars > 50000 && estimatedBars <= 200000 && (
+            <span className="text-xs" style={{ color: 'var(--orange)' }}>
+              Large dataset
+            </span>
+          )}
         </div>
       </Card>
 
-      {/* CONFIG EXPANDER */}
+      {/* ================================================================= */}
+      {/* STRATEGY CONFIG EXPANDER: Entry, Exit, Stop, Target               */}
+      {/* ================================================================= */}
       <Card className="mb-4">
-        <button className="w-full flex items-center justify-between text-sm font-medium" style={{ color: 'var(--text-secondary)' }} onClick={() => setExpanded(!expanded)}>
+        <button
+          className="w-full flex items-center justify-between text-sm font-medium"
+          style={{ color: 'var(--text-secondary)' }}
+          onClick={() => setConfigExpanded(!configExpanded)}
+        >
           <div className="flex items-center gap-3">
             <span>Strategy Config</span>
-            {!expanded && entry && (
+            {/* Quick summary when collapsed */}
+            {!configExpanded && entryDef && (
               <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                {entryName} | {exitTriggers.length} exit(s) | {confPills.length} cond | Stop: {stopId || 'None'} | TP: {tpId || 'None'}
+                <ExecBadge type={entryDef.execType} />{' '}
+                {entryDef.name} {'\u2192'}{' '}
+                {exitDefs.map((e) => e.name).join(' / ') || 'No exit'}{' '}
+                | Stop: {API_STOP_PACKS.find((p) => p.id === selectedStopPack)?.summary || 'None'}{' '}
+                | Target: {API_TARGET_PACKS.find((p) => p.id === selectedTargetPack)?.summary || 'None'}
               </span>
             )}
           </div>
-          <span className="text-xs" style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>v</span>
+          <span
+            className="text-xs transition-transform"
+            style={{
+              color: 'var(--text-muted)',
+              transform: configExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+            }}
+          >
+            v
+          </span>
         </button>
-        {expanded && (
+
+        {configExpanded && (
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Entry Trigger — grouped list from API */}
+            {/* Entry Trigger */}
             <div>
-              <Label>Entry Trigger</Label>
-              <input
-                type="text"
-                placeholder="Search triggers..."
+              <SectionLabel>Entry Trigger</SectionLabel>
+              <TextInput
                 value={triggerSearch}
-                onChange={e => setTriggerSearch(e.target.value)}
-                style={{ ...iStyle, marginBottom: 8 }}
+                onChange={setTriggerSearch}
+                placeholder="Search triggers..."
               />
-              {Object.keys(entryTriggerMap).length > 0 ? (
+              <div className="mt-2">
                 <TriggerGroupedList
-                  triggers={entryTriggerMap}
+                  triggers={API_TRIGGERS.filter((t) => {
+                    // Show direction-appropriate triggers
+                    if (direction === 'LONG') {
+                      return !t.name.toLowerCase().includes('down') &&
+                             !t.name.toLowerCase().includes('bear') &&
+                             !t.name.toLowerCase().includes('sell') &&
+                             !t.name.toLowerCase().includes('short') &&
+                             !t.name.toLowerCase().includes('overbought');
+                    }
+                    return !t.name.toLowerCase().includes('up') &&
+                           !t.name.toLowerCase().includes('bull') &&
+                           !t.name.toLowerCase().includes('buy') &&
+                           !t.name.toLowerCase().includes('long') &&
+                           !t.name.toLowerCase().includes('oversold');
+                  })}
                   searchQuery={triggerSearch}
-                  selectedId={entry}
-                  onSelect={setEntry}
+                  selectedId={entryTrigger}
+                  onSelect={setEntryTrigger}
                 />
-              ) : (
-                <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
-                  No entry triggers available. Create confluence groups first.
-                </p>
-              )}
+              </div>
             </div>
 
-            {/* Exit Triggers — multi-select list from API */}
+            {/* Exit Trigger(s) */}
             <div>
-              <Label>
+              <SectionLabel>
                 Exit Trigger(s){' '}
                 <span style={{ color: 'var(--text-muted)' }}>({exitTriggers.length}/3)</span>
-              </Label>
+              </SectionLabel>
               {exitTriggers.length > 0 && (
                 <div className="space-y-1 mb-2">
-                  {exitTriggers.map((eid, idx) => (
-                    <div key={eid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--accent-muted, rgba(0,255,136,.1))', border: '1px solid var(--border)' }}>
-                      <span className="flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
-                        {exitTriggersAvailable[eid] || eid}
-                      </span>
-                      <button className="text-[10px] hover:opacity-70" style={{ color: 'var(--text-muted)' }} onClick={() => handleRemoveExit(idx)}>x</button>
-                    </div>
-                  ))}
+                  {exitTriggers.map((eid, idx) => {
+                    const eDef = API_TRIGGERS.find((t) => t.id === eid);
+                    return (
+                      <div
+                        key={eid}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs"
+                        style={{
+                          background: 'var(--accent-muted)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        {eDef && <ExecBadge type={eDef.execType} />}
+                        <span className="flex-1" style={{ color: 'var(--text-secondary)' }}>
+                          {eDef?.name || eid}
+                        </span>
+                        <button
+                          className="text-[10px] hover:opacity-70"
+                          style={{ color: 'var(--text-muted)' }}
+                          onClick={() => handleRemoveExit(idx)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-              {Object.keys(exitTriggersAvailable).length > 0 ? (
+              <div className="mt-1">
                 <TriggerGroupedList
-                  triggers={exitTriggersAvailable}
+                  triggers={API_TRIGGERS.filter((t) => {
+                    // Show direction-appropriate exit triggers
+                    if (direction === 'LONG') {
+                      return !t.name.toLowerCase().includes('up') &&
+                             !t.name.toLowerCase().includes('bull') &&
+                             !t.name.toLowerCase().includes('buy') &&
+                             !t.name.toLowerCase().includes('long') &&
+                             !t.name.toLowerCase().includes('oversold');
+                    }
+                    return !t.name.toLowerCase().includes('down') &&
+                           !t.name.toLowerCase().includes('bear') &&
+                           !t.name.toLowerCase().includes('sell') &&
+                           !t.name.toLowerCase().includes('short') &&
+                           !t.name.toLowerCase().includes('overbought');
+                  })}
                   searchQuery=""
                   selectedId=""
                   onSelect={(id) => {
                     if (exitTriggers.length < 3 && !exitTriggers.includes(id)) {
-                      setExitTriggers(prev => [...prev, id]);
+                      setExitTriggers((prev) => [...prev, id]);
                     }
                   }}
                 />
-              ) : (
-                <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
-                  No exit triggers available.
-                </p>
-              )}
+              </div>
             </div>
 
-            {/* Stop Loss Pack */}
-            <div><Label>Stop Loss Pack</Label><PackList packs={allPacks} selectedId={stopId} onSelect={setStopId} /></div>
+            {/* Stop Loss — pack list (limit 1) */}
+            <div>
+              <SectionLabel>Stop Loss Pack</SectionLabel>
+              <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
+                {API_STOP_PACKS.map((p) => (
+                  <button
+                    key={p.id}
+                    className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                    style={{
+                      background: p.id === selectedStopPack ? 'var(--accent-muted)' : 'transparent',
+                      color: p.id === selectedStopPack ? 'var(--accent)' : 'var(--text-primary)',
+                      border: p.id === selectedStopPack ? '1px solid var(--accent)' : '1px solid transparent',
+                    }}
+                    onClick={() => setSelectedStopPack(p.id)}
+                  >
+                    <span className="flex-1 truncate">{p.name} ({p.version})</span>
+                    <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                <a href="/confluence-packs/stop-loss" className="underline" style={{ color: 'var(--accent)' }}>Manage stop loss packs</a>
+              </p>
+            </div>
 
-            {/* Take Profit Pack */}
-            <div><Label>Take Profit Pack</Label><PackList packs={allPacks} selectedId={tpId} onSelect={setTpId} /></div>
+            {/* Take Profit — pack list (limit 1) */}
+            <div>
+              <SectionLabel>Take Profit Pack</SectionLabel>
+              <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
+                {API_TARGET_PACKS.map((p) => (
+                  <button
+                    key={p.id}
+                    className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                    style={{
+                      background: p.id === selectedTargetPack ? 'var(--accent-muted)' : 'transparent',
+                      color: p.id === selectedTargetPack ? 'var(--accent)' : 'var(--text-primary)',
+                      border: p.id === selectedTargetPack ? '1px solid var(--accent)' : '1px solid transparent',
+                    }}
+                    onClick={() => setSelectedTargetPack(p.id)}
+                  >
+                    <span className="flex-1 truncate">{p.name} ({p.version})</span>
+                    <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                <a href="/confluence-packs/take-profit" className="underline" style={{ color: 'var(--accent)' }}>Manage take profit packs</a>
+              </p>
+            </div>
           </div>
         )}
       </Card>
 
-      {/* CONFLUENCE CONDITIONS — checkable pills from confluence groups */}
-      {expanded && <Card className="mb-4">
-        <Label>Confluence Conditions</Label>
-        {confPills.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {confPills.map(p => (
-              <Pill key={p} label={confluenceGroups?.find((g: any) => g.id === p)?.base_template || p} onRemove={() => handleToggleCondition(p)} />
-            ))}
-            <button className="text-xs px-2 py-1 rounded" style={{ color: 'var(--red)', background: 'rgba(244,67,54,.15)' }} onClick={() => setConfSelected(new Set())}>Clear All</button>
+      {/* ================================================================= */}
+      {/* PRE-BACKTEST PROMPT                                               */}
+      {/* ================================================================= */}
+      {!backtestRan && (
+        <Card className="text-center py-12">
+          <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+            Select your settings above, then click <strong>Load Data</strong> to begin analysis.
+          </p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {symbol} | {direction} | {timeframe} | ~{estimatedBars.toLocaleString()} bars
+          </p>
+        </Card>
+      )}
+
+      {/* ================================================================= */}
+      {/* POST-BACKTEST: KPIs, Charts, Analysis Tabs                        */}
+      {/* ================================================================= */}
+      {backtestRan && (
+        <>
+          {/* Strategy Summary Header */}
+          <div className="mb-4">
+            <h2 className="text-xl font-bold">{strategyName}</h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {symbol} | {direction} |{' '}
+              {entryDef ? (
+                <><ExecBadge type={entryDef.execType} /> {entryDef.name}</>
+              ) : '?'}{' '}
+              {'\u2192'} {exitDefs.map((e) => e.name).join(' / ') || '?'}
+            </p>
           </div>
-        )}
-        <ConfluenceConditionPicker
-          groups={confluenceGroups || []}
-          selected={confSelected}
-          onToggle={handleToggleCondition}
-        />
-      </Card>}
 
-      {/* PRE-BACKTEST */}
-      {!ran && !bt.isError && <Card className="text-center py-12">
-        <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>Select settings above, then click <strong>Load Data</strong> to begin.</p>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{symbol || 'TICKER'} | {dir} | {tf} | ~{estBars.toLocaleString()} bars</p>
-      </Card>}
+          {/* KPIs */}
+          <KPIDashboard kpis={backtestResult?.kpis ?? MOCK_KPIS} backtestRan={backtestRan || !!backtestResult} />
 
-      {bt.isError && <Card className="mb-4"><div className="text-center py-8" style={{ color: 'var(--red)' }}>Backtest failed.<p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>{(bt.error as any)?.message || 'Unknown error'}</p></div></Card>}
-
-      {/* POST-BACKTEST */}
-      {ran && <>
-        {/* KPI Dashboard: 2 rows */}
-        <div className="space-y-3 mb-4">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
-            <MetricCard label="Trades" value={kpis.total_trades != null ? String(kpis.total_trades) : '--'} />
-            <MetricCard label="Win Rate" value={kpis.win_rate != null ? `${kpis.win_rate.toFixed(1)}%` : '--'} positive={kpis.win_rate > 50} />
-            <MetricCard label="Profit Factor" value={kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--'} positive={kpis.profit_factor > 1} />
-            <MetricCard label="Avg R" value={kpi(kpis.avg_r)} positive={kpis.avg_r > 0} />
-            <MetricCard label="Total R" value={kpi(kpis.total_r)} positive={kpis.total_r > 0} />
-            <MetricCard label="Daily R" value={kpi(kpis.daily_r)} positive={kpis.daily_r > 0} />
-            <MetricCard label="R-Squared" value={kpis.r_squared != null ? kpis.r_squared.toFixed(2) : '--'} positive={kpis.r_squared > 0.7} />
-            <MetricCard label="Max R DD" value={kpis.max_r_drawdown != null ? `${kpis.max_r_drawdown.toFixed(1)}R` : '--'} />
+          {/* Optimizable Variables */}
+          <div className="mt-4">
+            <OptimizableVariables
+              entryTrigger={entryTrigger}
+              exitTriggers={exitTriggers}
+              selectedConditions={selectedConditions}
+              generalConditions={selectedGenerals}
+              selectedStopPack={selectedStopPack}
+              selectedTargetPack={selectedTargetPack}
+              allTriggers={API_TRIGGERS}
+              allConditions={API_CONFLUENCE_CONDITIONS}
+              allGeneralConditions={API_GENERAL_CONDITIONS}
+              onRemoveCondition={(id) => handleToggleCondition(id)}
+              onRemoveGeneral={(id) => handleToggleGeneral(id)}
+              onRemoveExit={handleRemoveExit}
+            />
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-            <MetricCard label="Avg Win" value={kpi(result?.secondary_kpis?.avg_win_r)} positive />
-            <MetricCard label="Avg Loss" value={kpi(result?.secondary_kpis?.avg_loss_r)} />
-            <MetricCard label="Max DD" value={result?.secondary_kpis?.max_drawdown != null ? `${result.secondary_kpis.max_drawdown.toFixed(1)}%` : '--'} />
-            <MetricCard label="Recovery" value={result?.secondary_kpis?.recovery_factor != null ? result.secondary_kpis.recovery_factor.toFixed(2) : '--'} positive={result?.secondary_kpis?.recovery_factor > 2} />
-            <MetricCard label="Sharpe" value={result?.secondary_kpis?.sharpe_ratio != null ? result.secondary_kpis.sharpe_ratio.toFixed(2) : '--'} positive={result?.secondary_kpis?.sharpe_ratio > 1} />
-            <MetricCard label="Data" value={result?.data_source || '--'} />
-          </div>
-        </div>
 
-        {/* SYMMETRIC 2-COL: Charts+Trades | Analysis+Advanced */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* LEFT */}
-          <div className="space-y-4">
-            <div style={{ height: 620 }}>
+          {/* Main Content: Charts + Trade History (left) | Analysis Tabs + Advanced Analysis (right) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+            {/* =========================================== */}
+            {/* LEFT: Charts + Trade History                */}
+            {/* =========================================== */}
+            <div className="space-y-4">
+              <div style={{ height: 620 }}>
               <Card className="h-full flex flex-col">
                 <TabBar tabs={['Equity Curve', 'Price Chart']}>
-                  {(t) => t === 'Equity Curve' ? (
-                    <div className="flex-1">
-                      {result?.equity_curve?.length > 0 ? (
-                        <div className="rounded-lg overflow-hidden" style={{ background: 'var(--bg-input)', height: 500 }}>
-                          <svg width="100%" height="100%" viewBox={`0 0 ${result.equity_curve.length} 100`} preserveAspectRatio="none">
-                            {(() => { const d = result.equity_curve.map((p: any) => p.cumulative_r); const mn = Math.min(...d); const mx = Math.max(...d); const r = mx - mn || 1; return <polyline points={d.map((v: number, i: number) => `${i},${100 - ((v - mn) / r) * 90 - 5}`).join(' ')} fill="none" stroke="var(--accent)" strokeWidth="1" />; })()}
-                          </svg>
+                  {(tab) =>
+                    tab === 'Equity Curve' ? (
+                      <div className="flex-1">
+                        <ChartPlaceholder
+                          label="Equity curve -- cumulative R over time with high-water mark"
+                          height={500}
+                        />
+                        <div className="mt-2 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <span>
+                            <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: '#2196F3' }} />
+                            Equity
+                          </span>
+                          <span>
+                            <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: 'green', opacity: 0.5 }} />
+                            High Water Mark
+                          </span>
                         </div>
-                      ) : <ChartPlaceholder label="Equity curve -- cumulative R over time" height={500} />}
-                      <div className="mt-2 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
-                        <span><span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: 'var(--accent)' }} />Equity</span>
-                        <span><span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: 'green', opacity: .5 }} />HWM</span>
                       </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <span className="text-xs mb-2 block" style={{ color: 'var(--text-muted)' }}>{result?.trades?.length || 0} trades on {symbol.toUpperCase()} ({dir})</span>
-                      <ChartPlaceholder label="OHLC chart with indicators + trade markers" height={500} />
-                    </div>
-                  )}
+                    ) : (
+                      <div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {MOCK_TRADES.length} trades on {symbol} ({direction})
+                          </span>
+                        </div>
+                        <ChartPlaceholder
+                          label="OHLC candlestick chart with indicator overlays + trade entry/exit markers"
+                          height={500}
+                        />
+                      </div>
+                    )
+                  }
                 </TabBar>
               </Card>
-            </div>
-            <Card>
-              <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Trade History</h3>
-              {result?.trades?.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['#', 'Entry', 'Exit', 'Dir', 'Entry $', 'Exit $', 'P&L (R)', 'Exec', 'Reason'].map(h => <th key={h} className="px-2 py-2 font-medium text-left whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{h}</th>)}</tr></thead>
-                    <tbody>
-                      {result.trades.slice(0, 20).map((t: any, i: number) => (
-                        <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{i + 1}</td>
-                          <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{t.entry_time || '--'}</td>
-                          <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{t.exit_time || '--'}</td>
-                          <td className="px-2 py-2"><span style={{ color: t.direction === 'LONG' ? 'var(--green)' : 'var(--red)' }}>{t.direction}</span></td>
-                          <td className="px-2 py-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{t.entry_price?.toFixed(2) ?? '--'}</td>
-                          <td className="px-2 py-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{t.exit_price?.toFixed(2) ?? '--'}</td>
-                          <td className="px-2 py-2 font-mono font-medium"><span style={{ color: (t.r_multiple ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{t.r_multiple != null ? `${t.r_multiple >= 0 ? '+' : ''}${t.r_multiple.toFixed(2)}` : '--'}</span></td>
-                          <td className="px-2 py-2"><span className="text-xs font-mono px-1.5 py-0.5 rounded-full" style={{ color: '#2196F3', background: 'rgba(33,150,243,.12)' }}>[{t.exec_type || 'C'}]</span></td>
-                          <td className="px-2 py-2" style={{ color: 'var(--text-muted)' }}>{t.exit_reason || '--'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {result.trades.length > 20 && <p className="text-xs text-center py-2" style={{ color: 'var(--text-muted)' }}>Showing 20 of {result.trades.length}</p>}
-                </div>
-              ) : <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>No trades</p>}
-            </Card>
-          </div>
+              </div>
 
-          {/* RIGHT: Analysis Tabs + Advanced */}
-          <div className="space-y-4">
-            <div style={{ height: 620 }}>
+              {/* Trade History */}
+              <Card>
+                <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+                  Trade History
+                </h3>
+                <TradeHistoryTable trades={backtestResult?.trades ?? MOCK_TRADES} />
+              </Card>
+            </div>
+
+            {/* =========================================== */}
+            {/* RIGHT: Analysis Tabs + Advanced Analysis    */}
+            {/* =========================================== */}
+            <div className="space-y-4">
+              <div style={{ height: 620 }}>
               <Card className="h-full flex flex-col overflow-hidden">
                 <div className="flex-1 min-h-0 overflow-hidden">
-                  <TabBar tabs={ANALYSIS_TABS}>
-                    {(t) => {
-                      if (t !== tab) setTimeout(() => setTab(t), 0);
+                <TabBar tabs={['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit']}>
+                  {(tab) => {
+                    // Track active tab for pinned depth selector
+                    if (tab !== activeAnalysisTab) {
+                      // Use a timeout to avoid setState during render
+                      setTimeout(() => setActiveAnalysisTab(tab), 0);
+                    }
+
+                    // ---- ENTRY TAB ----
+                    if (tab === 'Entry') {
+                      return (
+                        <div>
+                          <AnalysisToolbar search={analyzerSearch} onSearch={setAnalyzerSearch} onAnalyze={() => setEntryAnalysisRan(true)} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search entry triggers..." />
+                          {entryDef && (
+                            <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                              Current: <ExecBadge type={entryDef.execType} />{' '}
+                              <strong>{entryDef.name}</strong>
+                            </p>
+                          )}
+                          {entryAnalysisRan ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {MOCK_ENTRY_ANALYSIS.filter((r) =>
+                                !analyzerSearch || r.triggerName.toLowerCase().includes(analyzerSearch.toLowerCase())
+                              ).map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.triggerId}
+                                  result={result}
+                                  isCurrent={result.triggerId === entryTrigger}
+                                  actionLabel="Replace"
+                                  onAction={() => setEntryTrigger(result.triggerId)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare all available entry triggers using the current strategy config.
+                            </p>
+                          )}
+
+                        </div>
+                      );
+                    }
+
+                    // ---- EXIT TAB ----
+                    if (tab === 'Exit') {
+                      return (
+                        <div>
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => setExitAnalysisRan(true)} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search exit triggers..." />
+                          {/* Active exit tags */}
+                          {exitTriggers.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {exitTriggers.map((eid, idx) => {
+                                const eDef = API_TRIGGERS.find((t) => t.id === eid);
+                                return (
+                                  <ConditionPill
+                                    key={eid}
+                                    label={eDef?.name || eid}
+                                    onRemove={() => handleRemoveExit(idx)}
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                          {exitAnalysisRan ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {MOCK_EXIT_ANALYSIS.map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.triggerId}
+                                  result={result}
+                                  isCurrent={exitTriggers.includes(result.triggerId)}
+                                  actionLabel={exitDepth >= 2 ? 'Replace' : 'Add'}
+                                  onAction={() => {
+                                    if (exitTriggers.length < 3 && !exitTriggers.includes(result.triggerId)) {
+                                      setExitTriggers((prev) => [...prev, result.triggerId]);
+                                    }
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare individual exit triggers against the current entry.
+                            </p>
+                          )}
+
+                        </div>
+                      );
+                    }
+
+                    // ---- TF CONDITIONS TAB ----
+                    if (tab === 'TF Conditions') {
+                      const tfSelected = Array.from(selectedConditions).sort();
                       return (
                         <div>
                           <div className="flex gap-2 mb-3">
-                            <input type="text" placeholder={`Search ${t.toLowerCase()}...`} style={{ ...iStyle, flex: 1 }} />
-                            <button className="px-3 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: '#000' }}>Analyze</button>
-                            <button className="px-2.5 py-2 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
+                            <div className="flex-1">
+                              <TextInput value="" onChange={() => {}} placeholder="Search indicators..." />
+                            </div>
+                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                            <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
                           </div>
-                          {(t === 'TF Conditions' && confPills.length > 0) && <div className="flex flex-wrap gap-1.5 mb-3">{confPills.map((p, i) => <Pill key={p} label={confluenceGroups?.find((g: any) => g.id === p)?.base_template || p} onRemove={() => handleToggleCondition(p)} />)}</div>}
-                          <div className="overflow-y-auto" style={{ maxHeight: 440 }}>
-                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>Click <strong>Analyze</strong> to compare {t.toLowerCase()} options using the current config.</p>
+                          {/* Active TF condition pills */}
+                          {tfSelected.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {tfSelected.map((cid) => {
+                                const cDef = API_CONFLUENCE_CONDITIONS.find((c) => c.id === cid);
+                                return (
+                                  <ConditionPill
+                                    key={cid}
+                                    label={cDef?.label || cid}
+                                    onRemove={() => handleToggleCondition(cid)}
+                                  />
+                                );
+                              })}
+                              <button
+                                className="text-xs px-2 py-1 rounded"
+                                style={{ color: 'var(--red)', background: 'var(--red-muted)' }}
+                                onClick={() => setSelectedConditions(new Set())}
+                              >
+                                Clear TF
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Confluence drill-down results (mock) */}
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                            {API_CONFLUENCE_CONDITIONS.map((cond) => {
+                              const isActive = selectedConditions.has(cond.id);
+                              return (
+                                <div
+                                  key={cond.id}
+                                  className="rounded-lg border p-3"
+                                  style={{
+                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
+                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                                  }}
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span
+                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
+                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
+                                    >
+                                      {cond.label}
+                                      {isActive && (
+                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
+                                          (active)
+                                        </span>
+                                      )}
+                                    </span>
+                                    {!isActive && (
+                                      <SecondaryButton onClick={() => handleToggleCondition(cond.id)}>
+                                        {tfDepth >= 2 ? 'Replace' : 'Add'}
+                                      </SecondaryButton>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-6 gap-2">
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(40 + Math.random() * 80)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.2 + Math.random() * 1.8).toFixed(1)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(48 + Math.random() * 18).toFixed(1)}%</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.05 + Math.random() * 0.4).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.1 + Math.random() * 0.5).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.6 + Math.random() * 0.3).toFixed(2)}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
+
+
                         </div>
                       );
-                    }}
-                  </TabBar>
+                    }
+
+                    // ---- GENERAL TAB ----
+                    if (tab === 'General') {
+                      const genSelected = Array.from(selectedGenerals).sort();
+                      return (
+                        <div>
+                          <div className="flex gap-2 mb-3">
+                            <div className="flex-1">
+                              <TextInput value="" onChange={() => {}} placeholder="Search general conditions..." />
+                            </div>
+                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                            <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
+                            </button>
+                          </div>
+                          {/* Active general pills */}
+                          {genSelected.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {genSelected.map((gid) => {
+                                const gDef = API_GENERAL_CONDITIONS.find((c) => c.id === gid);
+                                return (
+                                  <ConditionPill
+                                    key={gid}
+                                    label={gDef?.label || gid}
+                                    onRemove={() => handleToggleGeneral(gid)}
+                                  />
+                                );
+                              })}
+                              <button
+                                className="text-xs px-2 py-1 rounded"
+                                style={{ color: 'var(--red)', background: 'var(--red-muted)' }}
+                                onClick={() => setSelectedGenerals(new Set())}
+                              >
+                                Clear Gen
+                              </button>
+                            </div>
+                          )}
+
+                          {/* General condition drill-down */}
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                            {API_GENERAL_CONDITIONS.map((cond) => {
+                              const isActive = selectedGenerals.has(cond.id);
+                              return (
+                                <div
+                                  key={cond.id}
+                                  className="rounded-lg border p-3"
+                                  style={{
+                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
+                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                                  }}
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span
+                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
+                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
+                                    >
+                                      {cond.label}
+                                      {isActive && (
+                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
+                                          (active)
+                                        </span>
+                                      )}
+                                    </span>
+                                    {!isActive && (
+                                      <SecondaryButton onClick={() => handleToggleGeneral(cond.id)}>
+                                        {generalDepth >= 2 ? 'Replace' : 'Add'}
+                                      </SecondaryButton>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-6 gap-2">
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(30 + Math.random() * 60)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.3 + Math.random() * 1.5).toFixed(1)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(50 + Math.random() * 15).toFixed(1)}%</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.08 + Math.random() * 0.35).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.12 + Math.random() * 0.4).toFixed(2)}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.55 + Math.random() * 0.35).toFixed(2)}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                        </div>
+                      );
+                    }
+
+                    // ---- STOP LOSS TAB ----
+                    if (tab === 'Stop Loss') {
+                      const stopResults: AnalyzerResult[] = [
+                        { triggerId: 'atr-1.0', triggerName: 'ATR x1.0', execType: 'C', totalTrades: 127, profitFactor: 1.82, winRate: 54.3, avgR: 0.15, dailyR: 0.32, rSquared: 0.79 },
+                        { triggerId: 'atr-1.5', triggerName: 'ATR x1.5 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+                        { triggerId: 'atr-2.0', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.31, winRate: 61.4, avgR: 0.28, dailyR: 0.53, rSquared: 0.84 },
+                        { triggerId: 'swing-5', triggerName: 'Swing 5-bar', execType: 'C', totalTrades: 127, profitFactor: 2.08, winRate: 57.5, avgR: 0.20, dailyR: 0.41, rSquared: 0.82 },
+                        { triggerId: 'fixed-1', triggerName: 'Fixed $1.00', execType: 'C', totalTrades: 127, profitFactor: 1.65, winRate: 52.0, avgR: 0.10, dailyR: 0.22, rSquared: 0.71 },
+                      ];
+                      return (
+                        <div>
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search stop loss packs..." />
+                          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                            Current: <strong>{API_STOP_PACKS.find((p) => p.id === selectedStopPack)?.summary || 'None'}</strong>
+                          </p>
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                            {stopResults.map((result) => (
+                              <AnalyzerResultCard
+                                key={result.triggerId}
+                                result={result}
+                                isCurrent={result.triggerId === 'atr-1.5'}
+                                actionLabel="Replace"
+                                onAction={() => {}}
+                              />
+                            ))}
+                          </div>
+
+                        </div>
+                      );
+                    }
+
+                    // ---- TAKE PROFIT TAB ----
+                    if (tab === 'Take Profit') {
+                      const tpResults: AnalyzerResult[] = [
+                        { triggerId: 'tp-none', triggerName: 'None (signal exit)', execType: 'C', totalTrades: 127, profitFactor: 1.95, winRate: 55.1, avgR: 0.18, dailyR: 0.38, rSquared: 0.80 },
+                        { triggerId: 'tp-1.5r', triggerName: 'R:R 1.5', execType: 'C', totalTrades: 127, profitFactor: 1.78, winRate: 52.8, avgR: 0.14, dailyR: 0.30, rSquared: 0.75 },
+                        { triggerId: 'tp-2r', triggerName: 'R:R 2.0 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
+                        { triggerId: 'tp-3r', triggerName: 'R:R 3.0', execType: 'C', totalTrades: 112, profitFactor: 2.42, winRate: 42.9, avgR: 0.25, dailyR: 0.44, rSquared: 0.83 },
+                        { triggerId: 'tp-atr2', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.18, winRate: 56.7, avgR: 0.21, dailyR: 0.43, rSquared: 0.85 },
+                      ];
+                      return (
+                        <div>
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search take profit packs..." />
+                          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                            Current: <strong>{API_TARGET_PACKS.find((p) => p.id === selectedTargetPack)?.summary || 'None'}</strong>
+                          </p>
+                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                            {tpResults.map((result) => (
+                              <AnalyzerResultCard
+                                key={result.triggerId}
+                                result={result}
+                                isCurrent={result.triggerId === 'tp-2r'}
+                                actionLabel="Replace"
+                                onAction={() => {}}
+                              />
+                            ))}
+                          </div>
+
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  }}
+                </TabBar>
                 </div>
+                {/* Pinned depth selector at bottom of card */}
                 <div className="flex-shrink-0 -mb-2">
-                  {tab === 'Entry' && <Depth depth={1} max={1} onChange={() => {}} />}
-                  {tab === 'Exit' && <Depth depth={exitD} max={3} onChange={setExitD} />}
-                  {tab === 'TF Conditions' && <Depth depth={tfD} max={4} onChange={setTfD} />}
-                  {tab === 'General' && <Depth depth={genD} max={4} onChange={setGenD} />}
-                  {tab === 'Stop Loss' && <Depth depth={1} max={1} onChange={() => {}} />}
-                  {tab === 'Take Profit' && <Depth depth={1} max={1} onChange={() => {}} />}
+                  {activeAnalysisTab === 'Entry' && <DepthSelector depth={entryDepth} maxDepth={1} onChange={() => {}} />}
+                  {activeAnalysisTab === 'Exit' && <DepthSelector depth={exitDepth} maxDepth={3} onChange={setExitDepth} />}
+                  {activeAnalysisTab === 'TF Conditions' && <DepthSelector depth={tfDepth} maxDepth={4} onChange={setTfDepth} />}
+                  {activeAnalysisTab === 'General' && <DepthSelector depth={generalDepth} maxDepth={4} onChange={setGeneralDepth} />}
+                  {activeAnalysisTab === 'Stop Loss' && <DepthSelector depth={stopDepth} maxDepth={1} onChange={() => {}} />}
+                  {activeAnalysisTab === 'Take Profit' && <DepthSelector depth={targetDepth} maxDepth={1} onChange={() => {}} />}
                 </div>
               </Card>
-            </div>
-            <Card>
-              <div className="flex items-center justify-between text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-                <span>Advanced Analysis</span>
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Streaks, TOD, DOW, Markov</span>
               </div>
-              <p className="text-xs mt-2 py-4 text-center" style={{ color: 'var(--text-muted)' }}>Advanced analysis populates after a backtest with sufficient trades.</p>
-            </Card>
-          </div>
-        </div>
 
-        {/* SAVE */}
-        <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm">{result?.trades?.length || 0} trades over {result?.total_bars?.toLocaleString() || 0} bars</p>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Source: {result?.data_source || 'Unknown'}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <input type="text" placeholder="Strategy name" value={name} onChange={e => setName(e.target.value)} className="w-48" style={iStyle} />
-              <button className="px-6 py-3 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: '#000', border: 'none', cursor: 'pointer' }} onClick={save} disabled={createMut.isPending}>{createMut.isPending ? 'Saving...' : 'Save Strategy'}</button>
+              {/* Advanced Analysis */}
+              <AdvancedAnalysis />
             </div>
           </div>
-        </div>
-      </>}
+
+          {/* ================================================================= */}
+          {/* SAVE STRATEGY                                                      */}
+          {/* ================================================================= */}
+          <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+            <div className="flex justify-center">
+              <PrimaryButton size="lg" onClick={() => {
+                if (onSave) {
+                  onSave({
+                    name: strategyName, symbol, direction, timeframe,
+                    trading_session: session,
+                    data_days: lookbackDays, lookback_mode: lookbackMode,
+                    entry_trigger_confluence_id: entryTrigger,
+                    exit_trigger_confluence_ids: exitTriggers,
+                    confluence: Array.from(selectedConditions),
+                    stop_loss_pack_id: selectedStopPack,
+                    take_profit_pack_id: selectedTargetPack,
+                    kpis: backtestResult?.kpis ?? MOCK_KPIS,
+                    stored_trades: backtestResult?.trades ?? [],
+                  });
+                }
+              }}>
+                {onSave ? 'Save Strategy' : 'Save Strategy (Demo)'}
+              </PrimaryButton>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODALS                                                             */}
+      {/* ================================================================= */}
+      <ConfluencePickerModal
+        isOpen={confluenceModalOpen}
+        onClose={() => setConfluenceModalOpen(false)}
+        conditions={API_CONFLUENCE_CONDITIONS}
+        selected={selectedConditions}
+        onToggle={handleToggleCondition}
+      />
+      <ConfluencePickerModal
+        isOpen={generalModalOpen}
+        onClose={() => setGeneralModalOpen(false)}
+        conditions={API_GENERAL_CONDITIONS}
+        selected={selectedGenerals}
+        onToggle={handleToggleGeneral}
+      />
+      <FilterSortModal
+        isOpen={filterModalOpen}
+        onClose={() => setFilterModalOpen(false)}
+        filters={filters}
+        onApply={setFilters}
+      />
     </div>
   );
 }
