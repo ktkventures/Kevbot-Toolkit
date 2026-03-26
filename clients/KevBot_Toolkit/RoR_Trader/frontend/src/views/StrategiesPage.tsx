@@ -237,6 +237,10 @@ export default function StrategiesPage() {
   const dupMut = useDuplicateStrategy();
   const bulkDeleteMut = useBulkDeleteStrategies();
 
+  // Bulk refresh — uses plain fetch to avoid production bundler issues
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
+
   useEffect(() => {
     const id = 'strategies-pulse-css';
     if (!document.getElementById(id)) {
@@ -374,8 +378,31 @@ export default function StrategiesPage() {
         <h1 className="text-2xl font-bold">My Strategies</h1>
         <div className="flex gap-3">
           <button style={btnSecondary}>Reset All Alerts</button>
-          <button style={btnSecondary}>Update Data</button>
-          <button style={btnPrimary}>+ New Strategy</button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            disabled={refreshing}
+            onClick={async () => {
+              if (refreshing || strategies.length === 0) return;
+              setRefreshing(true);
+              setRefreshCount(0);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              for (let i = 0; i < strategies.length; i++) {
+                try {
+                  await fetch(`${base}/api/strategies/${strategies[i].id}/refresh`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  });
+                } catch (e) { /* skip failures */ }
+                setRefreshCount(i + 1);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+          >
+            {refreshing ? `Refreshing ${refreshCount}/${strategies.length}...` : 'Update Data'}
+          </button>
+          <Link href="/strategy-builder"><button style={btnPrimary}>+ New Strategy</button></Link>
         </div>
       </div>
 
