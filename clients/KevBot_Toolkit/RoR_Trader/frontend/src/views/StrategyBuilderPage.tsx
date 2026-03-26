@@ -939,24 +939,11 @@ function TradeHistoryTable({ trades }: { trades: TradeRow[] }) {
 function AdvancedAnalysis() {
   const [expanded, setExpanded] = useState(false);
 
-  // Mock analysis data
-  const winStreaks = [3, 5, 2, 4, 7, 3, 2, 6];
-  const lossStreaks = [1, 2, 1, 3, 1, 2, 1, 1];
-  const todPerformance = [
-    { hour: '09:30-10:00', trades: 28, winRate: 64.3, avgR: 0.42 },
-    { hour: '10:00-11:00', trades: 31, winRate: 54.8, avgR: 0.18 },
-    { hour: '11:00-12:00', trades: 22, winRate: 59.1, avgR: 0.31 },
-    { hour: '13:00-14:00', trades: 24, winRate: 62.5, avgR: 0.38 },
-    { hour: '14:00-15:00', trades: 15, winRate: 46.7, avgR: -0.12 },
-    { hour: '15:00-16:00', trades: 7, winRate: 71.4, avgR: 0.65 },
-  ];
-  const dowPerformance = [
-    { day: 'Monday', trades: 26, winRate: 57.7, avgR: 0.22 },
-    { day: 'Tuesday', trades: 29, winRate: 62.1, avgR: 0.41 },
-    { day: 'Wednesday', trades: 28, winRate: 60.7, avgR: 0.35 },
-    { day: 'Thursday', trades: 25, winRate: 52.0, avgR: 0.08 },
-    { day: 'Friday', trades: 19, winRate: 57.9, avgR: 0.28 },
-  ];
+  // {{advanced_analysis}} — not wired yet. Needs backtest API to compute these.
+  const winStreaks: number[] = [];
+  const lossStreaks: number[] = [];
+  const todPerformance: { hour: string; trades: number; winRate: number; avgR: number }[] = [];
+  const dowPerformance: { day: string; trades: number; winRate: number; avgR: number }[] = [];
 
   return (
     <Card>
@@ -2302,27 +2289,27 @@ export default function StrategyBuilderPage() {
                                   <div className="grid grid-cols-6 gap-2">
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(40 + Math.random() * 80)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{trades}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.2 + Math.random() * 1.8).toFixed(1)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{pf}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(48 + Math.random() * 18).toFixed(1)}%</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{wr}}%"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.05 + Math.random() * 0.4).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{avg_r}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.1 + Math.random() * 0.5).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{daily_r}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.6 + Math.random() * 0.3).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{r_sq}}"}</div>
                                     </div>
                                   </div>
                                 </div>
@@ -2406,27 +2393,27 @@ export default function StrategyBuilderPage() {
                                   <div className="grid grid-cols-6 gap-2">
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{Math.floor(30 + Math.random() * 60)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{trades}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(1.3 + Math.random() * 1.5).toFixed(1)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{pf}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(50 + Math.random() * 15).toFixed(1)}%</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{wr}}%"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.08 + Math.random() * 0.35).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{avg_r}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{(0.12 + Math.random() * 0.4).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{daily_r}}"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(0.55 + Math.random() * 0.35).toFixed(2)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{r_sq}}"}</div>
                                     </div>
                                   </div>
                                 </div>
