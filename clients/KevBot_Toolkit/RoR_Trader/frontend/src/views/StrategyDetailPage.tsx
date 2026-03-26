@@ -406,8 +406,30 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
     : '--';
 
-  const fwdTrades = allTrades.filter((t: any) => t.isFwd === true);
-  const btTrades = allTrades.filter((t: any) => t.isFwd !== true);
+  // Forward test trades come from the dedicated forward-test endpoint
+  // which loads fresh Polygon data and splits at forward_test_start
+  const fwdTrades = (fwdData?.forward_trades || []).map((t: any, i: number) => ({
+    id: i + 1,
+    entryTime: t.entry_time || '--',
+    exitTime: t.exit_time || '--',
+    entryPrice: t.entry_price ?? 0,
+    exitPrice: t.exit_price ?? 0,
+    pnlR: t.r_multiple ?? 0,
+    execType: t.exec_type ? `[${t.exec_type}]` : '[C]',
+    exitReason: t.exit_reason || '--',
+    isFwd: true,
+  }));
+  const btTrades = (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => ({
+    id: t.id ?? i + 1,
+    entryTime: t.entry_time || t.entryTime || '--',
+    exitTime: t.exit_time || t.exitTime || '--',
+    entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+    exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+    pnlR: t.r_multiple ?? t.pnlR ?? 0,
+    execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
+    exitReason: t.exit_reason || t.exitReason || '--',
+    isFwd: false,
+  }));
 
   // Parse entry for badges
   const entryParsed = parseExecTag(strategy.entry);
