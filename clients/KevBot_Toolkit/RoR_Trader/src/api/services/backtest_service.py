@@ -63,12 +63,19 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
 
     # 4. Load + enrich data
     sec_tfs = tuple(sorted(req.secondary_tfs))
+    logger.info("Backtest request: symbol=%s, tf=%s, dir=%s, days=%d, entry=%s, exits=%s, confluence=%s",
+                req.symbol, req.timeframe, req.direction, req.days,
+                req.entry_trigger_confluence_id, req.exit_trigger_confluence_ids, req.confluence)
+    logger.info("Strategy dict: %s", {k: v for k, v in strategy.items() if k != 'confluence'})
+
     df = svc.prepare_data_with_indicators(
         req.symbol, days=req.days, start_date=start_date,
         end_date=end_date, timeframe=req.timeframe,
         data_feed=req.data_feed, session=req.session,
         secondary_tfs=sec_tfs,
     )
+
+    logger.info("Data loaded: %d bars, source=%s", len(df), get_data_source())
 
     if len(df) == 0:
         return BacktestResponse(
@@ -79,6 +86,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
 
     # 5. Run unified engine
     trades_df = svc.unified_trades(df, strategy)
+    logger.info("Unified engine returned %d trades", len(trades_df))
 
     # 6. Calculate KPIs
     trading_days = svc.count_trading_days(df)

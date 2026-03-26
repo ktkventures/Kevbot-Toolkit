@@ -1507,7 +1507,7 @@ export default function StrategyBuilderPage() {
         id: i + 1,
         entryTime: t.entry_time ? new Date(t.entry_time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
         exitTime: t.exit_time ? new Date(t.exit_time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
-        direction: direction as 'LONG' | 'SHORT',
+        direction: (t.direction || 'LONG') as 'LONG' | 'SHORT',
         entryPrice: t.entry_price || 0, exitPrice: t.exit_price || 0,
         rMultiple: t.r_multiple || 0, execType: t.exec_type || 'C',
         exitReason: t.exit_reason || '', confluences: '',
