@@ -248,30 +248,7 @@ export default function StrategiesPage() {
     return apiData.map(apiToStrategy);
   }, [apiData]);
 
-  // Loading state
-  if (isLoading) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Strategies</h1>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <Card key={i}><div className="animate-pulse space-y-3"><div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} /><div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} /><div className="h-16 rounded" style={{ background: 'var(--bg-input)' }} /></div></Card>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Strategies</h1>
-        <Card><div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategies.</div></Card>
-      </div>
-    );
-  }
-
-  // Filter state
+  // Filter state (must be before any early returns — React hooks rule)
   const [tickerFilter, setTickerFilter] = useState('All');
   const [directionFilter, setDirectionFilter] = useState('All');
   const [tagFilter, setTagFilter] = useState('All');
@@ -365,6 +342,28 @@ export default function StrategiesPage() {
     fontWeight: 500,
     cursor: 'pointer' as const,
   };
+
+  // Loading / error states (after all hooks)
+  if (isLoading) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Strategies</h1>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <Card key={i}><div className="animate-pulse space-y-3"><div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} /><div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} /><div className="h-16 rounded" style={{ background: 'var(--bg-input)' }} /></div></Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Strategies</h1>
+        <Card><div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategies.</div></Card>
+      </div>
+    );
+  }
 
   return (
     <div>
