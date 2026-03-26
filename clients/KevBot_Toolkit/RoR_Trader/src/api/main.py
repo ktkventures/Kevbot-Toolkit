@@ -30,14 +30,16 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
 
-    # CORS — allow frontend origins
+    # CORS — allow frontend origins (including Railway dev URLs)
+    import os as _os
+    _extra_origins = [o.strip() for o in _os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
             "http://localhost:3000",        # Local dev
             "https://rortrader.com",        # Production
             "https://www.rortrader.com",
-        ],
+        ] + _extra_origins,  # Railway dev URLs via CORS_ORIGINS env var
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
