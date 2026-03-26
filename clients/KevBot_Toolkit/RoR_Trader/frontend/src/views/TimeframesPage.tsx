@@ -1,10 +1,13 @@
 'use client';
 
 /**
- * Timeframes — Clean API-first page.
+ * Timeframes — Faithful copy of V5 design with mock data replaced by API hooks.
+ * Source: src/app/confluence-packs/timeframes/versions/V5.tsx (192 lines)
  *
- * Visual design derived from V5 (versions/V5.tsx), data layer built
- * around the settings API endpoint. No mock data.
+ * Data convention:
+ *   Real value = live from API
+ *   -- = wired but no data yet
+ *   {{field}} = not wired, needs backend work
  */
 
 import { useState, useEffect } from 'react';
@@ -12,111 +15,124 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* DATA                                                                        */
+/* ========================================================================= */
 
 interface TimeframeDef {
   id: string;
   label: string;
   seconds: number;
-  bars_per_day: number;
-  primary_enabled: boolean;
-  confluence_enabled: boolean;
-  mass_builder_enabled: boolean;
-  chart_display_enabled: boolean;
-  is_sub_minute: boolean;
+  barsPerDay: number;
+  primaryEnabled: boolean;
+  confluenceEnabled: boolean;
+  massBuilderEnabled: boolean;
+  chartDisplayEnabled: boolean;
+  isDefault: boolean;
+  isSubMinute: boolean;
+  providerSupport: 'polygon' | 'both' | 'streaming_only';
 }
 
+const TF_DEFINITIONS: TimeframeDef[] = [
+  { id: '5Sec', label: '5s', seconds: 5, barsPerDay: 4680, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: false, isDefault: false, isSubMinute: true, providerSupport: 'polygon' },
+  { id: '10Sec', label: '10s', seconds: 10, barsPerDay: 2340, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: false, isDefault: false, isSubMinute: true, providerSupport: 'polygon' },
+  { id: '15Sec', label: '15s', seconds: 15, barsPerDay: 1560, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: false, isDefault: false, isSubMinute: true, providerSupport: 'polygon' },
+  { id: '30Sec', label: '30s', seconds: 30, barsPerDay: 780, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: false, isDefault: false, isSubMinute: true, providerSupport: 'polygon' },
+  { id: '1Min', label: '1m', seconds: 60, barsPerDay: 390, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: true, isSubMinute: false, providerSupport: 'both' },
+  { id: '2Min', label: '2m', seconds: 120, barsPerDay: 195, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '3Min', label: '3m', seconds: 180, barsPerDay: 130, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '5Min', label: '5m', seconds: 300, barsPerDay: 78, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '10Min', label: '10m', seconds: 600, barsPerDay: 39, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '15Min', label: '15m', seconds: 900, barsPerDay: 26, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '30Min', label: '30m', seconds: 1800, barsPerDay: 13, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '1Hour', label: '1h', seconds: 3600, barsPerDay: 7, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: true, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '2Hour', label: '2h', seconds: 7200, barsPerDay: 4, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: false, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '4Hour', label: '4h', seconds: 14400, barsPerDay: 2, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: false, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '1Day', label: '1d', seconds: 86400, barsPerDay: 1, primaryEnabled: true, confluenceEnabled: true, massBuilderEnabled: false, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '1Week', label: '1w', seconds: 604800, barsPerDay: 0.2, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+  { id: '1Month', label: '1mo', seconds: 2592000, barsPerDay: 0.05, primaryEnabled: false, confluenceEnabled: false, massBuilderEnabled: false, chartDisplayEnabled: true, isDefault: false, isSubMinute: false, providerSupport: 'both' },
+];
+
 const USE_CASES = [
-  { key: 'primary_enabled', label: 'Strategy Primary' },
-  { key: 'confluence_enabled', label: 'TF Confluence' },
-  { key: 'mass_builder_enabled', label: 'Mass Builder' },
-  { key: 'chart_display_enabled', label: 'Chart Display' },
+  { key: 'primaryEnabled', label: 'Strategy Primary', desc: 'Available as the main trading timeframe in Strategy Builder' },
+  { key: 'confluenceEnabled', label: 'TF Confluence', desc: 'Available as a secondary timeframe for confluence conditions' },
+  { key: 'massBuilderEnabled', label: 'Mass Builder', desc: 'Available in Mass Strategy Builder timeframe selection' },
+  { key: 'chartDisplayEnabled', label: 'Chart Display', desc: 'Available for chart viewing and data display' },
 ];
 
-// Fallback timeframes if settings don't include them yet
-const DEFAULT_TIMEFRAMES: TimeframeDef[] = [
-  { id: '1Min', label: '1m', seconds: 60, bars_per_day: 390, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '2Min', label: '2m', seconds: 120, bars_per_day: 195, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '3Min', label: '3m', seconds: 180, bars_per_day: 130, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '5Min', label: '5m', seconds: 300, bars_per_day: 78, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '10Min', label: '10m', seconds: 600, bars_per_day: 39, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '15Min', label: '15m', seconds: 900, bars_per_day: 26, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '30Min', label: '30m', seconds: 1800, bars_per_day: 13, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '1Hour', label: '1h', seconds: 3600, bars_per_day: 7, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: true, chart_display_enabled: true, is_sub_minute: false },
-  { id: '4Hour', label: '4h', seconds: 14400, bars_per_day: 2, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: false, chart_display_enabled: true, is_sub_minute: false },
-  { id: '1Day', label: '1d', seconds: 86400, bars_per_day: 1, primary_enabled: true, confluence_enabled: true, mass_builder_enabled: false, chart_display_enabled: true, is_sub_minute: false },
-];
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* COMPONENT                                                                   */
+/* ========================================================================= */
 
 export default function TimeframesPage() {
+  // --- API hooks (MUST come before any early returns) ---
   const { data: settings, isLoading, error } = useSettings();
   const saveMutation = useSaveSettings();
 
-  const [tfs, setTfs] = useState<TimeframeDef[]>(DEFAULT_TIMEFRAMES);
+  const [tfs, setTfs] = useState(TF_DEFINITIONS);
   const [defaultTf, setDefaultTf] = useState('1Min');
+  const [initialized, setInitialized] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
-  // Sync from API
+  // Initialize from settings API
   useEffect(() => {
-    if (settings?.timeframes) {
-      setTfs(settings.timeframes);
-      setHasChanges(false);
+    if (settings && !initialized) {
+      const enabledTfs: Record<string, Record<string, boolean>> = settings.enabled_timeframes ?? {};
+      const newDefaultTf = settings.default_timeframe ?? '1Min';
+      setDefaultTf(newDefaultTf);
+      if (Object.keys(enabledTfs).length > 0) {
+        setTfs(TF_DEFINITIONS.map((tf) => {
+          const overrides = enabledTfs[tf.id];
+          if (!overrides) return tf;
+          return {
+            ...tf,
+            primaryEnabled: overrides.primaryEnabled ?? tf.primaryEnabled,
+            confluenceEnabled: overrides.confluenceEnabled ?? tf.confluenceEnabled,
+            massBuilderEnabled: overrides.massBuilderEnabled ?? tf.massBuilderEnabled,
+            chartDisplayEnabled: overrides.chartDisplayEnabled ?? tf.chartDisplayEnabled,
+          };
+        }));
+      }
+      setInitialized(true);
     }
-    if (settings?.default_timeframe) {
-      setDefaultTf(settings.default_timeframe);
-    }
-  }, [settings]);
+  }, [settings, initialized]);
 
-  const toggleUseCase = (tfId: string, key: string) => {
+  const toggleUseCase = (tfId: string, key: keyof TimeframeDef) => {
     setTfs((prev) => prev.map((tf) =>
-      tf.id === tfId ? { ...tf, [key]: !(tf as unknown as Record<string, unknown>)[key] } : tf
+      tf.id === tfId ? { ...tf, [key]: !tf[key] } : tf
     ));
     setHasChanges(true);
   };
 
-  const enabledCount = (key: string) => tfs.filter((tf) => (tf as unknown as Record<string, unknown>)[key]).length;
+  const enabledCount = (key: keyof TimeframeDef) => tfs.filter((tf) => tf[key]).length;
 
   const handleSave = () => {
-    saveMutation.mutate({
-      ...settings,
-      timeframes: tfs,
-      default_timeframe: defaultTf,
-    });
+    const enabledTimeframes: Record<string, Record<string, boolean>> = {};
+    for (const tf of tfs) {
+      enabledTimeframes[tf.id] = {
+        primaryEnabled: tf.primaryEnabled,
+        confluenceEnabled: tf.confluenceEnabled,
+        massBuilderEnabled: tf.massBuilderEnabled,
+        chartDisplayEnabled: tf.chartDisplayEnabled,
+      };
+    }
+    saveMutation.mutate({ ...settings, enabled_timeframes: enabledTimeframes, default_timeframe: defaultTf });
     setHasChanges(false);
   };
-
-  // ---------------------------------------------------------------------------
-  // Loading / Error
-  // ---------------------------------------------------------------------------
 
   if (isLoading) {
     return (
       <div>
         <PageHeader title="Timeframes" subtitle="Loading..." />
-        <Card className="mt-4">
-          <div className="animate-pulse space-y-3">
-            <div className="h-4 rounded w-1/4" style={{ background: 'var(--border)' }} />
-            <div className="h-40 rounded" style={{ background: 'var(--bg-input)' }} />
-          </div>
-        </Card>
+        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading timeframe settings...</p></Card>
       </div>
     );
   }
-
   if (error) {
     return (
       <div>
-        <PageHeader title="Timeframes" subtitle="Error" />
-        <Card>
-          <div className="text-center py-8" style={{ color: 'var(--red)' }}>
-            Failed to load timeframe settings. Check your connection and try again.
-          </div>
-        </Card>
+        <PageHeader title="Timeframes" subtitle="Error loading data" />
+        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--red)' }}>Failed to load settings: {String(error)}</p></Card>
       </div>
     );
   }
@@ -127,33 +143,19 @@ export default function TimeframesPage() {
         title="Timeframes"
         subtitle="Configure which timeframes are available across the application"
         actions={
-          <div className="flex items-center gap-2">
-            <span
-              className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5"
-              style={{ background: 'var(--green)' + '15', color: 'var(--green)' }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />
-              Live
-            </span>
-            <button
-              className="px-4 py-2 rounded-lg text-sm font-medium"
-              style={{
-                background: hasChanges ? 'var(--accent)' : 'var(--bg-input)',
-                color: hasChanges ? '#fff' : 'var(--text-muted)',
-                border: 'none',
-                cursor: hasChanges ? 'pointer' : 'not-allowed',
-              }}
-              disabled={!hasChanges || saveMutation.isPending}
-              onClick={handleSave}
-            >
-              {saveMutation.isPending ? 'Saving...' : 'Save Changes'}
-            </button>
-          </div>
+          <button
+            className="px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: hasChanges ? 'pointer' : 'default', opacity: hasChanges ? 1 : 0.5 }}
+            onClick={handleSave}
+            disabled={!hasChanges || saveMutation.isPending}
+          >
+            {saveMutation.isPending ? 'Saving...' : 'Save Changes'}
+          </button>
         }
       />
 
       {/* Default TF selector */}
-      <Card className="mb-4 mt-4">
+      <Card className="mb-4">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium">Default Timeframe</p>
@@ -167,7 +169,7 @@ export default function TimeframesPage() {
             className="px-3 py-2 rounded-lg text-sm"
             style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
           >
-            {tfs.filter((tf) => tf.primary_enabled).map((tf) => (
+            {tfs.filter((tf) => tf.primaryEnabled).map((tf) => (
               <option key={tf.id} value={tf.id}>{tf.id} ({tf.label})</option>
             ))}
           </select>
@@ -180,8 +182,9 @@ export default function TimeframesPage() {
           <div key={uc.key} className="rounded-lg p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <div className="flex items-center justify-between mb-1">
               <p className="text-xs font-medium">{uc.label}</p>
-              <span className="text-xs font-bold" style={{ color: 'var(--accent)' }}>{enabledCount(uc.key)}</span>
+              <span className="text-xs font-bold" style={{ color: 'var(--accent)' }}>{enabledCount(uc.key as keyof TimeframeDef)}</span>
             </div>
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{uc.desc}</p>
           </div>
         ))}
       </div>
@@ -192,50 +195,39 @@ export default function TimeframesPage() {
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <th className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>
-                  Timeframe
-                </th>
-                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>
-                  Label
-                </th>
-                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>
-                  Bars/Day
-                </th>
+                <th className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', position: 'sticky', left: 0, zIndex: 1 }}>Timeframe</th>
+                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>Label</th>
+                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>Bars/Day</th>
                 {USE_CASES.map((uc) => (
                   <th key={uc.key} className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>
                     {uc.label}
                   </th>
                 ))}
-                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>
-                  Default
-                </th>
+                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>Default</th>
+                <th className="text-center py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>Provider</th>
               </tr>
             </thead>
             <tbody>
               {tfs.map((tf) => (
-                <tr key={tf.id} style={{ borderBottom: '1px solid var(--border)', opacity: tf.is_sub_minute ? 0.6 : 1 }}>
-                  <td className="py-2.5 px-3 font-medium">
+                <tr key={tf.id} style={{ borderBottom: '1px solid var(--border)', opacity: tf.isSubMinute ? 0.6 : 1 }}>
+                  <td className="py-2.5 px-3 font-medium" style={{ position: 'sticky', left: 0, background: 'var(--bg-card)', zIndex: 1 }}>
                     <div className="flex items-center gap-2">
                       {tf.id}
-                      {tf.is_sub_minute && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--orange, #FF9800)20', color: 'var(--orange, #FF9800)' }}>
-                          sub-min
-                        </span>
+                      {tf.isSubMinute && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--orange)' + '20', color: 'var(--orange)' }}>sub-min</span>
                       )}
                     </div>
                   </td>
-                  <td className="text-center py-2.5 px-3 font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {tf.label}
-                  </td>
+                  <td className="text-center py-2.5 px-3 font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{tf.label}</td>
                   <td className="text-center py-2.5 px-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {tf.bars_per_day >= 1 ? Math.round(tf.bars_per_day) : tf.bars_per_day.toFixed(2)}
+                    {tf.barsPerDay >= 1 ? Math.round(tf.barsPerDay) : tf.barsPerDay.toFixed(2)}
                   </td>
                   {USE_CASES.map((uc) => (
                     <td key={uc.key} className="text-center py-2.5 px-3">
                       <input
                         type="checkbox"
-                        checked={(tf as unknown as Record<string, unknown>)[uc.key] as boolean}
-                        onChange={() => toggleUseCase(tf.id, uc.key)}
+                        checked={tf[uc.key as keyof TimeframeDef] as boolean}
+                        onChange={() => toggleUseCase(tf.id, uc.key as keyof TimeframeDef)}
                         className="w-4 h-4 rounded cursor-pointer"
                         style={{ accentColor: 'var(--accent)' }}
                       />
@@ -247,10 +239,18 @@ export default function TimeframesPage() {
                       name="defaultTf"
                       checked={defaultTf === tf.id}
                       onChange={() => { setDefaultTf(tf.id); setHasChanges(true); }}
-                      disabled={!tf.primary_enabled}
+                      disabled={!tf.primaryEnabled}
                       className="w-4 h-4 cursor-pointer"
                       style={{ accentColor: 'var(--accent)' }}
                     />
+                  </td>
+                  <td className="text-center py-2.5 px-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{
+                      background: tf.providerSupport === 'both' ? 'var(--green-muted)' : tf.providerSupport === 'polygon' ? 'var(--accent-muted)' : 'var(--bg-input)',
+                      color: tf.providerSupport === 'both' ? 'var(--green)' : tf.providerSupport === 'polygon' ? 'var(--accent)' : 'var(--text-muted)',
+                    }}>
+                      {tf.providerSupport === 'both' ? 'All' : tf.providerSupport === 'polygon' ? 'Polygon' : 'Stream'}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -259,10 +259,11 @@ export default function TimeframesPage() {
         </div>
       </Card>
 
-      {/* Save status */}
-      {saveMutation.isSuccess && (
-        <p className="text-xs mt-3" style={{ color: 'var(--green)' }}>Timeframe settings saved.</p>
-      )}
+      {/* Info note */}
+      <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+        Sub-minute timeframes (5s-30s) require Polygon.io data feed and are not available for confluence resampling from REST data.
+        Weekly and monthly timeframes are display-only and cannot be used as primary strategy timeframes.
+      </p>
     </div>
   );
 }

@@ -25,7 +25,9 @@ V5 files have TWO layers of mock data:
 1. **Top-level constants** (e.g., `const strategy = {...}`, `const mockTrades = [...]`) — easy to find and replace
 2. **Inline mock data in JSX** (e.g., hardcoded prices `142.35`, dates `2026-03-18 09:42:15`, table rows with fake trades) — hidden throughout tab content, much harder to find
 
-The copy-and-wire procedure MUST include a `grep` audit for inline mock data AFTER replacing top-level constants. Patterns to search: specific prices (`14[0-9]\.`), specific dates (`2026-03-1[0-9]`), `mock` references, `Math.random`.
+The copy-and-wire procedure MUST include:
+1. `grep` audit for inline mock data AFTER replacing top-level constants. Patterns: specific prices (`14[0-9]\.`), specific dates (`2026-03-1[0-9]`), `mock` references, `Math.random`.
+2. **React hooks order check**: verify ALL `useState`, `useMemo`, `useEffect`, `usePopover` calls come BEFORE any `if (isLoading) return` or `if (error) return` early exits. This has caused "Rendered more hooks" errors in Batch 1 AND Batch 2.
 
 ### Known Issues per Tab (Strategy Detail V5)
 

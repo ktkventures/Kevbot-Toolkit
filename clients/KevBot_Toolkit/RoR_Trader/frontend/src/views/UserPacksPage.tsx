@@ -1,41 +1,1660 @@
 'use client';
 
+import { useState, useMemo } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
-import Link from 'next/link';
+import TabBar from '@/components/TabBar';
+import Modal from '@/components/Modal';
+import ChartPlaceholder from '@/components/ChartPlaceholder';
+
+/* ========================================================================
+   Types
+   ======================================================================== */
+
+interface PackParam {
+  key: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  type: 'int' | 'float';
+}
+
+interface PlotSetting {
+  key: string;
+  label: string;
+  default: string;
+}
+
+interface PackOutput {
+  code: string;
+  description: string;
+}
+
+interface PackTrigger {
+  id: string;
+  name: string;
+  direction: 'LONG' | 'SHORT' | 'BOTH';
+  type: 'ENTRY' | 'EXIT';
+  exec: string;
+}
+
+interface StateTimelineEntry {
+  time: string;
+  state: string;
+  prevState: string;
+}
+
+interface TriggerEvent {
+  time: string;
+  trigger: string;
+  direction: string;
+  type: string;
+  price: string;
+  execType: string;
+}
+
+interface UserPack {
+  id: string;
+  name: string;
+  version: string;
+  packType: 'tf_confluence' | 'general';
+  category: string;
+  enabled: boolean;
+  isDefault: boolean;
+  visibility: 'private' | 'public';
+  strategiesUsing: number;
+  lastModified: string;
+  validationStatus: 'passed' | 'warnings' | 'failed';
+  parityScore: number | null;
+  params: PackParam[];
+  plotSettings: PlotSetting[];
+  outputs: PackOutput[];
+  triggers: PackTrigger[];
+}
+
+/* ========================================================================
+   Data — User packs are a future feature; no API hooks yet.
+   All pack data is empty. The page renders the full V5 layout with empty states.
+   ======================================================================== */
+
+// No user packs — future feature
+const emptyUserPacks: UserPack[] = [];
+
+// Preview data: not wired — empty
+const mockStateTimelines: Record<string, StateTimelineEntry[]> = {};
+const mockTriggerEvents: Record<string, TriggerEvent[]> = {};
+
+/* Built-in template packs for "Create from Template" — future feature */
+const builtInTemplates: { key: string; name: string; category: string; description: string }[] = [];
+
+/* ========================================================================
+   Style Constants
+   ======================================================================== */
+
+const categoryColors: Record<string, { color: string; bg: string }> = {
+  'Momentum': { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+  'Moving Averages': { color: 'var(--blue)', bg: 'var(--blue-muted)' },
+  'Volume': { color: 'var(--accent)', bg: 'var(--accent-muted)' },
+  'Volatility': { color: 'var(--red)', bg: 'var(--red-muted)' },
+  'Trend': { color: 'var(--green)', bg: 'var(--green-muted)' },
+  'Custom': { color: 'var(--accent)', bg: 'var(--accent-muted)' },
+};
+
+const execTypeBadgeStyles: Record<string, { color: string; bg: string }> = {
+  '[C]': { color: 'var(--green)', bg: 'var(--green-muted)' },
+  '[L0]': { color: 'var(--blue)', bg: 'var(--blue-muted)' },
+  '[L1]': { color: 'var(--purple)', bg: 'rgba(168,85,247,0.15)' },
+  '[HM]': { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+  '[HL]': { color: 'var(--teal)', bg: 'rgba(20,184,166,0.15)' },
+};
+
+const directionColors: Record<string, { color: string; bg: string }> = {
+  'LONG': { color: 'var(--green)', bg: 'var(--green-muted)' },
+  'SHORT': { color: 'var(--red)', bg: 'var(--red-muted)' },
+  'BOTH': { color: 'var(--blue)', bg: 'var(--blue-muted)' },
+};
+
+const triggerTypeColors: Record<string, { color: string; bg: string }> = {
+  'ENTRY': { color: 'var(--accent)', bg: 'var(--accent-muted)' },
+  'EXIT': { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+};
+
+/* ========================================================================
+   Shared inline-style helpers
+   ======================================================================== */
+
+const inputStyle: React.CSSProperties = {
+  background: 'var(--bg-input)',
+  border: '1px solid var(--border)',
+  color: 'var(--text-primary)',
+};
+
+const selectStyle: React.CSSProperties = { ...inputStyle };
+
+const btnPrimary: React.CSSProperties = {
+  background: 'var(--accent)',
+  color: 'white',
+};
+
+const btnSecondary: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  color: 'var(--text-secondary)',
+};
+
+/* ========================================================================
+   Sub-components
+   ======================================================================== */
+
+function ExecBadge({ exec }: { exec: string }) {
+  const s = execTypeBadgeStyles[exec] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+  return (
+    <span
+      className="text-xs font-mono px-2 py-0.5 rounded"
+      style={{ color: s.color, background: s.bg }}
+    >
+      {exec}
+    </span>
+  );
+}
+
+function DirectionBadge({ dir }: { dir: string }) {
+  const s = directionColors[dir] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+  return (
+    <span className="text-xs px-2 py-0.5 rounded font-medium" style={{ color: s.color, background: s.bg }}>
+      {dir}
+    </span>
+  );
+}
+
+function TypeBadge({ type }: { type: string }) {
+  const s = triggerTypeColors[type] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+  return (
+    <span className="text-xs px-2 py-0.5 rounded" style={{ color: s.color, background: s.bg }}>
+      {type}
+    </span>
+  );
+}
+
+function CategoryBadge({ category }: { category: string }) {
+  const s = categoryColors[category] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+  return (
+    <span className="text-xs px-2 py-0.5 rounded font-medium" style={{ color: s.color, background: s.bg }}>
+      {category}
+    </span>
+  );
+}
+
+function Toggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className="w-10 h-6 rounded-full relative flex-shrink-0 transition-colors"
+      style={{
+        background: enabled ? 'var(--accent)' : 'var(--bg-input)',
+        border: enabled ? 'none' : '1px solid var(--border)',
+      }}
+    >
+      <div
+        className="w-4 h-4 rounded-full absolute top-1 transition-all"
+        style={{
+          background: enabled ? 'white' : 'var(--text-muted)',
+          left: enabled ? '22px' : '4px',
+        }}
+      />
+    </button>
+  );
+}
+
+/* ========================================================================
+   Detail: Parameters Tab
+   ======================================================================== */
+
+function ParametersTab({ pack }: { pack: UserPack }) {
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+          Pack Parameters
+        </h3>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {pack.params.length} parameters
+        </span>
+      </div>
+
+      <div className="space-y-4">
+        {pack.params.map((param) => (
+          <div key={param.key}>
+            <div className="flex items-center gap-4">
+              <label className="text-sm w-52 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
+                {param.label}
+              </label>
+              <input
+                type="number"
+                step={param.type === 'float' ? 0.1 : 1}
+                min={param.min}
+                max={param.max}
+                className="px-3 py-2 rounded-lg text-sm flex-1 font-mono"
+                style={inputStyle}
+                defaultValue={param.value}
+              />
+            </div>
+            <div className="flex gap-4 mt-1">
+              <span className="w-52 flex-shrink-0" />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {param.type === 'int' ? 'Integer' : 'Decimal'} &middot; Range: {param.min} - {param.max}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div
+        className="flex gap-3 mt-6 pt-4 border-t"
+        style={{ borderColor: 'var(--border)' }}
+      >
+        <button className="px-4 py-2 rounded-lg text-sm font-medium" style={btnPrimary}>
+          Save Changes
+        </button>
+        <button className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>
+          Reset to Default
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/* ========================================================================
+   Detail: Plot Settings Tab
+   ======================================================================== */
+
+function PlotSettingsTab({ pack }: { pack: UserPack }) {
+  const [lineWidth, setLineWidth] = useState(2);
+
+  return (
+    <Card>
+      <h3 className="text-sm font-medium mb-5" style={{ color: 'var(--text-secondary)' }}>
+        Visual Settings for {pack.name}
+      </h3>
+
+      <div className="space-y-4">
+        {pack.plotSettings.map((ps) => (
+          <div key={ps.key} className="flex items-center gap-4">
+            <label className="text-sm w-52 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
+              {ps.label}
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                defaultValue={ps.default}
+                className="w-8 h-8 rounded border-0 cursor-pointer"
+                style={{ background: 'transparent', padding: 0 }}
+              />
+              <div
+                className="w-10 h-8 rounded border"
+                style={{
+                  background: ps.default,
+                  borderColor: 'var(--border)',
+                }}
+              />
+              <input
+                className="px-3 py-2 rounded-lg text-sm font-mono w-28"
+                style={inputStyle}
+                defaultValue={ps.default}
+              />
+            </div>
+          </div>
+        ))}
+
+        <div className="border-t my-2" style={{ borderColor: 'var(--border)' }} />
+
+        <div className="flex items-center gap-4">
+          <label className="text-sm w-52 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
+            Line Width
+          </label>
+          <div className="flex items-center gap-3 flex-1">
+            <input
+              type="range"
+              min="1"
+              max="5"
+              value={lineWidth}
+              onChange={(e) => setLineWidth(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span
+              className="text-sm font-mono w-12 text-center px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)' }}
+            >
+              {lineWidth}px
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-6 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+        <button className="px-4 py-2 rounded-lg text-sm font-medium" style={btnPrimary}>
+          Save Plot Settings
+        </button>
+        <button className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>
+          Reset Colors
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/* ========================================================================
+   Detail: Outputs & Triggers Tab
+   ======================================================================== */
+
+function OutputsTriggersTab({ pack }: { pack: UserPack }) {
+  return (
+    <div className="grid grid-cols-2 gap-6">
+      {/* Outputs column */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Interpreter Outputs
+          </h3>
+          <span
+            className="text-xs px-2 py-0.5 rounded"
+            style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}
+          >
+            {pack.outputs.length} states
+          </span>
+        </div>
+        <div className="space-y-2">
+          {pack.outputs.map((output) => (
+            <div
+              key={output.code}
+              className="px-3 py-2.5 rounded-lg"
+              style={{ background: 'var(--bg-input)' }}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span
+                  className="text-sm font-mono font-semibold px-2 py-0.5 rounded"
+                  style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                >
+                  {output.code}
+                </span>
+              </div>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                {output.description}
+              </p>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Triggers column */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Available Triggers
+          </h3>
+          <span
+            className="text-xs px-2 py-0.5 rounded"
+            style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}
+          >
+            {pack.triggers.length} triggers
+          </span>
+        </div>
+        <div className="space-y-2">
+          {pack.triggers.map((trigger) => (
+            <div
+              key={trigger.id}
+              className="px-3 py-2.5 rounded-lg"
+              style={{ background: 'var(--bg-input)' }}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {trigger.name}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <DirectionBadge dir={trigger.direction} />
+                  <TypeBadge type={trigger.type} />
+                  <ExecBadge exec={trigger.exec} />
+                </div>
+              </div>
+              <p className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                {trigger.id}
+              </p>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Detail: Preview Tab
+   ======================================================================== */
+
+function PreviewTab({ pack }: { pack: UserPack }) {
+  const [showConditions, setShowConditions] = useState(true);
+  const [showTriggers, setShowTriggers] = useState(true);
+  const [symbol, setSymbol] = useState('NVDA');
+  const [session, setSession] = useState('RTH Only');
+
+  const stateTimeline = mockStateTimelines[pack.id] || [];
+  const triggerEvents = mockTriggerEvents[pack.id] || [];
+
+  return (
+    <div className="space-y-4">
+      {/* Controls bar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          className="px-3 py-2 rounded-lg text-sm"
+          style={selectStyle}
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+        >
+          {['NVDA', 'SPY', 'AAPL', 'TSLA', 'MSFT', 'AMD'].map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
+        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle}>
+          {['1Min', '5Min', '15Min', '1H', '4H', '1D'].map((tf) => (
+            <option key={tf}>{tf}</option>
+          ))}
+        </select>
+        <select
+          className="px-3 py-2 rounded-lg text-sm"
+          style={selectStyle}
+          value={session}
+          onChange={(e) => setSession(e.target.value)}
+        >
+          <option>RTH Only</option>
+          <option>Extended Hours</option>
+          <option>24/7</option>
+        </select>
+
+        <div className="border-l h-6 mx-1" style={{ borderColor: 'var(--border)' }} />
+
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showConditions}
+            onChange={(e) => setShowConditions(e.target.checked)}
+            className="w-3.5 h-3.5 rounded"
+          />
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Show Conditions</span>
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showTriggers}
+            onChange={(e) => setShowTriggers(e.target.checked)}
+            className="w-3.5 h-3.5 rounded"
+          />
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Show Triggers</span>
+        </label>
+      </div>
+
+      {/* Chart */}
+      <Card>
+        <ChartPlaceholder
+          label={`${symbol} price chart with ${pack.name} overlay${showConditions ? ' + conditions' : ''}${showTriggers ? ' + triggers' : ''}`}
+          height={380}
+        />
+      </Card>
+
+      {/* Data tables below chart */}
+      <div className="grid grid-cols-2 gap-4">
+        {/* State Timeline */}
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              State Timeline
+            </h4>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {stateTimeline.length} transitions
+            </span>
+          </div>
+          <div
+            className="rounded-lg overflow-hidden border"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div
+              className="grid grid-cols-3 text-xs font-medium px-3 py-2"
+              style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+            >
+              <span>Time</span>
+              <span>State</span>
+              <span>Previous</span>
+            </div>
+            {stateTimeline.map((row, i) => {
+              const changed = row.state !== row.prevState;
+              return (
+                <div
+                  key={i}
+                  className="grid grid-cols-3 text-xs px-3 py-2 border-t"
+                  style={{
+                    borderColor: 'var(--border)',
+                    background: changed ? 'var(--accent-muted)' : 'var(--bg-card)',
+                  }}
+                >
+                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                    {row.time}
+                  </span>
+                  <span className="font-mono font-semibold" style={{ color: changed ? 'var(--accent)' : 'var(--text-primary)' }}>
+                    {row.state}
+                  </span>
+                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                    {row.prevState}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        {/* Trigger Events */}
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Trigger Events
+            </h4>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {triggerEvents.length} events
+            </span>
+          </div>
+          <div
+            className="rounded-lg overflow-hidden border"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div
+              className="grid text-xs font-medium px-3 py-2"
+              style={{
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-muted)',
+                gridTemplateColumns: '70px 1fr 55px 50px 70px 35px',
+                gap: '4px',
+              }}
+            >
+              <span>Time</span>
+              <span>Trigger</span>
+              <span>Dir</span>
+              <span>Type</span>
+              <span>Price</span>
+              <span>Exec</span>
+            </div>
+            {triggerEvents.map((row, i) => (
+              <div
+                key={i}
+                className="grid text-xs px-3 py-2 border-t items-center"
+                style={{
+                  borderColor: 'var(--border)',
+                  background: 'var(--bg-card)',
+                  gridTemplateColumns: '70px 1fr 55px 50px 70px 35px',
+                  gap: '4px',
+                }}
+              >
+                <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                  {row.time}
+                </span>
+                <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                  {row.trigger}
+                </span>
+                <DirectionBadge dir={row.direction} />
+                <TypeBadge type={row.type} />
+                <span className="font-mono" style={{ color: 'var(--text-primary)' }}>
+                  {row.price}
+                </span>
+                <ExecBadge exec={row.execType} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Detail: Code Tab
+   ======================================================================== */
+
+function CodeTab({ pack }: { pack: UserPack }) {
+  const [showIndicatorCode, setShowIndicatorCode] = useState(false);
+  const [showInterpreterCode, setShowInterpreterCode] = useState(false);
+
+  const codeBlockStyle: React.CSSProperties = {
+    background: 'var(--bg-primary)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    fontFamily: 'monospace',
+    fontSize: '12px',
+    lineHeight: '1.6',
+    padding: '16px',
+    borderRadius: '8px',
+    whiteSpace: 'pre-wrap',
+    overflowX: 'auto',
+  };
+
+  const packId = pack.id.replace(/-/g, '_');
+
+  return (
+    <div className="space-y-4">
+      {/* Active Configuration */}
+      <Card>
+        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+          Active Parameters
+        </h3>
+        <div
+          className="rounded-lg px-4 py-3"
+          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+        >
+          <div className="grid grid-cols-2 gap-y-2 gap-x-8">
+            {pack.params.map((p) => (
+              <div key={p.key} className="flex justify-between">
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.label}</span>
+                <span className="text-xs font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {p.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* Indicator Function */}
+      <Card>
+        <button
+          className="flex items-center justify-between w-full text-left"
+          onClick={() => setShowIndicatorCode(!showIndicatorCode)}
+        >
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Indicator Function
+          </h3>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {showIndicatorCode ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
+        {showIndicatorCode && (
+          <div className="mt-3">
+            <pre style={codeBlockStyle}>
+{`def compute_${packId}(df, ${pack.params.map((p) => `${p.key}=${p.value}`).join(', ')}):
+    """
+    Compute ${pack.name} indicator values.
+    Category: ${pack.category}
+
+    Parameters:
+${pack.params.map((p) => `        ${p.key}: ${p.label} (${p.type}, range ${p.min}-${p.max})`).join('\n')}
+
+    Returns enriched DataFrame with indicator columns.
+    """
+    # Custom implementation
+    ...`}
+            </pre>
+          </div>
+        )}
+      </Card>
+
+      {/* Interpreter Function */}
+      <Card>
+        <button
+          className="flex items-center justify-between w-full text-left"
+          onClick={() => setShowInterpreterCode(!showInterpreterCode)}
+        >
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Interpreter Function
+          </h3>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {showInterpreterCode ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
+        {showInterpreterCode && (
+          <div className="mt-3">
+            <pre style={codeBlockStyle}>
+{`def interpret_${packId}(row):
+    """
+    Classify bar state into one of ${pack.outputs.length} output categories.
+
+    Outputs:
+${pack.outputs.map((o) => `        ${o.code}: ${o.description}`).join('\n')}
+
+    Returns state string for confluence record.
+    """
+    # Custom implementation
+    ...`}
+            </pre>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Detail: Danger Zone Tab
+   ======================================================================== */
+
+function DangerZoneTab({
+  pack,
+  onDelete,
+}: {
+  pack: UserPack;
+  onDelete: () => void;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <Card>
+      <h3 className="text-sm font-medium mb-5" style={{ color: 'var(--red)' }}>
+        Danger Zone
+      </h3>
+      <div className="space-y-6">
+        {/* Rename */}
+        <div>
+          <label className="text-sm mb-2 block" style={{ color: 'var(--text-secondary)' }}>
+            Rename Pack
+          </label>
+          <div className="flex gap-3">
+            <input
+              className="px-3 py-2 rounded-lg text-sm flex-1"
+              style={inputStyle}
+              defaultValue={pack.name}
+            />
+            <button
+              className="px-4 py-2 rounded-lg text-sm"
+              style={btnSecondary}
+            >
+              Rename
+            </button>
+          </div>
+        </div>
+
+        {/* Delete */}
+        <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+          <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+            Delete this pack permanently. This cannot be undone.
+          </p>
+          {pack.strategiesUsing > 0 && (
+            <p className="text-xs mb-3 px-3 py-2 rounded-lg" style={{ background: 'var(--orange-muted)', color: 'var(--orange)' }}>
+              Warning: This pack is used in {pack.strategiesUsing} {pack.strategiesUsing === 1 ? 'strategy' : 'strategies'}.
+              Deleting it will remove it from those strategies.
+            </p>
+          )}
+          {!confirmDelete ? (
+            <button
+              className="px-4 py-2 rounded-lg text-sm font-medium"
+              style={{ background: 'var(--red)', color: 'white' }}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete Pack
+            </button>
+          ) : (
+            <div className="flex items-center gap-3">
+              <button
+                className="px-4 py-2 rounded-lg text-sm font-medium"
+                style={{ background: 'var(--red)', color: 'white' }}
+                onClick={onDelete}
+              >
+                Confirm Delete
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg text-sm"
+                style={btnSecondary}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ========================================================================
+   Detail View (all 6 tabs)
+   ======================================================================== */
+
+function DetailView({
+  pack,
+  onBack,
+  onDelete,
+}: {
+  pack: UserPack;
+  onBack: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div>
+      <PageHeader
+        title={pack.name}
+        backHref="#"
+        actions={
+          <div className="flex items-center gap-3">
+            <Toggle enabled={pack.enabled} onToggle={() => {}} />
+            <span className="text-xs" style={{ color: pack.enabled ? 'var(--green)' : 'var(--text-muted)' }}>
+              {pack.enabled ? 'Enabled' : 'Disabled'}
+            </span>
+            <select className="text-xs px-2 py-1 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} defaultValue={pack.visibility}>
+              <option value="private">Private</option>
+              <option value="public">Public</option>
+            </select>
+            <button onClick={onBack} className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>Back to Packs</button>
+          </div>
+        }
+      />
+
+      {/* Status badges */}
+      <div className="flex items-center gap-3 mb-2 flex-wrap">
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
+          {pack.packType === 'tf_confluence' ? 'TF Confluence' : 'General'}
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)' }}>
+          {pack.category}
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{
+          color: pack.validationStatus === 'passed' ? 'var(--green)' : pack.validationStatus === 'warnings' ? 'var(--orange)' : 'var(--red)',
+          background: (pack.validationStatus === 'passed' ? 'var(--green)' : pack.validationStatus === 'warnings' ? 'var(--orange)' : 'var(--red)') + '20',
+        }}>
+          Validation: {pack.validationStatus}
+        </span>
+        {pack.parityScore !== null && (
+          <span className="text-xs px-2 py-0.5 rounded-full" style={{
+            color: pack.parityScore === 100 ? 'var(--green)' : 'var(--orange)',
+            background: (pack.parityScore === 100 ? 'var(--green)' : 'var(--orange)') + '20',
+          }}>
+            Parity: {pack.parityScore}%
+          </span>
+        )}
+        <span className="text-xs px-2 py-0.5 rounded-full" style={{
+          color: pack.visibility === 'public' ? 'var(--accent)' : 'var(--text-muted)',
+          background: pack.visibility === 'public' ? 'var(--accent-muted)' : 'var(--bg-input)',
+        }}>
+          {pack.visibility === 'public' ? 'Public' : 'Private'}
+        </span>
+      </div>
+      <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+        {pack.version} &middot; {pack.strategiesUsing} strategies &middot; Last modified {pack.lastModified}
+      </p>
+
+      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
+        {(tab) => (
+          <div>
+            {tab === 'Parameters' && <ParametersTab pack={pack} />}
+            {tab === 'Plot Settings' && <PlotSettingsTab pack={pack} />}
+            {tab === 'States & Triggers' && <OutputsTriggersTab pack={pack} />}
+            {tab === 'Chart Preview' && (
+              <div>
+                <Card className="mb-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium">Confluence States & Trigger Visualization</h4>
+                    <div className="flex gap-2">
+                      <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                        <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }} /> Show Confluence
+                      </label>
+                      <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                        <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }} /> Show Triggers
+                      </label>
+                    </div>
+                  </div>
+                  <ChartPlaceholder label={`Price chart with ${pack.name} applied: background shading shows state changes (${pack.outputs.map(o => o.code).join('/')}), arrow markers show trigger fires. Heatmap pane below.`} height={400} />
+                  <div className="flex gap-4 mt-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    {pack.outputs.map((o, i) => (
+                      <span key={o.code} className="flex items-center gap-1">
+                        <span className="w-3 h-3 rounded" style={{ background: ['var(--red)', 'var(--text-muted)', 'var(--green)'][i % 3] + '30' }} />
+                        {o.code}
+                      </span>
+                    ))}
+                  </div>
+                </Card>
+                <PreviewTab pack={pack} />
+              </div>
+            )}
+            {tab === 'Signal Validation' && (
+              <Card>
+                <h4 className="text-sm font-medium mb-2">Signal Validation</h4>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Runs {pack.name} on 90 days of sample data to verify signals fire correctly and all states are reached.
+                </p>
+                <div className="grid grid-cols-4 gap-4 mb-4">
+                  {[
+                    { label: 'Total Signals', value: '{{total_signals}}' },
+                    { label: 'Avg Bars Between', value: '{{avg_bars}}' },
+                    { label: 'State Coverage', value: '{{state_coverage}}' },
+                    { label: 'All States Reached', value: '{{states_reached}}' },
+                  ].map((m) => (
+                    <div key={m.label}>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                      <p className="text-lg font-bold">{m.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Per-Trigger Breakdown</h5>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        {['Trigger', 'Direction', 'Fires', 'Avg Bars', 'State Match'].map((h) => (
+                          <th key={h} className="text-left py-2 px-3 text-[10px] font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pack.triggers.map((t) => (
+                        <tr key={t.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td className="py-2 px-3">{t.name}</td>
+                          <td className="py-2 px-3">{t.direction}</td>
+                          <td className="py-2 px-3">{'{{fires}}'}</td>
+                          <td className="py-2 px-3">{'{{avg_bars}}'}</td>
+                          <td className="py-2 px-3">{'{{match}}'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button className="mt-3" style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }}>
+                  Re-run Validation
+                </button>
+              </Card>
+            )}
+            {tab === 'Parity Simulator' && (
+              <Card>
+                <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Replays historical data through both backtest and live engine paths for {pack.name}. Verifies triggers fire at the same bars.
+                </p>
+                <div className="flex items-center gap-4 mb-4">
+                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Ticker</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>NVDA</option><option>SPY</option><option>AAPL</option></select></div>
+                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>TF</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>1Min</option><option>5Min</option></select></div>
+                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bars</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>200</option><option>500</option></select></div>
+                  <div className="flex items-end"><button style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }}>Run Parity Test</button></div>
+                </div>
+                <ChartPlaceholder label="Bar-by-bar replay: backtest triggers (blue above) vs live triggers (green below). Matched = green. Mismatched = red." height={300} />
+                <div className="grid grid-cols-4 gap-4 mt-4 mb-4">
+                  {[
+                    { label: 'Total Triggers', value: '{{total_triggers}}' },
+                    { label: 'Matched', value: '{{matched}}' },
+                    { label: 'Mismatched', value: '{{mismatched}}' },
+                    { label: 'Parity Score', value: '{{parity_score}}' },
+                  ].map((m) => (
+                    <div key={m.label}>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                      <p className="text-lg font-bold">{m.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+            {tab === 'Code' && <CodeTab pack={pack} />}
+            {tab === 'Danger Zone' && <DangerZoneTab pack={pack} onDelete={onDelete} />}
+          </div>
+        )}
+      </TabBar>
+    </div>
+  );
+}
+
+/* ========================================================================
+   Pack Card (list view)
+   ======================================================================== */
+
+function PackCard({
+  pack,
+  onToggle,
+  onDetail,
+  onClone,
+  onDelete,
+}: {
+  pack: UserPack;
+  onToggle: () => void;
+  onDetail: () => void;
+  onClone: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <Card>
+      <div className="flex items-start gap-4">
+        {/* Toggle */}
+        <div className="pt-0.5">
+          <Toggle enabled={pack.enabled} onToggle={onToggle} />
+        </div>
+
+        {/* Main info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>
+              {pack.name}
+            </span>
+            <CategoryBadge category={pack.category} />
+            <span
+              className="text-xs px-1.5 py-0.5 rounded font-medium"
+              style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}
+            >
+              {pack.version}
+            </span>
+          </div>
+
+          {/* Parameter summary */}
+          <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+            {pack.params.map((p) => `${p.label}: ${p.value}`).join(', ')}
+          </p>
+
+          {/* Outputs preview + usage stats */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 flex-wrap">
+              {pack.outputs.map((output) => (
+                <span
+                  key={output.code}
+                  className="text-xs font-mono px-1.5 py-0.5 rounded"
+                  style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}
+                  title={output.description}
+                >
+                  {output.code}
+                </span>
+              ))}
+            </div>
+            <div className="border-l h-4" style={{ borderColor: 'var(--border)' }} />
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Used in {pack.strategiesUsing} {pack.strategiesUsing === 1 ? 'strategy' : 'strategies'}
+            </span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              &middot; Modified {pack.lastModified}
+            </span>
+          </div>
+        </div>
+
+        {/* Right side: visibility + trigger count + actions */}
+        <div className="flex flex-col items-end gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <select className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', cursor: 'pointer' }} defaultValue={pack.visibility}>
+              <option value="private">Private</option>
+              <option value="public">Public</option>
+            </select>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {pack.triggers.length} triggers
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onDetail}
+              className="px-3 py-1.5 rounded text-xs font-medium"
+              style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}
+            >
+              Edit
+            </button>
+            <button
+              onClick={onClone}
+              className="px-3 py-1.5 rounded text-xs"
+              style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+            >
+              Clone
+            </button>
+            <button
+              onClick={onDelete}
+              className="px-3 py-1.5 rounded text-xs"
+              style={{ background: 'var(--red-muted)', color: 'var(--red)' }}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ========================================================================
+   Create from Scratch Modal
+   ======================================================================== */
+
+function CreateScratchModal({
+  isOpen,
+  onClose,
+  onSubmit,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (name: string, category: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState('Momentum');
+
+  return (
+    <Modal title="Create Pack from Scratch" isOpen={isOpen} onClose={onClose} width="500px">
+      <div className="space-y-4">
+        <div>
+          <label className="text-sm mb-1.5 block font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Pack Name
+          </label>
+          <input
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={inputStyle}
+            placeholder="e.g. My RSI Pack"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="text-sm mb-1.5 block font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Category
+          </label>
+          <select
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={selectStyle}
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+          >
+            {Object.keys(categoryColors).map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button
+            className="px-4 py-2 rounded-lg text-sm font-medium flex-1"
+            style={{
+              ...btnPrimary,
+              ...(name.trim() ? {} : { opacity: 0.5, cursor: 'not-allowed' }),
+            }}
+            disabled={!name.trim()}
+            onClick={() => {
+              onSubmit(name.trim(), category);
+              setName('');
+              onClose();
+            }}
+          >
+            Create Pack
+          </button>
+          <button
+            className="px-4 py-2 rounded-lg text-sm flex-1"
+            style={btnSecondary}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ========================================================================
+   Create from Template Modal
+   ======================================================================== */
+
+function CreateTemplateModal({
+  isOpen,
+  onClose,
+  onSubmit,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (templateKey: string, name: string) => void;
+}) {
+  const [selectedTemplate, setSelectedTemplate] = useState(builtInTemplates[0]?.key ?? '');
+  const [customName, setCustomName] = useState('');
+
+  const tpl = builtInTemplates.find((t) => t.key === selectedTemplate);
+
+  return (
+    <Modal title="Create from Template" isOpen={isOpen} onClose={onClose} width="560px">
+      {builtInTemplates.length === 0 ? (
+        <div className="text-center py-8">
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No built-in templates available yet. This feature is coming soon.</p>
+        </div>
+      ) : (
+      <div className="space-y-5">
+        <div>
+          <label className="text-sm mb-1.5 block font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Template
+          </label>
+          <select
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={selectStyle}
+            value={selectedTemplate}
+            onChange={(e) => setSelectedTemplate(e.target.value)}
+          >
+            {builtInTemplates.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.name} ({t.category})
+              </option>
+            ))}
+          </select>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            {tpl?.description ?? '--'}
+          </p>
+        </div>
+
+        {/* Template preview */}
+        <div
+          className="rounded-lg px-4 py-3"
+          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <CategoryBadge category={tpl?.category ?? '--'} />
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Built-in template -- all parameters customizable
+            </span>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {tpl?.description ?? '--'}
+          </p>
+        </div>
+
+        <div>
+          <label className="text-sm mb-1.5 block font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Custom Name
+          </label>
+          <input
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={inputStyle}
+            placeholder={`e.g. My ${tpl?.name ?? 'Pack'}`}
+            value={customName}
+            onChange={(e) => setCustomName(e.target.value)}
+          />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button
+            className="px-4 py-2 rounded-lg text-sm font-medium flex-1"
+            style={{
+              ...btnPrimary,
+              ...(customName.trim() ? {} : { opacity: 0.5, cursor: 'not-allowed' }),
+            }}
+            disabled={!customName.trim()}
+            onClick={() => {
+              onSubmit(selectedTemplate, customName.trim());
+              setCustomName('');
+              onClose();
+            }}
+          >
+            Create from Template
+          </button>
+          <button
+            className="px-4 py-2 rounded-lg text-sm flex-1"
+            style={btnSecondary}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ========================================================================
+   Import Pack Modal
+   ======================================================================== */
+
+function ImportPackModal({
+  isOpen,
+  onClose,
+  onImport,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onImport: () => void;
+}) {
+  const [jsonInput, setJsonInput] = useState('');
+
+  return (
+    <Modal title="Import Pack" isOpen={isOpen} onClose={onClose} width="600px">
+      <div className="space-y-4">
+        <div>
+          <label className="text-sm mb-1.5 block font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Pack JSON Definition
+          </label>
+          <textarea
+            className="w-full px-3 py-2 rounded-lg text-sm font-mono"
+            style={{
+              ...inputStyle,
+              resize: 'vertical' as const,
+              minHeight: '200px',
+            }}
+            rows={10}
+            placeholder='{ "name": "My Pack", "category": "Momentum", ... }'
+            value={jsonInput}
+            onChange={(e) => setJsonInput(e.target.value)}
+          />
+        </div>
+
+        {/* Validation status */}
+        <div
+          className="rounded-lg px-4 py-3"
+          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center gap-2">
+            {jsonInput.trim() ? (
+              <>
+                <span className="w-2 h-2 rounded-full" style={{ background: 'var(--green)' }} />
+                <span className="text-xs" style={{ color: 'var(--green)' }}>Valid JSON detected</span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 rounded-full" style={{ background: 'var(--text-muted)' }} />
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Paste a pack JSON definition above</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button
+            className="px-4 py-2 rounded-lg text-sm font-medium flex-1"
+            style={{
+              ...btnPrimary,
+              ...(jsonInput.trim() ? {} : { opacity: 0.5, cursor: 'not-allowed' }),
+            }}
+            disabled={!jsonInput.trim()}
+            onClick={() => {
+              onImport();
+              setJsonInput('');
+              onClose();
+            }}
+          >
+            Import Pack
+          </button>
+          <button
+            className="px-4 py-2 rounded-lg text-sm flex-1"
+            style={btnSecondary}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ========================================================================
+   Main Component
+   ======================================================================== */
 
 export default function UserPacksPage() {
+  const [packs, setPacks] = useState<UserPack[]>(emptyUserPacks);
+  const [detailPackId, setDetailPackId] = useState<string | null>(null);
+  const [showCreateScratchModal, setShowCreateScratchModal] = useState(false);
+  const [showCreateTemplateModal, setShowCreateTemplateModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState<string | null>(null);
+
+  const enabledCount = packs.filter((p) => p.enabled).length;
+
+  function togglePack(id: string) {
+    setPacks((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p))
+    );
+  }
+
+  function clonePack(pack: UserPack) {
+    const newId = `${pack.id}-clone-${Date.now()}`;
+    const clone: UserPack = {
+      ...pack,
+      id: newId,
+      name: `${pack.name} (Copy)`,
+      strategiesUsing: 0,
+      lastModified: new Date().toISOString().slice(0, 10),
+      params: pack.params.map((p) => ({ ...p })),
+      plotSettings: pack.plotSettings.map((ps) => ({ ...ps })),
+      outputs: pack.outputs.map((o) => ({ ...o })),
+      triggers: pack.triggers.map((t) => ({ ...t })),
+    };
+    setPacks((prev) => [...prev, clone]);
+  }
+
+  function deletePack(id: string) {
+    setPacks((prev) => prev.filter((p) => p.id !== id));
+    setShowDeleteModal(null);
+    if (detailPackId === id) setDetailPackId(null);
+  }
+
+  function handleCreateScratch(name: string, category: string) {
+    const newId = `custom-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+    const newPack: UserPack = {
+      id: newId,
+      name,
+      version: 'Custom',
+      packType: 'tf_confluence',
+      category,
+      enabled: true,
+      isDefault: false,
+      visibility: 'private',
+      strategiesUsing: 0,
+      lastModified: new Date().toISOString().slice(0, 10),
+      validationStatus: 'passed',
+      parityScore: null,
+      params: [],
+      plotSettings: [],
+      outputs: [],
+      triggers: [],
+    };
+    setPacks((prev) => [...prev, newPack]);
+  }
+
+  function handleCreateFromTemplate(templateKey: string, name: string) {
+    const tpl = builtInTemplates.find((t) => t.key === templateKey);
+    if (!tpl) return;
+    const newId = `${templateKey}-custom-${Date.now()}`;
+    const newPack: UserPack = {
+      id: newId,
+      name,
+      version: 'Custom',
+      packType: 'tf_confluence',
+      category: tpl.category,
+      enabled: true,
+      isDefault: false,
+      visibility: 'private',
+      strategiesUsing: 0,
+      lastModified: new Date().toISOString().slice(0, 10),
+      validationStatus: 'passed',
+      parityScore: null,
+      params: [
+        { key: 'period', label: 'Period', value: 14, min: 2, max: 100, type: 'int' },
+      ],
+      plotSettings: [
+        { key: 'line_color', label: 'Line Color', default: '#8b5cf6' },
+      ],
+      outputs: [
+        { code: 'HIGH', description: 'Above threshold' },
+        { code: 'LOW', description: 'Below threshold' },
+      ],
+      triggers: [
+        { id: `${templateKey}_cross_up`, name: 'Cross Up', direction: 'LONG', type: 'ENTRY', exec: '[C]' },
+        { id: `${templateKey}_cross_down`, name: 'Cross Down', direction: 'SHORT', type: 'ENTRY', exec: '[C]' },
+      ],
+    };
+    setPacks((prev) => [...prev, newPack]);
+  }
+
+  function handleImport() {
+    const imported: UserPack = {
+      id: `imported-${Date.now()}`,
+      name: 'Imported Pack',
+      version: 'Imported',
+      packType: 'tf_confluence',
+      category: 'Custom',
+      enabled: true,
+      isDefault: false,
+      visibility: 'private',
+      strategiesUsing: 0,
+      lastModified: new Date().toISOString().slice(0, 10),
+      validationStatus: 'passed',
+      parityScore: null,
+      params: [
+        { key: 'length', label: 'Length', value: 20, min: 1, max: 100, type: 'int' },
+      ],
+      plotSettings: [
+        { key: 'color', label: 'Color', default: '#f59e0b' },
+      ],
+      outputs: [
+        { code: 'ACTIVE', description: 'Signal active' },
+        { code: 'INACTIVE', description: 'Signal inactive' },
+      ],
+      triggers: [
+        { id: 'imported_trigger', name: 'Signal Trigger', direction: 'BOTH', type: 'ENTRY', exec: '[C]' },
+      ],
+    };
+    setPacks((prev) => [...prev, imported]);
+  }
+
+  // Detail view
+  const detailPack = packs.find((p) => p.id === detailPackId);
+  if (detailPack) {
+    return (
+      <DetailView
+        pack={detailPack}
+        onBack={() => setDetailPackId(null)}
+        onDelete={() => deletePack(detailPack.id)}
+      />
+    );
+  }
+
+  const packToDelete = packs.find((p) => p.id === showDeleteModal);
+
+  // List view
   return (
     <div>
       <PageHeader
         title="User Packs"
-        subtitle="Custom indicator packs"
+        subtitle="Custom indicator packs you've created"
         actions={
-          <span className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5"
-            style={{ background: 'var(--green)15', color: 'var(--green)' }}>
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />
-            Live
-          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="px-4 py-2 rounded-lg text-sm"
+              style={btnSecondary}
+            >
+              Import JSON
+            </button>
+            <button
+              onClick={() => setShowCreateTemplateModal(true)}
+              className="px-4 py-2 rounded-lg text-sm"
+              style={btnSecondary}
+            >
+              From Template
+            </button>
+            <button
+              onClick={() => setShowCreateScratchModal(true)}
+              className="px-4 py-2 rounded-lg text-sm font-medium"
+              style={btnPrimary}
+            >
+              + Create Pack
+            </button>
+          </div>
         }
       />
-      <Card>
-        <div className="text-center py-16">
-          <div className="text-4xl mb-4" style={{ opacity: 0.3 }}>&#9881;</div>
-          <h3 className="text-lg font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
-            No Custom Packs Installed
-          </h3>
-          <p className="text-sm mb-6" style={{ color: 'var(--text-muted)', maxWidth: 400, margin: '0 auto' }}>
-            User packs are custom indicator packs created with the Pack Builder.
-            Build your own indicators, interpreters, and triggers — then install them here.
-          </p>
-          <Link href="/confluence-packs/pack-builder">
-            <button className="px-4 py-2 rounded-lg text-sm font-medium"
-              style={{ background: 'var(--accent)', color: '#fff' }}>
-              Go to Pack Builder
-            </button>
-          </Link>
+
+      {/* Summary stats */}
+      <div className="flex items-center gap-4 mb-6">
+        <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          {packs.length} {packs.length === 1 ? 'pack' : 'packs'}{packs.length > 0 ? `, ${enabledCount} enabled` : ''}
+        </span>
+        {packs.length > 0 && (
+          <div className="flex items-center gap-1.5">
+            {Array.from(new Set(packs.map((p) => p.category))).map((cat) => (
+              <CategoryBadge key={cat} category={cat} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {packs.length === 0 ? (
+        <Card>
+          <div className="text-center py-16">
+            <div className="text-4xl mb-4" style={{ color: 'var(--text-muted)' }}>
+              { /* Package icon placeholder */ }
+              <span style={{ fontSize: '48px', opacity: 0.3 }}>[ ]</span>
+            </div>
+            <p className="text-lg font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+              No custom packs installed
+            </p>
+            <p className="text-sm mb-8 max-w-md mx-auto" style={{ color: 'var(--text-muted)' }}>
+              Create packs with the Pack Builder. Custom indicator packs with
+              parameters, outputs, and triggers will appear here once created.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => setShowCreateScratchModal(true)}
+                className="px-5 py-2.5 rounded-lg text-sm font-medium"
+                style={btnPrimary}
+              >
+                Create from Scratch
+              </button>
+              <button
+                onClick={() => setShowCreateTemplateModal(true)}
+                className="px-5 py-2.5 rounded-lg text-sm"
+                style={btnSecondary}
+              >
+                Start from Template
+              </button>
+            </div>
+          </div>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {packs.map((pack) => (
+            <PackCard
+              key={pack.id}
+              pack={pack}
+              onToggle={() => togglePack(pack.id)}
+              onDetail={() => setDetailPackId(pack.id)}
+              onClone={() => clonePack(pack)}
+              onDelete={() => setShowDeleteModal(pack.id)}
+            />
+          ))}
         </div>
-      </Card>
+      )}
+
+      {/* Create from Scratch Modal */}
+      <CreateScratchModal
+        isOpen={showCreateScratchModal}
+        onClose={() => setShowCreateScratchModal(false)}
+        onSubmit={handleCreateScratch}
+      />
+
+      {/* Create from Template Modal */}
+      <CreateTemplateModal
+        isOpen={showCreateTemplateModal}
+        onClose={() => setShowCreateTemplateModal(false)}
+        onSubmit={handleCreateFromTemplate}
+      />
+
+      {/* Import Pack Modal */}
+      <ImportPackModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImport={handleImport}
+      />
+
+      {/* Delete confirmation modal */}
+      <Modal title="Delete Pack" isOpen={!!showDeleteModal} onClose={() => setShowDeleteModal(null)} width="420px">
+        <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+          Are you sure you want to delete <strong>{packToDelete?.name || 'this pack'}</strong>? This action cannot be undone.
+        </p>
+        {packToDelete && packToDelete.strategiesUsing > 0 && (
+          <p className="text-xs mb-4 px-3 py-2 rounded-lg" style={{ background: 'var(--orange-muted)', color: 'var(--orange)' }}>
+            This pack is used in {packToDelete.strategiesUsing} {packToDelete.strategiesUsing === 1 ? 'strategy' : 'strategies'}.
+          </p>
+        )}
+        <div className="flex gap-3">
+          <button
+            onClick={() => showDeleteModal && deletePack(showDeleteModal)}
+            className="px-4 py-2 rounded-lg text-sm font-medium flex-1"
+            style={{ background: 'var(--red)', color: 'white' }}
+          >
+            Delete
+          </button>
+          <button
+            onClick={() => setShowDeleteModal(null)}
+            className="px-4 py-2 rounded-lg text-sm flex-1"
+            style={btnSecondary}
+          >
+            Cancel
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
