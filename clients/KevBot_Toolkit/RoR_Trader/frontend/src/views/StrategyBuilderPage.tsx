@@ -1096,60 +1096,38 @@ function AdvancedAnalysis() {
             </div>
           </div>
 
-          {/* Markov Motor */}
+          {/* Markov Motor — {{markov_transitions}} not wired yet */}
           <div>
             <h4 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>
               Markov Motor Analysis
             </h4>
             <div className="grid grid-cols-2 gap-4">
-              <div
-                className="rounded-lg border p-3"
-                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
-              >
-                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
-                  After Win
-                </div>
+              <div className="rounded-lg border p-3" style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}>
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>After Win</div>
                 <div className="flex justify-between text-xs mb-1">
                   <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
-                  <span style={{ color: 'var(--green)' }}>62.4%</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{'{{win_after_win}}'}</span>
                 </div>
                 <div className="flex justify-between text-xs">
                   <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
-                  <span style={{ color: 'var(--red)' }}>37.6%</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{'{{loss_after_win}}'}</span>
                 </div>
-                <div
-                  className="mt-2 h-2 rounded-full overflow-hidden"
-                  style={{ background: 'var(--red-muted)' }}
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{ width: '62.4%', background: 'var(--green)' }}
-                  />
+                <div className="mt-2 h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                  <div className="h-full rounded-full" style={{ width: '50%', background: 'var(--text-muted)', opacity: 0.3 }} />
                 </div>
               </div>
-              <div
-                className="rounded-lg border p-3"
-                style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}
-              >
-                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
-                  After Loss
-                </div>
+              <div className="rounded-lg border p-3" style={{ background: 'var(--bg-input)', borderColor: 'var(--border)' }}>
+                <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>After Loss</div>
                 <div className="flex justify-between text-xs mb-1">
                   <span style={{ color: 'var(--text-secondary)' }}>P(Win)</span>
-                  <span style={{ color: 'var(--green)' }}>55.1%</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{'{{win_after_loss}}'}</span>
                 </div>
                 <div className="flex justify-between text-xs">
                   <span style={{ color: 'var(--text-secondary)' }}>P(Loss)</span>
-                  <span style={{ color: 'var(--red)' }}>44.9%</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{'{{loss_after_loss}}'}</span>
                 </div>
-                <div
-                  className="mt-2 h-2 rounded-full overflow-hidden"
-                  style={{ background: 'var(--red-muted)' }}
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{ width: '55.1%', background: 'var(--green)' }}
-                  />
+                <div className="mt-2 h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                  <div className="h-full rounded-full" style={{ width: '50%', background: 'var(--text-muted)', opacity: 0.3 }} />
                 </div>
               </div>
             </div>
