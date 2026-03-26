@@ -237,17 +237,21 @@ export default function StrategiesPage() {
   const dupMut = useDuplicateStrategy();
   const bulkDeleteMut = useBulkDeleteStrategies();
 
-  // Bulk refresh state
+  // Bulk refresh — uses plain fetch to avoid bundler issues with apiFetch import
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState(0);
   const handleBulkRefresh = useCallback(async () => {
     if (bulkRefreshing || strategies.length === 0) return;
-    const { apiFetch } = await import('@/lib/api/client');
     setBulkRefreshing(true);
     setRefreshProgress(0);
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ror_access_token') : null;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     for (let i = 0; i < strategies.length; i++) {
       try {
-        await apiFetch(`/api/strategies/${strategies[i].id}/refresh`, { method: 'POST' });
+        await fetch(`${apiUrl}/api/strategies/${strategies[i].id}/refresh`, {
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } : {},
+        });
       } catch (e) {
         console.error(`Failed to refresh strategy ${strategies[i].id}:`, e);
       }
