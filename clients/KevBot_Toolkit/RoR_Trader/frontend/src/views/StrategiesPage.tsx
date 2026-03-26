@@ -294,7 +294,7 @@ export default function StrategiesPage() {
       case 'Max DD (Best)': result.sort((a, b) => b.maxDD - a.maxDD); break;
     }
     return result;
-  }, [tickerFilter, directionFilter, tagFilter, statusFilter, sortBy]);
+  }, [strategies, tickerFilter, directionFilter, tagFilter, statusFilter, sortBy]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
