@@ -16,7 +16,6 @@ import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useDeleteStrategy, useDuplicateStrategy, useBulkDeleteStrategies } from '@/hooks/mutations/useStrategyMutations';
-import { apiFetch } from '@/lib/api/client';
 
 /* ========================================================================= */
 /* TYPES                                                                       */
@@ -243,6 +242,7 @@ export default function StrategiesPage() {
   const [refreshProgress, setRefreshProgress] = useState(0);
   const handleBulkRefresh = useCallback(async () => {
     if (bulkRefreshing || strategies.length === 0) return;
+    const { apiFetch } = await import('@/lib/api/client');
     setBulkRefreshing(true);
     setRefreshProgress(0);
     for (let i = 0; i < strategies.length; i++) {
@@ -254,7 +254,6 @@ export default function StrategiesPage() {
       setRefreshProgress(i + 1);
     }
     setBulkRefreshing(false);
-    // Invalidate to reload with fresh data
     window.location.reload();
   }, [bulkRefreshing, strategies]);
 
