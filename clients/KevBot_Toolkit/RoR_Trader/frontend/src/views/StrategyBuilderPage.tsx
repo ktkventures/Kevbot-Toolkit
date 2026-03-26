@@ -1556,15 +1556,15 @@ export default function StrategyBuilderPage() {
   const [strategyName, setStrategyName] = useState('SPY LONG - 1');
 
   // ---- Entry/Exit ----
-  const [entryTrigger, setEntryTrigger] = useState('ema-price-cross-up');
-  const [exitTriggers, setExitTriggers] = useState<string[]>(['ema-price-cross-down']);
+  const [entryTrigger, setEntryTrigger] = useState('');
+  const [exitTriggers, setExitTriggers] = useState<string[]>([]);
   const [triggerSearch, setTriggerSearch] = useState('');
 
   // ---- Stop Loss (pack selection) ----
-  const [selectedStopPack, setSelectedStopPack] = useState('atr-default');
+  const [selectedStopPack, setSelectedStopPack] = useState('');
 
   // ---- Target (pack selection) ----
-  const [selectedTargetPack, setSelectedTargetPack] = useState('rr-default');
+  const [selectedTargetPack, setSelectedTargetPack] = useState('');
 
   // ---- Confluence ----
   const [selectedConditions, setSelectedConditions] = useState<Set<string>>(
