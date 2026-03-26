@@ -813,12 +813,47 @@ def derive_strategy_status(
         return 'On Track'
 
 
+def enrich_confluence_with_fidelity(confluence: list) -> list:
+    """Enrich confluence condition strings with fidelity type [PB]/[CB].
+
+    Current behavior: all cross-TF conditions use shifted (previous bar) data = [PB].
+    The _spec_ columns exist for [CB] but aren't used in trading decisions yet.
+
+    Input: ["5M-EMA_STACK-SML", "1D-MACD_LINE-BULL"]
+    Output: [{"id": "5M-EMA_STACK-SML", "fidelity": "PB", "label": "5M-EMA_STACK-SML [PB]"}, ...]
+    """
+    if not confluence:
+        return []
+
+    result = []
+    for cond in confluence:
+        if isinstance(cond, dict):
+            # Already enriched
+            result.append(cond)
+        elif isinstance(cond, str):
+            # Primary TF conditions (1M prefix) don't need fidelity tags
+            parts = cond.split('-')
+            tf = parts[0] if parts else ''
+            if tf in ('1M', '1m', 'GEN'):
+                result.append({"id": cond, "fidelity": None, "label": cond})
+            else:
+                # Cross-TF = [PB] by default
+                result.append({"id": cond, "fidelity": "PB", "label": f"{cond} [PB]"})
+        else:
+            result.append({"id": str(cond), "fidelity": None, "label": str(cond)})
+    return result
+
+
 def enrich_strategy(strategy: dict) -> dict:
-    """Add forward_kpis, alert_kpis, sigma, and status to a strategy dict.
+    """Add forward_kpis, alert_kpis, sigma, status, and fidelity to a strategy dict.
 
     Called by the strategies API to enrich the response.
     """
     enriched = dict(strategy)
+
+    # Fidelity-enriched confluence
+    raw_conf = strategy.get('confluence', [])
+    enriched['confluence_enriched'] = enrich_confluence_with_fidelity(raw_conf)
 
     # Forward KPIs
     fwd_kpis = compute_forward_kpis(strategy)
