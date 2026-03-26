@@ -1483,7 +1483,7 @@ export default function StrategyBuilderPage() {
 
   // Derive trigger/pack/condition lists from API data
   const API_TRIGGERS: TriggerDef[] = useMemo(() => {
-    if (!apiEntryTriggers && !apiExitTriggers) return API_TRIGGERS;
+    if (!apiEntryTriggers && !apiExitTriggers) return [];
     const triggers: TriggerDef[] = [];
     for (const [id, name] of Object.entries(apiEntryTriggers || {})) {
       triggers.push({ id, name: String(name), execType: 'C', pack: id.split('_')[0] || 'unknown' });
@@ -1497,7 +1497,7 @@ export default function StrategyBuilderPage() {
   }, [apiEntryTriggers, apiExitTriggers]);
 
   const API_STOP_PACKS: RiskPack[] = useMemo(() => {
-    if (!apiRmPacks) return API_STOP_PACKS;
+    if (!apiRmPacks) return [];
     return apiRmPacks.map((p: any) => ({
       id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
       summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
@@ -1505,7 +1505,7 @@ export default function StrategyBuilderPage() {
   }, [apiRmPacks]);
 
   const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
-    if (!apiRmPacks) return API_TARGET_PACKS;
+    if (!apiRmPacks) return [];
     return apiRmPacks.filter((p: any) => p.base_template === 'rr_ratio' || p.base_template?.includes('target'))
       .map((p: any) => ({
         id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
@@ -1514,7 +1514,7 @@ export default function StrategyBuilderPage() {
   }, [apiRmPacks]);
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
-    if (!apiConfluenceGroups) return API_CONFLUENCE_CONDITIONS;
+    if (!apiConfluenceGroups) return [];
     const conds: ConfluenceCondition[] = [];
     for (const g of apiConfluenceGroups) {
       // Generate conditions from group outputs (e.g., "1M-EMA_STACK_DEFAULT-SML")
@@ -1525,7 +1525,7 @@ export default function StrategyBuilderPage() {
   }, [apiConfluenceGroups]);
 
   const API_GENERAL_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
-    if (!apiGeneralPacks) return API_GENERAL_CONDITIONS;
+    if (!apiGeneralPacks) return [];
     return apiGeneralPacks.map((p: any) => ({
       id: `GEN-${p.id.toUpperCase()}-IN`,
       label: `${p.base_template} (${p.version}) — In Window`,
