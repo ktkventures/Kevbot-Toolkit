@@ -86,90 +86,35 @@ const EMPTY_EXTENDED_KPIS = {
   maxConsecWins: 0, maxConsecLosses: 0,
 };
 
-const mockRollingMetrics = {
-  windows: [10, 20, 30, 50, 100],
-  defaultWindow: 20,
-  metrics: ['Win Rate', 'PF', 'Sharpe'],
-};
+const ROLLING_METRIC_OPTIONS = ['Win Rate', 'PF', 'Sharpe'];
 
-const mockAlertAnalysis = {
-  missed: [
-    { tradeNum: 5, entryTime: '2026-03-15 09:38:12', monitorActive: false, status: 'Monitor Off' },
-    { tradeNum: 9, entryTime: '2026-03-13 14:22:45', monitorActive: true, status: 'WS Disconnect' },
-  ],
-  phantom: [
-    { alertId: 'A-042', type: 'ENTRY', timestamp: '2026-03-16 10:05:33', price: 141.22, status: 'No Matching Trade' },
-  ],
-  summaryMetrics: [
-    { label: 'Total Trades', ftAll: '18', ftAlertsOn: '16', alertActual: '16', delta: '0' },
-    { label: 'Win Rate', ftAll: '52.1%', ftAlertsOn: '51.5%', alertActual: '50.5%', delta: '-1.0%' },
-    { label: 'PF', ftAll: '1.82', ftAlertsOn: '1.78', alertActual: '1.70', delta: '-0.08' },
-    { label: 'Avg R', ftAll: '+0.38', ftAlertsOn: '+0.36', alertActual: '+0.35', delta: '-0.01' },
-    { label: 'Total R', ftAll: '+6.84', ftAlertsOn: '+5.76', alertActual: '+5.60', delta: '-0.16' },
-    { label: 'Avg Slippage (R)', ftAll: '--', ftAlertsOn: '--', alertActual: '-0.04', delta: '-0.04' },
-    { label: 'Entry Slip $/sh', ftAll: '--', ftAlertsOn: '--', alertActual: '$0.02', delta: '$0.02' },
-    { label: 'Exit Slip $/sh', ftAll: '--', ftAlertsOn: '--', alertActual: '$0.03', delta: '$0.03' },
-    { label: 'Webhook Success %', ftAll: '--', ftAlertsOn: '--', alertActual: '93.8%', delta: '--' },
-    { label: 'Missed Count', ftAll: '--', ftAlertsOn: '--', alertActual: '2', delta: '2' },
-    { label: 'Phantom Count', ftAll: '--', ftAlertsOn: '--', alertActual: '1', delta: '1' },
-  ],
+// {{alert_analysis}} — populated from API when alert analysis endpoint is available
+const EMPTY_ALERT_ANALYSIS = {
+  missed: [] as any[],
+  phantom: [] as any[],
+  summaryMetrics: [] as any[],
   positionHealth: {
-    status: 'Healthy', entries: 16, exits: 16, avgHoldTime: '4m 18s',
-    anomalies: [
-      { time: '2026-03-16 10:05:33', type: 'Phantom Entry', detail: 'Entry signal with no matching trade' },
-    ],
+    status: '--', entries: 0, exits: 0, avgHoldTime: '--',
+    anomalies: [] as any[],
   },
-  triggerTiming: [
-    { tradeNum: 1, type: 'ENTRY', exec: '[C]', trigger: 'EMA Short > Mid Cross', theoTime: '09:42:00', alertTime: '09:42:15', timeDelta: '+15s', theoPrice: 142.33, alertPrice: 142.35, priceDelta: '+$0.02', slipR: 0.04 },
-    { tradeNum: 1, type: 'EXIT', exec: '[C]', trigger: 'EMA Short < Mid Cross', theoTime: '09:46:00', alertTime: '09:46:32', timeDelta: '+32s', theoPrice: 143.01, alertPrice: 142.98, priceDelta: '-$0.03', slipR: -0.06 },
-    { tradeNum: 2, type: 'ENTRY', exec: '[C]', trigger: 'EMA Short > Mid Cross', theoTime: '10:15:00', alertTime: '10:15:03', timeDelta: '+3s', theoPrice: 143.08, alertPrice: 143.10, priceDelta: '+$0.02', slipR: 0.03 },
-    { tradeNum: 3, type: 'ENTRY', exec: '[L]', trigger: 'EMA Short > Mid Cross', theoTime: '11:02:30', alertTime: '11:02:44', timeDelta: '+14s', theoPrice: 143.48, alertPrice: 143.50, priceDelta: '+$0.02', slipR: 0.04 },
-  ],
-  tradeByTrade: [
-    { tradeNum: 1, ftR: 1.42, liveR: 1.32, deltaR: -0.10, entrySlip: 0.02, exitSlip: -0.03, netSlip: -0.01 },
-    { tradeNum: 2, ftR: -0.85, liveR: -0.88, deltaR: -0.03, entrySlip: 0.02, exitSlip: 0.01, netSlip: 0.03 },
-    { tradeNum: 3, ftR: 2.07, liveR: 1.98, deltaR: -0.09, entrySlip: 0.02, exitSlip: -0.05, netSlip: -0.03 },
-    { tradeNum: 4, ftR: -0.92, liveR: -0.95, deltaR: -0.03, entrySlip: 0.01, exitSlip: 0.02, netSlip: 0.03 },
-    { tradeNum: 5, ftR: 1.63, liveR: 1.55, deltaR: -0.08, entrySlip: 0.03, exitSlip: -0.02, netSlip: 0.01 },
-  ],
+  triggerTiming: [] as any[],
+  tradeByTrade: [] as any[],
 };
 
-const mockAlerts = [
-  { time: '2026-03-18 09:42:15', type: 'ENTRY', trigger: 'EMA Short > Mid Cross', price: 142.35, status: 'Delivered' },
-  { time: '2026-03-18 09:46:32', type: 'EXIT', trigger: 'EMA Short < Mid Cross', price: 142.98, status: 'Delivered' },
-  { time: '2026-03-18 10:15:03', type: 'ENTRY', trigger: 'EMA Short > Mid Cross', price: 143.10, status: 'Delivered' },
-  { time: '2026-03-17 09:35:22', type: 'ENTRY', trigger: 'EMA Short > Mid Cross', price: 141.80, status: 'Delivered' },
-  { time: '2026-03-17 09:39:22', type: 'EXIT', trigger: 'EMA Short < Mid Cross', price: 141.45, status: 'Failed' },
-  { time: '2026-03-17 10:22:11', type: 'ENTRY', trigger: 'EMA Short > Mid Cross', price: 141.60, status: 'Delivered' },
-];
+// {{recent_alerts}} — populated from useStrategyAlerts hook
+const EMPTY_ALERTS: any[] = [];
 
-const tradeAlertMapping = [
-  { tradeNum: 1, btEntry: '09:42:00', alertEntry: '09:42:15', entryDelta: '+15s', btExit: '09:46:00', alertExit: '09:46:32', exitDelta: '+32s' },
-  { tradeNum: 2, btEntry: '10:15:00', alertEntry: '10:15:03', entryDelta: '+3s', btExit: '10:19:00', alertExit: '10:19:18', exitDelta: '+18s' },
-  { tradeNum: 3, btEntry: '11:02:30', alertEntry: '11:02:44', entryDelta: '+14s', btExit: '11:06:30', alertExit: '11:06:44', exitDelta: '+14s' },
-  { tradeNum: 4, btEntry: '09:35:00', alertEntry: '09:35:22', entryDelta: '+22s', btExit: '09:39:00', alertExit: '09:39:22', exitDelta: '+22s' },
-];
+// {{trade_alert_mapping}} — populated from API when alert analysis endpoint is available
+const EMPTY_TRADE_ALERT_MAPPING: any[] = [];
 
-const confluenceGroups = [
-  { name: 'EMA Stack (Default)', pack: 'Default', id: 'EMA_STACK' },
-  { name: 'RVOL (Default)', pack: 'Default', id: 'RVOL' },
-  { name: 'MACD Line (Default)', pack: 'Default', id: 'MACD_LINE' },
-];
+// {{confluence_groups}} — derived from strategy.confluence when API data is available
+const EMPTY_CONFLUENCE_GROUPS: { name: string; pack: string; id: string }[] = [];
 
-const confluenceTimeline = [
-  { time: '2026-03-18 09:42:00', state: 'SML', previous: 'MLS' },
-  { time: '2026-03-18 09:46:00', state: 'MLS', previous: 'SML' },
-  { time: '2026-03-18 10:15:00', state: 'SML', previous: 'MLS' },
-  { time: '2026-03-18 10:19:00', state: 'MLS', previous: 'SML' },
-  { time: '2026-03-18 11:02:00', state: 'SML', previous: 'MLS' },
-];
+// {{confluence_timeline}} — populated from API when confluence analysis endpoint is available
+const EMPTY_CONFLUENCE_TIMELINE: any[] = [];
 
-const confluenceTriggerEvents = [
-  { time: '2026-03-18 09:42:00', trigger: 'Short > Mid Cross', sentiment: 'Bullish', price: 142.33, exec: '[C]' },
-  { time: '2026-03-18 09:46:00', trigger: 'Short < Mid Cross', sentiment: 'Bearish', price: 143.01, exec: '[C]' },
-  { time: '2026-03-18 10:15:00', trigger: 'Short > Mid Cross', sentiment: 'Bullish', price: 143.08, exec: '[C]' },
-  { time: '2026-03-18 11:02:30', trigger: 'Short > Mid Cross', sentiment: 'Bullish', price: 143.48, exec: '[L]' },
-];
+// {{confluence_trigger_events}} — populated from API when confluence analysis endpoint is available
+const EMPTY_CONFLUENCE_TRIGGER_EVENTS: any[] = [];
 
 /* ========================================================================= */
 /* HELPERS                                                                     */
@@ -413,7 +358,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggers, setShowTriggers] = useState(true);
   const [btTradesOpen, setBtTradesOpen] = useState(false);
   const [fwdTradesOpen, setFwdTradesOpen] = useState(true);
-  const [selectedConfGroup, setSelectedConfGroup] = useState(confluenceGroups[0].name);
+  const confluenceGroups = EMPTY_CONFLUENCE_GROUPS; // {{confluence_groups}} — wire to API
+  const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // {{confluence_timeline}} — wire to API
+  const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // {{confluence_trigger_events}} — wire to API
+  const recentAlerts = alerts || EMPTY_ALERTS; // from useStrategyAlerts hook
+  const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
+  const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
+  const [selectedConfGroup, setSelectedConfGroup] = useState(confluenceGroups.length > 0 ? confluenceGroups[0].name : '');
   const [showPosHealth, setShowPosHealth] = useState(false);
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
@@ -982,7 +933,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               value={rollingMetric}
                               onChange={(e) => setRollingMetric(e.target.value)}
                             >
-                              {mockRollingMetrics.metrics.map((m) => (
+                              {ROLLING_METRIC_OPTIONS.map((m) => (
                                 <option key={m} value={m}>{m}</option>
                               ))}
                             </select>
@@ -1084,13 +1035,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             <tbody>
                               <tr>
                                 <td style={{ ...tdStyle, fontWeight: 600 }}>Win</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--green)' }}>58.2%</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--red)' }}>41.8%</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
                               </tr>
                               <tr>
                                 <td style={{ ...tdStyle, fontWeight: 600 }}>Loss</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--green)' }}>52.4%</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--red)' }}>47.6%</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
                               </tr>
                             </tbody>
                           </table>
@@ -1099,11 +1050,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <div className="flex items-center gap-6 mt-4">
                           <div>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Trend Score</p>
-                            <p className="text-base font-bold" style={{ color: 'var(--green)' }}>+0.62</p>
+                            <p className="text-base font-bold" style={{ color: 'var(--text-muted)' }}>{'--'}</p>
                           </div>
                           <div>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Edge Strength</p>
-                            <p className="text-base font-bold" style={{ color: 'var(--green)' }}>Strong</p>
+                            <p className="text-base font-bold" style={{ color: 'var(--text-muted)' }}>{'--'}</p>
                           </div>
                         </div>
                       </Card>
@@ -1166,19 +1117,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Status</p>
-                      <p className="text-base font-bold mt-1" style={{ color: 'var(--green)' }}>FLAT</p>
+                      <p className="text-base font-bold mt-1" style={{ color: 'var(--text-muted)' }}>{'{{status}}'}</p>
                     </div>
                     <div>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Last Signal</p>
-                      <p className="text-base font-bold mt-1">EXIT @ $142.98</p>
+                      <p className="text-base font-bold mt-1">{'{{last_signal}}'}</p>
                     </div>
                     <div>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Signal Time</p>
-                      <p className="text-base font-bold mt-1 font-mono">09:46:32</p>
+                      <p className="text-base font-bold mt-1 font-mono">{'{{signal_time}}'}</p>
                     </div>
                     <div>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Price</p>
-                      <p className="text-base font-bold mt-1">$143.25</p>
+                      <p className="text-base font-bold mt-1">{'{{current_price}}'}</p>
                     </div>
                   </div>
                 </Card>
@@ -1196,24 +1147,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {[
-                          { condition: '[1M] EMA Stack', current: 'SML', needed: 'SML', met: true },
-                          { condition: '[5M] RVOL', current: 'HIGH', needed: 'HIGH', met: true },
-                          { condition: '[1D] MACD Line', current: 'BULL', needed: 'BULL', met: true },
-                        ].map((row, i) => (
+                        {strategy.confluence.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              No confluence conditions configured
+                            </td>
+                          </tr>
+                        ) : strategy.confluence.map((c, i) => (
                           <tr key={i}>
-                            <td style={tdStyle}>{row.condition}</td>
+                            <td style={tdStyle}>{c}</td>
                             <td style={tdStyle}>
                               <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
-                                {row.current}
+                                {'{{current_state}}'}
                               </span>
                             </td>
                             <td style={tdStyle}>
-                              <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{row.needed}</span>
+                              <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{'{{needed_state}}'}</span>
                             </td>
                             <td style={tdStyle}>
-                              <span style={{ color: row.met ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                {row.met ? 'Met' : 'Not met'}
+                              <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                {'{{met_status}}'}
                               </span>
                             </td>
                           </tr>
@@ -1238,25 +1191,27 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {[
-                            { entryTime: '03/18 09:42:15', exitTime: '03/18 09:46:32', entryPrice: 142.35, exitPrice: 142.98, r: 1.42, result: 'Win' },
-                            { entryTime: '03/18 10:15:03', exitTime: '03/18 10:19:18', entryPrice: 143.10, exitPrice: 142.65, r: -0.85, result: 'Loss' },
-                            { entryTime: '03/18 11:02:44', exitTime: 'Open', entryPrice: 143.50, exitPrice: null, r: null, result: 'Open' },
-                          ].map((row, i) => (
+                          {recentAlerts.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                No alerts available — enable monitoring to populate
+                              </td>
+                            </tr>
+                          ) : recentAlerts.map((row: any, i: number) => (
                             <tr key={i}>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime}</td>
-                              <td style={tdStyle}>${row.entryPrice.toFixed(2)}</td>
-                              <td style={tdStyle}>{row.exitPrice ? `$${row.exitPrice.toFixed(2)}` : '\u2014'}</td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime || '--'}</td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime || '--'}</td>
+                              <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
+                              <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
                               <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
-                                {row.r != null ? `${row.r >= 0 ? '+' : ''}${row.r.toFixed(2)}` : '\u2014'}
+                                {row.r != null ? `${row.r >= 0 ? '+' : ''}${Number(row.r).toFixed(2)}` : '\u2014'}
                               </td>
                               <td style={tdStyle}>
                                 <span style={{
                                   color: row.result === 'Win' ? 'var(--green)' : row.result === 'Loss' ? 'var(--red)' : 'var(--orange)',
                                   fontWeight: 600, fontSize: '0.75rem',
                                 }}>
-                                  {row.result}
+                                  {row.result || '--'}
                                 </span>
                               </td>
                             </tr>
@@ -1279,25 +1234,27 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {[
-                            { entryTime: '03/18 09:42:00', exitTime: '03/18 09:46:00', entryPrice: 142.33, exitPrice: 143.01, r: 1.48, result: 'Win' },
-                            { entryTime: '03/18 10:15:00', exitTime: '03/18 10:19:00', entryPrice: 143.08, exitPrice: 142.62, r: -0.82, result: 'Loss' },
-                            { entryTime: '03/18 11:02:30', exitTime: '03/18 11:06:30', entryPrice: 143.48, exitPrice: 144.15, r: 2.12, result: 'Win' },
-                          ].map((row, i) => (
+                          {btTrades.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                No trades available — run backtest to populate
+                              </td>
+                            </tr>
+                          ) : btTrades.slice(0, 20).map((row: any, i: number) => (
                             <tr key={i}>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime}</td>
-                              <td style={tdStyle}>${row.entryPrice.toFixed(2)}</td>
-                              <td style={tdStyle}>${row.exitPrice.toFixed(2)}</td>
-                              <td style={{ ...tdStyle, color: row.r >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                                {row.r >= 0 ? '+' : ''}{row.r.toFixed(2)}
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime || '--'}</td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime || '--'}</td>
+                              <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
+                              <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
+                              <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                                {row.pnlR != null ? `${row.pnlR >= 0 ? '+' : ''}${Number(row.pnlR).toFixed(2)}` : '--'}
                               </td>
                               <td style={tdStyle}>
                                 <span style={{
-                                  color: row.result === 'Win' ? 'var(--green)' : 'var(--red)',
+                                  color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)',
                                   fontWeight: 600, fontSize: '0.75rem',
                                 }}>
-                                  {row.result}
+                                  {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
                                 </span>
                               </td>
                             </tr>
@@ -1343,6 +1300,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             {/* =========================================================== */}
             {tab === 'Confluence Analysis' && (
               <div>
+                {confluenceGroups.length === 0 ? (
+                  <p className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>No confluence groups available — wire to API to populate.</p>
+                ) : (
+                <>
                 <PillTabs
                   tabs={confluenceGroups.map((g) => g.name)}
                   active={selectedConfGroup}
@@ -1377,7 +1338,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 </tr>
                               </thead>
                               <tbody>
-                                {confluenceTimeline.map((row, i) => (
+                                {confluenceTimeline.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={3} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                      No data — run backtest to populate
+                                    </td>
+                                  </tr>
+                                ) : confluenceTimeline.map((row: any, i: number) => (
                                   <tr key={i}>
                                     <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.time}</td>
                                     <td style={tdStyle}>
@@ -1413,7 +1380,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 </tr>
                               </thead>
                               <tbody>
-                                {confluenceTriggerEvents.map((row, i) => (
+                                {confluenceTriggerEvents.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={5} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                      No data — run backtest to populate
+                                    </td>
+                                  </tr>
+                                ) : confluenceTriggerEvents.map((row: any, i: number) => (
                                   <tr key={i}>
                                     <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.time}</td>
                                     <td style={tdStyle}>{row.trigger}</td>
@@ -1422,7 +1395,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                         {row.sentiment}
                                       </span>
                                     </td>
-                                    <td style={tdStyle}>${row.price.toFixed(2)}</td>
+                                    <td style={tdStyle}>${row.price != null ? Number(row.price).toFixed(2) : '--'}</td>
                                     <td style={tdStyle}>
                                       <span
                                         className="text-xs font-mono px-1.5 py-0.5 rounded-full"
@@ -1443,6 +1416,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </div>
                     </div>
                   ))}
+                </>
+                )}
               </div>
             )}
 
@@ -1795,20 +1770,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </thead>
                         <tbody>
                           {[
-                            { ph: '{{event_type}}', val: 'entry_long_market', src: 'Derived from execution type + direction' },
+                            { ph: '{{event_type}}', val: '{{event_type}}', src: 'Derived from execution type + direction' },
                             { ph: '{{symbol}}', val: strategy.symbol, src: 'Strategy' },
                             { ph: '{{direction}}', val: strategy.direction, src: 'Strategy' },
-                            { ph: '{{order_action}}', val: 'buy', src: 'Derived (buy/sell/close)' },
-                            { ph: '{{order_type}}', val: 'market', src: 'Derived from execution type' },
-                            { ph: '{{order_price}}', val: `${mockAlerts[0].price.toFixed(2)}`, src: 'Fill price or limit price' },
-                            { ph: '{{stop_price}}', val: '141.50', src: 'Calculated stop' },
-                            { ph: '{{quantity}}', val: '12', src: 'Portfolio (risk / stop distance)' },
-                            { ph: '{{trigger_name}}', val: mockAlerts[0].trigger, src: 'Strategy trigger' },
-                            { ph: '{{atr}}', val: '1.42', src: 'Indicator at signal bar' },
-                            { ph: '{{confluence_met}}', val: strategy.confluence.join(', '), src: 'Active conditions at signal' },
-                            { ph: '{{portfolio_name}}', val: 'Main Portfolio', src: 'Portfolio' },
-                            { ph: '{{risk_per_trade}}', val: '500.00', src: 'Portfolio' },
-                            { ph: '{{timestamp}}', val: mockAlerts[0].time, src: 'Signal time' },
+                            { ph: '{{order_action}}', val: '{{order_action}}', src: 'Derived (buy/sell/close)' },
+                            { ph: '{{order_type}}', val: '{{order_type}}', src: 'Derived from execution type' },
+                            { ph: '{{order_price}}', val: '{{order_price}}', src: 'Fill price or limit price' },
+                            { ph: '{{stop_price}}', val: '{{stop_price}}', src: 'Calculated stop' },
+                            { ph: '{{quantity}}', val: '{{quantity}}', src: 'Portfolio (risk / stop distance)' },
+                            { ph: '{{trigger_name}}', val: '{{trigger_name}}', src: 'Strategy trigger' },
+                            { ph: '{{atr}}', val: '{{atr}}', src: 'Indicator at signal bar' },
+                            { ph: '{{confluence_met}}', val: strategy.confluence.length > 0 ? strategy.confluence.join(', ') : '{{confluence_met}}', src: 'Active conditions at signal' },
+                            { ph: '{{portfolio_name}}', val: '{{portfolio_name}}', src: 'Portfolio' },
+                            { ph: '{{risk_per_trade}}', val: '{{risk_per_trade}}', src: 'Portfolio' },
+                            { ph: '{{timestamp}}', val: '{{timestamp}}', src: 'Signal time' },
                           ].map((row, i) => (
                             <tr key={i}>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--accent)' }}>{row.ph}</td>
@@ -1835,9 +1810,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {mockAlerts.map((alert, i) => (
+                        {recentAlerts.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              No alerts available — enable monitoring to populate
+                            </td>
+                          </tr>
+                        ) : recentAlerts.map((alert: any, i: number) => (
                           <tr key={i}>
-                            <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{alert.time}</td>
+                            <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{alert.time || '--'}</td>
                             <td style={tdStyle}>
                               <span
                                 className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
@@ -1849,8 +1830,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 {alert.type === 'ENTRY' ? 'entry_long_market' : 'exit_long_market'}
                               </span>
                             </td>
-                            <td style={tdStyle}>{alert.trigger}</td>
-                            <td style={tdStyle}>${alert.price.toFixed(2)}</td>
+                            <td style={tdStyle}>{alert.trigger || '--'}</td>
+                            <td style={tdStyle}>{alert.price != null ? `$${Number(alert.price).toFixed(2)}` : '--'}</td>
                             <td style={tdStyle}>
                               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Market</span>
                             </td>
@@ -1858,7 +1839,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               <span style={{
                                 color: alert.status === 'Delivered' ? 'var(--green)' : 'var(--red)',
                               }}>
-                                {alert.status}
+                                {alert.status || '--'}
                               </span>
                             </td>
                           </tr>
@@ -1881,7 +1862,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {tradeAlertMapping.map((row, i) => (
+                        {tradeAlertMapping.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              No data — enable monitoring to populate
+                            </td>
+                          </tr>
+                        ) : tradeAlertMapping.map((row: any, i: number) => (
                           <tr key={i}>
                             <td style={tdStyle}>{row.tradeNum}</td>
                             <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.btEntry}</td>
@@ -1910,7 +1897,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* Missed Alerts */}
                 <Card className="mb-4">
                   <h4 className="text-sm font-medium mb-3">Missed Alerts</h4>
-                  {mockAlertAnalysis.missed.length === 0 ? (
+                  {alertAnalysis.missed.length === 0 ? (
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No missed alerts.</p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
@@ -1923,7 +1910,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {mockAlertAnalysis.missed.map((row, i) => (
+                          {alertAnalysis.missed.map((row: any, i: number) => (
                             <tr key={i}>
                               <td style={tdStyle}>{row.tradeNum}</td>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime}</td>
@@ -1944,7 +1931,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* Phantom Alerts */}
                 <Card className="mb-6">
                   <h4 className="text-sm font-medium mb-3">Phantom Alerts</h4>
-                  {mockAlertAnalysis.phantom.length === 0 ? (
+                  {alertAnalysis.phantom.length === 0 ? (
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No phantom alerts.</p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
@@ -1957,7 +1944,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {mockAlertAnalysis.phantom.map((row, i) => (
+                          {alertAnalysis.phantom.map((row: any, i: number) => (
                             <tr key={i}>
                               <td style={{ ...tdStyle, fontFamily: 'monospace' }}>{row.alertId}</td>
                               <td style={tdStyle}>
@@ -1972,7 +1959,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 </span>
                               </td>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.timestamp}</td>
-                              <td style={tdStyle}>${row.price.toFixed(2)}</td>
+                              <td style={tdStyle}>{row.price != null ? `$${Number(row.price).toFixed(2)}` : '--'}</td>
                               <td style={{ ...tdStyle, color: 'var(--orange)' }}>{row.status}</td>
                             </tr>
                           ))}
@@ -1995,7 +1982,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {mockAlertAnalysis.summaryMetrics.map((row, i) => {
+                        {alertAnalysis.summaryMetrics.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              No data — enable monitoring to populate
+                            </td>
+                          </tr>
+                        ) : alertAnalysis.summaryMetrics.map((row: any, i: number) => {
                           const deltaNum = parseFloat(row.delta);
                           const isDelta = !isNaN(deltaNum) && row.delta !== '--';
                           const isNeg = isDelta && deltaNum < 0;
@@ -2026,10 +2019,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   <Card className="mb-4">
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
                       {[
-                        { label: 'Status', value: mockAlertAnalysis.positionHealth.status },
-                        { label: 'Entries', value: String(mockAlertAnalysis.positionHealth.entries) },
-                        { label: 'Exits', value: String(mockAlertAnalysis.positionHealth.exits) },
-                        { label: 'Avg Hold Time', value: mockAlertAnalysis.positionHealth.avgHoldTime },
+                        { label: 'Status', value: alertAnalysis.positionHealth.status },
+                        { label: 'Entries', value: String(alertAnalysis.positionHealth.entries) },
+                        { label: 'Exits', value: String(alertAnalysis.positionHealth.exits) },
+                        { label: 'Avg Hold Time', value: alertAnalysis.positionHealth.avgHoldTime },
                       ].map((kpi) => (
                         <div key={kpi.label}>
                           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
@@ -2042,7 +2035,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       ))}
                     </div>
 
-                    {mockAlertAnalysis.positionHealth.anomalies.length > 0 && (
+                    {alertAnalysis.positionHealth.anomalies.length > 0 && (
                       <>
                         <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Anomalies</h5>
                         <div style={{ overflowX: 'auto' }}>
@@ -2055,7 +2048,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               </tr>
                             </thead>
                             <tbody>
-                              {mockAlertAnalysis.positionHealth.anomalies.map((row, i) => (
+                              {alertAnalysis.positionHealth.anomalies.map((row, i) => (
                                 <tr key={i}>
                                   <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.time}</td>
                                   <td style={{ ...tdStyle, color: 'var(--orange)' }}>{row.type}</td>
@@ -2083,7 +2076,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {mockAlertAnalysis.triggerTiming.map((row, i) => (
+                          {alertAnalysis.triggerTiming.length === 0 ? (
+                            <tr>
+                              <td colSpan={11} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                No data — enable monitoring to populate
+                              </td>
+                            </tr>
+                          ) : alertAnalysis.triggerTiming.map((row: any, i: number) => (
                             <tr key={i}>
                               <td style={tdStyle}>{row.tradeNum}</td>
                               <td style={tdStyle}>
@@ -2104,15 +2103,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.theoTime}</td>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.alertTime}</td>
                               <td style={{ ...tdStyle, color: 'var(--orange)' }}>{row.timeDelta}</td>
-                              <td style={tdStyle}>${row.theoPrice.toFixed(2)}</td>
-                              <td style={tdStyle}>${row.alertPrice.toFixed(2)}</td>
+                              <td style={tdStyle}>{row.theoPrice != null ? `$${Number(row.theoPrice).toFixed(2)}` : '--'}</td>
+                              <td style={tdStyle}>{row.alertPrice != null ? `$${Number(row.alertPrice).toFixed(2)}` : '--'}</td>
                               <td style={{ ...tdStyle, color: 'var(--orange)' }}>{row.priceDelta}</td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.slipR <= 0 ? 'var(--green)' : 'var(--red)',
                                 fontWeight: 600,
                               }}>
-                                {row.slipR >= 0 ? '+' : ''}{row.slipR.toFixed(2)}R
+                                {row.slipR >= 0 ? '+' : ''}{Number(row.slipR).toFixed(2)}R
                               </td>
                             </tr>
                           ))}
@@ -2138,7 +2137,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </tr>
                         </thead>
                         <tbody>
-                          {mockAlertAnalysis.tradeByTrade.map((row, i) => (
+                          {alertAnalysis.tradeByTrade.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                No data — enable monitoring to populate
+                              </td>
+                            </tr>
+                          ) : alertAnalysis.tradeByTrade.map((row: any, i: number) => (
                             <tr key={i}>
                               <td style={tdStyle}>{row.tradeNum}</td>
                               <td style={{
@@ -2146,40 +2151,40 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 color: row.ftR >= 0 ? 'var(--green)' : 'var(--red)',
                                 fontWeight: 600,
                               }}>
-                                {row.ftR >= 0 ? '+' : ''}{row.ftR.toFixed(2)}R
+                                {row.ftR >= 0 ? '+' : ''}{Number(row.ftR).toFixed(2)}R
                               </td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.liveR >= 0 ? 'var(--green)' : 'var(--red)',
                                 fontWeight: 600,
                               }}>
-                                {row.liveR >= 0 ? '+' : ''}{row.liveR.toFixed(2)}R
+                                {row.liveR >= 0 ? '+' : ''}{Number(row.liveR).toFixed(2)}R
                               </td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.deltaR >= 0 ? 'var(--green)' : 'var(--red)',
                                 fontWeight: 600,
                               }}>
-                                {row.deltaR >= 0 ? '+' : ''}{row.deltaR.toFixed(2)}R
+                                {row.deltaR >= 0 ? '+' : ''}{Number(row.deltaR).toFixed(2)}R
                               </td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.entrySlip <= 0 ? 'var(--green)' : 'var(--red)',
                               }}>
-                                ${row.entrySlip >= 0 ? '+' : ''}{row.entrySlip.toFixed(2)}
+                                ${row.entrySlip >= 0 ? '+' : ''}{Number(row.entrySlip).toFixed(2)}
                               </td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.exitSlip <= 0 ? 'var(--green)' : 'var(--red)',
                               }}>
-                                ${row.exitSlip >= 0 ? '+' : ''}{row.exitSlip.toFixed(2)}
+                                ${row.exitSlip >= 0 ? '+' : ''}{Number(row.exitSlip).toFixed(2)}
                               </td>
                               <td style={{
                                 ...tdStyle,
                                 color: row.netSlip <= 0 ? 'var(--green)' : 'var(--red)',
                                 fontWeight: 600,
                               }}>
-                                ${row.netSlip >= 0 ? '+' : ''}{row.netSlip.toFixed(2)}
+                                ${row.netSlip >= 0 ? '+' : ''}{Number(row.netSlip).toFixed(2)}
                               </td>
                             </tr>
                           ))}

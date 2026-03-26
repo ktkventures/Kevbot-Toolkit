@@ -19,6 +19,25 @@ Copy each locked V5/V6/V7/V1 design file exactly into `views/`, then surgically 
 
 **Rule:** No fake numbers that look like real data. Ever.
 
+### Lesson Learned (Batch 1 QA)
+
+V5 files have TWO layers of mock data:
+1. **Top-level constants** (e.g., `const strategy = {...}`, `const mockTrades = [...]`) — easy to find and replace
+2. **Inline mock data in JSX** (e.g., hardcoded prices `142.35`, dates `2026-03-18 09:42:15`, table rows with fake trades) — hidden throughout tab content, much harder to find
+
+The copy-and-wire procedure MUST include a `grep` audit for inline mock data AFTER replacing top-level constants. Patterns to search: specific prices (`14[0-9]\.`), specific dates (`2026-03-1[0-9]`), `mock` references, `Math.random`.
+
+### Known Issues per Tab (Strategy Detail V5)
+
+| Tab | Mock Data Status | What Needs Wiring |
+|-----|-----------------|-------------------|
+| Equity & KPIs | Top-level replaced, extended KPIs show 0 | Wire `useStrategyKPIs()` secondary_kpis to extendedKPIs |
+| Chart & Trades | Trade tables wired but may show 0 FWD trades | Wire `useStrategyForwardTest()` properly; bar_count_exit = valid exit |
+| Confluence Analysis | Entire tab is inline mock data (stateTimeline, triggerEvents) | Needs new API endpoint for per-group state/trigger history |
+| Configuration | Mostly wired | bar_count_exit should display as exit trigger |
+| Alerts | mockAlerts array + inline trade-to-alert mapping table | Wire `useStrategyAlerts()` to replace mockAlerts |
+| Alert Analysis | mockAlertAnalysis with phantom trades, timing deltas, slippage | Needs new API endpoint for discrepancy/timing analysis |
+
 ---
 
 ## Phase A: Frontend Faithful Copy
