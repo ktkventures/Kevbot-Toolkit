@@ -8,7 +8,7 @@
  * - API_STOP_PACKS / API_TARGET_PACKS → useRiskManagementPacks()
  * - API_CONFLUENCE_CONDITIONS → useConfluenceGroups() derived
  * - API_GENERAL_CONDITIONS → useGeneralPacks() derived
- * - MOCK_KPIS / MOCK_TRADES → useRunBacktest() mutation results
+ * - EMPTY_KPIS / EMPTY_TRADES → useRunBacktest() mutation results
  * - Save → useCreateStrategy() mutation
  */
 
@@ -167,37 +167,16 @@ const API_GENERAL_CONDITIONS: ConfluenceCondition[] = [
   { id: 'GEN-SESSION-RTH', label: 'Regular Trading Hours', pack: 'Session Filter' },
 ];
 
-const MOCK_KPIS: KPIs = {
-  winRate: 58.3,
-  profitFactor: 2.14,
-  dailyR: 0.47,
-  totalTrades: 127,
-  avgWin: 1.82,
-  avgLoss: -0.94,
-  maxDrawdown: -4.2,
-  recoveryFactor: 3.8,
-  sharpeRatio: 1.67,
-  expectancy: 0.53,
-  totalR: 28.4,
-  avgR: 0.22,
-  rSquared: 0.87,
-  maxRDrawdown: -6.1,
+// Empty KPIs — shown before a backtest is run. No fake numbers.
+const EMPTY_KPIS: KPIs = {
+  winRate: 0, profitFactor: 0, dailyR: 0, totalTrades: 0,
+  avgWin: 0, avgLoss: 0, maxDrawdown: 0, recoveryFactor: 0,
+  sharpeRatio: 0, expectancy: 0, totalR: 0, avgR: 0,
+  rSquared: 0, maxRDrawdown: 0,
 };
 
-const MOCK_TRADES: TradeRow[] = [
-  { id: 1, entryTime: '03/18 09:35:12', exitTime: '03/18 10:12:45', direction: 'LONG', entryPrice: 567.42, exitPrice: 569.18, rMultiple: 1.84, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
-  { id: 2, entryTime: '03/18 10:45:03', exitTime: '03/18 11:30:00', direction: 'LONG', entryPrice: 568.90, exitPrice: 567.15, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '5M-EMA_STACK-BULL' },
-  { id: 3, entryTime: '03/18 13:15:27', exitTime: '03/18 14:02:18', direction: 'LONG', entryPrice: 567.80, exitPrice: 570.25, rMultiple: 2.56, execType: 'L', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
-  { id: 4, entryTime: '03/19 09:32:41', exitTime: '03/19 09:58:09', direction: 'LONG', entryPrice: 571.10, exitPrice: 570.20, rMultiple: -0.85, execType: 'LC', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
-  { id: 5, entryTime: '03/19 10:15:00', exitTime: '03/19 11:45:30', direction: 'LONG', entryPrice: 570.55, exitPrice: 573.40, rMultiple: 3.12, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
-  { id: 6, entryTime: '03/19 13:05:22', exitTime: '03/19 13:42:00', direction: 'LONG', entryPrice: 572.80, exitPrice: 573.60, rMultiple: 0.84, execType: 'C', exitReason: 'bar_count', confluences: '5M-EMA_STACK-BULL' },
-  { id: 7, entryTime: '03/19 14:10:15', exitTime: '03/19 15:15:00', direction: 'LONG', entryPrice: 573.20, exitPrice: 572.05, rMultiple: -1.00, execType: 'L', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
-  { id: 8, entryTime: '03/20 09:35:08', exitTime: '03/20 10:50:33', direction: 'LONG', entryPrice: 570.15, exitPrice: 572.90, rMultiple: 2.89, execType: 'C', exitReason: 'target', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL' },
-  { id: 9, entryTime: '03/20 11:20:47', exitTime: '03/20 12:05:12', direction: 'LONG', entryPrice: 572.45, exitPrice: 573.80, rMultiple: 1.41, execType: 'LC', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1H-VWAP_POS-ABOVE' },
-  { id: 10, entryTime: '03/20 13:30:00', exitTime: '03/20 14:45:55', direction: 'LONG', entryPrice: 573.10, exitPrice: 571.90, rMultiple: -1.00, execType: 'C', exitReason: 'stop', confluences: '1D-MACD_LINE-BULL' },
-  { id: 11, entryTime: '03/20 15:00:05', exitTime: '03/20 15:45:30', direction: 'LONG', entryPrice: 572.20, exitPrice: 574.50, rMultiple: 2.41, execType: 'C', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL, 1D-MACD_LINE-BULL, 1H-VWAP_POS-ABOVE' },
-  { id: 12, entryTime: '03/21 09:33:19', exitTime: '03/21 10:20:42', direction: 'LONG', entryPrice: 574.80, exitPrice: 575.95, rMultiple: 1.20, execType: 'L', exitReason: 'signal', confluences: '5M-EMA_STACK-BULL' },
-];
+// Empty trades — shown before a backtest is run. No fake data.
+const EMPTY_TRADES: TradeRow[] = [];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1210,22 +1189,9 @@ interface AnalyzerResult {
   rSquared: number;
 }
 
-const MOCK_ENTRY_ANALYSIS: AnalyzerResult[] = [
-  { triggerId: 'ema-price-cross-up', triggerName: 'EMA Price Cross Up', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
-  { triggerId: 'macd-cross-bull', triggerName: 'MACD Cross Bull', execType: 'C', totalTrades: 98, profitFactor: 1.89, winRate: 55.1, avgR: 0.18, dailyR: 0.35, rSquared: 0.81 },
-  { triggerId: 'vwap-cross-up', triggerName: 'VWAP Cross Up', execType: 'L0', totalTrades: 142, profitFactor: 1.62, winRate: 52.8, avgR: 0.11, dailyR: 0.28, rSquared: 0.74 },
-  { triggerId: 'ut-bot-buy', triggerName: 'UT Bot Buy', execType: 'HM', totalTrades: 83, profitFactor: 2.41, winRate: 61.4, avgR: 0.34, dailyR: 0.52, rSquared: 0.89 },
-  { triggerId: 'supertrend-flip-bull', triggerName: 'Supertrend Flip Bull', execType: 'L1', totalTrades: 67, profitFactor: 1.95, winRate: 56.7, avgR: 0.21, dailyR: 0.31, rSquared: 0.78 },
-  { triggerId: 'keltner-bounce-long', triggerName: 'Keltner Bounce Long', execType: 'HL', totalTrades: 54, profitFactor: 2.28, winRate: 59.3, avgR: 0.29, dailyR: 0.42, rSquared: 0.84 },
-];
-
-const MOCK_EXIT_ANALYSIS: AnalyzerResult[] = [
-  { triggerId: 'ema-price-cross-down', triggerName: 'EMA Price Cross Down', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
-  { triggerId: 'macd-cross-bear', triggerName: 'MACD Cross Bear', execType: 'C', totalTrades: 112, profitFactor: 1.72, winRate: 53.6, avgR: 0.14, dailyR: 0.32, rSquared: 0.76 },
-  { triggerId: 'supertrend-flip-bear', triggerName: 'Supertrend Flip Bear', execType: 'L1', totalTrades: 89, profitFactor: 2.05, winRate: 57.3, avgR: 0.26, dailyR: 0.41, rSquared: 0.82 },
-  { triggerId: 'rsi-overbought-exit', triggerName: 'RSI Overbought Exit', execType: 'C', totalTrades: 76, profitFactor: 1.58, winRate: 51.3, avgR: 0.09, dailyR: 0.18, rSquared: 0.69 },
-  { triggerId: 'bar-count-exit-4', triggerName: '4-Bar Exit', execType: 'C', totalTrades: 127, profitFactor: 1.45, winRate: 50.4, avgR: 0.07, dailyR: 0.15, rSquared: 0.62 },
-];
+// Empty analysis results — populated by the Analyze button (TODO: wire to backtest API)
+const EMPTY_ENTRY_ANALYSIS: AnalyzerResult[] = [];
+const EMPTY_EXIT_ANALYSIS: AnalyzerResult[] = [];
 
 function AnalyzerResultCard({
   result,
@@ -2095,7 +2061,7 @@ export default function StrategyBuilderPage() {
           </div>
 
           {/* KPIs */}
-          <KPIDashboard kpis={backtestResult?.kpis ?? MOCK_KPIS} backtestRan={backtestRan || !!backtestResult} />
+          <KPIDashboard kpis={backtestResult?.kpis ?? EMPTY_KPIS} backtestRan={backtestRan || !!backtestResult} />
 
           {/* Optimizable Variables */}
           <div className="mt-4">
@@ -2146,7 +2112,7 @@ export default function StrategyBuilderPage() {
                       <div>
                         <div className="mb-2 flex items-center gap-2">
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            {MOCK_TRADES.length} trades on {symbol} ({direction})
+                            {EMPTY_TRADES.length} trades on {symbol} ({direction})
                           </span>
                         </div>
                         <ChartPlaceholder
@@ -2165,7 +2131,7 @@ export default function StrategyBuilderPage() {
                 <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
                   Trade History
                 </h3>
-                <TradeHistoryTable trades={backtestResult?.trades ?? MOCK_TRADES} />
+                <TradeHistoryTable trades={backtestResult?.trades ?? EMPTY_TRADES} />
               </Card>
             </div>
 
@@ -2197,7 +2163,7 @@ export default function StrategyBuilderPage() {
                           )}
                           {entryAnalysisRan ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {MOCK_ENTRY_ANALYSIS.filter((r) =>
+                              {EMPTY_ENTRY_ANALYSIS.filter((r) =>
                                 !analyzerSearch || r.triggerName.toLowerCase().includes(analyzerSearch.toLowerCase())
                               ).map((result) => (
                                 <AnalyzerResultCard
@@ -2241,7 +2207,7 @@ export default function StrategyBuilderPage() {
                           )}
                           {exitAnalysisRan ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {MOCK_EXIT_ANALYSIS.map((result) => (
+                              {EMPTY_EXIT_ANALYSIS.map((result) => (
                                 <AnalyzerResultCard
                                   key={result.triggerId}
                                   result={result}
@@ -2571,7 +2537,7 @@ export default function StrategyBuilderPage() {
                     confluence: Array.from(selectedConditions),
                     stop_loss_pack_id: selectedStopPack,
                     take_profit_pack_id: selectedTargetPack,
-                    kpis: backtestResult?.kpis ?? MOCK_KPIS,
+                    kpis: backtestResult?.kpis ?? EMPTY_KPIS,
                     stored_trades: backtestResult?.trades ?? [],
                   });
                 }
