@@ -21,7 +21,16 @@ RoR Trader is a trading strategy platform migrating from Streamlit to Next.js + 
 - Frontend URL: `https://frontend-dev-e01a.up.railway.app`
 - API URL: `https://api-dev-2c9d.up.railway.app`
 - API health check: `https://api-dev-2c9d.up.railway.app/health`
-- API docs: `https://api-dev-2c9d.up.railway.app/api/docs`
+- API docs (Swagger): `https://api-dev-2c9d.up.railway.app/api/docs`
+
+**Test Accounts:**
+
+| Account | Email | Password | Purpose |
+|---------|-------|----------|---------|
+| Data-rich | `kevin-migrate@rortrader.dev` | `MigrateTest123!` | 26 strategies, portfolios, packs — verify data rendering |
+| Fresh (empty) | TBD — Kevin to create in Supabase dashboard | TBD | Verify empty states, onboarding flow |
+
+Use the data-rich account for most QA. Use the fresh account to verify empty states show proper messages (not errors).
 
 ---
 
