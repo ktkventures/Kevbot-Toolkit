@@ -175,6 +175,11 @@ Replace `{{field_name}}` with real computed data. Working through these on Railw
 | C1.12 | Return distribution (histogram + stats) | Not Started — R values available, needs charting |
 | C1.13 | Markov Motor (transition matrix) | Not Started — needs analytics.py integration |
 | C1.14 | Equity curve x-axis toggle (Date vs Trade #) | Not Started |
+| C1.15 | **Real equity sparklines on My Strategies cards** | Not Started — equity_curve_data in API, need to replace V5 fake MiniEquityCurve with SparkLine reading real data |
+| C1.16 | **Real equity curve on Strategy Detail (3-segment)** | Not Started — EquityCurve component exists, need to wire to equity_curve_data with boundary_index |
+| C1.17 | **Live price chart on Strategy Detail (Chart & Trades tab)** | Not Started — TradingChart component exists, need data endpoint (OHLCV + indicators + trade markers) |
+| C1.18 | **Price chart on Strategy Builder (results panel)** | Not Started — backtest endpoint supports include_chart_data=true |
+| C1.19 | **Settings Display → chart preferences applied globally** | Not Started — candle style, colors, grid, visible candles from useDisplayStore |
 
 ### C2: Dashboard Widgets
 | Task | Description | Status |
