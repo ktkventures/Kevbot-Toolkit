@@ -24,7 +24,7 @@ const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
 const ASSET_TYPES = ['Equity', 'Crypto'];
 const ANALYSIS_TABS = ['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit'];
 
-const iStyle: React.CSSProperties = { background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 14px', borderRadius: '8px', fontSize: '.875rem', width: '100%' };
+const iStyle: React.CSSProperties = { background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '6px 10px', borderRadius: '6px', fontSize: '.8125rem', width: '100%' };
 const Label = ({ children }: { children: React.ReactNode }) => <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>{children}</label>;
 
 function kpi(v: number | undefined, d = 2, s = ''): string {
@@ -163,7 +163,7 @@ export default function StrategyBuilderPage() {
           <div><Label>Session</Label>{asset === 'Crypto' ? <input style={{ ...iStyle, color: 'var(--text-muted)' }} value="24/7" disabled /> : <select value={sess} onChange={e => setSess(e.target.value)} style={iStyle}>{SESSIONS.map(s => <option key={s}>{s}</option>)}</select>}</div>
           <div><Label>Days</Label><input type="number" min={1} max={365} value={days} onChange={e => setDays(+e.target.value)} style={iStyle} /></div>
           <div className="xl:col-span-2"><Label>Name</Label><input type="text" placeholder={`${symbol || 'SPY'} ${dir} - 1`} value={name} onChange={e => setName(e.target.value)} style={iStyle} /></div>
-          <div className="flex items-end"><button className="w-full py-2 rounded-lg text-sm font-medium" style={{ background: canRun ? 'var(--accent)' : 'var(--bg-input)', color: canRun ? '#000' : 'var(--text-muted)', border: 'none', cursor: canRun ? 'pointer' : 'not-allowed' }} disabled={!canRun || bt.isPending} onClick={run}>{bt.isPending ? 'Running...' : ran ? 'Reload' : 'Load Data'}</button></div>
+          <div className="flex items-end"><button className="w-full py-2 rounded-lg text-sm font-medium" style={{ background: symbol.trim() ? 'var(--accent)' : 'var(--bg-input)', color: symbol.trim() ? '#000' : 'var(--text-muted)', border: 'none', cursor: symbol.trim() ? 'pointer' : 'not-allowed' }} disabled={!symbol.trim() || bt.isPending} onClick={run}>{bt.isPending ? 'Running Backtest...' : ran ? 'Re-run Backtest' : 'Run Backtest'}</button></div>
         </div>
         <div className="mt-2 flex items-center gap-2">
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>~{estBars.toLocaleString()} bars</span>

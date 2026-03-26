@@ -2,6 +2,12 @@
 /**
  * Portfolio Detail — Clean API-first page.
  * Visual design from V5, data wired to real API hooks. No mock data.
+ *
+ * V5 QA fixes:
+ * - Warning banner: "Dashboard metrics reflect visible strategies from the Strategies tab"
+ * - Planned/Executed data toggle + TQ filter dropdown in Live Dashboard
+ * - Performance tab: Worst-Case Analysis, Daily P&L vs Limits, Capital Deployed modules
+ * - Strategy variable summary above tabs (sigma + variable details per strategy)
  */
 import { useState } from 'react';
 import Link from 'next/link';
@@ -44,6 +50,7 @@ interface TabDataProps { portfolio?: any; compute?: any; trades?: any[]; anomali
 /* ======================================================================== */
 function LiveDashboardTab({ compute, trades, anomalies }: TabDataProps) {
   const [anomalyTab, setAnomalyTab] = useState('All');
+  const [dataMode, setDataMode] = useState<'Planned' | 'Executed'>('Planned');
   const kpis = compute?.live_dashboard_kpis;
   const openPositions: any[] = compute?.open_positions ?? [];
   const buyingPower = compute?.buying_power;
@@ -52,6 +59,49 @@ function LiveDashboardTab({ compute, trades, anomalies }: TabDataProps) {
 
   return (
     <div>
+      {/* Warning banner + data mode toggle + TQ filter (V5) */}
+      <div className="flex items-center justify-between mb-4 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-muted)', border: '1px solid rgba(99,102,241,0.2)' }}>
+        <span className="text-xs" style={{ color: 'var(--accent)' }}>
+          Dashboard metrics reflect <strong>visible strategies</strong> from the Strategies tab.
+        </span>
+        <div className="flex items-center gap-4 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Data:</span>
+            {(['Planned', 'Executed'] as const).map((mode) => (
+              <button
+                key={mode}
+                className="text-xs px-2.5 py-1 rounded-full"
+                style={{
+                  background: dataMode === mode ? 'var(--bg-card)' : 'transparent',
+                  color: dataMode === mode ? 'var(--text-primary)' : 'var(--text-muted)',
+                  border: dataMode === mode ? '1px solid var(--border)' : '1px solid transparent',
+                  cursor: 'pointer',
+                  fontWeight: dataMode === mode ? 600 : 400,
+                }}
+                onClick={() => setDataMode(mode)}
+                title={mode === 'Planned' ? 'Planned quantity -- assumes unlimited buying power' : 'Executed quantity -- actual transactions'}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>TQ:</span>
+            <select
+              className="text-xs px-2 py-1 rounded-full"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', cursor: 'pointer' }}
+              defaultValue="None"
+            >
+              <option value="None">None</option>
+              <option value="ttp">Trade The Pool</option>
+              <option value="ftmo">FTMO</option>
+              <option value="topstep">Topstep</option>
+              <option value="custom">My Custom Rules</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       {/* KPIs */}
       <div className="grid grid-cols-5 gap-3 mb-6">
         <MetricCard label="Alert Trades" value={kpis?.alert_trades != null ? String(kpis.alert_trades) : '--'} />
@@ -101,7 +151,7 @@ function LiveDashboardTab({ compute, trades, anomalies }: TabDataProps) {
             </div>
             <ChartPlaceholder label="24-hour buying power chart" height={180} />
           </>
-        ) : <ChartPlaceholder label="Buying power tracker — awaiting data" height={180} />}
+        ) : <ChartPlaceholder label="Buying power tracker -- awaiting data" height={180} />}
       </Card>
       {/* Anomalies */}
       <Card className="mb-6">
@@ -163,7 +213,7 @@ function LiveDashboardTab({ compute, trades, anomalies }: TabDataProps) {
 }
 
 /* ======================================================================== */
-/* Tab: Performance                                                          */
+/* Tab: Performance (V5: added risk analytics modules)                       */
 /* ======================================================================== */
 function PerformanceTab({ compute }: TabDataProps) {
   const kpis = compute?.performance_kpis;
@@ -185,10 +235,73 @@ function PerformanceTab({ compute }: TabDataProps) {
         <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Drawdown Analysis</h3>
         <ChartPlaceholder label="Drawdown chart with requirement-set threshold line" height={220} />
       </Card>
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-2 gap-6 mb-6">
         <Card><h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Daily P&L Distribution</h3><ChartPlaceholder label="Histogram of daily P&L" height={300} /></Card>
         <Card><h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Strategy Correlation</h3><ChartPlaceholder label="Correlation heatmap" height={300} /></Card>
       </div>
+
+      {/* Risk Analytics (V5 missing modules) */}
+      <h3 className="text-sm font-semibold mt-6 mb-4" style={{ color: 'var(--text-primary)' }}>Risk Analytics</h3>
+
+      {/* Worst-Case Analysis */}
+      <Card className="mb-4">
+        <h4 className="text-sm font-medium mb-3">Worst-Case Analysis</h4>
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
+          {[
+            { label: 'Worst Single Day', key: 'worst_day' },
+            { label: 'Worst Losing Streak', key: 'worst_streak' },
+            { label: 'Worst 5-Day Rolling DD', key: 'worst_5d_dd' },
+            { label: 'Days Breaching Pause', key: 'days_breach_pause' },
+            { label: 'Days Breaching Max Loss', key: 'days_breach_max' },
+          ].map((m) => {
+            const val = compute?.worst_case?.[m.key];
+            return (
+              <div key={m.label}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                <p className="text-sm font-bold">{val ?? '--'}</p>
+              </div>
+            );
+          })}
+        </div>
+        <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Top 5 Worst Days</h5>
+        <p className="text-sm py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+          Worst-case analysis will populate once sufficient trade data is available.
+        </p>
+      </Card>
+
+      {/* Daily P&L vs Limits */}
+      <Card className="mb-4">
+        <h4 className="text-sm font-medium mb-3">Daily P&L vs Limits</h4>
+        <ChartPlaceholder label="Bar chart: daily P&L colored by compliance (blue normal, orange pause breach, red max loss breach) with reference lines for Max Daily Loss and Daily Pause" height={220} />
+        <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+          Daily P&L compliance chart will populate once a requirement set is linked and trade data is available.
+        </p>
+      </Card>
+
+      {/* Daily Peak Capital Deployed */}
+      <Card className="mb-4">
+        <h4 className="text-sm font-medium mb-3">Daily Peak Capital Deployed</h4>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Shows the maximum buying power used on each day across the date range.
+        </p>
+        <ChartPlaceholder label="Bar chart by day: peak capital deployed per day. Red dashed line at account balance. X-axis: dates, Y-axis: peak capital ($)" height={220} />
+        <div className="grid grid-cols-4 gap-4 mt-3">
+          {[
+            { label: 'Highest Peak Day', key: 'peak_day' },
+            { label: 'Avg Peak / Day', key: 'avg_peak' },
+            { label: 'Days Near Limit', key: 'days_near_limit' },
+            { label: 'Max Concurrent Positions', key: 'max_concurrent' },
+          ].map((m) => {
+            const val = compute?.capital_deployed?.[m.key];
+            return (
+              <div key={m.label}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                <p className="text-sm font-bold">{val ?? '--'}</p>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
     </div>
   );
 }
@@ -344,6 +457,55 @@ function WebhooksTab() {
 }
 
 /* ======================================================================== */
+/* Strategy Variable Summary (V5 — above tabs)                               */
+/* ======================================================================== */
+function StrategyVariableSummary({ portfolio }: { portfolio?: any }) {
+  const strategies: any[] = portfolio?.strategies ?? [];
+  if (strategies.length === 0) return null;
+
+  return (
+    <Card className="mb-4">
+      <h3 className="text-xs font-medium mb-3" style={{ color: 'var(--text-muted)' }}>Strategy Variables</h3>
+      <div className="space-y-2">
+        {strategies.slice(0, 10).map((s: any, i: number) => (
+          <div key={s.id ?? i} className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-medium min-w-[140px]">{s.name ?? `Strategy #${s.id}`}</span>
+            {s.fwd_sigma != null && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{
+                background: Math.abs(s.fwd_sigma) <= 1 ? 'var(--green-muted)' : Math.abs(s.fwd_sigma) <= 2 ? 'var(--orange-muted)' : 'var(--red-muted)',
+                color: Math.abs(s.fwd_sigma) <= 1 ? 'var(--green)' : Math.abs(s.fwd_sigma) <= 2 ? 'var(--orange)' : 'var(--red)',
+              }}>
+                {s.fwd_sigma >= 0 ? '+' : ''}{s.fwd_sigma.toFixed(1)} SD
+              </span>
+            )}
+            {s.entry_trigger && (
+              <span className="text-[10px] font-mono" style={{ color: 'var(--text-secondary)' }}>
+                entry: {s.entry_trigger}
+              </span>
+            )}
+            {s.exit_trigger && (
+              <span className="text-[10px] font-mono" style={{ color: 'var(--text-secondary)' }}>
+                exit: {s.exit_trigger}
+              </span>
+            )}
+            {s.stop_desc && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ color: 'var(--red)', background: 'rgba(244,67,54,0.1)' }}>
+                {s.stop_desc}
+              </span>
+            )}
+            {s.target_desc && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ color: 'var(--green)', background: 'rgba(76,175,80,0.1)' }}>
+                {s.target_desc}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ======================================================================== */
 /* Main Component                                                            */
 /* ======================================================================== */
 interface PortfolioDetailPageProps { portfolioId: number }
@@ -410,6 +572,10 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
       <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
         {stratCount} strategies{portfolio?.kpis?.balance != null && <> &middot; {fmtMoney(portfolio.kpis.balance)} balance</>}
       </p>
+
+      {/* Strategy variable summary above tabs (V5) */}
+      <StrategyVariableSummary portfolio={portfolio} />
+
       <TabBar tabs={TABS}>
         {(tab) => (
           <div>
