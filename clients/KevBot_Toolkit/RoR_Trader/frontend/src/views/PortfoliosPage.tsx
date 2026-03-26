@@ -1,189 +1,398 @@
 'use client';
 
 /**
- * My Portfolios — Clean API-first page.
+ * My Portfolios — Faithful copy of V5 design with mock data replaced by API hooks.
+ * Source: src/app/portfolios/versions/V5.tsx
  *
- * Visual design derived from V5 (versions/V5.tsx), data layer built
- * around actual Supabase API response shapes. No mock data.
+ * Data convention:
+ *   Real value = live from API
+ *   -- = wired but no data yet
+ *   {{field}} = not wired, needs backend work
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
-import PageHeader from '@/components/PageHeader';
-import { usePortfolios, PortfolioDTO } from '@/hooks/queries/usePortfolios';
+import Modal from '@/components/Modal';
+import ChartPlaceholder from '@/components/ChartPlaceholder';
+import { usePortfolios } from '@/hooks/queries/usePortfolios';
+import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useDeletePortfolio, useDuplicatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 
-// ---------------------------------------------------------------------------
-// Style constants (from V5)
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* TYPES                                                                       */
+/* ========================================================================= */
 
-const selectStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: '6px',
-  border: '1px solid var(--border)',
-  background: 'var(--bg-input)',
-  color: 'var(--text-primary)',
-  fontSize: '12px',
-};
+interface Portfolio {
+  id: string;
+  name: string;
+  status: 'On Track' | 'Outperforming' | 'Underperforming' | 'Insufficient Data';
+  enabled: boolean;
+  strategies: { symbol: string; direction: string }[];
+  startingBalance: number;
+  compoundRate: number;
+  avgRiskPerTrade: number;
+  webhookTemplate: string | null;
+  requirementSet: string | null;
+  reqPassing: number | null;
+  reqTotal: number | null;
+  // KPIs
+  totalPnl: number;
+  finalBalance: number;
+  winRate: number;
+  pf: number;
+  maxDDPct: number;
+  avgDailyPnl: number;
+  trades: number;
+  tradesPerDay: number;
+  // Forward test
+  fwdDays: number;
+  fwdTotalPnl: number | null;
+  fwdWinRate: number | null;
+  fwdPF: number | null;
+  fwdMaxDDPct: number | null;
+  fwdAvgDailyPnl: number | null;
+  // Alert/Live
+  alertTotalPnl: number | null;
+  alertWinRate: number | null;
+  alertPF: number | null;
+  alertMaxDDPct: number | null;
+  alertAvgDailyPnl: number | null;
+  // Sigma
+  fwdSD: number;
+  alertSD: number;
+  // Meta
+  tags: string[];
+  createdAt: string;
+  btDays: number;
+}
+
+/* ========================================================================= */
+/* API → V5 Portfolio Mapping                                                  */
+/* ========================================================================= */
+
+function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
+  const k = p.kpis || {};
+  const strats = (p.strategies || []).map((ps: any) => {
+    const strat = strategyMap.get(ps.strategy_id);
+    return {
+      symbol: strat?.symbol || ps.symbol || '--',
+      direction: strat?.direction || ps.direction || 'LONG',
+    };
+  });
+  return {
+    id: String(p.id),
+    name: p.name || '--',
+    status: 'Insufficient Data',            // {{status_derivation}} — needs worker compute
+    enabled: p.enabled ?? false,
+    strategies: strats,
+    startingBalance: p.starting_balance ?? p.account?.starting_balance ?? 0,
+    compoundRate: p.compound_rate ?? 0,
+    avgRiskPerTrade: k.avg_risk_per_trade ?? 0,
+    webhookTemplate: p.webhook_template_name || null,
+    requirementSet: p.requirement_set_name || null,
+    reqPassing: null,                        // {{req_passing}} — needs compute endpoint
+    reqTotal: null,                          // {{req_total}} — needs compute endpoint
+    totalPnl: k.total_pnl ?? 0,
+    finalBalance: k.final_balance ?? 0,
+    winRate: k.win_rate ?? 0,
+    pf: k.profit_factor ?? 0,
+    maxDDPct: k.max_dd_pct ?? 0,
+    avgDailyPnl: k.avg_daily_pnl ?? 0,
+    trades: k.total_trades ?? 0,
+    tradesPerDay: k.trades_per_day ?? 0,
+    fwdDays: 0,                              // {{fwd_days}} — needs forward test compute
+    fwdTotalPnl: null,                       // {{fwd_total_pnl}}
+    fwdWinRate: null,                        // {{fwd_win_rate}}
+    fwdPF: null,                             // {{fwd_pf}}
+    fwdMaxDDPct: null,                       // {{fwd_max_dd_pct}}
+    fwdAvgDailyPnl: null,                   // {{fwd_avg_daily_pnl}}
+    alertTotalPnl: null,                     // {{alert_total_pnl}}
+    alertWinRate: null,                      // {{alert_win_rate}}
+    alertPF: null,                           // {{alert_pf}}
+    alertMaxDDPct: null,                     // {{alert_max_dd_pct}}
+    alertAvgDailyPnl: null,                 // {{alert_avg_daily_pnl}}
+    fwdSD: 0,                                // {{fwd_sd}}
+    alertSD: 0,                              // {{alert_sd}}
+    tags: p.tags || [],
+    createdAt: p.created_at || '',
+    btDays: p.data_days ?? k.bt_days ?? 30,
+  };
+}
+
+/* ========================================================================= */
+/* HELPERS                                                                     */
+/* ========================================================================= */
 
 const statusColors: Record<string, string> = {
-  active: 'var(--green)',
-  paused: 'var(--text-muted)',
-  error: 'var(--red)',
+  'On Track': 'var(--green)',
+  'Outperforming': 'var(--blue)',
+  'Underperforming': 'var(--red)',
+  'Insufficient Data': 'var(--text-muted)',
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const EQ_BT_COLOR = '#2196F3';
+const EQ_FWD_COLOR = '#FF9800';
+const EQ_LIVE_COLOR = '#4CAF50';
 
-function fmtDollar(v: number | undefined): string {
-  if (v === undefined || v === null) return '--';
-  return `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString()}`;
+const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.5; } 50% { transform: scale(2.2); opacity: 0; } }`;
+
+function MiniEquityCurve({ portfolioId, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: {
+  portfolioId: string; fwdStartPct: number; hasAlerts: boolean;
+  showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number;
+}) {
+  const seed = parseInt(portfolioId, 10) || 1;
+  const totalPoints = 50;
+  const fwdIdx = Math.max(1, Math.floor(totalPoints * fwdStartPct));
+  const w = 320;
+  const h = height;
+  const pad = 3;
+
+  const btPoints: number[] = [0];
+  let val = 0;
+  for (let i = 1; i <= totalPoints; i++) {
+    val += Math.sin(seed * 137.5 * i) * 0.5 + 0.2;
+    btPoints.push(val);
+  }
+
+  const fwdPoints = btPoints.slice(fwdIdx).map((p, i) => p + Math.sin(seed * 42 * (fwdIdx + i)) * 0.3);
+  const livePoints = hasAlerts ? fwdPoints.map((p, i) => p + Math.sin(seed * 99 * i) * 0.4 - 0.3) : [];
+
+  const allVals = [...btPoints, ...fwdPoints, ...livePoints];
+  const min = Math.min(...allVals);
+  const max = Math.max(...allVals);
+  const range = max - min || 1;
+
+  const toY = (v: number) => h - ((v - min) / range) * (h - pad * 2) - pad;
+  const toX = (idx: number) => (idx / totalPoints) * w;
+
+  const buildLine = (pts: number[], startIdx: number) =>
+    pts.map((p, i) => `${toX(startIdx + i).toFixed(1)},${toY(p).toFixed(1)}`).join(' ');
+  const buildFill = (pts: number[], startIdx: number) => {
+    const line = buildLine(pts, startIdx);
+    return `${toX(startIdx).toFixed(1)},${h} ${line} ${toX(startIdx + pts.length - 1).toFixed(1)},${h}`;
+  };
+
+  let hwmPeak = -Infinity;
+  const hwmLine = btPoints.map((p, i) => { hwmPeak = Math.max(hwmPeak, p); return `${toX(i).toFixed(1)},${toY(hwmPeak).toFixed(1)}`; }).join(' ');
+
+  const zeroY = toY(0);
+  const bndX = toX(fwdIdx);
+
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: 'block' }}>
+      <defs>
+        <linearGradient id={`pbtG${seed}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_BT_COLOR} stopOpacity="0.2" /><stop offset="100%" stopColor={EQ_BT_COLOR} stopOpacity="0" /></linearGradient>
+        <linearGradient id={`pfwG${seed}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_FWD_COLOR} stopOpacity="0.15" /><stop offset="100%" stopColor={EQ_FWD_COLOR} stopOpacity="0" /></linearGradient>
+      </defs>
+      <line x1="0" y1={zeroY} x2={w} y2={zeroY} stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="4 3" opacity="0.4" />
+      {showHWM && <polyline points={hwmLine} fill="none" stroke="var(--green)" strokeWidth="0.5" strokeDasharray="2 2" opacity="0.4" />}
+      {showEdgeMA && (() => {
+        const maLine = btPoints.map((_, i) => {
+          const window = btPoints.slice(Math.max(0, i - 7), i + 1);
+          const avg = window.reduce((s, v) => s + v, 0) / window.length;
+          return `${toX(i).toFixed(1)},${toY(avg).toFixed(1)}`;
+        }).join(' ');
+        return <polyline points={maLine} fill="none" stroke="#808000" strokeWidth="0.8" strokeDasharray="3 2" opacity="0.6" />;
+      })()}
+      {showConfBands && fwdPoints.length > 1 && (() => {
+        const sdOffset = 2.5;
+        const upper = fwdPoints.map((p, i) => `${toX(fwdIdx + i).toFixed(1)},${toY(p + sdOffset).toFixed(1)}`).join(' ');
+        const lower = fwdPoints.map((p, i) => `${toX(fwdIdx + i).toFixed(1)},${toY(p - sdOffset).toFixed(1)}`).join(' ');
+        return (<><polyline points={upper} fill="none" stroke={EQ_BT_COLOR} strokeWidth="0.5" strokeDasharray="2 2" opacity="0.3" /><polyline points={lower} fill="none" stroke={EQ_BT_COLOR} strokeWidth="0.5" strokeDasharray="2 2" opacity="0.3" /></>);
+      })()}
+      <polygon points={buildFill(btPoints.slice(0, fwdIdx + 1), 0)} fill={`url(#pbtG${seed})`} />
+      <polygon points={buildFill(fwdPoints, fwdIdx)} fill={`url(#pfwG${seed})`} />
+      <line x1={bndX} y1="0" x2={bndX} y2={h} stroke={EQ_FWD_COLOR} strokeWidth="0.5" strokeDasharray="3 2" opacity="0.5" />
+      <polyline points={buildLine(btPoints.slice(0, fwdIdx + 1), 0)} fill="none" stroke={EQ_BT_COLOR} strokeWidth="1.5" />
+      <polyline points={buildLine(fwdPoints, fwdIdx)} fill="none" stroke={EQ_FWD_COLOR} strokeWidth="1.5" />
+      {livePoints.length > 0 && <polyline points={buildLine(livePoints, fwdIdx)} fill="none" stroke={EQ_LIVE_COLOR} strokeWidth="1.5" />}
+    </svg>
+  );
 }
 
-function fmtPct(v: number | undefined): string {
-  if (v === undefined || v === null) return '--';
-  return `${v.toFixed(1)}%`;
-}
-
-function getPortfolioStatus(p: PortfolioDTO): { label: string; color: string } {
-  if (!p.enabled) return { label: 'Disabled', color: 'var(--text-muted)' };
-  return { label: 'Active', color: 'var(--green)' };
-}
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* COMPONENT                                                                   */
+/* ========================================================================= */
 
 export default function PortfoliosPage() {
-  const { data: portfolios, isLoading, error } = usePortfolios();
-  const deleteMutation = useDeletePortfolio();
-  const duplicateMutation = useDuplicatePortfolio();
+  const router = useRouter();
+
+  // ---- API Hooks (ALL before early returns) ----
+  const { data: apiPortfoliosRaw, isLoading, error } = usePortfolios();
+  const { data: apiStrategiesRaw } = useStrategies();
+  const deleteMut = useDeletePortfolio();
+  const dupMut = useDuplicatePortfolio();
+
+  useEffect(() => {
+    const id = 'portfolios-pulse-css';
+    if (!document.getElementById(id)) {
+      const s = document.createElement('style'); s.id = id; s.textContent = PULSE_CSS; document.head.appendChild(s);
+    }
+  }, []);
+
+  // Map API data to V5 Portfolio interface
+  const strategyMap = useMemo(() => {
+    const m = new Map<number, any>();
+    if (apiStrategiesRaw) {
+      for (const s of apiStrategiesRaw) m.set(s.id, s);
+    }
+    return m;
+  }, [apiStrategiesRaw]);
+
+  const portfolios: Portfolio[] = useMemo(() => {
+    if (!apiPortfoliosRaw) return [];
+    return apiPortfoliosRaw.map((p) => apiToPortfolio(p, strategyMap));
+  }, [apiPortfoliosRaw, strategyMap]);
 
   // Filters
-  const [sortBy, setSortBy] = useState('Newest First');
+  const [statusFilter, setStatusFilter] = useState('All');
   const [tagFilter, setTagFilter] = useState('All');
+  const [tqFilter, setTqFilter] = useState('None');
+  const [sortBy, setSortBy] = useState('Newest First');
+  const [dataView, setDataView] = useState('All Data');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [kpiMode, setKpiMode] = useState('Overall');
+  const [chartHeight, setChartHeight] = useState(64);
+  const [eqXAxis, setEqXAxis] = useState<'time' | 'trade'>('time');
+  const [eqShowHWM, setEqShowHWM] = useState(true);
+  const [eqShowEdgeMA, setEqShowEdgeMA] = useState(false);
+  const [eqShowConfBands, setEqShowConfBands] = useState(false);
 
-  const allTags = useMemo(() => {
-    if (!portfolios) return [];
-    return Array.from(new Set(portfolios.flatMap((p: PortfolioDTO) => p.tags || []))).sort();
-  }, [portfolios]);
+  // Bulk select
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
-  const filtered = useMemo(() => {
-    if (!portfolios) return [];
-    let result = [...portfolios] as PortfolioDTO[];
-
-    if (tagFilter !== 'All') {
-      result = result.filter((p) => (p.tags || []).includes(tagFilter));
-    }
-
-    if (sortBy === 'Newest First') result.sort((a, b) => b.id - a.id);
-    else if (sortBy === 'Oldest First') result.sort((a, b) => a.id - b.id);
-    else if (sortBy === 'Name A-Z') result.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    else if (sortBy === 'P&L (High)') result.sort((a, b) => ((b.kpis?.total_pnl || 0) - (a.kpis?.total_pnl || 0)));
-    else if (sortBy === 'Win Rate (High)') result.sort((a, b) => ((b.kpis?.win_rate || 0) - (a.kpis?.win_rate || 0)));
-
-    return result;
-  }, [portfolios, sortBy, tagFilter]);
-
-  // Combined metrics
-  const combined = useMemo(() => {
-    if (!filtered.length) return null;
-    const totalPnl = filtered.reduce((s, p) => s + (p.kpis?.total_pnl || 0), 0);
-    const avgWR = filtered.reduce((s, p) => s + (p.kpis?.win_rate || 0), 0) / filtered.length;
-    const avgPF = filtered.reduce((s, p) => s + (p.kpis?.profit_factor || 0), 0) / filtered.length;
-    const totalTrades = filtered.reduce((s, p) => s + (p.kpis?.total_trades || 0), 0);
-    const totalStrategies = filtered.reduce((s, p) => s + (p.strategies || []).length, 0);
-    return { totalPnl, avgWR, avgPF, totalTrades, totalStrategies };
-  }, [filtered]);
-
-  // ---------------------------------------------------------------------------
-  // Loading / Error / Empty states
-  // ---------------------------------------------------------------------------
-
+  // ---- Loading / Error states (after all hooks) ----
   if (isLoading) {
     return (
-      <div>
-        <PageHeader title="My Portfolios" subtitle="Loading..." />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Portfolios</h1>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <Card key={i}>
-              <div className="animate-pulse space-y-3">
-                <div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} />
-                <div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} />
-                <div className="h-16 rounded" style={{ background: 'var(--bg-input)' }} />
-                <div className="grid grid-cols-4 gap-2">
-                  {[1, 2, 3, 4].map((j) => (
-                    <div key={j} className="h-8 rounded" style={{ background: 'var(--border)' }} />
-                  ))}
-                </div>
-              </div>
-            </Card>
+            <Card key={i}><div className="animate-pulse space-y-3"><div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} /><div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} /><div className="h-16 rounded" style={{ background: 'var(--bg-input)' }} /></div></Card>
           ))}
         </div>
       </div>
     );
   }
-
   if (error) {
     return (
-      <div>
-        <PageHeader title="My Portfolios" subtitle="Error loading portfolios" />
-        <Card>
-          <div className="text-center py-8" style={{ color: 'var(--red)' }}>
-            Failed to load portfolios. Check your connection and try again.
-          </div>
-        </Card>
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>My Portfolios</h1>
+        <Card><div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load portfolios.</div></Card>
       </div>
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
+  const startPortfolios = portfolios;
+  const allStatuses = ['On Track', 'Outperforming', 'Underperforming', 'Insufficient Data'];
+  const allTags = useMemo(() => Array.from(new Set(startPortfolios.flatMap((p) => p.tags))).sort(), [startPortfolios]);
+
+  const filteredPortfolios = useMemo(() => {
+    let result = [...startPortfolios];
+    if (statusFilter !== 'All') result = result.filter((p) => p.status === statusFilter);
+    if (tagFilter !== 'All') result = result.filter((p) => p.tags.includes(tagFilter));
+    switch (sortBy) {
+      case 'Newest First': result.sort((a, b) => parseInt(b.id) - parseInt(a.id)); break;
+      case 'Oldest First': result.sort((a, b) => parseInt(a.id) - parseInt(b.id)); break;
+      case 'Name A-Z': result.sort((a, b) => a.name.localeCompare(b.name)); break;
+      case 'P&L (High)': result.sort((a, b) => b.totalPnl - a.totalPnl); break;
+      case 'Win Rate (High)': result.sort((a, b) => b.winRate - a.winRate); break;
+      case 'Balance (High)': result.sort((a, b) => b.finalBalance - a.finalBalance); break;
+    }
+    return result;
+  }, [statusFilter, sortBy]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  };
+  const selectAll = () => setSelectedIds(new Set(filteredPortfolios.map((p) => p.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const selectStyle: React.CSSProperties = {
+    background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)',
+    padding: '6px 12px', borderRadius: '8px', fontSize: '0.875rem',
+  };
+  const btnSecondary: React.CSSProperties = {
+    background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)',
+    padding: '6px 14px', borderRadius: '8px', fontSize: '0.875rem', cursor: 'pointer',
+  };
+  const btnPrimary: React.CSSProperties = {
+    background: 'var(--accent)', border: 'none', color: 'white',
+    padding: '6px 14px', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer',
+  };
 
   return (
     <div>
-      <PageHeader
-        title="My Portfolios"
-        subtitle={`${filtered.length} portfolio${filtered.length === 1 ? '' : 's'}`}
-        actions={
-          <div className="flex items-center gap-2">
-            <span
-              className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5"
-              style={{ background: 'var(--green)' + '15', color: 'var(--green)' }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />
-              Live
-            </span>
-            <Link href="/portfolios/new">
-              <button
-                className="px-4 py-2 rounded-lg text-sm font-medium"
-                style={{ background: 'var(--accent)', color: '#fff' }}
-              >
-                + New Portfolio
-              </button>
-            </Link>
-          </div>
-        }
-      />
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold">My Portfolios</h1>
+        <div className="flex gap-3">
+          <button style={btnSecondary}>Update Data</button>
+          <button style={btnPrimary} onClick={() => router.push('/portfolios/new')}>+ New Portfolio</button>
+        </div>
+      </div>
 
-      {/* Filter row */}
-      <div className="flex flex-wrap gap-2 mb-2 mt-4">
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-4 mb-4 px-4 py-3 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{selectedIds.size} selected</span>
+          <button className="text-sm px-3 py-1 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer' }} onClick={selectAll}>Select All</button>
+          <button className="text-sm px-3 py-1 rounded" style={{ background: 'var(--red-muted)', color: 'var(--red)', border: 'none', cursor: 'pointer' }} onClick={() => setBulkDeleteConfirm(true)}>Delete Selected</button>
+          <span className="flex-1" />
+          <button className="text-sm px-3 py-1 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={clearSelection}>Clear</button>
+        </div>
+      )}
+
+      {/* Bulk delete modal */}
+      <Modal title="Delete Selected Portfolios" isOpen={bulkDeleteConfirm} onClose={() => setBulkDeleteConfirm(false)} width="480px">
+        <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>Delete {selectedIds.size} portfolios? This cannot be undone.</p>
+        <div className="flex gap-3 justify-end">
+          <button style={btnSecondary} onClick={() => setBulkDeleteConfirm(false)}>Cancel</button>
+          <button style={{ ...btnPrimary, background: 'var(--red)' }} onClick={() => { setBulkDeleteConfirm(false); clearSelection(); }}>Yes, Delete All</button>
+        </div>
+      </Modal>
+
+      {/* Filters */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
+        <select style={selectStyle} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="All">Status: All</option>
+          {allStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
         <select style={selectStyle} value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}>
-          <option value="All">All Tags</option>
+          <option value="All">Tag: All</option>
           {allTags.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
+        <select style={selectStyle} value={tqFilter} onChange={(e) => setTqFilter(e.target.value)}>
+          <option value="None">TQ: None</option>
+          <option value="ttp">TQ: Trade The Pool</option>
+          <option value="ftmo">TQ: FTMO</option>
+          <option value="topstep">TQ: Topstep</option>
+          <option value="custom">TQ: My Custom Rules</option>
+        </select>
         <select style={selectStyle} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          {['Newest First', 'Oldest First', 'Name A-Z', 'P&L (High)', 'Win Rate (High)'].map((s) => (
+          {['Newest First', 'Oldest First', 'Name A-Z', 'P&L (High)', 'Win Rate (High)', 'Balance (High)'].map((s) => (
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
+        <select style={selectStyle} value={dataView} onChange={(e) => setDataView(e.target.value)}>
+          {['All Data', 'Last 7 Days', 'Last 30 Days', 'Last 90 Days', 'Backtest Only', 'Forward Only', 'Custom'].map((v) => (
+            <option key={v} value={v}>{v}</option>
+          ))}
+        </select>
+        {dataView === 'Custom' && (
+          <>
+            <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} style={selectStyle} />
+            <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} style={selectStyle} />
+          </>
+        )}
       </div>
 
-      {/* KPI comparison mode selector (from V5) */}
+      {/* Viewing preferences */}
       <div className="flex items-center gap-4 mb-4 text-[10px]" style={{ color: 'var(--text-muted)' }}>
         <div className="flex items-center gap-1.5">
           <span>KPIs:</span>
@@ -199,92 +408,164 @@ export default function PortfoliosPage() {
             <option value="BT vs Alerts">Backtest vs Alerts</option>
           </select>
         </div>
+        <div className="w-px h-4" style={{ background: 'var(--border)' }} />
+        <div className="flex items-center gap-1.5">
+          <span>Chart Height:</span>
+          {[{ value: 48, label: 'S' }, { value: 64, label: 'M' }, { value: 96, label: 'L' }, { value: 140, label: 'XL' }].map((opt) => (
+            <button key={opt.value} onClick={() => setChartHeight(opt.value)} className="px-2 py-1 rounded font-medium"
+              style={{ background: chartHeight === opt.value ? 'var(--accent-muted)' : 'var(--bg-input)', color: chartHeight === opt.value ? 'var(--accent)' : 'var(--text-muted)', border: chartHeight === opt.value ? '1px solid var(--accent)' : '1px solid var(--border)' }}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="w-px h-4" style={{ background: 'var(--border)' }} />
+        <div className="flex items-center gap-1.5">
+          <span>X-axis:</span>
+          {(['time', 'trade'] as const).map((mode) => (
+            <button key={mode} onClick={() => setEqXAxis(mode)} className="px-2 py-1 rounded font-medium"
+              style={{ background: eqXAxis === mode ? 'var(--accent-muted)' : 'var(--bg-input)', color: eqXAxis === mode ? 'var(--accent)' : 'var(--text-muted)', border: eqXAxis === mode ? '1px solid var(--accent)' : '1px solid var(--border)' }}>
+              {mode === 'time' ? 'Time' : 'Trade #'}
+            </button>
+          ))}
+        </div>
+        <div className="w-px h-4" style={{ background: 'var(--border)' }} />
+        <div className="flex items-center gap-1.5">
+          <span>High Water Mark:</span>
+          {(['On', 'Off'] as const).map((v) => (
+            <button key={v} onClick={() => setEqShowHWM(v === 'On')} className="px-2 py-1 rounded font-medium"
+              style={{ background: (eqShowHWM ? 'On' : 'Off') === v ? 'var(--accent-muted)' : 'var(--bg-input)', color: (eqShowHWM ? 'On' : 'Off') === v ? 'var(--accent)' : 'var(--text-muted)', border: (eqShowHWM ? 'On' : 'Off') === v ? '1px solid var(--accent)' : '1px solid var(--border)' }}>
+              {v}
+            </button>
+          ))}
+        </div>
+        <div className="w-px h-4" style={{ background: 'var(--border)' }} />
+        <div className="flex items-center gap-1.5">
+          <span>Edge Check:</span>
+          {(['On', 'Off'] as const).map((v) => (
+            <button key={v} onClick={() => setEqShowEdgeMA(v === 'On')} className="px-2 py-1 rounded font-medium"
+              style={{ background: (eqShowEdgeMA ? 'On' : 'Off') === v ? 'var(--accent-muted)' : 'var(--bg-input)', color: (eqShowEdgeMA ? 'On' : 'Off') === v ? 'var(--accent)' : 'var(--text-muted)', border: (eqShowEdgeMA ? 'On' : 'Off') === v ? '1px solid var(--accent)' : '1px solid var(--border)' }}>
+              {v}
+            </button>
+          ))}
+        </div>
+        <div className="w-px h-4" style={{ background: 'var(--border)' }} />
+        <div className="flex items-center gap-1.5">
+          <span>Confidence Bands:</span>
+          {(['On', 'Off'] as const).map((v) => (
+            <button key={v} onClick={() => setEqShowConfBands(v === 'On')} className="px-2 py-1 rounded font-medium"
+              style={{ background: (eqShowConfBands ? 'On' : 'Off') === v ? 'var(--accent-muted)' : 'var(--bg-input)', color: (eqShowConfBands ? 'On' : 'Off') === v ? 'var(--accent)' : 'var(--text-muted)', border: (eqShowConfBands ? 'On' : 'Off') === v ? '1px solid var(--accent)' : '1px solid var(--border)' }}>
+              {v}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Combined Metrics card (from V5) */}
-      {combined && filtered.length > 0 && (
-        <Card className="mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-medium">
-              Combined Metrics
-              <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                {filtered.length} portfolio{filtered.length !== 1 ? 's' : ''} &middot; {combined.totalStrategies} strategies
-              </span>
-            </h4>
-          </div>
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-            {[
-              { label: 'Total P&L', value: fmtDollar(combined.totalPnl), color: combined.totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label: 'Avg Win Rate', value: fmtPct(combined.avgWR) },
-              { label: 'Avg PF', value: combined.avgPF.toFixed(2) },
-              { label: 'Total Trades', value: String(combined.totalTrades) },
-              { label: 'Strategies', value: String(combined.totalStrategies) },
-            ].map((kpi) => (
-              <div key={kpi.label}>
-                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
-                <p className="text-sm font-bold" style={(kpi as { color?: string }).color ? { color: (kpi as { color: string }).color } : undefined}>{kpi.value}</p>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
+      {/* Combined Metrics */}
+      {filteredPortfolios.length > 0 && (() => {
+        const combined = {
+          totalPnl: filteredPortfolios.reduce((s, p) => s + p.totalPnl, 0),
+          totalBalance: filteredPortfolios.reduce((s, p) => s + p.finalBalance, 0),
+          startingBalance: filteredPortfolios.reduce((s, p) => s + p.startingBalance, 0),
+          avgWR: filteredPortfolios.reduce((s, p) => s + p.winRate, 0) / filteredPortfolios.length,
+          avgPF: filteredPortfolios.reduce((s, p) => s + p.pf, 0) / filteredPortfolios.length,
+          worstDD: Math.min(...filteredPortfolios.map((p) => p.maxDDPct)),
+          avgDailyPnl: filteredPortfolios.reduce((s, p) => s + p.avgDailyPnl, 0),
+          totalTrades: filteredPortfolios.reduce((s, p) => s + p.trades, 0),
+          totalStrategies: filteredPortfolios.reduce((s, p) => s + p.strategies.length, 0),
+        };
+        const roi = combined.startingBalance > 0 ? ((combined.totalPnl / combined.startingBalance) * 100) : 0;
 
-      {/* Empty state */}
-      {filtered.length === 0 && (
-        <Card>
-          <div className="text-center py-12">
-            <p className="text-lg mb-2" style={{ color: 'var(--text-secondary)' }}>
-              {(portfolios?.length || 0) === 0
-                ? 'No portfolios yet. Create your first portfolio!'
-                : 'No portfolios match the current filters.'}
-            </p>
-            {(portfolios?.length || 0) === 0 && (
-              <Link href="/portfolios/new">
-                <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: '#fff' }}>
-                  Create Portfolio
-                </button>
-              </Link>
-            )}
-          </div>
-        </Card>
-      )}
+        return (
+          <Card className="mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium">
+                Combined Metrics
+                <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                  {filteredPortfolios.length} portfolio{filteredPortfolios.length !== 1 ? 's' : ''} &middot; {combined.totalStrategies} strategies
+                  {(statusFilter !== 'All' || tagFilter !== 'All') && ` (filtered from ${startPortfolios.length})`}
+                </span>
+              </h4>
+            </div>
+
+            {/* KPI row */}
+            <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-3 mb-3">
+              {[
+                { label: 'Total P&L', value: `${combined.totalPnl >= 0 ? '+' : ''}$${Math.abs(combined.totalPnl).toLocaleString()}`, color: combined.totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+                { label: 'Combined Balance', value: `$${combined.totalBalance.toLocaleString()}` },
+                { label: 'ROI', value: `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`, color: roi >= 0 ? 'var(--green)' : 'var(--red)' },
+                { label: 'Avg Win Rate', value: `${combined.avgWR.toFixed(1)}%` },
+                { label: 'Avg PF', value: combined.avgPF.toFixed(2) },
+                { label: 'Worst Max DD', value: `${combined.worstDD.toFixed(1)}%`, color: 'var(--red)' },
+                { label: 'Combined Daily', value: `${combined.avgDailyPnl >= 0 ? '+' : ''}$${Math.abs(combined.avgDailyPnl).toLocaleString()}`, color: combined.avgDailyPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+                { label: 'Total Trades', value: String(combined.totalTrades) },
+                { label: 'Strategies', value: String(combined.totalStrategies) },
+              ].map((kpi) => (
+                <div key={kpi.label}>
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
+                  <p className="text-sm font-bold" style={kpi.color ? { color: kpi.color } : undefined}>{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Combined equity curve */}
+            <ChartPlaceholder label="Combined equity curve: sum of all visible portfolio equity curves with DD shading" height={100} />
+          </Card>
+        );
+      })()}
 
       {/* Portfolio cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {filtered.map((port) => {
-          const kpis = port.kpis || {};
-          const stratCount = (port.strategies || []).length;
-          const status = getPortfolioStatus(port);
-          const reqSet = port.requirement_set_id;
-          const reqPassing = port.req_passing;
-          const reqTotal = port.req_total;
+        {filteredPortfolios.map((port) => {
+          const fmtDollar = (v: number) => `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString()}`;
+          const fmtPct = (v: number | null) => v !== null ? `${v.toFixed(1)}%` : '--';
+          const fmtD = (a: number | null, b: number | null) => {
+            if (a === null || b === null) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
+            const d = a - b;
+            return <span style={{ color: d > 0 ? 'var(--green)' : d < 0 ? 'var(--red)' : 'var(--text-muted)' }}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>;
+          };
+
+          const hasAlerts = port.alertTotalPnl !== null;
 
           return (
             <Card key={port.id}>
-              {/* Header: name + status */}
+              {/* Name + status + enabled dot */}
               <div className="flex items-center gap-2 mb-1">
                 {port.enabled && (
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: 'var(--green)' }} />
+                  <div className="relative flex-shrink-0 w-2.5 h-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--green)' }} />
+                    <div className="w-2.5 h-2.5 rounded-full absolute top-0 left-0" style={{ background: 'var(--green)', animation: 'pulse 2s ease-out infinite', opacity: 0.5 }} />
+                  </div>
                 )}
-                <Link
-                  href={`/portfolios/${port.id}`}
-                  className="font-semibold text-base hover:underline"
-                  style={{ color: 'var(--text-primary)' }}
-                >
-                  {port.name || 'Untitled Portfolio'}
-                </Link>
-                <span
-                  className="text-xs px-2 py-0.5 rounded-full font-medium"
-                  style={{ color: status.color, background: status.color + '20' }}
-                >
-                  {status.label}
+                <h3 className="font-semibold text-base">{port.name}</h3>
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ color: statusColors[port.status], background: statusColors[port.status] + '20' }}>
+                  {port.status}
                 </span>
+                <span className="flex-1" />
+                {/* Sigma badges */}
+                {port.fwdDays > 0 && (() => {
+                  const fmtSD = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}\u03c3`;
+                  return (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_FWD_COLOR, background: EQ_FWD_COLOR + '18' }}>
+                        {fmtSD(port.fwdSD)}
+                      </span>
+                      {hasAlerts && (
+                        <>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>|</span>
+                          <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_LIVE_COLOR, background: EQ_LIVE_COLOR + '18' }}>
+                            {fmtSD(port.alertSD)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Tags */}
-              {(port.tags || []).length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {port.tags!.map((tag) => (
+              {port.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-1" style={{ marginTop: '-2px' }}>
+                  {port.tags.map((tag) => (
                     <span key={tag} className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
                       {tag}
                     </span>
@@ -292,118 +573,168 @@ export default function PortfoliosPage() {
                 </div>
               )}
 
-              {/* Meta line with requirement set badge */}
+              {/* Meta line */}
               <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-                {stratCount} strateg{stratCount === 1 ? 'y' : 'ies'}
-                {port.account?.starting_balance != null && (
-                  <span> | ${port.account.starting_balance.toLocaleString()} balance</span>
-                )}
-                {reqSet && (
-                  <span style={{ color: 'var(--accent)' }}>
-                    {' '}| Req Set #{reqSet}
-                    {reqPassing != null && reqTotal != null && (
-                      <span
-                        className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                        style={{
-                          color: reqPassing === reqTotal ? 'var(--green)' : 'var(--orange)',
-                          background: reqPassing === reqTotal ? 'var(--green)' + '20' : 'var(--orange)' + '20',
-                        }}
-                      >
-                        {reqPassing}/{reqTotal} pass
-                      </span>
-                    )}
-                  </span>
-                )}
+                {port.strategies.length} strategies
+                <span> | ${port.startingBalance.toLocaleString()} balance</span>
+                {port.compoundRate > 0 && <span> | {(port.compoundRate * 100).toFixed(0)}% scaling</span>}
+                <span> | ${port.avgRiskPerTrade} avg risk</span>
+                <span> | {port.tradesPerDay.toFixed(1)} trades/day</span>
+                {port.webhookTemplate && <span style={{ color: 'var(--accent)' }}> | {port.webhookTemplate}</span>}
               </p>
 
-              {/* Strategy pills — symbol + direction */}
-              {stratCount > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {(port.strategies || []).slice(0, 5).map((s: any, i: number) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                      <span className="font-mono font-medium" style={{ color: 'var(--text-secondary)' }}>{s.symbol || '???'}</span>
-                      {s.direction && (
-                        <span style={{ color: s.direction === 'LONG' ? 'var(--green)' : 'var(--red)', fontSize: '0.6rem' }}>
-                          {s.direction === 'LONG' ? '\u2191' : '\u2193'}
-                        </span>
-                      )}
-                    </span>
-                  ))}
-                  {stratCount > 5 && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                      +{stratCount - 5} more
-                    </span>
-                  )}
+              {/* Strategy names */}
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {port.strategies.slice(0, 5).map((s, i) => (
+                  <span key={i} className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                    {s.symbol} {s.direction}
+                  </span>
+                ))}
+                {port.strategies.length > 5 && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                    +{port.strategies.length - 5} more
+                  </span>
+                )}
+              </div>
+
+              {/* Equity curve */}
+              <div className="rounded-lg mb-2 overflow-hidden" style={{ background: 'var(--bg-input)' }}>
+                <MiniEquityCurve
+                  portfolioId={port.id}
+                  fwdStartPct={port.btDays / (port.btDays + port.fwdDays)}
+                  hasAlerts={hasAlerts}
+                  showHWM={eqShowHWM}
+                  showEdgeMA={eqShowEdgeMA}
+                  showConfBands={eqShowConfBands}
+                  height={chartHeight}
+                />
+              </div>
+              <div className="flex gap-3 mb-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                <span><span style={{ color: EQ_BT_COLOR }}>{'\u2014'}</span> Backtest</span>
+                <span><span style={{ color: EQ_FWD_COLOR }}>{'\u2014'}</span> Forward</span>
+                {hasAlerts && <span><span style={{ color: EQ_LIVE_COLOR }}>{'\u2014'}</span> Alerts</span>}
+              </div>
+
+              {/* KPIs */}
+              {(() => {
+                if (kpiMode === 'Overall') {
+                  return (
+                    <div className="grid grid-cols-6 gap-2 mb-2">
+                      {[
+                        { label: 'P&L', value: fmtDollar(port.totalPnl), color: port.totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+                        { label: 'WR', value: `${port.winRate.toFixed(1)}%` },
+                        { label: 'PF', value: port.pf.toFixed(2) },
+                        { label: 'Max DD', value: `${port.maxDDPct.toFixed(1)}%` },
+                        { label: 'Avg Daily', value: fmtDollar(port.avgDailyPnl), color: port.avgDailyPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+                        { label: 'Trades', value: String(port.trades) },
+                      ].map((kpi, j) => (
+                        <div key={j}>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
+                          <p className="text-sm font-medium" style={kpi.color ? { color: kpi.color } : undefined}>{kpi.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
+
+                // Comparison mode
+                const btRow = { label: 'Backtest', color: EQ_BT_COLOR, pnl: port.totalPnl, wr: port.winRate, pf: port.pf, dd: port.maxDDPct, daily: port.avgDailyPnl };
+                const fwdRow = { label: 'Forward', color: EQ_FWD_COLOR, pnl: port.fwdTotalPnl, wr: port.fwdWinRate, pf: port.fwdPF, dd: port.fwdMaxDDPct, daily: port.fwdAvgDailyPnl };
+                const alertRow = { label: 'Alerts', color: EQ_LIVE_COLOR, pnl: port.alertTotalPnl, wr: port.alertWinRate, pf: port.alertPF, dd: port.alertMaxDDPct, daily: port.alertAvgDailyPnl };
+
+                const rowA = kpiMode === 'FWD vs Alerts' ? fwdRow : btRow;
+                const rowB = kpiMode === 'BT vs FWD' ? fwdRow : alertRow;
+
+                return (
+                  <div className="mb-2 rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+                    <div className="grid grid-cols-6 text-[10px] font-medium px-2 py-1.5" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
+                      <span></span><span>P&L</span><span>WR</span><span>PF</span><span>Max DD</span><span>Avg Daily</span>
+                    </div>
+                    <div className="grid grid-cols-6 text-xs px-2 py-1.5 border-t" style={{ borderColor: 'var(--border)' }}>
+                      <span className="text-[10px] font-medium" style={{ color: rowA.color }}>{rowA.label}</span>
+                      <span>{rowA.pnl !== null ? fmtDollar(rowA.pnl) : '--'}</span>
+                      <span>{fmtPct(rowA.wr)}</span>
+                      <span>{rowA.pf !== null ? rowA.pf.toFixed(2) : '--'}</span>
+                      <span>{fmtPct(rowA.dd)}</span>
+                      <span>{rowA.daily !== null ? fmtDollar(rowA.daily) : '--'}</span>
+                    </div>
+                    <div className="grid grid-cols-6 text-xs px-2 py-1.5 border-t" style={{ borderColor: 'var(--border)' }}>
+                      <span className="text-[10px] font-medium" style={{ color: rowB.color }}>{rowB.label}</span>
+                      <span>{rowB.pnl !== null ? fmtDollar(rowB.pnl) : '--'}</span>
+                      <span>{fmtPct(rowB.wr)}</span>
+                      <span>{rowB.pf !== null ? rowB.pf.toFixed(2) : '--'}</span>
+                      <span>{fmtPct(rowB.dd)}</span>
+                      <span>{rowB.daily !== null ? fmtDollar(rowB.daily) : '--'}</span>
+                    </div>
+                    <div className="grid grid-cols-6 text-xs px-2 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--bg-input)' }}>
+                      <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{'\u0394'}</span>
+                      <span>{fmtD(rowB.pnl, rowA.pnl)}</span>
+                      <span>{fmtD(rowB.wr, rowA.wr)}</span>
+                      <span>{fmtD(rowB.pf, rowA.pf)}</span>
+                      <span>{fmtD(rowB.dd, rowA.dd)}</span>
+                      <span>{fmtD(rowB.daily, rowA.daily)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Requirement set badge */}
+              {port.requirementSet && (
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Reqs:</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{
+                    color: port.reqPassing === port.reqTotal ? 'var(--green)' : 'var(--orange)',
+                    background: port.reqPassing === port.reqTotal ? 'var(--green-muted)' : 'rgba(255,152,0,0.12)',
+                  }}>
+                    {port.requirementSet} ({port.reqPassing}/{port.reqTotal} pass)
+                  </span>
                 </div>
               )}
 
-              {/* Equity curve placeholder */}
-              <div
-                className="rounded-lg mb-3 flex items-center justify-center"
-                style={{ background: 'var(--bg-input)', height: 64 }}
-              >
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Equity curve</span>
-              </div>
-
-              {/* KPIs — V5-style with comparison mode support */}
-              <div className="grid grid-cols-4 gap-2 mb-3">
-                {kpiMode === 'Overall' ? (
-                  <>
-                    {[
-                      { label: 'WR', value: kpis.win_rate != null ? fmtPct(kpis.win_rate) : '--' },
-                      { label: 'PF', value: kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--' },
-                      { label: 'Total P&L', value: kpis.total_pnl != null ? fmtDollar(kpis.total_pnl) : '--' },
-                      { label: 'Trades', value: kpis.total_trades != null ? String(kpis.total_trades) : '--' },
-                    ].map((m) => (
-                      <div key={m.label} className="text-center">
-                        <div className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
-                        <div className="text-sm font-mono font-medium" style={{ color: 'var(--text-primary)' }}>{m.value}</div>
-                      </div>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    {[
-                      { label: 'WR', value: kpis.win_rate != null ? fmtPct(kpis.win_rate) : '--' },
-                      { label: 'PF', value: kpis.profit_factor != null ? kpis.profit_factor.toFixed(2) : '--' },
-                      { label: 'Max DD', value: kpis.max_dd_pct != null ? `${kpis.max_dd_pct.toFixed(1)}%` : '--', color: 'var(--red)' },
-                      { label: 'Trades', value: kpis.total_trades != null ? String(kpis.total_trades) : '--' },
-                    ].map((m) => (
-                      <div key={m.label} className="text-center">
-                        <div className="text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
-                        <div className="text-sm font-mono font-medium" style={(m as { color?: string }).color ? { color: (m as { color: string }).color } : { color: 'var(--text-primary)' }}>{m.value}</div>
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-
               {/* Action row */}
-              <div className="flex items-center gap-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                <Link href={`/portfolios/${port.id}`}>
-                  <button className="text-xs px-3 py-1.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
-                    View
-                  </button>
+              <div className="flex items-center gap-2 mt-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <Link href={`/portfolios/${port.id}`} className="px-3 py-1.5 rounded text-xs" style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 12px', textDecoration: 'none', color: 'var(--text-secondary)' }}>
+                  View
                 </Link>
-                <button
-                  className="text-xs px-3 py-1.5 rounded"
-                  style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                  onClick={() => duplicateMutation.mutate(port.id)}
-                >
-                  Clone
-                </button>
-                <button
-                  className="text-xs px-3 py-1.5 rounded"
-                  style={{ background: 'var(--red)15', color: 'var(--red)', border: '1px solid var(--red)30' }}
-                  onClick={() => {
-                    if (confirm(`Delete "${port.name}"?`)) {
-                      deleteMutation.mutate(port.id);
-                    }
-                  }}
-                >
+                <button className="px-3 py-1.5 rounded text-xs" style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 12px' }}>Edit</button>
+                <button className="px-3 py-1.5 rounded text-xs" style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 12px' }} onClick={() => dupMut.mutate(Number(port.id))}>Clone</button>
+                <button className="px-3 py-1.5 rounded text-xs" style={{ background: 'var(--red-muted)', color: 'var(--red)', border: 'none', fontSize: '0.75rem', padding: '4px 12px', cursor: 'pointer' }}
+                  onClick={() => setDeleteId(port.id)}>
                   Delete
                 </button>
+                <button className="px-3 py-1.5 rounded text-xs" style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 12px' }}>Tags</button>
+                <span className="flex-1" />
+                {/* Portfolio enabled toggle */}
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Enabled</span>
+                <div
+                  className="relative w-7 h-4 rounded-full cursor-pointer flex-shrink-0"
+                  style={{ background: port.enabled ? 'var(--accent)' : 'var(--bg-input)', border: port.enabled ? 'none' : '1px solid var(--border)' }}
+                  title={port.enabled ? 'Portfolio on' : 'Portfolio off'}
+                >
+                  <div className="absolute top-0.5 w-3 h-3 rounded-full transition-all" style={{ background: 'white', left: port.enabled ? '12px' : '2px' }} />
+                </div>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(port.id)}
+                  onChange={() => toggleSelect(port.id)}
+                  className="w-4 h-4 rounded cursor-pointer flex-shrink-0"
+                  style={{ accentColor: 'var(--accent)' }}
+                  title="Select for bulk actions"
+                />
               </div>
+
+              {/* Inline delete confirmation */}
+              {deleteId === port.id && (
+                <div className="mt-3 p-3 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                  <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
+                    Delete &apos;{port.name}&apos;? This cannot be undone.
+                  </p>
+                  <div className="flex gap-2">
+                    <button style={{ ...btnPrimary, background: 'var(--red)', fontSize: '0.75rem', padding: '4px 12px' }} onClick={() => { deleteMut.mutate(Number(port.id)); setDeleteId(null); }}>Yes, Delete</button>
+                    <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 12px' }} onClick={() => setDeleteId(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}

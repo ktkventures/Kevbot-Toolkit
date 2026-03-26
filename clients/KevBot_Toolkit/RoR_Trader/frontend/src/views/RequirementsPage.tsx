@@ -1,23 +1,24 @@
 'use client';
+
 /**
- * Portfolio Requirements — V5 locked design. Expand/collapse sets with rule badges,
- * TQ rules (orange accent), Clone/Delete actions, + New Set.
+ * Portfolio Requirements — Faithful copy of V5 design with mock data replaced by API hooks.
+ * Source: src/app/portfolio-requirements/versions/V5.tsx
+ *
+ * Data convention:
+ *   Real value = live from API
+ *   -- = wired but no data yet
+ *   {{field}} = not wired, needs backend work
  */
-import { useState } from 'react';
+
+import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 
-
-interface Rule {
-  id: string;
-  name: string;
-  type: string;
-  value: number;
-  current_value?: number;
-  description?: string;
-}
+/* ========================================================================= */
+/* TYPES                                                                      */
+/* ========================================================================= */
 
 interface TradeQualRule {
   id: string;
@@ -25,20 +26,33 @@ interface TradeQualRule {
   type: string;
   value: number;
   unit: string;
-  applies_to: string;
+  appliesTo: 'wins' | 'losses' | 'all';
+  description: string;
+}
+
+interface Rule {
+  id: string;
+  name: string;
+  type: string;
+  value: number;
+  currentValue: number;
   description?: string;
+  thresholdPct?: number;
 }
 
 interface RequirementSet {
   id: string;
   name: string;
-  firm_key?: string;
-  is_built_in: boolean;
+  firmKey?: string;
+  isBuiltIn: boolean;
   rules: Rule[];
-  trade_qual_rules?: TradeQualRule[];
-  used_by?: string[];
+  tradeQualRules: TradeQualRule[];
+  usedBy: string[];
 }
 
+/* ========================================================================= */
+/* CONSTANTS                                                                  */
+/* ========================================================================= */
 
 const RULE_TYPE_OPTIONS = [
   { value: 'max_daily_loss_pct', label: 'Max Daily Loss (%)' },
@@ -59,27 +73,55 @@ const TRADE_QUAL_OPTIONS = [
   { value: 'min_profit_threshold', label: 'Min Profit Threshold', unit: '$' },
 ];
 
+/* ========================================================================= */
+/* API → V5 RequirementSet Mapping                                            */
+/* ========================================================================= */
 
-function useRequirements() {
-  return useQuery({
-    queryKey: ['requirements'],
-    queryFn: () => apiFetch<RequirementSet[]>('/api/requirements'),
-  });
+function apiToRequirementSet(rs: any): RequirementSet {
+  return {
+    id: String(rs.id),
+    name: rs.name || '--',
+    firmKey: rs.firm_key,
+    isBuiltIn: rs.is_built_in ?? false,
+    usedBy: rs.used_by || [],
+    rules: (rs.rules || []).map((r: any, i: number) => ({
+      id: r.id || `r${i}`,
+      name: r.name || '--',
+      type: r.type || '',
+      value: r.value ?? 0,
+      currentValue: r.current_value ?? 0,
+      description: r.description,
+      thresholdPct: r.threshold_pct,
+    })),
+    tradeQualRules: (rs.trade_qual_rules || []).map((tq: any, i: number) => ({
+      id: tq.id || `tq${i}`,
+      name: tq.name || '--',
+      type: tq.type || '',
+      value: tq.value ?? 0,
+      unit: tq.unit || '',
+      appliesTo: tq.applies_to || 'all',
+      description: tq.description || '',
+    })),
+  };
 }
 
-function useSaveRequirements() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (sets: RequirementSet[]) =>
-      apiFetch('/api/requirements', { method: 'PUT', body: JSON.stringify(sets) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['requirements'] }); },
-  });
+/* ========================================================================= */
+/* HELPERS                                                                    */
+/* ========================================================================= */
+
+function generateId(): string {
+  return 'id-' + Math.random().toString(36).substring(2, 9);
 }
 
+function formatRuleValue(type: string, value: number): string {
+  const pctTypes = ['max_daily_loss_pct', 'max_total_drawdown_pct', 'daily_pause_pct', 'min_profit_pct', 'min_profitable_days'];
+  if (pctTypes.includes(type)) return `${value}%`;
+  return value.toString();
+}
 
 function getRuleStatus(rule: Rule): 'pass' | 'fail' | 'warning' {
-  if (rule.current_value === undefined || rule.value === 0) return 'pass';
-  const pct = (rule.current_value / rule.value) * 100;
+  if (rule.value === 0) return 'pass';
+  const pct = (rule.currentValue / rule.value) * 100;
   const isMaxType = rule.type.startsWith('max_');
   if (isMaxType) {
     if (pct >= 100) return 'fail';
@@ -97,78 +139,194 @@ function statusDot(status: 'pass' | 'fail' | 'warning'): string {
   return 'var(--yellow, #e5a813)';
 }
 
-function formatRuleValue(type: string, value: number): string {
-  const pctTypes = ['max_daily_loss_pct', 'max_total_drawdown_pct', 'daily_pause_pct', 'min_profit_pct', 'min_profitable_days'];
-  if (pctTypes.includes(type)) return `${value}%`;
-  return value.toString();
-}
-
-function getSetSummary(set: RequirementSet): { pass: number; fail: number; warn: number } {
-  let pass = 0, fail = 0, warn = 0;
-  (set.rules || []).forEach((r) => {
-    const s = getRuleStatus(r);
-    if (s === 'pass') pass++;
-    else if (s === 'fail') fail++;
-    else warn++;
-  });
-  return { pass, fail, warn };
-}
-
+/* ========================================================================= */
+/* COMPONENT                                                                  */
+/* ========================================================================= */
 
 export default function RequirementsPage() {
-  const { data: sets, isLoading, error } = useRequirements();
-  const saveMutation = useSaveRequirements();
+  // ---- API Hooks (ALL before early returns) ----
+  const { data: apiRequirementsRaw, isLoading, error } = useQuery({
+    queryKey: ['requirements'],
+    queryFn: () => apiFetch<any[]>('/api/requirements'),
+  });
 
+  // Map API data to V5 RequirementSet interface
+  const apiSets: RequirementSet[] = useMemo(() => {
+    if (!apiRequirementsRaw) return [];
+    return apiRequirementsRaw.map(apiToRequirementSet);
+  }, [apiRequirementsRaw]);
+
+  const [sets, setSets] = useState<RequirementSet[]>([]);
+  // Sync API data into local state once loaded
+  const [initialized, setInitialized] = useState(false);
+  if (apiSets.length > 0 && !initialized) {
+    setSets(apiSets);
+    setInitialized(true);
+  }
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  // Inline edit state
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editRuleValue, setEditRuleValue] = useState('');
+
+  // Inline add rule state
   const [addingToSetId, setAddingToSetId] = useState<string | null>(null);
   const [newRuleType, setNewRuleType] = useState(RULE_TYPE_OPTIONS[0].value);
   const [newRuleValue, setNewRuleValue] = useState('');
+
+  // Inline add trade qual rule state
   const [addingTQToSetId, setAddingTQToSetId] = useState<string | null>(null);
   const [newTQType, setNewTQType] = useState(TRADE_QUAL_OPTIONS[0].value);
   const [newTQValue, setNewTQValue] = useState('');
-  const [newTQAppliesTo, setNewTQAppliesTo] = useState<string>('wins');
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [newTQAppliesTo, setNewTQAppliesTo] = useState<'wins' | 'losses' | 'all'>('wins');
 
+  // Inline set name edit
+  const [editingNameId, setEditingNameId] = useState<string | null>(null);
+  const [editNameValue, setEditNameValue] = useState('');
 
+  function handleNewSet() {
+    const newSet: RequirementSet = {
+      id: generateId(),
+      name: 'New Requirement Set',
+      isBuiltIn: false,
+      usedBy: [],
+      rules: [],
+      tradeQualRules: [],
+    };
+    setSets((prev) => [...prev, newSet]);
+    setExpandedId(newSet.id);
+    setEditingNameId(newSet.id);
+    setEditNameValue(newSet.name);
+  }
+
+  function handleSaveName(setId: string) {
+    if (!editNameValue.trim()) return;
+    setSets((prev) => prev.map((s) => s.id === setId ? { ...s, name: editNameValue.trim() } : s));
+    setEditingNameId(null);
+  }
+
+  function handleDelete(id: string) {
+    setSets((prev) => prev.filter((s) => s.id !== id));
+    setDeleteConfirmId(null);
+    if (expandedId === id) setExpandedId(null);
+  }
+
+  function handleStartEditRule(rule: Rule) {
+    setEditingRuleId(rule.id);
+    setEditRuleValue(rule.value.toString());
+  }
+
+  function handleSaveRule(setId: string, ruleId: string) {
+    const val = parseFloat(editRuleValue);
+    if (isNaN(val)) return;
+    setSets((prev) => prev.map((s) =>
+      s.id === setId
+        ? { ...s, rules: s.rules.map((r) => r.id === ruleId ? { ...r, value: val } : r) }
+        : s
+    ));
+    setEditingRuleId(null);
+  }
+
+  function handleDeleteRule(setId: string, ruleId: string) {
+    setSets((prev) => prev.map((s) =>
+      s.id === setId ? { ...s, rules: s.rules.filter((r) => r.id !== ruleId) } : s
+    ));
+  }
+
+  function handleAddRule(setId: string) {
+    if (!newRuleValue) return;
+    const val = parseFloat(newRuleValue);
+    if (isNaN(val)) return;
+    const label = RULE_TYPE_LABELS[newRuleType] || newRuleType;
+    const rule: Rule = {
+      id: generateId(),
+      name: label.replace(/\s*\(.*\)/, ''),
+      type: newRuleType,
+      value: val,
+      currentValue: 0,
+    };
+    setSets((prev) => prev.map((s) =>
+      s.id === setId ? { ...s, rules: [...s.rules, rule] } : s
+    ));
+    setAddingToSetId(null);
+    setNewRuleType(RULE_TYPE_OPTIONS[0].value);
+    setNewRuleValue('');
+  }
+
+  function handleCloneSet(set: RequirementSet) {
+    const cloned: RequirementSet = {
+      id: generateId(),
+      name: `${set.name} (Copy)`,
+      isBuiltIn: false,
+      usedBy: [],
+      rules: set.rules.map((r) => ({ ...r, id: generateId(), currentValue: 0 })),
+      tradeQualRules: set.tradeQualRules.map((r) => ({ ...r, id: generateId() })),
+    };
+    setSets((prev) => [...prev, cloned]);
+    setExpandedId(cloned.id);
+  }
+
+  function handleAddTQRule(setId: string) {
+    if (!newTQValue) return;
+    const val = parseFloat(newTQValue);
+    if (isNaN(val)) return;
+    const opt = TRADE_QUAL_OPTIONS.find((o) => o.value === newTQType);
+    const rule: TradeQualRule = {
+      id: generateId(),
+      name: opt?.label || newTQType,
+      type: newTQType,
+      value: val,
+      unit: opt?.unit || '',
+      appliesTo: newTQAppliesTo,
+      description: `${opt?.label || newTQType}: ${val} ${opt?.unit || ''} (${newTQAppliesTo === 'wins' ? 'wins only' : newTQAppliesTo === 'losses' ? 'losses only' : 'all trades'})`,
+    };
+    setSets((prev) => prev.map((s) =>
+      s.id === setId ? { ...s, tradeQualRules: [...s.tradeQualRules, rule] } : s
+    ));
+    setAddingTQToSetId(null);
+    setNewTQType(TRADE_QUAL_OPTIONS[0].value);
+    setNewTQValue('');
+  }
+
+  function handleDeleteTQRule(setId: string, ruleId: string) {
+    setSets((prev) => prev.map((s) =>
+      s.id === setId ? { ...s, tradeQualRules: s.tradeQualRules.filter((r) => r.id !== ruleId) } : s
+    ));
+  }
+
+  function getSetSummary(set: RequirementSet): { pass: number; fail: number; warn: number } {
+    let pass = 0, fail = 0, warn = 0;
+    set.rules.forEach((r) => {
+      const s = getRuleStatus(r);
+      if (s === 'pass') pass++;
+      else if (s === 'fail') fail++;
+      else warn++;
+    });
+    return { pass, fail, warn };
+  }
+
+  // ---- Loading / Error states (after all hooks) ----
   if (isLoading) {
     return (
-      <div>
-        <PageHeader title="Portfolio Requirements" subtitle="Loading..." />
-        <div className="space-y-3 mt-4">
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Portfolio Requirements</h1>
+        <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <Card key={i}>
-              <div className="animate-pulse space-y-3">
-                <div className="h-4 rounded w-1/4" style={{ background: 'var(--border)' }} />
-                <div className="h-3 rounded w-1/2" style={{ background: 'var(--border)' }} />
-                <div className="flex gap-2">
-                  {[1, 2, 3].map((j) => (
-                    <div key={j} className="h-6 w-12 rounded" style={{ background: 'var(--border)' }} />
-                  ))}
-                </div>
-              </div>
-            </Card>
+            <Card key={i}><div className="animate-pulse space-y-3"><div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} /><div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} /></div></Card>
           ))}
         </div>
       </div>
     );
   }
-
   if (error) {
     return (
-      <div>
-        <PageHeader title="Portfolio Requirements" subtitle="Error" />
-        <Card>
-          <div className="text-center py-8" style={{ color: 'var(--red)' }}>
-            Failed to load requirement sets. Check your connection and try again.
-          </div>
-        </Card>
+      <div style={{ padding: '32px' }}>
+        <h1 className="text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Portfolio Requirements</h1>
+        <Card><div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load requirement sets.</div></Card>
       </div>
     );
   }
-
-  const requirementSets = sets || [];
 
   return (
     <div>
@@ -176,55 +334,28 @@ export default function RequirementsPage() {
         title="Portfolio Requirements"
         subtitle="Manage requirement sets and rules"
         actions={
-          <div className="flex items-center gap-2">
-            <span
-              className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5"
-              style={{ background: 'var(--green)' + '15', color: 'var(--green)' }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />
-              Live
-            </span>
-            <button
-              className="px-4 py-2 rounded-lg text-sm font-medium"
-              style={{ background: 'var(--accent)', color: 'white', cursor: 'pointer' }}
-            >
-              + New Set
-            </button>
-          </div>
+          <button
+            onClick={handleNewSet}
+            className="px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: 'var(--accent)', color: 'white' }}
+          >
+            + New Set
+          </button>
         }
       />
 
       <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-        {requirementSets.length} requirement set{requirementSets.length !== 1 ? 's' : ''}
+        {sets.length} requirement set{sets.length !== 1 ? 's' : ''}
       </p>
 
-      {/* Empty state */}
-      {requirementSets.length === 0 && (
-        <Card>
-          <div className="text-center py-12">
-            <p className="text-lg mb-2" style={{ color: 'var(--text-secondary)' }}>
-              No requirement sets found.
-            </p>
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              Requirement sets define prop firm rules and compliance criteria for your portfolios.
-            </p>
-          </div>
-        </Card>
-      )}
-
-      {/* Requirement set cards */}
       <div className="space-y-3">
-        {requirementSets.map((set) => {
-          const summary = getSetSummary(set);
+        {sets.map((set) => {
           const isExpanded = expandedId === set.id;
-          const totalRules = (set.rules || []).length;
-          const tqRules = set.trade_qual_rules || [];
-          const tqCount = tqRules.length;
-          const usedByList = set.used_by || [];
+          const summary = getSetSummary(set);
 
           return (
             <Card key={set.id}>
-              {/* Set header — V5 style with triangle expand indicator */}
+              {/* Set header */}
               <div
                 className="flex items-center justify-between cursor-pointer"
                 onClick={() => setExpandedId(isExpanded ? null : set.id)}
@@ -232,31 +363,62 @@ export default function RequirementsPage() {
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   {/* Expand indicator */}
                   <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {isExpanded ? '\u25BC' : '\u25B6'}
+                    {isExpanded ? '▼' : '▶'}
                   </span>
 
-                  <h3 className="font-semibold text-sm truncate">{set.name}</h3>
+                  {/* Name (inline editable) */}
+                  {editingNameId === set.id ? (
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="text"
+                        value={editNameValue}
+                        onChange={(e) => setEditNameValue(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName(set.id); if (e.key === 'Escape') setEditingNameId(null); }}
+                        autoFocus
+                        className="px-2 py-1 rounded text-sm"
+                        style={{ background: 'var(--bg-input)', border: '1px solid var(--accent)', color: 'var(--text-primary)', width: '200px' }}
+                      />
+                      <button
+                        onClick={() => handleSaveName(set.id)}
+                        className="text-xs px-2 py-1 rounded"
+                        style={{ background: 'var(--accent)', color: 'white' }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  ) : (
+                    <h3
+                      className="font-semibold text-sm truncate"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        if (!set.isBuiltIn) {
+                          setEditingNameId(set.id);
+                          setEditNameValue(set.name);
+                        }
+                      }}
+                    >
+                      {set.name}
+                    </h3>
+                  )}
 
-                  {set.is_built_in && (
+                  {set.isBuiltIn && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
                       Built-in
                     </span>
                   )}
-                  {set.firm_key && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                      {set.firm_key.toUpperCase()}
-                    </span>
+                  {set.isBuiltIn && (
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }} title="Built-in sets are read-only. Clone to customize.">🔒</span>
                   )}
-                  {tqCount > 0 && (
+                  {set.tradeQualRules.length > 0 && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(255,152,0,0.12)', color: 'var(--orange)' }}>
-                      {tqCount} TQ rule{tqCount !== 1 ? 's' : ''}
+                      {set.tradeQualRules.length} TQ rule{set.tradeQualRules.length !== 1 ? 's' : ''}
                     </span>
                   )}
                 </div>
 
                 {/* Summary badges */}
                 <div className="flex items-center gap-3 shrink-0">
-                  {totalRules > 0 && (
+                  {set.rules.length > 0 && (
                     <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
                       {summary.pass > 0 && (
                         <span className="flex items-center gap-1">
@@ -278,24 +440,24 @@ export default function RequirementsPage() {
                       )}
                     </div>
                   )}
-                  {usedByList.length > 0 && (
+                  {set.usedBy.length > 0 && (
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                      {usedByList.length} portfolio{usedByList.length !== 1 ? 's' : ''}
+                      {set.usedBy.length} portfolio{set.usedBy.length !== 1 ? 's' : ''}
                     </span>
                   )}
                   <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {totalRules} rule{totalRules !== 1 ? 's' : ''}
+                    {set.rules.length} rule{set.rules.length !== 1 ? 's' : ''}
                   </span>
                 </div>
               </div>
 
-              {/* Expanded content — V5 style: rule badges, TQ rules, actions */}
+              {/* Expanded content: rules as badges + inline actions */}
               {isExpanded && (
                 <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
-                  {/* Rule badges (V5 inline pill display) */}
+                  {/* Rule badges */}
                   <div className="flex flex-wrap gap-2 mb-3">
-                    {(set.rules || []).map((rule) => {
-                      const rStatus = getRuleStatus(rule);
+                    {set.rules.map((rule) => {
+                      const status = getRuleStatus(rule);
                       const isEditing = editingRuleId === rule.id;
 
                       return (
@@ -304,10 +466,12 @@ export default function RequirementsPage() {
                           className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
                           style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
                         >
+                          {/* Status dot */}
                           <span
                             className="w-2 h-2 rounded-full shrink-0"
-                            style={{ background: statusDot(rStatus) }}
+                            style={{ background: statusDot(status) }}
                           />
+
                           <span style={{ color: 'var(--text-secondary)' }}>{rule.name}:</span>
 
                           {isEditing ? (
@@ -316,64 +480,64 @@ export default function RequirementsPage() {
                                 type="number"
                                 value={editRuleValue}
                                 onChange={(e) => setEditRuleValue(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') setEditingRuleId(null);
-                                  if (e.key === 'Escape') setEditingRuleId(null);
-                                }}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveRule(set.id, rule.id); if (e.key === 'Escape') setEditingRuleId(null); }}
                                 autoFocus
                                 className="w-20 px-1.5 py-0.5 rounded text-xs"
                                 style={{ background: 'var(--bg-card)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
                               />
                               <button
-                                onClick={() => setEditingRuleId(null)}
+                                onClick={() => handleSaveRule(set.id, rule.id)}
                                 className="text-[10px] px-1.5 py-0.5 rounded"
-                                style={{ background: 'var(--accent)', color: 'white', cursor: 'pointer' }}
+                                style={{ background: 'var(--accent)', color: 'white' }}
                               >
                                 OK
                               </button>
                             </div>
                           ) : (
                             <span
-                              className="font-medium"
-                              style={{ color: 'var(--text-primary)', cursor: set.is_built_in ? 'default' : 'pointer' }}
-                              onClick={(e) => {
-                                if (set.is_built_in) return;
-                                e.stopPropagation();
-                                setEditingRuleId(rule.id);
-                                setEditRuleValue(rule.value.toString());
-                              }}
-                              title={set.is_built_in ? 'Clone to edit' : 'Click to edit'}
+                              className="font-medium cursor-pointer"
+                              style={{ color: 'var(--text-primary)' }}
+                              onClick={(e) => { e.stopPropagation(); handleStartEditRule(rule); }}
+                              title="Click to edit"
                             >
-                              {rule.current_value !== undefined
-                                ? `${rule.current_value} / ${formatRuleValue(rule.type, rule.value)}`
-                                : formatRuleValue(rule.type, rule.value)
-                              }
+                              {formatRuleValue(rule.type, rule.value)}
                             </span>
                           )}
 
+                          {/* Delete rule button (not on built-in sets) */}
+                          {!set.isBuiltIn && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteRule(set.id, rule.id); }}
+                              className="w-4 h-4 flex items-center justify-center rounded text-[10px] shrink-0 transition-colors"
+                              style={{ color: 'var(--text-muted)' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--red)'; e.currentTarget.style.background = 'var(--red-muted)'; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+                              title="Remove rule"
+                            >
+                              x
+                            </button>
+                          )}
+                          {/* Description tooltip */}
                           {rule.description && (
-                            <span className="text-[10px] hidden sm:inline" style={{ color: 'var(--text-muted)' }} title={rule.description}>i</span>
+                            <span className="text-[10px] hidden sm:inline" style={{ color: 'var(--text-muted)' }} title={rule.description}>ⓘ</span>
                           )}
                         </div>
                       );
                     })}
 
-                    {(set.rules || []).length === 0 && (
+                    {set.rules.length === 0 && (
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No rules yet.</p>
                     )}
                   </div>
 
-                  {/* Add rule (V5 — not on built-in sets) */}
-                  {!set.is_built_in && addingToSetId === set.id ? (
+                  {/* Add rule inline form (not on built-in sets) */}
+                  {!set.isBuiltIn && addingToSetId === set.id ? (
                     <div className="flex items-end gap-2 flex-wrap mb-3" onClick={(e) => e.stopPropagation()}>
                       <div>
                         <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Type</label>
-                        <select
-                          value={newRuleType}
-                          onChange={(e) => setNewRuleType(e.target.value)}
+                        <select value={newRuleType} onChange={(e) => setNewRuleType(e.target.value)}
                           className="px-2 py-1.5 rounded text-xs"
-                          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                        >
+                          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
                           {RULE_TYPE_OPTIONS.map((opt) => (
                             <option key={opt.value} value={opt.value}>{opt.label}</option>
                           ))}
@@ -381,44 +545,30 @@ export default function RequirementsPage() {
                       </div>
                       <div>
                         <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Value</label>
-                        <input
-                          type="number"
-                          value={newRuleValue}
-                          onChange={(e) => setNewRuleValue(e.target.value)}
-                          placeholder="e.g. 5"
-                          autoFocus
-                          className="w-24 px-2 py-1.5 rounded text-xs"
-                          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                        />
+                        <input type="number" value={newRuleValue} onChange={(e) => setNewRuleValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleAddRule(set.id); }}
+                          placeholder="e.g. 5" autoFocus className="w-24 px-2 py-1.5 rounded text-xs"
+                          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
                       </div>
-                      <button
-                        className="px-3 py-1.5 rounded text-xs font-medium"
-                        style={{ background: 'var(--accent)', color: 'white', opacity: newRuleValue ? 1 : 0.5, cursor: 'pointer' }}
-                        disabled={!newRuleValue}
-                      >
+                      <button onClick={() => handleAddRule(set.id)} className="px-3 py-1.5 rounded text-xs font-medium"
+                        style={{ background: 'var(--accent)', color: 'white', opacity: newRuleValue ? 1 : 0.5, cursor: 'pointer' }} disabled={!newRuleValue}>
                         Add
                       </button>
-                      <button
-                        onClick={() => setAddingToSetId(null)}
-                        className="px-3 py-1.5 rounded text-xs"
-                        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}
-                      >
+                      <button onClick={() => setAddingToSetId(null)} className="px-3 py-1.5 rounded text-xs"
+                        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                         Cancel
                       </button>
                     </div>
-                  ) : !set.is_built_in ? (
+                  ) : !set.isBuiltIn ? (
                     <div className="mb-3">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setAddingToSetId(set.id); setNewRuleValue(''); }}
-                        className="text-xs px-3 py-1.5 rounded"
-                        style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer' }}
-                      >
+                      <button onClick={(e) => { e.stopPropagation(); setAddingToSetId(set.id); setNewRuleValue(''); }}
+                        className="text-xs px-3 py-1.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer' }}>
                         + Add Compliance Rule
                       </button>
                     </div>
                   ) : null}
 
-                  {/* Trade Qualification Rules (V5 — orange accent section) */}
+                  {/* ---- Trade Qualification Rules ---- */}
                   <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
                     <div className="flex items-center gap-2 mb-2">
                       <h4 className="text-xs font-medium" style={{ color: 'var(--orange)' }}>Trade Qualification Rules</h4>
@@ -427,55 +577,47 @@ export default function RequirementsPage() {
                       </span>
                     </div>
 
-                    {tqRules.length > 0 ? (
+                    {set.tradeQualRules.length > 0 ? (
                       <div className="flex flex-wrap gap-2 mb-2">
-                        {tqRules.map((tq) => {
-                          const appliesToColors: Record<string, { color: string; label: string }> = {
-                            wins: { color: 'var(--green)', label: 'Wins only' },
-                            losses: { color: 'var(--red)', label: 'Losses only' },
-                            all: { color: 'var(--text-muted)', label: 'All trades' },
-                          };
-                          const at = appliesToColors[tq.applies_to] || appliesToColors.all;
+                        {set.tradeQualRules.map((tq) => {
+                          const appliesToColors = { wins: { color: 'var(--green)', label: 'Wins only' }, losses: { color: 'var(--red)', label: 'Losses only' }, all: { color: 'var(--text-muted)', label: 'All trades' } };
+                          const at = appliesToColors[tq.appliesTo];
                           return (
-                            <div
-                              key={tq.id}
-                              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-                              style={{ background: 'rgba(255,152,0,0.08)', border: '1px solid rgba(255,152,0,0.2)' }}
-                            >
-                              <span style={{ color: 'var(--orange)' }}>{tq.name}:</span>
-                              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                                {tq.unit === '$' ? `$${tq.value}` : `${tq.value} ${tq.unit}`}
-                              </span>
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded-full"
-                                style={{ color: at.color, background: at.color + '18' }}
-                              >
-                                {at.label}
-                              </span>
-                              {tq.description && (
-                                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }} title={tq.description}>i</span>
-                              )}
-                            </div>
+                          <div key={tq.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+                            style={{ background: 'rgba(255,152,0,0.08)', border: '1px solid rgba(255,152,0,0.2)' }}>
+                            <span style={{ color: 'var(--orange)' }}>{tq.name}:</span>
+                            <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                              {tq.unit === '$' ? `$${tq.value}` : `${tq.value} ${tq.unit}`}
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ color: at.color, background: at.color + '18' }}>
+                              {at.label}
+                            </span>
+                            {!set.isBuiltIn && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteTQRule(set.id, tq.id); }}
+                                className="w-4 h-4 flex items-center justify-center rounded text-[10px] shrink-0"
+                                style={{ color: 'var(--text-muted)' }}
+                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--red)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}>
+                                x
+                              </button>
+                            )}
+                            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }} title={tq.description}>ⓘ</span>
+                          </div>
                           );
                         })}
                       </div>
                     ) : (
-                      <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-                        No trade qualification rules. All trades count.
-                      </p>
+                      <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>No trade qualification rules. All trades count.</p>
                     )}
 
-                    {/* Add TQ rule (V5 — not on built-in sets) */}
-                    {!set.is_built_in && addingTQToSetId === set.id ? (
+                    {/* Add TQ rule form (not on built-in sets) */}
+                    {!set.isBuiltIn && addingTQToSetId === set.id ? (
                       <div className="flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                         <div>
                           <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Type</label>
-                          <select
-                            value={newTQType}
-                            onChange={(e) => setNewTQType(e.target.value)}
+                          <select value={newTQType} onChange={(e) => setNewTQType(e.target.value)}
                             className="px-2 py-1.5 rounded text-xs"
-                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                          >
+                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
                             {TRADE_QUAL_OPTIONS.map((opt) => (
                               <option key={opt.value} value={opt.value}>{opt.label} ({opt.unit})</option>
                             ))}
@@ -483,109 +625,78 @@ export default function RequirementsPage() {
                         </div>
                         <div>
                           <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Value</label>
-                          <input
-                            type="number"
-                            value={newTQValue}
-                            onChange={(e) => setNewTQValue(e.target.value)}
-                            placeholder="e.g. 30"
-                            autoFocus
-                            className="w-24 px-2 py-1.5 rounded text-xs"
-                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                          />
+                          <input type="number" value={newTQValue} onChange={(e) => setNewTQValue(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleAddTQRule(set.id); }}
+                            placeholder="e.g. 30" autoFocus className="w-24 px-2 py-1.5 rounded text-xs"
+                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
                         </div>
                         <div>
                           <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Applies To</label>
-                          <select
-                            value={newTQAppliesTo}
-                            onChange={(e) => setNewTQAppliesTo(e.target.value)}
+                          <select value={newTQAppliesTo} onChange={(e) => setNewTQAppliesTo(e.target.value as 'wins' | 'losses' | 'all')}
                             className="px-2 py-1.5 rounded text-xs"
-                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                          >
+                            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
                             <option value="wins">Wins only</option>
                             <option value="losses">Losses only</option>
                             <option value="all">All trades</option>
                           </select>
                         </div>
-                        <button
-                          className="px-3 py-1.5 rounded text-xs font-medium"
-                          style={{ background: 'var(--orange)', color: 'white', opacity: newTQValue ? 1 : 0.5, cursor: 'pointer' }}
-                          disabled={!newTQValue}
-                        >
+                        <button onClick={() => handleAddTQRule(set.id)} className="px-3 py-1.5 rounded text-xs font-medium"
+                          style={{ background: 'var(--orange)', color: 'white', opacity: newTQValue ? 1 : 0.5, cursor: 'pointer' }} disabled={!newTQValue}>
                           Add
                         </button>
-                        <button
-                          onClick={() => setAddingTQToSetId(null)}
-                          className="px-3 py-1.5 rounded text-xs"
-                          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}
-                        >
+                        <button onClick={() => setAddingTQToSetId(null)} className="px-3 py-1.5 rounded text-xs"
+                          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                           Cancel
                         </button>
                       </div>
-                    ) : !set.is_built_in ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setAddingTQToSetId(set.id); setNewTQValue(''); }}
+                    ) : !set.isBuiltIn ? (
+                      <button onClick={(e) => { e.stopPropagation(); setAddingTQToSetId(set.id); setNewTQValue(''); }}
                         className="text-xs px-3 py-1.5 rounded"
-                        style={{ background: 'rgba(255,152,0,0.12)', color: 'var(--orange)', cursor: 'pointer' }}
-                      >
+                        style={{ background: 'rgba(255,152,0,0.12)', color: 'var(--orange)', cursor: 'pointer' }}>
                         + Add Qualification Rule
                       </button>
                     ) : null}
                   </div>
 
-                  {/* Action row (V5 — Clone / Delete) */}
+                  {/* ---- Action row ---- */}
                   <div className="flex items-center gap-2 mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
-                    <button
+                    <button onClick={(e) => { e.stopPropagation(); handleCloneSet(set); }}
                       className="text-xs px-3 py-1.5 rounded"
-                      style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer' }}
-                    >
+                      style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
                       Clone
                     </button>
 
-                    {!set.is_built_in && (
+                    {/* Delete set (not built-in) */}
+                    {!set.isBuiltIn && (
                       <>
                         {deleteConfirmId === set.id ? (
                           <div className="flex items-center gap-2 ml-auto">
                             <span className="text-xs" style={{ color: 'var(--red)' }}>Delete this set?</span>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
-                              className="text-xs px-2 py-1 rounded font-medium"
-                              style={{ background: 'var(--red)', color: 'white', cursor: 'pointer' }}
-                            >
+                            <button onClick={(e) => { e.stopPropagation(); handleDelete(set.id); }}
+                              className="text-xs px-2 py-1 rounded font-medium" style={{ background: 'var(--red)', color: 'white', cursor: 'pointer' }}>
                               Yes
                             </button>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
-                              className="text-xs px-2 py-1 rounded"
-                              style={{ border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}
-                            >
+                            <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
+                              className="text-xs px-2 py-1 rounded" style={{ border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                               No
                             </button>
                           </div>
                         ) : (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(set.id); }}
-                            className="text-xs px-3 py-1.5 rounded ml-auto"
-                            style={{ color: 'var(--red)', cursor: 'pointer' }}
-                          >
+                          <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(set.id); }}
+                            className="text-xs px-3 py-1.5 rounded ml-auto" style={{ color: 'var(--red)', cursor: 'pointer' }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--red-muted)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
                             Delete Set
                           </button>
                         )}
                       </>
                     )}
-
-                    {set.is_built_in && (
+                    {set.isBuiltIn && (
                       <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
                         Built-in sets are read-only. Clone to customize.
                       </span>
                     )}
                   </div>
-
-                  {/* Used by */}
-                  {usedByList.length > 0 && (
-                    <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
-                      Used by: {usedByList.join(', ')}
-                    </p>
-                  )}
                 </div>
               )}
             </Card>

@@ -1,62 +1,117 @@
 'use client';
 
-/**
- * Mass Results — Clean API-first page.
- *
- * Visual design derived from V5 (versions/V5.tsx), data layer built
- * around the mass builder results API endpoint. No mock data.
- */
-
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import { useMassResults, useDeleteMassResult, useCancelMassSearch } from '@/hooks/queries/useMassBuilder';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* TYPES                                                                      */
+/* ========================================================================= */
 
-function StatusBadge({ status }: { status: string }) {
-  const s = (status || '').toLowerCase();
-  let color = 'var(--text-muted)';
-  let bg = 'var(--bg-input)';
-  let label = status || 'Unknown';
-
-  if (s === 'completed') { color = 'var(--green)'; bg = 'var(--green-muted, rgba(76,175,80,0.15))'; }
-  else if (s === 'running') { color = 'var(--accent)'; bg = 'var(--accent-muted)'; }
-  else if (s === 'queued') { color = 'var(--text-muted)'; bg = 'var(--bg-input)'; }
-  else if (s === 'failed') { color = 'var(--red)'; bg = 'var(--red-muted, rgba(239,83,80,0.15))'; }
-
-  return (
-    <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ color, background: bg }}>
-      {label}
-    </span>
-  );
+interface SavedSearch {
+  id: string;
+  name: string;
+  date: string;
+  status: 'completed' | 'running' | 'queued';
+  // Config summary
+  tickerCount: number;
+  tfCount: number;
+  dirCount: number;
+  entryCount: number;
+  exitCount: number;
+  confluenceCount: number;
+  stopCount: number;
+  targetCount: number;
+  totalEvaluations: number;
+  // Results (if completed)
+  resultCount: number;
+  bestDailyR: number | null;
+  bestWR: number | null;
+  bestPF: number | null;
+  bestR2: number | null;
+  // Progress (if running)
+  progress: number | null;
+  elapsed: string | null;
+  eta: string | null;
+  currentStep: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+/* ========================================================================= */
+/* HELPERS                                                                     */
+/* ========================================================================= */
+
+/** Map a snake_case API record to the component's SavedSearch shape */
+function mapApiSearch(raw: any): SavedSearch {
+  return {
+    id: String(raw.id ?? raw.search_id ?? ''),
+    name: raw.name ?? '--',
+    date: raw.created_at ?? raw.date ?? '--',
+    status: raw.status === 'completed' ? 'completed'
+      : raw.status === 'running' ? 'running'
+      : raw.status === 'queued' ? 'queued'
+      : 'completed',
+    tickerCount: raw.ticker_count ?? raw.config?.tickers?.length ?? 0,
+    tfCount: raw.tf_count ?? raw.config?.timeframes?.length ?? 0,
+    dirCount: raw.dir_count ?? raw.config?.directions?.length ?? 0,
+    entryCount: raw.entry_count ?? raw.config?.entry_triggers?.length ?? 0,
+    exitCount: raw.exit_count ?? raw.config?.exit_triggers?.length ?? 0,
+    confluenceCount: raw.confluence_count ?? 0,
+    stopCount: raw.stop_count ?? 0,
+    targetCount: raw.target_count ?? 0,
+    totalEvaluations: raw.total_evaluations ?? 0,
+    resultCount: raw.result_count ?? 0,
+    bestDailyR: raw.best_daily_r ?? null,
+    bestWR: raw.best_win_rate ?? raw.best_wr ?? null,
+    bestPF: raw.best_profit_factor ?? raw.best_pf ?? null,
+    bestR2: raw.best_r_squared ?? raw.best_r2 ?? null,
+    progress: raw.progress ?? null,
+    elapsed: raw.elapsed ?? null,
+    eta: raw.eta ?? null,
+    currentStep: raw.current_step ?? null,
+  };
+}
+
+/* ========================================================================= */
+/* STYLES                                                                      */
+/* ========================================================================= */
+
+const btnSecondary: React.CSSProperties = {
+  background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)',
+  padding: '4px 12px', borderRadius: '8px', fontSize: '0.75rem', cursor: 'pointer',
+};
+
+/* ========================================================================= */
+/* COMPONENT                                                                   */
+/* ========================================================================= */
 
 export default function MassResultsPage() {
-  const { data: results, isLoading, error } = useMassResults();
-  const deleteMutation = useDeleteMassResult();
-  const cancelMutation = useCancelMassSearch();
+  // ---- API hooks (MUST come before any early returns) ----
+  const { data: apiResults, isLoading, error } = useMassResults();
+  const deleteMut = useDeleteMassResult();
+  const cancelMut = useCancelMassSearch();
 
+  // ---- Local UI state ----
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState('Newest');
 
-  const sorted = useMemo(() => {
-    if (!results) return [];
-    const arr = [...results] as any[];
-    if (sortBy === 'Newest') arr.sort((a, b) => (b.created_at || b.date || '').localeCompare(a.created_at || a.date || ''));
-    else if (sortBy === 'Results') arr.sort((a, b) => (b.result_count || 0) - (a.result_count || 0));
-    return arr;
-  }, [results, sortBy]);
+  // ---- Map API data ----
+  const searches: SavedSearch[] = useMemo(() => {
+    if (!apiResults) return [];
+    return apiResults.map(mapApiSearch);
+  }, [apiResults]);
 
-  // ---------------------------------------------------------------------------
-  // Loading / Error
-  // ---------------------------------------------------------------------------
+  const sorted = useMemo(() => {
+    return [...searches].sort((a, b) => {
+      if (sortBy === 'Newest') return b.date.localeCompare(a.date);
+      if (sortBy === 'Results') return (b.resultCount || 0) - (a.resultCount || 0);
+      if (sortBy === 'Best Daily R') return (b.bestDailyR || 0) - (a.bestDailyR || 0);
+      return 0;
+    });
+  }, [searches, sortBy]);
+
+  // ---- Loading / Error states ----
 
   if (isLoading) {
     return (
@@ -68,7 +123,7 @@ export default function MassResultsPage() {
               <div className="animate-pulse space-y-3">
                 <div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} />
                 <div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} />
-                <div className="h-3 rounded w-1/2" style={{ background: 'var(--border)' }} />
+                <div className="h-8 rounded" style={{ background: 'var(--bg-input)' }} />
               </div>
             </Card>
           ))}
@@ -80,121 +135,114 @@ export default function MassResultsPage() {
   if (error) {
     return (
       <div>
-        <PageHeader title="Mass Results" subtitle="Error" />
+        <PageHeader title="Mass Results" subtitle="Error loading results" />
         <Card>
           <div className="text-center py-8" style={{ color: 'var(--red)' }}>
-            Failed to load mass results. Check your connection and try again.
+            Failed to load mass builder results. Check your connection and try again.
           </div>
         </Card>
       </div>
     );
   }
 
-  const runningCount = sorted.filter((s: any) => (s.status || '').toLowerCase() === 'running').length;
+  // ---- Action handlers ----
+  function handleDelete(searchId: string) {
+    deleteMut.mutate(Number(searchId));
+    setDeleteConfirmId(null);
+  }
+
+  function handleCancel(searchId: string) {
+    cancelMut.mutate(Number(searchId));
+  }
 
   return (
     <div>
       <PageHeader
         title="Mass Results"
         subtitle="Browse and manage saved mass builder searches"
-        actions={
-          <div className="flex items-center gap-2">
-            <span
-              className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5"
-              style={{ background: 'var(--green)' + '15', color: 'var(--green)' }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)' }} />
-              Live
-            </span>
-          </div>
-        }
       />
 
       {/* Controls */}
-      <div className="flex items-center justify-between mb-4 mt-4">
+      <div className="flex items-center justify-between mb-4">
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          {sorted.length} saved search{sorted.length !== 1 ? 'es' : ''}
-          {runningCount > 0 && ` \u00b7 ${runningCount} running`}
+          {searches.length} saved searches &middot; {searches.filter((s) => s.status === 'running').length} running
         </p>
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          className="px-2 py-1 rounded text-xs"
-          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-        >
-          <option value="Newest">Newest First</option>
-          <option value="Results">Most Results</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="px-2 py-1 rounded text-xs"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+          >
+            <option value="Newest">Newest First</option>
+            <option value="Results">Most Results</option>
+            <option value="Best Daily R">Best Daily R</option>
+          </select>
+        </div>
       </div>
 
       {/* Empty state */}
-      {sorted.length === 0 && (
+      {searches.length === 0 && (
         <Card>
-          <div className="text-center py-12">
-            <p className="text-lg mb-2" style={{ color: 'var(--text-secondary)' }}>
-              No saved searches yet.
+          <div className="text-center py-8">
+            <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+              No saved searches yet
             </p>
-            <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-              Run a mass search from the Mass Builder to see results here.
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Run a mass builder search to see results here.
             </p>
-            <Link href="/mass-builder">
-              <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--accent)', color: '#fff' }}>
-                Go to Mass Builder
-              </button>
-            </Link>
           </div>
         </Card>
       )}
 
       {/* Search cards */}
       <div className="space-y-3">
-        {sorted.map((search: any) => {
-          const searchId = search.id || search.search_id;
-          const isRunning = (search.status || '').toLowerCase() === 'running';
-          const isQueued = (search.status || '').toLowerCase() === 'queued';
-          const isComplete = (search.status || '').toLowerCase() === 'completed';
+        {sorted.map((search) => {
+          const isRunning = search.status === 'running';
+          const isQueued = search.status === 'queued';
+          const isComplete = search.status === 'completed';
 
           return (
-            <Card key={searchId}>
+            <Card key={search.id}>
               <div className="flex items-start justify-between">
                 {/* Left: info */}
                 <div className="flex-1 min-w-0">
                   {/* Row 1: Name + status + date */}
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <h3 className="font-semibold text-sm">{search.name || `Search #${searchId}`}</h3>
-                    <StatusBadge status={search.status} />
-                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
-                      {search.created_at || search.date || '--'}
+                    <h3 className="font-semibold text-sm">{search.name}</h3>
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{
+                      color: isComplete ? 'var(--green)' : isRunning ? 'var(--accent)' : 'var(--text-muted)',
+                      background: isComplete ? 'var(--green-muted)' : isRunning ? 'var(--accent-muted)' : 'var(--bg-input)',
+                    }}>
+                      {isComplete ? `${search.resultCount} results` : isRunning ? 'Running' : 'Queued'}
                     </span>
+                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{search.date}</span>
                   </div>
 
                   {/* Row 2: Config summary */}
                   <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-                    {search.ticker_count || search.symbols?.length || '?'} ticker{(search.ticker_count || 0) !== 1 ? 's' : ''}
-                    {' \u00b7 '}{search.tf_count || search.timeframes?.length || '?'} TFs
-                    {' \u00b7 '}{search.total_evaluations?.toLocaleString() || '?'} evaluations
-                    {isComplete && search.result_count != null && ` \u00b7 ${search.result_count} results`}
+                    {search.tickerCount} ticker{search.tickerCount !== 1 ? 's' : ''}
+                    {' '}&middot; {search.tfCount} TF{search.tfCount !== 1 ? 's' : ''}
+                    {' '}&middot; {search.dirCount} dir
+                    {' '}&middot; {search.entryCount} entries
+                    {' '}&middot; {search.exitCount} exits
+                    {' '}&middot; {search.confluenceCount} confluences
+                    {' '}&middot; {search.stopCount} stops
+                    {' '}&middot; {search.targetCount} targets
+                    {' '}&middot; {search.totalEvaluations.toLocaleString()} evaluations
                   </p>
 
                   {/* Running: progress bar */}
-                  {isRunning && search.progress != null && (
+                  {isRunning && search.progress !== null && (
                     <div className="mb-2">
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs" style={{ color: 'var(--accent)' }}>
-                          {search.current_label || search.current_step || 'Processing...'}
-                        </span>
+                        <span className="text-xs" style={{ color: 'var(--accent)' }}>{search.currentStep}</span>
                         <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
-                          {Math.round((search.progress / (search.total || 1)) * 100)}%
+                          {Math.round(search.progress * 100)}% &middot; Elapsed: {search.elapsed ?? '--'} &middot; ETA: {search.eta ?? '--'}
                         </span>
                       </div>
                       <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-input)' }}>
-                        <div
-                          className="h-full rounded-full transition-all"
-                          style={{
-                            width: `${Math.round((search.progress / (search.total || 1)) * 100)}%`,
-                            background: 'var(--accent)',
-                          }}
-                        />
+                        <div className="h-full rounded-full transition-all" style={{ width: `${search.progress * 100}%`, background: 'var(--accent)' }} />
                       </div>
                     </div>
                   )}
@@ -202,17 +250,18 @@ export default function MassResultsPage() {
                   {/* Queued: status message */}
                   {isQueued && (
                     <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-                      Queued — waiting for active search to complete
+                      {search.currentStep ?? 'Queued'}
                     </p>
                   )}
 
                   {/* Completed: best KPIs */}
-                  {isComplete && search.best_kpis && (
+                  {isComplete && (
                     <div className="flex gap-6">
                       {[
-                        { label: 'Best Daily R', value: search.best_kpis.daily_r != null ? `+${search.best_kpis.daily_r.toFixed(2)}` : '--' },
-                        { label: 'Best WR', value: search.best_kpis.win_rate != null ? `${search.best_kpis.win_rate.toFixed(1)}%` : '--' },
-                        { label: 'Best PF', value: search.best_kpis.profit_factor != null ? search.best_kpis.profit_factor.toFixed(2) : '--' },
+                        { label: 'Best Daily R', value: search.bestDailyR != null ? `+${search.bestDailyR.toFixed(2)}` : '--' },
+                        { label: 'Best WR', value: search.bestWR != null ? `${search.bestWR.toFixed(1)}%` : '--' },
+                        { label: 'Best PF', value: search.bestPF != null ? search.bestPF.toFixed(2) : '--' },
+                        { label: 'Best R\u00B2', value: search.bestR2 != null ? search.bestR2.toFixed(2) : '--' },
                       ].map((kpi) => (
                         <div key={kpi.label}>
                           <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
@@ -226,39 +275,31 @@ export default function MassResultsPage() {
                 {/* Right: actions */}
                 <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                   {isComplete && (
-                    <Link
-                      href={`/mass-builder?load=${searchId}`}
-                      className="text-xs px-3 py-1.5 rounded"
-                      style={{
-                        background: 'var(--bg-input)',
-                        color: 'var(--text-secondary)',
-                        border: '1px solid var(--border)',
-                        textDecoration: 'none',
-                      }}
-                    >
+                    <Link href={`/mass-builder?load=${search.id}`} style={{ ...btnSecondary, textDecoration: 'none' }}>
                       View
                     </Link>
                   )}
+                  {isComplete && (
+                    <button style={btnSecondary}>Load</button>
+                  )}
+                  <button style={btnSecondary}>Copy</button>
                   {isRunning && (
                     <button
-                      className="text-xs px-3 py-1.5 rounded"
-                      style={{ background: 'var(--bg-input)', color: 'var(--orange)', border: '1px solid var(--orange)', cursor: 'pointer' }}
-                      onClick={() => cancelMutation.mutate(searchId)}
+                      style={{ ...btnSecondary, color: 'var(--orange)', borderColor: 'var(--orange)' }}
+                      onClick={() => handleCancel(search.id)}
                     >
                       Cancel
                     </button>
                   )}
-                  <button
-                    className="text-xs px-3 py-1.5 rounded"
-                    style={{ background: 'var(--red)15', color: 'var(--red)', border: '1px solid var(--red)30', cursor: 'pointer' }}
-                    onClick={() => {
-                      if (confirm('Delete this search?')) {
-                        deleteMutation.mutate(searchId);
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
+                  {deleteConfirmId === search.id ? (
+                    <div className="flex items-center gap-1">
+                      <button style={{ ...btnSecondary, background: 'var(--red)', color: 'white', border: 'none' }}
+                        onClick={() => handleDelete(search.id)}>Yes</button>
+                      <button style={btnSecondary} onClick={() => setDeleteConfirmId(null)}>No</button>
+                    </div>
+                  ) : (
+                    <button style={{ ...btnSecondary, color: 'var(--red)' }} onClick={() => setDeleteConfirmId(search.id)}>Delete</button>
+                  )}
                 </div>
               </div>
             </Card>

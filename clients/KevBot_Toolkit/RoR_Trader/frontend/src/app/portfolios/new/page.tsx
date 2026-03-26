@@ -1,60 +1,14 @@
 'use client';
 
-import VersionedPage from '@/components/VersionedPage';
+import PageSwitch from '@/components/PageSwitch';
+import PortfolioNewPage from '@/views/PortfolioNewPage';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
 import V3 from './versions/V3';
 import V4 from './versions/V4';
 import V5 from './versions/V5';
-import { useStrategies } from '@/hooks/queries/useStrategies';
-import { useCreatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 
-/**
- * Transform API strategy to the StrategyData shape V5 portfolio builder expects.
- */
-function apiToBuilderStrategy(s: any): any {
-  const kpis = s.kpis || {};
-  return {
-    id: String(s.id),
-    name: s.name || 'Untitled',
-    symbol: s.symbol || '???',
-    direction: s.direction || 'LONG',
-    displayName: `${s.symbol || '???'} ${s.direction || 'LONG'} — ${s.name || 'Untitled'}`,
-    trades: kpis.total_trades ?? 0,
-    winRate: kpis.win_rate ?? 0,
-    pf: kpis.profit_factor ?? 0,
-    totalR: kpis.total_r ?? 0,
-    maxDD: kpis.max_r_drawdown ?? 0,
-    avgR: kpis.avg_r ?? 0,
-    equityCurve: s.equity_curve_data?.cumulative_r || [],
-  };
-}
-
-function WiredV5() {
-  const { data: apiStrategies, isLoading } = useStrategies();
-  const createMutation = useCreatePortfolio();
-
-  if (isLoading) {
-    return (
-      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-        Loading strategies...
-      </div>
-    );
-  }
-
-  const builderStrategies = apiStrategies
-    ? apiStrategies.map(apiToBuilderStrategy)
-    : undefined;
-
-  return (
-    <V5
-      apiStrategies={builderStrategies}
-      onCreate={(portfolio) => createMutation.mutate(portfolio)}
-    />
-  );
-}
-
-const versions = [
+const designVersions = [
   {
     meta: {
       id: 'v1-initial',
@@ -69,7 +23,7 @@ const versions = [
       id: 'v2-full-parity',
       name: 'Full Parity',
       description: 'Full builder: risk scaling, position sizing calcs, strategy recommendations, risk summary, chart legend.',
-      rationale: 'Every Streamlit portfolio builder feature. Adds: risk scaling with explanation, position sizing calculation per strategy, strategy recommendations with P&L/DD/correlation analysis, risk summary card with daily exposure and capital utilization, chart legend mapping colors to strategies, drag-to-reorder.',
+      rationale: 'Every Streamlit portfolio builder feature.',
     },
     component: V2,
   },
@@ -78,7 +32,7 @@ const versions = [
       id: 'v3-streamlined',
       name: 'Streamlined',
       description: 'Single-column builder: compact settings row, inline search-to-add strategies, simple equity preview, dynamic KPI strip.',
-      rationale: 'Removed two-column layout, recommendations engine, risk summary card, position sizing calculations, reorder controls, and drawdown chart. Focus on adding strategies with risk and seeing the combined result.',
+      rationale: 'Removed two-column layout, recommendations engine, risk summary card.',
     },
     component: V3,
   },
@@ -86,31 +40,22 @@ const versions = [
     meta: {
       id: 'v4-creative',
       name: 'Creative',
-      description: 'Wizard-style builder with 4-step flow (Setup, Strategies, Risk, Review), interactive strategy card picker with sparkline equity curves, live risk gauge, donut composition chart, smart defaults from risk tolerance, and what-if stress scenarios.',
-      rationale: 'Guided creation experience that breaks portfolio building into digestible steps. Visual strategy picker replaces search/dropdown. Risk gauge and stress scenarios add portfolio-level insight before committing.',
+      description: 'Wizard-style builder with 4-step flow (Setup, Strategies, Risk, Review).',
+      rationale: 'Guided creation experience.',
     },
     component: V4,
   },
   {
     meta: {
       id: 'v5-production',
-      name: 'Production (Phase 39 Aligned)',
-      description: 'V2 Full Parity + webhook template selector (defaults to paper), capital utilization chart, worst case analysis, Monte Carlo risk simulation.',
-      rationale: 'Adds the three missing risk analytics modules from Streamlit and the Phase 39 webhook template selector. All Streamlit portfolio builder features present.',
+      name: 'Production (Design Ref)',
+      description: 'V2 Full Parity + webhook template selector, capital utilization chart, worst case analysis, Monte Carlo.',
+      rationale: 'Design reference with mock data.',
     },
     component: V5,
   },
-  {
-    meta: {
-      id: 'v5-wired',
-      name: 'Production (Live)',
-      description: 'Portfolio builder wired to real API data — strategies fetched from FastAPI, create portfolio via mutation.',
-      rationale: 'Production version with live data.',
-    },
-    component: WiredV5,
-  },
 ];
 
-export default function PortfolioNewPage() {
-  return <VersionedPage pageKey="portfolio-new" versions={versions} />;
+export default function Page() {
+  return <PageSwitch live={PortfolioNewPage} versions={designVersions} pageKey="portfolio-new" />;
 }
