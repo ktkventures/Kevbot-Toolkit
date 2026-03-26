@@ -3083,33 +3083,28 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 
 ---
 
-### Phase 38: Frontend Migration — DESIGN IN PROGRESS (2026-03-24)
+### Phase 38: Frontend Migration — IMPLEMENTATION IN PROGRESS (2026-03-26)
 
-**Goal:** Migrate the frontend from Streamlit to a modern web framework for better UX, performance, and maintainability. The Python backend (strategy engine, alert system, portfolio computation) stays — only the UI layer changes.
+**Goal:** Migrate the frontend from Streamlit to Next.js + FastAPI. Python backend (engines, indicators, portfolio math, alerts) stays untouched — only the UI layer changes.
 
-**Motivation:** Streamlit limitations encountered during development:
-- Session drops on page reload (no persistent auth)
-- `@st.dialog` can't reliably persist data (workaround required)
-- Widget key conflicts prevent post-render state modification (nav_target workaround)
-- `@st.fragment` requires JWT thread-local restoration hacks
-- 18K+ line single-file app with no routing (entire page re-executes on every interaction)
-- Limited charting (lightweight-charts bolted on, no native TradingView support)
-- No client-side interactivity (every click round-trips to server)
+**Stack (confirmed):**
+- **Frontend:** Next.js 14 (React 18, TypeScript, Tailwind CSS)
+- **Backend API:** FastAPI (Python) — 55+ endpoints wrapping existing modules
+- **Auth:** Supabase Auth — persistent sessions via localStorage JWT
+- **Charts:** lightweight-charts v4 (candlestick) + recharts v2 (equity/analytics)
+- **State:** TanStack Query v5 (server) + Zustand v4 (client) + React Context (auth)
+- **Forms:** React Hook Form v7 + Zod v3
 
-**Proposed stack (to be discussed and finalized):**
-- **Frontend:** Next.js (React) — dominant in fintech (Robinhood, Webull use React). Largest ecosystem, best charting support, most documentation. TradingView official React library for charts.
-- **Backend API:** FastAPI (Python) — wraps existing computation functions as REST/WebSocket endpoints. Minimal rewrite — portfolios.py, alerts.py, unified_engine.py, ralph_engine.py become API handlers.
-- **Auth:** Supabase Auth (already in use) — persistent sessions via cookies/localStorage. No more logout on reload.
-- **Real-time:** WebSocket from FastAPI → React for live chart updates, alert notifications, position monitoring.
-- **Styling:** Tailwind CSS with theme system (CSS custom properties). User-selectable themes (dark/light/custom accent colors, Steam-style).
-- **Charting:** TradingView Advanced Charts (official React widget) — replaces all custom lightweight-charts hacks.
+**Current status (2026-03-26):**
+- Phase A (Frontend Faithful Copy): COMPLETE — 28 pages copy-wired from V5 designs
+- Phase B (Backend Alignment): COMPLETE — stop/target separation, exec types, fidelity, dashboard, strategy enrichment
+- Phase C (Feature Wiring): IN PROGRESS — charts, analytics, portfolio, pack editing
+- Phase D (Future Pages + QA + Polish): NOT STARTED
+- Deployed to Railway dev (frontend + API services)
+- Backup branch: `dev-backup-pre-qa`
 
-**Approach:**
-1. **Branch:** `frontend-migration` or `dev` — Streamlit stays functional on `main` throughout
-2. **Frontend-first:** Build UI shell with mock/placeholder data. Get layout, navigation, page structure, and visual design approved BEFORE wiring in real data.
-3. **API layer:** Wrap existing Python functions in FastAPI endpoints. Minimal logic changes.
-4. **Wire up:** Connect React pages to real API endpoints, replace mock data.
-5. **QA & cutover:** Run both in parallel, verify feature parity, then switch.
+**Execution plan:** `docs/Phase_38_Execution_Plan.md`
+**QA agent briefing:** `docs/QA_Agent_Briefing.md`
 
 **Pages locked (V5 designs approved):**
 - Settings (Themes V1, Display V5, Connections V4, Account V2)
@@ -3131,31 +3126,30 @@ Phases 37A-37F deployed to production. Multiple QA rounds completed. Core featur
 - User Packs V5 (8-tab detail with Signal Validation + Parity Simulator, private/public visibility toggle)
 - Timeframes V5 (use case grid: 17 TFs × 4 use cases, default TF selector, provider badges)
 
-**Open decisions:**
-- [ ] Confirm tech stack: Next.js + FastAPI vs alternatives (SvelteKit, Vue/Nuxt)
-- [ ] Research what TradingView and popular fintech tools use and why
-- [ ] Theme system: how customizable? Preset themes vs full color picker?
-- [ ] Which pages to migrate first (Strategy Builder + Portfolio Detail = highest value)
-- [ ] Mobile responsiveness: how important at launch?
-- [ ] Hosting: keep Railway? Or move to Vercel (frontend) + Railway (API)?
+**Resolved decisions:**
+- [x] Tech stack: Next.js + FastAPI (confirmed)
+- [x] Theme system: 9 preset themes with CSS custom properties (implemented)
+- [x] Migration order: Strategy Builder first, then core trading, then packs, portfolios, settings
+- [x] Hosting: Railway (frontend + API + worker services)
+- [ ] Mobile responsiveness: deferred to Phase D polish
+- [ ] Production DNS: rortrader.com → Railway frontend (Phase D)
 
-**Estimated effort:**
-- Backend API wrapping: 1-2 weeks
-- Frontend UI shell (no data): 2-3 weeks
-- Wiring + integration: 2-3 weeks
-- QA + polish: 1-2 weeks
-- Total: ~6-10 weeks (can be phased)
+**Key architectural decisions:**
+1. Stop/Target packs: adapter endpoints over existing RM module (no DB migration)
+2. Execution types [C]/[L]/[LC]/[CC]: schema in TEMPLATES registry, stored in parameters JSONB
+3. Fidelity [PB]/[CB]: derived from cross-TF shift logic, display only
+4. Views as live code, versions/ as frozen design reference
+5. All page.tsx use next/dynamic ssr:false for production builds
+6. Data convention: real values / `--` / `{{field_name}}`
 
-**Expected benefits:**
-- ~40-50% less time debugging UI quirks (no more Streamlit workarounds)
-- ~30% faster feature development once foundation is set
-- Persistent auth sessions (no logout on reload)
-- Native TradingView charting (no hacks)
-- User-selectable themes and visual customization
-- Proper component architecture (reusable, testable, independent renders)
-- Client-side interactivity (instant UI responses, no server round-trips for every click)
-
-**When to start:** After Phase 31 (Polygon.io) — that's pure backend and works the same regardless of frontend. Migrate before building more complex UI features (webhook rework, scanner) so they're built correctly the first time.
+**Remaining work (Phase C+D):**
+- Charts: equity sparklines, price charts, settings integration
+- Analytics: extended KPIs, Markov, rolling metrics, return distribution
+- Portfolio: equity curves, correlation, Monte Carlo, anomalies
+- Pack editing: parameter CRUD, exec type tabs, variation creation
+- Pack modernization: legacy tagging, new defaults with [PB]/[CB] + exec types
+- Secondary pages: admin, creator, marketplace (all {{field}})
+- Visual QA + polish
 
 ---
 
