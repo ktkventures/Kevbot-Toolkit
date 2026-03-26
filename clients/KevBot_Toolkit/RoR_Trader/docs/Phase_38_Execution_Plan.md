@@ -104,41 +104,41 @@ The copy-and-wire procedure MUST include:
 ### B1: Stop Loss / Take Profit Separation
 | Task | Description | Status |
 |------|------------|--------|
-| B1.1 | `GET /api/packs/stop-loss` — filtered RM packs | Not Started |
-| B1.2 | `GET /api/packs/stop-loss/templates` — stop-only templates | Not Started |
-| B1.3 | `PUT /api/packs/stop-loss` — save via RM pipeline | Not Started |
-| B1.4 | Repeat for take-profit | Not Started |
-| B1.5 | `useStopLossPacks()` + `useTakeProfitPacks()` hooks | Not Started |
+| B1.1 | `GET /api/packs/stop-loss` — filtered RM packs | **DONE** |
+| B1.2 | `GET /api/packs/stop-loss/templates` — stop-only templates | **DONE** |
+| B1.3 | `PUT /api/packs/stop-loss` — save via RM pipeline | **DONE** |
+| B1.4 | Repeat for take-profit | **DONE** |
+| B1.5 | `useStopLossPacks()` + `useTakeProfitPacks()` hooks | **DONE** |
 
 ### B2: Execution Type Parameters
 | Task | Description | Status |
 |------|------------|--------|
-| B2.1 | Extend TEMPLATES with exec variant schemas | Not Started |
-| B2.2 | Update templates API serialization | Not Started |
-| B2.3 | Update `ConfluenceTemplateDTO` TypeScript type | Not Started |
+| B2.1 | Extend TEMPLATES with exec variant schemas | **DONE** |
+| B2.2 | Update templates API serialization | **DONE** |
+| B2.3 | Update `ConfluenceTemplateDTO` TypeScript type | **DONE** |
 
 ### B3: Fidelity Type [PB]/[CB]
 | Task | Description | Status |
 |------|------------|--------|
-| B3.1 | Add fidelity_type to confluence condition records | Not Started |
-| B3.2 | Default existing conditions to [PB] | Not Started |
+| B3.1 | Add fidelity_type to confluence condition records | **DONE** |
+| B3.2 | Default existing conditions to [PB] | **DONE** |
 
 ### B4: Dashboard Endpoints
 | Task | Description | Status |
 |------|------------|--------|
-| B4.1 | `GET /api/dashboard/equity-curve` | Not Started |
-| B4.2 | `GET /api/dashboard/daily-pnl` | Not Started |
-| B4.3 | `GET /api/dashboard/positions` | Not Started |
-| B4.4 | `GET /api/dashboard/health` | Not Started |
-| B4.5 | `GET /api/dashboard/activity` | Not Started |
+| B4.1 | `GET /api/dashboard/equity-curve` | **DONE** |
+| B4.2 | `GET /api/dashboard/daily-pnl` | **DONE** |
+| B4.3 | `GET /api/dashboard/positions` | **DONE** |
+| B4.4 | `GET /api/dashboard/health` | **DONE** |
+| B4.5 | `GET /api/dashboard/activity` | **DONE** |
 
 ### B5: Missing Strategy Fields
 | Task | Description | Status |
 |------|------------|--------|
-| B5.1 | Forward test + alert KPIs on strategy endpoint | Not Started |
-| B5.2 | Sigma deviation computation | Not Started |
-| B5.3 | Strategy status derivation | Not Started |
-| B5.4 | Equity curve data in strategy list | Not Started |
+| B5.1 | Forward test + alert KPIs on strategy endpoint | **DONE** |
+| B5.2 | Sigma deviation computation | **DONE** |
+| B5.3 | Strategy status derivation | **DONE** |
+| B5.4 | Equity curve data in strategy list | **DONE** |
 
 ---
 
