@@ -142,57 +142,119 @@ The copy-and-wire procedure MUST include:
 
 ---
 
-## Phase A QA Notes (2026-03-26)
+## Phase A QA Notes (2026-03-26) — RESOLVED
 
-### Remaining Mock Data (fix before Phase B)
-- [ ] Stop Loss detail Preview tab: "Sample Trades" → `{{recent_stop_examples}}`
-- [ ] Take Profit detail Preview tab: same check
-- [ ] Portfolio Detail Anomaly Detection: verify not mock alerts → empty state
-- [ ] Portfolio Detail Strategy Correlation Heatmap: verify real or mock
-- [ ] Exit triggers showing only 3 — should match entry trigger count
-
-### Wrong Version / Wiring
-- [ ] User Packs: Design Ref showing V1 not V5; "Create from scratch" → link to Pack Builder
-- [ ] X-axis toggle (Date vs Trade #) not functional on equity curves
-
-### Feature Roadmap (Phase B/C/future)
-- Confluence pack duplication: tag current as "legacy (Default)", create new defaults with [PB]/[CB] + [C]/[L]/[LC]/[CC]
-- Take Profit packs: need to be created (only Stop Loss packs exist)
-- Entry/Exit trigger parity: exits should have same available triggers as entries
-- UT Bot duplicate triggers: C vs L1→L cleanup when new packs built
-- Portfolio "Re-analyze" / recommendations: needs backend endpoint
-- Equity curve x-axis toggle: wire Date vs Trade # across all equity curve instances
+- [x] Stop Loss detail Preview tab: replaced with empty state
+- [x] Take Profit detail Preview tab: replaced with empty state
+- [x] Portfolio Detail Anomaly Detection: replaced with empty state
+- [x] Portfolio Detail Correlation Heatmap: replaced with empty state
+- [x] Exit triggers: fixed `get_exit_triggers()` to include entry-type triggers
+- [x] User Packs: "Create from scratch" → links to Pack Builder
+- [ ] X-axis toggle (Date vs Trade #) — deferred to Phase C
 
 ---
 
 ## Phase C: Feature Wiring
 
-Replace `{{field_name}}` with real computed data.
+Replace `{{field_name}}` with real computed data. Working through these on Railway dev.
 
 ### C1: Strategy Analytics
-Forward KPIs, sigma badges, status, analysis tab computations, Markov, rolling metrics
+| Task | Description | Status |
+|------|------------|--------|
+| C1.1 | Forward KPIs on strategy list + detail | **DONE** — enrich_strategy + full_compute |
+| C1.2 | Sigma deviation badges | **DONE** — fixed to compare avg_r vs backtest distribution |
+| C1.3 | Strategy status (On Track/Outperforming/etc.) | **DONE** — derived from sigma |
+| C1.4 | Alerts always-on for forward testing strategies | **DONE** — enrich_strategy sets flag |
+| C1.5 | Update Data button (list page — bulk refresh) | **DONE** — sequential refresh with progress |
+| C1.6 | Update Data button (detail page — single refresh) | **DONE** — POST /api/strategies/{id}/refresh |
+| C1.7 | Loading indicators for long computations | **DONE** — spinner banners + table loaders |
+| C1.8 | Forward test trades in Chart & Trades tab | **DONE** — wired to useStrategyForwardTest |
+| C1.9 | Extended KPIs (Sharpe, Sortino, etc.) in detail | Not Started — useStrategyKPIs hook exists, needs frontend wiring |
+| C1.10 | Analysis tab computations (per-trigger comparison) | Not Started — needs new API endpoint |
+| C1.11 | Rolling metrics chart | Not Started — needs analytics.py integration |
+| C1.12 | Return distribution (histogram + stats) | Not Started — R values available, needs charting |
+| C1.13 | Markov Motor (transition matrix) | Not Started — needs analytics.py integration |
+| C1.14 | Equity curve x-axis toggle (Date vs Trade #) | Not Started |
 
 ### C2: Dashboard Widgets
-Equity curve, daily P&L, P&L calendar, positions, health, regime, monthly goal
+| Task | Description | Status |
+|------|------------|--------|
+| C2.1 | KPI strip from API | **DONE** — useDashboardSummary wired |
+| C2.2 | Strategy health widget | **DONE** — /api/dashboard/health endpoint |
+| C2.3 | Active positions from engine state | **DONE** — /api/dashboard/positions endpoint |
+| C2.4 | Activity feed from alerts | **DONE** — /api/dashboard/activity endpoint |
+| C2.5 | Portfolio equity curve chart | Not Started — needs aggregated equity data |
+| C2.6 | Daily P&L bar chart | Not Started — needs daily P&L computation |
+| C2.7 | P&L Calendar heatmap | Not Started — needs daily P&L data |
+| C2.8 | Market regime indicator | Not Started — needs VIX/breadth data source |
+| C2.9 | Monthly goal progress | Not Started — needs settings-driven goal config |
 
 ### C3: Portfolio Analytics
-Equity curve, Monte Carlo, correlation, buying power, anomalies
+| Task | Description | Status |
+|------|------------|--------|
+| C3.1 | Portfolio equity curve | Not Started — compute endpoint exists |
+| C3.2 | Strategy correlation heatmap | Not Started — compute endpoint exists |
+| C3.3 | Monte Carlo simulation display | Not Started — compute endpoint exists |
+| C3.4 | Buying power tracker | Not Started — account endpoint exists |
+| C3.5 | Anomaly detection display | Not Started — anomalies endpoint exists |
+| C3.6 | Portfolio "Re-analyze" button | Not Started — needs recommendation endpoint |
+| C3.7 | Worst-case analysis | Not Started — needs computation |
 
 ### C4: Pack Configuration
-Parameter editing, exec type tabs, CRUD operations
+| Task | Description | Status |
+|------|------------|--------|
+| C4.1 | TF Confluence pack parameter editing + save | Not Started — save endpoint exists |
+| C4.2 | Trigger exec type parameter tabs (Trigger Parameters tab) | Not Started — exec_variants in TEMPLATES |
+| C4.3 | General pack parameter editing + save | Not Started — save endpoint exists |
+| C4.4 | Stop Loss / Take Profit pack CRUD | Not Started — dedicated endpoints exist |
+| C4.5 | Create Variation flow | Not Started |
+| C4.6 | Pack Builder AI wizard steps | Not Started — future feature (needs AI API) |
+
+### C5: Confluence Pack Modernization
+| Task | Description | Status |
+|------|------------|--------|
+| C5.1 | Duplicate current packs, tag originals as "legacy (Default)" | Not Started |
+| C5.2 | Create new default packs with [PB]/[CB] fidelity options | Not Started |
+| C5.3 | Create new default packs with [C]/[L]/[LC]/[CC] exec variants | Not Started |
+| C5.4 | Create Take Profit pack templates (currently only Stop Loss exist) | Not Started |
+| C5.5 | Entry/Exit trigger parity — ensure full trigger sets on both | **DONE** — get_exit_triggers fixed |
 
 ---
 
 ## Phase D: Future Pages + QA + Polish
 
-### D1: Secondary Pages (admin, creator, marketplace, pricing)
-All V4 copies with `{{field_name}}` throughout — no backend exists yet.
+### D1: Secondary Pages (no backend yet — all `{{field}}`)
+| Task | Description | Status |
+|------|------------|--------|
+| D1.1 | Admin Dashboard, Users, Curation (V4 copies) | Not Started |
+| D1.2 | Creator Dashboard, Earnings, Publish (V4 copies) | Not Started |
+| D1.3 | Marketplace, Prop Firms, Subscriptions (V4 copies) | Not Started |
+| D1.4 | Pricing page (V4 copy) | Not Started |
+| D1.5 | Onboarding flow | Not Started |
 
-### D2: Visual QA
-Kevin toggles PageSwitch on every page, logs discrepancies, I fix them.
+### D2: Railway Deployment + Production Readiness
+| Task | Description | Status |
+|------|------------|--------|
+| D2.1 | API service on Railway dev | **DONE** |
+| D2.2 | Frontend service on Railway dev | **DONE** |
+| D2.3 | CORS + env vars configured | **DONE** |
+| D2.4 | Deploy to Railway main (production) | Not Started |
+| D2.5 | DNS setup (rortrader.com → frontend) | Not Started |
 
-### D3: Polish
-Responsive, loading skeletons, error states, accessibility.
+### D3: Visual QA
+| Task | Description | Status |
+|------|------------|--------|
+| D3.1 | Kevin full pass: toggle PageSwitch on every page | Not Started |
+| D3.2 | Log discrepancies per page | Not Started |
+| D3.3 | Fix all flagged discrepancies | Not Started |
+
+### D4: Polish
+| Task | Description | Status |
+|------|------------|--------|
+| D4.1 | Responsive breakpoints (sidebar collapse, card stacking) | Not Started |
+| D4.2 | Loading skeleton consistency | In Progress — added to Strategy Detail |
+| D4.3 | Error state consistency (retry buttons, helpful messages) | Not Started |
+| D4.4 | Accessibility (aria labels, keyboard navigation) | Not Started |
 
 ---
 
