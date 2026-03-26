@@ -695,8 +695,15 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
 # STRATEGY FIELD ENRICHMENT (Phase B5)
 # =============================================================================
 
-def compute_forward_kpis(strategy: dict) -> dict | None:
-    """Compute KPIs for the forward test portion of a strategy's stored_trades.
+def compute_forward_kpis(strategy: dict, full_compute: bool = False) -> dict | None:
+    """Compute KPIs for the forward test portion of a strategy.
+
+    If full_compute=False (default, used for list endpoint):
+      Only splits stored_trades at forward_test_start. Fast but may be stale.
+
+    If full_compute=True (used for detail endpoint):
+      Loads fresh market data and runs the full backtest to get current forward trades.
+      This is slower (Polygon API + engine computation) but always current.
 
     Returns dict with win_rate, profit_factor, daily_r, total_r, trades, max_r_drawdown,
     or None if no forward test data.
@@ -704,18 +711,29 @@ def compute_forward_kpis(strategy: dict) -> dict | None:
     if not strategy.get('forward_testing') or not strategy.get('forward_test_start'):
         return None
 
-    stored = strategy.get('stored_trades', [])
-    if not stored:
-        return None
-
-    trades_df = trades_df_from_stored(stored)
-    if len(trades_df) == 0:
-        return None
-
     fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
-    _, fwd_trades = split_trades_at_boundary(trades_df, fwd_start)
+    fwd_trades = None
 
-    if len(fwd_trades) == 0:
+    # Try stored_trades first (fast path)
+    stored = strategy.get('stored_trades', [])
+    if stored:
+        trades_df = trades_df_from_stored(stored)
+        if len(trades_df) > 0:
+            _, fwd_portion = split_trades_at_boundary(trades_df, fwd_start)
+            if len(fwd_portion) > 0:
+                fwd_trades = fwd_portion
+
+    # Full computation if stored path yielded nothing and full_compute requested
+    if fwd_trades is None and full_compute:
+        try:
+            _, _, fwd_portion, _ = prepare_forward_test_data(strategy)
+            if len(fwd_portion) > 0:
+                fwd_trades = fwd_portion
+        except Exception as e:
+            _logger.warning("Full forward test computation failed for strategy %s: %s",
+                          strategy.get('id'), e)
+
+    if fwd_trades is None or len(fwd_trades) == 0:
         return None
 
     kpis = calculate_kpis(fwd_trades)
@@ -844,10 +862,13 @@ def enrich_confluence_with_fidelity(confluence: list) -> list:
     return result
 
 
-def enrich_strategy(strategy: dict) -> dict:
+def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     """Add forward_kpis, alert_kpis, sigma, status, and fidelity to a strategy dict.
 
-    Called by the strategies API to enrich the response.
+    Args:
+        strategy: Raw strategy dict from DB
+        full_compute: If True, load fresh market data for forward test computation.
+            Used for detail endpoint. False (default) for list endpoint (faster).
     """
     enriched = dict(strategy)
 
@@ -856,7 +877,7 @@ def enrich_strategy(strategy: dict) -> dict:
     enriched['confluence_enriched'] = enrich_confluence_with_fidelity(raw_conf)
 
     # Forward KPIs
-    fwd_kpis = compute_forward_kpis(strategy)
+    fwd_kpis = compute_forward_kpis(strategy, full_compute=full_compute)
     enriched['forward_kpis'] = fwd_kpis
 
     # Alert KPIs

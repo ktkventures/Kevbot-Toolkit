@@ -86,12 +86,12 @@ def get_strategy(strategy_id: int, user=Depends(get_current_user)):
         strat = get_strategy_by_id_db(strategy_id)
         if strat is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
-        return svc.enrich_strategy(strat)
+        return svc.enrich_strategy(strat, full_compute=True)
 
     # JSON fallback
     for s in list_strategies(enrich=False, user=user):
         if s.get('id') == strategy_id:
-            return svc.enrich_strategy(s)
+            return svc.enrich_strategy(s, full_compute=True)
     raise HTTPException(status_code=404, detail="Strategy not found")
 
 
