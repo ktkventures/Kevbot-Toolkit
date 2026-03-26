@@ -56,6 +56,24 @@ export function useDuplicateStrategy() {
   });
 }
 
+export function useRefreshStrategy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ status: string; trades: number; kpis: Record<string, number> }>(
+        `/api/strategies/${id}/refresh`,
+        { method: 'POST' }
+      ),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+      queryClient.invalidateQueries({ queryKey: ['strategy', id] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-trades', id] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-forward-test', id] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-kpis', id] });
+    },
+  });
+}
+
 export function useBulkDeleteStrategies() {
   const queryClient = useQueryClient();
   return useMutation({

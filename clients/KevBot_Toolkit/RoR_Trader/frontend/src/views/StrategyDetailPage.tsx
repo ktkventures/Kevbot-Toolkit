@@ -8,7 +8,7 @@ import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs } from '@/hooks/queries/useStrategies';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
-import { useDeleteStrategy, useDuplicateStrategy } from '@/hooks/mutations/useStrategyMutations';
+import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 
 /* ========================================================================= */
 /* COLOR CONSTANTS                                                            */
@@ -315,12 +315,13 @@ interface Props {
 
 export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
-  const { data: trades } = useStrategyTrades(strategyId);
-  const { data: fwdData } = useStrategyForwardTest(strategyId);
-  const { data: kpiData } = useStrategyKPIs(strategyId);
+  const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
+  const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
+  const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
   const { data: alerts } = useStrategyAlerts(strategyId);
   const deleteMut = useDeleteStrategy();
   const dupMut = useDuplicateStrategy();
+  const refreshMut = useRefreshStrategy();
 
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
@@ -593,13 +594,49 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         backHref="/strategies"
         actions={
           <>
-            <button style={btnSecondary}>Refresh</button>
-            <button style={btnSecondary}>Edit</button>
-            <button style={btnSecondary}>Clone</button>
-            <button style={{ ...btnSecondary, background: 'var(--red-muted)', color: 'var(--red)', border: 'none' }}>Delete</button>
+            <button
+              style={{ ...btnSecondary, opacity: refreshMut.isPending ? 0.6 : 1 }}
+              disabled={refreshMut.isPending}
+              onClick={() => refreshMut.mutate(strategyId)}
+            >
+              {refreshMut.isPending ? 'Refreshing...' : 'Update Data'}
+            </button>
+            <button style={btnSecondary} onClick={() => dupMut.mutate(strategyId)}>Clone</button>
+            <button
+              style={{ ...btnSecondary, background: 'var(--red-muted)', color: 'var(--red)', border: 'none' }}
+              onClick={() => { if (confirm(`Delete "${strategy.name}"?`)) deleteMut.mutate(strategyId); }}
+            >
+              Delete
+            </button>
           </>
         }
       />
+
+      {/* Loading indicators */}
+      {(fwdLoading || refreshMut.isPending) && (
+        <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-3" style={{ background: 'var(--accent-muted)', border: '1px solid var(--accent)30' }}>
+          <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+          <span className="text-sm" style={{ color: 'var(--accent)' }}>
+            {refreshMut.isPending ? 'Updating strategy data — loading bars from Polygon and running backtest...' : 'Computing forward test trades — this may take 10-30 seconds for 1-minute timeframes...'}
+          </span>
+        </div>
+      )}
+      {refreshMut.isSuccess && (
+        <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-2" style={{ background: 'var(--green)10', border: '1px solid var(--green)30' }}>
+          <span style={{ color: 'var(--green)' }}>&#10003;</span>
+          <span className="text-sm" style={{ color: 'var(--green)' }}>
+            Data updated — {refreshMut.data?.trades ?? 0} trades refreshed
+          </span>
+        </div>
+      )}
+      {refreshMut.isError && (
+        <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-2" style={{ background: 'var(--red)10', border: '1px solid var(--red)30' }}>
+          <span style={{ color: 'var(--red)' }}>&#10007;</span>
+          <span className="text-sm" style={{ color: 'var(--red)' }}>
+            Refresh failed — check Polygon API connection
+          </span>
+        </div>
+      )}
 
       {/* Status badges + sigma + pulse dot */}
       <div className="flex items-center gap-3 mb-2 flex-wrap">
@@ -1309,7 +1346,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     Forward Test Trades
                     <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({fwdTrades.length})</span>
                   </button>
-                  {fwdTradesOpen && renderTradeTable(fwdTrades)}
+                  {fwdTradesOpen && (
+                    fwdLoading ? (
+                      <div className="flex items-center gap-3 py-6 justify-center">
+                        <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                        <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading forward test trades from Polygon...</span>
+                      </div>
+                    ) : renderTradeTable(fwdTrades)
+                  )}
                 </Card>
 
                 {/* Backtest Trades */}
