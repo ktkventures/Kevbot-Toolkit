@@ -142,6 +142,29 @@ The copy-and-wire procedure MUST include:
 
 ---
 
+## Phase A QA Notes (2026-03-26)
+
+### Remaining Mock Data (fix before Phase B)
+- [ ] Stop Loss detail Preview tab: "Sample Trades" → `{{recent_stop_examples}}`
+- [ ] Take Profit detail Preview tab: same check
+- [ ] Portfolio Detail Anomaly Detection: verify not mock alerts → empty state
+- [ ] Portfolio Detail Strategy Correlation Heatmap: verify real or mock
+- [ ] Exit triggers showing only 3 — should match entry trigger count
+
+### Wrong Version / Wiring
+- [ ] User Packs: Design Ref showing V1 not V5; "Create from scratch" → link to Pack Builder
+- [ ] X-axis toggle (Date vs Trade #) not functional on equity curves
+
+### Feature Roadmap (Phase B/C/future)
+- Confluence pack duplication: tag current as "legacy (Default)", create new defaults with [PB]/[CB] + [C]/[L]/[LC]/[CC]
+- Take Profit packs: need to be created (only Stop Loss packs exist)
+- Entry/Exit trigger parity: exits should have same available triggers as entries
+- UT Bot duplicate triggers: C vs L1→L cleanup when new packs built
+- Portfolio "Re-analyze" / recommendations: needs backend endpoint
+- Equity curve x-axis toggle: wire Date vs Trade # across all equity curve instances
+
+---
+
 ## Phase C: Feature Wiring
 
 Replace `{{field_name}}` with real computed data.
