@@ -10,12 +10,13 @@
  *   {{field}} = not wired, needs backend work
  */
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useDeleteStrategy, useDuplicateStrategy, useBulkDeleteStrategies } from '@/hooks/mutations/useStrategyMutations';
+import { apiFetch } from '@/lib/api/client';
 
 /* ========================================================================= */
 /* TYPES                                                                       */
@@ -237,6 +238,26 @@ export default function StrategiesPage() {
   const dupMut = useDuplicateStrategy();
   const bulkDeleteMut = useBulkDeleteStrategies();
 
+  // Bulk refresh state
+  const [bulkRefreshing, setBulkRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState(0);
+  const handleBulkRefresh = useCallback(async () => {
+    if (bulkRefreshing || strategies.length === 0) return;
+    setBulkRefreshing(true);
+    setRefreshProgress(0);
+    for (let i = 0; i < strategies.length; i++) {
+      try {
+        await apiFetch(`/api/strategies/${strategies[i].id}/refresh`, { method: 'POST' });
+      } catch (e) {
+        console.error(`Failed to refresh strategy ${strategies[i].id}:`, e);
+      }
+      setRefreshProgress(i + 1);
+    }
+    setBulkRefreshing(false);
+    // Invalidate to reload with fresh data
+    window.location.reload();
+  }, [bulkRefreshing, strategies]);
+
   useEffect(() => {
     const id = 'strategies-pulse-css';
     if (!document.getElementById(id)) {
@@ -374,8 +395,14 @@ export default function StrategiesPage() {
         <h1 className="text-2xl font-bold">My Strategies</h1>
         <div className="flex gap-3">
           <button style={btnSecondary}>Reset All Alerts</button>
-          <button style={btnSecondary}>Update Data</button>
-          <button style={btnPrimary}>+ New Strategy</button>
+          <button
+            style={{ ...btnSecondary, opacity: bulkRefreshing ? 0.6 : 1 }}
+            disabled={bulkRefreshing}
+            onClick={handleBulkRefresh}
+          >
+            {bulkRefreshing ? `Refreshing ${refreshProgress}/${strategies.length}...` : 'Update Data'}
+          </button>
+          <Link href="/strategy-builder"><button style={btnPrimary}>+ New Strategy</button></Link>
         </div>
       </div>
 
