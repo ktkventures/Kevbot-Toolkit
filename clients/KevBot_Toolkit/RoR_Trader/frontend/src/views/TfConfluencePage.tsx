@@ -1537,40 +1537,6 @@ export default function TfConfluencePage() {
 
   const enabledCount = packs.filter((p) => p.enabled).length;
 
-  // ---- Loading / Error states ----
-
-  if (isLoading) {
-    return (
-      <div>
-        <PageHeader title="TF Confluence Packs" subtitle="Loading..." />
-        <div className="space-y-3 mt-4">
-          {[1, 2, 3, 4, 5].map((i) => (
-            <Card key={i}>
-              <div className="animate-pulse space-y-3">
-                <div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} />
-                <div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} />
-                <div className="h-8 rounded" style={{ background: 'var(--bg-input)' }} />
-              </div>
-            </Card>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div>
-        <PageHeader title="TF Confluence Packs" subtitle="Error loading packs" />
-        <Card>
-          <div className="text-center py-8" style={{ color: 'var(--red)' }}>
-            Failed to load confluence packs. Check your connection and try again.
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
   function togglePack(id: string) {
     setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
   }
@@ -1751,6 +1717,28 @@ export default function TfConfluencePage() {
             </div>
           )}
         </TabBar>
+      </div>
+    );
+  }
+
+  // ---- Loading / Error states (after all hooks) ----
+  if (isLoading) {
+    return (
+      <div>
+        <PageHeader title="TF Confluence Packs" subtitle="Loading..." />
+        <div className="space-y-3 mt-4">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Card key={i}><div className="animate-pulse space-y-3"><div className="h-4 rounded w-1/3" style={{ background: 'var(--border)' }} /><div className="h-3 rounded w-2/3" style={{ background: 'var(--border)' }} /><div className="h-8 rounded" style={{ background: 'var(--bg-input)' }} /></div></Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div>
+        <PageHeader title="TF Confluence Packs" subtitle="Error" />
+        <Card><div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load confluence packs.</div></Card>
       </div>
     );
   }

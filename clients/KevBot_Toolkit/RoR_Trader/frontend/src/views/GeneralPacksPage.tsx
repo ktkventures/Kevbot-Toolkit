@@ -653,7 +653,37 @@ export default function GeneralPacksPage() {
 
   const enabledCount = packs.filter((p) => p.enabled).length;
 
-  // ---- Loading / Error states ----
+  function togglePack(id: string) {
+    setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
+  }
+
+  function toggleTemplate(key: string) {
+    setExpandedTemplates((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  }
+
+  const groupedPacks = useMemo(() => {
+    const groups: { templateKey: string; default: GeneralPack; variations: GeneralPack[] }[] = [];
+    for (const pack of packs) {
+      if (pack.isDefault) groups.push({ templateKey: pack.templateKey, default: pack, variations: [] });
+    }
+    for (const pack of packs) {
+      if (!pack.isDefault) {
+        const group = groups.find((g) => g.templateKey === pack.templateKey);
+        if (group) group.variations.push(pack);
+      }
+    }
+    return groups;
+  }, [packs]);
+
+  const filteredGroups = useMemo(() => {
+    if (!search.trim()) return groupedPacks;
+    const q = search.toLowerCase();
+    return groupedPacks
+      .map((group) => ({ ...group, variations: group.variations.filter((v) => v.name.toLowerCase().includes(q) || v.version.toLowerCase().includes(q) || v.tags.some((t) => t.toLowerCase().includes(q))) }))
+      .filter((group) => group.default.name.toLowerCase().includes(q) || group.default.tags.some((t) => t.toLowerCase().includes(q)) || group.variations.length > 0);
+  }, [groupedPacks, search]);
+
+  // ---- Loading / Error states (after all hooks) ----
 
   if (isLoading) {
     return (
@@ -686,36 +716,6 @@ export default function GeneralPacksPage() {
       </div>
     );
   }
-
-  function togglePack(id: string) {
-    setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
-  }
-
-  function toggleTemplate(key: string) {
-    setExpandedTemplates((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-  }
-
-  const groupedPacks = useMemo(() => {
-    const groups: { templateKey: string; default: GeneralPack; variations: GeneralPack[] }[] = [];
-    for (const pack of packs) {
-      if (pack.isDefault) groups.push({ templateKey: pack.templateKey, default: pack, variations: [] });
-    }
-    for (const pack of packs) {
-      if (!pack.isDefault) {
-        const group = groups.find((g) => g.templateKey === pack.templateKey);
-        if (group) group.variations.push(pack);
-      }
-    }
-    return groups;
-  }, [packs]);
-
-  const filteredGroups = useMemo(() => {
-    if (!search.trim()) return groupedPacks;
-    const q = search.toLowerCase();
-    return groupedPacks
-      .map((group) => ({ ...group, variations: group.variations.filter((v) => v.name.toLowerCase().includes(q) || v.version.toLowerCase().includes(q) || v.tags.some((t) => t.toLowerCase().includes(q))) }))
-      .filter((group) => group.default.name.toLowerCase().includes(q) || group.default.tags.some((t) => t.toLowerCase().includes(q)) || group.variations.length > 0);
-  }, [groupedPacks, search]);
 
   const activePack = draftPack || detailPack;
   const isDraft = draftPack !== null;

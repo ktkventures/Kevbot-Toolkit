@@ -266,6 +266,25 @@ export default function PortfoliosPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
+  const startPortfolios = portfolios;
+  const allStatuses = ['On Track', 'Outperforming', 'Underperforming', 'Insufficient Data'];
+  const allTags = useMemo(() => Array.from(new Set(startPortfolios.flatMap((p) => p.tags))).sort(), [startPortfolios]);
+
+  const filteredPortfolios = useMemo(() => {
+    let result = [...startPortfolios];
+    if (statusFilter !== 'All') result = result.filter((p) => p.status === statusFilter);
+    if (tagFilter !== 'All') result = result.filter((p) => p.tags.includes(tagFilter));
+    switch (sortBy) {
+      case 'Newest First': result.sort((a, b) => parseInt(b.id) - parseInt(a.id)); break;
+      case 'Oldest First': result.sort((a, b) => parseInt(a.id) - parseInt(b.id)); break;
+      case 'Name A-Z': result.sort((a, b) => a.name.localeCompare(b.name)); break;
+      case 'P&L (High)': result.sort((a, b) => b.totalPnl - a.totalPnl); break;
+      case 'Win Rate (High)': result.sort((a, b) => b.winRate - a.winRate); break;
+      case 'Balance (High)': result.sort((a, b) => b.finalBalance - a.finalBalance); break;
+    }
+    return result;
+  }, [statusFilter, sortBy]);
+
   // ---- Loading / Error states (after all hooks) ----
   if (isLoading) {
     return (
@@ -287,25 +306,6 @@ export default function PortfoliosPage() {
       </div>
     );
   }
-
-  const startPortfolios = portfolios;
-  const allStatuses = ['On Track', 'Outperforming', 'Underperforming', 'Insufficient Data'];
-  const allTags = useMemo(() => Array.from(new Set(startPortfolios.flatMap((p) => p.tags))).sort(), [startPortfolios]);
-
-  const filteredPortfolios = useMemo(() => {
-    let result = [...startPortfolios];
-    if (statusFilter !== 'All') result = result.filter((p) => p.status === statusFilter);
-    if (tagFilter !== 'All') result = result.filter((p) => p.tags.includes(tagFilter));
-    switch (sortBy) {
-      case 'Newest First': result.sort((a, b) => parseInt(b.id) - parseInt(a.id)); break;
-      case 'Oldest First': result.sort((a, b) => parseInt(a.id) - parseInt(b.id)); break;
-      case 'Name A-Z': result.sort((a, b) => a.name.localeCompare(b.name)); break;
-      case 'P&L (High)': result.sort((a, b) => b.totalPnl - a.totalPnl); break;
-      case 'Win Rate (High)': result.sort((a, b) => b.winRate - a.winRate); break;
-      case 'Balance (High)': result.sort((a, b) => b.finalBalance - a.finalBalance); break;
-    }
-    return result;
-  }, [statusFilter, sortBy]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });

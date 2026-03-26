@@ -382,24 +382,8 @@ export default function StopLossPage() {
     }
   }, [apiPacks, apiTemplates, initialized]);
 
-  // Loading / error states
+  // Derived state
   const isLoading = packsLoading || templatesLoading;
-  if (isLoading) {
-    return (
-      <div>
-        <PageHeader title="Stop Loss Packs" subtitle="Loading..." />
-        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading stop loss packs...</p></Card>
-      </div>
-    );
-  }
-  if (packsError) {
-    return (
-      <div>
-        <PageHeader title="Stop Loss Packs" subtitle="Error loading data" />
-        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--red)' }}>Failed to load packs: {String(packsError)}</p></Card>
-      </div>
-    );
-  }
 
   const enabledCount = packs.filter((p) => p.enabled).length;
   function togglePack(id: string) { setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p))); }
@@ -417,6 +401,24 @@ export default function StopLossPage() {
     const q = search.toLowerCase();
     return groupedPacks.map((g) => ({ ...g, variations: g.variations.filter((v) => v.name.toLowerCase().includes(q) || v.version.toLowerCase().includes(q) || v.tags.some((t) => t.toLowerCase().includes(q))) })).filter((g) => g.default.name.toLowerCase().includes(q) || g.default.tags.some((t) => t.toLowerCase().includes(q)) || g.variations.length > 0);
   }, [groupedPacks, search]);
+
+  // Loading / error states (after all hooks)
+  if (isLoading) {
+    return (
+      <div>
+        <PageHeader title="Stop Loss Packs" subtitle="Loading..." />
+        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading stop loss packs...</p></Card>
+      </div>
+    );
+  }
+  if (packsError) {
+    return (
+      <div>
+        <PageHeader title="Stop Loss Packs" subtitle="Error loading data" />
+        <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--red)' }}>Failed to load packs: {String(packsError)}</p></Card>
+      </div>
+    );
+  }
 
   const activePack = draftPack || detailPack;
   const isDraft = draftPack !== null;
