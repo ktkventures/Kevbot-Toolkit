@@ -2427,13 +2427,8 @@ export default function StrategyBuilderPage() {
 
                     // ---- STOP LOSS TAB ----
                     if (tab === 'Stop Loss') {
-                      const stopResults: AnalyzerResult[] = [
-                        { triggerId: 'atr-1.0', triggerName: 'ATR x1.0', execType: 'C', totalTrades: 127, profitFactor: 1.82, winRate: 54.3, avgR: 0.15, dailyR: 0.32, rSquared: 0.79 },
-                        { triggerId: 'atr-1.5', triggerName: 'ATR x1.5 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
-                        { triggerId: 'atr-2.0', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.31, winRate: 61.4, avgR: 0.28, dailyR: 0.53, rSquared: 0.84 },
-                        { triggerId: 'swing-5', triggerName: 'Swing 5-bar', execType: 'C', totalTrades: 127, profitFactor: 2.08, winRate: 57.5, avgR: 0.20, dailyR: 0.41, rSquared: 0.82 },
-                        { triggerId: 'fixed-1', triggerName: 'Fixed $1.00', execType: 'C', totalTrades: 127, profitFactor: 1.65, winRate: 52.0, avgR: 0.10, dailyR: 0.22, rSquared: 0.71 },
-                      ];
+                      // {{stop_loss_analysis}} — not wired yet. Needs per-pack backtest comparison API.
+                      const stopResults: AnalyzerResult[] = [];
                       return (
                         <div>
                           <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search stop loss packs..." />
@@ -2458,13 +2453,8 @@ export default function StrategyBuilderPage() {
 
                     // ---- TAKE PROFIT TAB ----
                     if (tab === 'Take Profit') {
-                      const tpResults: AnalyzerResult[] = [
-                        { triggerId: 'tp-none', triggerName: 'None (signal exit)', execType: 'C', totalTrades: 127, profitFactor: 1.95, winRate: 55.1, avgR: 0.18, dailyR: 0.38, rSquared: 0.80 },
-                        { triggerId: 'tp-1.5r', triggerName: 'R:R 1.5', execType: 'C', totalTrades: 127, profitFactor: 1.78, winRate: 52.8, avgR: 0.14, dailyR: 0.30, rSquared: 0.75 },
-                        { triggerId: 'tp-2r', triggerName: 'R:R 2.0 (current)', execType: 'C', totalTrades: 127, profitFactor: 2.14, winRate: 58.3, avgR: 0.22, dailyR: 0.47, rSquared: 0.87 },
-                        { triggerId: 'tp-3r', triggerName: 'R:R 3.0', execType: 'C', totalTrades: 112, profitFactor: 2.42, winRate: 42.9, avgR: 0.25, dailyR: 0.44, rSquared: 0.83 },
-                        { triggerId: 'tp-atr2', triggerName: 'ATR x2.0', execType: 'C', totalTrades: 127, profitFactor: 2.18, winRate: 56.7, avgR: 0.21, dailyR: 0.43, rSquared: 0.85 },
-                      ];
+                      // {{take_profit_analysis}} — not wired yet. Needs per-pack backtest comparison API.
+                      const tpResults: AnalyzerResult[] = [];
                       return (
                         <div>
                           <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search take profit packs..." />
