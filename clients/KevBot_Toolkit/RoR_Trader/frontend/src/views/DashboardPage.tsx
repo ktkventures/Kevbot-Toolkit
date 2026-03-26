@@ -895,6 +895,17 @@ export default function DashboardPage() {
     .filter(a => activityFilter === 'all' || a.type === activityFilter)
     .filter(a => !activitySearch || a.message.toLowerCase().includes(activitySearch.toLowerCase()));
 
+  // Inject animation CSS (must be before early returns — React hooks rule)
+  useEffect(() => {
+    const id = 'v7-animation-styles';
+    if (!document.getElementById(id)) {
+      const style = document.createElement('style');
+      style.id = id;
+      style.textContent = ANIMATION_STYLES;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   // =========================================================================
   // Loading / Error states
   // =========================================================================
@@ -927,16 +938,6 @@ export default function DashboardPage() {
       </div>
     );
   }
-
-  useEffect(() => {
-    const id = 'v7-animation-styles';
-    if (!document.getElementById(id)) {
-      const style = document.createElement('style');
-      style.id = id;
-      style.textContent = ANIMATION_STYLES;
-      document.head.appendChild(style);
-    }
-  }, []);
 
   return (
     <div style={{ animation: 'v7-fade-in 0.3s ease-out' }}>
