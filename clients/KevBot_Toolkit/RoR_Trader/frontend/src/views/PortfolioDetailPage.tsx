@@ -357,7 +357,6 @@ function LiveDashboardTab() {
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
             Anomaly Detection
-            <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--red-muted)', color: 'var(--red)' }}>4</span>
           </h3>
           <div className="flex gap-1">
             {['All', 'Alert Issues', 'Performance'].map((t) => (
@@ -377,34 +376,9 @@ function LiveDashboardTab() {
             ))}
           </div>
         </div>
-        <div className="space-y-2">
-          {[
-            { severity: 'critical' as const, type: 'Phantom Trade', category: 'Alert Issues', message: 'NVDA LONG - Mass #2: Entry alert fired with no matching backtest trade', time: '10:22 AM' },
-            { severity: 'critical' as const, type: 'Unclosed Position', category: 'Alert Issues', message: 'SPY LONG - Mass #1: Position open for 4h 12m (expected max hold: 30m)', time: '09:18 AM' },
-            { severity: 'warning' as const, type: 'Missed Trade', category: 'Alert Issues', message: 'AAPL LONG - Mass #5: Backtest trade #23 had no corresponding alert (monitor was active)', time: '10:45 AM' },
-            { severity: 'warning' as const, type: 'Consecutive Losses', category: 'Performance', message: 'SPY LONG - Mass #1: 3 consecutive losses (unusual for this strategy)', time: '10:32 AM' },
-          ]
-            .filter((a) => anomalyTab === 'All' || a.category === anomalyTab)
-            .map((anomaly, i) => {
-              const severityColors = {
-                critical: { bg: 'var(--red-muted)', text: 'var(--red)', label: 'CRITICAL' },
-                warning: { bg: 'rgba(255,152,0,0.12)', text: 'var(--orange)', label: 'WARNING' },
-              };
-              const sc = severityColors[anomaly.severity];
-              return (
-                <div key={i} className="flex items-start gap-3 p-3 rounded-lg" style={{ background: 'var(--bg-input)' }}>
-                  <span className="text-xs px-2 py-0.5 rounded font-mono font-medium flex-shrink-0" style={{ background: sc.bg, color: sc.text }}>
-                    {sc.label}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium mb-0.5" style={{ color: sc.text }}>{anomaly.type}</p>
-                    <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{anomaly.message}</p>
-                  </div>
-                  <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{anomaly.time}</span>
-                </div>
-              );
-            })}
-        </div>
+        <p className="text-xs py-6 text-center" style={{ color: 'var(--text-muted)' }}>
+          No anomalies detected. Anomalies will appear here once the portfolio monitor is active.
+        </p>
       </Card>
 
       {/* Trade History — matching Streamlit 13 columns */}
@@ -523,42 +497,9 @@ function PerformanceTab() {
 
         <Card>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Strategy Correlation Heatmap</h3>
-          <div className="rounded-lg p-4" style={{ background: 'var(--bg-input)' }}>
-            <div className="overflow-auto">
-              <table className="w-full text-xs" style={{ borderCollapse: 'separate', borderSpacing: 2 }}>
-                <thead>
-                  <tr>
-                    <th />
-                    {['SPY', 'NVDA', 'AAPL', 'META', 'TSLA'].map((s) => (
-                      <th key={s} className="px-2 py-1 font-medium text-center" style={{ color: 'var(--text-muted)' }}>{s}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    { label: 'SPY', values: [1.00, 0.42, 0.38, 0.15, 0.28] },
-                    { label: 'NVDA', values: [0.42, 1.00, 0.31, 0.22, 0.55] },
-                    { label: 'AAPL', values: [0.38, 0.31, 1.00, 0.18, 0.25] },
-                    { label: 'META', values: [0.15, 0.22, 0.18, 1.00, 0.20] },
-                    { label: 'TSLA', values: [0.28, 0.55, 0.25, 0.20, 1.00] },
-                  ].map((row) => (
-                    <tr key={row.label}>
-                      <td className="px-2 py-1 font-medium" style={{ color: 'var(--text-muted)' }}>{row.label}</td>
-                      {row.values.map((v, j) => {
-                        const intensity = Math.abs(v);
-                        const bg = v === 1 ? 'var(--accent)' : `rgba(99, 102, 241, ${intensity * 0.6})`;
-                        return (
-                          <td key={j} className="px-2 py-2 text-center rounded" style={{ background: bg, color: 'white', fontWeight: 500 }}>
-                            {v.toFixed(2)}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+            Correlation data will appear here once enough trade history is available across strategies.
+          </p>
         </Card>
       </div>
 

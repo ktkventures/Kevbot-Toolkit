@@ -222,26 +222,10 @@ function PreviewTab({ pack }: { pack: StopPack }) {
         <ChartPlaceholder label={`Price chart with ${pack.name} placement \u2014 ${buildParamSummary(pack.params)}`} height={350} />
       </Card>
       <Card>
-        <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Sample Trades</h4>
-        <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
-          <div className="grid text-xs font-medium px-3 py-2" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', gridTemplateColumns: '70px 70px 70px 70px 50px 60px', gap: '4px' }}>
-            <span>Entry</span><span>Stop</span><span>Risk</span><span>Exit</span><span>R</span><span>Reason</span>
-          </div>
-          {[
-            { entry: '$487.20', stop: '$485.50', risk: '$1.70', exit: '$485.50', r: '-1.0R', reason: 'Stop' },
-            { entry: '$488.10', stop: '$486.30', risk: '$1.80', exit: '$491.70', r: '+2.0R', reason: 'Target' },
-            { entry: '$490.50', stop: '$488.90', risk: '$1.60', exit: '$489.20', r: '+0.2R', reason: 'Signal' },
-          ].map((row, i) => (
-            <div key={i} className="grid text-xs px-3 py-2 border-t items-center" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)', gridTemplateColumns: '70px 70px 70px 70px 50px 60px', gap: '4px' }}>
-              <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{row.entry}</span>
-              <span className="font-mono" style={{ color: 'var(--red)' }}>{row.stop}</span>
-              <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{row.risk}</span>
-              <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{row.exit}</span>
-              <span className="font-mono font-semibold" style={{ color: row.r.startsWith('-') ? 'var(--red)' : 'var(--green)' }}>{row.r}</span>
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{row.reason}</span>
-            </div>
-          ))}
-        </div>
+        <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Recent Stop Examples</h4>
+        <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+          Recent stop examples will appear here once strategies are running.
+        </p>
       </Card>
     </div>
   );

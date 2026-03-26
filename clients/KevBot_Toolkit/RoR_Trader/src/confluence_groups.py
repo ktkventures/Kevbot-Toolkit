@@ -926,15 +926,19 @@ def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] =
 
 def get_exit_triggers(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str, str]:
     """
-    Get all exit triggers.
+    Get all exit-eligible triggers.
 
-    Returns dict mapping trigger_id -> display_name
+    Returns dict mapping trigger_id -> display_name.
+    Includes both EXIT-type triggers and all ENTRY triggers (which can
+    serve as opposite-signal exits when the direction is reversed).
     """
     all_triggers = get_all_triggers(groups)
 
     result = {}
     for trig_id, trig_def in all_triggers.items():
         if trig_def.trigger_type == "EXIT":
+            result[trig_id] = trig_def.name
+        elif trig_def.trigger_type == "ENTRY":
             result[trig_id] = trig_def.name
 
     return result

@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
+import Link from 'next/link';
 
 /* ========================================================================
    Types
@@ -1535,13 +1536,13 @@ export default function UserPacksPage() {
             >
               From Template
             </button>
-            <button
-              onClick={() => setShowCreateScratchModal(true)}
+            <Link
+              href="/confluence-packs/pack-builder"
               className="px-4 py-2 rounded-lg text-sm font-medium"
               style={btnPrimary}
             >
               + Create Pack
-            </button>
+            </Link>
           </div>
         }
       />
@@ -1575,13 +1576,13 @@ export default function UserPacksPage() {
               parameters, outputs, and triggers will appear here once created.
             </p>
             <div className="flex gap-3 justify-center">
-              <button
-                onClick={() => setShowCreateScratchModal(true)}
+              <Link
+                href="/confluence-packs/pack-builder"
                 className="px-5 py-2.5 rounded-lg text-sm font-medium"
                 style={btnPrimary}
               >
                 Create from Scratch
-              </button>
+              </Link>
               <button
                 onClick={() => setShowCreateTemplateModal(true)}
                 className="px-5 py-2.5 rounded-lg text-sm"
