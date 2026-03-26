@@ -689,3 +689,168 @@ def calculate_secondary_kpis(trades_df: pd.DataFrame, kpis: dict) -> dict:
         "volatility": volatility,
         "longest_dd_days": longest_dd_days,
     }
+
+
+# =============================================================================
+# STRATEGY FIELD ENRICHMENT (Phase B5)
+# =============================================================================
+
+def compute_forward_kpis(strategy: dict) -> dict | None:
+    """Compute KPIs for the forward test portion of a strategy's stored_trades.
+
+    Returns dict with win_rate, profit_factor, daily_r, total_r, trades, max_r_drawdown,
+    or None if no forward test data.
+    """
+    if not strategy.get('forward_testing') or not strategy.get('forward_test_start'):
+        return None
+
+    stored = strategy.get('stored_trades', [])
+    if not stored:
+        return None
+
+    trades_df = trades_df_from_stored(stored)
+    if len(trades_df) == 0:
+        return None
+
+    fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
+    _, fwd_trades = split_trades_at_boundary(trades_df, fwd_start)
+
+    if len(fwd_trades) == 0:
+        return None
+
+    kpis = calculate_kpis(fwd_trades)
+    return {
+        "win_rate": kpis.get("win_rate", 0),
+        "profit_factor": kpis.get("profit_factor", 0),
+        "daily_r": kpis.get("daily_r", 0),
+        "total_r": kpis.get("total_r", 0),
+        "avg_r": kpis.get("avg_r", 0),
+        "trades": kpis.get("total_trades", 0),
+        "max_r_drawdown": kpis.get("max_r_drawdown", 0),
+    }
+
+
+def compute_alert_kpis(strategy: dict) -> dict | None:
+    """Compute KPIs from a strategy's live_executions (alert trades).
+
+    Returns dict with win_rate, profit_factor, etc., or None if no alert data.
+    """
+    live_execs = strategy.get('live_executions')
+    if not live_execs:
+        return None
+
+    # live_executions is a list of matched alert entries with r_multiple
+    # Extract trades that have both entry and exit
+    trades = []
+    for exec_entry in live_execs:
+        if exec_entry.get('r_multiple') is not None:
+            trades.append({
+                'entry_time': exec_entry.get('entry_time', ''),
+                'exit_time': exec_entry.get('exit_time', ''),
+                'r_multiple': exec_entry['r_multiple'],
+                'win': exec_entry.get('r_multiple', 0) > 0,
+            })
+
+    if not trades:
+        return None
+
+    trades_df = pd.DataFrame(trades)
+    if 'entry_time' in trades_df.columns:
+        trades_df['entry_time'] = pd.to_datetime(trades_df['entry_time'], utc=True, errors='coerce')
+    if 'exit_time' in trades_df.columns:
+        trades_df['exit_time'] = pd.to_datetime(trades_df['exit_time'], utc=True, errors='coerce')
+
+    kpis = calculate_kpis(trades_df)
+    return {
+        "win_rate": kpis.get("win_rate", 0),
+        "profit_factor": kpis.get("profit_factor", 0),
+        "daily_r": kpis.get("daily_r", 0),
+        "total_r": kpis.get("total_r", 0),
+        "avg_r": kpis.get("avg_r", 0),
+        "trades": kpis.get("total_trades", 0),
+        "max_r_drawdown": kpis.get("max_r_drawdown", 0),
+    }
+
+
+def compute_sigma_deviation(actual_daily_r: float, bt_trades_df: pd.DataFrame) -> float | None:
+    """Compute sigma deviation of actual performance vs backtest baseline.
+
+    Returns number of standard deviations from expected daily R,
+    or None if insufficient data.
+    """
+    if len(bt_trades_df) < 5:
+        return None
+
+    r_values = bt_trades_df['r_multiple'].values
+    expected = float(np.mean(r_values))
+    std = float(np.std(r_values, ddof=1))
+
+    if std == 0:
+        return None
+
+    return round((actual_daily_r - expected) / std, 2)
+
+
+def derive_strategy_status(
+    forward_kpis: dict | None,
+    sigma_fwd: float | None,
+) -> str:
+    """Derive strategy status from forward test performance.
+
+    Returns: 'On Track', 'Outperforming', 'Underperforming', or 'Insufficient Data'
+    """
+    if forward_kpis is None or sigma_fwd is None:
+        return 'Insufficient Data'
+
+    if forward_kpis.get('trades', 0) < 5:
+        return 'Insufficient Data'
+
+    if sigma_fwd >= 2.0:
+        return 'Outperforming'
+    elif sigma_fwd <= -2.0:
+        return 'Underperforming'
+    else:
+        return 'On Track'
+
+
+def enrich_strategy(strategy: dict) -> dict:
+    """Add forward_kpis, alert_kpis, sigma, and status to a strategy dict.
+
+    Called by the strategies API to enrich the response.
+    """
+    enriched = dict(strategy)
+
+    # Forward KPIs
+    fwd_kpis = compute_forward_kpis(strategy)
+    enriched['forward_kpis'] = fwd_kpis
+
+    # Alert KPIs
+    alert_kpis = compute_alert_kpis(strategy)
+    enriched['alert_kpis'] = alert_kpis
+
+    # Sigma deviation
+    stored = strategy.get('stored_trades', [])
+    if stored and fwd_kpis and fwd_kpis.get('daily_r') is not None:
+        bt_df = trades_df_from_stored(stored)
+        if strategy.get('forward_test_start'):
+            fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
+            bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
+        sigma_fwd = compute_sigma_deviation(fwd_kpis['daily_r'], bt_df)
+    else:
+        sigma_fwd = None
+    enriched['sigma_fwd'] = sigma_fwd
+
+    if alert_kpis and alert_kpis.get('daily_r') is not None and stored:
+        bt_df = trades_df_from_stored(stored)
+        if strategy.get('forward_test_start'):
+            fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
+            bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
+        sigma_alert = compute_sigma_deviation(alert_kpis['daily_r'], bt_df)
+    else:
+        sigma_alert = None
+    enriched['sigma_alert'] = sigma_alert
+
+    # Status
+    enriched['status'] = derive_strategy_status(fwd_kpis, sigma_fwd)
+
+    return enriched

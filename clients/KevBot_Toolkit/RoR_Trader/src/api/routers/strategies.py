@@ -19,20 +19,28 @@ router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 # =============================================================================
 
 @router.get("")
-def list_strategies(user=Depends(get_current_user)):
-    """Load all strategies for the current user."""
+def list_strategies(
+    enrich: bool = Query(True, description="Include forward KPIs, sigma, status"),
+    user=Depends(get_current_user),
+):
+    """Load all strategies for the current user, optionally enriched."""
     from db import USE_DB
     if USE_DB:
         from db import load_strategies_db
-        return load_strategies_db()
+        strategies = load_strategies_db()
+    else:
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), '..', '..', 'strategies.json')
+        strategies = []
+        if os.path.exists(path):
+            with open(path) as f:
+                strategies = json.load(f)
 
-    # JSON fallback
-    import json, os
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'strategies.json')
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
+    if enrich and strategies:
+        import services as svc
+        strategies = [svc.enrich_strategy(s) for s in strategies]
+
+    return strategies
 
 
 @router.post("")
@@ -70,19 +78,20 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
 
 @router.get("/{strategy_id}")
 def get_strategy(strategy_id: int, user=Depends(get_current_user)):
-    """Get a single strategy by ID."""
+    """Get a single strategy by ID, enriched with forward KPIs and sigma."""
     from db import USE_DB
+    import services as svc
     if USE_DB:
         from db import get_strategy_by_id_db
         strat = get_strategy_by_id_db(strategy_id)
         if strat is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
-        return strat
+        return svc.enrich_strategy(strat)
 
     # JSON fallback
-    for s in list_strategies(user):
+    for s in list_strategies(enrich=False, user=user):
         if s.get('id') == strategy_id:
-            return s
+            return svc.enrich_strategy(s)
     raise HTTPException(status_code=404, detail="Strategy not found")
 
 
