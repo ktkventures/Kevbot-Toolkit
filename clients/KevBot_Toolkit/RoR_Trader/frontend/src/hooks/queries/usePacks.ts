@@ -73,6 +73,44 @@ export function useRiskManagementTemplates() {
 }
 
 // =============================================================================
+// STOP LOSS PACKS (dedicated filtered view)
+// =============================================================================
+
+export function useStopLossPacks() {
+  return useQuery({
+    queryKey: ['stop-loss-packs'],
+    queryFn: () => apiFetch<RiskManagementPackDTO[]>('/api/packs/stop-loss'),
+  });
+}
+
+export function useStopLossTemplates() {
+  return useQuery({
+    queryKey: ['stop-loss-templates'],
+    queryFn: () => apiFetch<Record<string, RMTemplateDTO>>('/api/packs/stop-loss/templates'),
+    staleTime: Infinity,
+  });
+}
+
+// =============================================================================
+// TAKE PROFIT PACKS (dedicated filtered view)
+// =============================================================================
+
+export function useTakeProfitPacks() {
+  return useQuery({
+    queryKey: ['take-profit-packs'],
+    queryFn: () => apiFetch<RiskManagementPackDTO[]>('/api/packs/take-profit'),
+  });
+}
+
+export function useTakeProfitTemplates() {
+  return useQuery({
+    queryKey: ['take-profit-templates'],
+    queryFn: () => apiFetch<Record<string, RMTemplateDTO>>('/api/packs/take-profit/templates'),
+    staleTime: Infinity,
+  });
+}
+
+// =============================================================================
 // TYPES — Mirror the Python dataclass shapes
 // =============================================================================
 

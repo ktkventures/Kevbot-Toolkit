@@ -216,6 +216,7 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "ATR-Based",
         "category": "Volatility",
         "description": "ATR-derived stop and target with independent multipliers",
+        "has_stop": True, "has_target": True, "stop_only": False, "target_only": False,
         "parameters_schema": {
             "stop_atr_mult": {"type": "float", "default": 1.5, "min": 0.5, "max": 5.0, "label": "Stop ATR Mult"},
             "target_atr_mult": {"type": "float", "default": 3.0, "min": 0.0, "max": 10.0, "label": "Target ATR Mult"},
@@ -258,6 +259,7 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "Swing",
         "category": "Structure",
         "description": "Swing-based stop with risk:reward target",
+        "has_stop": True, "has_target": True, "stop_only": False, "target_only": False,
         "parameters_schema": {
             "lookback": {"type": "int", "default": 5, "min": 2, "max": 50, "label": "Lookback"},
             "padding": {"type": "float", "default": 0.05, "min": 0.0, "max": 10.0, "label": "Padding ($)"},
@@ -297,6 +299,7 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "ATR Trailing",
         "category": "Trailing",
         "description": "ATR-based initial stop with trailing stop that ratchets in your favor",
+        "has_stop": True, "has_target": True, "stop_only": False, "target_only": False,
         "parameters_schema": {
             "stop_atr_mult": {"type": "float", "default": 1.5, "min": 0.5, "max": 5.0, "label": "Initial Stop ATR×"},
             "trail_atr_mult": {"type": "float", "default": 1.0, "min": 0.3, "max": 5.0, "label": "Trail ATR×"},
@@ -313,6 +316,7 @@ TEMPLATES: Dict[str, Dict] = {
         "name": "Breakeven Stop",
         "category": "Trailing",
         "description": "ATR stop that moves to breakeven after reaching an R threshold",
+        "has_stop": True, "has_target": True, "stop_only": False, "target_only": False,
         "parameters_schema": {
             "stop_atr_mult": {"type": "float", "default": 1.5, "min": 0.5, "max": 5.0, "label": "Initial Stop ATR×"},
             "be_activation_r": {"type": "float", "default": 1.0, "min": 0.1, "max": 5.0, "label": "BE Activation (R)"},

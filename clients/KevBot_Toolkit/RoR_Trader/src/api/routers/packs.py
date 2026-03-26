@@ -145,6 +145,81 @@ def get_rm_templates(user=Depends(get_current_user)):
 
 
 # =============================================================================
+# STOP LOSS PACKS (filtered view of RM packs)
+# =============================================================================
+
+@router.get("/stop-loss")
+def get_stop_loss_packs(user=Depends(get_current_user)):
+    """Load stop-loss capable packs (filtered from RM packs)."""
+    from risk_management_packs import load_risk_management_packs, TEMPLATES
+    packs = load_risk_management_packs()
+    stop_packs = [p for p in packs if TEMPLATES.get(p.base_template, {}).get("has_stop", True)]
+    return [_rm_pack_to_dict(p, include_configs=True) for p in stop_packs]
+
+
+@router.get("/stop-loss/templates")
+def get_stop_loss_templates(user=Depends(get_current_user)):
+    """Get stop-loss template definitions."""
+    from risk_management_packs import TEMPLATES
+    result = {}
+    for k, v in TEMPLATES.items():
+        if v.get("has_stop", True):
+            entry = {key: val for key, val in v.items() if not callable(val)}
+            result[k] = entry
+    return result
+
+
+@router.put("/stop-loss")
+def save_stop_loss_packs(packs: list = Body(...), user=Depends(get_current_user)):
+    """Save stop-loss packs (writes through RM pack pipeline)."""
+    from risk_management_packs import save_risk_management_packs, load_risk_management_packs, TEMPLATES
+    # Merge: keep existing non-stop packs, replace stop packs
+    existing = load_risk_management_packs()
+    stop_keys = {k for k, v in TEMPLATES.items() if v.get("has_stop", True)}
+    non_stop = [p for p in existing if p.base_template not in stop_keys]
+    new_stop = [_dict_to_rm_pack(p) for p in packs]
+    save_risk_management_packs(non_stop + new_stop)
+    return {"status": "saved", "count": len(new_stop)}
+
+
+# =============================================================================
+# TAKE PROFIT PACKS (filtered view of RM packs)
+# =============================================================================
+
+@router.get("/take-profit")
+def get_take_profit_packs(user=Depends(get_current_user)):
+    """Load take-profit capable packs (filtered from RM packs)."""
+    from risk_management_packs import load_risk_management_packs, TEMPLATES
+    packs = load_risk_management_packs()
+    tp_packs = [p for p in packs if TEMPLATES.get(p.base_template, {}).get("has_target", True)]
+    return [_rm_pack_to_dict(p, include_configs=True) for p in tp_packs]
+
+
+@router.get("/take-profit/templates")
+def get_take_profit_templates(user=Depends(get_current_user)):
+    """Get take-profit template definitions."""
+    from risk_management_packs import TEMPLATES
+    result = {}
+    for k, v in TEMPLATES.items():
+        if v.get("has_target", True):
+            entry = {key: val for key, val in v.items() if not callable(val)}
+            result[k] = entry
+    return result
+
+
+@router.put("/take-profit")
+def save_take_profit_packs(packs: list = Body(...), user=Depends(get_current_user)):
+    """Save take-profit packs (writes through RM pack pipeline)."""
+    from risk_management_packs import save_risk_management_packs, load_risk_management_packs, TEMPLATES
+    existing = load_risk_management_packs()
+    tp_keys = {k for k, v in TEMPLATES.items() if v.get("has_target", True)}
+    non_tp = [p for p in existing if p.base_template not in tp_keys]
+    new_tp = [_dict_to_rm_pack(p) for p in packs]
+    save_risk_management_packs(non_tp + new_tp)
+    return {"status": "saved", "count": len(new_tp)}
+
+
+# =============================================================================
 # SERIALIZATION HELPERS
 # =============================================================================
 
@@ -175,9 +250,9 @@ def _dict_to_general_pack(d: dict):
     )
 
 
-def _rm_pack_to_dict(pack) -> dict:
+def _rm_pack_to_dict(pack, include_configs: bool = False) -> dict:
     """Serialize a RiskManagementPack dataclass to dict."""
-    return {
+    d = {
         "id": pack.id,
         "base_template": pack.base_template,
         "version": pack.version,
@@ -186,6 +261,16 @@ def _rm_pack_to_dict(pack) -> dict:
         "is_default": pack.is_default,
         "parameters": pack.parameters,
     }
+    if include_configs:
+        try:
+            d["stop_config"] = pack.get_stop_config()
+        except Exception:
+            d["stop_config"] = None
+        try:
+            d["target_config"] = pack.get_target_config()
+        except Exception:
+            d["target_config"] = None
+    return d
 
 
 def _dict_to_rm_pack(d: dict):
