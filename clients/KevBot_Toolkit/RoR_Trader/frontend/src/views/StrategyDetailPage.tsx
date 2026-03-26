@@ -34,7 +34,7 @@ function apiToDetailStrategy(s: any) {
     timeframe: s.timeframe || '1Min',
     session: s.trading_session || 'RTH',
     method: 'Ticker-Based',
-    status: s.forward_testing ? 'On Track' : 'Insufficient Data',
+    status: s.status || (s.forward_testing ? 'On Track' : 'Insufficient Data'),
     tags: s.tags || [],
     monitored: s.alert_tracking_enabled || false,
     entry: s.entry_trigger_confluence_id || '--',
@@ -51,21 +51,21 @@ function apiToDetailStrategy(s: any) {
     btDays: s.data_days || 30,
     btStart: '--',  // {{bt_start}}
     btEnd: '--',    // {{bt_end}}
-    fwdWinRate: null as number | null,   // {{fwd_win_rate}}
-    fwdPF: null as number | null,        // {{fwd_pf}}
-    fwdDailyR: null as number | null,    // {{fwd_daily_r}}
-    fwdDailyROI: null as number | null,  // {{fwd_daily_roi}}
-    fwdTrades: 0,       // {{fwd_trades}}
+    fwdWinRate: (s.forward_kpis?.win_rate ?? null) as number | null,
+    fwdPF: (s.forward_kpis?.profit_factor ?? null) as number | null,
+    fwdDailyR: (s.forward_kpis?.daily_r ?? null) as number | null,
+    fwdDailyROI: null as number | null, // {{fwd_daily_roi}}
+    fwdTrades: s.forward_kpis?.trades ?? 0,
     fwdSince: s.forward_test_start || '',
-    fwdMaxDD: null as number | null,     // {{fwd_max_dd}}
-    alertWinRate: null as number | null,  // {{alert_win_rate}}
-    alertPF: null as number | null,       // {{alert_pf}}
-    alertDailyR: null as number | null,   // {{alert_daily_r}}
+    fwdMaxDD: (s.forward_kpis?.max_r_drawdown ?? null) as number | null,
+    alertWinRate: (s.alert_kpis?.win_rate ?? null) as number | null,
+    alertPF: (s.alert_kpis?.profit_factor ?? null) as number | null,
+    alertDailyR: (s.alert_kpis?.daily_r ?? null) as number | null,
     alertDailyROI: null as number | null, // {{alert_daily_roi}}
-    alertTrades: 0,      // {{alert_trades}}
-    alertMaxDD: null as number | null,    // {{alert_max_dd}}
-    fwdSD: null as number | null,         // {{fwd_sigma}}
-    alertSD: null as number | null,       // {{alert_sigma}}
+    alertTrades: s.alert_kpis?.trades ?? 0,
+    alertMaxDD: (s.alert_kpis?.max_r_drawdown ?? null) as number | null,
+    fwdSD: (s.sigma_fwd ?? null) as number | null,
+    alertSD: (s.sigma_alert ?? null) as number | null,
     createdAt: s.created_at || '--',
     updatedAt: s.updated_at || '--',
   };

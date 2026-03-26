@@ -70,25 +70,27 @@ function apiToStrategy(s: any): Strategy {
     direction: s.direction || 'LONG',
     timeframe: s.timeframe || '1Min',
     session: s.trading_session || 'RTH',
-    status: s.forward_testing ? 'On Track' : 'Insufficient Data', // {{status_derivation}} — needs B5.3
+    status: s.status || (s.forward_testing ? 'On Track' : 'Insufficient Data'),
     tags: s.tags || [],
     winRate: k.win_rate ?? 0,
     pf: k.profit_factor ?? 0,
     dailyR: k.daily_r ?? 0,
-    dailyROI: 0,           // {{daily_roi}} — needs B5.1
+    dailyROI: 0,
     trades: k.total_trades ?? 0,
     maxDD: k.max_r_drawdown ?? 0,
-    fwdWinRate: null,       // {{fwd_win_rate}} — needs B5.1
-    fwdPF: null,            // {{fwd_pf}} — needs B5.1
-    fwdDailyROI: null,      // {{fwd_daily_roi}} — needs B5.1
-    fwdTrades: 0,           // {{fwd_trades}} — needs B5.1
+    // Forward test KPIs (from enrich_strategy)
+    fwdWinRate: s.forward_kpis?.win_rate ?? null,
+    fwdPF: s.forward_kpis?.profit_factor ?? null,
+    fwdDailyROI: null, // {{fwd_daily_roi}} — needs computation
+    fwdTrades: s.forward_kpis?.trades ?? 0,
     fwdSince: s.forward_test_start || '',
-    alertWinRate: null,     // {{alert_win_rate}} — needs B5.1
-    alertPF: null,          // {{alert_pf}} — needs B5.1
-    alertDailyR: null,      // {{alert_daily_r}} — needs B5.1
-    alertDailyROI: null,    // {{alert_daily_roi}} — needs B5.1
-    alertTrades: 0,         // {{alert_trades}} — needs B5.1
-    alertMaxDD: null,       // {{alert_max_dd}} — needs B5.1
+    // Alert KPIs (from enrich_strategy)
+    alertWinRate: s.alert_kpis?.win_rate ?? null,
+    alertPF: s.alert_kpis?.profit_factor ?? null,
+    alertDailyR: s.alert_kpis?.daily_r ?? null,
+    alertDailyROI: null, // {{alert_daily_roi}}
+    alertTrades: s.alert_kpis?.trades ?? 0,
+    alertMaxDD: s.alert_kpis?.max_r_drawdown ?? null,
     entry: s.entry_trigger_confluence_id || '--',
     exit: s.exit_trigger_confluence_ids || [],
     stop: s.stop_config?.method ? `${s.stop_config.method}${s.stop_config.atr_mult ? ` ${s.stop_config.atr_mult}x` : ''}` : '--',
