@@ -790,23 +790,34 @@ def compute_alert_kpis(strategy: dict) -> dict | None:
     }
 
 
-def compute_sigma_deviation(actual_daily_r: float, bt_trades_df: pd.DataFrame) -> float | None:
-    """Compute sigma deviation of actual performance vs backtest baseline.
+def compute_sigma_deviation(actual_avg_r: float, bt_trades_df: pd.DataFrame) -> float | None:
+    """Compute sigma deviation of actual avg R per trade vs backtest baseline.
 
-    Returns number of standard deviations from expected daily R,
-    or None if insufficient data.
+    Compares actual average R-multiple per trade against the backtest
+    distribution of R-multiples per trade. Returns number of standard
+    deviations from expected.
+
+    Args:
+        actual_avg_r: Average R-multiple per trade in the forward/alert period
+        bt_trades_df: Backtest trades DataFrame with 'r_multiple' column
+
+    Returns float (sigma) or None if insufficient data.
     """
     if len(bt_trades_df) < 5:
+        return None
+
+    if 'r_multiple' not in bt_trades_df.columns:
         return None
 
     r_values = bt_trades_df['r_multiple'].values
     expected = float(np.mean(r_values))
     std = float(np.std(r_values, ddof=1))
 
-    if std == 0:
+    if std == 0 or np.isnan(std):
         return None
 
-    return round((actual_daily_r - expected) / std, 2)
+    sigma = (actual_avg_r - expected) / std
+    return round(float(sigma), 2)
 
 
 def derive_strategy_status(
@@ -872,6 +883,10 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     """
     enriched = dict(strategy)
 
+    # Alerts always on for forward testing strategies
+    if strategy.get('forward_testing') and not strategy.get('alert_tracking_enabled'):
+        enriched['alert_tracking_enabled'] = True
+
     # Fidelity-enriched confluence
     raw_conf = strategy.get('confluence', [])
     enriched['confluence_enriched'] = enrich_confluence_with_fidelity(raw_conf)
@@ -891,7 +906,7 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
         if strategy.get('forward_test_start'):
             fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
             bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
-        sigma_fwd = compute_sigma_deviation(fwd_kpis['daily_r'], bt_df)
+        sigma_fwd = compute_sigma_deviation(fwd_kpis['avg_r'], bt_df)
     else:
         sigma_fwd = None
     enriched['sigma_fwd'] = sigma_fwd
@@ -901,7 +916,7 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
         if strategy.get('forward_test_start'):
             fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
             bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
-        sigma_alert = compute_sigma_deviation(alert_kpis['daily_r'], bt_df)
+        sigma_alert = compute_sigma_deviation(alert_kpis['avg_r'], bt_df)
     else:
         sigma_alert = None
     enriched['sigma_alert'] = sigma_alert
