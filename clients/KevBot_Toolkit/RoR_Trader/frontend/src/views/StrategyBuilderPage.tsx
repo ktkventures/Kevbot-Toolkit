@@ -5,6 +5,9 @@
  * Strategy method selector, horizontal config bar, expandable config (entry/exit/stop/target packs),
  * confluence pills, symmetric 2-col layout (charts+trades | analysis tabs+advanced),
  * analysis tabs with depth selector, KPI dashboard (2 rows), and save button.
+ *
+ * QA Fix: Trigger selection now uses confluence group triggers from the API
+ * instead of plain text inputs.
  */
 
 import { useState, useCallback, useMemo } from 'react';
@@ -16,7 +19,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import MetricCard from '@/components/MetricCard';
 import { useRunBacktest, BacktestRequest } from '@/hooks/queries/useBacktest';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
-import { useConfluenceGroups, useRiskManagementPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceGroups, useConfluenceTriggers, useRiskManagementPacks } from '@/hooks/queries/usePacks';
 
 const TIMEFRAMES = ['1Min', '2Min', '3Min', '5Min', '10Min', '15Min', '30Min', '1Hour', '4Hour', '1Day'];
 const DIRECTIONS: Array<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
@@ -68,11 +71,133 @@ function PackList({ packs, selectedId, onSelect }: { packs: any[]; selectedId: s
   );
 }
 
+/** Grouped trigger list — shows triggers grouped by pack, with search filtering */
+function TriggerGroupedList({
+  triggers,
+  searchQuery,
+  selectedId,
+  onSelect,
+}: {
+  triggers: Record<string, string>;
+  searchQuery: string;
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    const entries = Object.entries(triggers);
+    if (!searchQuery) return entries;
+    const q = searchQuery.toLowerCase();
+    return entries.filter(([id, name]) => id.toLowerCase().includes(q) || name.toLowerCase().includes(q));
+  }, [triggers, searchQuery]);
+
+  if (filtered.length === 0) {
+    return <p className="text-xs p-3" style={{ color: 'var(--text-muted)' }}>No triggers available.</p>;
+  }
+
+  return (
+    <div className="space-y-0.5 overflow-y-auto pr-1" style={{ maxHeight: 280 }}>
+      {filtered.map(([id, name]) => (
+        <button
+          key={id}
+          className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+          style={{
+            background: id === selectedId ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'transparent',
+            color: id === selectedId ? 'var(--accent)' : 'var(--text-secondary)',
+          }}
+          onClick={() => onSelect(id)}
+        >
+          <span className="flex-1 truncate">{name}</span>
+          <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{id}</span>
+          {id === selectedId && <span className="text-[10px]" style={{ color: 'var(--accent)' }}>selected</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Confluence condition picker — checkable list built from confluence groups */
+function ConfluenceConditionPicker({
+  groups,
+  selected,
+  onToggle,
+}: {
+  groups: any[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+
+  // Build conditions from confluence groups: "{TF}-{INTERPRETER}-{STATE}" format
+  // We show the group base_template + version as label context
+  const conditions = useMemo(() => {
+    if (!groups || groups.length === 0) return [];
+    return groups
+      .filter((g: any) => g.enabled !== false)
+      .map((g: any) => ({
+        id: g.id,
+        label: `${g.base_template} (${g.version || 'v1'})`,
+        description: g.description || '',
+      }));
+  }, [groups]);
+
+  const filtered = useMemo(() => {
+    if (!search) return conditions;
+    const q = search.toLowerCase();
+    return conditions.filter(c => c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+  }, [conditions, search]);
+
+  if (conditions.length === 0) {
+    return <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No confluence groups configured. Create groups in the Confluence Packs page.</p>;
+  }
+
+  return (
+    <div>
+      <input
+        type="text"
+        placeholder="Search conditions..."
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        style={{ ...iStyle, marginBottom: 8 }}
+      />
+      <div className="space-y-0.5 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
+        {filtered.map(c => {
+          const active = selected.has(c.id);
+          return (
+            <button
+              key={c.id}
+              className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+              style={{
+                background: active ? 'var(--accent-muted, rgba(0,255,136,.1))' : 'transparent',
+                color: active ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onToggle(c.id)}
+            >
+              <span
+                className="w-4 h-4 rounded border flex items-center justify-center text-[10px] flex-shrink-0"
+                style={{
+                  borderColor: active ? 'var(--accent)' : 'var(--border)',
+                  background: active ? 'var(--accent)' : 'transparent',
+                  color: active ? '#000' : 'transparent',
+                }}
+              >
+                {active ? '\u2713' : ''}
+              </span>
+              <span className="flex-1 truncate">{c.label}</span>
+              <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{c.id}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function StrategyBuilderPage() {
   const router = useRouter();
   const bt = useRunBacktest();
   const createMut = useCreateStrategy();
   const { data: rmPacks } = useRiskManagementPacks();
+  const { data: confluenceGroups } = useConfluenceGroups();
 
   const [method, setMethod] = useState<'standard' | 'webhook' | 'scanner'>('standard');
   const [symbol, setSymbol] = useState('');
@@ -83,9 +208,8 @@ export default function StrategyBuilderPage() {
   const [days, setDays] = useState(30);
   const [name, setName] = useState('');
   const [entry, setEntry] = useState('');
-  const [exits, setExits] = useState('');
-  const [confInput, setConfInput] = useState('');
-  const [confPills, setConfPills] = useState<string[]>([]);
+  const [exitTriggers, setExitTriggers] = useState<string[]>([]);
+  const [confSelected, setConfSelected] = useState<Set<string>>(new Set());
   const [stopId, setStopId] = useState('');
   const [tpId, setTpId] = useState('');
   const [tab, setTab] = useState('Entry');
@@ -93,8 +217,16 @@ export default function StrategyBuilderPage() {
   const [tfD, setTfD] = useState(1);
   const [genD, setGenD] = useState(1);
   const [expanded, setExpanded] = useState(false);
+  const [triggerSearch, setTriggerSearch] = useState('');
+
+  // Fetch triggers based on direction
+  const { data: entryTriggers } = useConfluenceTriggers(dir);
+  const { data: exitTriggerMap } = useConfluenceTriggers('EXIT');
 
   const allPacks = rmPacks || [];
+  const entryTriggerMap = entryTriggers || {};
+  const exitTriggersAvailable = exitTriggerMap || {};
+
   const estBars = useMemo(() => {
     const bpd: Record<string, number> = { '1Min': 390, '2Min': 195, '3Min': 130, '5Min': 78, '10Min': 39, '15Min': 26, '30Min': 13, '1Hour': 7, '4Hour': 2, '1Day': 1 };
     return Math.round(days * (bpd[tf] || 78));
@@ -105,16 +237,18 @@ export default function StrategyBuilderPage() {
   const kpis = result?.kpis || {};
   const ran = !!result;
 
+  const confPills = useMemo(() => Array.from(confSelected), [confSelected]);
+
   const run = useCallback(() => {
     if (!canRun) return;
     bt.mutate({
       symbol: symbol.trim().toUpperCase(), timeframe: tf, direction: dir, days, session: sess,
       entry_trigger_confluence_id: entry.trim(),
-      exit_trigger_confluence_ids: exits.trim() ? exits.split(',').map(s => s.trim()) : [],
-      confluence: confPills.length > 0 ? confPills : (confInput.trim() ? confInput.split(',').map(s => s.trim()) : []),
+      exit_trigger_confluence_ids: exitTriggers,
+      confluence: confPills,
       stop_loss_pack_id: stopId || undefined, take_profit_pack_id: tpId || undefined, include_chart_data: false,
     } as BacktestRequest);
-  }, [canRun, symbol, tf, dir, days, sess, entry, exits, confPills, confInput, stopId, tpId, bt]);
+  }, [canRun, symbol, tf, dir, days, sess, entry, exitTriggers, confPills, stopId, tpId, bt]);
 
   const save = useCallback(() => {
     if (!result) return;
@@ -122,16 +256,26 @@ export default function StrategyBuilderPage() {
       name: name.trim() || `${symbol.toUpperCase()} ${dir} ${tf}`,
       symbol: symbol.trim().toUpperCase(), timeframe: tf, direction: dir, trading_session: sess, data_days: days,
       entry_trigger_confluence_id: entry.trim(),
-      exit_trigger_confluence_ids: exits.trim() ? exits.split(',').map(s => s.trim()) : [],
-      confluence: confPills.length > 0 ? confPills : (confInput.trim() ? confInput.split(',').map(s => s.trim()) : []),
+      exit_trigger_confluence_ids: exitTriggers,
+      confluence: confPills,
       stop_loss_pack_id: stopId || undefined, take_profit_pack_id: tpId || undefined, kpis: result.kpis,
     }, { onSuccess: () => router.push('/strategies') });
-  }, [result, name, symbol, tf, dir, sess, days, entry, exits, confPills, confInput, stopId, tpId, createMut, router]);
+  }, [result, name, symbol, tf, dir, sess, days, entry, exitTriggers, confPills, stopId, tpId, createMut, router]);
 
-  const addPill = useCallback(() => {
-    const v = confInput.trim();
-    if (v && !confPills.includes(v)) { setConfPills(p => [...p, v]); setConfInput(''); }
-  }, [confInput, confPills]);
+  const handleToggleCondition = useCallback((id: string) => {
+    setConfSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleRemoveExit = useCallback((idx: number) => {
+    setExitTriggers(prev => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  // Entry trigger display name
+  const entryName = entry ? (entryTriggerMap[entry] || entry) : '';
 
   return (
     <div>
@@ -175,30 +319,103 @@ export default function StrategyBuilderPage() {
       {/* CONFIG EXPANDER */}
       <Card className="mb-4">
         <button className="w-full flex items-center justify-between text-sm font-medium" style={{ color: 'var(--text-secondary)' }} onClick={() => setExpanded(!expanded)}>
-          <div className="flex items-center gap-3"><span>Strategy Config</span>{!expanded && entry && <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>{entry} | {confPills.length} cond | Stop: {stopId || 'None'} | TP: {tpId || 'None'}</span>}</div>
+          <div className="flex items-center gap-3">
+            <span>Strategy Config</span>
+            {!expanded && entry && (
+              <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                {entryName} | {exitTriggers.length} exit(s) | {confPills.length} cond | Stop: {stopId || 'None'} | TP: {tpId || 'None'}
+              </span>
+            )}
+          </div>
           <span className="text-xs" style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>v</span>
         </button>
         {expanded && (
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div><Label>Entry Trigger (confluence ID)</Label><input type="text" placeholder="e.g. EMA_STACK-SML-BULL_CROSS" value={entry} onChange={e => setEntry(e.target.value)} style={iStyle} /></div>
-            <div><Label>Exit Triggers (comma separated)</Label><input type="text" placeholder="e.g. EMA_STACK-SML-BEAR_CROSS" value={exits} onChange={e => setExits(e.target.value)} style={iStyle} /></div>
+            {/* Entry Trigger — grouped list from API */}
+            <div>
+              <Label>Entry Trigger</Label>
+              <input
+                type="text"
+                placeholder="Search triggers..."
+                value={triggerSearch}
+                onChange={e => setTriggerSearch(e.target.value)}
+                style={{ ...iStyle, marginBottom: 8 }}
+              />
+              {Object.keys(entryTriggerMap).length > 0 ? (
+                <TriggerGroupedList
+                  triggers={entryTriggerMap}
+                  searchQuery={triggerSearch}
+                  selectedId={entry}
+                  onSelect={setEntry}
+                />
+              ) : (
+                <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+                  No entry triggers available. Create confluence groups first.
+                </p>
+              )}
+            </div>
+
+            {/* Exit Triggers — multi-select list from API */}
+            <div>
+              <Label>
+                Exit Trigger(s){' '}
+                <span style={{ color: 'var(--text-muted)' }}>({exitTriggers.length}/3)</span>
+              </Label>
+              {exitTriggers.length > 0 && (
+                <div className="space-y-1 mb-2">
+                  {exitTriggers.map((eid, idx) => (
+                    <div key={eid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--accent-muted, rgba(0,255,136,.1))', border: '1px solid var(--border)' }}>
+                      <span className="flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                        {exitTriggersAvailable[eid] || eid}
+                      </span>
+                      <button className="text-[10px] hover:opacity-70" style={{ color: 'var(--text-muted)' }} onClick={() => handleRemoveExit(idx)}>x</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {Object.keys(exitTriggersAvailable).length > 0 ? (
+                <TriggerGroupedList
+                  triggers={exitTriggersAvailable}
+                  searchQuery=""
+                  selectedId=""
+                  onSelect={(id) => {
+                    if (exitTriggers.length < 3 && !exitTriggers.includes(id)) {
+                      setExitTriggers(prev => [...prev, id]);
+                    }
+                  }}
+                />
+              ) : (
+                <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+                  No exit triggers available.
+                </p>
+              )}
+            </div>
+
+            {/* Stop Loss Pack */}
             <div><Label>Stop Loss Pack</Label><PackList packs={allPacks} selectedId={stopId} onSelect={setStopId} /></div>
+
+            {/* Take Profit Pack */}
             <div><Label>Take Profit Pack</Label><PackList packs={allPacks} selectedId={tpId} onSelect={setTpId} /></div>
           </div>
         )}
       </Card>
 
-      {/* CONFLUENCE PILLS */}
+      {/* CONFLUENCE CONDITIONS — checkable pills from confluence groups */}
       {expanded && <Card className="mb-4">
         <Label>Confluence Conditions</Label>
-        <div className="flex gap-2 mb-2">
-          <input type="text" placeholder="e.g. 5M-EMA_STACK-SML" value={confInput} onChange={e => setConfInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPill(); } }} style={iStyle} />
-          <button className="px-3 py-2 rounded-lg text-sm font-medium flex-shrink-0" style={{ background: 'var(--accent-muted, rgba(0,255,136,.1))', color: 'var(--accent)', border: '1px solid var(--accent)' }} onClick={addPill}>Add</button>
-        </div>
-        {confPills.length > 0 && <div className="flex flex-wrap gap-1.5">
-          {confPills.map((p, i) => <Pill key={p} label={p} onRemove={() => setConfPills(prev => prev.filter((_, j) => j !== i))} />)}
-          <button className="text-xs px-2 py-1 rounded" style={{ color: 'var(--red)', background: 'rgba(244,67,54,.15)' }} onClick={() => setConfPills([])}>Clear All</button>
-        </div>}
+        {confPills.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {confPills.map(p => (
+              <Pill key={p} label={confluenceGroups?.find((g: any) => g.id === p)?.base_template || p} onRemove={() => handleToggleCondition(p)} />
+            ))}
+            <button className="text-xs px-2 py-1 rounded" style={{ color: 'var(--red)', background: 'rgba(244,67,54,.15)' }} onClick={() => setConfSelected(new Set())}>Clear All</button>
+          </div>
+        )}
+        <ConfluenceConditionPicker
+          groups={confluenceGroups || []}
+          selected={confSelected}
+          onToggle={handleToggleCondition}
+        />
       </Card>}
 
       {/* PRE-BACKTEST */}
@@ -308,7 +525,7 @@ export default function StrategyBuilderPage() {
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
                           </div>
-                          {(t === 'TF Conditions' && confPills.length > 0) && <div className="flex flex-wrap gap-1.5 mb-3">{confPills.map((p, i) => <Pill key={p} label={p} onRemove={() => setConfPills(prev => prev.filter((_, j) => j !== i))} />)}</div>}
+                          {(t === 'TF Conditions' && confPills.length > 0) && <div className="flex flex-wrap gap-1.5 mb-3">{confPills.map((p, i) => <Pill key={p} label={confluenceGroups?.find((g: any) => g.id === p)?.base_template || p} onRemove={() => handleToggleCondition(p)} />)}</div>}
                           <div className="overflow-y-auto" style={{ maxHeight: 440 }}>
                             <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>Click <strong>Analyze</strong> to compare {t.toLowerCase()} options using the current config.</p>
                           </div>
