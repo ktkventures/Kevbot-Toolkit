@@ -7,6 +7,8 @@ import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis } from '@/hooks/queries/useStrategies';
+import EquityCurve from '@/charts/EquityCurve';
+import DistributionChart from '@/charts/DistributionChart';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 
@@ -427,7 +429,41 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
-  const extendedKPIs = kpiData?.secondary_kpis || EMPTY_EXTENDED_KPIS;
+  const extendedKPIs = useMemo(() => {
+    const s = kpiData?.secondary_kpis;
+    if (!s) return EMPTY_EXTENDED_KPIS;
+    return {
+      wins: s.win_count ?? s.wins ?? 0,
+      losses: s.loss_count ?? s.losses ?? 0,
+      bestTrade: s.best_trade_r ?? s.bestTrade ?? 0,
+      worstTrade: s.worst_trade_r ?? s.worstTrade ?? 0,
+      avgWin: s.avg_win_r ?? s.avgWin ?? 0,
+      avgLoss: s.avg_loss_r ?? s.avgLoss ?? 0,
+      payoffRatio: s.payoff_ratio ?? s.payoffRatio ?? 0,
+      expectedDailyR: s.expected_daily ?? s.expectedDailyR ?? 0,
+      sharpe: s.sharpe_ratio ?? s.sharpe ?? 0,
+      sortino: s.sortino_ratio ?? s.sortino ?? 0,
+      calmar: s.calmar_ratio ?? s.calmar ?? 0,
+      kelly: s.kelly_criterion ?? s.kelly ?? 0,
+      dailyVaR: s.daily_var_95 ?? s.dailyVaR ?? 0,
+      cvar: s.cvar_95 ?? s.cvar ?? 0,
+      volatility: s.volatility ?? 0,
+      rSquared: s.r_squared ?? s.rSquared ?? 0,
+      skewness: s.skewness ?? 0,
+      kurtosis: s.kurtosis ?? 0,
+      tailRatio: s.tail_ratio ?? s.tailRatio ?? 0,
+      outlierWinPct: s.outlier_win_ratio ?? s.outlierWinPct ?? 0,
+      outlierLossPct: s.outlier_loss_ratio ?? s.outlierLossPct ?? 0,
+      maxRDD: s.max_r_drawdown ?? s.maxRDD ?? 0,
+      recoveryFactor: s.recovery_factor ?? s.recoveryFactor ?? 0,
+      ulcerIndex: s.ulcer_index ?? s.ulcerIndex ?? 0,
+      serenityIndex: s.serenity_index ?? s.serenityIndex ?? 0,
+      longestDDTrades: s.longest_dd_trades ?? s.longestDDTrades ?? 0,
+      longestDDDays: s.longest_dd_days ?? s.longestDDDays ?? 0,
+      maxConsecWins: s.max_consec_wins ?? s.maxConsecWins ?? 0,
+      maxConsecLosses: s.max_consec_losses ?? s.maxConsecLosses ?? 0,
+    };
+  }, [kpiData]);
   // Map API trades (snake_case) to V5 format (camelCase)
   const allTrades = (trades || EMPTY_TRADES).map((t: any, i: number) => ({
     id: t.id ?? i + 1,
@@ -538,6 +574,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     exitReason: t.exit_reason || t.exitReason || '--',
     isFwd: false,
   }));
+
+  // Build equity curve data for the EquityCurve chart
+  const equityPoints = useMemo(() => {
+    const combined = [...btTrades, ...fwdTrades];
+    if (combined.length === 0) return [];
+    let cum = 0;
+    return combined.map((t, i) => {
+      cum += t.pnlR;
+      return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exitTime };
+    });
+  }, [btTrades, fwdTrades]);
+
+  const equityBoundaryIndex = btTrades.length > 0 ? btTrades.length : null;
 
   // Parse entry for badges
   const entryParsed = parseExecTag(strategy.entry);
@@ -1038,9 +1087,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* ---- Equity Curve ---- */}
                 <Card className="mb-4">
                   <h4 className="text-sm font-medium mb-3">Equity Curve</h4>
-                  <ChartPlaceholder
-                    label="3-segment equity curve: Backtest (blue) | Forward Test (orange) | Alert Actual (green) with DD shading"
+                  <EquityCurve
+                    data={equityPoints}
+                    boundaryIndex={equityBoundaryIndex}
                     height={300}
+                    showZeroLine
+                    showHWM={eqShowHWM}
+                    xAxis="trade"
                   />
                   <div className="flex items-center gap-6 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span className="flex items-center gap-1.5">
@@ -1070,11 +1123,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <Card>
                     <h4 className="text-sm font-medium mb-3">BT R-Distribution</h4>
-                    <ChartPlaceholder label="R-Multiple histogram (backtest trades)" height={200} />
+                    <DistributionChart values={btTrades.map(t => t.pnlR)} bins={20} height={200} />
                   </Card>
                   <Card>
                     <h4 className="text-sm font-medium mb-3">FWD R-Distribution</h4>
-                    <ChartPlaceholder label="R-Multiple histogram (forward test trades)" height={200} />
+                    <DistributionChart values={fwdTrades.map(t => t.pnlR)} bins={20} height={200} />
                   </Card>
                 </div>
 

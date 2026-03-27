@@ -283,7 +283,7 @@ export default function PortfoliosPage() {
       case 'Balance (High)': result.sort((a, b) => b.finalBalance - a.finalBalance); break;
     }
     return result;
-  }, [statusFilter, sortBy]);
+  }, [startPortfolios, statusFilter, tagFilter, sortBy]);
 
   // ---- Loading / Error states (after all hooks) ----
   if (isLoading) {

@@ -18,6 +18,7 @@ import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
+import EquityCurve from '@/charts/EquityCurve';
 import {
   usePortfolio,
   usePortfolioCompute,
@@ -408,7 +409,8 @@ function LiveDashboardTab() {
 }
 
 // ---- 2. Performance ----
-function PerformanceTab() {
+function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
+  const { data: perfData } = usePortfolioCompute(portfolioId ?? null, ['kpis', 'equity_curve', 'daily_pnl', 'correlation']);
   return (
     <div>
       {/* KPI Row — needs compute endpoint */}
@@ -433,7 +435,18 @@ function PerformanceTab() {
             </span>
           </div>
         </div>
-        <ChartPlaceholder label="Combined equity curve: bold white portfolio line + per-strategy dashed colored lines (SPY blue, NVDA green, AAPL orange, META purple, TSLA cyan) layered underneath at 60% opacity. Zero reference line. X-axis: exit timestamps, Y-axis: cumulative P&L ($)" height={320} />
+        {(() => {
+          const ec = perfData?.equity_curve;
+          if (!ec || !Array.isArray(ec) || ec.length === 0) {
+            return <div className="flex items-center justify-center py-8" style={{ color: 'var(--text-muted)', height: 320 }}><span className="text-xs">No equity data — click Re-Analyze to compute</span></div>;
+          }
+          const points = ec.map((pt: any, i: number) => ({
+            trade_number: i + 1,
+            cumulative_r: pt.cumulative_r ?? pt.value ?? pt,
+            timestamp: pt.timestamp ?? pt.time ?? undefined,
+          }));
+          return <EquityCurve data={points} height={320} showZeroLine xAxis="trade" />;
+        })()}
       </Card>
 
       {/* Drawdown Analysis */}
@@ -497,9 +510,39 @@ function PerformanceTab() {
 
         <Card>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Strategy Correlation Heatmap</h3>
-          <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
-            Correlation data will appear here once enough trade history is available across strategies.
-          </p>
+          {(() => {
+            const corr = perfData?.correlation;
+            if (!corr || Object.keys(corr).length === 0) {
+              return <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>Correlation data will appear once enough trade history is available — click Re-Analyze.</p>;
+            }
+            const keys = Object.keys(corr);
+            const getColor = (v: number | null) => {
+              if (v == null) return 'var(--bg-input)';
+              const abs = Math.abs(v);
+              if (v >= 0) return `rgba(76,175,80,${abs * 0.7})`;
+              return `rgba(244,67,54,${abs * 0.7})`;
+            };
+            return (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="text-xs" style={{ borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr><th style={{ padding: '4px 8px' }} />{keys.map(k => <th key={k} style={{ padding: '4px 8px', color: 'var(--text-muted)', fontWeight: 500 }}>{k}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {keys.map(row => (
+                      <tr key={row}>
+                        <td style={{ padding: '4px 8px', fontWeight: 600, color: 'var(--text-secondary)' }}>{row}</td>
+                        {keys.map(col => {
+                          const val = corr[row]?.[col] ?? null;
+                          return <td key={col} style={{ padding: '4px 8px', textAlign: 'center', background: getColor(val), color: 'white', fontFamily: 'monospace', borderRadius: 2 }}>{val != null ? val.toFixed(2) : '--'}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
         </Card>
       </div>
 
@@ -545,35 +588,62 @@ function PerformanceTab() {
       {/* Worst-Case Analysis */}
       <Card className="mb-4">
         <h4 className="text-sm font-medium mb-3">Worst-Case Analysis</h4>
-        <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
-          {[
-            { label: 'Worst Single Day', value: '-$185' },
-            { label: 'Worst Losing Streak', value: '3 days (-$312)' },
-            { label: 'Worst 5-Day Rolling DD', value: '-$428' },
-            { label: 'Days Breaching Pause', value: '0' },
-            { label: 'Days Breaching Max Loss', value: '0' },
-          ].map((m) => (
-            <div key={m.label}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-              <p className="text-sm font-bold" style={m.value.startsWith('-') ? { color: 'var(--red)' } : undefined}>{m.value}</p>
-            </div>
-          ))}
-        </div>
-        <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Top 5 Worst Days</h5>
-        <div style={{ overflowX: 'auto' }}>
-          <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                {['Date', 'P&L ($)', 'P&L (%)', 'Cumulative DD %', 'Status'].map((h) => (
-                  <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
+        {(() => {
+          const dpnl = perfData?.daily_pnl;
+          const days: { date: string; pnl: number }[] = Array.isArray(dpnl)
+            ? dpnl.map((d: any) => ({ date: d.date || d.day || '--', pnl: d.daily_pnl ?? d.pnl ?? d.value ?? 0 }))
+            : [];
+          const sorted = [...days].sort((a, b) => a.pnl - b.pnl);
+          const worst5 = sorted.slice(0, 5);
+          const worstDay = sorted.length > 0 ? sorted[0].pnl : 0;
+          // Compute worst 5-day rolling sum
+          let worstRolling = 0;
+          for (let i = 0; i <= days.length - 5; i++) {
+            const sum = days.slice(i, i + 5).reduce((a, d) => a + d.pnl, 0);
+            if (sum < worstRolling) worstRolling = sum;
+          }
+          return (
+            <>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
+                {[
+                  { label: 'Worst Single Day', value: days.length > 0 ? `$${worstDay.toFixed(0)}` : '--' },
+                  { label: 'Losing Days', value: String(days.filter(d => d.pnl < 0).length) },
+                  { label: 'Worst 5-Day Rolling', value: days.length >= 5 ? `$${worstRolling.toFixed(0)}` : '--' },
+                  { label: 'Winning Days', value: String(days.filter(d => d.pnl >= 0).length) },
+                  { label: 'Total Days', value: String(days.length) },
+                ].map((m) => (
+                  <div key={m.label}>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                    <p className="text-sm font-bold" style={m.value.startsWith('-') || m.value.startsWith('$-') ? { color: 'var(--red)' } : undefined}>{m.value}</p>
+                  </div>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td colSpan={5} className="py-4 text-center text-sm" style={{ color: 'var(--text-muted)' }}>Needs compute endpoint.</td></tr>
-            </tbody>
-          </table>
-        </div>
+              </div>
+              <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Top 5 Worst Days</h5>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Date', 'P&L ($)', 'Rank'].map((h) => (
+                        <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {worst5.length === 0 ? (
+                      <tr><td colSpan={3} className="py-4 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No daily P&L data — click Re-Analyze.</td></tr>
+                    ) : worst5.map((d, i) => (
+                      <tr key={d.date}>
+                        <td className="py-2 px-3 text-xs font-mono">{d.date}</td>
+                        <td className="py-2 px-3 text-xs font-mono" style={{ color: d.pnl < 0 ? 'var(--red)' : 'var(--green)' }}>${d.pnl.toFixed(2)}</td>
+                        <td className="py-2 px-3 text-xs">#{i + 1}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          );
+        })()}
       </Card>
 
       {/* Monte Carlo Simulation */}
@@ -1426,7 +1496,7 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
         {(tab) => (
           <div>
             {tab === 'Live Dashboard' && <LiveDashboardTab />}
-            {tab === 'Performance' && <PerformanceTab />}
+            {tab === 'Performance' && <PerformanceTab portfolioId={portfolioId} />}
             {tab === 'Strategies' && <StrategiesTab />}
             {tab === 'Prop Firm Check' && <PropFirmCheckTab portfolioId={portfolioId} />}
             {tab === 'Account' && <AccountTab />}

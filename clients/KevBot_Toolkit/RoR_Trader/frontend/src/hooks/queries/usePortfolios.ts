@@ -22,6 +22,7 @@ export function usePortfolios() {
   return useQuery({
     queryKey: ['portfolios'],
     queryFn: () => apiFetch<PortfolioDTO[]>('/api/portfolios'),
+    retry: 2, // Retry on 401 if token not yet in localStorage
   });
 }
 

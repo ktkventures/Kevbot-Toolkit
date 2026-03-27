@@ -251,13 +251,23 @@ def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
 def get_strategy_kpis(strategy_id: int, user=Depends(get_current_user)):
     """Get KPIs for a strategy (from stored kpis or computed)."""
     strat = _get_or_404(strategy_id, user)
-
-    # Return stored KPIs if available
-    if strat.get('kpis'):
-        return {"kpis": strat['kpis'], "secondary_kpis": None}
-
-    # Compute from trades
     import services as svc
+
+    primary_kpis = strat.get('kpis')
+    if primary_kpis:
+        # Stored KPIs exist — still need to compute secondary from trades
+        try:
+            stored = strat.get('stored_trades', [])
+            if stored:
+                trades_df = svc.trades_df_from_stored(stored)
+            else:
+                trades_df = svc.get_strategy_trades(strat)
+            secondary = svc.calculate_secondary_kpis(trades_df, primary_kpis)
+        except Exception:
+            secondary = None
+        return {"kpis": primary_kpis, "secondary_kpis": secondary}
+
+    # No stored KPIs — compute both from trades
     trades_df = svc.get_strategy_trades(strat)
     kpis = svc.calculate_kpis(trades_df)
     secondary = svc.calculate_secondary_kpis(trades_df, kpis)
