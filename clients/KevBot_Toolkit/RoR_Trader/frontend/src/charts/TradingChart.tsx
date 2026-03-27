@@ -105,13 +105,16 @@ export default function TradingChart({
       wickDownColor: colors.down,
     });
 
-    const candleData: CandlestickData[] = ohlcv.map((c) => ({
-      time: c.time as Time,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-    }));
+    const candleData: CandlestickData[] = ohlcv
+      .filter((c) => c.open != null && c.high != null && c.low != null && c.close != null && c.time)
+      .map((c) => ({
+        time: c.time as Time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }));
+    if (candleData.length === 0) { chart.remove(); return; }
     candleSeries.setData(candleData);
     candleSeriesRef.current = candleSeries;
 
