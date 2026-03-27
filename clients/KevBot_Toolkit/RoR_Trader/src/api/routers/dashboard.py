@@ -339,34 +339,30 @@ def get_market_regime(user=Depends(get_current_user)):
         # If value looks like an ETF price (< 100), use it directly
         # If value looks like an index reading (> 100), it's probably wrong data
         vix_value = 0.0
+        vix_label = "VIX"
         for vix_sym in ["VIXY", "VXX", "UVXY"]:
             try:
                 vix_df = load_market_data(vix_sym, days=5, timeframe="1Day", session="RTH")
                 if len(vix_df) > 0:
                     raw = float(vix_df["close"].iloc[-1])
-                    # VIXY/VXX track VIX futures, prices typically in 10-80 range
                     vix_value = round(raw, 2)
+                    vix_label = vix_sym  # Show actual ticker used
                     break
             except Exception:
                 continue
 
-        # Derive regime
+        # Derive regime based on SPY vs SMA20 (VIX proxy unreliable for thresholds)
         regime = "Neutral"
         spy_price = spy_data["price"]
-        if spy_sma20 > 0 and spy_price > spy_sma20 * 1.01 and vix_value < 25:
+        if spy_sma20 > 0 and spy_price > spy_sma20 * 1.01:
             regime = "Bull"
-        elif spy_sma20 > 0 and spy_price < spy_sma20 * 0.99 and vix_value > 35:
-            regime = "Bear"
-        elif vix_value > 40:
-            regime = "High Volatility"
-        elif spy_sma20 > 0 and spy_price > spy_sma20:
-            regime = "Bull"
-        elif spy_sma20 > 0 and spy_price < spy_sma20:
+        elif spy_sma20 > 0 and spy_price < spy_sma20 * 0.99:
             regime = "Bear"
 
         return {
             "regime": regime,
             "vix": vix_value,
+            "vix_label": vix_label,
             "spy": spy_data,
             "qqq": qqq_data,
         }

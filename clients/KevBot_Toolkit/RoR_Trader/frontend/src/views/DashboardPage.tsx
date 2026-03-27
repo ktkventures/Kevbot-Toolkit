@@ -816,9 +816,9 @@ export default function DashboardPage() {
           name: s.name || '--',
           deviationSd: typeof sigma === 'number' ? sigma : 0,
           status,
-          alertTrades: k.total_trades ?? 0,
-          expectedR: k.daily_r ?? 0,
-          actualR: k.total_r ?? 0,
+          alertTrades: (s as any).forward_kpis?.trades ?? k.total_trades ?? 0,
+          expectedR: k.avg_r ?? k.daily_r ?? 0,
+          actualR: (s as any).forward_kpis?.total_r ?? k.total_r ?? 0,
         };
       });
   }, [apiStrategies]);
@@ -867,7 +867,8 @@ export default function DashboardPage() {
       change: (marketRegimeData as any)?.qqq?.change ?? 0,
       changePct: (marketRegimeData as any)?.qqq?.change_pct ?? 0,
     },
-    breadth: { advancers: 0, decliners: 0, ratio: 0 },
+    breadth: null, // No data source available — hidden in UI
+    vixLabel: (marketRegimeData as any)?.vix_label ?? 'VIX',
   }), [marketRegimeData]);
 
   // Equity curve — wired to /api/dashboard/equity-curve
@@ -1437,9 +1438,9 @@ export default function DashboardPage() {
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
-                    <span style={{ color: 'var(--text-muted)' }}>Breadth</span>
-                    <span className="font-mono" style={{ color: marketData.breadth.ratio > 1 ? 'var(--green)' : 'var(--red)' }}>
-                      {marketData.breadth.ratio.toFixed(2)}
+                    <span style={{ color: 'var(--text-muted)' }}>{(marketData as any).vixLabel || 'VIX'}</span>
+                    <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+                      {marketData.vix > 0 ? `$${marketData.vix.toFixed(2)}` : '--'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
@@ -2173,22 +2174,9 @@ export default function DashboardPage() {
         </ModalSection>
 
         <ModalSection title="Market Breadth">
-          <div className="grid grid-cols-3 gap-3">
-            <div className="text-center">
-              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Advancers</p>
-              <p className="text-lg font-semibold" style={{ color: 'var(--green)' }}>{marketData.breadth.advancers}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Decliners</p>
-              <p className="text-lg font-semibold" style={{ color: 'var(--red)' }}>{marketData.breadth.decliners}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>A/D Ratio</p>
-              <p className="text-lg font-semibold" style={{ color: marketData.breadth.ratio > 1 ? 'var(--green)' : 'var(--red)' }}>
-                {marketData.breadth.ratio.toFixed(2)}
-              </p>
-            </div>
-          </div>
+          <p className="text-xs text-center py-3" style={{ color: 'var(--text-muted)' }}>
+            Market breadth data not available — requires premium data feed.
+          </p>
         </ModalSection>
 
         <ModalSection title="Index Performance">

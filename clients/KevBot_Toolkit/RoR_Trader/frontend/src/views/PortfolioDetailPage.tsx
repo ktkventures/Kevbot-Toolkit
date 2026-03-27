@@ -19,6 +19,7 @@ import Modal from '@/components/Modal';
 import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import EquityCurve from '@/charts/EquityCurve';
+import DistributionChart from '@/charts/DistributionChart';
 import {
   usePortfolio,
   usePortfolioCompute,
@@ -279,7 +280,12 @@ function LiveDashboardTab() {
             </span>
           </div>
         </div>
-        <ChartPlaceholder label="Benchmark equity line with +/- 1SD and 2SD confidence bands overlaid with actual equity curve (green/orange/red based on deviation)" height={400} />
+        <div className="flex items-center justify-center py-12" style={{ height: 400, color: 'var(--text-muted)' }}>
+          <div className="text-center">
+            <p className="text-sm mb-1">Performance vs Plan chart requires portfolio compute data.</p>
+            <p className="text-xs">Click <strong>Re-Analyze</strong> to generate benchmark + actual equity curves.</p>
+          </div>
+        </div>
       </Card>
 
       {/* Open Positions */}
@@ -494,7 +500,12 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
       <div className="grid grid-cols-2 gap-6">
         <Card>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Daily P&L Distribution</h3>
-          <ChartPlaceholder label="Histogram: daily P&L distribution with mean and std lines" height={300} />
+          {(() => {
+            const dpnl = perfData?.daily_pnl;
+            const vals = Array.isArray(dpnl) ? dpnl.map((d: any) => d.daily_pnl ?? d.pnl ?? d.value ?? 0) : [];
+            if (vals.length === 0) return <div className="flex items-center justify-center py-8" style={{ height: 300, color: 'var(--text-muted)' }}><span className="text-xs">No daily P&L data — click Re-Analyze</span></div>;
+            return <DistributionChart values={vals} bins={15} height={300} />;
+          })()}
           <div className="flex items-center gap-6 mt-3">
             <div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Avg Daily</p>
