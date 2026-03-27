@@ -288,15 +288,14 @@ def get_strategy_chart_data(
     days: int = Query(None, description="Override data_days"),
     user=Depends(get_current_user),
 ):
-    """Get OHLCV bars with computed indicator columns for chart rendering.
+    """Get OHLCV bars with strategy-relevant indicator columns for chart rendering.
 
-    Runs prepare_data_with_indicators() for the strategy's symbol/timeframe,
-    then serializes OHLCV + all numeric indicator columns. This is slow
+    Only includes indicators from confluence groups actually used by this strategy
+    (matching the Streamlit _get_strategy_relevant_groups logic). This is slow
     (~10-30s for 1Min strategies) — frontend should cache the result.
     """
     strat = _get_or_404(strategy_id, user)
     import services as svc
-    import numpy as np
 
     try:
         df = svc.prepare_data_with_indicators(
@@ -308,21 +307,75 @@ def get_strategy_chart_data(
         if len(df) == 0:
             return {"chart_data": [], "indicators": []}
 
-        # Auto-detect numeric indicator columns (exclude OHLCV, internals, triggers)
-        skip = {'open', 'high', 'low', 'close', 'volume', 'vwap_volume', 'typical_price'}
-        indicator_cols = [
-            c for c in df.columns
-            if c not in skip
-            and not c.startswith('trig_')
-            and not c.startswith('_')
-            and not c.isupper()  # Skip interpreter state columns (EMA_STACK, MACD_LINE etc.)
-            and df[c].dtype in (np.float64, np.float32, np.int64)
-        ]
+        # ---- Filter to strategy-relevant indicators only ----
+        # Replicate _get_strategy_relevant_groups() from Streamlit app.py
+        from confluence_groups import get_enabled_groups, get_template, TEMPLATES
+
+        entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
+        exit_conf_id = strat.get('exit_trigger_confluence_id') or ''
+        exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
+        confluence_records = list(strat.get('confluence', []))
+
+        # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
+        confluence_interpreters = set()
+        for record in confluence_records:
+            if record.startswith("GEN-"):
+                continue
+            parts = record.split("-")
+            if len(parts) >= 2:
+                confluence_interpreters.add(parts[1])
+
+        # Find relevant groups
+        relevant_indicator_cols = []
+        for group in get_enabled_groups():
+            gid_prefix = group.id + "_"
+
+            # Check if group owns the entry/exit trigger
+            is_relevant = (
+                entry_conf_id.startswith(gid_prefix)
+                or exit_conf_id.startswith(gid_prefix)
+                or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
+            )
+
+            # Check if group's interpreter appears in confluence conditions
+            if not is_relevant:
+                template = get_template(group.base_template)
+                if template:
+                    for interp_key in template.get("interpreters", []):
+                        if interp_key in confluence_interpreters:
+                            is_relevant = True
+                            break
+
+            if is_relevant:
+                template = get_template(group.base_template)
+                if template:
+                    for col in template.get("indicator_columns", []):
+                        # Resolve parameterized column names
+                        if col in ("ema_short", "ema_mid", "ema_long"):
+                            params = group.parameters
+                            if col == "ema_short":
+                                resolved = f"ema_{params.get('short_period', 9)}"
+                            elif col == "ema_mid":
+                                resolved = f"ema_{params.get('mid_period', 21)}"
+                            else:
+                                resolved = f"ema_{params.get('long_period', 200)}"
+                            if resolved in df.columns:
+                                relevant_indicator_cols.append(resolved)
+                        elif col in df.columns:
+                            relevant_indicator_cols.append(col)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_cols = []
+        for c in relevant_indicator_cols:
+            if c not in seen:
+                seen.add(c)
+                unique_cols.append(c)
 
         from api.services.backtest_service import _serialize_chart_data
         return {
-            "chart_data": _serialize_chart_data(df, indicator_cols),
-            "indicators": indicator_cols,
+            "chart_data": _serialize_chart_data(df, unique_cols),
+            "indicators": unique_cols,
         }
     except Exception as e:
         logger.exception("Failed to compute chart data for strategy %s: %s", strategy_id, e)

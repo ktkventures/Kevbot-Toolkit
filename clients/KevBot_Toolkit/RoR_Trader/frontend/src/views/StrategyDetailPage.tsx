@@ -522,7 +522,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
-  const recentAlerts = alerts || EMPTY_ALERTS; // from useStrategyAlerts hook
+  const recentAlerts = (alerts || EMPTY_ALERTS).map((a: any) => {
+    const d = a.data || {};
+    return {
+      time: a.timestamp || a.time || '--',
+      type: (a.type || '').toLowerCase().includes('entry') ? 'ENTRY' : 'EXIT',
+      trigger: d.trigger || a.trigger || '--',
+      price: d.price ?? a.price ?? null,
+      status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
+    };
+  });
   const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
   const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
