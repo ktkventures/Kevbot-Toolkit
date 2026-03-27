@@ -1,6 +1,8 @@
 """Dashboard router — aggregated summary data for the dashboard page."""
 
 import logging
+from collections import defaultdict
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
 
@@ -160,3 +162,104 @@ def get_dashboard_activity(user=Depends(get_current_user)):
         return {"items": items}
     except Exception:
         return {"items": []}
+
+
+@router.get("/equity-curve")
+def get_dashboard_equity_curve(user=Depends(get_current_user)):
+    """Get aggregated equity curve across all strategies.
+
+    Merges each strategy's equity_curve_data (exit_times + cumulative_r)
+    into a single time-ordered cumulative R series.
+    """
+    from db import USE_DB
+
+    if not USE_DB:
+        return {"points": []}
+
+    try:
+        from db import load_strategies_db
+        strategies = load_strategies_db() or []
+
+        # Collect all (time, r_value) data points from every strategy
+        all_points: list[tuple[str, float]] = []
+        for s in strategies:
+            ecd = s.get("equity_curve_data")
+            if not ecd:
+                continue
+            exit_times = ecd.get("exit_times", [])
+            cumulative_r = ecd.get("cumulative_r", [])
+            if not exit_times or not cumulative_r:
+                continue
+            # Convert cumulative per-strategy to incremental, then we re-accumulate globally
+            prev = 0.0
+            for t, cr in zip(exit_times, cumulative_r):
+                delta = cr - prev
+                prev = cr
+                all_points.append((t, delta))
+
+        if not all_points:
+            return {"points": []}
+
+        # Sort by timestamp and re-accumulate
+        all_points.sort(key=lambda x: x[0])
+        cumulative = 0.0
+        result = []
+        for t, delta in all_points:
+            cumulative += delta
+            result.append({"time": t, "value": round(cumulative, 4)})
+
+        return {"points": result}
+    except Exception as e:
+        logger.exception("Error computing dashboard equity curve: %s", e)
+        return {"points": []}
+
+
+@router.get("/daily-pnl")
+def get_dashboard_daily_pnl(user=Depends(get_current_user)):
+    """Get daily P&L across all strategies.
+
+    Aggregates incremental R from all strategies' equity curves,
+    grouped by calendar day.
+    """
+    from db import USE_DB
+
+    if not USE_DB:
+        return {"days": []}
+
+    try:
+        from db import load_strategies_db
+        strategies = load_strategies_db() or []
+
+        # Collect incremental R with timestamps
+        day_totals: dict[str, float] = defaultdict(float)
+        for s in strategies:
+            ecd = s.get("equity_curve_data")
+            if not ecd:
+                continue
+            exit_times = ecd.get("exit_times", [])
+            cumulative_r = ecd.get("cumulative_r", [])
+            if not exit_times or not cumulative_r:
+                continue
+            prev = 0.0
+            for t, cr in zip(exit_times, cumulative_r):
+                delta = cr - prev
+                prev = cr
+                try:
+                    day = t[:10]  # "YYYY-MM-DD"
+                    day_totals[day] += delta
+                except (TypeError, IndexError):
+                    continue
+
+        if not day_totals:
+            return {"days": []}
+
+        # Sort by date and return
+        result = [
+            {"day": day, "value": round(val, 4)}
+            for day, val in sorted(day_totals.items())
+        ]
+
+        return {"days": result}
+    except Exception as e:
+        logger.exception("Error computing dashboard daily P&L: %s", e)
+        return {"days": []}

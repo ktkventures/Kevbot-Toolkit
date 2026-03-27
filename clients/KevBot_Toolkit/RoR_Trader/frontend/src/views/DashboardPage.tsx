@@ -14,7 +14,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
-import { useDashboardSummary } from '@/hooks/queries/useDashboard';
+import { useDashboardSummary, useDashboardEquityCurve, useDashboardDailyPnl } from '@/hooks/queries/useDashboard';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useMonitorStatus, useEngineState } from '@/hooks/queries/useAlerts';
 import { usePortfolios } from '@/hooks/queries/usePortfolios';
@@ -720,6 +720,8 @@ export default function DashboardPage() {
   const { data: monitorStatus, isLoading: monitorLoading } = useMonitorStatus();
   const { data: engineState, isLoading: engineLoading } = useEngineState();
   const { data: apiPortfolios, isLoading: portfoliosLoading } = usePortfolios();
+  const { data: equityCurveData } = useDashboardEquityCurve();
+  const { data: dailyPnlData } = useDashboardDailyPnl();
 
   // =========================================================================
   // UI state
@@ -834,10 +836,16 @@ export default function DashboardPage() {
   // Market data — {{market_regime}} — not wired yet
   const marketData = { regime: '--' as string, vix: 0, spy: { price: 0, change: 0, changePct: 0 }, qqq: { price: 0, change: 0, changePct: 0 }, breadth: { advancers: 0, decliners: 0, ratio: 0 } };
 
-  // Equity curve — {{equity_curve}} — needs new endpoint
-  const equityData: number[] = [];
-  // Daily P&L — {{daily_pnl}} — needs new endpoint
-  const dailyPnl: { day: string; value: number }[] = [];
+  // Equity curve — wired to /api/dashboard/equity-curve
+  const equityData: number[] = useMemo(() => {
+    if (!equityCurveData?.points?.length) return [];
+    return equityCurveData.points.map(p => p.value);
+  }, [equityCurveData]);
+  // Daily P&L — wired to /api/dashboard/daily-pnl
+  const dailyPnl: { day: string; value: number }[] = useMemo(() => {
+    if (!dailyPnlData?.days?.length) return [];
+    return dailyPnlData.days;
+  }, [dailyPnlData]);
   // Calendar — {{calendar}} — needs new endpoint
   const calendarData: Record<number, number> = {};
   // Monthly goal — {{monthly_goal}}

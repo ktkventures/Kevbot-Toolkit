@@ -64,3 +64,19 @@ export function useDashboardActivity() {
     refetchInterval: 10000,
   });
 }
+
+export function useDashboardEquityCurve() {
+  return useQuery({
+    queryKey: ['dashboard-equity-curve'],
+    queryFn: () => apiFetch<{ points: { time: string; value: number }[] }>('/api/dashboard/equity-curve'),
+    refetchInterval: 60000, // 60s refresh
+  });
+}
+
+export function useDashboardDailyPnl() {
+  return useQuery({
+    queryKey: ['dashboard-daily-pnl'],
+    queryFn: () => apiFetch<{ days: { day: string; value: number }[] }>('/api/dashboard/daily-pnl'),
+    refetchInterval: 60000,
+  });
+}
