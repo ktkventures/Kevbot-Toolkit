@@ -265,6 +265,89 @@ def get_strategy_kpis(strategy_id: int, user=Depends(get_current_user)):
 
 
 # =============================================================================
+# TRIGGER ANALYSIS
+# =============================================================================
+
+@router.get("/{strategy_id}/trigger-analysis")
+def get_trigger_analysis(strategy_id: int, user=Depends(get_current_user)):
+    """Per-trigger and per-exit-reason analysis for the Confluence Analysis tab.
+
+    Returns:
+    - confluence_groups: Groups used by this strategy
+    - exit_breakdown: KPIs grouped by exit_reason
+    - trade_distribution: Win/loss counts by exit reason
+    """
+    strat = _get_or_404(strategy_id, user)
+
+    import services as svc
+    import pandas as pd
+
+    # Get confluence groups used
+    confluence_ids = strat.get("confluence", [])
+    entry_trigger = strat.get("entry_trigger") or strat.get("entry_trigger_confluence_id") or "--"
+    exit_triggers = strat.get("exit_trigger_confluence_ids") or strat.get("exit_triggers") or []
+
+    groups = []
+    if confluence_ids:
+        # Try to load pack names from templates
+        try:
+            from confluence_groups import TEMPLATES
+            for cid in confluence_ids:
+                tpl = TEMPLATES.get(cid)
+                groups.append({
+                    "id": cid,
+                    "name": tpl["name"] if tpl else cid.replace("_", " ").title(),
+                    "pack": cid,
+                })
+        except Exception:
+            groups = [{"id": cid, "name": cid.replace("_", " ").title(), "pack": cid} for cid in confluence_ids]
+
+    # Analyze trades by exit reason
+    exit_breakdown = []
+    trade_distribution = []
+
+    stored = strat.get("stored_trades", [])
+    if stored:
+        trades_df = svc.trades_df_from_stored(stored)
+        if len(trades_df) > 0 and "exit_reason" in trades_df.columns:
+            for reason, group_df in trades_df.groupby("exit_reason"):
+                if reason == "open":
+                    continue
+                wins = int((group_df["r_multiple"] > 0).sum())
+                losses = int((group_df["r_multiple"] <= 0).sum())
+                total = len(group_df)
+                total_r = float(group_df["r_multiple"].sum())
+                avg_r = float(group_df["r_multiple"].mean())
+                win_rate = wins / total * 100 if total > 0 else 0
+
+                exit_breakdown.append({
+                    "exit_reason": str(reason),
+                    "trades": total,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": round(win_rate, 1),
+                    "total_r": round(total_r, 4),
+                    "avg_r": round(avg_r, 4),
+                    "best_trade": round(float(group_df["r_multiple"].max()), 4) if total > 0 else 0,
+                    "worst_trade": round(float(group_df["r_multiple"].min()), 4) if total > 0 else 0,
+                })
+
+                trade_distribution.append({
+                    "exit_reason": str(reason),
+                    "wins": wins,
+                    "losses": losses,
+                })
+
+    return {
+        "confluence_groups": groups,
+        "entry_trigger": entry_trigger,
+        "exit_triggers": exit_triggers if isinstance(exit_triggers, list) else [exit_triggers],
+        "exit_breakdown": exit_breakdown,
+        "trade_distribution": trade_distribution,
+    }
+
+
+# =============================================================================
 # REFRESH / UPDATE DATA
 # =============================================================================
 

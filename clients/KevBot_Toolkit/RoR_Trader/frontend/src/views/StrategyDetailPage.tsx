@@ -6,7 +6,7 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis } from '@/hooks/queries/useStrategies';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 
@@ -319,6 +319,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
   const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
   const { data: alerts } = useStrategyAlerts(strategyId);
+  const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
   const deleteMut = useDeleteStrategy();
   const dupMut = useDuplicateStrategy();
   const refreshMut = useRefreshStrategy();
@@ -370,13 +371,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggers, setShowTriggers] = useState(true);
   const [btTradesOpen, setBtTradesOpen] = useState(false);
   const [fwdTradesOpen, setFwdTradesOpen] = useState(true);
-  const confluenceGroups = EMPTY_CONFLUENCE_GROUPS; // {{confluence_groups}} — wire to API
-  const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // {{confluence_timeline}} — wire to API
-  const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // {{confluence_trigger_events}} — wire to API
+  const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
+  const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
+  const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
   const recentAlerts = alerts || EMPTY_ALERTS; // from useStrategyAlerts hook
   const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
   const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
-  const [selectedConfGroup, setSelectedConfGroup] = useState(confluenceGroups.length > 0 ? confluenceGroups[0].name : '');
+  const [selectedConfGroup, setSelectedConfGroup] = useState('');
+  useEffect(() => {
+    if (confluenceGroups.length > 0 && !selectedConfGroup) {
+      setSelectedConfGroup(confluenceGroups[0].name);
+    }
+  }, [confluenceGroups, selectedConfGroup]);
   const [showPosHealth, setShowPosHealth] = useState(false);
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
@@ -1494,6 +1500,51 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   ))}
                 </>
+                )}
+
+                {/* Exit Reason Breakdown — per-trigger comparison */}
+                {triggerAnalysis?.exit_breakdown && triggerAnalysis.exit_breakdown.length > 0 && (
+                  <Card className="mt-4">
+                    <h4 className="text-sm font-medium mb-3">Exit Reason Breakdown</h4>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr>
+                            {['Exit Reason', 'Trades', 'Win Rate', 'Total R', 'Avg R', 'Best', 'Worst'].map((h) => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {triggerAnalysis.exit_breakdown.map((row) => (
+                            <tr key={row.exit_reason}>
+                              <td style={tdStyle}>
+                                <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
+                                  {row.exit_reason.replace(/_/g, ' ')}
+                                </span>
+                              </td>
+                              <td style={tdStyle}>{row.trades}</td>
+                              <td style={{ ...tdStyle, color: row.win_rate >= 50 ? 'var(--green)' : 'var(--red)' }}>
+                                {row.win_rate.toFixed(1)}%
+                              </td>
+                              <td style={{ ...tdStyle, color: row.total_r >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'monospace' }}>
+                                {row.total_r >= 0 ? '+' : ''}{row.total_r.toFixed(2)}R
+                              </td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace' }}>
+                                {row.avg_r >= 0 ? '+' : ''}{row.avg_r.toFixed(2)}R
+                              </td>
+                              <td style={{ ...tdStyle, color: 'var(--green)', fontFamily: 'monospace' }}>
+                                +{row.best_trade.toFixed(2)}R
+                              </td>
+                              <td style={{ ...tdStyle, color: 'var(--red)', fontFamily: 'monospace' }}>
+                                {row.worst_trade.toFixed(2)}R
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
                 )}
               </div>
             )}

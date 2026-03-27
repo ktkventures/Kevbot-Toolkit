@@ -99,3 +99,29 @@ export function useStrategyKPIs(id: number | null) {
     enabled: id !== null,
   });
 }
+
+export interface TriggerAnalysis {
+  confluence_groups: { id: string; name: string; pack: string }[];
+  entry_trigger: string;
+  exit_triggers: string[];
+  exit_breakdown: {
+    exit_reason: string;
+    trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    total_r: number;
+    avg_r: number;
+    best_trade: number;
+    worst_trade: number;
+  }[];
+  trade_distribution: { exit_reason: string; wins: number; losses: number }[];
+}
+
+export function useTriggerAnalysis(id: number | null) {
+  return useQuery({
+    queryKey: ['trigger-analysis', id],
+    queryFn: () => apiFetch<TriggerAnalysis>(`/api/strategies/${id}/trigger-analysis`),
+    enabled: id !== null,
+  });
+}
