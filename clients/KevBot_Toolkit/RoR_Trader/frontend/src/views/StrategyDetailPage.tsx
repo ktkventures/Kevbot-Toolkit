@@ -9,6 +9,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis } from '@/hooks/queries/useStrategies';
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
+import { useChartPrefs } from '@/hooks/useChartPrefs';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 
@@ -426,6 +427,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const deleteMut = useDeleteStrategy();
   const dupMut = useDuplicateStrategy();
   const refreshMut = useRefreshStrategy();
+  const chartPrefs = useChartPrefs();
 
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
@@ -1090,9 +1092,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     data={equityPoints}
                     boundaryIndex={equityBoundaryIndex}
                     height={300}
-                    showZeroLine
-                    showHWM={eqShowHWM}
-                    xAxis="trade"
+                    showZeroLine={chartPrefs.eqShowZeroLine}
+                    showHWM={eqShowHWM || chartPrefs.eqShowHWM}
+                    xAxis={chartPrefs.eqXAxis}
                   />
                   <div className="flex items-center gap-6 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span className="flex items-center gap-1.5">
