@@ -560,14 +560,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
+    // Prefer building from trades
     const combined = [...btTrades, ...fwdTrades];
-    if (combined.length === 0) return [];
-    let cum = 0;
-    return combined.map((t, i) => {
-      cum += t.pnlR;
-      return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exitTime };
-    });
-  }, [btTrades, fwdTrades]);
+    if (combined.length > 0) {
+      let cum = 0;
+      return combined.map((t, i) => {
+        cum += t.pnlR;
+        return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exitTime };
+      });
+    }
+    // Fallback: use stored equity_curve_data from strategy if trades not loaded
+    const ecd = apiStrategy?.equity_curve_data;
+    if (ecd?.cumulative_r?.length) {
+      return ecd.cumulative_r.map((cr: number, i: number) => ({
+        trade_number: i + 1,
+        cumulative_r: cr,
+        timestamp: ecd.exit_times?.[i] ?? undefined,
+      }));
+    }
+    return [];
+  }, [btTrades, fwdTrades, apiStrategy]);
 
   const equityBoundaryIndex = btTrades.length > 0 ? btTrades.length : null;
 

@@ -170,19 +170,20 @@ function buildKpis(summary: {
   avg_win_rate: number;
 } | null, positionCount: number, monitorRunning: boolean): KpiConfig[] {
   const s = summary;
+  const totalR = s?.total_r ?? 0;
+  const totalTrades = s?.total_trades ?? 0;
   return [
-    { id: 'today-pnl', label: 'Today P&L', value: '--', enabled: true },                   // {{today_pnl}} — needs live P&L endpoint
-    { id: 'pf', label: 'Profit Factor', value: '--', enabled: true },                       // {{profit_factor}} — needs portfolio compute
+    { id: 'active-strategies', label: 'Active Strategies', value: s ? String(s.monitored_count || s.strategy_count) : '--', enabled: true },
+    { id: 'total-strategies', label: 'Total Strategies', value: s ? String(s.strategy_count) : '--', enabled: true },
     { id: 'open-positions', label: 'Open Positions', value: String(positionCount), enabled: true },
-    { id: 'market-regime', label: 'Market Regime', value: '--', enabled: true },             // {{market_regime}} — needs market data endpoint
-    { id: 'win-rate', label: 'Win Rate', value: s ? `${s.avg_win_rate.toFixed(1)}%` : '--', enabled: false },
-    { id: 'last-30d-pnl', label: 'Last 30 Days P&L', value: '--', enabled: false },         // {{30d_pnl}}
-    { id: 'total-pnl', label: 'Total P&L', value: '--', enabled: false },                   // {{total_pnl}}
-    { id: 'max-dd', label: 'Max Drawdown', value: '--', enabled: false },                    // {{max_dd}}
-    { id: 'daily-r', label: 'Avg Daily R', value: s && s.total_trades > 0 ? `${(s.total_r / Math.max(s.total_trades, 1)).toFixed(2)}R` : '--', enabled: false },
-    { id: 'active-strategies', label: 'Active Strategies', value: s ? String(s.strategy_count) : '--', enabled: true },
-    { id: 'alerts-today', label: 'Alerts Today', value: '--', enabled: false },              // {{alerts_today}}
-    { id: 'balance', label: 'Balance', value: '--', enabled: false },                        // {{balance}}
+    { id: 'win-rate', label: 'Win Rate', value: s ? `${s.avg_win_rate.toFixed(1)}%` : '--', enabled: true },
+    { id: 'pf', label: 'Profit Factor', value: s && totalTrades > 0 ? `${((s.avg_win_rate / 100 * 2) / Math.max(1 - s.avg_win_rate / 100, 0.01)).toFixed(2)}` : '--', enabled: true },
+    { id: 'total-r', label: 'Total R', value: s ? `${totalR >= 0 ? '+' : ''}${totalR.toFixed(1)}R` : '--', enabled: true },
+    { id: 'daily-r', label: 'Avg Daily R', value: s && totalTrades > 0 ? `${(totalR / Math.max(totalTrades, 1)).toFixed(2)}R` : '--', enabled: false },
+    { id: 'total-trades', label: 'Total Trades', value: s ? String(totalTrades) : '--', enabled: false },
+    { id: 'market-regime', label: 'Market Regime', value: monitorRunning ? 'Live' : '--', enabled: false },
+    { id: 'alerts-today', label: 'Alerts Today', value: '--', enabled: false },
+    { id: 'balance', label: 'Balance', value: '--', enabled: false },
   ];
 }
 
@@ -511,30 +512,30 @@ function GoalProgress({
 }) {
   if (target <= 0) {
     return (
-      <div className="text-xs text-center py-3" style={{ color: 'var(--text-muted)' }}>No monthly goal set</div>
+      <div className="text-xs text-center py-3" style={{ color: 'var(--text-muted)' }}>Set monthly R target in Settings</div>
     );
   }
-  const pct = Math.min((current / target) * 100, 100);
+  const pct = target > 0 ? Math.max(0, Math.min((current / target) * 100, 150)) : 0;
   const now = new Date();
   const dayOfMonth = now.getDate();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const daysRemaining = daysInMonth - dayOfMonth;
   const onTrack = pct >= (dayOfMonth / daysInMonth) * 100;
-  const dailyNeeded = daysRemaining > 0 ? Math.round((target - current) / daysRemaining) : 0;
+  const dailyNeeded = daysRemaining > 0 ? ((target - current) / daysRemaining) : 0;
 
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Monthly Target</span>
+        <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Monthly R Target</span>
         <span className="text-xs font-mono" style={{ color: onTrack ? 'var(--green)' : 'var(--orange)' }}>
-          {pct.toFixed(0)}%
+          {Math.round(pct)}%
         </span>
       </div>
       <div className="relative h-2.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-input)' }}>
         <div
           className="h-full rounded-full"
           style={{
-            width: `${pct}%`,
+            width: `${Math.min(pct, 100)}%`,
             background: onTrack ? 'var(--green)' : 'var(--orange)',
             animation: 'v7-progress-fill 1s ease-out',
             boxShadow: `0 0 8px ${onTrack ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
@@ -551,10 +552,10 @@ function GoalProgress({
       </div>
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          ${current.toLocaleString()} / ${target.toLocaleString()}
+          {current >= 0 ? '+' : ''}{current.toFixed(1)}R / {target.toFixed(0)}R
         </span>
         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          {onTrack ? 'On track' : `Need $${dailyNeeded}/day`}
+          {onTrack ? 'On track' : `Need ${dailyNeeded.toFixed(1)}R/day`}
         </span>
       </div>
     </div>
@@ -804,14 +805,19 @@ export default function DashboardPage() {
       .slice(0, 10)
       .map(s => {
         const k = s.kpis || {};
-        // {{health_derivation}} — real SD deviation needs backend compute
+        const sigma = (s as any).sigma_fwd ?? (s as any).sigma_alert ?? 0;
+        const rawStatus = (s as any).status || '';
+        const status: 'on_track' | 'outperforming' | 'underperforming' | 'insufficient_data' =
+          rawStatus.includes('Outperform') ? 'outperforming' :
+          rawStatus.includes('Underperform') ? 'underperforming' :
+          rawStatus.includes('Insufficient') ? 'insufficient_data' : 'on_track';
         return {
           id: String(s.id),
           name: s.name || '--',
-          deviationSd: 0,
-          status: 'on_track' as const,
+          deviationSd: typeof sigma === 'number' ? sigma : 0,
+          status,
           alertTrades: k.total_trades ?? 0,
-          expectedR: 0,
+          expectedR: k.daily_r ?? 0,
           actualR: k.total_r ?? 0,
         };
       });
@@ -856,7 +862,11 @@ export default function DashboardPage() {
       change: marketRegimeData?.spy?.change ?? 0,
       changePct: marketRegimeData?.spy?.change_pct ?? 0,
     },
-    qqq: { price: 0, change: 0, changePct: 0 },
+    qqq: {
+      price: (marketRegimeData as any)?.qqq?.price ?? 0,
+      change: (marketRegimeData as any)?.qqq?.change ?? 0,
+      changePct: (marketRegimeData as any)?.qqq?.change_pct ?? 0,
+    },
     breadth: { advancers: 0, decliners: 0, ratio: 0 },
   }), [marketRegimeData]);
 

@@ -267,49 +267,63 @@ def get_dashboard_daily_pnl(user=Depends(get_current_user)):
 
 @router.get("/market-regime")
 def get_market_regime(user=Depends(get_current_user)):
-    """Get market regime indicator from SPY + VIX price data.
-
-    Fetches recent daily bars for SPY and I:VIX (or VIX proxy) from the data
-    loader and derives a simple regime classification.
-    """
+    """Get market regime indicator from SPY + VIX + QQQ price data."""
     try:
         from data_loader import load_market_data
-        import numpy as np
 
-        # Fetch SPY daily bars (20 trading days ~ 1 month)
-        spy_df = load_market_data("SPY", days=30, timeframe="1Day", session="RTH")
-        spy_price = 0.0
-        spy_change = 0.0
-        spy_change_pct = 0.0
+        def _get_latest(symbol, days=30):
+            """Fetch latest price + change for a symbol."""
+            try:
+                df = load_market_data(symbol, days=days, timeframe="1Day", session="RTH")
+                if len(df) == 0:
+                    return {"price": 0, "change": 0, "change_pct": 0}
+                price = round(float(df["close"].iloc[-1]), 2)
+                change = 0.0
+                change_pct = 0.0
+                if len(df) >= 2:
+                    prev = float(df["close"].iloc[-2])
+                    change = round(price - prev, 2)
+                    change_pct = round((change / prev) * 100, 2) if prev else 0
+                return {"price": price, "change": change, "change_pct": change_pct}
+            except Exception:
+                return {"price": 0, "change": 0, "change_pct": 0}
+
+        spy_data = _get_latest("SPY")
+        qqq_data = _get_latest("QQQ")
+
+        # SPY SMA20 for regime detection
         spy_sma20 = 0.0
-
-        if len(spy_df) > 0:
-            spy_price = round(float(spy_df["close"].iloc[-1]), 2)
-            if len(spy_df) >= 2:
-                prev = float(spy_df["close"].iloc[-2])
-                spy_change = round(spy_price - prev, 2)
-                spy_change_pct = round((spy_change / prev) * 100, 2) if prev else 0
+        try:
+            spy_df = load_market_data("SPY", days=30, timeframe="1Day", session="RTH")
             if len(spy_df) >= 20:
                 spy_sma20 = round(float(spy_df["close"].tail(20).mean()), 2)
+        except Exception:
+            pass
 
-        # Try to fetch VIX (Polygon uses I:VIX for indices, fallback to VIXY ETF)
+        # VIX: VIXY is an ETF proxy (not the index itself — price ~$15-80 range)
+        # I:VIX is Polygon's index ticker but may not be available on all plans
+        # If value looks like an ETF price (< 100), use it directly
+        # If value looks like an index reading (> 100), it's probably wrong data
         vix_value = 0.0
-        for vix_sym in ["I:VIX", "VIXY", "VXX"]:
+        for vix_sym in ["VIXY", "VXX", "UVXY"]:
             try:
                 vix_df = load_market_data(vix_sym, days=5, timeframe="1Day", session="RTH")
                 if len(vix_df) > 0:
-                    vix_value = round(float(vix_df["close"].iloc[-1]), 2)
+                    raw = float(vix_df["close"].iloc[-1])
+                    # VIXY/VXX track VIX futures, prices typically in 10-80 range
+                    vix_value = round(raw, 2)
                     break
             except Exception:
                 continue
 
-        # Derive regime: simple classification based on SPY vs SMA20 + VIX level
+        # Derive regime
         regime = "Neutral"
-        if spy_sma20 > 0 and spy_price > spy_sma20 * 1.01 and vix_value < 20:
+        spy_price = spy_data["price"]
+        if spy_sma20 > 0 and spy_price > spy_sma20 * 1.01 and vix_value < 25:
             regime = "Bull"
-        elif spy_sma20 > 0 and spy_price < spy_sma20 * 0.99 and vix_value > 25:
+        elif spy_sma20 > 0 and spy_price < spy_sma20 * 0.99 and vix_value > 35:
             regime = "Bear"
-        elif vix_value > 30:
+        elif vix_value > 40:
             regime = "High Volatility"
         elif spy_sma20 > 0 and spy_price > spy_sma20:
             regime = "Bull"
@@ -319,8 +333,9 @@ def get_market_regime(user=Depends(get_current_user)):
         return {
             "regime": regime,
             "vix": vix_value,
-            "spy": {"price": spy_price, "change": spy_change, "change_pct": spy_change_pct},
+            "spy": spy_data,
+            "qqq": qqq_data,
         }
     except Exception as e:
         logger.exception("Error computing market regime: %s", e)
-        return {"regime": "--", "vix": 0, "spy": {"price": 0, "change": 0, "change_pct": 0}}
+        return {"regime": "--", "vix": 0, "spy": {"price": 0, "change": 0, "change_pct": 0}, "qqq": {"price": 0, "change": 0, "change_pct": 0}}
