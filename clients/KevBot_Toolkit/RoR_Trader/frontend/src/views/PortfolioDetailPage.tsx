@@ -797,7 +797,9 @@ function StrategiesTab() {
 }
 
 // ---- 4. Prop Firm Check ----
-function PropFirmCheckTab() {
+function PropFirmCheckTab({ portfolioId }: { portfolioId?: number }) {
+  const { data: mcData } = usePortfolioCompute(portfolioId ?? null, ['monte_carlo']);
+  const mc = mcData?.monte_carlo || null;
   const complianceRules: any[] = [];  // {{compliance_rules}} — needs compute endpoint
   const requirementSetData = EMPTY_REQ_SET;
   const passingCount = complianceRules.filter((r: any) => r.passing).length;
@@ -913,25 +915,43 @@ function PropFirmCheckTab() {
       {/* Worst Case Analysis */}
       <Card>
         <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Worst Case Analysis (Monte Carlo)</h3>
-        <ChartPlaceholder label="Monte Carlo drawdown projection: 1000 simulations, 95th/99th percentile lines, current trajectory" height={300} />
-        <div className="flex items-center gap-6 mt-3">
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>95th Percentile DD</p>
-            <p className="text-sm font-semibold" style={{ color: 'var(--orange)' }}>-4.2%</p>
+        {!mc ? (
+          <div className="flex items-center justify-center py-8" style={{ color: 'var(--text-muted)' }}>
+            <span className="text-xs">Monte Carlo data loading or not available — click Re-Analyze to compute</span>
           </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>99th Percentile DD</p>
-            <p className="text-sm font-semibold" style={{ color: 'var(--red)' }}>-6.8%</p>
-          </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Probability of Ruin</p>
-            <p className="text-sm font-semibold" style={{ color: 'var(--green)' }}>0.3%</p>
-          </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Expected Max DD</p>
-            <p className="text-sm font-semibold">-3.1%</p>
-          </div>
-        </div>
+        ) : (
+          <>
+            <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+              {mc.n_simulations?.toLocaleString() ?? '--'} simulations ({mc.shuffle_mode ?? '--'} shuffle)
+            </div>
+            <div className="flex items-center gap-6 mt-3">
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>95th Percentile DD</p>
+                <p className="text-sm font-semibold" style={{ color: 'var(--orange)' }}>
+                  {mc.p95_max_dd != null ? `${mc.p95_max_dd.toFixed(1)}%` : '--'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Median Max DD</p>
+                <p className="text-sm font-semibold" style={{ color: 'var(--red)' }}>
+                  {mc.median_max_dd != null ? `${mc.median_max_dd.toFixed(1)}%` : '--'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Probability of Ruin</p>
+                <p className="text-sm font-semibold" style={{ color: mc.bust_probability > 5 ? 'var(--red)' : 'var(--green)' }}>
+                  {mc.bust_probability != null ? `${mc.bust_probability.toFixed(1)}%` : '--'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Expected Worst Day</p>
+                <p className="text-sm font-semibold">
+                  {mc.expected_worst_day != null ? `${mc.expected_worst_day.toFixed(1)}%` : '--'}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );
@@ -1408,7 +1428,7 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
             {tab === 'Live Dashboard' && <LiveDashboardTab />}
             {tab === 'Performance' && <PerformanceTab />}
             {tab === 'Strategies' && <StrategiesTab />}
-            {tab === 'Prop Firm Check' && <PropFirmCheckTab />}
+            {tab === 'Prop Firm Check' && <PropFirmCheckTab portfolioId={portfolioId} />}
             {tab === 'Account' && <AccountTab />}
             {tab === 'Webhooks' && <WebhooksTab />}
           </div>
