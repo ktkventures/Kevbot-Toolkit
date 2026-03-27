@@ -350,13 +350,38 @@ function mapApiGroupToTfPack(
       ? Object.entries(apiTemplate.outputs).map(([code, description]) => ({ code, description }))
       : []);
 
+  // Merge stored exec_config overrides from parameters._exec_config
+  const storedExec = group.parameters?._exec_config as Record<string, any> | undefined;
+  function mergeExecVariants(base: Record<'C' | 'L' | 'LC' | 'CC', ExecConfig>): Record<'C' | 'L' | 'LC' | 'CC', ExecConfig> {
+    if (!storedExec) return base;
+    const merged = { ...base };
+    for (const et of ['C', 'L', 'LC', 'CC'] as const) {
+      const s = storedExec[et];
+      if (s) {
+        merged[et] = {
+          ...merged[et],
+          enabled: s.enabled ?? merged[et].enabled,
+          referenceBar: s.reference_bar ?? merged[et].referenceBar,
+          orderType: s.order_type ?? merged[et].orderType,
+          ...(s.hold_seconds !== undefined && { holdSeconds: s.hold_seconds }),
+          ...(s.confirm_bar_offset !== undefined && { confirmBarOffset: s.confirm_bar_offset }),
+          ...(s.bail_action !== undefined && { bailAction: s.bail_action }),
+          ...(s.limit_price_source !== undefined && { limitPriceSource: s.limit_price_source }),
+          ...(s.limit_duration_seconds !== undefined && { limitDurationSeconds: s.limit_duration_seconds }),
+        };
+      }
+    }
+    return merged;
+  }
+
   const triggers: PackTrigger[] = localTemplate?.triggers
-    ?? (apiTemplate?.triggers || []).map((t) => ({
+    ? localTemplate.triggers.map(t => ({ ...t, execVariants: mergeExecVariants(t.execVariants) }))
+    : (apiTemplate?.triggers || []).map((t) => ({
       id: t.id,
       name: t.name,
       sentiment: (t.direction === 'LONG' ? 'bullish' : t.direction === 'SHORT' ? 'bearish' : 'neutral') as 'bullish' | 'bearish' | 'neutral',
       description: t.name,
-      execVariants: defaultExecVariants(),
+      execVariants: mergeExecVariants(defaultExecVariants()),
     }));
 
   return {
@@ -383,6 +408,24 @@ function tfPackToDto(pack: TfPack): ConfluenceGroupDTO {
   const parameters: Record<string, unknown> = {};
   for (const p of pack.params) {
     parameters[p.key] = p.value;
+  }
+
+  // Store exec variant config so it persists with the pack
+  if (pack.triggers.length > 0) {
+    const execConfig: Record<string, any> = {};
+    for (const [et, cfg] of Object.entries(pack.triggers[0].execVariants)) {
+      execConfig[et] = {
+        enabled: cfg.enabled,
+        reference_bar: cfg.referenceBar,
+        order_type: cfg.orderType,
+        ...(cfg.holdSeconds !== undefined && { hold_seconds: cfg.holdSeconds }),
+        ...(cfg.confirmBarOffset !== undefined && { confirm_bar_offset: cfg.confirmBarOffset }),
+        ...(cfg.bailAction !== undefined && { bail_action: cfg.bailAction }),
+        ...(cfg.limitPriceSource !== undefined && { limit_price_source: cfg.limitPriceSource }),
+        ...(cfg.limitDurationSeconds !== undefined && { limit_duration_seconds: cfg.limitDurationSeconds }),
+      };
+    }
+    parameters._exec_config = execConfig;
   }
 
   const colors: Record<string, string> = {};
@@ -1309,7 +1352,7 @@ const EXEC_TYPE_LABELS: Record<string, { label: string; description: string }> =
   CC: { label: 'Close-Close', description: 'Bar close entry, next bar close confirmation. Most conservative two-stage.' },
 };
 
-function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
+function StartingTriggerParamsTab({ pack, onPackChange }: { pack: TfPack; onPackChange?: (updated: TfPack) => void }) {
   const configFor = (et: 'C' | 'L' | 'LC' | 'CC') =>
     pack.triggers[0]?.execVariants[et] || { enabled: true, referenceBar: 0, orderType: 'market' as const };
   const isDisabled = pack.isSaved;
@@ -1317,6 +1360,18 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
     background: 'var(--bg-input)', border: '1px solid var(--border)',
     color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
   });
+
+  function updateExec(et: 'C' | 'L' | 'LC' | 'CC', field: string, value: any) {
+    if (isDisabled || !onPackChange || !pack.triggers[0]) return;
+    const updatedTriggers = pack.triggers.map(t => ({
+      ...t,
+      execVariants: {
+        ...t.execVariants,
+        [et]: { ...t.execVariants[et], [field]: value },
+      },
+    }));
+    onPackChange({ ...pack, triggers: updatedTriggers });
+  }
 
   const cConfig = configFor('C');
   const lConfig = configFor('L');
@@ -1363,21 +1418,21 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Enabled</span>
-                <Toggle enabled={cConfig.enabled} onChange={() => {}} />
+                <Toggle enabled={cConfig.enabled} onChange={() => updateExec('C', 'enabled', !cConfig.enabled)} />
               </label>
             </div>
             {cConfig.enabled && (
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
                 <div>
                   <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Reference Bar</label>
-                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={cConfig.referenceBar} disabled={isDisabled}>
+                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={cConfig.referenceBar} disabled={isDisabled} onChange={e => updateExec('C', 'referenceBar', Number(e.target.value))}>
                     <option value={0}>Current bar (0)</option>
                     <option value={-1}>Previous bar (-1)</option>
                   </select>
                 </div>
                 <div>
                   <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Order Type</label>
-                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={cConfig.orderType} disabled={isDisabled}>
+                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={cConfig.orderType} disabled={isDisabled} onChange={e => updateExec('C', 'orderType', e.target.value)}>
                     <option value="market">Market</option>
                     <option value="limit">Limit</option>
                   </select>
@@ -1396,28 +1451,28 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Enabled</span>
-                <Toggle enabled={lConfig.enabled} onChange={() => {}} />
+                <Toggle enabled={lConfig.enabled} onChange={() => updateExec('L', 'enabled', !lConfig.enabled)} />
               </label>
             </div>
             {lConfig.enabled && (
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
                 <div>
                   <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Reference Bar</label>
-                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lConfig.referenceBar} disabled={isDisabled}>
+                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lConfig.referenceBar} disabled={isDisabled} onChange={e => updateExec('L', 'referenceBar', Number(e.target.value))}>
                     <option value={-1}>Previous bar (-1)</option>
                     <option value={0}>Current bar (0)</option>
                   </select>
                 </div>
                 <div>
                   <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Order Type</label>
-                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lConfig.orderType} disabled={isDisabled}>
+                  <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lConfig.orderType} disabled={isDisabled} onChange={e => updateExec('L', 'orderType', e.target.value)}>
                     <option value="market">Market</option>
                     <option value="limit">Limit</option>
                   </select>
                 </div>
                 <div>
                   <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Hold Seconds</label>
-                  <input type="number" className="w-full px-2 py-1.5 rounded text-xs font-mono" style={selectStyle(isDisabled)} value={lConfig.holdSeconds ?? 0} min={0} disabled={isDisabled} />
+                  <input type="number" className="w-full px-2 py-1.5 rounded text-xs font-mono" style={selectStyle(isDisabled)} value={lConfig.holdSeconds ?? 0} min={0} disabled={isDisabled} onChange={e => updateExec('L', 'holdSeconds', Number(e.target.value))} />
                 </div>
               </div>
             )}
@@ -1433,7 +1488,7 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Enabled</span>
-                <Toggle enabled={lcConfig.enabled} onChange={() => {}} />
+                <Toggle enabled={lcConfig.enabled} onChange={() => updateExec('LC', 'enabled', !lcConfig.enabled)} />
               </label>
             </div>
             {lcConfig.enabled && (
@@ -1458,14 +1513,14 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
                   <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
                     <div>
                       <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Confirm Bar Offset</label>
-                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lcConfig.confirmBarOffset ?? 0} disabled={isDisabled}>
+                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lcConfig.confirmBarOffset ?? 0} disabled={isDisabled} onChange={e => updateExec('LC', 'confirmBarOffset', Number(e.target.value))}>
                         <option value={0}>Same bar (0)</option>
                         <option value={1}>Next bar (+1)</option>
                       </select>
                     </div>
                     <div>
                       <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Bail Action (on non-confirm)</label>
-                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lcConfig.bailAction ?? 'exit_market'} disabled={isDisabled}>
+                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={lcConfig.bailAction ?? 'exit_market'} disabled={isDisabled} onChange={e => updateExec('LC', 'bailAction', e.target.value)}>
                         <option value="exit_market">Immediate market exit</option>
                         <option value="exit_limit">Immediate limit exit</option>
                         <option value="exit_limit_breakeven">Limit exit at breakeven</option>
@@ -1487,7 +1542,7 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Enabled</span>
-                <Toggle enabled={ccConfig.enabled} onChange={() => {}} />
+                <Toggle enabled={ccConfig.enabled} onChange={() => updateExec('CC', 'enabled', !ccConfig.enabled)} />
               </label>
             </div>
             {ccConfig.enabled && (
@@ -1517,7 +1572,7 @@ function StartingTriggerParamsTab({ pack }: { pack: TfPack }) {
                     </div>
                     <div>
                       <label className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>Bail Action (on non-confirm)</label>
-                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={ccConfig.bailAction ?? 'exit_market'} disabled={isDisabled}>
+                      <select className="w-full px-2 py-1.5 rounded text-xs" style={selectStyle(isDisabled)} value={ccConfig.bailAction ?? 'exit_market'} disabled={isDisabled} onChange={e => updateExec('CC', 'bailAction', e.target.value)}>
                         <option value="exit_market">Immediate market exit</option>
                         <option value="exit_limit">Immediate limit exit</option>
                         <option value="exit_limit_breakeven">Limit exit at breakeven</option>
@@ -1774,7 +1829,7 @@ export default function TfConfluencePage() {
           {(tab) => (
             <div>
               {tab === 'Parameters' && <ParametersTab pack={activePack} />}
-              {tab === 'Trigger Parameters' && <StartingTriggerParamsTab pack={activePack} />}
+              {tab === 'Trigger Parameters' && <StartingTriggerParamsTab pack={activePack} onPackChange={(updated) => { if (isDraft) setDraftPack(updated); }} />}
               {tab === 'Plot Settings' && <PlotSettingsTab pack={activePack} />}
               {tab === 'Outputs & Triggers' && <OutputsTriggersTab pack={activePack} />}
               {tab === 'Preview' && <PreviewTab pack={activePack} />}
