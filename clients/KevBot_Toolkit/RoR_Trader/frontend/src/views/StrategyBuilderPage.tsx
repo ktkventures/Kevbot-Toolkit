@@ -17,6 +17,9 @@ import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
 import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
+import EquityCurve from '@/charts/EquityCurve';
+import TradingChart from '@/charts/TradingChart';
+import type { CandleData, TradeMarker } from '@/charts/TradingChart';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import { useRunBacktest } from '@/hooks/queries/useBacktest';
@@ -2058,10 +2061,21 @@ export default function StrategyBuilderPage() {
                   {(tab) =>
                     tab === 'Equity Curve' ? (
                       <div className="flex-1">
-                        <ChartPlaceholder
-                          label="Equity curve -- cumulative R over time with high-water mark"
-                          height={500}
-                        />
+                        {backtestResult?.equityCurve && backtestResult.equityCurve.length > 0 ? (
+                          <EquityCurve
+                            data={backtestResult.equityCurve.map((pt: any, i: number) => ({
+                              trade_number: pt.trade_number ?? i + 1,
+                              cumulative_r: pt.cumulative_r ?? 0,
+                              timestamp: pt.timestamp,
+                            }))}
+                            height={500}
+                            showZeroLine
+                            showHWM
+                            xAxis="trade"
+                          />
+                        ) : (
+                          <ChartPlaceholder label="Run backtest to see equity curve" height={500} />
+                        )}
                         <div className="mt-2 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
                           <span>
                             <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: '#2196F3' }} />
@@ -2077,13 +2091,30 @@ export default function StrategyBuilderPage() {
                       <div>
                         <div className="mb-2 flex items-center gap-2">
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            {EMPTY_TRADES.length} trades on {symbol} ({direction})
+                            {backtestResult?.trades?.length ?? 0} trades on {symbol} ({direction})
                           </span>
                         </div>
-                        <ChartPlaceholder
-                          label="OHLC candlestick chart with indicator overlays + trade entry/exit markers"
-                          height={500}
-                        />
+                        {backtestResult?.chartData && backtestResult.chartData.length > 0 ? (
+                          <TradingChart
+                            ohlcv={backtestResult.chartData.map((c: any) => ({
+                              time: c.timestamp || c.time || '',
+                              open: c.open ?? 0,
+                              high: c.high ?? 0,
+                              low: c.low ?? 0,
+                              close: c.close ?? 0,
+                              volume: c.volume,
+                            }))}
+                            markers={(backtestResult.trades || []).flatMap((t: any): TradeMarker[] => {
+                              const markers: TradeMarker[] = [];
+                              if (t.entryTime) markers.push({ time: t.entryTime, position: direction === 'LONG' ? 'belowBar' : 'aboveBar', shape: direction === 'LONG' ? 'arrowUp' : 'arrowDown', color: 'var(--green)', text: 'Entry' });
+                              if (t.exitTime) markers.push({ time: t.exitTime, position: direction === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.rMultiple >= 0 ? 'var(--green)' : 'var(--red)', text: `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple.toFixed(1)}R` });
+                              return markers;
+                            })}
+                            height={500}
+                          />
+                        ) : (
+                          <ChartPlaceholder label="Run backtest to see price chart with trade markers" height={500} />
+                        )}
                       </div>
                     )
                   }
