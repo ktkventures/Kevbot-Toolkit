@@ -11,6 +11,8 @@ import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 import TradingChart from '@/charts/TradingChart';
+import ConfluenceHeatmap from '@/charts/ConfluenceHeatmap';
+import OscillatorPane from '@/charts/OscillatorPane';
 import type { TradeMarker } from '@/charts/TradingChart';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
@@ -1364,62 +1366,82 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </label>
                 </div>
 
-                {/* OHLC Chart with indicator overlays */}
-                <Card className="mb-4">
-                  {(() => {
-                    // Prefer chart-data (has indicators) over plain bars
-                    const chartSrc = chartDataResp?.chart_data;
-                    const ohlcvData = chartSrc && chartSrc.length > 0
-                      ? chartSrc.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
-                      : barsData
-                        ? barsData.map(b => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
-                        : [];
+                {/* ---- Multi-Pane Chart: Heatmap + Price + Oscillators ---- */}
+                {(() => {
+                  const chartSrc = chartDataResp?.chart_data;
+                  const ohlcvData = chartSrc && chartSrc.length > 0
+                    ? chartSrc.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                    : barsData
+                      ? barsData.map(b => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                      : [];
 
-                    // Build indicator overlays from chart-data response
-                    const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
-                    const indicatorOverlays = (chartDataResp?.indicators || []).map((name: string, i: number) => ({
-                      name,
-                      data: (chartDataResp?.chart_data || [])
-                        .filter((d: any) => d[name] != null)
-                        .map((d: any) => ({ time: d.timestamp, value: d[name] })),
-                      color: INDICATOR_COLORS[i % INDICATOR_COLORS.length],
-                      lineWidth: 1,
-                    }));
+                  // OVERLAY indicators only — exclude oscillators
+                  const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
+                  const overlayNames = (chartDataResp as any)?.overlay_indicators || [];
+                  const indicatorOverlays = overlayNames.map((name: string, i: number) => ({
+                    name,
+                    data: (chartSrc || []).filter((d: any) => d[name] != null).map((d: any) => ({ time: d.timestamp, value: d[name] })),
+                    color: INDICATOR_COLORS[i % INDICATOR_COLORS.length],
+                    lineWidth: 1,
+                  }));
 
-                    // Build trade markers with exit-reason-aware colors
-                    const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
-                      const m: TradeMarker[] = [];
-                      const dir = strategy.direction;
-                      if (t.entryTime && t.entryTime !== '--') {
-                        m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'E' : '' });
-                      }
-                      if (t.exitTime && t.exitTime !== '--') {
-                        const reason = t.exitReason || '';
-                        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                        else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                        else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
-                        m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '' });
-                      }
-                      return m;
-                    });
-
-                    if (ohlcvData.length === 0) {
-                      return <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} />;
+                  // Trade markers
+                  const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
+                    const m: TradeMarker[] = [];
+                    const dir = strategy.direction;
+                    if (t.entryTime && t.entryTime !== '--') {
+                      m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'E' : '' });
                     }
+                    if (t.exitTime && t.exitTime !== '--') {
+                      const reason = t.exitReason || '';
+                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                      else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
+                      m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '' });
+                    }
+                    return m;
+                  });
 
-                    return (
-                      <>
-                        {chartDataLoading && !chartDataResp && (
-                          <div className="text-xs px-3 py-1.5 mb-2 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                            Loading indicators...
-                          </div>
-                        )}
+                  // Oscillator columns
+                  const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
+
+                  // Heatmap conditions
+                  const heatmapConds: { label: string; column: string; neededState: string }[] =
+                    ((chartDataResp as any)?.heatmap_conditions || [])
+                      .filter((c: any) => c.has_data)
+                      .map((c: any) => ({ label: c.label, column: c.column, neededState: c.needed_state }));
+
+                  if (ohlcvData.length === 0) {
+                    return <Card className="mb-4"><ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} /></Card>;
+                  }
+
+                  return (
+                    <>
+                      {chartDataLoading && !chartDataResp && (
+                        <div className="text-xs px-3 py-1.5 mb-2 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                          Loading indicators & heatmap data...
+                        </div>
+                      )}
+
+                      {/* Pane 1: Confluence Heatmap */}
+                      {showConditions && heatmapConds.length > 0 && (
+                        <Card className="mb-1 py-2">
+                          <p className="text-[10px] font-medium mb-1 px-2" style={{ color: 'var(--text-muted)' }}>Confluence Conditions</p>
+                          <ConfluenceHeatmap
+                            bars={chartSrc || []}
+                            conditions={heatmapConds}
+                          />
+                        </Card>
+                      )}
+
+                      {/* Pane 2: Price Chart with overlay indicators only */}
+                      <Card className="mb-1">
                         <TradingChart
                           ohlcv={ohlcvData}
                           overlays={indicatorOverlays}
                           markers={tradeMarkers}
-                          height={400}
+                          height={350}
                           upColor={chartPrefs.candleUp}
                           downColor={chartPrefs.candleDown}
                           upBorderColor={chartPrefs.candleUpBorder}
@@ -1428,31 +1450,44 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           timeVisible
                           secondsVisible
                         />
-                      </>
-                    );
-                  })()}
-                  {/* Indicator legend */}
-                  {chartDataResp?.indicators && chartDataResp.indicators.length > 0 && (
-                    <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                      {chartDataResp.indicators.map((name: string, i: number) => {
-                        const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
-                        return (
-                          <span key={name} className="flex items-center gap-1">
-                            <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
-                            {name.replace(/_/g, ' ')}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    <span><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
-                    <span><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
-                    <span><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
-                    <span><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
-                    <span><span style={{ color: chartPrefs.exitBarCountColor }}>&#9679;</span> Bar count</span>
-                  </div>
-                </Card>
+                        {/* Overlay legend */}
+                        {overlayNames.length > 0 && (
+                          <div className="flex flex-wrap gap-3 mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {overlayNames.map((name: string, i: number) => (
+                              <span key={name} className="flex items-center gap-1">
+                                <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
+                                {name.replace(/_/g, ' ')}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex gap-4 mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <span><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
+                          <span><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
+                          <span><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
+                          <span><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
+                          <span><span style={{ color: chartPrefs.exitBarCountColor }}>&#9679;</span> Bar count</span>
+                        </div>
+                      </Card>
+
+                      {/* Pane 3: Oscillator panes (MACD, RVOL, etc.) */}
+                      {oscNames.length > 0 && chartSrc && (
+                        <Card className="mb-4">
+                          <OscillatorPane
+                            bars={chartSrc}
+                            series={oscNames.map((col: string) => ({
+                              column: col,
+                              label: col.replace(/_/g, ' '),
+                              color: col.includes('signal') ? '#FF9800' : col.includes('hist') ? '#9C27B0' : '#2196F3',
+                              type: col.includes('hist') ? 'histogram' as const : 'line' as const,
+                            }))}
+                            height={150}
+                          />
+                        </Card>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* Position Status */}
                 <Card className="mb-4">

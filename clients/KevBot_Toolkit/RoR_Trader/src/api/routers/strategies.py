@@ -288,14 +288,20 @@ def get_strategy_chart_data(
     days: int = Query(None, description="Override data_days"),
     user=Depends(get_current_user),
 ):
-    """Get OHLCV bars with strategy-relevant indicator columns for chart rendering.
+    """Get OHLCV bars with strategy-relevant indicators, classified by pane type.
 
-    Only includes indicators from confluence groups actually used by this strategy
-    (matching the Streamlit _get_strategy_relevant_groups logic). This is slow
-    (~10-30s for 1Min strategies) — frontend should cache the result.
+    Returns:
+    - chart_data: OHLCV + indicator values per bar
+    - overlay_indicators: indicators to plot ON the price chart (EMA, VWAP, UT Bot)
+    - oscillator_indicators: indicators for separate panes below (MACD, RVOL)
+    - heatmap_conditions: confluence conditions with per-bar met/unmet states
     """
     strat = _get_or_404(strategy_id, user)
     import services as svc
+    import pandas as pd
+
+    OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
+    OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
     try:
         df = svc.prepare_data_with_indicators(
@@ -303,20 +309,16 @@ def get_strategy_chart_data(
             days=days or strat.get('data_days', 30),
             timeframe=strat.get('timeframe', '1Min'),
         )
-
         if len(df) == 0:
-            return {"chart_data": [], "indicators": []}
+            return {"chart_data": [], "overlay_indicators": [], "oscillator_indicators": [], "heatmap_conditions": []}
 
-        # ---- Filter to strategy-relevant indicators only ----
-        # Replicate _get_strategy_relevant_groups() from Streamlit app.py
-        from confluence_groups import get_enabled_groups, get_template, TEMPLATES
+        from confluence_groups import get_enabled_groups, get_template
 
         entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
-        exit_conf_id = strat.get('exit_trigger_confluence_id') or ''
         exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
         confluence_records = list(strat.get('confluence', []))
 
-        # Extract interpreter keys from confluence records (format: "1M-MACD_LINE-M>S+")
+        # Extract interpreter keys from confluence records
         confluence_interpreters = set()
         for record in confluence_records:
             if record.startswith("GEN-"):
@@ -325,57 +327,109 @@ def get_strategy_chart_data(
             if len(parts) >= 2:
                 confluence_interpreters.add(parts[1])
 
-        # Find relevant groups
-        relevant_indicator_cols = []
+        overlay_cols = []
+        oscillator_cols = []
+
         for group in get_enabled_groups():
             gid_prefix = group.id + "_"
-
-            # Check if group owns the entry/exit trigger
             is_relevant = (
                 entry_conf_id.startswith(gid_prefix)
-                or exit_conf_id.startswith(gid_prefix)
                 or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
             )
-
-            # Check if group's interpreter appears in confluence conditions
             if not is_relevant:
                 template = get_template(group.base_template)
                 if template:
-                    for interp_key in template.get("interpreters", []):
-                        if interp_key in confluence_interpreters:
+                    for ik in template.get("interpreters", []):
+                        if ik in confluence_interpreters:
                             is_relevant = True
                             break
+            if not is_relevant:
+                continue
 
-            if is_relevant:
-                template = get_template(group.base_template)
-                if template:
-                    for col in template.get("indicator_columns", []):
-                        # Resolve parameterized column names
-                        if col in ("ema_short", "ema_mid", "ema_long"):
-                            params = group.parameters
-                            if col == "ema_short":
-                                resolved = f"ema_{params.get('short_period', 9)}"
-                            elif col == "ema_mid":
-                                resolved = f"ema_{params.get('mid_period', 21)}"
-                            else:
-                                resolved = f"ema_{params.get('long_period', 200)}"
-                            if resolved in df.columns:
-                                relevant_indicator_cols.append(resolved)
-                        elif col in df.columns:
-                            relevant_indicator_cols.append(col)
+            template = get_template(group.base_template)
+            if not template:
+                continue
 
-        # Deduplicate while preserving order
-        seen = set()
-        unique_cols = []
-        for c in relevant_indicator_cols:
-            if c not in seen:
-                seen.add(c)
-                unique_cols.append(c)
+            raw_cols = template.get("indicator_columns", [])
+            resolved = []
+            for col in raw_cols:
+                if col in ("ema_short", "ema_mid", "ema_long"):
+                    p = group.parameters
+                    resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                                    f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                                    f"ema_{p.get('long_period', 200)}"
+                    if resolved_name in df.columns:
+                        resolved.append(resolved_name)
+                elif col in df.columns:
+                    resolved.append(col)
 
+            if group.base_template in OVERLAY_TEMPLATES:
+                overlay_cols.extend(resolved)
+            elif group.base_template in OSCILLATOR_TEMPLATES:
+                oscillator_cols.extend(resolved)
+            else:
+                dt = template.get("display_type", "overlay")
+                if dt == "oscillator":
+                    oscillator_cols.extend(resolved)
+                else:
+                    overlay_cols.extend(resolved)
+
+        # Deduplicate
+        overlay_cols = list(dict.fromkeys(overlay_cols))
+        oscillator_cols = list(dict.fromkeys(oscillator_cols))
+        all_indicator_cols = overlay_cols + oscillator_cols
+
+        # Build heatmap condition data
+        from data_loader import get_tf_label
+        primary_tf = get_tf_label(strat.get('timeframe', '1Min')).lower()
+        all_conditions = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
+
+        heatmap_conditions = []
+        for record in all_conditions:
+            parts = record.split('-', 2)
+            if len(parts) < 3:
+                continue
+            rec_tf, interp_key, needed_state = parts
+            is_general = rec_tf == 'GEN'
+            is_cross_tf = not is_general and rec_tf.lower() != primary_tf
+
+            if is_general:
+                col_name = f"GP_{interp_key}"
+            elif is_cross_tf:
+                col_name = f"{interp_key}__{rec_tf.lower()}"
+            else:
+                col_name = interp_key
+
+            heatmap_conditions.append({
+                "label": record,
+                "column": col_name,
+                "needed_state": needed_state,
+                "has_data": col_name in df.columns,
+            })
+
+        # Serialize: OHLCV + indicators + interpreter state columns for heatmap
+        state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
         from api.services.backtest_service import _serialize_chart_data
+
+        # For state columns, serialize separately (they're categorical, not numeric)
+        chart_data = _serialize_chart_data(df, all_indicator_cols)
+
+        # Add interpreter state values to each bar for heatmap
+        if state_cols:
+            reset_df = df.reset_index()
+            time_col = reset_df.columns[0]
+            for i, row in enumerate(chart_data):
+                if i < len(reset_df):
+                    r = reset_df.iloc[i]
+                    for sc in state_cols:
+                        val = r.get(sc)
+                        row[f"_state_{sc}"] = str(val) if pd.notna(val) else None
+
         return {
-            "chart_data": _serialize_chart_data(df, unique_cols),
-            "indicators": unique_cols,
+            "chart_data": chart_data,
+            "overlay_indicators": overlay_cols,
+            "oscillator_indicators": oscillator_cols,
+            "heatmap_conditions": heatmap_conditions,
         }
     except Exception as e:
         logger.exception("Failed to compute chart data for strategy %s: %s", strategy_id, e)
