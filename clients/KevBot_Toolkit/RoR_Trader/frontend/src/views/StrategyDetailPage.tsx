@@ -523,16 +523,50 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
-  const recentAlerts = (alerts || EMPTY_ALERTS).map((a: any) => {
+  // Map raw alerts to event-level format (for Alerts tab)
+  const recentAlertEvents = (alerts || EMPTY_ALERTS).map((a: any) => {
     const d = a.data || {};
     return {
       time: a.timestamp || a.time || '--',
       type: (a.type || '').toLowerCase().includes('entry') ? 'ENTRY' : 'EXIT',
       trigger: d.trigger || a.trigger || '--',
       price: d.price ?? a.price ?? null,
+      stopPrice: d.stop_price ?? null,
+      entryPrice: d.entry_price ?? null,
       status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
     };
   });
+
+  // Pair entry/exit alerts into trade rows (for Alert History table on Chart & Trades tab)
+  const recentAlerts = (() => {
+    const entries: any[] = [];
+    const paired: any[] = [];
+    for (const evt of recentAlertEvents) {
+      if (evt.type === 'ENTRY') {
+        entries.push(evt);
+      } else if (evt.type === 'EXIT' && entries.length > 0) {
+        const entry = entries.pop();
+        const entryP = entry?.price ?? 0;
+        const exitP = evt.price ?? 0;
+        const stopP = entry?.stopPrice ?? 0;
+        const rMult = stopP && entryP && exitP ? (exitP - entryP) / Math.abs(entryP - stopP) : null;
+        paired.push({
+          entryTime: entry?.time || '--',
+          exitTime: evt.time || '--',
+          entryPrice: entryP,
+          exitPrice: exitP,
+          r: rMult != null ? Math.round(rMult * 100) / 100 : null,
+          result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : '--',
+          exitReason: evt.trigger || '--',
+        });
+      }
+    }
+    // Any unmatched entries show as open positions
+    for (const entry of entries) {
+      paired.push({ entryTime: entry.time || '--', exitTime: null, entryPrice: entry.price, exitPrice: null, r: null, result: 'Open', exitReason: null });
+    }
+    return paired;
+  })();
   const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
   const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
@@ -1552,30 +1586,48 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {strategy.confluence.length === 0 ? (
-                          <tr>
-                            <td colSpan={4} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
-                              No confluence conditions configured
-                            </td>
-                          </tr>
-                        ) : strategy.confluence.map((c, i) => (
-                          <tr key={i}>
-                            <td style={tdStyle}>{c}</td>
-                            <td style={tdStyle}>
-                              <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
-                                {'{{current_state}}'}
-                              </span>
-                            </td>
-                            <td style={tdStyle}>
-                              <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{'{{needed_state}}'}</span>
-                            </td>
-                            <td style={tdStyle}>
-                              <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                {'{{met_status}}'}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
+                        {(() => {
+                          const heatmapConds = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+                          const lastBar = chartDataResp?.chart_data?.length ? chartDataResp.chart_data[chartDataResp.chart_data.length - 1] : null;
+                          const allConds = heatmapConds.length > 0 ? heatmapConds : strategy.confluence.map((c: string) => {
+                            const parts = c.split('-', 3);
+                            return parts.length >= 3 ? { label: c, column: parts[1], needed_state: parts[2], has_data: false } : null;
+                          }).filter(Boolean);
+
+                          if (allConds.length === 0) {
+                            return (
+                              <tr>
+                                <td colSpan={4} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                  No confluence conditions configured
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          return allConds.map((cond: any, i: number) => {
+                            const currentState = lastBar ? (lastBar[`_state_${cond.column}`] ?? '--') : '--';
+                            const neededState = cond.needed_state;
+                            const isMet = currentState === neededState;
+                            return (
+                              <tr key={i}>
+                                <td style={tdStyle}>{cond.label}</td>
+                                <td style={tdStyle}>
+                                  <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
+                                    {currentState}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{neededState}</span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{ color: isMet ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {isMet ? 'Met' : 'Not met'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
                       </tbody>
                     </table>
                   </div>

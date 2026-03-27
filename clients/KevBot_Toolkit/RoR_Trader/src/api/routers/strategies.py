@@ -304,10 +304,17 @@ def get_strategy_chart_data(
     OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
     try:
+        # Extract required secondary timeframes from confluence records
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels if get_tf_from_label(lbl)))
+
         df = svc.prepare_data_with_indicators(
             strat['symbol'],
             days=days or strat.get('data_days', 30),
             timeframe=strat.get('timeframe', '1Min'),
+            session=strat.get('trading_session', 'RTH'),
+            secondary_tfs=sec_tfs,
         )
         if len(df) == 0:
             return {"chart_data": [], "overlay_indicators": [], "oscillator_indicators": [], "heatmap_conditions": []}
