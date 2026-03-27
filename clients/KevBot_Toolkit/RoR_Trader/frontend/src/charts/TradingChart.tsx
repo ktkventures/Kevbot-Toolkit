@@ -44,6 +44,13 @@ interface TradingChartProps {
  * Renders OHLCV data with optional indicator overlays and trade markers.
  * Uses imperative API via useRef + useEffect for full control.
  */
+
+/** Convert ISO 8601 string or any date-like value to Unix seconds for LWC. */
+function toUnixTime(t: string | number): number {
+  if (typeof t === 'number') return t;
+  return Math.floor(new Date(t).getTime() / 1000);
+}
+
 export default function TradingChart({
   ohlcv,
   overlays = [],
@@ -106,15 +113,15 @@ export default function TradingChart({
     });
 
     const candleData: CandlestickData[] = ohlcv
-      .filter((c) => c.time && c.open != null && c.high != null && c.low != null && c.close != null
-        && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close))
       .map((c) => ({
-        time: c.time as Time,
+        time: toUnixTime(c.time) as Time,
         open: Number(c.open),
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
-      }));
+      }))
+      .filter((c) => isFinite(c.time as number) && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close))
+      .sort((a, b) => (a.time as number) - (b.time as number));
     if (candleData.length === 0) { chart.remove(); return; }
     candleSeries.setData(candleData);
     candleSeriesRef.current = candleSeries;
@@ -126,12 +133,14 @@ export default function TradingChart({
         const lwcMarkers = markers
           .filter((m) => m.time)
           .map((m) => ({
-            time: m.time as Time,
+            time: toUnixTime(m.time) as Time,
             position: m.position,
             shape: m.shape,
             color: m.color,
             text: m.text,
-          }));
+          }))
+          .filter((m) => isFinite(m.time as number))
+          .sort((a, b) => (a.time as number) - (b.time as number));
         if (typeof (candleSeries as any).setMarkers === 'function') {
           (candleSeries as any).setMarkers(lwcMarkers);
         }
@@ -150,10 +159,13 @@ export default function TradingChart({
         priceLineVisible: false,
         lastValueVisible: false,
       });
-      const lineData: LineData[] = overlay.data.map((d) => ({
-        time: d.time as Time,
-        value: d.value,
-      }));
+      const lineData: LineData[] = overlay.data
+        .map((d) => ({
+          time: toUnixTime(d.time) as Time,
+          value: d.value,
+        }))
+        .filter((d) => isFinite(d.time as number) && isFinite(d.value))
+        .sort((a, b) => (a.time as number) - (b.time as number));
       lineSeries.setData(lineData);
       overlayRefs.push(lineSeries);
     }

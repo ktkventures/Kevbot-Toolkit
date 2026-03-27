@@ -217,11 +217,15 @@ def get_strategy_trades(
         from api.services.backtest_service import _serialize_trades
         return _serialize_trades(trades_df)
 
-    # Slow path: full computation
-    import services as svc
-    trades_df = svc.get_strategy_trades(strat)
-    from api.services.backtest_service import _serialize_trades
-    return _serialize_trades(trades_df)
+    # Slow path: full computation (can be slow — 10-30s for 1Min strategies)
+    try:
+        import services as svc
+        trades_df = svc.get_strategy_trades(strat)
+        from api.services.backtest_service import _serialize_trades
+        return _serialize_trades(trades_df)
+    except Exception as e:
+        logger.exception("Failed to compute trades for strategy %s: %s", strategy_id, e)
+        raise HTTPException(status_code=504, detail=f"Trade computation timed out or failed: {str(e)[:200]}")
 
 
 @router.get("/{strategy_id}/forward-test")
