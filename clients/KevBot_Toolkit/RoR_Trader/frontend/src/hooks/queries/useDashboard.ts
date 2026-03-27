@@ -80,3 +80,18 @@ export function useDashboardDailyPnl() {
     refetchInterval: 60000,
   });
 }
+
+export interface MarketRegimeData {
+  regime: string;
+  vix: number;
+  spy: { price: number; change: number; change_pct: number };
+}
+
+export function useDashboardMarketRegime() {
+  return useQuery({
+    queryKey: ['dashboard-market-regime'],
+    queryFn: () => apiFetch<MarketRegimeData>('/api/dashboard/market-regime'),
+    refetchInterval: 300000, // 5 min refresh
+    staleTime: 120000,
+  });
+}

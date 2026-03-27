@@ -263,3 +263,64 @@ def get_dashboard_daily_pnl(user=Depends(get_current_user)):
     except Exception as e:
         logger.exception("Error computing dashboard daily P&L: %s", e)
         return {"days": []}
+
+
+@router.get("/market-regime")
+def get_market_regime(user=Depends(get_current_user)):
+    """Get market regime indicator from SPY + VIX price data.
+
+    Fetches recent daily bars for SPY and I:VIX (or VIX proxy) from the data
+    loader and derives a simple regime classification.
+    """
+    try:
+        from data_loader import load_market_data
+        import numpy as np
+
+        # Fetch SPY daily bars (20 trading days ~ 1 month)
+        spy_df = load_market_data("SPY", days=30, timeframe="1Day", session="RTH")
+        spy_price = 0.0
+        spy_change = 0.0
+        spy_change_pct = 0.0
+        spy_sma20 = 0.0
+
+        if len(spy_df) > 0:
+            spy_price = round(float(spy_df["close"].iloc[-1]), 2)
+            if len(spy_df) >= 2:
+                prev = float(spy_df["close"].iloc[-2])
+                spy_change = round(spy_price - prev, 2)
+                spy_change_pct = round((spy_change / prev) * 100, 2) if prev else 0
+            if len(spy_df) >= 20:
+                spy_sma20 = round(float(spy_df["close"].tail(20).mean()), 2)
+
+        # Try to fetch VIX (Polygon uses I:VIX for indices, fallback to VIXY ETF)
+        vix_value = 0.0
+        for vix_sym in ["I:VIX", "VIXY", "VXX"]:
+            try:
+                vix_df = load_market_data(vix_sym, days=5, timeframe="1Day", session="RTH")
+                if len(vix_df) > 0:
+                    vix_value = round(float(vix_df["close"].iloc[-1]), 2)
+                    break
+            except Exception:
+                continue
+
+        # Derive regime: simple classification based on SPY vs SMA20 + VIX level
+        regime = "Neutral"
+        if spy_sma20 > 0 and spy_price > spy_sma20 * 1.01 and vix_value < 20:
+            regime = "Bull"
+        elif spy_sma20 > 0 and spy_price < spy_sma20 * 0.99 and vix_value > 25:
+            regime = "Bear"
+        elif vix_value > 30:
+            regime = "High Volatility"
+        elif spy_sma20 > 0 and spy_price > spy_sma20:
+            regime = "Bull"
+        elif spy_sma20 > 0 and spy_price < spy_sma20:
+            regime = "Bear"
+
+        return {
+            "regime": regime,
+            "vix": vix_value,
+            "spy": {"price": spy_price, "change": spy_change, "change_pct": spy_change_pct},
+        }
+    except Exception as e:
+        logger.exception("Error computing market regime: %s", e)
+        return {"regime": "--", "vix": 0, "spy": {"price": 0, "change": 0, "change_pct": 0}}

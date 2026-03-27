@@ -14,7 +14,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
-import { useDashboardSummary, useDashboardEquityCurve, useDashboardDailyPnl } from '@/hooks/queries/useDashboard';
+import { useDashboardSummary, useDashboardEquityCurve, useDashboardDailyPnl, useDashboardMarketRegime } from '@/hooks/queries/useDashboard';
 import { useSettings } from '@/hooks/queries/useSettings';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useMonitorStatus, useEngineState } from '@/hooks/queries/useAlerts';
@@ -724,6 +724,7 @@ export default function DashboardPage() {
   const { data: equityCurveData } = useDashboardEquityCurve();
   const { data: dailyPnlData } = useDashboardDailyPnl();
   const { data: userSettings } = useSettings();
+  const { data: marketRegimeData } = useDashboardMarketRegime();
 
   // =========================================================================
   // UI state
@@ -835,8 +836,18 @@ export default function DashboardPage() {
   // Activity feed — empty array, needs activity/alert log endpoint {{activity}}
   const activityFeed: ActivityItem[] = [];
 
-  // Market data — {{market_regime}} — not wired yet
-  const marketData = { regime: '--' as string, vix: 0, spy: { price: 0, change: 0, changePct: 0 }, qqq: { price: 0, change: 0, changePct: 0 }, breadth: { advancers: 0, decliners: 0, ratio: 0 } };
+  // Market data — wired to /api/dashboard/market-regime
+  const marketData = useMemo(() => ({
+    regime: marketRegimeData?.regime ?? '--',
+    vix: marketRegimeData?.vix ?? 0,
+    spy: {
+      price: marketRegimeData?.spy?.price ?? 0,
+      change: marketRegimeData?.spy?.change ?? 0,
+      changePct: marketRegimeData?.spy?.change_pct ?? 0,
+    },
+    qqq: { price: 0, change: 0, changePct: 0 },
+    breadth: { advancers: 0, decliners: 0, ratio: 0 },
+  }), [marketRegimeData]);
 
   // Equity curve — wired to /api/dashboard/equity-curve
   const equityData: number[] = useMemo(() => {
