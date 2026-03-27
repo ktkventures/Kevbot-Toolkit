@@ -376,6 +376,37 @@ function mapApiGroupToTfPack(
 }
 
 /* ========================================================================
+   V5 TfPack → ConfluenceGroupDTO (reverse mapper for save)
+   ======================================================================== */
+
+function tfPackToDto(pack: TfPack): ConfluenceGroupDTO {
+  const parameters: Record<string, unknown> = {};
+  for (const p of pack.params) {
+    parameters[p.key] = p.value;
+  }
+
+  const colors: Record<string, string> = {};
+  for (const ps of pack.plotSettings) {
+    colors[ps.key] = ps.value;
+  }
+
+  return {
+    id: pack.id,
+    base_template: pack.templateKey,
+    version: pack.version,
+    description: '',
+    enabled: pack.enabled,
+    is_default: pack.isDefault,
+    parameters,
+    plot_settings: {
+      colors,
+      line_width: 2,
+      visible: true,
+    },
+  };
+}
+
+/* ========================================================================
    Style Constants
    ======================================================================== */
 
@@ -976,7 +1007,8 @@ indicator("${pack.name}", overlay=true)
    Detail View — Danger Zone Tab
    ======================================================================== */
 
-function DangerZoneTab({ pack }: { pack: TfPack }) {
+function DangerZoneTab({ pack, onRename, onDelete }: { pack: TfPack; onRename?: (newVersion: string) => void; onDelete?: () => void }) {
+  const [renameValue, setRenameValue] = useState(pack.version);
   return (
     <Card>
       <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--red)' }}>Danger Zone</h3>
@@ -992,7 +1024,8 @@ function DangerZoneTab({ pack }: { pack: TfPack }) {
                 color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-primary)',
                 cursor: pack.isDefault ? 'not-allowed' : 'text',
               }}
-              defaultValue={pack.version}
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
               disabled={pack.isDefault}
             />
             <button
@@ -1004,6 +1037,7 @@ function DangerZoneTab({ pack }: { pack: TfPack }) {
                 cursor: pack.isDefault ? 'not-allowed' : 'pointer',
               }}
               disabled={pack.isDefault}
+              onClick={() => onRename?.(renameValue)}
             >
               Rename
             </button>
@@ -1020,6 +1054,7 @@ function DangerZoneTab({ pack }: { pack: TfPack }) {
               cursor: pack.isDefault ? 'not-allowed' : 'pointer',
             }}
             disabled={pack.isDefault}
+            onClick={() => onDelete?.()}
           >
             Delete Variation
           </button>
@@ -1535,10 +1570,25 @@ export default function TfConfluencePage() {
   const isLoading = groupsLoading || templatesLoading;
   const error = groupsError;
 
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  // Persist the full packs array to the API
+  function persistPacks(updatedPacks: TfPack[]) {
+    setSaveStatus('saving');
+    saveMutation.mutate(updatedPacks.map(tfPackToDto), {
+      onSuccess: () => { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); },
+      onError: () => { setSaveStatus('error'); setTimeout(() => setSaveStatus('idle'), 3000); },
+    });
+  }
+
   const enabledCount = packs.filter((p) => p.enabled).length;
 
   function togglePack(id: string) {
-    setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
+    setPacks((prev) => {
+      const updated = prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p));
+      persistPacks(updated);
+      return updated;
+    });
   }
 
   function toggleTemplate(key: string) {
@@ -1612,9 +1662,25 @@ export default function TfConfluencePage() {
   function handleSaveVariation() {
     if (!draftPack || !draftPack.version.trim()) return;
     const saved: TfPack = { ...draftPack, isSaved: true, id: `${draftPack.templateKey}-${draftPack.version.toLowerCase().replace(/\s+/g, '-')}` };
-    setPacks((prev) => [...prev, saved]);
+    const updatedPacks = [...packs, saved];
+    setPacks(updatedPacks);
     setDraftPack(null);
     setDetailPack(saved);
+    persistPacks(updatedPacks);
+  }
+
+  function handleDeleteVariation(packId: string) {
+    const updatedPacks = packs.filter((p) => p.id !== packId);
+    setPacks(updatedPacks);
+    setDetailPack(null);
+    persistPacks(updatedPacks);
+  }
+
+  function handleRenameVariation(packId: string, newVersion: string) {
+    const updatedPacks = packs.map((p) => (p.id === packId ? { ...p, version: newVersion } : p));
+    setPacks(updatedPacks);
+    setDetailPack((prev) => prev && prev.id === packId ? { ...prev, version: newVersion } : prev);
+    persistPacks(updatedPacks);
   }
 
   function handleDiscardDraft() {
@@ -1713,7 +1779,7 @@ export default function TfConfluencePage() {
               {tab === 'Outputs & Triggers' && <OutputsTriggersTab pack={activePack} />}
               {tab === 'Preview' && <PreviewTab pack={activePack} />}
               {tab === 'Code' && <CodeTab pack={activePack} />}
-              {tab === 'Danger Zone' && <DangerZoneTab pack={activePack} />}
+              {tab === 'Danger Zone' && <DangerZoneTab pack={activePack} onRename={(v) => handleRenameVariation(activePack.id, v)} onDelete={() => handleDeleteVariation(activePack.id)} />}
             </div>
           )}
         </TabBar>
@@ -1768,6 +1834,9 @@ export default function TfConfluencePage() {
       <div className="flex items-center gap-4 mb-5">
         <p className="text-sm flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
           {packs.length} packs, {enabledCount} enabled
+          {saveStatus === 'saving' && <span className="ml-2 text-xs" style={{ color: 'var(--accent)' }}>Saving...</span>}
+          {saveStatus === 'saved' && <span className="ml-2 text-xs" style={{ color: 'var(--green)' }}>Saved</span>}
+          {saveStatus === 'error' && <span className="ml-2 text-xs" style={{ color: 'var(--red)' }}>Save failed</span>}
         </p>
         <div className="flex-1 relative">
           <svg

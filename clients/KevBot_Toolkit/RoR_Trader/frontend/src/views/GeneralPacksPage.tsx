@@ -213,6 +213,26 @@ function mapApiGeneralPackToV5(
 }
 
 /* ========================================================================
+   V5 GeneralPack → GeneralPackDTO (reverse mapper for save)
+   ======================================================================== */
+
+function generalPackToDto(pack: GeneralPack): GeneralPackDTO {
+  const parameters: Record<string, unknown> = {};
+  for (const p of pack.params) {
+    parameters[p.key] = p.value;
+  }
+  return {
+    id: pack.id,
+    base_template: pack.templateKey,
+    version: pack.version,
+    description: '',
+    enabled: pack.enabled,
+    is_default: pack.isDefault,
+    parameters,
+  };
+}
+
+/* ========================================================================
    Style Constants
    ======================================================================== */
 
@@ -517,7 +537,8 @@ ${pack.params.map((p) => `        ${p.key}: ${p.label} (${p.type})`).join('\n')}
    Detail View — Danger Zone Tab
    ======================================================================== */
 
-function DangerZoneTab({ pack }: { pack: GeneralPack }) {
+function DangerZoneTab({ pack, onRename, onDelete }: { pack: GeneralPack; onRename?: (newVersion: string) => void; onDelete?: () => void }) {
+  const [renameValue, setRenameValue] = useState(pack.version);
   return (
     <Card>
       <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--red)' }}>Danger Zone</h3>
@@ -528,16 +549,17 @@ function DangerZoneTab({ pack }: { pack: GeneralPack }) {
             <input
               className="px-3 py-2 rounded-lg text-sm flex-1"
               style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-primary)', cursor: pack.isDefault ? 'not-allowed' : 'text' }}
-              defaultValue={pack.version}
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
               disabled={pack.isDefault}
             />
-            <button className="px-4 py-2 rounded-lg text-sm" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--bg-card)', border: '1px solid var(--border)', color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-secondary)', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault}>Rename</button>
+            <button className="px-4 py-2 rounded-lg text-sm" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--bg-card)', border: '1px solid var(--border)', color: pack.isDefault ? 'var(--text-muted)' : 'var(--text-secondary)', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault} onClick={() => onRename?.(renameValue)}>Rename</button>
           </div>
           {pack.isDefault && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Default packs cannot be renamed.</p>}
         </div>
         <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
           <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>Delete this variation permanently.</p>
-          <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--red)', color: pack.isDefault ? 'var(--text-muted)' : 'white', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault}>Delete Variation</button>
+          <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: pack.isDefault ? 'var(--bg-input)' : 'var(--red)', color: pack.isDefault ? 'var(--text-muted)' : 'white', cursor: pack.isDefault ? 'not-allowed' : 'pointer' }} disabled={pack.isDefault} onClick={() => onDelete?.()}>Delete Variation</button>
           {pack.isDefault && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Default packs cannot be deleted.</p>}
         </div>
       </div>
@@ -651,10 +673,24 @@ export default function GeneralPacksPage() {
   const isLoading = packsLoading || templatesLoading;
   const error = packsError;
 
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  function persistPacks(updatedPacks: GeneralPack[]) {
+    setSaveStatus('saving');
+    saveMutation.mutate(updatedPacks.map(generalPackToDto), {
+      onSuccess: () => { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); },
+      onError: () => { setSaveStatus('error'); setTimeout(() => setSaveStatus('idle'), 3000); },
+    });
+  }
+
   const enabledCount = packs.filter((p) => p.enabled).length;
 
   function togglePack(id: string) {
-    setPacks((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
+    setPacks((prev) => {
+      const updated = prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p));
+      persistPacks(updated);
+      return updated;
+    });
   }
 
   function toggleTemplate(key: string) {
@@ -729,9 +765,25 @@ export default function GeneralPacksPage() {
   function handleSaveVariation() {
     if (!draftPack || !draftPack.version.trim()) return;
     const saved: GeneralPack = { ...draftPack, isSaved: true, id: `${draftPack.templateKey}-${draftPack.version.toLowerCase().replace(/\s+/g, '-')}` };
-    setPacks((prev) => [...prev, saved]);
+    const updatedPacks = [...packs, saved];
+    setPacks(updatedPacks);
     setDraftPack(null);
     setDetailPack(saved);
+    persistPacks(updatedPacks);
+  }
+
+  function handleDeleteVariation(packId: string) {
+    const updatedPacks = packs.filter((p) => p.id !== packId);
+    setPacks(updatedPacks);
+    setDetailPack(null);
+    persistPacks(updatedPacks);
+  }
+
+  function handleRenameVariation(packId: string, newVersion: string) {
+    const updatedPacks = packs.map((p) => (p.id === packId ? { ...p, version: newVersion } : p));
+    setPacks(updatedPacks);
+    setDetailPack((prev) => prev && prev.id === packId ? { ...prev, version: newVersion } : prev);
+    persistPacks(updatedPacks);
   }
 
   /* ---- Detail View ---- */
@@ -788,7 +840,7 @@ export default function GeneralPacksPage() {
               {tab === 'Outputs & Triggers' && <OutputsTriggersTab pack={activePack} />}
               {tab === 'Preview' && <PreviewTab pack={activePack} />}
               {tab === 'Code' && <CodeTab pack={activePack} />}
-              {tab === 'Danger Zone' && <DangerZoneTab pack={activePack} />}
+              {tab === 'Danger Zone' && <DangerZoneTab pack={activePack} onRename={(v) => handleRenameVariation(activePack.id, v)} onDelete={() => handleDeleteVariation(activePack.id)} />}
             </div>
           )}
         </TabBar>
@@ -811,7 +863,12 @@ export default function GeneralPacksPage() {
       />
 
       <div className="flex items-center gap-4 mb-5">
-        <p className="text-sm flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{packs.length} packs, {enabledCount} enabled</p>
+        <p className="text-sm flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+          {packs.length} packs, {enabledCount} enabled
+          {saveStatus === 'saving' && <span className="ml-2 text-xs" style={{ color: 'var(--accent)' }}>Saving...</span>}
+          {saveStatus === 'saved' && <span className="ml-2 text-xs" style={{ color: 'var(--green)' }}>Saved</span>}
+          {saveStatus === 'error' && <span className="ml-2 text-xs" style={{ color: 'var(--red)' }}>Save failed</span>}
+        </p>
         <div className="flex-1 relative">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
             <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
