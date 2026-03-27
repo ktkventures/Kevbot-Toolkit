@@ -10,6 +10,9 @@ import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
+import TradingChart from '@/charts/TradingChart';
+import type { TradeMarker } from '@/charts/TradingChart';
+import { useBars } from '@/hooks/queries/useMarketData';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 
@@ -428,6 +431,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const dupMut = useDuplicateStrategy();
   const refreshMut = useRefreshStrategy();
   const chartPrefs = useChartPrefs();
+
+  // Price chart data — fetch bars for the strategy's symbol/timeframe
+  const stratSymbol = apiStrategy?.symbol ?? null;
+  const stratTimeframe = apiStrategy?.timeframe ?? '1Min';
+  const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
 
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
@@ -1336,10 +1344,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                 {/* OHLC Chart */}
                 <Card className="mb-4">
-                  <ChartPlaceholder
-                    label="OHLC with indicators, trade markers, confluence heatmap"
-                    height={400}
-                  />
+                  {barsData && barsData.length > 0 ? (
+                    <TradingChart
+                      ohlcv={barsData.map(b => ({
+                        time: b.timestamp,
+                        open: b.open,
+                        high: b.high,
+                        low: b.low,
+                        close: b.close,
+                        volume: b.volume,
+                      }))}
+                      markers={[...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
+                        const m: TradeMarker[] = [];
+                        const dir = strategy.direction;
+                        if (t.entryTime && t.entryTime !== '--') m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: 'E' });
+                        if (t.exitTime && t.exitTime !== '--') m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor, text: `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` });
+                        return m;
+                      })}
+                      height={400}
+                    />
+                  ) : (
+                    <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} />
+                  )}
                   <div className="flex gap-4 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span><span style={{ color: 'var(--green)' }}>+</span> Entry (long)</span>
                     <span><span style={{ color: 'var(--green)' }}>x</span> Exit (win)</span>
