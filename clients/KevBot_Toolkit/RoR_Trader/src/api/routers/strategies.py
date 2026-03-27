@@ -279,6 +279,57 @@ def get_strategy_kpis(strategy_id: int, user=Depends(get_current_user)):
 
 
 # =============================================================================
+# CHART DATA (OHLCV + indicator overlays)
+# =============================================================================
+
+@router.get("/{strategy_id}/chart-data")
+def get_strategy_chart_data(
+    strategy_id: int,
+    days: int = Query(None, description="Override data_days"),
+    user=Depends(get_current_user),
+):
+    """Get OHLCV bars with computed indicator columns for chart rendering.
+
+    Runs prepare_data_with_indicators() for the strategy's symbol/timeframe,
+    then serializes OHLCV + all numeric indicator columns. This is slow
+    (~10-30s for 1Min strategies) — frontend should cache the result.
+    """
+    strat = _get_or_404(strategy_id, user)
+    import services as svc
+    import numpy as np
+
+    try:
+        df = svc.prepare_data_with_indicators(
+            strat['symbol'],
+            days=days or strat.get('data_days', 30),
+            timeframe=strat.get('timeframe', '1Min'),
+        )
+
+        if len(df) == 0:
+            return {"chart_data": [], "indicators": []}
+
+        # Auto-detect numeric indicator columns (exclude OHLCV, internals, triggers)
+        skip = {'open', 'high', 'low', 'close', 'volume', 'vwap_volume', 'typical_price'}
+        indicator_cols = [
+            c for c in df.columns
+            if c not in skip
+            and not c.startswith('trig_')
+            and not c.startswith('_')
+            and not c.isupper()  # Skip interpreter state columns (EMA_STACK, MACD_LINE etc.)
+            and df[c].dtype in (np.float64, np.float32, np.int64)
+        ]
+
+        from api.services.backtest_service import _serialize_chart_data
+        return {
+            "chart_data": _serialize_chart_data(df, indicator_cols),
+            "indicators": indicator_cols,
+        }
+    except Exception as e:
+        logger.exception("Failed to compute chart data for strategy %s: %s", strategy_id, e)
+        raise HTTPException(status_code=504, detail=f"Chart data computation failed: {str(e)[:200]}")
+
+
+# =============================================================================
 # TRIGGER ANALYSIS
 # =============================================================================
 

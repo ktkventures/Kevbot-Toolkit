@@ -6,7 +6,7 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData } from '@/hooks/queries/useStrategies';
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -432,10 +432,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const refreshMut = useRefreshStrategy();
   const chartPrefs = useChartPrefs();
 
-  // Price chart data — fetch bars for the strategy's symbol/timeframe
+  // Price chart data — fast OHLCV from bars endpoint, slow indicators from chart-data
   const stratSymbol = apiStrategy?.symbol ?? null;
   const stratTimeframe = apiStrategy?.timeframe ?? '1Min';
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
+  const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
   // Map API data to V5 shape
   const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
@@ -1354,36 +1355,93 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </label>
                 </div>
 
-                {/* OHLC Chart */}
+                {/* OHLC Chart with indicator overlays */}
                 <Card className="mb-4">
-                  {barsData && barsData.length > 0 ? (
-                    <TradingChart
-                      ohlcv={barsData.map(b => ({
-                        time: b.timestamp,
-                        open: b.open,
-                        high: b.high,
-                        low: b.low,
-                        close: b.close,
-                        volume: b.volume,
-                      }))}
-                      markers={[...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
-                        const m: TradeMarker[] = [];
-                        const dir = strategy.direction;
-                        if (t.entryTime && t.entryTime !== '--') m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: 'E' });
-                        if (t.exitTime && t.exitTime !== '--') m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor, text: `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` });
-                        return m;
+                  {(() => {
+                    // Prefer chart-data (has indicators) over plain bars
+                    const chartSrc = chartDataResp?.chart_data;
+                    const ohlcvData = chartSrc && chartSrc.length > 0
+                      ? chartSrc.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                      : barsData
+                        ? barsData.map(b => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                        : [];
+
+                    // Build indicator overlays from chart-data response
+                    const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
+                    const indicatorOverlays = (chartDataResp?.indicators || []).map((name: string, i: number) => ({
+                      name,
+                      data: (chartDataResp?.chart_data || [])
+                        .filter((d: any) => d[name] != null)
+                        .map((d: any) => ({ time: d.timestamp, value: d[name] })),
+                      color: INDICATOR_COLORS[i % INDICATOR_COLORS.length],
+                      lineWidth: 1,
+                    }));
+
+                    // Build trade markers with exit-reason-aware colors
+                    const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
+                      const m: TradeMarker[] = [];
+                      const dir = strategy.direction;
+                      if (t.entryTime && t.entryTime !== '--') {
+                        m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'E' : '' });
+                      }
+                      if (t.exitTime && t.exitTime !== '--') {
+                        const reason = t.exitReason || '';
+                        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                        else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                        else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
+                        m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '' });
+                      }
+                      return m;
+                    });
+
+                    if (ohlcvData.length === 0) {
+                      return <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} />;
+                    }
+
+                    return (
+                      <>
+                        {chartDataLoading && !chartDataResp && (
+                          <div className="text-xs px-3 py-1.5 mb-2 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                            Loading indicators...
+                          </div>
+                        )}
+                        <TradingChart
+                          ohlcv={ohlcvData}
+                          overlays={indicatorOverlays}
+                          markers={tradeMarkers}
+                          height={400}
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          upBorderColor={chartPrefs.candleUpBorder}
+                          gridLines={chartPrefs.gridLines}
+                          rightOffset={chartPrefs.rightOffset}
+                          timeVisible
+                          secondsVisible
+                        />
+                      </>
+                    );
+                  })()}
+                  {/* Indicator legend */}
+                  {chartDataResp?.indicators && chartDataResp.indicators.length > 0 && (
+                    <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {chartDataResp.indicators.map((name: string, i: number) => {
+                        const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
+                        return (
+                          <span key={name} className="flex items-center gap-1">
+                            <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
+                            {name.replace(/_/g, ' ')}
+                          </span>
+                        );
                       })}
-                      height={400}
-                    />
-                  ) : (
-                    <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} />
+                    </div>
                   )}
-                  <div className="flex gap-4 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    <span><span style={{ color: 'var(--green)' }}>+</span> Entry (long)</span>
-                    <span><span style={{ color: 'var(--green)' }}>x</span> Exit (win)</span>
-                    <span><span style={{ color: 'var(--red)' }}>x</span> Exit (loss)</span>
-                    <span><span style={{ color: 'var(--orange)' }}>x</span> Exit (unconfirmed)</span>
-                    <span><span style={{ color: '#009688' }}>x</span> Exit (bar count)</span>
+                  <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                    <span><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
+                    <span><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
+                    <span><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
+                    <span><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
+                    <span><span style={{ color: chartPrefs.exitBarCountColor }}>&#9679;</span> Bar count</span>
                   </div>
                 </Card>
 

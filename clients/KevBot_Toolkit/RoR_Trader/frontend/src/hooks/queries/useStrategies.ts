@@ -118,6 +118,21 @@ export interface TriggerAnalysis {
   trade_distribution: { exit_reason: string; wins: number; losses: number }[];
 }
 
+export interface ChartDataResponse {
+  chart_data: Record<string, any>[];
+  indicators: string[];
+}
+
+export function useStrategyChartData(id: number | null) {
+  return useQuery({
+    queryKey: ['strategy-chart-data', id],
+    queryFn: () => apiFetch<ChartDataResponse>(`/api/strategies/${id}/chart-data`),
+    enabled: id !== null,
+    staleTime: 300000, // 5 min cache — this is a slow endpoint
+    retry: 1,
+  });
+}
+
 export function useTriggerAnalysis(id: number | null) {
   return useQuery({
     queryKey: ['trigger-analysis', id],

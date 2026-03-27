@@ -36,14 +36,15 @@ interface TradingChartProps {
   overlays?: OverlaySeries[];
   markers?: TradeMarker[];
   height?: number;
+  // Display preferences
+  upColor?: string;
+  downColor?: string;
+  upBorderColor?: string;
+  gridLines?: boolean;
+  rightOffset?: number;
+  timeVisible?: boolean;
+  secondsVisible?: boolean;
 }
-
-/**
- * TradingView lightweight-charts candlestick chart.
- *
- * Renders OHLCV data with optional indicator overlays and trade markers.
- * Uses imperative API via useRef + useEffect for full control.
- */
 
 /** Convert ISO 8601 string or any date-like value to Unix seconds for LWC. */
 function toUnixTime(t: string | number): number {
@@ -56,13 +57,20 @@ export default function TradingChart({
   overlays = [],
   markers = [],
   height = 400,
+  upColor,
+  downColor,
+  upBorderColor,
+  gridLines = true,
+  rightOffset = 3,
+  timeVisible = true,
+  secondsVisible = true,
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<typeof CandlestickSeries> | null>(null);
   const overlaySeriesRefs = useRef<ISeriesApi<typeof LineSeries>[]>([]);
 
-  // Get theme colors from CSS variables
+  // Get theme colors from CSS variables (fallback when no explicit colors passed)
   const getThemeColors = useCallback(() => {
     if (typeof window === 'undefined') return {
       bg: '#1E1E1E', text: '#DDD', grid: '#2B2B2B', border: '#333',
@@ -83,8 +91,10 @@ export default function TradingChart({
     if (!containerRef.current || ohlcv.length === 0) return;
 
     const colors = getThemeColors();
+    const up = upColor || colors.up;
+    const down = downColor || colors.down;
+    const borderUp = upBorderColor || up;
 
-    // Create chart
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height,
@@ -92,24 +102,32 @@ export default function TradingChart({
         background: { color: 'transparent' },
         textColor: colors.text,
       },
-      grid: {
+      grid: gridLines ? {
         vertLines: { color: colors.grid, style: 1 },
         horzLines: { color: colors.grid, style: 1 },
+      } : {
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
       crosshair: { mode: 0 },
       rightPriceScale: { borderColor: colors.border },
-      timeScale: { borderColor: colors.border },
+      timeScale: {
+        borderColor: colors.border,
+        timeVisible,
+        secondsVisible,
+        rightOffset,
+      },
     });
     chartRef.current = chart;
 
-    // Add candlestick series (v5 API: addSeries with series type)
+    // Candlestick series with user-configurable colors
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: colors.up,
-      downColor: colors.down,
-      borderUpColor: colors.up,
-      borderDownColor: colors.down,
-      wickUpColor: colors.up,
-      wickDownColor: colors.down,
+      upColor: up,
+      downColor: down,
+      borderUpColor: borderUp,
+      borderDownColor: down,
+      wickUpColor: borderUp,
+      wickDownColor: down,
     });
 
     const candleData: CandlestickData[] = ohlcv
@@ -126,8 +144,7 @@ export default function TradingChart({
     candleSeries.setData(candleData);
     candleSeriesRef.current = candleSeries;
 
-    // Markers: LWC v5 removed setMarkers() from series API.
-    // Use try-catch as defensive fallback for any version differences.
+    // Markers
     if (markers.length > 0) {
       try {
         const lwcMarkers = markers
@@ -149,8 +166,8 @@ export default function TradingChart({
       }
     }
 
-    // Add overlay line series
-    const overlayRefs: ISeriesApi<'Line'>[] = [];
+    // Overlay line series (indicators)
+    const overlayRefs: ISeriesApi<typeof LineSeries>[] = [];
     for (const overlay of overlays) {
       const lineSeries = chart.addSeries(LineSeries, {
         color: overlay.color,
@@ -171,10 +188,8 @@ export default function TradingChart({
     }
     overlaySeriesRefs.current = overlayRefs;
 
-    // Fit content
     chart.timeScale().fitContent();
 
-    // Resize handler
     const handleResize = () => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth });
@@ -189,7 +204,7 @@ export default function TradingChart({
       candleSeriesRef.current = null;
       overlaySeriesRefs.current = [];
     };
-  }, [ohlcv, overlays, markers, height, getThemeColors]);
+  }, [ohlcv, overlays, markers, height, getThemeColors, upColor, downColor, upBorderColor, gridLines, rightOffset, timeVisible, secondsVisible]);
 
   if (ohlcv.length === 0) {
     return (
