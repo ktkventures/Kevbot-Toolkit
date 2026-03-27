@@ -524,15 +524,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
   // Map raw alerts to event-level format (for Alerts tab)
+  // Map raw alerts — handle both flattened (from _row_to_alert) and nested (data JSONB) formats
   const recentAlertEvents = (alerts || EMPTY_ALERTS).map((a: any) => {
     const d = a.data || {};
     return {
       time: a.timestamp || a.time || '--',
       type: (a.type || '').toLowerCase().includes('entry') ? 'ENTRY' : 'EXIT',
-      trigger: d.trigger || a.trigger || '--',
-      price: d.price ?? a.price ?? null,
-      stopPrice: d.stop_price ?? null,
-      entryPrice: d.entry_price ?? null,
+      trigger: a.trigger || d.trigger || '--',
+      price: a.price ?? d.price ?? null,
+      stopPrice: a.stop_price ?? d.stop_price ?? a.entry_stop_price ?? d.entry_stop_price ?? null,
+      entryPrice: a.entry_price ?? d.entry_price ?? null,
       status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
     };
   });
@@ -541,31 +542,37 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const recentAlerts = (() => {
     const entries: any[] = [];
     const paired: any[] = [];
-    for (const evt of recentAlertEvents) {
+    // Sort chronologically (oldest first) for proper pairing
+    const sorted = [...recentAlertEvents].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    for (const evt of sorted) {
       if (evt.type === 'ENTRY') {
         entries.push(evt);
       } else if (evt.type === 'EXIT' && entries.length > 0) {
-        const entry = entries.pop();
+        const entry = entries.shift(); // FIFO: match oldest unmatched entry
         const entryP = entry?.price ?? 0;
         const exitP = evt.price ?? 0;
-        const stopP = entry?.stopPrice ?? 0;
-        const rMult = stopP && entryP && exitP ? (exitP - entryP) / Math.abs(entryP - stopP) : null;
+        const stopP = entry?.stopPrice;
+        // Compute R-multiple if we have stop price, otherwise use raw P&L
+        let rMult: number | null = null;
+        if (stopP != null && stopP !== 0 && entryP && exitP) {
+          rMult = (exitP - entryP) / Math.abs(entryP - stopP);
+        }
         paired.push({
           entryTime: entry?.time || '--',
           exitTime: evt.time || '--',
           entryPrice: entryP,
           exitPrice: exitP,
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
-          result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : '--',
+          result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
           exitReason: evt.trigger || '--',
         });
       }
     }
-    // Any unmatched entries show as open positions
     for (const entry of entries) {
       paired.push({ entryTime: entry.time || '--', exitTime: null, entryPrice: entry.price, exitPrice: null, r: null, result: 'Open', exitReason: null });
     }
-    return paired;
+    // Reverse so most recent trades are first
+    return paired.reverse();
   })();
   const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
   const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
@@ -1649,7 +1656,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   {/* Alert History */}
                   <Card>
                     <h4 className="text-sm font-medium mb-3">Alert History</h4>
-                    <div style={{ overflowX: 'auto' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
@@ -1692,7 +1699,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   {/* Backtest Trade History */}
                   <Card>
                     <h4 className="text-sm font-medium mb-3">Trade History (Backtest)</h4>
-                    <div style={{ overflowX: 'auto' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>

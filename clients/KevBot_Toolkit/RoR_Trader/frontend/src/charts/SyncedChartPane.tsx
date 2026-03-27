@@ -202,19 +202,30 @@ export default function SyncedChartPane({
                   crosshairMarkerVisible: false,
                   lastValueVisible: false,
                 });
-                // Create data points at each marker time using the candle close price
+                // Build a lookup of candle timestamps → close prices
+                const candlePrices = new Map<number, number>();
+                for (const d of seriesCfg.data) {
+                  const t = toUnixTime(d.time ?? d.timestamp);
+                  if (isFinite(t)) candlePrices.set(t, d.close ?? d.value ?? 0);
+                }
+                // Map markers to data points, finding nearest candle if exact match fails
                 const markerData = validMarkers.map((m: any) => {
-                  // Find the closest candle data point for the price
-                  const matchingCandle = seriesCfg.data.find((d: any) => {
-                    const t = toUnixTime(d.time ?? d.timestamp);
-                    return t === (m.time as number);
-                  });
-                  const price = matchingCandle ? (matchingCandle.close ?? matchingCandle.value ?? 0) : 0;
-                  return { time: m.time, value: price };
-                }).filter((d: any) => d.value !== 0);
+                  const mt = m.time as number;
+                  let price = candlePrices.get(mt);
+                  if (price == null) {
+                    // Find nearest candle within 120 seconds
+                    let best = 0, bestDist = Infinity;
+                    for (const [t, p] of candlePrices) {
+                      const dist = Math.abs(t - mt);
+                      if (dist < bestDist && dist <= 120) { bestDist = dist; best = p; }
+                    }
+                    price = best || undefined;
+                  }
+                  return price ? { time: m.time, value: price } : null;
+                }).filter(Boolean);
 
                 if (markerData.length > 0) {
-                  markerLine.setData(markerData);
+                  markerLine.setData(markerData as any);
                   if (typeof markerLine.setMarkers === 'function') {
                     markerLine.setMarkers(validMarkers);
                   }
