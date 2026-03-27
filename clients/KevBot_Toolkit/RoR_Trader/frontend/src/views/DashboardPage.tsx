@@ -15,7 +15,6 @@ import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useDashboardSummary, useDashboardEquityCurve, useDashboardDailyPnl, useDashboardMarketRegime } from '@/hooks/queries/useDashboard';
-import { useSettings } from '@/hooks/queries/useSettings';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useMonitorStatus, useEngineState } from '@/hooks/queries/useAlerts';
 import { usePortfolios } from '@/hooks/queries/usePortfolios';
@@ -723,8 +722,20 @@ export default function DashboardPage() {
   const { data: apiPortfolios, isLoading: portfoliosLoading } = usePortfolios();
   const { data: equityCurveData } = useDashboardEquityCurve();
   const { data: dailyPnlData } = useDashboardDailyPnl();
-  const { data: userSettings } = useSettings();
   const { data: marketRegimeData } = useDashboardMarketRegime();
+
+  // Settings loaded inline to avoid adding another hook import
+  // (useSettings from queries/useSettings caused circular dep in production bundle)
+  const [userSettings, setUserSettings] = useState<Record<string, any> | null>(null);
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ror_access_token') : null;
+    if (!token) return;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    fetch(`${apiUrl}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setUserSettings(d); })
+      .catch(() => {});
+  }, []);
 
   // =========================================================================
   // UI state
