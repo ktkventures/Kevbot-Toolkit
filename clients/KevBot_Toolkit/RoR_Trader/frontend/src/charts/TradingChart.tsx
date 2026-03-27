@@ -106,28 +106,38 @@ export default function TradingChart({
     });
 
     const candleData: CandlestickData[] = ohlcv
-      .filter((c) => c.open != null && c.high != null && c.low != null && c.close != null && c.time)
+      .filter((c) => c.time && c.open != null && c.high != null && c.low != null && c.close != null
+        && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close))
       .map((c) => ({
         time: c.time as Time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
       }));
     if (candleData.length === 0) { chart.remove(); return; }
     candleSeries.setData(candleData);
     candleSeriesRef.current = candleSeries;
 
-    // Add markers
+    // Markers: LWC v5 removed setMarkers() from series API.
+    // Use try-catch as defensive fallback for any version differences.
     if (markers.length > 0) {
-      const lwcMarkers = markers.map((m) => ({
-        time: m.time as Time,
-        position: m.position,
-        shape: m.shape,
-        color: m.color,
-        text: m.text,
-      }));
-      candleSeries.setMarkers(lwcMarkers);
+      try {
+        const lwcMarkers = markers
+          .filter((m) => m.time)
+          .map((m) => ({
+            time: m.time as Time,
+            position: m.position,
+            shape: m.shape,
+            color: m.color,
+            text: m.text,
+          }));
+        if (typeof (candleSeries as any).setMarkers === 'function') {
+          (candleSeries as any).setMarkers(lwcMarkers);
+        }
+      } catch {
+        // v5 may not support setMarkers — silently skip
+      }
     }
 
     // Add overlay line series

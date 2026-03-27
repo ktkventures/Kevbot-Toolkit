@@ -169,11 +169,13 @@ function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, sho
   const zeroY = toY(0);
   const bndX = toX(fwdIdx);
 
+  const uid = totalPoints + fwdIdx; // stable unique ID for gradient defs
+
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: 'block' }}>
       <defs>
-        <linearGradient id={`btG${seed}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_BT_COLOR} stopOpacity="0.2" /><stop offset="100%" stopColor={EQ_BT_COLOR} stopOpacity="0" /></linearGradient>
-        <linearGradient id={`fwG${seed}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_FWD_COLOR} stopOpacity="0.15" /><stop offset="100%" stopColor={EQ_FWD_COLOR} stopOpacity="0" /></linearGradient>
+        <linearGradient id={`btG${uid}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_BT_COLOR} stopOpacity="0.2" /><stop offset="100%" stopColor={EQ_BT_COLOR} stopOpacity="0" /></linearGradient>
+        <linearGradient id={`fwG${uid}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={EQ_FWD_COLOR} stopOpacity="0.15" /><stop offset="100%" stopColor={EQ_FWD_COLOR} stopOpacity="0" /></linearGradient>
       </defs>
       {/* Zero line */}
       <line x1="0" y1={zeroY} x2={w} y2={zeroY} stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="4 3" opacity="0.4" />
@@ -201,9 +203,9 @@ function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, sho
         );
       })()}
       {/* BT gradient fill */}
-      <polygon points={buildFill(btPoints.slice(0, fwdIdx + 1), 0)} fill={`url(#btG${seed})`} />
+      <polygon points={buildFill(btPoints.slice(0, fwdIdx + 1), 0)} fill={`url(#btG${uid})`} />
       {/* FWD gradient fill */}
-      <polygon points={buildFill(fwdPoints, fwdIdx)} fill={`url(#fwG${seed})`} />
+      <polygon points={buildFill(fwdPoints, fwdIdx)} fill={`url(#fwG${uid})`} />
       {/* FWD boundary */}
       <line x1={bndX} y1="0" x2={bndX} y2={h} stroke={EQ_FWD_COLOR} strokeWidth="0.5" strokeDasharray="3 2" opacity="0.5" />
       {/* BT line */}
