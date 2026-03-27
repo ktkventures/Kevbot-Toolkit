@@ -53,7 +53,12 @@ interface StopPack {
    Stop-related template keys — used to filter risk management templates
    ======================================================================== */
 
-const STOP_TEMPLATE_KEYS = ['atr', 'fixed_dollar', 'percentage', 'swing', 'atr_trailing', 'breakeven'];
+// Backend template keys from risk_management_packs.py TEMPLATES dict
+const STOP_TEMPLATE_KEYS = [
+  'atr_based', 'fixed_dollar', 'percentage', 'swing', 'atr_trailing', 'breakeven_stop', 'rr_ratio',
+  // Legacy frontend aliases
+  'atr', 'breakeven',
+];
 
 /* ========================================================================
    API → V1 StopPack Mapping
@@ -378,7 +383,7 @@ export default function StopLossPage() {
   useEffect(() => {
     if (apiPacks && apiTemplates && !initialized) {
       const stopPacks = apiPacks
-        .filter((p) => STOP_TEMPLATE_KEYS.includes(p.base_template) || apiTemplates[p.base_template]?.stop_method)
+        .filter((p) => STOP_TEMPLATE_KEYS.includes(p.base_template) || (apiTemplates[p.base_template] as any)?.has_stop)
         .map((p) => apiToStopPack(p, apiTemplates[p.base_template]));
       setPacks(stopPacks);
       const variationKeys = stopPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);

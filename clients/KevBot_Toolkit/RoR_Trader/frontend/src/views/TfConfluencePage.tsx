@@ -64,6 +64,7 @@ interface TfPack {
   enabled: boolean;
   isDefault: boolean;
   isSaved: boolean;
+  fidelityType: 'PB' | 'CB' | 'auto';
   params: PackParam[];
   plotSettings: PlotSetting[];
   outputs: OutputDef[];
@@ -376,23 +377,38 @@ function mapApiGroupToTfPack(
 
   const triggers: PackTrigger[] = localTemplate?.triggers
     ? localTemplate.triggers.map(t => ({ ...t, execVariants: mergeExecVariants(t.execVariants) }))
-    : (apiTemplate?.triggers || []).map((t) => ({
-      id: t.id,
-      name: t.name,
-      sentiment: (t.direction === 'LONG' ? 'bullish' : t.direction === 'SHORT' ? 'bearish' : 'neutral') as 'bullish' | 'bearish' | 'neutral',
-      description: t.name,
-      execVariants: mergeExecVariants(defaultExecVariants()),
-    }));
+    : (apiTemplate?.triggers || []).map((t) => {
+      // Use exec_variants from API template if available, otherwise fall back to defaults
+      const apiExec = t.exec_variants;
+      const baseExec = apiExec ? {
+        C: { enabled: apiExec.C?.enabled ?? true, referenceBar: (apiExec.C?.reference_bar ?? 0) as 0 | -1, orderType: (apiExec.C?.order_type ?? 'market') as 'market' | 'limit' },
+        L: { enabled: apiExec.L?.enabled ?? true, referenceBar: (apiExec.L?.reference_bar ?? -1) as 0 | -1, orderType: (apiExec.L?.order_type ?? 'market') as 'market' | 'limit', holdSeconds: apiExec.L?.hold_seconds ?? 0 },
+        LC: { enabled: apiExec.LC?.enabled ?? true, referenceBar: (apiExec.LC?.reference_bar ?? -1) as 0 | -1, orderType: (apiExec.LC?.order_type ?? 'market') as 'market' | 'limit', confirmBarOffset: (apiExec.LC?.confirm_bar_offset ?? 0) as 0 | 1, bailAction: (apiExec.LC?.bail_action ?? 'exit_market') as ExecConfig['bailAction'] },
+        CC: { enabled: apiExec.CC?.enabled ?? false, referenceBar: (apiExec.CC?.reference_bar ?? 0) as 0 | -1, orderType: (apiExec.CC?.order_type ?? 'market') as 'market' | 'limit', confirmBarOffset: (apiExec.CC?.confirm_bar_offset ?? 1) as 0 | 1, bailAction: (apiExec.CC?.bail_action ?? 'exit_market') as ExecConfig['bailAction'] },
+      } : defaultExecVariants();
+      return {
+        id: t.id,
+        name: t.name,
+        sentiment: (t.direction === 'LONG' ? 'bullish' : t.direction === 'SHORT' ? 'bearish' : 'neutral') as 'bullish' | 'bearish' | 'neutral',
+        description: t.name,
+        execVariants: mergeExecVariants(baseExec),
+      };
+    });
 
   return {
     id: group.id,
     templateKey,
     name: localTemplate?.name || apiTemplate?.name || templateKey,
     version: group.version || 'Default',
-    tags: localTemplate?.tags || (apiTemplate?.category ? [apiTemplate.category] : []),
+    tags: [
+      ...(localTemplate?.tags || (apiTemplate?.category ? [apiTemplate.category] : [])),
+      ...(group.is_default ? ['Default'] : []),
+      ...((group.parameters as any)?._tags || []),
+    ],
     enabled: group.enabled,
     isDefault: group.is_default,
     isSaved: true,
+    fidelityType: ((group.parameters as any)?._fidelity_type ?? 'auto') as 'PB' | 'CB' | 'auto',
     params,
     plotSettings,
     outputs,
@@ -428,6 +444,15 @@ function tfPackToDto(pack: TfPack): ConfluenceGroupDTO {
     parameters._exec_config = execConfig;
   }
 
+  // Persist custom tags and fidelity type
+  const customTags = pack.tags.filter(t => ['Legacy'].includes(t));
+  if (customTags.length > 0) {
+    parameters._tags = customTags;
+  }
+  if (pack.fidelityType && pack.fidelityType !== 'auto') {
+    parameters._fidelity_type = pack.fidelityType;
+  }
+
   const colors: Record<string, string> = {};
   for (const ps of pack.plotSettings) {
     colors[ps.key] = ps.value;
@@ -460,6 +485,8 @@ const tagColors: Record<string, { color: string; bg: string }> = {
   Volatility: { color: 'var(--red)', bg: 'var(--red-muted)' },
   Trend: { color: 'var(--green)', bg: 'var(--green-muted)' },
   Exit: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+  Default: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+  Legacy: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
 };
 
 // Display settings V5 spec: single color for all exec types, single color for all fidelity types
@@ -1584,6 +1611,39 @@ function StartingTriggerParamsTab({ pack, onPackChange }: { pack: TfPack; onPack
             )}
           </div>
         </div>
+      </Card>
+
+      {/* Fidelity Type Selector */}
+      <Card>
+        <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Backtest Fidelity</h3>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Controls how intra-bar execution is simulated. [PB] = Price Bar (uses OHLC of the signal bar).
+          [CB] = Candle Body (uses sub-second data for precise fill simulation). Auto selects based on exec type.
+        </p>
+        <div className="flex gap-3">
+          {(['auto', 'PB', 'CB'] as const).map((ft) => (
+            <button
+              key={ft}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={{
+                background: pack.fidelityType === ft ? 'var(--accent)' : 'var(--bg-input)',
+                color: pack.fidelityType === ft ? 'white' : 'var(--text-secondary)',
+                border: pack.fidelityType === ft ? 'none' : '1px solid var(--border)',
+                cursor: isDisabled ? 'not-allowed' : 'pointer',
+                opacity: isDisabled ? 0.6 : 1,
+              }}
+              disabled={isDisabled}
+              onClick={() => onPackChange?.({ ...pack, fidelityType: ft })}
+            >
+              {ft === 'auto' ? 'Auto' : `[${ft}]`}
+            </button>
+          ))}
+        </div>
+        {pack.fidelityType !== 'auto' && (
+          <p className="text-xs mt-2" style={{ color: 'var(--accent)' }}>
+            Fidelity locked to [{pack.fidelityType}] — all triggers will use {pack.fidelityType === 'PB' ? 'Price Bar' : 'Candle Body'} simulation.
+          </p>
+        )}
       </Card>
     </div>
   );

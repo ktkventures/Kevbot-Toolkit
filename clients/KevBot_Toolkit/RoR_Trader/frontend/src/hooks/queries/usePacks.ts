@@ -154,6 +154,14 @@ export interface ConfluenceTemplateDTO {
     direction: string;
     trigger_type: string;
     execution: string;
+    exec_variants?: Record<string, {
+      enabled?: boolean;
+      reference_bar?: number;
+      order_type?: string;
+      hold_seconds?: number;
+      confirm_bar_offset?: number;
+      bail_action?: string;
+    }>;
   }>;
 }
 

@@ -53,7 +53,13 @@ interface TargetPack {
    Target-related template keys — used to filter risk management templates
    ======================================================================== */
 
-const TARGET_TEMPLATE_KEYS = ['risk_reward', 'atr_target', 'fixed_dollar_target', 'percentage_target', 'swing_target', 'none'];
+// Backend template keys from risk_management_packs.py TEMPLATES dict
+const TARGET_TEMPLATE_KEYS = [
+  'rr_ratio', 'atr_based', 'fixed_dollar', 'percentage', 'swing',
+  'atr_trailing', 'breakeven_stop',
+  // Legacy frontend aliases (keep for backwards compatibility)
+  'risk_reward', 'atr_target', 'fixed_dollar_target', 'percentage_target', 'swing_target', 'none',
+];
 
 /* ========================================================================
    API → V1 TargetPack Mapping
@@ -362,7 +368,7 @@ export default function TakeProfitPage() {
   useEffect(() => {
     if (apiPacks && apiTemplates && !initialized) {
       const tgtPacks = apiPacks
-        .filter((p) => TARGET_TEMPLATE_KEYS.includes(p.base_template) || apiTemplates[p.base_template]?.target_method)
+        .filter((p) => TARGET_TEMPLATE_KEYS.includes(p.base_template) || (apiTemplates[p.base_template] as any)?.has_target)
         .map((p) => apiToTargetPack(p, apiTemplates[p.base_template]));
       setPacks(tgtPacks);
       const variationKeys = tgtPacks.filter((p) => !p.isDefault).map((p) => p.templateKey);
