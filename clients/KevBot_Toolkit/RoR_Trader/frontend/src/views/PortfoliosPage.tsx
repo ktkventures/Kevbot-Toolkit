@@ -81,10 +81,31 @@ function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
       direction: strat?.direction || ps.direction || 'LONG',
     };
   });
+
+  // Aggregate KPIs from constituent strategies if portfolio kpis empty
+  let totalR = k.total_r ?? 0;
+  let totalTrades = k.total_trades ?? 0;
+  let winCount = 0;
+  if (!k.total_trades && (p.strategies || []).length > 0) {
+    for (const ps of (p.strategies || [])) {
+      const strat = strategyMap.get(ps.strategy_id);
+      if (strat?.kpis) {
+        const sk = strat.kpis;
+        totalR += sk.total_r ?? 0;
+        totalTrades += sk.total_trades ?? 0;
+        if (sk.win_rate > 0 && sk.total_trades > 0) {
+          winCount += Math.round(sk.total_trades * sk.win_rate / 100);
+        }
+      }
+    }
+  }
+  const aggWinRate = totalTrades > 0 ? (winCount / totalTrades * 100) : (k.win_rate ?? 0);
+  const aggPF = k.profit_factor ?? 0;
+
   return {
     id: String(p.id),
     name: p.name || '--',
-    status: 'Insufficient Data',            // {{status_derivation}} — needs worker compute
+    status: 'Insufficient Data',
     enabled: p.enabled ?? false,
     strategies: strats,
     startingBalance: p.starting_balance ?? p.account?.starting_balance ?? 0,
@@ -92,15 +113,15 @@ function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
     avgRiskPerTrade: k.avg_risk_per_trade ?? 0,
     webhookTemplate: p.webhook_template_name || null,
     requirementSet: p.requirement_set_name || null,
-    reqPassing: null,                        // {{req_passing}} — needs compute endpoint
-    reqTotal: null,                          // {{req_total}} — needs compute endpoint
-    totalPnl: k.total_pnl ?? 0,
+    reqPassing: null,
+    reqTotal: null,
+    totalPnl: totalR,
     finalBalance: k.final_balance ?? 0,
-    winRate: k.win_rate ?? 0,
-    pf: k.profit_factor ?? 0,
+    winRate: aggWinRate,
+    pf: aggPF,
     maxDDPct: k.max_dd_pct ?? 0,
     avgDailyPnl: k.avg_daily_pnl ?? 0,
-    trades: k.total_trades ?? 0,
+    trades: totalTrades,
     tradesPerDay: k.trades_per_day ?? 0,
     fwdDays: 0,                              // {{fwd_days}} — needs forward test compute
     fwdTotalPnl: null,                       // {{fwd_total_pnl}}

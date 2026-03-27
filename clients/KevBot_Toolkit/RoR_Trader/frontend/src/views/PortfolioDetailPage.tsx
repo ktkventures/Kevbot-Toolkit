@@ -29,6 +29,13 @@ import {
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useDeletePortfolio, useDuplicatePortfolio, useReanalyzePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 
+const statusColors: Record<string, string> = {
+  'On Track': 'var(--green)',
+  'Outperforming': 'var(--blue)',
+  'Underperforming': 'var(--red)',
+  'Insufficient Data': 'var(--text-muted)',
+};
+
 /* =========================================================================
    EMPTY-STATE DEFAULTS (replace mock constants — tabs use these until worker provides data)
    ========================================================================= */
@@ -1458,16 +1465,19 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
 
       {/* Status badges + sigma + pulse dot */}
       <div className="flex items-center gap-3 mb-2 flex-wrap">
-        <span className="text-xs font-semibold px-2.5 py-1 rounded-full" style={{ color: 'var(--text-muted)', background: 'var(--text-muted)' + '20' }}>
-          {'{{status}}'}
+        <span className="text-xs font-semibold px-2.5 py-1 rounded-full" style={{ color: statusColors[k.status as string] || 'var(--text-muted)', background: (statusColors[k.status as string] || 'var(--text-muted)') + '20' }}>
+          {k.status || 'Insufficient Data'}
         </span>
-        <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_FWD_COLOR, background: EQ_FWD_COLOR + '18' }}>
-          {'{{fwd_sd}}'}
-        </span>
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>|</span>
-        <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_LIVE_COLOR, background: EQ_LIVE_COLOR + '18' }}>
-          {'{{alert_sd}}'}
-        </span>
+        {k.total_trades > 0 && (
+          <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_FWD_COLOR, background: EQ_FWD_COLOR + '18' }}>
+            {k.total_trades} trades
+          </span>
+        )}
+        {k.total_r != null && (
+          <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: k.total_r >= 0 ? EQ_LIVE_COLOR : 'var(--red)', background: (k.total_r >= 0 ? EQ_LIVE_COLOR : 'var(--red)') + '18' }}>
+            {k.total_r >= 0 ? '+' : ''}{Number(k.total_r).toFixed(1)}R
+          </span>
+        )}
         {portEnabled && (
           <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--green)' }}>
             <span style={{ position: 'relative', display: 'inline-block', width: 8, height: 8 }}>
