@@ -15,6 +15,7 @@ import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useDashboardSummary, useDashboardEquityCurve, useDashboardDailyPnl } from '@/hooks/queries/useDashboard';
+import { useSettings } from '@/hooks/queries/useSettings';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { useMonitorStatus, useEngineState } from '@/hooks/queries/useAlerts';
 import { usePortfolios } from '@/hooks/queries/usePortfolios';
@@ -722,6 +723,7 @@ export default function DashboardPage() {
   const { data: apiPortfolios, isLoading: portfoliosLoading } = usePortfolios();
   const { data: equityCurveData } = useDashboardEquityCurve();
   const { data: dailyPnlData } = useDashboardDailyPnl();
+  const { data: userSettings } = useSettings();
 
   // =========================================================================
   // UI state
@@ -846,11 +848,32 @@ export default function DashboardPage() {
     if (!dailyPnlData?.days?.length) return [];
     return dailyPnlData.days;
   }, [dailyPnlData]);
-  // Calendar — {{calendar}} — needs new endpoint
-  const calendarData: Record<number, number> = {};
-  // Monthly goal — {{monthly_goal}}
-  const monthlyTarget = 0;
-  const monthlyProgress = 0;
+  // Calendar — derived from daily P&L for current month
+  const calendarData: Record<number, number> = useMemo(() => {
+    if (!dailyPnlData?.days?.length) return {};
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const result: Record<number, number> = {};
+    for (const d of dailyPnlData.days) {
+      if (d.day.startsWith(currentMonth)) {
+        const dayNum = parseInt(d.day.split('-')[2], 10);
+        result[dayNum] = Math.round(d.value * 100) / 100;
+      }
+    }
+    return result;
+  }, [dailyPnlData]);
+  // Monthly goal — from settings + current month P&L from dailyPnl
+  const monthlyTarget = useMemo(() => {
+    return (userSettings as any)?.monthly_r_target ?? (userSettings as any)?.monthlyRTarget ?? 10;
+  }, [userSettings]);
+  const monthlyProgress = useMemo(() => {
+    if (!dailyPnlData?.days?.length) return 0;
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return dailyPnlData.days
+      .filter(d => d.day.startsWith(currentMonth))
+      .reduce((sum, d) => sum + d.value, 0);
+  }, [dailyPnlData]);
 
   // KPIs — built from summary + derived data
   const [kpis, setKpis] = useState<KpiConfig[]>([]);
