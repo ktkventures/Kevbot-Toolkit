@@ -26,7 +26,7 @@ import {
   usePortfolioAccount,
 } from '@/hooks/queries/usePortfolios';
 import { useStrategies } from '@/hooks/queries/useStrategies';
-import { useDeletePortfolio, useDuplicatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
+import { useDeletePortfolio, useDuplicatePortfolio, useReanalyzePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 
 /* =========================================================================
    EMPTY-STATE DEFAULTS (replace mock constants — tabs use these until worker provides data)
@@ -1306,6 +1306,7 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
   const { data: apiStrategiesRaw } = useStrategies();
   const deleteMut = useDeletePortfolio();
   const dupMut = useDuplicatePortfolio();
+  const reanalyzeMut = useReanalyzePortfolio();
 
   useEffect(() => {
     const id = 'portfolio-detail-pulse-css';
@@ -1355,7 +1356,9 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
         backHref="/portfolios"
         actions={
           <>
-            <button style={btnSecondary}>Refresh</button>
+            <button style={btnSecondary} onClick={() => reanalyzeMut.mutate(portfolioId)} disabled={reanalyzeMut.isPending}>
+              {reanalyzeMut.isPending ? 'Analyzing...' : 'Re-Analyze'}
+            </button>
             <button style={btnSecondary}>Edit</button>
             <button style={btnSecondary} onClick={() => dupMut.mutate(portfolioId)}>Clone</button>
             <button style={{ ...btnSecondary, background: 'var(--red-muted)', color: 'var(--red)', border: 'none' }} onClick={() => deleteMut.mutate(portfolioId)}>Delete</button>

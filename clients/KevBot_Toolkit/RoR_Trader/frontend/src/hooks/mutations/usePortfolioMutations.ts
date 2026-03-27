@@ -59,3 +59,19 @@ export function useRemoveLedgerEntry() {
     onSuccess: (_d, { portfolioId }) => { qc.invalidateQueries({ queryKey: ['portfolio-account', portfolioId] }); },
   });
 }
+
+export function useReanalyzePortfolio() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/portfolios/${id}/compute`, {
+        method: 'POST',
+        body: JSON.stringify({ include: ['kpis', 'equity_curve', 'correlation', 'monte_carlo', 'daily_pnl'] }),
+      }),
+    onSuccess: (_d, id) => {
+      qc.invalidateQueries({ queryKey: ['portfolio-compute', id] });
+      qc.invalidateQueries({ queryKey: ['portfolio-trades', id] });
+      qc.invalidateQueries({ queryKey: ['portfolio', id] });
+    },
+  });
+}
