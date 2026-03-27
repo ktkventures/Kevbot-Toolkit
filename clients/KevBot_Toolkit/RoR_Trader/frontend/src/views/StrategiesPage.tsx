@@ -55,6 +55,9 @@ interface Strategy {
   alertTracking: boolean;
   monitored: boolean;
   btDays: number;
+  sigmaFwd: number;
+  sigmaAlert: number;
+  equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null };
 }
 
 /* ========================================================================= */
@@ -99,6 +102,9 @@ function apiToStrategy(s: any): Strategy {
     alertTracking: s.alert_tracking_enabled || false,
     monitored: s.alert_tracking_enabled || false,
     btDays: s.data_days || 30,
+    sigmaFwd: s.sigma_fwd ?? 0,
+    sigmaAlert: s.sigma_alert ?? 0,
+    equityCurveData: s.equity_curve_data || undefined,
   };
 }
 
@@ -126,27 +132,20 @@ const EQ_BT_COLOR = '#2196F3';
 const EQ_FWD_COLOR = '#FF9800';
 const EQ_LIVE_COLOR = '#4CAF50';
 
-function MiniEquityCurve({ strategyId, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: { strategyId: string; fwdStartPct: number; hasAlerts: boolean; showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number }) {
-  const seed = parseInt(strategyId, 10) || 1;
-  const totalPoints = 50;
-  const fwdIdx = Math.max(1, Math.floor(totalPoints * fwdStartPct));
+function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: { equityCurveData?: { cumulative_r: number[]; boundary_index?: number | null }; fwdStartPct: number; hasAlerts: boolean; showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number }) {
+  const cumR = equityCurveData?.cumulative_r || [];
+  const totalPoints = cumR.length;
+  if (totalPoints < 2) {
+    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>--</span></div>;
+  }
+  const fwdIdx = equityCurveData?.boundary_index ?? Math.max(1, Math.floor(totalPoints * fwdStartPct));
   const w = 320;
   const h = height;
   const pad = 3;
 
-  // Generate backtest equity curve
-  const btPoints: number[] = [0];
-  let val = 0;
-  for (let i = 1; i <= totalPoints; i++) {
-    val += Math.sin(seed * 137.5 * i) * 0.5 + 0.2;
-    btPoints.push(val);
-  }
-
-  // Forward test continues from backtest — same trajectory but diverges slightly
-  const fwdPoints = btPoints.slice(fwdIdx).map((p, i) => p + Math.sin(seed * 42 * (fwdIdx + i)) * 0.3);
-
-  // Live alerts overlay on forward test x-range — shows slippage (slightly below/above fwd)
-  const livePoints = hasAlerts ? fwdPoints.map((p, i) => p + Math.sin(seed * 99 * i) * 0.4 - 0.3) : [];
+  const btPoints = cumR.slice(0, fwdIdx + 1);
+  const fwdPoints = cumR.slice(fwdIdx);
+  const livePoints: number[] = [];
 
   const allVals = [...btPoints, ...fwdPoints, ...livePoints];
   const min = Math.min(...allVals);
@@ -217,11 +216,9 @@ function MiniEquityCurve({ strategyId, fwdStartPct, hasAlerts, showHWM, showEdge
   );
 }
 
-// Mock SD values per strategy (would be computed from forward test vs backtest distribution)
-function getStrategySD(stratId: string): { fwd: number; alert: number } {
-  const fwdMap: Record<string, number> = { '1': 0.8, '2': -0.3, '3': 1.5, '4': 2.1, '5': 1.9 };
-  const alertMap: Record<string, number> = { '1': 0.6, '2': -0.5, '3': 1.2, '4': 2.4, '5': 2.1 };
-  return { fwd: fwdMap[stratId] ?? 0, alert: alertMap[stratId] ?? 0 };
+// SD values from enriched strategy API (sigma_fwd, sigma_alert)
+function getStrategySD(strat: Strategy): { fwd: number; alert: number } {
+  return { fwd: strat.sigmaFwd, alert: strat.sigmaAlert };
 }
 
 /* ========================================================================= */
@@ -643,7 +640,7 @@ export default function StrategiesPage() {
                 </span>
                 <span className="flex-1" />
                 {strat.fwdTrades > 0 && (() => {
-                  const { fwd, alert } = getStrategySD(strat.id);
+                  const { fwd, alert } = getStrategySD(strat);
                   const fmtSD = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}\u03c3`;
                   return (
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -694,7 +691,7 @@ export default function StrategiesPage() {
               {/* Mini equity curve (3-segment per display settings V5) */}
               <div className="rounded-lg mb-2 overflow-hidden" style={{ background: 'var(--bg-input)' }}>
                 <MiniEquityCurve
-                  strategyId={strat.id}
+                  equityCurveData={strat.equityCurveData}
                   fwdStartPct={strat.btDays / (strat.btDays + fwdDays)}
                   hasAlerts={strat.alertTracking}
                   showHWM={eqShowHWM}

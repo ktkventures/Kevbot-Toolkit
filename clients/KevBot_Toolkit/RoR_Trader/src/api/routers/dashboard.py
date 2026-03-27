@@ -184,6 +184,24 @@ def get_dashboard_equity_curve(user=Depends(get_current_user)):
         all_points: list[tuple[str, float]] = []
         for s in strategies:
             ecd = s.get("equity_curve_data")
+            # Fallback: build equity from stored_trades if equity_curve_data missing
+            if not ecd and s.get("stored_trades"):
+                try:
+                    trades = s["stored_trades"]
+                    cum = 0.0
+                    exit_times_fb = []
+                    cumulative_r_fb = []
+                    for t in trades:
+                        r = t.get("r_multiple", 0)
+                        if r is None:
+                            continue
+                        cum += float(r)
+                        exit_times_fb.append(t.get("exit_time", ""))
+                        cumulative_r_fb.append(cum)
+                    if cumulative_r_fb:
+                        ecd = {"exit_times": exit_times_fb, "cumulative_r": cumulative_r_fb}
+                except Exception:
+                    pass
             if not ecd:
                 continue
             exit_times = ecd.get("exit_times", [])
@@ -234,6 +252,22 @@ def get_dashboard_daily_pnl(user=Depends(get_current_user)):
         day_totals: dict[str, float] = defaultdict(float)
         for s in strategies:
             ecd = s.get("equity_curve_data")
+            if not ecd and s.get("stored_trades"):
+                try:
+                    trades = s["stored_trades"]
+                    cum = 0.0
+                    et, cr = [], []
+                    for t in trades:
+                        r = t.get("r_multiple", 0)
+                        if r is None:
+                            continue
+                        cum += float(r)
+                        et.append(t.get("exit_time", ""))
+                        cr.append(cum)
+                    if cr:
+                        ecd = {"exit_times": et, "cumulative_r": cr}
+                except Exception:
+                    pass
             if not ecd:
                 continue
             exit_times = ecd.get("exit_times", [])
