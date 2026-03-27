@@ -540,9 +540,20 @@ def refresh_strategy(strategy_id: int, user=Depends(get_current_user)):
     strat = _get_or_404(strategy_id, user)
     import services as svc
 
+    # Log confluence gating info for parity debugging
+    confluence = strat.get('confluence', [])
+    general_conf = strat.get('general_confluences', [])
+    logger.info(
+        "[REFRESH] Strategy %s (%s): confluence=%s, general=%s, entry=%s",
+        strategy_id, strat.get('name', '?'),
+        confluence, general_conf,
+        strat.get('entry_trigger_confluence_id', '?'),
+    )
+
     try:
         # Get full trades (backtest + forward)
         all_trades = svc.get_strategy_trades(strat)
+        logger.info("[REFRESH] Strategy %s: computed %d trades (confluence gated)", strategy_id, len(all_trades))
 
         if len(all_trades) == 0:
             return {"status": "no_trades", "trades": 0}

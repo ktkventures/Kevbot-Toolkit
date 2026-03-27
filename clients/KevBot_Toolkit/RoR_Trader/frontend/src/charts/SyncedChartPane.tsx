@@ -172,17 +172,56 @@ export default function SyncedChartPane({
 
         if (data.length > 0) chartSeries.setData(data);
 
-        // Markers
+        // Markers — LWC v5 removed setMarkers() from series.
+        // Workaround: create invisible Line series with markers attached.
+        // This matches how the Streamlit fork renders trade markers (app.py:2753-2839).
         if (seriesCfg.markers && seriesCfg.markers.length > 0) {
-          try {
-            const markers = seriesCfg.markers
-              .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
-              .filter((m: any) => isFinite(m.time as number))
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            if (typeof chartSeries.setMarkers === 'function') {
-              chartSeries.setMarkers(markers);
+          const validMarkers = seriesCfg.markers
+            .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
+            .filter((m: any) => isFinite(m.time as number))
+            .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+          if (validMarkers.length > 0) {
+            // First try the direct setMarkers approach (works in some v5 builds)
+            let markersSet = false;
+            try {
+              if (typeof chartSeries.setMarkers === 'function') {
+                chartSeries.setMarkers(validMarkers);
+                markersSet = true;
+              }
+            } catch { /* not available */ }
+
+            // Fallback: invisible line series with markers
+            if (!markersSet) {
+              try {
+                const markerLine = chart.addSeries(LineSeries, {
+                  color: 'transparent',
+                  lineVisible: false,
+                  pointMarkersVisible: false,
+                  priceLineVisible: false,
+                  crosshairMarkerVisible: false,
+                  lastValueVisible: false,
+                });
+                // Create data points at each marker time using the candle close price
+                const markerData = validMarkers.map((m: any) => {
+                  // Find the closest candle data point for the price
+                  const matchingCandle = seriesCfg.data.find((d: any) => {
+                    const t = toUnixTime(d.time ?? d.timestamp);
+                    return t === (m.time as number);
+                  });
+                  const price = matchingCandle ? (matchingCandle.close ?? matchingCandle.value ?? 0) : 0;
+                  return { time: m.time, value: price };
+                }).filter((d: any) => d.value !== 0);
+
+                if (markerData.length > 0) {
+                  markerLine.setData(markerData);
+                  if (typeof markerLine.setMarkers === 'function') {
+                    markerLine.setMarkers(validMarkers);
+                  }
+                }
+              } catch { /* fallback also failed, skip markers */ }
             }
-          } catch { /* v5 may not support setMarkers */ }
+          }
         }
 
         createdSeries.push(chartSeries);

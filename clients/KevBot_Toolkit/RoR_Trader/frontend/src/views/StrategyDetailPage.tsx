@@ -1553,24 +1553,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* Position Status */}
                 <Card className="mb-4">
                   <h4 className="text-sm font-medium mb-3">Position Status</h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Status</p>
-                      <p className="text-base font-bold mt-1" style={{ color: 'var(--text-muted)' }}>{'{{status}}'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Last Signal</p>
-                      <p className="text-base font-bold mt-1">{'{{last_signal}}'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Signal Time</p>
-                      <p className="text-base font-bold mt-1 font-mono">{'{{signal_time}}'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Price</p>
-                      <p className="text-base font-bold mt-1">{'{{current_price}}'}</p>
-                    </div>
-                  </div>
+                  {(() => {
+                    const lastBar = chartDataResp?.chart_data?.length ? chartDataResp.chart_data[chartDataResp.chart_data.length - 1] : null;
+                    const lastAlert = recentAlertEvents.length > 0 ? recentAlertEvents[0] : null;
+                    const hasOpenPosition = recentAlerts.some((t: any) => t.result === 'Open');
+                    const currentPrice = lastBar ? `$${Number(lastBar.close).toFixed(2)}` : '--';
+                    const lastSignal = lastAlert ? `${lastAlert.type} (${lastAlert.trigger})` : '--';
+                    const signalTime = lastAlert?.time ? new Date(lastAlert.time).toLocaleString() : '--';
+                    const status = hasOpenPosition ? 'In Position' : 'Flat';
+                    return (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Status</p>
+                          <p className="text-base font-bold mt-1" style={{ color: hasOpenPosition ? 'var(--green)' : 'var(--text-muted)' }}>{status}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Last Signal</p>
+                          <p className="text-base font-bold mt-1">{lastSignal}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Signal Time</p>
+                          <p className="text-base font-bold mt-1 font-mono">{signalTime}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Price</p>
+                          <p className="text-base font-bold mt-1">{currentPrice}</p>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Card>
 
                 {/* Current Conditions */}
