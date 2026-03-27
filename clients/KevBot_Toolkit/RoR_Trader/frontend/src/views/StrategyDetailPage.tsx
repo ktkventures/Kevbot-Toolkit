@@ -524,34 +524,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
 
-  // Early returns after all hooks
-  if (isLoading || !strategy) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <div className="animate-pulse space-y-4">
-          <div className="h-6 rounded w-1/3" style={{ background: 'var(--border)' }} />
-          <div className="h-4 rounded w-2/3" style={{ background: 'var(--border)' }} />
-          <div className="h-64 rounded" style={{ background: 'var(--bg-input)' }} />
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategy.</div>
-      </div>
-    );
-  }
-
-  const fwdDays = daysSince(strategy.fwdSince);
-  const alertAccuracy = strategy.alertTrades > 0 && strategy.alertWinRate != null && strategy.fwdWinRate
-    ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
-    : '--';
-
-  // Forward test trades come from the dedicated forward-test endpoint
-  // which loads fresh Polygon data and splits at forward_test_start
+  // Forward test trades — computed before early returns (hook-safe)
   const fwdTrades = (fwdData?.forward_trades || []).map((t: any, i: number) => ({
     id: i + 1,
     entryTime: t.entry_time || '--',
@@ -587,6 +560,32 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }, [btTrades, fwdTrades]);
 
   const equityBoundaryIndex = btTrades.length > 0 ? btTrades.length : null;
+
+  // Early returns after all hooks
+  if (isLoading || !strategy) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <div className="animate-pulse space-y-4">
+          <div className="h-6 rounded w-1/3" style={{ background: 'var(--border)' }} />
+          <div className="h-4 rounded w-2/3" style={{ background: 'var(--border)' }} />
+          <div className="h-64 rounded" style={{ background: 'var(--bg-input)' }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategy.</div>
+      </div>
+    );
+  }
+
+  const fwdDays = daysSince(strategy.fwdSince);
+  const alertAccuracy = strategy.alertTrades > 0 && strategy.alertWinRate != null && strategy.fwdWinRate
+    ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
+    : '--';
 
   // Parse entry for badges
   const entryParsed = parseExecTag(strategy.entry);
