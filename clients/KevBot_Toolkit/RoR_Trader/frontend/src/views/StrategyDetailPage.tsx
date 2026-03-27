@@ -11,8 +11,7 @@ import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 import TradingChart from '@/charts/TradingChart';
-import ConfluenceHeatmap from '@/charts/ConfluenceHeatmap';
-import OscillatorPane from '@/charts/OscillatorPane';
+import SyncedChartPane, { type PaneConfig, type SeriesConfig } from '@/charts/SyncedChartPane';
 import type { TradeMarker } from '@/charts/TradingChart';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
@@ -1366,31 +1365,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </label>
                 </div>
 
-                {/* ---- Multi-Pane Chart: Heatmap + Price + Oscillators ---- */}
+                {/* ---- Synchronized Multi-Pane Chart ---- */}
                 {(() => {
                   const chartSrc = chartDataResp?.chart_data;
-                  const ohlcvData = chartSrc && chartSrc.length > 0
-                    ? chartSrc.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                  const rawBars = chartSrc && chartSrc.length > 0
+                    ? chartSrc
                     : barsData
-                      ? barsData.map(b => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+                      ? barsData.map(b => ({ timestamp: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
                       : [];
 
-                  // OVERLAY indicators only — exclude oscillators
-                  const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
-                  const overlayNames = (chartDataResp as any)?.overlay_indicators || [];
-                  const indicatorOverlays = overlayNames.map((name: string, i: number) => ({
-                    name,
-                    data: (chartSrc || []).filter((d: any) => d[name] != null).map((d: any) => ({ time: d.timestamp, value: d[name] })),
-                    color: INDICATOR_COLORS[i % INDICATOR_COLORS.length],
-                    lineWidth: 1,
-                  }));
+                  // Apply candle count slicing (last N bars)
+                  const bars = candleCount > 0 && rawBars.length > candleCount
+                    ? rawBars.slice(-candleCount)
+                    : rawBars;
 
-                  // Trade markers
-                  const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t): TradeMarker[] => {
-                    const m: TradeMarker[] = [];
+                  if (bars.length === 0) {
+                    return <Card className="mb-4"><ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} /></Card>;
+                  }
+
+                  const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
+                  const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
+                  const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
+                  const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+
+                  // Build trade markers
+                  const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t) => {
+                    const m: any[] = [];
                     const dir = strategy.direction;
                     if (t.entryTime && t.entryTime !== '--') {
-                      m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'E' : '' });
+                      m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
                     }
                     if (t.exitTime && t.exitTime !== '--') {
                       const reason = t.exitReason || '';
@@ -1398,22 +1401,86 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
                       else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
                       else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
-                      m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '' });
+                      m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
                     }
                     return m;
                   });
 
-                  // Oscillator columns
-                  const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
+                  // ---- Build pane configs for SyncedChartPane ----
+                  const chartPanes: PaneConfig[] = [];
 
-                  // Heatmap conditions
-                  const heatmapConds: { label: string; column: string; neededState: string }[] =
-                    ((chartDataResp as any)?.heatmap_conditions || [])
-                      .filter((c: any) => c.has_data)
-                      .map((c: any) => ({ label: c.label, column: c.column, neededState: c.needed_state }));
+                  // Pane 1: Confluence heatmap (histogram-based, like Streamlit)
+                  if (showConditions && heatmapConds.length > 0) {
+                    const n = heatmapConds.length;
+                    const hmSeries: SeriesConfig[] = heatmapConds.map((cond: any, idx: number) => ({
+                      type: 'Histogram' as const,
+                      data: bars.map((b: any) => {
+                        const stateVal = b[`_state_${cond.column}`];
+                        const isMet = stateVal != null && stateVal === cond.needed_state;
+                        return { time: b.timestamp, value: n - idx, color: isMet ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.4)' };
+                      }),
+                      options: { priceLineVisible: false, lastValueVisible: false, title: cond.label },
+                    }));
+                    chartPanes.push({ id: 'heatmap', height: Math.max(50, n * 20 + 10), series: hmSeries, hideTimeAxis: true });
+                  }
 
-                  if (ohlcvData.length === 0) {
-                    return <Card className="mb-4"><ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} /></Card>;
+                  // Pane 2: Price chart + overlay indicators + trade markers
+                  const priceSeries: SeriesConfig[] = [
+                    {
+                      type: 'Candlestick',
+                      data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+                      markers: tradeMarkers,
+                    },
+                  ];
+                  // Add overlay line series (EMA, UT Bot stop, VWAP, etc.)
+                  for (let i = 0; i < overlayNames.length; i++) {
+                    const col = overlayNames[i];
+                    priceSeries.push({
+                      type: 'Line',
+                      data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+                      options: { color: INDICATOR_COLORS[i % INDICATOR_COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
+                    });
+                  }
+                  chartPanes.push({ id: 'price', height: 350, series: priceSeries });
+
+                  // Pane 3: Oscillator (MACD, RVOL, etc.)
+                  if (oscNames.length > 0) {
+                    const oscSeries: SeriesConfig[] = [];
+                    // Histogram first (drawn in back)
+                    for (const col of oscNames.filter(c => c.includes('hist'))) {
+                      oscSeries.push({
+                        type: 'Histogram',
+                        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
+                          time: b.timestamp, value: b[col],
+                          color: b[col] >= 0 ? '#4CAF50' : '#f44336',
+                        })),
+                        options: { priceLineVisible: false, title: 'Hist' },
+                      });
+                    }
+                    // Lines
+                    for (const col of oscNames.filter(c => !c.includes('hist'))) {
+                      oscSeries.push({
+                        type: 'Line',
+                        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+                        options: {
+                          color: col.includes('signal') ? '#FF9800' : '#2196F3',
+                          lineWidth: 1, priceLineVisible: false,
+                          title: col.replace(/_/g, ' '),
+                        },
+                      });
+                    }
+                    // Zero reference line
+                    if (bars.length > 0) {
+                      oscSeries.push({
+                        type: 'Line',
+                        data: [
+                          { time: bars[0].timestamp, value: 0 },
+                          { time: bars[bars.length - 1].timestamp, value: 0 },
+                        ],
+                        options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
+                      });
+                    }
+                    chartPanes.push({ id: 'oscillator', height: 180, series: oscSeries });
                   }
 
                   return (
@@ -1423,68 +1490,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           Loading indicators & heatmap data...
                         </div>
                       )}
-
-                      {/* Pane 1: Confluence Heatmap */}
-                      {showConditions && heatmapConds.length > 0 && (
-                        <Card className="mb-1 py-2">
-                          <p className="text-[10px] font-medium mb-1 px-2" style={{ color: 'var(--text-muted)' }}>Confluence Conditions</p>
-                          <ConfluenceHeatmap
-                            bars={chartSrc || []}
-                            conditions={heatmapConds}
-                          />
-                        </Card>
-                      )}
-
-                      {/* Pane 2: Price Chart with overlay indicators only */}
-                      <Card className="mb-1">
-                        <TradingChart
-                          ohlcv={ohlcvData}
-                          overlays={indicatorOverlays}
-                          markers={tradeMarkers}
-                          height={350}
+                      <Card className="mb-4">
+                        <SyncedChartPane
+                          panes={chartPanes}
                           upColor={chartPrefs.candleUp}
                           downColor={chartPrefs.candleDown}
                           upBorderColor={chartPrefs.candleUpBorder}
                           gridLines={chartPrefs.gridLines}
-                          rightOffset={chartPrefs.rightOffset}
-                          timeVisible
-                          secondsVisible
                         />
-                        {/* Overlay legend */}
-                        {overlayNames.length > 0 && (
-                          <div className="flex flex-wrap gap-3 mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                            {overlayNames.map((name: string, i: number) => (
-                              <span key={name} className="flex items-center gap-1">
-                                <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
-                                {name.replace(/_/g, ' ')}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <div className="flex gap-4 mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                          <span><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
-                          <span><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
-                          <span><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
-                          <span><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
-                          <span><span style={{ color: chartPrefs.exitBarCountColor }}>&#9679;</span> Bar count</span>
+                        {/* Legend */}
+                        <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          {overlayNames.map((name: string, i: number) => (
+                            <span key={name} className="flex items-center gap-1">
+                              <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
+                              {name.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
                         </div>
                       </Card>
-
-                      {/* Pane 3: Oscillator panes (MACD, RVOL, etc.) */}
-                      {oscNames.length > 0 && chartSrc && (
-                        <Card className="mb-4">
-                          <OscillatorPane
-                            bars={chartSrc}
-                            series={oscNames.map((col: string) => ({
-                              column: col,
-                              label: col.replace(/_/g, ' '),
-                              color: col.includes('signal') ? '#FF9800' : col.includes('hist') ? '#9C27B0' : '#2196F3',
-                              type: col.includes('hist') ? 'histogram' as const : 'line' as const,
-                            }))}
-                            height={150}
-                          />
-                        </Card>
-                      )}
                     </>
                   );
                 })()}

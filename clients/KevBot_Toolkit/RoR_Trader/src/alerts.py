@@ -485,11 +485,27 @@ def save_alert(alert: dict) -> dict:
     """Save a new alert, auto-assigning ID and timestamp."""
     from db import USE_DB
     if USE_DB:
-        from db import save_alert_db
         if 'timestamp' not in alert:
             alert['timestamp'] = datetime.now(timezone.utc).isoformat()
         if 'acknowledged' not in alert:
             alert['acknowledged'] = False
+
+        # If no user context (e.g., alert_monitor standalone), use admin client
+        # to bypass RLS and look up user_id from the strategy record
+        from db import get_current_user_id
+        if not get_current_user_id() and alert.get('strategy_id'):
+            try:
+                from db import save_alert_admin, get_admin_client
+                admin = get_admin_client()
+                # Look up user_id from the strategy
+                strat_result = admin.table('strategies').select('user_id').eq('id', alert['strategy_id']).limit(1).execute()
+                user_id = strat_result.data[0]['user_id'] if strat_result.data else None
+                if user_id:
+                    return save_alert_admin(alert, user_id)
+            except Exception as e:
+                _log.warning("Admin alert save failed, falling back: %s", e)
+
+        from db import save_alert_db
         return save_alert_db(alert)
 
     with _alerts_lock:
