@@ -117,6 +117,107 @@ const EMPTY_CONFLUENCE_TIMELINE: any[] = [];
 const EMPTY_CONFLUENCE_TRIGGER_EVENTS: any[] = [];
 
 /* ========================================================================= */
+/* ROLLING METRICS + MARKOV COMPUTATION (client-side from trades)            */
+/* ========================================================================= */
+
+function computeRollingMetric(
+  trades: { pnlR: number }[],
+  window: number,
+  metric: string,
+): number[] {
+  if (trades.length < window) return [];
+  const result: number[] = [];
+  for (let i = window - 1; i < trades.length; i++) {
+    const slice = trades.slice(i - window + 1, i + 1);
+    const rs = slice.map(t => t.pnlR);
+    const wins = rs.filter(r => r > 0).length;
+    if (metric === 'Win Rate') {
+      result.push(wins / window * 100);
+    } else if (metric === 'PF') {
+      const grossWin = rs.filter(r => r > 0).reduce((a, b) => a + b, 0);
+      const grossLoss = Math.abs(rs.filter(r => r <= 0).reduce((a, b) => a + b, 0));
+      result.push(grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 10 : 0);
+    } else if (metric === 'Sharpe') {
+      const mean = rs.reduce((a, b) => a + b, 0) / window;
+      const variance = rs.reduce((a, r) => a + (r - mean) ** 2, 0) / window;
+      const std = Math.sqrt(variance);
+      result.push(std > 0 ? mean / std : 0);
+    }
+  }
+  return result;
+}
+
+function computeMarkov(trades: { pnlR: number }[]): {
+  ww: number; wl: number; lw: number; ll: number;
+  trendScore: number; edgeStrength: number;
+} {
+  let ww = 0, wl = 0, lw = 0, ll = 0;
+  for (let i = 1; i < trades.length; i++) {
+    const prev = trades[i - 1].pnlR > 0;
+    const curr = trades[i].pnlR > 0;
+    if (prev && curr) ww++;
+    else if (prev && !curr) wl++;
+    else if (!prev && curr) lw++;
+    else ll++;
+  }
+  const wTotal = ww + wl || 1;
+  const lTotal = lw + ll || 1;
+  const pWW = ww / wTotal;
+  const pLW = lw / lTotal;
+  // Trend score: how much wins cluster (>0.5 = streaky wins, <0.5 = mean-reverting)
+  const trendScore = (pWW + (1 - pLW)) / 2;
+  // Edge strength: deviation from random walk
+  const edgeStrength = Math.abs(pWW - 0.5) + Math.abs(pLW - 0.5);
+  return {
+    ww: Math.round(pWW * 100),
+    wl: Math.round((1 - pWW) * 100),
+    lw: Math.round(pLW * 100),
+    ll: Math.round((1 - pLW) * 100),
+    trendScore: Math.round(trendScore * 100) / 100,
+    edgeStrength: Math.round(edgeStrength * 100) / 100,
+  };
+}
+
+/** Inline rolling line chart (SVG) */
+function RollingLineChart({ data, label, height = 250 }: { data: number[]; label: string; height?: number }) {
+  if (data.length < 2) {
+    return <div className="flex items-center justify-center" style={{ height, color: 'var(--text-muted)' }}><span className="text-xs">Not enough trades for rolling computation</span></div>;
+  }
+  const width = 700;
+  const pad = { top: 20, right: 16, bottom: 28, left: 56 };
+  const cW = width - pad.left - pad.right;
+  const cH = height - pad.top - pad.bottom;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => ({
+    x: pad.left + (i / (data.length - 1)) * cW,
+    y: pad.top + cH - ((v - min) / range) * cH,
+  }));
+  const lineD = `M${pts.map(p => `${p.x},${p.y}`).join(' L')}`;
+  const last = pts[pts.length - 1];
+  const lastVal = data[data.length - 1];
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+      {/* Grid */}
+      {[0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
+        const y = pad.top + cH * (1 - pct);
+        const val = min + range * pct;
+        return (
+          <g key={i}>
+            <line x1={pad.left} y1={y} x2={pad.left + cW} y2={y} stroke="var(--border)" strokeWidth="0.5" strokeDasharray="4 4" />
+            <text x={pad.left - 8} y={y + 3} textAnchor="end" fontSize="9" fill="var(--text-muted)" fontFamily="monospace">{val.toFixed(1)}</text>
+          </g>
+        );
+      })}
+      <path d={lineD} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" />
+      <circle cx={last.x} cy={last.y} r="4" fill="var(--accent)" />
+      <text x={last.x} y={last.y - 10} textAnchor="middle" fontSize="10" fill="var(--accent)" fontWeight="600" fontFamily="monospace">{lastVal.toFixed(1)}</text>
+    </svg>
+  );
+}
+
+/* ========================================================================= */
 /* HELPERS                                                                     */
 /* ========================================================================= */
 
@@ -1015,8 +1116,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             </select>
                           </label>
                         </div>
-                        <ChartPlaceholder
-                          label={`Rolling ${rollingMetric} (window=${rollingWindow}) over trade sequence`}
+                        <RollingLineChart
+                          data={computeRollingMetric(allTrades, rollingWindow, rollingMetric)}
+                          label={`Rolling ${rollingMetric} (window=${rollingWindow})`}
                           height={250}
                         />
                       </Card>
@@ -1059,7 +1161,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </Card>
                     )}
 
-                    {advancedTab === 'Markov Motor' && (
+                    {advancedTab === 'Markov Motor' && (() => {
+                      const windowedTrades = allTrades.slice(-markovWindow);
+                      const markov = computeMarkov(windowedTrades.length >= 2 ? windowedTrades : allTrades);
+                      const rollingWR = computeRollingMetric(allTrades, markovWindow, 'Win Rate');
+                      return (
                       <Card>
                         <div className="flex items-center gap-6 mb-4 flex-wrap">
                           <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -1090,8 +1196,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </label>
                         </div>
 
-                        <ChartPlaceholder
-                          label={`Rolling performance with Markov transitions (window=${markovWindow})`}
+                        <RollingLineChart
+                          data={rollingWR}
+                          label={`Rolling Win Rate with Markov transitions (window=${markovWindow})`}
                           height={250}
                         />
 
@@ -1111,13 +1218,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             <tbody>
                               <tr>
                                 <td style={{ ...tdStyle, fontWeight: 600 }}>Win</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--green)' }}>{markov.ww}%</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--red)' }}>{markov.wl}%</td>
                               </tr>
                               <tr>
                                 <td style={{ ...tdStyle, fontWeight: 600 }}>Loss</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
-                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>{'--'}</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--green)' }}>{markov.lw}%</td>
+                                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--red)' }}>{markov.ll}%</td>
                               </tr>
                             </tbody>
                           </table>
@@ -1126,15 +1233,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <div className="flex items-center gap-6 mt-4">
                           <div>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Trend Score</p>
-                            <p className="text-base font-bold" style={{ color: 'var(--text-muted)' }}>{'--'}</p>
+                            <p className="text-base font-bold" style={{ color: markov.trendScore > 0.5 ? 'var(--green)' : 'var(--red)' }}>{markov.trendScore.toFixed(2)}</p>
                           </div>
                           <div>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Edge Strength</p>
-                            <p className="text-base font-bold" style={{ color: 'var(--text-muted)' }}>{'--'}</p>
+                            <p className="text-base font-bold" style={{ color: markov.edgeStrength > edgeDecay ? 'var(--green)' : 'var(--text-muted)' }}>{markov.edgeStrength.toFixed(2)}</p>
                           </div>
                         </div>
                       </Card>
-                    )}
+                      );
+                    })()}
                   </CollapsibleSection>
                 )}
               </div>
