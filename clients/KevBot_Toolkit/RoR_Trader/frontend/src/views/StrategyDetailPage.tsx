@@ -444,6 +444,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Price chart data — fast OHLCV from bars endpoint, slow indicators from chart-data
   const stratSymbol = apiStrategy?.symbol ?? null;
   const stratTimeframe = apiStrategy?.timeframe ?? '1Min';
+  // Timeframe duration in milliseconds — used to shift C-type timestamps to next bar open
+  const tfMs = useMemo(() => {
+    const tf = stratTimeframe;
+    if (tf.includes('Min')) return parseInt(tf) * 60 * 1000;
+    if (tf.includes('Hour') || tf === '1H') return 3600 * 1000;
+    if (tf.includes('Day') || tf === '1D') return 86400 * 1000;
+    return 60 * 1000;
+  }, [stratTimeframe]);
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
@@ -600,29 +608,47 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Forward test trades — wrapped in useMemo to prevent Terser from chaining
   // const declarations (which causes TDZ errors in production builds)
-  const fwdTrades = useMemo(() => (fwdData?.forward_trades || []).map((t: any, i: number) => ({
-    id: i + 1,
-    entryTime: t.entry_time || '--',
-    exitTime: t.exit_time || '--',
-    entryPrice: t.entry_price ?? 0,
-    exitPrice: t.exit_price ?? 0,
-    pnlR: t.r_multiple ?? 0,
-    execType: t.exec_type ? `[${t.exec_type}]` : '[C]',
-    exitReason: t.exit_reason || '--',
-    isFwd: true,
-  })), [fwdData]);
+  // Shift a C-type timestamp to the next bar open (more accurate to reality)
+  const shiftCType = useMemo(() => (iso: string, execType: string): string => {
+    if (!iso || iso === '--') return iso;
+    const isL = execType.includes('L') || execType.includes('HM') || execType.includes('HL');
+    if (isL) return iso; // L-type fires mid-bar, no shift needed
+    return new Date(new Date(iso).getTime() + tfMs).toISOString();
+  }, [tfMs]);
 
-  const btTrades = useMemo(() => (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => ({
-    id: t.id ?? i + 1,
-    entryTime: t.entry_time || t.entryTime || '--',
-    exitTime: t.exit_time || t.exitTime || '--',
-    entryPrice: t.entry_price ?? t.entryPrice ?? 0,
-    exitPrice: t.exit_price ?? t.exitPrice ?? 0,
-    pnlR: t.r_multiple ?? t.pnlR ?? 0,
-    execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
-    exitReason: t.exit_reason || t.exitReason || '--',
-    isFwd: false,
-  })), [fwdData, allTrades]);
+  const fwdTrades = useMemo(() => (fwdData?.forward_trades || []).map((t: any, i: number) => {
+    const rawExec = t.exec_type || 'C';
+    return {
+      id: i + 1,
+      entryTime: t.entry_time || '--',
+      exitTime: t.exit_time || '--',
+      entryTimeDisplay: shiftCType(t.entry_time || '--', rawExec),
+      exitTimeDisplay: shiftCType(t.exit_time || '--', rawExec),
+      entryPrice: t.entry_price ?? 0,
+      exitPrice: t.exit_price ?? 0,
+      pnlR: t.r_multiple ?? 0,
+      execType: rawExec,
+      exitReason: t.exit_reason || '--',
+      isFwd: true,
+    };
+  }), [fwdData, shiftCType]);
+
+  const btTrades = useMemo(() => (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => {
+    const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
+    return {
+      id: t.id ?? i + 1,
+      entryTime: t.entry_time || t.entryTime || '--',
+      exitTime: t.exit_time || t.exitTime || '--',
+      entryTimeDisplay: shiftCType(t.entry_time || t.entryTime || '--', rawExec),
+      exitTimeDisplay: shiftCType(t.exit_time || t.exitTime || '--', rawExec),
+      entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+      exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+      pnlR: t.r_multiple ?? t.pnlR ?? 0,
+      execType: rawExec,
+      exitReason: t.exit_reason || t.exitReason || '--',
+      isFwd: false,
+    };
+  }), [fwdData, allTrades, shiftCType]);
 
   // Trade-to-Alert mapping — MUST be after btTrades declaration
   const tradeAlertMapping = useMemo(() => {
@@ -652,11 +678,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }, [recentAlerts, btTrades]);
 
   // Match sets: which algo trades have matching alerts, and vice versa
-  // Also compute entry/exit deltas in seconds for each match
+  // Uses shifted (display) timestamps for C-type trades so deltas reflect real slippage
+  // Match threshold = user's alertSlippage setting (not a fixed 10 minutes)
   const { alertMatches, algoMatches } = useMemo(() => {
     const algoAll = [...fwdTrades, ...btTrades];
+    const slipMs = (chartPrefs.alertSlippage || 5) * 1000;
+    // Search window: max of slippage tolerance or 2× timeframe (to find the closest match)
+    const searchWindow = Math.max(slipMs, tfMs * 2);
 
-    // For each alert, find closest algo trade by entry time
+    // For each alert, find closest algo trade by entry time (using shifted display time)
     const alertResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
     for (let ai = 0; ai < recentAlerts.length; ai++) {
       const a = recentAlerts[ai];
@@ -669,18 +699,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       let bestDist = Infinity;
       for (let ti = 0; ti < algoAll.length; ti++) {
         const t = algoAll[ti];
-        if (!t.entryTime || t.entryTime === '--') continue;
-        const dist = Math.abs(new Date(t.entryTime).getTime() - aEntryMs);
+        if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') continue;
+        const dist = Math.abs(new Date(t.entryTimeDisplay).getTime() - aEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ti; }
       }
-      if (bestIdx >= 0 && bestDist < 600000) { // within 10 minutes = plausible match
+      if (bestIdx >= 0 && bestDist <= searchWindow) {
         const algo = algoAll[bestIdx];
-        const entryDelta = (aEntryMs - new Date(algo.entryTime).getTime()) / 1000; // positive = alert fired after algo
+        const entryDelta = (aEntryMs - new Date(algo.entryTimeDisplay).getTime()) / 1000;
         let exitDelta: number | null = null;
-        if (a.exitTime && a.exitTime !== '--' && algo.exitTime && algo.exitTime !== '--') {
-          exitDelta = (new Date(a.exitTime).getTime() - new Date(algo.exitTime).getTime()) / 1000;
+        if (a.exitTime && a.exitTime !== '--' && algo.exitTimeDisplay && algo.exitTimeDisplay !== '--') {
+          exitDelta = (new Date(a.exitTime).getTime() - new Date(algo.exitTimeDisplay).getTime()) / 1000;
         }
-        alertResults.push({ matched: true, entryDelta, exitDelta });
+        alertResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
       } else {
         alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
@@ -690,11 +720,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const algoResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
     for (let ti = 0; ti < algoAll.length; ti++) {
       const t = algoAll[ti];
-      if (!t.entryTime || t.entryTime === '--') {
+      if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') {
         algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
         continue;
       }
-      const tEntryMs = new Date(t.entryTime).getTime();
+      const tEntryMs = new Date(t.entryTimeDisplay).getTime();
       let bestIdx = -1;
       let bestDist = Infinity;
       for (let ai = 0; ai < recentAlerts.length; ai++) {
@@ -703,21 +733,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         const dist = Math.abs(new Date(a.entryTime).getTime() - tEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ai; }
       }
-      if (bestIdx >= 0 && bestDist < 600000) {
+      if (bestIdx >= 0 && bestDist <= searchWindow) {
         const alert = recentAlerts[bestIdx];
-        const entryDelta = (new Date(alert.entryTime).getTime() - tEntryMs) / 1000; // positive = alert fired after algo
+        const entryDelta = (new Date(alert.entryTime).getTime() - tEntryMs) / 1000;
         let exitDelta: number | null = null;
-        if (alert.exitTime && alert.exitTime !== '--' && t.exitTime && t.exitTime !== '--') {
-          exitDelta = (new Date(alert.exitTime).getTime() - new Date(t.exitTime).getTime()) / 1000;
+        if (alert.exitTime && alert.exitTime !== '--' && t.exitTimeDisplay && t.exitTimeDisplay !== '--') {
+          exitDelta = (new Date(alert.exitTime).getTime() - new Date(t.exitTimeDisplay).getTime()) / 1000;
         }
-        algoResults.push({ matched: true, entryDelta, exitDelta });
+        algoResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
       } else {
         algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
     }
 
     return { alertMatches: alertResults, algoMatches: algoResults };
-  }, [recentAlerts, fwdTrades, btTrades]);
+  }, [recentAlerts, fwdTrades, btTrades, chartPrefs.alertSlippage, tfMs]);
 
   // Timezone-aware timestamp formatter
   const formatTime = useMemo(() => {
@@ -1563,22 +1593,24 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const firstBarTime = bars.length > 0 ? new Date(bars[0].timestamp).getTime() : 0;
                   const lastBarTime = bars.length > 0 ? new Date(bars[bars.length - 1].timestamp).getTime() : Infinity;
 
-                  // Build trade markers — only within visible bar range
+                  // Build trade markers — use shifted display times for C-type (next bar open)
                   const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t) => {
                     const m: any[] = [];
                     const dir = strategy.direction;
-                    const entryMs = t.entryTime && t.entryTime !== '--' ? new Date(t.entryTime).getTime() : 0;
-                    const exitMs = t.exitTime && t.exitTime !== '--' ? new Date(t.exitTime).getTime() : 0;
-                    if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
-                      m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
+                    const entryPlot = t.entryTimeDisplay || t.entryTime;
+                    const exitPlot = t.exitTimeDisplay || t.exitTime;
+                    const entryMs = entryPlot && entryPlot !== '--' ? new Date(entryPlot).getTime() : 0;
+                    const exitMs = exitPlot && exitPlot !== '--' ? new Date(exitPlot).getTime() : 0;
+                    if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
+                      m.push({ time: entryPlot, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
                     }
-                    if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+                    if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
                       const reason = t.exitReason || '';
                       let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
                       if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
                       else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
                       else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
-                      m.push({ time: t.exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
+                      m.push({ time: exitPlot, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
                     }
                     return m;
                   });
@@ -1613,10 +1645,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   // Add price-level cross markers (+ for backtest, x for alert trades)
                   // These show the exact fill price as an in-bar marker, matching Streamlit
                   const visibleTrades = [...btTrades, ...fwdTrades].filter(t => {
-                    const entryMs = t.entryTime && t.entryTime !== '--' ? new Date(t.entryTime).getTime() : 0;
-                    const exitMs = t.exitTime && t.exitTime !== '--' ? new Date(t.exitTime).getTime() : 0;
-                    return (entryMs >= firstBarTime && entryMs <= lastBarTime) ||
-                           (exitMs >= firstBarTime && exitMs <= lastBarTime);
+                    const ep = t.entryTimeDisplay || t.entryTime;
+                    const xp = t.exitTimeDisplay || t.exitTime;
+                    const entryMs = ep && ep !== '--' ? new Date(ep).getTime() : 0;
+                    const exitMs = xp && xp !== '--' ? new Date(xp).getTime() : 0;
+                    return (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) ||
+                           (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
                   });
 
                   if (visibleTrades.length > 0 || recentAlerts.length > 0) {
@@ -1643,11 +1677,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     const seenAlgoExit = new Set<string>();
 
                     for (const t of visibleTrades) {
+                      // Use shifted display time for C-type trades (plots on next bar)
+                      const entryPlot = t.entryTimeDisplay || t.entryTime;
+                      const exitPlot = t.exitTimeDisplay || t.exitTime;
                       // Entry
-                      if (t.entryTime && t.entryTime !== '--' && t.entryPrice > 0) {
-                        const entryMs = new Date(t.entryTime).getTime();
-                        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
-                          const snapped = snapToBar(t.entryTime);
+                      if (entryPlot && entryPlot !== '--' && t.entryPrice > 0) {
+                        const entryMs = new Date(entryPlot).getTime();
+                        if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
+                          const snapped = snapToBar(entryPlot);
                           if (snapped && !seenAlgoEntry.has(snapped)) {
                             seenAlgoEntry.add(snapped);
                             algoEntryData.push({ time: snapped, value: t.entryPrice });
@@ -1656,10 +1693,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         }
                       }
                       // Exit
-                      if (t.exitTime && t.exitTime !== '--' && t.exitPrice > 0) {
-                        const exitMs = new Date(t.exitTime).getTime();
-                        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
-                          const snapped = snapToBar(t.exitTime);
+                      if (exitPlot && exitPlot !== '--' && t.exitPrice > 0) {
+                        const exitMs = new Date(exitPlot).getTime();
+                        if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
+                          const snapped = snapToBar(exitPlot);
                           if (snapped && !seenAlgoExit.has(snapped)) {
                             seenAlgoExit.add(snapped);
                             const reason = t.exitReason || '';
@@ -1953,7 +1990,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h, hi) => (
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h, hi) => (
                               <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -1961,17 +1998,25 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <tbody>
                           {sortedAlgo.length === 0 ? (
                             <tr>
-                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No trades available — run backtest to populate
                               </td>
                             </tr>
                           ) : sortedAlgo.map((row: any, si: number) => {
                             const m = algoMatches[row._origIdx] || { matched: false, entryDelta: null, exitDelta: null };
+                            const execBadge = row.execType || 'C';
+                            const isL = execBadge.includes('L') || execBadge.includes('HM') || execBadge.includes('HL');
                             return (
                               <tr key={si}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                  <span style={{ color: isL ? '#FF9800' : 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>{isL ? 'L' : 'C'}</span>
+                                  {formatTime(row.entryTimeDisplay)}
+                                </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                  <span style={{ color: 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>C</span>
+                                  {formatTime(row.exitTimeDisplay)}
+                                </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
@@ -1984,14 +2029,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                     fontWeight: 600, fontSize: '0.75rem',
                                   }}>
                                     {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
-                                  </span>
-                                </td>
-                                <td style={tdStyle}>
-                                  <span style={{
-                                    color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
-                                    fontSize: '0.7rem',
-                                  }}>
-                                    {row.isFwd ? 'FWD' : 'BT'}
                                   </span>
                                 </td>
                                 <td style={tdStyle}>
