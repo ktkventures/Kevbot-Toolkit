@@ -526,7 +526,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
   // Map raw alerts to event-level format (for Alerts tab)
   // Map raw alerts — handle both flattened (from _row_to_alert) and nested (data JSONB) formats
-  const recentAlertEvents = (alerts || EMPTY_ALERTS).map((a: any) => {
+  const recentAlertEvents = useMemo(() => (alerts || EMPTY_ALERTS).map((a: any) => {
     const d = a.data || {};
     return {
       time: a.timestamp || a.time || '--',
@@ -537,32 +537,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       entryPrice: a.entry_price ?? d.entry_price ?? null,
       status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
     };
-  });
+  }), [alerts]);
 
   // Pair entry/exit alerts into trade rows (for Alert History table on Chart & Trades tab)
-  const recentAlerts = (() => {
+  const recentAlerts = useMemo(() => {
     const entries: any[] = [];
     const paired: any[] = [];
-    // Sort chronologically (oldest first) for proper pairing
     const sorted = [...recentAlertEvents].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
     for (const evt of sorted) {
       if (evt.type === 'ENTRY') {
         entries.push(evt);
       } else if (evt.type === 'EXIT' && entries.length > 0) {
-        const entry = entries.shift(); // FIFO: match oldest unmatched entry
+        const entry = entries.shift();
         const entryP = entry?.price ?? 0;
         const exitP = evt.price ?? 0;
         const stopP = entry?.stopPrice;
-        // Compute R-multiple if we have stop price, otherwise use raw P&L
         let rMult: number | null = null;
         if (stopP != null && stopP !== 0 && entryP && exitP) {
           rMult = (exitP - entryP) / Math.abs(entryP - stopP);
         }
         paired.push({
-          entryTime: entry?.time || '--',
-          exitTime: evt.time || '--',
-          entryPrice: entryP,
-          exitPrice: exitP,
+          entryTime: entry?.time || '--', exitTime: evt.time || '--',
+          entryPrice: entryP, exitPrice: exitP,
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
           result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
           exitReason: evt.trigger || '--',
@@ -572,9 +568,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     for (const entry of entries) {
       paired.push({ entryTime: entry.time || '--', exitTime: null, entryPrice: entry.price, exitPrice: null, r: null, result: 'Open', exitReason: null });
     }
-    // Reverse so most recent trades are first
     return paired.reverse();
-  })();
+  }, [recentAlertEvents]);
   // Trade-to-Alert mapping: pair alert trades with backtest trades by proximity
   const tradeAlertMapping = useMemo(() => recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
     // Find closest backtest trade by entry time
