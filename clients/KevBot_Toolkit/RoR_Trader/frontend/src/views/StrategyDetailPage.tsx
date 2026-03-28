@@ -1665,8 +1665,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const firstBarTime = bars.length > 0 ? new Date(bars[0].timestamp).getTime() : 0;
                   const lastBarTime = bars.length > 0 ? new Date(bars[bars.length - 1].timestamp).getTime() : Infinity;
 
-                  // Build trade markers — use shifted display times for C-type (next bar open)
-                  const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t) => {
+                  // Build trade markers — only when Show Triggers is on
+                  const tradeMarkers = !showTriggers ? [] : [...btTrades, ...fwdTrades].flatMap((t) => {
                     const m: any[] = [];
                     const dir = strategy.direction;
                     const entryPlot = t.entryTimeDisplay || t.entryTime;
@@ -1714,9 +1714,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     },
                   ];
 
-                  // Add price-level cross markers (+ for backtest, x for alert trades)
-                  // These show the exact fill price as an in-bar marker, matching Streamlit
-                  const visibleTrades = [...btTrades, ...fwdTrades].filter(t => {
+                  // Add price-level cross markers (+ for algo, x for alert trades)
+                  // Only when Show Triggers is on
+                  const visibleTrades = !showTriggers ? [] : [...btTrades, ...fwdTrades].filter(t => {
                     const ep = t.entryTimeDisplay || t.entryTime;
                     const xp = t.exitTimeDisplay || t.exitTime;
                     const entryMs = ep && ep !== '--' ? new Date(ep).getTime() : 0;
@@ -1918,6 +1918,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           downColor={chartPrefs.candleDown}
                           upBorderColor={chartPrefs.candleUpBorder}
                           gridLines={chartPrefs.gridLines}
+                          rightOffset={chartPrefs.rightOffset}
                         />
                         {/* Legend */}
                         <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -2349,6 +2350,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             downColor={chartPrefs.candleDown}
                             upBorderColor={chartPrefs.candleUpBorder}
                             gridLines={chartPrefs.gridLines}
+                            rightOffset={chartPrefs.rightOffset}
                           />
                         );
                       })() : (

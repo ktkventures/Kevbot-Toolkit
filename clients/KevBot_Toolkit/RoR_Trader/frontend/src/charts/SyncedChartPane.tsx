@@ -56,6 +56,8 @@ interface SyncedChartPaneProps {
   downColor?: string;
   upBorderColor?: string;
   gridLines?: boolean;
+  /** Number of empty bars to show to the right of the last candle */
+  rightOffset?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +70,7 @@ export default function SyncedChartPane({
   downColor,
   upBorderColor,
   gridLines = true,
+  rightOffset = 3,
 }: SyncedChartPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
@@ -118,7 +121,7 @@ export default function SyncedChartPane({
           timeVisible: true,
           secondsVisible: true,
           visible: !pane.hideTimeAxis,
-          rightOffset: 3,
+          rightOffset: rightOffset,
         },
       });
 
@@ -240,7 +243,7 @@ export default function SyncedChartPane({
       for (const c of charts) c.remove();
       chartsRef.current = [];
     };
-  }, [panes, upColor, downColor, upBorderColor, gridLines, getThemeColors]);
+  }, [panes, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors]);
 
   if (panes.length === 0) {
     return (
