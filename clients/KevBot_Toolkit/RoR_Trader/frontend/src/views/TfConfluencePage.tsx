@@ -402,7 +402,6 @@ function mapApiGroupToTfPack(
     version: group.version || 'Default',
     tags: [
       ...(localTemplate?.tags || (apiTemplate?.category ? [apiTemplate.category] : [])),
-      ...(group.is_default ? ['Default'] : []),
       ...((group.parameters as any)?._tags || []),
     ],
     enabled: group.enabled,
