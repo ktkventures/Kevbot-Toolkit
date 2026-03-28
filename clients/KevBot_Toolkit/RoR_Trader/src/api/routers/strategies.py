@@ -425,6 +425,15 @@ def get_strategy_chart_data(
         if state_cols:
             reset_df = df.reset_index()
             time_col = reset_df.columns[0]
+            # Log what state columns contain for debugging
+            for sc in state_cols:
+                if sc in reset_df.columns:
+                    unique_vals = reset_df[sc].dropna().unique()
+                    logger.info("[CHART-DATA] heatmap state_col=%s, unique_values=%s (last 5: %s)",
+                                sc, list(unique_vals[:10]),
+                                list(reset_df[sc].tail(5).values))
+                else:
+                    logger.warning("[CHART-DATA] heatmap state_col=%s NOT FOUND in df", sc)
             for i, row in enumerate(chart_data):
                 if i < len(reset_df):
                     r = reset_df.iloc[i]
