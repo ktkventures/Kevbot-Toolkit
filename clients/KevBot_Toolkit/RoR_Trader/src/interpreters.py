@@ -713,6 +713,34 @@ TRIGGER_FUNCS["UTBOT_V2"] = detect_utbot_confirmed_triggers
 TRIGGER_FUNCS["EMA_PRICE_POSITION_V2"] = detect_ema_price_position_confirmed_triggers
 
 
+# ---- Built-in Swing 1-2-3 interpreter & triggers ----
+
+def interpret_swing_123(df: pd.DataFrame, **params) -> pd.Series:
+    """Classify each bar into a Swing 1-2-3 pattern state."""
+    pattern_map = {2: "BULL_C3", 1: "BULL_C2", -2: "BEAR_C3", -1: "BEAR_C2", 0: "NEUTRAL"}
+    def classify(row):
+        p = row.get("sw123_pattern", 0)
+        if pd.isna(p):
+            return None
+        return pattern_map.get(int(p), "NEUTRAL")
+    return df.apply(classify, axis=1)
+
+
+def detect_swing_123_triggers(df: pd.DataFrame, **params) -> dict:
+    """Detect Swing 1-2-3 pattern triggers."""
+    pattern = df["sw123_pattern"]
+    return {
+        "sw123_bull_c2": pattern == 1,
+        "sw123_bull_c3": pattern == 2,
+        "sw123_bear_c2": pattern == -1,
+        "sw123_bear_c3": pattern == -2,
+    }
+
+
+INTERPRETER_FUNCS["SWING_123"] = interpret_swing_123
+TRIGGER_FUNCS["SWING_123"] = detect_swing_123_triggers
+
+
 def register_interpreter(key: str, func: Callable) -> None:
     """Register an interpreter function for a given key."""
     INTERPRETER_FUNCS[key] = func

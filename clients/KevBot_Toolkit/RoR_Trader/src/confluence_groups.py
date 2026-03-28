@@ -390,6 +390,40 @@ TEMPLATES: Dict[str, Dict] = {
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
 
+    "swing_123": {
+        "name": "Swing 1-2-3",
+        "category": "Trend",
+        "description": "Candle 2 and Candle 3 pattern detection for swing reversal and continuation signals",
+        "interpreters": ["SWING_123"],
+        "trigger_prefix": "sw123",
+        "parameters_schema": {},
+        "plot_schema": {
+            "bull_c2_color": {"type": "color", "default": "#FFD11A", "label": "Bullish C2 Color"},
+            "bull_c3_color": {"type": "color", "default": "#FFFF00", "label": "Bullish C3 Color"},
+            "bear_c2_color": {"type": "color", "default": "#FF66B3", "label": "Bearish C2 Color"},
+            "bear_c3_color": {"type": "color", "default": "#FF33CC", "label": "Bearish C3 Color"},
+        },
+        "plot_config": {"candle_color_column": "sw123_candle_color"},
+        "outputs": ["BULL_C3", "BULL_C2", "BEAR_C3", "BEAR_C2", "NEUTRAL"],
+        "output_descriptions": {
+            "BULL_C3": "Bullish Candle 3: Prior bar was C2 and current close > prior high (continuation confirmed)",
+            "BULL_C2": "Bullish Candle 2: Made lower low but closed above prior close (reversal candidate)",
+            "BEAR_C3": "Bearish Candle 3: Prior bar was C2 and current close < prior low (continuation confirmed)",
+            "BEAR_C2": "Bearish Candle 2: Made higher high but closed below prior close (reversal candidate)",
+            "NEUTRAL": "No swing pattern detected on this bar",
+        },
+        "triggers": [
+            {"base": "bull_c2", "name": "Bullish Candle 2", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bull_c3", "name": "Bullish Candle 3", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bear_c2", "name": "Bearish Candle 2", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bear_c3", "name": "Bearish Candle 3", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bull_c2_cc", "name": "Bullish C2 \u2192 C3 Confirmed (CC)", "direction": "LONG", "type": "ENTRY", "execution": "close_close", "column_base": "bull_c2"},
+            {"base": "bear_c2_cc", "name": "Bearish C2 \u2192 C3 Confirmed (CC)", "direction": "SHORT", "type": "ENTRY", "execution": "close_close", "column_base": "bear_c2"},
+        ],
+        "indicator_columns": ["sw123_pattern", "sw123_candle_color"],
+        "display_type": "hidden",
+    },
+
     "bar_count": {
         "name": "Bar Count Exit",
         "trigger_prefix": "bar_count",

@@ -535,6 +535,42 @@ def _run_ema_price_position_v2_indicators(df: pd.DataFrame, group) -> pd.DataFra
     return result
 
 
+def _run_swing_123_indicators(df: pd.DataFrame, group) -> pd.DataFrame:
+    """Run Swing 1-2-3 pattern indicator (built-in version)."""
+    import numpy as np
+    result = df.copy()
+    close = result["close"].values
+    high = result["high"].values
+    low = result["low"].values
+    n = len(close)
+    pattern = np.zeros(n, dtype=int)
+    colors = [""] * n
+    bull_c2_color = "#FFD11A"
+    bull_c3_color = "#FFFF00"
+    bear_c2_color = "#FF66B3"
+    bear_c3_color = "#FF33CC"
+    for i in range(1, n):
+        bull_c2 = low[i] < low[i - 1] and close[i] > close[i - 1]
+        bear_c2 = high[i] > high[i - 1] and close[i] < close[i - 1]
+        bull_c3 = (pattern[i - 1] == 1) and close[i] > high[i - 1]
+        bear_c3 = (pattern[i - 1] == -1) and close[i] < low[i - 1]
+        if bull_c3:
+            pattern[i] = 2
+            colors[i] = bull_c3_color
+        elif bear_c3:
+            pattern[i] = -2
+            colors[i] = bear_c3_color
+        elif bull_c2:
+            pattern[i] = 1
+            colors[i] = bull_c2_color
+        elif bear_c2:
+            pattern[i] = -1
+            colors[i] = bear_c2_color
+    result["sw123_pattern"] = pattern
+    result["sw123_candle_color"] = colors
+    return result
+
+
 GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "ema_stack": _run_ema_stack_indicators,
     "ema_price_position": _run_ema_stack_indicators,
@@ -545,6 +581,7 @@ GROUP_INDICATOR_FUNCS: Dict[str, Callable] = {
     "utbot": _run_utbot_indicators,
     "utbot_v2": lambda df, group: _run_utbot_v2_indicators(df, group),
     "ema_price_position_v2": lambda df, group: _run_ema_price_position_v2_indicators(df, group),
+    "swing_123": lambda df, group: _run_swing_123_indicators(df, group),
 }
 
 
