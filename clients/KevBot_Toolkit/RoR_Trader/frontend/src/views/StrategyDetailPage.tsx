@@ -484,8 +484,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       maxConsecLosses: s.max_consec_losses ?? s.maxConsecLosses ?? 0,
     };
   }, [kpiData]);
-  // Map API trades (snake_case) to V5 format (camelCase)
-  const allTrades = (trades || EMPTY_TRADES).map((t: any, i: number) => ({
+  // Map API trades (snake_case) to V5 format — useMemo prevents Terser const-chaining TDZ
+  const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => ({
     id: t.id ?? i + 1,
     entryTime: t.entry_time || t.entryTime || '--',
     exitTime: t.exit_time || t.exitTime || '--',
@@ -495,7 +495,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
     exitReason: t.exit_reason || t.exitReason || '--',
     isFwd: t.isFwd ?? false,
-  }));
+  })), [trades]);
 
   // Inject pulse CSS
   useEffect(() => {
@@ -577,33 +577,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     }
     return paired.reverse();
   }, [recentAlertEvents]);
-  // Trade-to-Alert mapping: computed from paired alerts + backtest trades
-  const tradeAlertMapping = useMemo(() => {
-    if (recentAlerts.length === 0) return [];
-    return recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
-    // Find closest backtest trade by entry time
-    const alertEntryMs = new Date(alertTrade.entryTime).getTime();
-    let closestBt: any = null;
-    let closestDist = Infinity;
-    for (const bt of btTrades) {
-      if (!bt.entryTime || bt.entryTime === '--') continue;
-      const dist = Math.abs(new Date(bt.entryTime).getTime() - alertEntryMs);
-      if (dist < closestDist) { closestDist = dist; closestBt = bt; }
-    }
-    const entryDelta = closestBt ? `${Math.round(closestDist / 1000)}s` : '--';
-    const exitDelta = closestBt && alertTrade.exitTime && closestBt.exitTime !== '--'
-      ? `${Math.round(Math.abs(new Date(alertTrade.exitTime).getTime() - new Date(closestBt.exitTime).getTime()) / 1000)}s` : '--';
-    return {
-      tradeNum: i + 1,
-      btEntry: closestBt?.entryTime ? new Date(closestBt.entryTime).toLocaleString() : '--',
-      alertEntry: new Date(alertTrade.entryTime).toLocaleString(),
-      entryDelta,
-      btExit: closestBt?.exitTime && closestBt.exitTime !== '--' ? new Date(closestBt.exitTime).toLocaleString() : '--',
-      alertExit: alertTrade.exitTime ? new Date(alertTrade.exitTime).toLocaleString() : '--',
-      exitDelta,
-    };
-  });
-  }, [recentAlerts, btTrades]);
   // Alert analysis computed lazily — avoid complex useMemo chains that cause TDZ in production
   const alertAnalysis = EMPTY_ALERT_ANALYSIS;
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
@@ -625,8 +598,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
 
-  // Forward test trades — computed before early returns (hook-safe)
-  const fwdTrades = (fwdData?.forward_trades || []).map((t: any, i: number) => ({
+  // Forward test trades — wrapped in useMemo to prevent Terser from chaining
+  // const declarations (which causes TDZ errors in production builds)
+  const fwdTrades = useMemo(() => (fwdData?.forward_trades || []).map((t: any, i: number) => ({
     id: i + 1,
     entryTime: t.entry_time || '--',
     exitTime: t.exit_time || '--',
@@ -636,8 +610,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     execType: t.exec_type ? `[${t.exec_type}]` : '[C]',
     exitReason: t.exit_reason || '--',
     isFwd: true,
-  }));
-  const btTrades = (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => ({
+  })), [fwdData]);
+
+  const btTrades = useMemo(() => (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => ({
     id: t.id ?? i + 1,
     entryTime: t.entry_time || t.entryTime || '--',
     exitTime: t.exit_time || t.exitTime || '--',
@@ -647,7 +622,34 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
     exitReason: t.exit_reason || t.exitReason || '--',
     isFwd: false,
-  }));
+  })), [fwdData, allTrades]);
+
+  // Trade-to-Alert mapping — MUST be after btTrades declaration
+  const tradeAlertMapping = useMemo(() => {
+    if (recentAlerts.length === 0) return [];
+    return recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
+      const alertEntryMs = new Date(alertTrade.entryTime).getTime();
+      let closestBt: any = null;
+      let closestDist = Infinity;
+      for (const bt of btTrades) {
+        if (!bt.entryTime || bt.entryTime === '--') continue;
+        const dist = Math.abs(new Date(bt.entryTime).getTime() - alertEntryMs);
+        if (dist < closestDist) { closestDist = dist; closestBt = bt; }
+      }
+      const entryDelta = closestBt ? `${Math.round(closestDist / 1000)}s` : '--';
+      const exitDelta = closestBt && alertTrade.exitTime && closestBt.exitTime !== '--'
+        ? `${Math.round(Math.abs(new Date(alertTrade.exitTime).getTime() - new Date(closestBt.exitTime).getTime()) / 1000)}s` : '--';
+      return {
+        tradeNum: i + 1,
+        btEntry: closestBt?.entryTime ? new Date(closestBt.entryTime).toLocaleString() : '--',
+        alertEntry: new Date(alertTrade.entryTime).toLocaleString(),
+        entryDelta,
+        btExit: closestBt?.exitTime && closestBt.exitTime !== '--' ? new Date(closestBt.exitTime).toLocaleString() : '--',
+        alertExit: alertTrade.exitTime ? new Date(alertTrade.exitTime).toLocaleString() : '--',
+        exitDelta,
+      };
+    });
+  }, [recentAlerts, btTrades]);
 
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
@@ -672,7 +674,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return [];
   }, [btTrades, fwdTrades, apiStrategy]);
 
-  const equityBoundaryIndex = btTrades.length > 0 ? btTrades.length : null;
+  const equityBoundaryIndex = useMemo(() => btTrades.length > 0 ? btTrades.length : null, [btTrades]);
 
   // Early returns after all hooks
   if (isLoading || !strategy) {
