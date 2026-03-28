@@ -1,11 +1,12 @@
 /**
  * Shared hook for chart display preferences.
  *
- * Reads from the user settings API (same data that Settings > Display saves)
- * and provides typed chart preferences for all chart components.
+ * Uses inline fetch (not useSettings/apiFetch) to avoid circular
+ * dependency that causes "Cannot access before initialization" in
+ * production builds.
  */
 
-import { useSettings } from '@/hooks/queries/useSettings';
+import { useState, useEffect } from 'react';
 
 /** Candle theme definitions — mirrors SettingsDisplayPage CANDLE_THEMES */
 export const CANDLE_THEMES: Record<string, { up: string; down: string; upBorder?: string }> = {
@@ -71,9 +72,20 @@ const DEFAULTS: ChartPrefs = {
 };
 
 export function useChartPrefs(): ChartPrefs {
-  const { data: settings } = useSettings();
+  const [settings, setSettings] = useState<Record<string, any> | null>(null);
+
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ror_access_token') : null;
+    if (!token) return;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    fetch(`${apiUrl}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setSettings(d); })
+      .catch(() => {});
+  }, []);
+
   if (!settings) return DEFAULTS;
-  const s = settings as Record<string, any>;
+  const s = settings;
 
   const theme = s.candleTheme ?? DEFAULTS.candleTheme;
   const themeColors = CANDLE_THEMES[theme] || CANDLE_THEMES.neutral;
