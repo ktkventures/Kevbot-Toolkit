@@ -1868,9 +1868,24 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <h4 className="text-sm font-medium">
                           {selectedCondition.split('-')[1]?.replace(/_/g, ' ') || 'Indicator'} — {confChartData?.timeframe || '...'} Chart
                         </h4>
-                        <span className="text-xs font-mono px-2 py-1 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                          Looking for: <strong style={{ color: 'var(--accent)' }}>{selectedCondition.split('-')[2]}</strong>
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-mono px-2 py-1 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                            Looking for: <strong style={{ color: 'var(--accent)' }}>{selectedCondition.split('-').slice(2).join('-')}</strong>
+                          </span>
+                          {confChartData && confChartData.bars.length > 0 && (() => {
+                            const lastBar = confChartData.bars[confChartData.bars.length - 1];
+                            const currentState = lastBar._state || '--';
+                            const isMet = lastBar._met === true || currentState === confChartData.needed_state;
+                            return (
+                              <span className="text-xs font-mono px-2 py-1 rounded" style={{
+                                background: isMet ? 'var(--green-muted)' : 'var(--red-muted)',
+                                color: isMet ? 'var(--green)' : 'var(--red)',
+                              }}>
+                                Current: <strong>{currentState}</strong> {isMet ? '✓ Met' : '✗ Not met'}
+                              </span>
+                            );
+                          })()}
+                        </div>
                       </div>
                       {confChartLoading ? (
                         <ChartPlaceholder label={`Loading ${selectedCondition.split('-')[0]} chart...`} height={350} />
