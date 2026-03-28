@@ -1924,7 +1924,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </div>
                 </Card>
 
-                {/* Alert History + Algo History side by side */}
+                {/* Algo History + Alert History side by side */}
                 {(() => {
                   const slipTol = chartPrefs.alertSlippage;
                   const fmtDelta = (d: number | null) => {
@@ -1936,9 +1936,78 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     if (d == null) return 'var(--text-muted)';
                     return Math.abs(d) <= slipTol ? 'var(--green)' : 'var(--red)';
                   };
+                  // Sort algo trades by entry time descending (most recent first)
+                  const sortedAlgo = [...fwdTrades, ...btTrades]
+                    .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
+                    .sort((a, b) => {
+                      const aMs = a.entryTime && a.entryTime !== '--' ? new Date(a.entryTime).getTime() : 0;
+                      const bMs = b.entryTime && b.entryTime !== '--' ? new Date(b.entryTime).getTime() : 0;
+                      return bMs - aMs;
+                    });
                   return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-                  {/* Alert History (× on chart — actual alert executions) */}
+                  {/* Algo History (+ on chart — BT + FWD programmatic trades) — LEFT */}
+                  <Card>
+                    <h4 className="text-sm font-medium mb-3">Algo History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({btTrades.length + fwdTrades.length})</span></h4>
+                    <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
+                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr>
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h, hi) => (
+                              <th key={hi} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedAlgo.length === 0 ? (
+                            <tr>
+                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                No trades available — run backtest to populate
+                              </td>
+                            </tr>
+                          ) : sortedAlgo.map((row: any, si: number) => {
+                            const m = algoMatches[row._origIdx] || { matched: false, entryDelta: null, exitDelta: null };
+                            return (
+                              <tr key={si}>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
+                                <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
+                                <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
+                                <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                                  {row.pnlR != null ? `${row.pnlR >= 0 ? '+' : ''}${Number(row.pnlR).toFixed(2)}` : '--'}
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{
+                                    color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)',
+                                    fontWeight: 600, fontSize: '0.75rem',
+                                  }}>
+                                    {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{
+                                    color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
+                                    fontSize: '0.7rem',
+                                  }}>
+                                    {row.isFwd ? 'FWD' : 'BT'}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {m.matched ? 'Yes' : 'No'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+
+                  {/* Alert History (× on chart — actual alert executions) — RIGHT */}
                   <Card>
                     <h4 className="text-sm font-medium mb-3">Alert History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({recentAlerts.length})</span></h4>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
@@ -1980,67 +2049,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 </td>
                                 <td style={tdStyle}>
                                   <span style={{ color: m.matched ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                    {m.matched ? 'Yes' : 'No'}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </Card>
-
-                  {/* Algo History (+ on chart — BT + FWD programmatic trades) */}
-                  <Card>
-                    <h4 className="text-sm font-medium mb-3">Algo History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({btTrades.length + fwdTrades.length})</span></h4>
-                    <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
-                      <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h, hi) => (
-                              <th key={hi} style={thStyle}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {btTrades.length === 0 && fwdTrades.length === 0 ? (
-                            <tr>
-                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
-                                No trades available — run backtest to populate
-                              </td>
-                            </tr>
-                          ) : [...fwdTrades, ...btTrades].map((row: any, i: number) => {
-                            const m = algoMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
-                            return (
-                              <tr key={i}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
-                                <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
-                                <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
-                                <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                                  {row.pnlR != null ? `${row.pnlR >= 0 ? '+' : ''}${Number(row.pnlR).toFixed(2)}` : '--'}
-                                </td>
-                                <td style={tdStyle}>
-                                  <span style={{
-                                    color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)',
-                                    fontWeight: 600, fontSize: '0.75rem',
-                                  }}>
-                                    {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
-                                  </span>
-                                </td>
-                                <td style={tdStyle}>
-                                  <span style={{
-                                    color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
-                                    fontSize: '0.7rem',
-                                  }}>
-                                    {row.isFwd ? 'FWD' : 'BT'}
-                                  </span>
-                                </td>
-                                <td style={tdStyle}>
-                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
                                     {m.matched ? 'Yes' : 'No'}
                                   </span>
                                 </td>
