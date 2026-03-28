@@ -734,28 +734,33 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
         pass
 
     # Structural fallback: parse the confluence ID without DB access.
-    # Format is "{trigger_prefix}_{group_name}_{base_trigger}[_exec_suffix]"
-    # e.g. "utbot_v2_default_buy" → prefix="utbot_v2", base="buy" → "utbot_v2_buy"
+    # Format can be either:
+    #   "{trigger_prefix}_{group_name}_{base_trigger}[_exec_suffix]"
+    #   "{template_slug}_{group_name}_{base_trigger}[_exec_suffix]"
+    # e.g. "utbot_v2_default_buy" or "ema_price_position_v2_default_cross_mid_up_lc"
     try:
         from confluence_groups import TEMPLATES
-        # Sort prefixes longest-first so "utbot_v2" matches before "utbot"
-        prefixes = sorted(
-            [(t.get('trigger_prefix', ''), t)
-             for t in TEMPLATES.values() if 'trigger_prefix' in t],
-            key=lambda x: len(x[0]), reverse=True)
-        for prefix, template in prefixes:
-            if confluence_trigger_id.startswith(prefix + '_'):
-                remainder = confluence_trigger_id[len(prefix) + 1:]
-                # remainder = "{group_name}_{base_trigger}[_exec_suffix]"
-                # Match against known trigger bases from the template
+        # Build lookup entries from both trigger_prefix AND template slug
+        # Sort longest-first so "ema_price_position_v2" matches before "ema"
+        entries = []
+        for slug, t in TEMPLATES.items():
+            tp = t.get('trigger_prefix', '')
+            if tp:
+                entries.append((tp, slug, t))
+                if slug != tp:
+                    entries.append((slug, slug, t))
+        entries.sort(key=lambda x: len(x[0]), reverse=True)
+
+        for match_key, slug, template in entries:
+            if confluence_trigger_id.startswith(match_key + '_'):
+                remainder = confluence_trigger_id[len(match_key) + 1:]
+                trigger_prefix = template.get('trigger_prefix', slug)
                 for trig_def in template.get('triggers', []):
                     base = trig_def['base']
-                    # Check if remainder ends with the base trigger
-                    # (possibly with exec suffix like _ib, _hm, _hl)
                     for suffix in ('', '_ib', '_hm', '_hl', '_lc', '_cc'):
                         candidate = base + suffix
                         if remainder.endswith('_' + candidate) or remainder == candidate:
-                            return f"{prefix}_{candidate}"
+                            return f"{trigger_prefix}_{candidate}"
                 break
     except Exception:
         pass
