@@ -329,6 +329,7 @@ export default function SettingsDisplayPage() {
   const [exitBarCountColor, setExitBarCountColor] = useState('#26A69A');
   const [exitHybridColor, setExitHybridColor] = useState('#FF9800');
   const [showLabels, setShowLabels] = useState(true);
+  const [alertSlippage, setAlertSlippage] = useState(5);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
 
   // Table
@@ -382,6 +383,7 @@ export default function SettingsDisplayPage() {
     if (s.exitBarCountColor) setExitBarCountColor(s.exitBarCountColor);
     if (s.exitHybridColor) setExitHybridColor(s.exitHybridColor);
     if (s.showLabels != null) setShowLabels(s.showLabels);
+    if (s.alertSlippage != null) setAlertSlippage(s.alertSlippage);
     if (s.tableDensity) setTableDensity(s.tableDensity);
     if (s.badgeShape) setBadgeShape(s.badgeShape);
     if (s.bracketStyle) setBracketStyle(s.bracketStyle);
@@ -399,6 +401,7 @@ export default function SettingsDisplayPage() {
     eqShowZeroLine, eqShowHWM, eqShowEdgeCheck, eqShowConfBands,
     entryShape, exitWinShape, exitLossShape, btEntryMark, btExitMark, alertEntryMark, alertExitMark,
     entryColor, exitWinColor, exitLossColor, exitStopColor, exitBarCountColor, exitHybridColor, showLabels,
+    alertSlippage,
     tableDensity, badgeShape, bracketStyle, execColor, fidelityColor, variationStyle,
   }), [
     timezone, dateFormat, numberFormat, currencySymbol,
@@ -407,6 +410,7 @@ export default function SettingsDisplayPage() {
     eqShowZeroLine, eqShowHWM, eqShowEdgeCheck, eqShowConfBands,
     entryShape, exitWinShape, exitLossShape, btEntryMark, btExitMark, alertEntryMark, alertExitMark,
     entryColor, exitWinColor, exitLossColor, exitStopColor, exitBarCountColor, exitHybridColor, showLabels,
+    alertSlippage,
     tableDensity, badgeShape, bracketStyle, execColor, fidelityColor, variationStyle,
   ]);
 
@@ -755,6 +759,24 @@ export default function SettingsDisplayPage() {
                 <button onClick={() => setShowLabels(!showLabels)} className="w-10 h-6 rounded-full relative flex-shrink-0 transition-colors" style={{ background: showLabels ? 'var(--accent)' : 'var(--bg-input)', border: showLabels ? 'none' : '1px solid var(--border)' }}>
                   <div className="w-4 h-4 rounded-full absolute top-1 transition-all" style={{ background: showLabels ? 'white' : 'var(--text-muted)', left: showLabels ? '22px' : '4px' }} />
                 </button>
+              </div>
+
+              {/* Alert slippage tolerance */}
+              <div>
+                <span className="text-xs font-medium block mb-1" style={{ color: 'var(--text-secondary)' }}>Alert Slippage Tolerance</span>
+                <span className="text-xs block mb-2" style={{ color: 'var(--text-muted)' }}>
+                  Max acceptable seconds between algo and alert execution. Deltas within this threshold show green; beyond show red.
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number" min={0} max={300} step={0.5}
+                    value={alertSlippage}
+                    onChange={e => setAlertSlippage(Number(e.target.value))}
+                    className="w-20 px-2 py-1 rounded text-sm"
+                    style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                  />
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>seconds</span>
+                </div>
               </div>
             </CollapsibleCard>
           </div>

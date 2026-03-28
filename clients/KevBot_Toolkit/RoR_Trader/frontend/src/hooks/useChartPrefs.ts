@@ -38,6 +38,8 @@ export interface ChartPrefs {
   eqShowZeroLine: boolean;
   eqShowHWM: boolean;
   eqXAxis: 'trade' | 'time';
+  // Alert slippage tolerance (seconds)
+  alertSlippage: number;
   // Trade markers
   entryColor: string;
   exitWinColor: string;
@@ -65,6 +67,7 @@ const DEFAULTS: ChartPrefs = {
   eqShowZeroLine: true,
   eqShowHWM: false,
   eqXAxis: 'trade',
+  alertSlippage: 5,
   entryColor: '#4CAF50',
   exitWinColor: '#4CAF50',
   exitLossColor: '#F44336',
@@ -110,6 +113,7 @@ export function useChartPrefs(): ChartPrefs {
     eqShowZeroLine: s.eqShowZeroLine ?? DEFAULTS.eqShowZeroLine,
     eqShowHWM: s.eqShowHWM ?? DEFAULTS.eqShowHWM,
     eqXAxis: s.eqXAxis ?? DEFAULTS.eqXAxis,
+    alertSlippage: s.alertSlippage ?? DEFAULTS.alertSlippage,
     entryColor: s.entryColor ?? DEFAULTS.entryColor,
     exitWinColor: s.exitWinColor ?? DEFAULTS.exitWinColor,
     exitLossColor: s.exitLossColor ?? DEFAULTS.exitLossColor,

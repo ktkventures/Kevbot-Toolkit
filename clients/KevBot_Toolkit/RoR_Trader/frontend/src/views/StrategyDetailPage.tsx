@@ -652,36 +652,72 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }, [recentAlerts, btTrades]);
 
   // Match sets: which algo trades have matching alerts, and vice versa
-  // Match = entry timestamps within 2 bars (2× timeframe seconds) of each other
-  const { alertMatchSet, algoMatchSet } = useMemo(() => {
-    const alertSet = new Set<number>(); // indices into recentAlerts
-    const algoSet = new Set<number>();  // indices into [...fwdTrades, ...btTrades]
+  // Also compute entry/exit deltas in seconds for each match
+  const { alertMatches, algoMatches } = useMemo(() => {
     const algoAll = [...fwdTrades, ...btTrades];
-    const tfSec = (() => {
-      const tf = apiStrategy?.timeframe || '1Min';
-      if (tf.includes('Min')) return parseInt(tf) * 60;
-      if (tf.includes('Hour') || tf === '1H') return 3600;
-      if (tf.includes('Day') || tf === '1D') return 86400;
-      return 60;
-    })();
-    const tolerance = tfSec * 2 * 1000; // 2 bars in ms
 
+    // For each alert, find closest algo trade by entry time
+    const alertResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
     for (let ai = 0; ai < recentAlerts.length; ai++) {
       const a = recentAlerts[ai];
-      if (!a.entryTime || a.entryTime === '--') continue;
-      const aMs = new Date(a.entryTime).getTime();
+      if (!a.entryTime || a.entryTime === '--') {
+        alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
+        continue;
+      }
+      const aEntryMs = new Date(a.entryTime).getTime();
+      let bestIdx = -1;
+      let bestDist = Infinity;
       for (let ti = 0; ti < algoAll.length; ti++) {
         const t = algoAll[ti];
         if (!t.entryTime || t.entryTime === '--') continue;
-        if (Math.abs(new Date(t.entryTime).getTime() - aMs) <= tolerance) {
-          alertSet.add(ai);
-          algoSet.add(ti);
-          break;
+        const dist = Math.abs(new Date(t.entryTime).getTime() - aEntryMs);
+        if (dist < bestDist) { bestDist = dist; bestIdx = ti; }
+      }
+      if (bestIdx >= 0 && bestDist < 600000) { // within 10 minutes = plausible match
+        const algo = algoAll[bestIdx];
+        const entryDelta = (aEntryMs - new Date(algo.entryTime).getTime()) / 1000; // positive = alert fired after algo
+        let exitDelta: number | null = null;
+        if (a.exitTime && a.exitTime !== '--' && algo.exitTime && algo.exitTime !== '--') {
+          exitDelta = (new Date(a.exitTime).getTime() - new Date(algo.exitTime).getTime()) / 1000;
         }
+        alertResults.push({ matched: true, entryDelta, exitDelta });
+      } else {
+        alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
     }
-    return { alertMatchSet: alertSet, algoMatchSet: algoSet };
-  }, [recentAlerts, fwdTrades, btTrades, apiStrategy]);
+
+    // For each algo trade, find closest alert by entry time
+    const algoResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
+    for (let ti = 0; ti < algoAll.length; ti++) {
+      const t = algoAll[ti];
+      if (!t.entryTime || t.entryTime === '--') {
+        algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
+        continue;
+      }
+      const tEntryMs = new Date(t.entryTime).getTime();
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let ai = 0; ai < recentAlerts.length; ai++) {
+        const a = recentAlerts[ai];
+        if (!a.entryTime || a.entryTime === '--') continue;
+        const dist = Math.abs(new Date(a.entryTime).getTime() - tEntryMs);
+        if (dist < bestDist) { bestDist = dist; bestIdx = ai; }
+      }
+      if (bestIdx >= 0 && bestDist < 600000) {
+        const alert = recentAlerts[bestIdx];
+        const entryDelta = (new Date(alert.entryTime).getTime() - tEntryMs) / 1000; // positive = alert fired after algo
+        let exitDelta: number | null = null;
+        if (alert.exitTime && alert.exitTime !== '--' && t.exitTime && t.exitTime !== '--') {
+          exitDelta = (new Date(alert.exitTime).getTime() - new Date(t.exitTime).getTime()) / 1000;
+        }
+        algoResults.push({ matched: true, entryDelta, exitDelta });
+      } else {
+        algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
+      }
+    }
+
+    return { alertMatches: alertResults, algoMatches: algoResults };
+  }, [recentAlerts, fwdTrades, btTrades]);
 
   // Timezone-aware timestamp formatter
   const formatTime = useMemo(() => {
@@ -1889,6 +1925,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 </Card>
 
                 {/* Alert History + Algo History side by side */}
+                {(() => {
+                  const slipTol = chartPrefs.alertSlippage;
+                  const fmtDelta = (d: number | null) => {
+                    if (d == null) return '--';
+                    const sign = d >= 0 ? '+' : '';
+                    return Math.abs(d) < 1 ? `${sign}${d.toFixed(1)}s` : `${sign}${Math.round(d)}s`;
+                  };
+                  const deltaColor = (d: number | null) => {
+                    if (d == null) return 'var(--text-muted)';
+                    return Math.abs(d) <= slipTol ? 'var(--green)' : 'var(--red)';
+                  };
+                  return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
                   {/* Alert History (× on chart — actual alert executions) */}
                   <Card>
@@ -1897,24 +1945,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h) => (
-                              <th key={h} style={thStyle}>{h}</th>
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h, hi) => (
+                              <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {recentAlerts.length === 0 ? (
                             <tr>
-                              <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No alerts available — enable monitoring to populate
                               </td>
                             </tr>
                           ) : recentAlerts.map((row: any, i: number) => {
-                            const matched = alertMatchSet.has(i);
+                            const m = alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
                             return (
                               <tr key={i}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
                                 <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
@@ -1929,8 +1979,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                   </span>
                                 </td>
                                 <td style={tdStyle}>
-                                  <span style={{ color: matched ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                    {matched ? 'Yes' : 'No'}
+                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {m.matched ? 'Yes' : 'No'}
                                   </span>
                                 </td>
                               </tr>
@@ -1948,24 +1998,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h) => (
-                              <th key={h} style={thStyle}>{h}</th>
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h, hi) => (
+                              <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {btTrades.length === 0 && fwdTrades.length === 0 ? (
                             <tr>
-                              <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No trades available — run backtest to populate
                               </td>
                             </tr>
                           ) : [...fwdTrades, ...btTrades].map((row: any, i: number) => {
-                            const matched = algoMatchSet.has(i);
+                            const m = algoMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
                             return (
                               <tr key={i}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
                                 <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
@@ -1988,8 +2040,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                   </span>
                                 </td>
                                 <td style={tdStyle}>
-                                  <span style={{ color: matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                    {matched ? 'Yes' : 'No'}
+                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {m.matched ? 'Yes' : 'No'}
                                   </span>
                                 </td>
                               </tr>
@@ -2000,6 +2052,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   </Card>
                 </div>
+                  );
+                })()}
               </div>
             )}
 
