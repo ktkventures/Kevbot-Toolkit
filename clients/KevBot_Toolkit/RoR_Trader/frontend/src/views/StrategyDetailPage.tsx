@@ -6,7 +6,7 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart } from '@/hooks/queries/useStrategies';
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -577,11 +577,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
   const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
+  const [selectedCondition, setSelectedCondition] = useState<string | null>(null);
   useEffect(() => {
     if (confluenceGroups.length > 0 && !selectedConfGroup) {
       setSelectedConfGroup(confluenceGroups[0].name);
     }
   }, [confluenceGroups, selectedConfGroup]);
+  // Auto-select first confluence condition for Confluence Analysis tab
+  const strategyConfluence: string[] = apiStrategy?.confluence || [];
+  useEffect(() => {
+    if (strategyConfluence.length > 0 && !selectedCondition) {
+      setSelectedCondition(strategyConfluence[0]);
+    }
+  }, [strategyConfluence, selectedCondition]);
+  const { data: confChartData, isLoading: confChartLoading } = useConfluenceChart(strategyId, selectedCondition);
   const [showPosHealth, setShowPosHealth] = useState(false);
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
@@ -1788,28 +1797,134 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             {/* =========================================================== */}
             {tab === 'Confluence Analysis' && (
               <div>
-                {confluenceGroups.length === 0 ? (
-                  <p className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>No confluence groups available — wire to API to populate.</p>
+                {strategyConfluence.length === 0 ? (
+                  <p className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>No confluence conditions configured for this strategy.</p>
                 ) : (
                 <>
-                <PillTabs
-                  tabs={confluenceGroups.map((g) => g.name)}
-                  active={selectedConfGroup}
-                  onChange={setSelectedConfGroup}
-                />
+                {/* Condition selector buttons */}
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {strategyConfluence.map((cond) => {
+                    const parts = cond.split('-', 3);
+                    const tf = parts[0] || '';
+                    const interp = parts[1] || '';
+                    const state = parts[2] || '';
+                    const isSelected = selectedCondition === cond;
+                    return (
+                      <button
+                        key={cond}
+                        onClick={() => setSelectedCondition(cond)}
+                        className="px-3 py-2 rounded-lg text-xs font-medium transition-colors"
+                        style={{
+                          background: isSelected ? 'var(--accent)' : 'var(--bg-card)',
+                          color: isSelected ? 'white' : 'var(--text-secondary)',
+                          border: isSelected ? 'none' : '1px solid var(--border)',
+                        }}
+                      >
+                        <span className="font-mono">[{tf}]</span>{' '}
+                        <span>{interp.replace(/_/g, ' ')}</span>{' '}
+                        <span style={{ color: isSelected ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>{state}</span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-                {confluenceGroups
-                  .filter((g) => g.name === selectedConfGroup)
-                  .map((group) => (
-                    <div key={group.id}>
-                      {/* Indicator chart */}
-                      <Card className="mb-4">
-                        <h4 className="text-sm font-medium mb-3">{group.name} &mdash; Indicator Chart</h4>
-                        <ChartPlaceholder
-                          label={`${group.name} indicator chart with overlays and state regions`}
-                          height={300}
+                {/* Confluence condition chart */}
+                {selectedCondition && (
+                  <div>
+                    <Card className="mb-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-sm font-medium">
+                          {selectedCondition.split('-')[1]?.replace(/_/g, ' ') || 'Indicator'} — {confChartData?.timeframe || '...'} Chart
+                        </h4>
+                        <span className="text-xs font-mono px-2 py-1 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                          Looking for: <strong style={{ color: 'var(--accent)' }}>{selectedCondition.split('-')[2]}</strong>
+                        </span>
+                      </div>
+                      {confChartLoading ? (
+                        <ChartPlaceholder label={`Loading ${selectedCondition.split('-')[0]} chart...`} height={350} />
+                      ) : confChartData && confChartData.bars.length > 0 ? (
+                        <SyncedChartPane
+                          panes={[{
+                            id: 'confluence-price',
+                            height: 350,
+                            series: [
+                              {
+                                type: 'Candlestick',
+                                data: confChartData.bars.map((b: any) => ({
+                                  time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                                })),
+                              },
+                              ...confChartData.indicator_columns.map((col: string, i: number) => ({
+                                type: 'Line' as const,
+                                data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({
+                                  time: b.timestamp, value: b[col],
+                                })),
+                                options: {
+                                  color: ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'][i % 4],
+                                  lineWidth: 2,
+                                  title: col.replace(/_/g, ' '),
+                                },
+                              })),
+                            ],
+                            primitives: (() => {
+                              // Build SessionHighlighting ranges for met/unmet regions
+                              const ranges: any[] = [];
+                              let regionStart: number | null = null;
+                              let regionMet = false;
+                              for (let i = 0; i < confChartData.bars.length; i++) {
+                                const bar = confChartData.bars[i];
+                                const met = bar._met === true;
+                                const t = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+                                if (regionStart === null) {
+                                  regionStart = t;
+                                  regionMet = met;
+                                } else if (met !== regionMet) {
+                                  ranges.push({
+                                    startTime: regionStart,
+                                    endTime: t,
+                                    color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)',
+                                  });
+                                  regionStart = t;
+                                  regionMet = met;
+                                }
+                              }
+                              if (regionStart !== null && confChartData.bars.length > 0) {
+                                const lastT = Math.floor(new Date(confChartData.bars[confChartData.bars.length - 1].timestamp).getTime() / 1000);
+                                ranges.push({
+                                  startTime: regionStart,
+                                  endTime: lastT,
+                                  color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)',
+                                });
+                              }
+                              return ranges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges } }] : [];
+                            })(),
+                          }]}
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          upBorderColor={chartPrefs.candleUpBorder}
+                          gridLines={chartPrefs.gridLines}
                         />
-                      </Card>
+                      ) : (
+                        <ChartPlaceholder label="No data for this condition" height={350} />
+                      )}
+                      {/* State legend */}
+                      <div className="flex items-center gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block w-4 h-3 rounded" style={{ background: 'rgba(76,175,80,0.15)' }} />
+                          Condition met
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block w-4 h-3 rounded" style={{ background: 'rgba(244,67,54,0.1)' }} />
+                          Condition not met
+                        </span>
+                        {confChartData?.indicator_columns.map((col: string, i: number) => (
+                          <span key={col} className="flex items-center gap-1">
+                            <span className="inline-block w-3 h-0.5 rounded" style={{ background: ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'][i % 4] }} />
+                            {col.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    </Card>
 
                       {/* Interpreter State Timeline + Trigger Events side by side */}
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1902,8 +2017,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           </div>
                         </Card>
                       </div>
-                    </div>
-                  ))}
+                  </div>
+                )}
                 </>
                 )}
 

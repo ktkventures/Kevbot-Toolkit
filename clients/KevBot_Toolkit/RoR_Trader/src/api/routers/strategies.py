@@ -444,6 +444,111 @@ def get_strategy_chart_data(
 
 
 # =============================================================================
+# CONFLUENCE CONDITION CHART DATA
+# =============================================================================
+
+@router.get("/{strategy_id}/confluence-chart")
+def get_confluence_chart(
+    strategy_id: int,
+    condition: str = Query(..., description="Confluence record e.g. '1d-MACD_LINE-M<S-'"),
+    days: int = Query(None),
+    user=Depends(get_current_user),
+):
+    """Get chart data for a specific confluence condition on its native timeframe.
+
+    Returns OHLCV bars + indicator overlay + interpreter state per bar
+    for the condition's timeframe (e.g., 1Day for '1d-MACD_LINE-M<S-').
+    """
+    strat = _get_or_404(strategy_id, user)
+    import services as svc
+    import pandas as pd
+
+    parts = condition.split('-', 2)
+    if len(parts) < 3:
+        raise HTTPException(status_code=400, detail="Invalid condition format. Expected 'TF-INTERPRETER-STATE'")
+
+    rec_tf, interp_key, needed_state = parts
+
+    # Resolve timeframe
+    from data_loader import get_tf_from_label
+    if rec_tf == 'GEN' or rec_tf == '1M':
+        chart_tf = strat.get('timeframe', '1Min')
+    else:
+        chart_tf = get_tf_from_label(rec_tf)
+        if not chart_tf:
+            chart_tf = strat.get('timeframe', '1Min')
+
+    try:
+        df = svc.prepare_data_with_indicators(
+            strat['symbol'],
+            days=days or strat.get('data_days', 30),
+            timeframe=chart_tf,
+            session=strat.get('trading_session', 'RTH'),
+        )
+
+        if len(df) == 0:
+            return {"bars": [], "indicator_columns": [], "states": [], "timeframe": chart_tf}
+
+        # Find indicator columns for this interpreter's template
+        from confluence_groups import get_enabled_groups, get_template
+        indicator_cols = []
+        for group in get_enabled_groups():
+            template = get_template(group.base_template)
+            if not template:
+                continue
+            if interp_key in [ik.upper() for ik in template.get("interpreters", [])] or \
+               interp_key in template.get("interpreters", []):
+                raw_cols = template.get("indicator_columns", [])
+                for col in raw_cols:
+                    if col in ("ema_short", "ema_mid", "ema_long"):
+                        p = group.parameters
+                        resolved = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                                   f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                                   f"ema_{p.get('long_period', 200)}"
+                        if resolved in df.columns:
+                            indicator_cols.append(resolved)
+                    elif col in df.columns:
+                        indicator_cols.append(col)
+                break  # found the matching group
+
+        indicator_cols = list(dict.fromkeys(indicator_cols))
+
+        # Get interpreter state column
+        state_col = interp_key if interp_key in df.columns else None
+        if not state_col:
+            # Try uppercase
+            for c in df.columns:
+                if c.upper() == interp_key.upper():
+                    state_col = c
+                    break
+
+        # Serialize
+        from api.services.backtest_service import _serialize_chart_data
+        chart_data = _serialize_chart_data(df, indicator_cols)
+
+        # Add state values
+        if state_col:
+            reset_df = df.reset_index()
+            for i, row_data in enumerate(chart_data):
+                if i < len(reset_df):
+                    val = reset_df.iloc[i].get(state_col)
+                    row_data['_state'] = str(val) if pd.notna(val) else None
+                    row_data['_met'] = (str(val) == needed_state) if pd.notna(val) else False
+
+        return {
+            "bars": chart_data,
+            "indicator_columns": indicator_cols,
+            "state_column": state_col,
+            "needed_state": needed_state,
+            "timeframe": chart_tf,
+            "condition": condition,
+        }
+    except Exception as e:
+        logger.exception("Failed to compute confluence chart for %s: %s", condition, e)
+        raise HTTPException(status_code=504, detail=f"Confluence chart failed: {str(e)[:200]}")
+
+
+# =============================================================================
 # TRIGGER ANALYSIS
 # =============================================================================
 

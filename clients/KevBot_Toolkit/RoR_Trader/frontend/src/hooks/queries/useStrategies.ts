@@ -133,6 +133,27 @@ export function useStrategyChartData(id: number | null) {
   });
 }
 
+export interface ConfluenceChartData {
+  bars: Record<string, any>[];
+  indicator_columns: string[];
+  state_column: string | null;
+  needed_state: string;
+  timeframe: string;
+  condition: string;
+}
+
+export function useConfluenceChart(strategyId: number | null, condition: string | null) {
+  return useQuery({
+    queryKey: ['confluence-chart', strategyId, condition],
+    queryFn: () => apiFetch<ConfluenceChartData>(
+      `/api/strategies/${strategyId}/confluence-chart?condition=${encodeURIComponent(condition!)}`
+    ),
+    enabled: strategyId !== null && !!condition,
+    staleTime: 300000,
+    retry: 1,
+  });
+}
+
 export function useTriggerAnalysis(id: number | null) {
   return useQuery({
     queryKey: ['trigger-analysis', id],
