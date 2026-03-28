@@ -501,9 +501,9 @@ def get_confluence_chart(
         # producing inflated MACD values (80+ instead of ±5).
         base_days = days or strat.get('data_days', 30)
         if chart_tf == '1Day':
-            chart_days = max(base_days, 730)  # ~2 years for daily
+            chart_days = max(base_days, 365)  # ~1 year for daily EMA warmup
         elif chart_tf in ('1Hour', '2Hour', '4Hour'):
-            chart_days = max(base_days, 365)  # 1 year for hourly
+            chart_days = max(base_days, 180)  # 6 months for hourly
         else:
             chart_days = base_days
 
