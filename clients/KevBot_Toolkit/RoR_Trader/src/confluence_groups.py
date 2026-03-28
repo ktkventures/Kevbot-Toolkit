@@ -569,6 +569,28 @@ def _parse_group_list(raw_groups: list) -> List[ConfluenceGroup]:
             plot_settings=PlotSettings(colors={}, line_width=1, visible=False),
         ))
 
+    # Migration: add swing_123_default if no swing_123 group exists
+    if not any(g.base_template == "swing_123" for g in groups):
+        groups.append(ConfluenceGroup(
+            id="swing_123_default",
+            base_template="swing_123",
+            version="Default",
+            description="Swing 1-2-3 candle pattern detection with C2/C3 entries",
+            enabled=True,
+            is_default=True,
+            parameters={},
+            plot_settings=PlotSettings(
+                colors={
+                    "bull_c2_color": "#FFD11A",
+                    "bull_c3_color": "#FFFF00",
+                    "bear_c2_color": "#FF66B3",
+                    "bear_c3_color": "#FF33CC",
+                },
+                line_width=1,
+                visible=True,
+            ),
+        ))
+
     return groups
 
 
@@ -683,6 +705,28 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
                 is_default=True,
                 parameters={"candle_count": 4},
                 plot_settings=PlotSettings(colors={}, line_width=1, visible=False),
+            ))
+
+        # Migration: add swing_123_default if no swing_123 group exists
+        if not any(g.base_template == "swing_123" for g in groups):
+            groups.append(ConfluenceGroup(
+                id="swing_123_default",
+                base_template="swing_123",
+                version="Default",
+                description="Swing 1-2-3 candle pattern detection with C2/C3 entries",
+                enabled=True,
+                is_default=True,
+                parameters={},
+                plot_settings=PlotSettings(
+                    colors={
+                        "bull_c2_color": "#FFD11A",
+                        "bull_c3_color": "#FFFF00",
+                        "bear_c2_color": "#FF66B3",
+                        "bear_c3_color": "#FF33CC",
+                    },
+                    line_width=1,
+                    visible=True,
+                ),
             ))
 
         return groups
@@ -848,6 +892,25 @@ def create_default_groups() -> List[ConfluenceGroup]:
                 colors={},
                 line_width=1,
                 visible=False,
+            ),
+        ),
+        ConfluenceGroup(
+            id="swing_123_default",
+            base_template="swing_123",
+            version="Default",
+            description="Swing 1-2-3 candle pattern detection with C2/C3 entries",
+            enabled=True,
+            is_default=True,
+            parameters={},
+            plot_settings=PlotSettings(
+                colors={
+                    "bull_c2_color": "#FFD11A",
+                    "bull_c3_color": "#FFFF00",
+                    "bear_c2_color": "#FF66B3",
+                    "bear_c3_color": "#FF33CC",
+                },
+                line_width=1,
+                visible=True,
             ),
         ),
     ]
