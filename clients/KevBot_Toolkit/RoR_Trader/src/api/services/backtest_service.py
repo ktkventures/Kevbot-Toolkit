@@ -162,10 +162,19 @@ def _serialize_trades(trades_df: pd.DataFrame) -> list[dict]:
                 d[k] = bool(v)
             elif isinstance(v, set):
                 d[k] = list(v)
-            elif pd.isna(v):
-                d[k] = None
-            else:
+            elif isinstance(v, (list, tuple, frozenset)):
+                d[k] = list(v)
+            elif isinstance(v, dict):
                 d[k] = v
+            else:
+                try:
+                    if pd.isna(v):
+                        d[k] = None
+                    else:
+                        d[k] = v
+                except (ValueError, TypeError):
+                    # pd.isna fails on arrays/collections — keep as-is
+                    d[k] = v
         result.append(d)
     return result
 

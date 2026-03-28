@@ -397,6 +397,55 @@ TEMPLATES: Dict[str, Dict] = {
         ],
         "indicator_columns": [],
     },
+
+    # ---- Legacy template aliases ----
+    # Old confluence groups reference these names. They use the same interpreters
+    # and indicator columns as their v2 counterparts but without confirmation delay.
+    "utbot": {
+        "name": "UT Bot (Legacy)",
+        "category": "Trend",
+        "description": "UT Bot ATR trailing stop — legacy version without confirmation delay",
+        "interpreters": ["UTBOT"],
+        "trigger_prefix": "utbot",
+        "parameters_schema": {
+            "atr_period": {"type": "int", "default": 10, "min": 1, "max": 50, "label": "ATR Period"},
+            "atr_multiplier": {"type": "float", "default": 1.0, "min": 0.5, "max": 5.0, "label": "ATR Multiplier"},
+        },
+        "plot_schema": {
+            "trail_color": {"type": "color", "default": "#64748b", "label": "Trailing Stop Color"},
+        },
+        "outputs": [],
+        "output_descriptions": {},
+        "triggers": [
+            {"base": "buy", "name": "UT Bot Buy", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "sell", "name": "UT Bot Sell", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+        ],
+        "indicator_columns": ["utbot_stop"],
+    },
+    "ema_price_position": {
+        "name": "EMA Price Position (Legacy)",
+        "category": "Moving Averages",
+        "description": "Price position within the EMA stack — legacy version without confirmation delay",
+        "interpreters": ["EMA_PRICE_POSITION"],
+        "trigger_prefix": "ema_pp",
+        "parameters_schema": {
+            "short_period": {"type": "int", "default": 9, "min": 1, "max": 200, "label": "Short Period"},
+            "mid_period": {"type": "int", "default": 21, "min": 1, "max": 200, "label": "Mid Period"},
+            "long_period": {"type": "int", "default": 200, "min": 1, "max": 500, "label": "Long Period"},
+        },
+        "plot_schema": {
+            "short_color": {"type": "color", "default": "#22c55e", "label": "Short EMA Color"},
+            "mid_color": {"type": "color", "default": "#eab308", "label": "Mid EMA Color"},
+            "long_color": {"type": "color", "default": "#ef4444", "label": "Long EMA Color"},
+        },
+        "outputs": [],
+        "output_descriptions": {},
+        "triggers": [
+            {"base": "cross_short_up", "name": "Price Crosses Above Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_down", "name": "Price Crosses Below Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+        ],
+        "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
+    },
 }
 
 
