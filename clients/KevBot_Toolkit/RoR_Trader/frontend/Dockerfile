@@ -2,8 +2,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (patches/ must be present for postinstall → patch-package)
 COPY package.json package-lock.json ./
+COPY patches/ patches/
 RUN npm ci
 
 # Copy source
