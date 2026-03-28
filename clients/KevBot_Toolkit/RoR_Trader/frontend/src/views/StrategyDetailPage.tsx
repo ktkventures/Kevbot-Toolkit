@@ -45,7 +45,8 @@ function apiToDetailStrategy(s: any) {
     tags: s.tags || [],
     monitored: s.alert_tracking_enabled || false,
     entry: s.entry_trigger_confluence_id || '--',
-    exit: s.exit_trigger_confluence_ids || [],
+    exit: s.exit_trigger_confluence_ids || s.exit_triggers || [],
+    barCountExit: s.bar_count_exit ?? null,
     stop: s.stop_config?.method || '--',
     target: s.target_config?.method || 'Signal exit only',
     confluence: s.confluence || [],
@@ -574,8 +575,70 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     // Reverse so most recent trades are first
     return paired.reverse();
   })();
-  const tradeAlertMapping = EMPTY_TRADE_ALERT_MAPPING; // {{trade_alert_mapping}} — wire to API
-  const alertAnalysis = EMPTY_ALERT_ANALYSIS; // {{alert_analysis}} — wire to API
+  // Trade-to-Alert mapping: pair alert trades with backtest trades by proximity
+  const tradeAlertMapping = recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
+    // Find closest backtest trade by entry time
+    const alertEntryMs = new Date(alertTrade.entryTime).getTime();
+    let closestBt: any = null;
+    let closestDist = Infinity;
+    for (const bt of btTrades) {
+      if (!bt.entryTime || bt.entryTime === '--') continue;
+      const dist = Math.abs(new Date(bt.entryTime).getTime() - alertEntryMs);
+      if (dist < closestDist) { closestDist = dist; closestBt = bt; }
+    }
+    const entryDelta = closestBt ? `${Math.round(closestDist / 1000)}s` : '--';
+    const exitDelta = closestBt && alertTrade.exitTime && closestBt.exitTime !== '--'
+      ? `${Math.round(Math.abs(new Date(alertTrade.exitTime).getTime() - new Date(closestBt.exitTime).getTime()) / 1000)}s` : '--';
+    return {
+      tradeNum: i + 1,
+      btEntry: closestBt?.entryTime ? new Date(closestBt.entryTime).toLocaleString() : '--',
+      alertEntry: new Date(alertTrade.entryTime).toLocaleString(),
+      entryDelta,
+      btExit: closestBt?.exitTime && closestBt.exitTime !== '--' ? new Date(closestBt.exitTime).toLocaleString() : '--',
+      alertExit: alertTrade.exitTime ? new Date(alertTrade.exitTime).toLocaleString() : '--',
+      exitDelta,
+    };
+  });
+  // Compute alert analysis from available alert data
+  const alertAnalysis = useMemo(() => {
+    if (recentAlertEvents.length === 0) return EMPTY_ALERT_ANALYSIS;
+    const entries = recentAlertEvents.filter((e: any) => e.type === 'ENTRY');
+    const exits = recentAlertEvents.filter((e: any) => e.type === 'EXIT');
+    const pairedCount = recentAlerts.filter((t: any) => t.result !== 'Open').length;
+    const wins = recentAlerts.filter((t: any) => t.result === 'Win').length;
+    const losses = recentAlerts.filter((t: any) => t.result === 'Loss').length;
+    const openCount = recentAlerts.filter((t: any) => t.result === 'Open').length;
+    const avgR = pairedCount > 0 ? recentAlerts.filter((t: any) => t.r != null).reduce((s: number, t: any) => s + t.r, 0) / pairedCount : 0;
+
+    return {
+      ...EMPTY_ALERT_ANALYSIS,
+      summaryMetrics: [
+        { label: 'Win Rate', ftAll: strategy.winRate ? `${strategy.winRate.toFixed(1)}%` : '--', ftAlertsOn: strategy.fwdWinRate != null ? `${strategy.fwdWinRate.toFixed(1)}%` : '--', alertActual: pairedCount > 0 ? `${(wins / pairedCount * 100).toFixed(1)}%` : '--', delta: pairedCount > 0 && strategy.fwdWinRate ? `${((wins / pairedCount * 100) - strategy.fwdWinRate).toFixed(1)}%` : '--' },
+        { label: 'Profit Factor', ftAll: strategy.pf ? strategy.pf.toFixed(2) : '--', ftAlertsOn: strategy.fwdPF != null ? strategy.fwdPF.toFixed(2) : '--', alertActual: '--', delta: '--' },
+        { label: 'Total Trades', ftAll: String(strategy.trades), ftAlertsOn: String(strategy.fwdTrades), alertActual: String(pairedCount), delta: '--' },
+        { label: 'Avg R-Multiple', ftAll: '--', ftAlertsOn: '--', alertActual: `${avgR >= 0 ? '+' : ''}${avgR.toFixed(2)}R`, delta: '--' },
+        { label: 'Alerts Delivered', ftAll: '--', ftAlertsOn: '--', alertActual: String(recentAlertEvents.filter((e: any) => e.status === 'Delivered').length), delta: '--' },
+        { label: 'Open Positions', ftAll: '--', ftAlertsOn: '--', alertActual: String(openCount), delta: '--' },
+      ],
+      positionHealth: {
+        status: openCount > 0 ? 'In Position' : 'Flat',
+        entries: entries.length,
+        exits: exits.length,
+        avgHoldTime: '--',
+        anomalies: [],
+      },
+      tradeByTrade: recentAlerts.map((t: any, i: number) => ({
+        tradeNum: i + 1,
+        entryTime: t.entryTime || '--',
+        exitTime: t.exitTime || '--',
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        r: t.r,
+        result: t.result,
+        exitReason: t.exitReason || '--',
+      })),
+    };
+  }, [recentAlertEvents, recentAlerts]);
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
   const [selectedCondition, setSelectedCondition] = useState<string | null>(null);
   useEffect(() => {
@@ -2051,14 +2114,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       {/* Exit */}
                       <div>
                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Exit</span>
-                        {exitsParsed.map((e, i) => (
+                        {exitsParsed.length > 0 ? exitsParsed.map((e, i) => (
                           <div key={i} className="flex items-center gap-2 mt-1 flex-wrap">
                             {e.exec && <ExecBadge exec={e.exec} />}
                             <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                               {e.pack && <>{e.pack} &gt; </>}{e.trigger}
                             </span>
                           </div>
-                        ))}
+                        )) : (
+                          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Signal exit only</p>
+                        )}
+                        {strategy.barCountExit != null && (
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: '#009688', background: 'rgba(0,150,136,0.12)' }}>
+                              Bar Count Exit
+                            </span>
+                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                              Max {strategy.barCountExit} bars
+                            </span>
+                          </div>
+                        )}
                       </div>
                       {/* Stop */}
                       <div>
@@ -2355,20 +2430,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </thead>
                         <tbody>
                           {[
-                            { ph: '{{event_type}}', val: '{{event_type}}', src: 'Derived from execution type + direction' },
+                            { ph: '{{event_type}}', val: recentAlertEvents[0]?.type ? `${recentAlertEvents[0].type.toLowerCase()}_${strategy.direction.toLowerCase()}_market` : '--', src: 'Derived from execution type + direction' },
                             { ph: '{{symbol}}', val: strategy.symbol, src: 'Strategy' },
                             { ph: '{{direction}}', val: strategy.direction, src: 'Strategy' },
-                            { ph: '{{order_action}}', val: '{{order_action}}', src: 'Derived (buy/sell/close)' },
-                            { ph: '{{order_type}}', val: '{{order_type}}', src: 'Derived from execution type' },
-                            { ph: '{{order_price}}', val: '{{order_price}}', src: 'Fill price or limit price' },
-                            { ph: '{{stop_price}}', val: '{{stop_price}}', src: 'Calculated stop' },
-                            { ph: '{{quantity}}', val: '{{quantity}}', src: 'Portfolio (risk / stop distance)' },
-                            { ph: '{{trigger_name}}', val: '{{trigger_name}}', src: 'Strategy trigger' },
-                            { ph: '{{atr}}', val: '{{atr}}', src: 'Indicator at signal bar' },
-                            { ph: '{{confluence_met}}', val: strategy.confluence.length > 0 ? strategy.confluence.join(', ') : '{{confluence_met}}', src: 'Active conditions at signal' },
-                            { ph: '{{portfolio_name}}', val: '{{portfolio_name}}', src: 'Portfolio' },
-                            { ph: '{{risk_per_trade}}', val: '{{risk_per_trade}}', src: 'Portfolio' },
-                            { ph: '{{timestamp}}', val: '{{timestamp}}', src: 'Signal time' },
+                            { ph: '{{order_action}}', val: strategy.direction === 'LONG' ? (recentAlertEvents[0]?.type === 'ENTRY' ? 'buy' : 'sell') : (recentAlertEvents[0]?.type === 'ENTRY' ? 'sell' : 'buy'), src: 'Derived (buy/sell/close)' },
+                            { ph: '{{order_type}}', val: 'market', src: 'Derived from execution type' },
+                            { ph: '{{order_price}}', val: recentAlertEvents[0]?.price != null ? `$${Number(recentAlertEvents[0].price).toFixed(2)}` : '--', src: 'Fill price or limit price' },
+                            { ph: '{{stop_price}}', val: recentAlertEvents[0]?.stopPrice != null ? `$${Number(recentAlertEvents[0].stopPrice).toFixed(2)}` : '--', src: 'Calculated stop' },
+                            { ph: '{{quantity}}', val: '--', src: 'Portfolio (risk / stop distance)' },
+                            { ph: '{{trigger_name}}', val: recentAlertEvents[0]?.trigger || '--', src: 'Strategy trigger' },
+                            { ph: '{{atr}}', val: '--', src: 'Indicator at signal bar' },
+                            { ph: '{{confluence_met}}', val: strategy.confluence.length > 0 ? strategy.confluence.join(', ') : '--', src: 'Active conditions at signal' },
+                            { ph: '{{portfolio_name}}', val: '--', src: 'Portfolio' },
+                            { ph: '{{risk_per_trade}}', val: '--', src: 'Portfolio' },
+                            { ph: '{{timestamp}}', val: recentAlertEvents[0]?.time ? new Date(recentAlertEvents[0].time).toLocaleString() : '--', src: 'Signal time' },
                           ].map((row, i) => (
                             <tr key={i}>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--accent)' }}>{row.ph}</td>
@@ -2395,15 +2470,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {recentAlerts.length === 0 ? (
+                        {recentAlertEvents.length === 0 ? (
                           <tr>
                             <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                               No alerts available — enable monitoring to populate
                             </td>
                           </tr>
-                        ) : recentAlerts.map((alert: any, i: number) => (
+                        ) : recentAlertEvents.map((alert: any, i: number) => (
                           <tr key={i}>
-                            <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{alert.time || '--'}</td>
+                            <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{alert.time ? new Date(alert.time).toLocaleString() : '--'}</td>
                             <td style={tdStyle}>
                               <span
                                 className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
@@ -2412,7 +2487,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                   background: alert.type === 'ENTRY' ? 'var(--green-muted)' : 'var(--red-muted)',
                                 }}
                               >
-                                {alert.type === 'ENTRY' ? 'entry_long_market' : 'exit_long_market'}
+                                {alert.type === 'ENTRY' ? `entry_${strategy.direction.toLowerCase()}_market` : `exit_${strategy.direction.toLowerCase()}_market`}
                               </span>
                             </td>
                             <td style={tdStyle}>{alert.trigger || '--'}</td>
@@ -2422,7 +2497,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             </td>
                             <td style={tdStyle}>
                               <span style={{
-                                color: alert.status === 'Delivered' ? 'var(--green)' : 'var(--red)',
+                                color: alert.status === 'Delivered' ? 'var(--green)' : alert.status === 'Pending' ? 'var(--orange)' : 'var(--text-muted)',
                               }}>
                                 {alert.status || '--'}
                               </span>
