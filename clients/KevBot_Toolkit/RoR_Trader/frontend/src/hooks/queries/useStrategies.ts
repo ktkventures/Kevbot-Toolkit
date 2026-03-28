@@ -78,6 +78,8 @@ export function useStrategyTrades(id: number | null, useStored = true) {
     queryFn: () =>
       apiFetch<TradeDTO[]>(`/api/strategies/${id}/trades?use_stored=${useStored}`),
     enabled: id !== null,
+    retry: 1,
+    retryDelay: 2000,
   });
 }
 
@@ -86,6 +88,8 @@ export function useStrategyForwardTest(id: number | null) {
     queryKey: ['strategy-forward-test', id],
     queryFn: () => apiFetch<ForwardTestDTO>(`/api/strategies/${id}/forward-test`),
     enabled: id !== null,
+    retry: 1,
+    retryDelay: 2000,
   });
 }
 

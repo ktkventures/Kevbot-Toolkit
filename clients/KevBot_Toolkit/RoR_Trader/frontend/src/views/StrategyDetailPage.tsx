@@ -576,7 +576,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return paired.reverse();
   })();
   // Trade-to-Alert mapping: pair alert trades with backtest trades by proximity
-  const tradeAlertMapping = recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
+  const tradeAlertMapping = useMemo(() => recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
     // Find closest backtest trade by entry time
     const alertEntryMs = new Date(alertTrade.entryTime).getTime();
     let closestBt: any = null;
@@ -598,7 +598,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       alertExit: alertTrade.exitTime ? new Date(alertTrade.exitTime).toLocaleString() : '--',
       exitDelta,
     };
-  });
+  }), [recentAlerts, btTrades]);
   // Compute alert analysis from available alert data
   const alertAnalysis = useMemo(() => {
     if (recentAlertEvents.length === 0) return EMPTY_ALERT_ANALYSIS;
