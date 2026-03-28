@@ -1531,60 +1531,82 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   });
 
                   if (visibleTrades.length > 0) {
-                    // Entry price crosses (+)
-                    const entryPriceMarkers = visibleTrades
-                      .filter(t => t.entryTime && t.entryTime !== '--' && t.entryPrice > 0)
-                      .filter(t => new Date(t.entryTime).getTime() >= firstBarTime && new Date(t.entryTime).getTime() <= lastBarTime)
-                      .map(t => ({
-                        time: t.entryTime,
-                        position: 'inBar' as const,
-                        shape: (t.isFwd ? 'xcross' : 'cross') as any,
+                    // Helper: snap a trade timestamp to nearest bar timestamp
+                    // LWC v4 requires marker timestamps to exactly match a data point
+                    const barTimestamps = bars.map((b: any) => b.timestamp);
+                    const snapToBar = (tradeTime: string): string | null => {
+                      const tradeMs = new Date(tradeTime).getTime();
+                      let bestTs = barTimestamps[0];
+                      let bestDist = Infinity;
+                      for (const ts of barTimestamps) {
+                        const dist = Math.abs(new Date(ts).getTime() - tradeMs);
+                        if (dist < bestDist) { bestDist = dist; bestTs = ts; }
+                      }
+                      return bestDist < 120000 ? bestTs : null; // Within 2 minutes
+                    };
+
+                    // Build entry price cross markers
+                    const entryPriceData: any[] = [];
+                    const entryPriceMarkers: any[] = [];
+                    const seenEntryTimes = new Set<string>();
+
+                    for (const t of visibleTrades) {
+                      if (!t.entryTime || t.entryTime === '--' || t.entryPrice <= 0) continue;
+                      if (new Date(t.entryTime).getTime() < firstBarTime || new Date(t.entryTime).getTime() > lastBarTime) continue;
+                      const snapped = snapToBar(t.entryTime);
+                      if (!snapped || seenEntryTimes.has(snapped)) continue;
+                      seenEntryTimes.add(snapped);
+                      entryPriceData.push({ time: snapped, value: t.entryPrice });
+                      entryPriceMarkers.push({
+                        time: snapped,
+                        position: 'inBar',
+                        shape: t.isFwd ? 'xcross' : 'cross',
                         color: chartPrefs.entryColor,
                         text: '',
                         size: 1,
-                      }));
-                    const entryPriceData = visibleTrades
-                      .filter(t => t.entryTime && t.entryTime !== '--' && t.entryPrice > 0)
-                      .filter(t => new Date(t.entryTime).getTime() >= firstBarTime && new Date(t.entryTime).getTime() <= lastBarTime)
-                      .map(t => ({ time: t.entryTime, value: t.entryPrice }));
+                      });
+                    }
 
                     if (entryPriceData.length > 0) {
                       priceSeries.push({
                         type: 'Line',
                         data: entryPriceData,
-                        options: { color: 'transparent', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false },
+                        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
                         markers: entryPriceMarkers,
                       });
                     }
 
-                    // Exit price crosses
-                    const exitPriceMarkers = visibleTrades
-                      .filter(t => t.exitTime && t.exitTime !== '--' && t.exitPrice > 0)
-                      .filter(t => new Date(t.exitTime).getTime() >= firstBarTime && new Date(t.exitTime).getTime() <= lastBarTime)
-                      .map(t => {
-                        const reason = t.exitReason || '';
-                        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                        else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                        return {
-                          time: t.exitTime,
-                          position: 'inBar' as const,
-                          shape: (t.isFwd ? 'xcross' : 'cross') as any,
-                          color,
-                          text: '',
-                          size: 1,
-                        };
+                    // Build exit price cross markers
+                    const exitPriceData: any[] = [];
+                    const exitPriceMarkers: any[] = [];
+                    const seenExitTimes = new Set<string>();
+
+                    for (const t of visibleTrades) {
+                      if (!t.exitTime || t.exitTime === '--' || t.exitPrice <= 0) continue;
+                      if (new Date(t.exitTime).getTime() < firstBarTime || new Date(t.exitTime).getTime() > lastBarTime) continue;
+                      const snapped = snapToBar(t.exitTime);
+                      if (!snapped || seenExitTimes.has(snapped)) continue;
+                      seenExitTimes.add(snapped);
+                      const reason = t.exitReason || '';
+                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                      exitPriceData.push({ time: snapped, value: t.exitPrice });
+                      exitPriceMarkers.push({
+                        time: snapped,
+                        position: 'inBar',
+                        shape: t.isFwd ? 'xcross' : 'cross',
+                        color,
+                        text: '',
+                        size: 1,
                       });
-                    const exitPriceData = visibleTrades
-                      .filter(t => t.exitTime && t.exitTime !== '--' && t.exitPrice > 0)
-                      .filter(t => new Date(t.exitTime).getTime() >= firstBarTime && new Date(t.exitTime).getTime() <= lastBarTime)
-                      .map(t => ({ time: t.exitTime, value: t.exitPrice }));
+                    }
 
                     if (exitPriceData.length > 0) {
                       priceSeries.push({
                         type: 'Line',
                         data: exitPriceData,
-                        options: { color: 'transparent', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false },
+                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
                         markers: exitPriceMarkers,
                       });
                     }
