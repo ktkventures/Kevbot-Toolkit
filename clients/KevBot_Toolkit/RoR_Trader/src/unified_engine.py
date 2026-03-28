@@ -107,9 +107,12 @@ _IB_L_TYPE_TRIGGERS: set = {
 # C  = Bar Close
 # L0 = Level Cross, current bar's indicator level
 # L1 = Level Cross, previous bar's indicator level (fixed reference)
-# HM = Hybrid Market (L1 cross + bar-close confirmation → market order)
-# HL = Hybrid Limit  (L1 cross + bar-close confirmation → limit order)
+# HM = Hybrid Market (L1 cross + bar-close confirmation → market order)  [legacy]
+# HL = Hybrid Limit  (L1 cross + bar-close confirmation → limit order)   [legacy]
+# LC = Level-Close (L cross + configurable confirmation → configurable bail)
+# CC = Close-Close (C entry + next-bar confirmation → configurable bail)
 _L_TYPES = frozenset({'L0', 'L1'})
+_LC_CC_TYPES = frozenset({'LC', 'CC'})
 
 
 def get_trigger_exec_type(trigger_id: str) -> str:
@@ -120,12 +123,16 @@ def get_trigger_exec_type(trigger_id: str) -> str:
 
     Returns: 'C' (bar close), 'L0' (level cross, current bar),
              'L1' (level cross, previous bar), 'HM' (hybrid market),
-             or 'HL' (hybrid limit).
+             'HL' (hybrid limit), 'LC' (level-close), or 'CC' (close-close).
     """
     if trigger_id.endswith('_hm'):
         return 'HM'
     if trigger_id.endswith('_hl'):
         return 'HL'
+    if trigger_id.endswith('_lc'):
+        return 'LC'
+    if trigger_id.endswith('_cc'):
+        return 'CC'
     if trigger_id.endswith('_ib'):
         base = trigger_id[:-3]
         level_spec = INTRABAR_LEVEL_MAP.get(base)
@@ -150,8 +157,8 @@ def get_trigger_exec_type(trigger_id: str) -> str:
 
 
 def _strip_exec_suffix(trigger_id: str) -> str:
-    """Strip execution suffix (_ib/_hm/_hl) to get base trigger."""
-    for suffix in ('_ib', '_hm', '_hl'):
+    """Strip execution suffix (_ib/_hm/_hl/_lc/_cc) to get base trigger."""
+    for suffix in ('_ib', '_hm', '_hl', '_lc', '_cc'):
         if trigger_id.endswith(suffix):
             return trigger_id[:-len(suffix)]
     return trigger_id
@@ -997,7 +1004,7 @@ class TriggerEvaluator:
             exec_type = get_trigger_exec_type(trigger_id)
 
             # L-type gate: use PREVIOUS bar's gate (matches live timing)
-            if exec_type in ('HM', 'HL') or base_trigger in _IB_L_TYPE_TRIGGERS:
+            if exec_type in ('HM', 'HL', 'LC') or base_trigger in _IB_L_TYPE_TRIGGERS:
                 if not prev_gates.get(trigger_id, False):
                     continue
             else:
@@ -1037,7 +1044,7 @@ class TriggerEvaluator:
             exec_type = get_trigger_exec_type(trigger_id)
 
             # Gate check
-            if exec_type in ('HM', 'HL') or base_trigger in _IB_L_TYPE_TRIGGERS:
+            if exec_type in ('HM', 'HL', 'LC') or base_trigger in _IB_L_TYPE_TRIGGERS:
                 if not self._ib_gate_open.get(trigger_id, False):
                     continue
             else:
@@ -1081,7 +1088,7 @@ class TriggerEvaluator:
             })
 
         for base_trigger, (level_key, direction) in IB_MAP.items():
-            for suffix in ('_ib', '_hm', '_hl'):
+            for suffix in ('_ib', '_hm', '_hl', '_lc'):
                 trigger_id = f'{base_trigger}{suffix}'
                 if trigger_id in self.required_triggers:
                     level = self._cached_levels.get(level_key)
@@ -1266,9 +1273,13 @@ class PositionState:
     direction: str = 'LONG'
     entry_trigger: str = ''
     confluence_records: Optional[set] = None
-    exec_type: str = 'C'            # C, L0, L1, HM, HL
+    exec_type: str = 'C'            # C, L0, L1, HM, HL, LC, CC
     pending_hm_exit: bool = False    # Exit at next bar open (HM unconfirmed)
     pending_hl_limit: bool = False   # Limit exit at entry_price (HL unconfirmed)
+    # LC/CC confirmation fields
+    pending_confirm_bar: int = -1    # Bar count when confirmation is due (-1 = none)
+    bail_action: str = 'exit_market' # exit_market | exit_limit | exit_limit_breakeven
+    hold_seconds: int = 0            # Minimum hold time before exit (L/LC)
 
     def to_dict(self) -> dict:
         return {
@@ -1285,6 +1296,9 @@ class PositionState:
             'exec_type': self.exec_type,
             'pending_hm_exit': self.pending_hm_exit,
             'pending_hl_limit': self.pending_hl_limit,
+            'pending_confirm_bar': self.pending_confirm_bar,
+            'bail_action': self.bail_action,
+            'hold_seconds': self.hold_seconds,
         }
 
     @classmethod
@@ -1303,6 +1317,9 @@ class PositionState:
             exec_type=d.get('exec_type', 'C'),
             pending_hm_exit=d.get('pending_hm_exit', False),
             pending_hl_limit=d.get('pending_hl_limit', False),
+            pending_confirm_bar=d.get('pending_confirm_bar', -1),
+            bail_action=d.get('bail_action', 'exit_market'),
+            hold_seconds=d.get('hold_seconds', 0),
         )
 
 
@@ -1350,6 +1367,33 @@ class PositionStateMachine:
         """Append a (high, low) pair to the rolling buffer for swing lookback."""
         self._high_low_buffer.append((high, low))
 
+    def _get_exec_variant_param(self, trigger_id: str, variant_key: str,
+                                param_name: str, default=None):
+        """Look up an exec_variant parameter from the confluence group template.
+
+        Searches TEMPLATES for the trigger's template and returns the
+        specified parameter from exec_variants[variant_key] on the matching
+        trigger.  Falls back to *default* if not found.
+        """
+        try:
+            from confluence_groups import TEMPLATES, TRIGGER_PREFIX_TO_TEMPLATE
+            base = _strip_exec_suffix(trigger_id)
+            # Find which template this trigger belongs to
+            for tp, tmpl_slug in TRIGGER_PREFIX_TO_TEMPLATE.items():
+                if base.startswith(tp + '_') or base == tp:
+                    tmpl = TEMPLATES.get(tmpl_slug)
+                    if not tmpl:
+                        continue
+                    # Match the trigger's base in the template's triggers list
+                    suffix = base[len(tp) + 1:] if base.startswith(tp + '_') else base
+                    for trig in tmpl.get('triggers', []):
+                        if suffix.endswith(trig['base']) or trig['base'] == suffix:
+                            ev = trig.get('exec_variants', {}).get(variant_key, {})
+                            return ev.get(param_name, default)
+        except Exception:
+            pass
+        return default
+
     def check_entry(self, trigger_booleans: Dict[str, bool],
                     current_values: Dict[str, float],
                     bar_count: int, bar_time: str,
@@ -1381,8 +1425,15 @@ class PositionStateMachine:
         fill_price = None
         is_ltype = False
 
-        if exec_type in (_L_TYPES | {'HM', 'HL'}) and l_type_fills:
-            if trigger_id in l_type_fills:
+        if exec_type in (_L_TYPES | {'HM', 'HL', 'LC'}) and l_type_fills:
+            # LC uses the same intra-bar level as _ib — look up with _ib suffix
+            lc_lookup = trigger_id
+            if exec_type == 'LC':
+                lc_lookup = _strip_exec_suffix(trigger_id) + '_ib'
+            if lc_lookup in l_type_fills:
+                fill_price = l_type_fills[lc_lookup]
+                is_ltype = True
+            elif trigger_id in l_type_fills:
                 fill_price = l_type_fills[trigger_id]
                 is_ltype = True
         if fill_price is None:
@@ -1432,6 +1483,24 @@ class PositionStateMachine:
         self.state.confluence_records = confluence_records
         self.state.exec_type = exec_type
 
+        # Schedule confirmation for LC/CC entries
+        if exec_type == 'LC':
+            # LC: level cross entry, confirm on entry_bar + confirm_bar_offset
+            # Default confirm_bar_offset=0 → confirm same bar (like HM)
+            # confirm_bar_offset=1 → confirm next bar
+            cbo = self._get_exec_variant_param(trigger_id, 'LC',
+                                               'confirm_bar_offset', 0)
+            self.state.pending_confirm_bar = bar_count + cbo
+            self.state.bail_action = self._get_exec_variant_param(
+                trigger_id, 'LC', 'bail_action', 'exit_market')
+            self.state.hold_seconds = self._get_exec_variant_param(
+                trigger_id, 'L', 'hold_seconds', 0)
+        elif exec_type == 'CC':
+            # CC: bar close entry, confirm on next bar (always +1)
+            self.state.pending_confirm_bar = bar_count + 1
+            self.state.bail_action = self._get_exec_variant_param(
+                trigger_id, 'CC', 'bail_action', 'exit_market')
+
         return {
             'type': 'entry_signal',
             'trigger': trigger_id,
@@ -1468,7 +1537,7 @@ class PositionStateMachine:
         # level checks handle intra-bar stops correctly.
         same_bar_ltype = (
             self.state.entry_bar_count == bar_count and
-            self.state.exec_type in _L_TYPES)
+            self.state.exec_type in (_L_TYPES | {'HM', 'HL', 'LC'}))
 
         # Update trailing/breakeven stop before checking
         self._update_stop(current_values)
@@ -1494,6 +1563,25 @@ class PositionStateMachine:
             elif direction == 'SHORT' and low <= ep:
                 self.state.last_exit_bar_count = bar_count
                 return self._exit('unconfirmed_hl', ep, bar_time)
+
+        # Priority 2b: LC/CC bail exit — limit-based bail actions
+        # pending_confirm_bar is set during entry; bail executes on the
+        # bar AFTER confirmation was supposed to happen.
+        # (Market bail is handled in process_bar step 4, before check_exit)
+        if (self.state.pending_confirm_bar >= 0 and
+                bar_count > self.state.pending_confirm_bar):
+            bail = self.state.bail_action
+            reason = f'unconfirmed_{self.state.exec_type.lower()}'
+            ep = self.state.entry_price
+            if bail in ('exit_limit', 'exit_limit_breakeven'):
+                # Limit exit at entry price (breakeven or exact)
+                if direction == 'LONG' and high >= ep:
+                    self.state.last_exit_bar_count = bar_count
+                    return self._exit(reason, ep, bar_time)
+                elif direction == 'SHORT' and low <= ep:
+                    self.state.last_exit_bar_count = bar_count
+                    return self._exit(reason, ep, bar_time)
+                # Limit not reached yet — stay in position, stop/target still active
 
         # Priority 3: Target (also skipped on entry bar for L-type)
         if self.state.target_price and not same_bar_ltype:
@@ -1579,6 +1667,9 @@ class PositionStateMachine:
         self.state.exec_type = 'C'
         self.state.pending_hm_exit = False
         self.state.pending_hl_limit = False
+        self.state.pending_confirm_bar = -1
+        self.state.bail_action = 'exit_market'
+        self.state.hold_seconds = 0
         # last_exit_bar_count intentionally preserved for cooldown
 
     def _exit(self, reason: str, price: float, bar_time) -> dict:
@@ -1739,7 +1830,7 @@ class PositionStateMachine:
         # the entry, which would create false triggers.
         same_bar_ltype = (
             self.state.entry_bar_count == bar_count and
-            self.state.exec_type in _L_TYPES)
+            self.state.exec_type in (_L_TYPES | {'HM', 'HL', 'LC'}))
 
         self._update_stop(current_values)
 
@@ -2039,11 +2130,25 @@ class UnifiedStrategy:
         # targets still fire since they are intra-bar events.
         c_trigs_for_eval = {} if partial else c_triggers
 
-        # 4. Handle pending HM exit (unconfirmed on previous bar)
-        if not partial and self.position.state.pending_hm_exit:
-            exit_record = self.position._exit(
-                'unconfirmed_hm', bar['open'], bar_time)
-            trades.append(exit_record)
+        # 4. Handle pending bail exits (unconfirmed on previous bar)
+        # HM: always bail at market (bar open)
+        # LC/CC with bail_action='exit_market': bail at market (bar open)
+        if not partial and self.position.state.status == 'IN_POSITION':
+            ps = self.position.state
+            bail_at_market = False
+            bail_reason = ''
+            if ps.pending_hm_exit:
+                bail_at_market = True
+                bail_reason = 'unconfirmed_hm'
+            elif (ps.pending_confirm_bar >= 0 and
+                  self._bar_count > ps.pending_confirm_bar and
+                  ps.bail_action == 'exit_market'):
+                bail_at_market = True
+                bail_reason = f'unconfirmed_{ps.exec_type.lower()}'
+            if bail_at_market:
+                exit_record = self.position._exit(
+                    bail_reason, bar['open'], bar_time)
+                trades.append(exit_record)
 
         # 5. Check exit (includes HL limit check, stop, target, signal, bar count)
         if self.position.state.status == 'IN_POSITION':
@@ -2063,17 +2168,34 @@ class UnifiedStrategy:
             l_type_fills=l_fills,
             prev_values=prev)
 
-        # 7. Confirmation check for HM/HL entries made THIS bar
-        if (self.position.state.status == 'IN_POSITION' and
-                self.position.state.entry_bar_count == self._bar_count and
-                self.position.state.exec_type in ('HM', 'HL')):
-            base_trigger = _strip_exec_suffix(
-                self.position.state.entry_trigger)
-            if not self.trigger_eval.check_confirmation(base_trigger, current):
-                if self.position.state.exec_type == 'HM':
-                    self.position.state.pending_hm_exit = True
+        # 7. Confirmation check for HM/HL/LC/CC entries
+        # HM/HL: always check on entry bar (same-bar confirmation)
+        # LC/CC: check on the bar specified by pending_confirm_bar
+        ps = self.position.state
+        if ps.status == 'IN_POSITION':
+            needs_confirm = False
+            if (ps.entry_bar_count == self._bar_count and
+                    ps.exec_type in ('HM', 'HL')):
+                needs_confirm = True
+            elif (ps.pending_confirm_bar >= 0 and
+                  self._bar_count == ps.pending_confirm_bar):
+                needs_confirm = True
+
+            if needs_confirm:
+                base_trigger = _strip_exec_suffix(ps.entry_trigger)
+                if not self.trigger_eval.check_confirmation(base_trigger, current):
+                    if ps.exec_type == 'HM':
+                        ps.pending_hm_exit = True
+                    elif ps.exec_type == 'HL':
+                        ps.pending_hl_limit = True
+                    # LC/CC: bail is handled in check_exit via
+                    # pending_confirm_bar (bar_count > pending_confirm_bar)
+                    # — no additional flag needed; the pending_confirm_bar
+                    # staying set tells check_exit to bail on the next bar
                 else:
-                    self.position.state.pending_hl_limit = True
+                    # Confirmed — clear the pending confirmation
+                    if ps.exec_type in ('LC', 'CC'):
+                        ps.pending_confirm_bar = -1
 
         return trades, current, interps, c_triggers
 
@@ -2375,11 +2497,23 @@ def run_trades_from_cache(
     for cb in cache:
         psm.update_high_low(cb.bar['high'], cb.bar['low'])
 
-        # Handle pending HM exit (unconfirmed on previous bar)
-        if psm.state.pending_hm_exit:
-            exit_record = psm._exit(
-                'unconfirmed_hm', cb.bar['open'], cb.bar['timestamp'])
-            trades.append(exit_record)
+        # Handle pending bail exits (unconfirmed on previous bar)
+        if psm.state.status == 'IN_POSITION':
+            ps = psm.state
+            bail_at_market = False
+            bail_reason = ''
+            if ps.pending_hm_exit:
+                bail_at_market = True
+                bail_reason = 'unconfirmed_hm'
+            elif (ps.pending_confirm_bar >= 0 and
+                  cb.bar_count > ps.pending_confirm_bar and
+                  ps.bail_action == 'exit_market'):
+                bail_at_market = True
+                bail_reason = f'unconfirmed_{ps.exec_type.lower()}'
+            if bail_at_market:
+                exit_record = psm._exit(
+                    bail_reason, cb.bar['open'], cb.bar['timestamp'])
+                trades.append(exit_record)
 
         # Check exit
         if psm.state.status == 'IN_POSITION':
@@ -2396,17 +2530,29 @@ def run_trades_from_cache(
             l_type_fills=cb.l_fills,
             prev_values=cb.prev_values)
 
-        # HM/HL confirmation check
-        if (psm.state.status == 'IN_POSITION' and
-                psm.state.entry_bar_count == cb.bar_count and
-                psm.state.exec_type in ('HM', 'HL')):
-            base_trigger = _strip_exec_suffix(psm.state.entry_trigger)
-            if not trigger_eval.check_confirmation(
-                    base_trigger, cb.current_values):
-                if psm.state.exec_type == 'HM':
-                    psm.state.pending_hm_exit = True
+        # HM/HL/LC/CC confirmation check
+        if psm.state.status == 'IN_POSITION':
+            ps = psm.state
+            needs_confirm = False
+            if (ps.entry_bar_count == cb.bar_count and
+                    ps.exec_type in ('HM', 'HL')):
+                needs_confirm = True
+            elif (ps.pending_confirm_bar >= 0 and
+                  cb.bar_count == ps.pending_confirm_bar):
+                needs_confirm = True
+
+            if needs_confirm:
+                base_trigger = _strip_exec_suffix(ps.entry_trigger)
+                if not trigger_eval.check_confirmation(
+                        base_trigger, cb.current_values):
+                    if ps.exec_type == 'HM':
+                        ps.pending_hm_exit = True
+                    elif ps.exec_type == 'HL':
+                        ps.pending_hl_limit = True
+                    # LC/CC: bail handled via pending_confirm_bar in check_exit
                 else:
-                    psm.state.pending_hl_limit = True
+                    if ps.exec_type in ('LC', 'CC'):
+                        ps.pending_confirm_bar = -1
 
     # Open position synthetic row
     if include_open_position and psm.state.status == 'IN_POSITION':
