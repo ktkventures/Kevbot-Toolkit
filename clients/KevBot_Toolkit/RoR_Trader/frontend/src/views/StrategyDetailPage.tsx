@@ -1429,14 +1429,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
                   const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
 
-                  // Build trade markers
+                  // Determine visible time range from sliced bars
+                  const firstBarTime = bars.length > 0 ? new Date(bars[0].timestamp).getTime() : 0;
+                  const lastBarTime = bars.length > 0 ? new Date(bars[bars.length - 1].timestamp).getTime() : Infinity;
+
+                  // Build trade markers — only within visible bar range
                   const tradeMarkers = [...btTrades, ...fwdTrades].flatMap((t) => {
                     const m: any[] = [];
                     const dir = strategy.direction;
-                    if (t.entryTime && t.entryTime !== '--') {
+                    const entryMs = t.entryTime && t.entryTime !== '--' ? new Date(t.entryTime).getTime() : 0;
+                    const exitMs = t.exitTime && t.exitTime !== '--' ? new Date(t.exitTime).getTime() : 0;
+                    if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
                       m.push({ time: t.entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
                     }
-                    if (t.exitTime && t.exitTime !== '--') {
+                    if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
                       const reason = t.exitReason || '';
                       let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
                       if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
