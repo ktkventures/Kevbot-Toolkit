@@ -6,8 +6,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source
+# Copy source + user packs
 COPY src/ ./src/
+COPY user_packs/ ./user_packs/
 
 # Environment
 ENV USE_DB=true
