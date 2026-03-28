@@ -1520,6 +1520,76 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       markers: tradeMarkers,
                     },
                   ];
+
+                  // Add price-level cross markers (+ for backtest, x for alert trades)
+                  // These show the exact fill price as an in-bar marker, matching Streamlit
+                  const visibleTrades = [...btTrades, ...fwdTrades].filter(t => {
+                    const entryMs = t.entryTime && t.entryTime !== '--' ? new Date(t.entryTime).getTime() : 0;
+                    const exitMs = t.exitTime && t.exitTime !== '--' ? new Date(t.exitTime).getTime() : 0;
+                    return (entryMs >= firstBarTime && entryMs <= lastBarTime) ||
+                           (exitMs >= firstBarTime && exitMs <= lastBarTime);
+                  });
+
+                  if (visibleTrades.length > 0) {
+                    // Entry price crosses (+)
+                    const entryPriceMarkers = visibleTrades
+                      .filter(t => t.entryTime && t.entryTime !== '--' && t.entryPrice > 0)
+                      .filter(t => new Date(t.entryTime).getTime() >= firstBarTime && new Date(t.entryTime).getTime() <= lastBarTime)
+                      .map(t => ({
+                        time: t.entryTime,
+                        position: 'inBar' as const,
+                        shape: (t.isFwd ? 'xcross' : 'cross') as any,
+                        color: chartPrefs.entryColor,
+                        text: '',
+                        size: 1,
+                      }));
+                    const entryPriceData = visibleTrades
+                      .filter(t => t.entryTime && t.entryTime !== '--' && t.entryPrice > 0)
+                      .filter(t => new Date(t.entryTime).getTime() >= firstBarTime && new Date(t.entryTime).getTime() <= lastBarTime)
+                      .map(t => ({ time: t.entryTime, value: t.entryPrice }));
+
+                    if (entryPriceData.length > 0) {
+                      priceSeries.push({
+                        type: 'Line',
+                        data: entryPriceData,
+                        options: { color: 'transparent', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false },
+                        markers: entryPriceMarkers,
+                      });
+                    }
+
+                    // Exit price crosses
+                    const exitPriceMarkers = visibleTrades
+                      .filter(t => t.exitTime && t.exitTime !== '--' && t.exitPrice > 0)
+                      .filter(t => new Date(t.exitTime).getTime() >= firstBarTime && new Date(t.exitTime).getTime() <= lastBarTime)
+                      .map(t => {
+                        const reason = t.exitReason || '';
+                        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                        else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                        return {
+                          time: t.exitTime,
+                          position: 'inBar' as const,
+                          shape: (t.isFwd ? 'xcross' : 'cross') as any,
+                          color,
+                          text: '',
+                          size: 1,
+                        };
+                      });
+                    const exitPriceData = visibleTrades
+                      .filter(t => t.exitTime && t.exitTime !== '--' && t.exitPrice > 0)
+                      .filter(t => new Date(t.exitTime).getTime() >= firstBarTime && new Date(t.exitTime).getTime() <= lastBarTime)
+                      .map(t => ({ time: t.exitTime, value: t.exitPrice }));
+
+                    if (exitPriceData.length > 0) {
+                      priceSeries.push({
+                        type: 'Line',
+                        data: exitPriceData,
+                        options: { color: 'transparent', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false },
+                        markers: exitPriceMarkers,
+                      });
+                    }
+                  }
+
                   // Add overlay line series (EMA, UT Bot stop, VWAP, etc.)
                   for (let i = 0; i < overlayNames.length; i++) {
                     const col = overlayNames[i];
@@ -1598,6 +1668,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>+</span> BT price</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&times;</span> Alert price</span>
                         </div>
                       </Card>
                     </>
