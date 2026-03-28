@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import {
-  createChart, LineSeries, HistogramSeries,
+  createChart,
   type IChartApi, type Time,
 } from 'lightweight-charts';
 
@@ -74,7 +74,7 @@ export default function OscillatorPane({
     chartRef.current = chart;
 
     // Zero reference line
-    const zeroLine = chart.addSeries(LineSeries, {
+    const zeroLine = chart.addLineSeries({
       color: 'rgba(128,128,128,0.3)',
       lineWidth: 1,
       lineStyle: 2,
@@ -91,7 +91,7 @@ export default function OscillatorPane({
       const isHist = s.type === 'histogram' || s.column.includes('hist');
 
       if (isHist) {
-        const histSeries = chart.addSeries(HistogramSeries, {
+        const histSeries = chart.addHistogramSeries({
           priceLineVisible: false,
           lastValueVisible: false,
         });
@@ -106,7 +106,7 @@ export default function OscillatorPane({
           .sort((a, b) => (a.time as number) - (b.time as number));
         if (histData.length > 0) histSeries.setData(histData);
       } else {
-        const lineSeries = chart.addSeries(LineSeries, {
+        const lineSeries = chart.addLineSeries({
           color: s.color,
           lineWidth: 1,
           priceLineVisible: false,

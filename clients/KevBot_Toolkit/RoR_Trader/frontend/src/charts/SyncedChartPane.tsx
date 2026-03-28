@@ -12,8 +12,8 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import {
-  createChart, CandlestickSeries, LineSeries, HistogramSeries,
-  type IChartApi, type Time,
+  createChart,
+  type IChartApi, type ISeriesApi, type SeriesType, type Time,
 } from 'lightweight-charts';
 import { SessionHighlighting } from './plugins/SessionHighlighting';
 
@@ -124,14 +124,14 @@ export default function SyncedChartPane({
 
       charts.push(chart);
 
-      // Create series
-      const createdSeries: any[] = [];
+      // Create series (LWC v4 API)
+      const createdSeries: ISeriesApi<SeriesType>[] = [];
       for (const seriesCfg of pane.series) {
-        let chartSeries: any;
+        let chartSeries: ISeriesApi<SeriesType> | undefined;
 
         switch (seriesCfg.type) {
           case 'Candlestick':
-            chartSeries = chart.addSeries(CandlestickSeries, {
+            chartSeries = chart.addCandlestickSeries({
               upColor: up, downColor: down,
               borderUpColor: borderUp, borderDownColor: down,
               wickUpColor: borderUp, wickDownColor: down,
@@ -139,14 +139,14 @@ export default function SyncedChartPane({
             });
             break;
           case 'Line':
-            chartSeries = chart.addSeries(LineSeries, {
+            chartSeries = chart.addLineSeries({
               priceLineVisible: false,
               lastValueVisible: false,
               ...seriesCfg.options,
             });
             break;
           case 'Histogram':
-            chartSeries = chart.addSeries(HistogramSeries, {
+            chartSeries = chart.addHistogramSeries({
               priceLineVisible: false,
               ...seriesCfg.options,
             });
@@ -172,66 +172,18 @@ export default function SyncedChartPane({
 
         if (data.length > 0) chartSeries.setData(data);
 
-        // Markers — LWC v5 removed setMarkers() from series.
-        // Workaround: create invisible Line series with markers attached.
-        // This matches how the Streamlit fork renders trade markers (app.py:2753-2839).
-        if (seriesCfg.markers && seriesCfg.markers.length > 0) {
-          const validMarkers = seriesCfg.markers
-            .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
-            .filter((m: any) => isFinite(m.time as number))
-            .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-
-          if (validMarkers.length > 0) {
-            // First try the direct setMarkers approach (works in some v5 builds)
-            let markersSet = false;
-            try {
-              if (typeof chartSeries.setMarkers === 'function') {
-                chartSeries.setMarkers(validMarkers);
-                markersSet = true;
-              }
-            } catch { /* not available */ }
-
-            // Fallback: invisible line series with markers
-            if (!markersSet) {
-              try {
-                const markerLine = chart.addSeries(LineSeries, {
-                  color: 'transparent',
-                  lineVisible: false,
-                  pointMarkersVisible: false,
-                  priceLineVisible: false,
-                  crosshairMarkerVisible: false,
-                  lastValueVisible: false,
-                });
-                // Build a lookup of candle timestamps → close prices
-                const candlePrices = new Map<number, number>();
-                for (const d of seriesCfg.data) {
-                  const t = toUnixTime(d.time ?? d.timestamp);
-                  if (isFinite(t)) candlePrices.set(t, d.close ?? d.value ?? 0);
-                }
-                // Map markers to data points, finding nearest candle if exact match fails
-                const markerData = validMarkers.map((m: any) => {
-                  const mt = m.time as number;
-                  let price = candlePrices.get(mt);
-                  if (price == null) {
-                    // Find nearest candle within 120 seconds
-                    let best = 0, bestDist = Infinity;
-                    for (const [t, p] of candlePrices) {
-                      const dist = Math.abs(t - mt);
-                      if (dist < bestDist && dist <= 120) { bestDist = dist; best = p; }
-                    }
-                    price = best || undefined;
-                  }
-                  return price ? { time: m.time, value: price } : null;
-                }).filter(Boolean);
-
-                if (markerData.length > 0) {
-                  markerLine.setData(markerData as any);
-                  if (typeof markerLine.setMarkers === 'function') {
-                    markerLine.setMarkers(validMarkers);
-                  }
-                }
-              } catch { /* fallback also failed, skip markers */ }
+        // Markers (v4 native API)
+        if (seriesCfg.markers && seriesCfg.markers.length > 0 && chartSeries) {
+          try {
+            const validMarkers = seriesCfg.markers
+              .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
+              .filter((m: any) => isFinite(m.time as number))
+              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+            if (validMarkers.length > 0) {
+              chartSeries.setMarkers(validMarkers);
             }
+          } catch (e) {
+            console.warn('setMarkers failed:', e);
           }
         }
 

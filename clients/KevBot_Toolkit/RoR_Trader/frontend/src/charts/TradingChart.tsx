@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import {
-  createChart, CandlestickSeries, LineSeries,
-  type IChartApi, type ISeriesApi, type CandlestickData, type LineData, type Time,
+  createChart,
+  type IChartApi, type ISeriesApi, type CandlestickData, type LineData, type Time, type SeriesType,
 } from 'lightweight-charts';
 
 export interface CandleData {
@@ -67,8 +67,8 @@ export default function TradingChart({
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<typeof CandlestickSeries> | null>(null);
-  const overlaySeriesRefs = useRef<ISeriesApi<typeof LineSeries>[]>([]);
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const overlaySeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
 
   // Get theme colors from CSS variables (fallback when no explicit colors passed)
   const getThemeColors = useCallback(() => {
@@ -121,7 +121,7 @@ export default function TradingChart({
     chartRef.current = chart;
 
     // Candlestick series with user-configurable colors
-    const candleSeries = chart.addSeries(CandlestickSeries, {
+    const candleSeries = chart.addCandlestickSeries({
       upColor: up,
       downColor: down,
       borderUpColor: borderUp,
@@ -167,9 +167,9 @@ export default function TradingChart({
     }
 
     // Overlay line series (indicators)
-    const overlayRefs: ISeriesApi<typeof LineSeries>[] = [];
+    const overlayRefs: ISeriesApi<'Line'>[] = [];
     for (const overlay of overlays) {
-      const lineSeries = chart.addSeries(LineSeries, {
+      const lineSeries = chart.addLineSeries({
         color: overlay.color,
         lineWidth: (overlay.lineWidth || 1) as 1 | 2 | 3 | 4,
         lineStyle: overlay.lineStyle || 0,

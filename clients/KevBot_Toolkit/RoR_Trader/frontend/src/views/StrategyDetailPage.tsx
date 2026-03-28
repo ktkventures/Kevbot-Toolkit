@@ -519,7 +519,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showConditions, setShowConditions] = useState(true);
   const [showTriggers, setShowTriggers] = useState(true);
   const [btTradesOpen, setBtTradesOpen] = useState(false);
-  const [fwdTradesOpen, setFwdTradesOpen] = useState(true);
+  const [fwdTradesOpen, setFwdTradesOpen] = useState(false);
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -764,12 +764,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   function renderTradeTable(trades: any[]) {
     return (
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
         <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
           <thead>
             <tr>
               {['#', 'Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Exec', 'Exit Reason'].map((h) => (
-                <th key={h} style={thStyle}>{h}</th>
+                <th key={h} style={{ ...thStyle, position: 'sticky' as const, top: 0, zIndex: 1, background: 'var(--bg-card)' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -914,7 +914,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       {/* Meta line */}
       <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
         {strategy.symbol} &middot; {strategy.direction} &middot; {strategy.timeframe} &middot; {strategy.session}
-        &nbsp;&middot;&nbsp;BT {strategy.btDays}d &middot; FWD {fwdDays}d &middot; Alert Accuracy {alertAccuracy}%
+        &nbsp;&middot;&nbsp;BT {strategy.btDays}d ({btTrades.length} trades) &middot; FWD {fwdDays}d ({fwdTrades.length} trades) &middot; Alert Accuracy {alertAccuracy}%
       </p>
 
       {/* Pack-aware variable display */}
