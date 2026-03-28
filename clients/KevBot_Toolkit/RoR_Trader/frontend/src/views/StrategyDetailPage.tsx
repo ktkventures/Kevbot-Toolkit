@@ -646,7 +646,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Derive exit exec type from exit_reason:
   // L-type: stop_loss, target, unconfirmed_hl, unconfirmed_hm (price crosses a level)
   // C-type: bar_count_exit, opposite_signal, time_exit, signal (evaluated at bar close)
-  const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl', 'unconfirmed_hm']);
+  const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']);
   const exitExecTypeOf = (reason: string) => L_TYPE_EXITS.has(reason) ? 'L' : 'C';
 
   const fwdTrades = useMemo(() => (fwdData?.forward_trades || []).map((t: any, i: number) => {
