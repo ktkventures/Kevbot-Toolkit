@@ -1545,70 +1545,105 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       return bestDist < 120000 ? bestTs : null; // Within 2 minutes
                     };
 
-                    // Build entry price cross markers
-                    const entryPriceData: any[] = [];
-                    const entryPriceMarkers: any[] = [];
-                    const seenEntryTimes = new Set<string>();
+                    // Separate BT and FWD trades into different series (like Streamlit)
+                    const btVisible = visibleTrades.filter(t => !t.isFwd);
+                    const fwdVisible = visibleTrades.filter(t => t.isFwd);
 
-                    for (const t of visibleTrades) {
+                    // BT entry price markers (+)
+                    const btEntryData: any[] = [];
+                    const btEntryMarkers: any[] = [];
+                    const seenBtEntry = new Set<string>();
+                    for (const t of btVisible) {
                       if (!t.entryTime || t.entryTime === '--' || t.entryPrice <= 0) continue;
                       if (new Date(t.entryTime).getTime() < firstBarTime || new Date(t.entryTime).getTime() > lastBarTime) continue;
                       const snapped = snapToBar(t.entryTime);
-                      if (!snapped || seenEntryTimes.has(snapped)) continue;
-                      seenEntryTimes.add(snapped);
-                      entryPriceData.push({ time: snapped, value: t.entryPrice });
-                      entryPriceMarkers.push({
-                        time: snapped,
-                        position: 'inBar',
-                        shape: t.isFwd ? 'xcross' : 'cross',
-                        color: chartPrefs.entryColor,
-                        text: '',
-                        size: 1,
-                      });
+                      if (!snapped || seenBtEntry.has(snapped)) continue;
+                      seenBtEntry.add(snapped);
+                      btEntryData.push({ time: snapped, value: t.entryPrice });
+                      btEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
                     }
-
-                    if (entryPriceData.length > 0) {
+                    if (btEntryData.length > 0) {
                       priceSeries.push({
-                        type: 'Line',
-                        data: entryPriceData,
+                        type: 'Line', data: btEntryData,
                         options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: entryPriceMarkers,
+                        markers: btEntryMarkers,
                       });
                     }
 
-                    // Build exit price cross markers
-                    const exitPriceData: any[] = [];
-                    const exitPriceMarkers: any[] = [];
-                    const seenExitTimes = new Set<string>();
-
-                    for (const t of visibleTrades) {
+                    // BT exit price markers (+)
+                    const btExitData: any[] = [];
+                    const btExitMarkers: any[] = [];
+                    const seenBtExit = new Set<string>();
+                    for (const t of btVisible) {
                       if (!t.exitTime || t.exitTime === '--' || t.exitPrice <= 0) continue;
                       if (new Date(t.exitTime).getTime() < firstBarTime || new Date(t.exitTime).getTime() > lastBarTime) continue;
                       const snapped = snapToBar(t.exitTime);
-                      if (!snapped || seenExitTimes.has(snapped)) continue;
-                      seenExitTimes.add(snapped);
+                      if (!snapped || seenBtExit.has(snapped)) continue;
+                      seenBtExit.add(snapped);
                       const reason = t.exitReason || '';
                       let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
                       if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
                       else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                      exitPriceData.push({ time: snapped, value: t.exitPrice });
-                      exitPriceMarkers.push({
-                        time: snapped,
-                        position: 'inBar',
-                        shape: t.isFwd ? 'xcross' : 'cross',
-                        color,
-                        text: '',
-                        size: 1,
+                      btExitData.push({ time: snapped, value: t.exitPrice });
+                      btExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
+                    }
+                    if (btExitData.length > 0) {
+                      priceSeries.push({
+                        type: 'Line', data: btExitData,
+                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+                        markers: btExitMarkers,
                       });
                     }
 
-                    if (exitPriceData.length > 0) {
+                    // FWD/alert entry price markers (×)
+                    const fwdEntryData: any[] = [];
+                    const fwdEntryMarkers: any[] = [];
+                    const seenFwdEntry = new Set<string>();
+                    for (const t of fwdVisible) {
+                      if (!t.entryTime || t.entryTime === '--' || t.entryPrice <= 0) continue;
+                      if (new Date(t.entryTime).getTime() < firstBarTime || new Date(t.entryTime).getTime() > lastBarTime) continue;
+                      const snapped = snapToBar(t.entryTime);
+                      if (!snapped || seenFwdEntry.has(snapped)) continue;
+                      seenFwdEntry.add(snapped);
+                      fwdEntryData.push({ time: snapped, value: t.entryPrice });
+                      fwdEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: chartPrefs.entryColor, text: '', size: 1 });
+                    }
+                    if (fwdEntryData.length > 0) {
                       priceSeries.push({
-                        type: 'Line',
-                        data: exitPriceData,
-                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: exitPriceMarkers,
+                        type: 'Line', data: fwdEntryData,
+                        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+                        markers: fwdEntryMarkers,
                       });
+                    }
+
+                    // FWD/alert exit price markers (×)
+                    const fwdExitData: any[] = [];
+                    const fwdExitMarkers: any[] = [];
+                    const seenFwdExit = new Set<string>();
+                    for (const t of fwdVisible) {
+                      if (!t.exitTime || t.exitTime === '--' || t.exitPrice <= 0) continue;
+                      if (new Date(t.exitTime).getTime() < firstBarTime || new Date(t.exitTime).getTime() > lastBarTime) continue;
+                      const snapped = snapToBar(t.exitTime);
+                      if (!snapped || seenFwdExit.has(snapped)) continue;
+                      seenFwdExit.add(snapped);
+                      const reason = t.exitReason || '';
+                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                      fwdExitData.push({ time: snapped, value: t.exitPrice });
+                      fwdExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
+                    }
+                    if (fwdExitData.length > 0) {
+                      priceSeries.push({
+                        type: 'Line', data: fwdExitData,
+                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+                        markers: fwdExitMarkers,
+                      });
+                    }
+
+                    console.log('[CrossMarkers] BT entries:', btEntryData.length, 'BT exits:', btExitData.length, 'FWD entries:', fwdEntryData.length, 'FWD exits:', fwdExitData.length);
+                    if (btEntryData.length === 0 && btVisible.length > 0) {
+                      console.log('[CrossMarkers] BT trades exist but no entry markers. Sample:', btVisible.slice(0, 3).map(t => ({ entryTime: t.entryTime, entryPrice: t.entryPrice, exitTime: t.exitTime, exitPrice: t.exitPrice })));
                     }
                   }
 
