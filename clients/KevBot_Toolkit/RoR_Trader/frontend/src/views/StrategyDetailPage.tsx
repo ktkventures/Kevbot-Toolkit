@@ -744,10 +744,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       }
       if (bestIdx >= 0 && bestDist <= searchWindow) {
         const algo = algoAll[bestIdx];
-        const entryDelta = (aEntryMs - new Date(algo.entryTimeDisplay).getTime()) / 1000;
+        // Delta from alert's perspective: negative = algo was earlier, positive = algo was later
+        const entryDelta = (new Date(algo.entryTimeDisplay).getTime() - aEntryMs) / 1000;
         let exitDelta: number | null = null;
         if (a.exitTime && a.exitTime !== '--' && algo.exitTimeDisplay && algo.exitTimeDisplay !== '--') {
-          exitDelta = (new Date(a.exitTime).getTime() - new Date(algo.exitTimeDisplay).getTime()) / 1000;
+          exitDelta = (new Date(algo.exitTimeDisplay).getTime() - new Date(a.exitTime).getTime()) / 1000;
         }
         alertResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
       } else {
