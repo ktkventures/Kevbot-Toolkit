@@ -602,7 +602,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       alertExit: alertTrade.exitTime ? new Date(alertTrade.exitTime).toLocaleString() : '--',
       exitDelta,
     };
-  }), [recentAlerts, btTrades]);
+  });
+  }, [recentAlerts, btTrades]);
   // Alert analysis computed lazily — avoid complex useMemo chains that cause TDZ in production
   const alertAnalysis = EMPTY_ALERT_ANALYSIS;
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
