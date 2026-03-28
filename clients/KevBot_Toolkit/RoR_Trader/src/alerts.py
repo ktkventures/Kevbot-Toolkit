@@ -752,7 +752,7 @@ def _get_base_trigger_id(confluence_trigger_id: str) -> str:
                     base = trig_def['base']
                     # Check if remainder ends with the base trigger
                     # (possibly with exec suffix like _ib, _hm, _hl)
-                    for suffix in ('', '_ib', '_hm', '_hl'):
+                    for suffix in ('', '_ib', '_hm', '_hl', '_lc', '_cc'):
                         candidate = base + suffix
                         if remainder.endswith('_' + candidate) or remainder == candidate:
                             return f"{prefix}_{candidate}"

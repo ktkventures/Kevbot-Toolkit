@@ -482,7 +482,7 @@ def _inject_intrabar_level_map(manifest: dict) -> None:
             continue
         base_key = f"{prefix}_{t['base']}"
         # Strip _ib/_hm/_hl suffix to get the base trigger for the map
-        for suffix in ("_ib", "_hm", "_hl"):
+        for suffix in ("_ib", "_hm", "_hl", "_lc", "_cc"):
             if base_key.endswith(suffix):
                 base_key = base_key[:-len(suffix)]
                 break

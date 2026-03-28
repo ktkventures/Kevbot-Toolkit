@@ -1142,7 +1142,7 @@ class TriggerEvaluator:
         }
 
         for base_trigger, (level_key, direction) in gate_map.items():
-            for suffix in ('_ib', '_hm', '_hl'):
+            for suffix in ('_ib', '_hm', '_hl', '_lc'):
                 trigger_id = f'{base_trigger}{suffix}'
                 if trigger_id not in self.required_triggers:
                     continue
