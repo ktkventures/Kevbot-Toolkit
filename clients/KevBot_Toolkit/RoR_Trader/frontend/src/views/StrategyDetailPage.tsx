@@ -1,21 +1,50 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart } from '@/hooks/queries/useStrategies';
-import EquityCurve from '@/charts/EquityCurve';
-import DistributionChart from '@/charts/DistributionChart';
-import { useChartPrefs } from '@/hooks/useChartPrefs';
-import TradingChart from '@/charts/TradingChart';
-import SyncedChartPane, { type PaneConfig, type SeriesConfig } from '@/charts/SyncedChartPane';
 import type { TradeMarker } from '@/charts/TradingChart';
-import { useBars } from '@/hooks/queries/useMarketData';
-import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
-import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
+
+// Dynamic imports to prevent production bundle circular dependency crashes
+// (SWC minifier reorders module-level variables causing TDZ errors)
+const EquityCurve = dynamic(() => import('@/charts/EquityCurve'), { ssr: false });
+const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
+const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
+
+// Lazy query/mutation imports — loaded at call time, not module scope
+let _strategyHooks: any = null;
+function getStrategyHooks() {
+  if (!_strategyHooks) _strategyHooks = require('@/hooks/queries/useStrategies');
+  return _strategyHooks;
+}
+let _alertHooks: any = null;
+function getAlertHooks() {
+  if (!_alertHooks) _alertHooks = require('@/hooks/queries/useAlerts');
+  return _alertHooks;
+}
+let _marketHooks: any = null;
+function getMarketHooks() {
+  if (!_marketHooks) _marketHooks = require('@/hooks/queries/useMarketData');
+  return _marketHooks;
+}
+let _mutationHooks: any = null;
+function getMutationHooks() {
+  if (!_mutationHooks) _mutationHooks = require('@/hooks/mutations/useStrategyMutations');
+  return _mutationHooks;
+}
+let _chartPrefsHook: any = null;
+function getChartPrefsHook() {
+  if (!_chartPrefsHook) _chartPrefsHook = require('@/hooks/useChartPrefs');
+  return _chartPrefsHook;
+}
+
+// Re-export types for JSX usage
+type PaneConfig = import('@/charts/SyncedChartPane').PaneConfig;
+type SeriesConfig = import('@/charts/SyncedChartPane').SeriesConfig;
 
 /* ========================================================================= */
 /* COLOR CONSTANTS                                                            */
@@ -423,6 +452,13 @@ interface Props {
 }
 
 export default function StrategyDetailPage({ strategyId }: Props) {
+  // Lazy hook resolution — avoids module-scope circular deps
+  const { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart } = getStrategyHooks();
+  const { useStrategyAlerts } = getAlertHooks();
+  const { useBars } = getMarketHooks();
+  const { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } = getMutationHooks();
+  const { useChartPrefs } = getChartPrefsHook();
+
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
   const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
