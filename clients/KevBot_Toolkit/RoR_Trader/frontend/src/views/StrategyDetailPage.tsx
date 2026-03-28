@@ -616,36 +616,48 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return new Date(new Date(iso).getTime() + tfMs).toISOString();
   }, [tfMs]);
 
+  // Derive exit exec type from exit_reason:
+  // L-type: stop_loss, target, unconfirmed_hl, unconfirmed_hm (price crosses a level)
+  // C-type: bar_count_exit, opposite_signal, time_exit, signal (evaluated at bar close)
+  const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl', 'unconfirmed_hm']);
+  const exitExecTypeOf = (reason: string) => L_TYPE_EXITS.has(reason) ? 'L' : 'C';
+
   const fwdTrades = useMemo(() => (fwdData?.forward_trades || []).map((t: any, i: number) => {
     const rawExec = t.exec_type || 'C';
+    const exitReason = t.exit_reason || '--';
+    const exitExec = exitExecTypeOf(exitReason);
     return {
       id: i + 1,
       entryTime: t.entry_time || '--',
       exitTime: t.exit_time || '--',
       entryTimeDisplay: shiftCType(t.entry_time || '--', rawExec),
-      exitTimeDisplay: shiftCType(t.exit_time || '--', rawExec),
+      exitTimeDisplay: shiftCType(t.exit_time || '--', exitExec),
       entryPrice: t.entry_price ?? 0,
       exitPrice: t.exit_price ?? 0,
       pnlR: t.r_multiple ?? 0,
       execType: rawExec,
-      exitReason: t.exit_reason || '--',
+      exitExecType: exitExec,
+      exitReason,
       isFwd: true,
     };
   }), [fwdData, shiftCType]);
 
   const btTrades = useMemo(() => (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => {
     const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
+    const exitReason = t.exit_reason || t.exitReason || '--';
+    const exitExec = exitExecTypeOf(exitReason);
     return {
       id: t.id ?? i + 1,
       entryTime: t.entry_time || t.entryTime || '--',
       exitTime: t.exit_time || t.exitTime || '--',
       entryTimeDisplay: shiftCType(t.entry_time || t.entryTime || '--', rawExec),
-      exitTimeDisplay: shiftCType(t.exit_time || t.exitTime || '--', rawExec),
+      exitTimeDisplay: shiftCType(t.exit_time || t.exitTime || '--', exitExec),
       entryPrice: t.entry_price ?? t.entryPrice ?? 0,
       exitPrice: t.exit_price ?? t.exitPrice ?? 0,
       pnlR: t.r_multiple ?? t.pnlR ?? 0,
       execType: rawExec,
-      exitReason: t.exit_reason || t.exitReason || '--',
+      exitExecType: exitExec,
+      exitReason,
       isFwd: false,
     };
   }), [fwdData, allTrades, shiftCType]);
@@ -2014,7 +2026,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                  <span style={{ color: 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>C</span>
+                                  {(() => { const xL = row.exitExecType === 'L'; return <span style={{ color: xL ? '#FF9800' : 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>{xL ? 'L' : 'C'}</span>; })()}
                                   {formatTime(row.exitTimeDisplay)}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
