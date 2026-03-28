@@ -309,9 +309,16 @@ def get_strategy_chart_data(
         req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
         sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels if get_tf_from_label(lbl)))
 
+        # If daily secondary TFs are needed, load more history for EMA warmup
+        base_days = days or strat.get('data_days', 30)
+        if any(tf == '1Day' for tf in sec_tfs):
+            chart_days = max(base_days, 365)  # Need ~250 trading days for daily MACD warmup
+        else:
+            chart_days = base_days
+
         df = svc.prepare_data_with_indicators(
             strat['symbol'],
-            days=days or strat.get('data_days', 30),
+            days=chart_days,
             timeframe=strat.get('timeframe', '1Min'),
             session=strat.get('trading_session', 'RTH'),
             secondary_tfs=sec_tfs,
@@ -488,9 +495,21 @@ def get_confluence_chart(
             chart_tf = strat.get('timeframe', '1Min')
 
     try:
+        # For coarser timeframes (daily, hourly), load more history to ensure
+        # EMA/MACD indicators have enough warmup bars. Without this, a 180-day
+        # daily chart only has ~126 bars, and EMA(26) doesn't stabilize,
+        # producing inflated MACD values (80+ instead of ±5).
+        base_days = days or strat.get('data_days', 30)
+        if chart_tf == '1Day':
+            chart_days = max(base_days, 730)  # ~2 years for daily
+        elif chart_tf in ('1Hour', '2Hour', '4Hour'):
+            chart_days = max(base_days, 365)  # 1 year for hourly
+        else:
+            chart_days = base_days
+
         df = svc.prepare_data_with_indicators(
             strat['symbol'],
-            days=days or strat.get('data_days', 30),
+            days=chart_days,
             timeframe=chart_tf,
             session=strat.get('trading_session', 'RTH'),
         )
