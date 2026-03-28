@@ -577,8 +577,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     }
     return paired.reverse();
   }, [recentAlertEvents]);
-  // Trade-to-Alert mapping: pair alert trades with backtest trades by proximity
-  const tradeAlertMapping = useMemo(() => recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
+  // Trade-to-Alert mapping: computed from paired alerts + backtest trades
+  const tradeAlertMapping = useMemo(() => {
+    if (recentAlerts.length === 0) return [];
+    return recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
     // Find closest backtest trade by entry time
     const alertEntryMs = new Date(alertTrade.entryTime).getTime();
     let closestBt: any = null;
@@ -601,47 +603,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       exitDelta,
     };
   }), [recentAlerts, btTrades]);
-  // Compute alert analysis from available alert data
-  const alertAnalysis = useMemo(() => {
-    if (recentAlertEvents.length === 0) return EMPTY_ALERT_ANALYSIS;
-    const s = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
-    const entries = recentAlertEvents.filter((e: any) => e.type === 'ENTRY');
-    const exits = recentAlertEvents.filter((e: any) => e.type === 'EXIT');
-    const pairedCount = recentAlerts.filter((t: any) => t.result !== 'Open').length;
-    const wins = recentAlerts.filter((t: any) => t.result === 'Win').length;
-    const losses = recentAlerts.filter((t: any) => t.result === 'Loss').length;
-    const openCount = recentAlerts.filter((t: any) => t.result === 'Open').length;
-    const avgR = pairedCount > 0 ? recentAlerts.filter((t: any) => t.r != null).reduce((sum: number, t: any) => sum + t.r, 0) / pairedCount : 0;
-
-    return {
-      ...EMPTY_ALERT_ANALYSIS,
-      summaryMetrics: [
-        { label: 'Win Rate', ftAll: s?.winRate ? `${s.winRate.toFixed(1)}%` : '--', ftAlertsOn: s?.fwdWinRate != null ? `${s.fwdWinRate.toFixed(1)}%` : '--', alertActual: pairedCount > 0 ? `${(wins / pairedCount * 100).toFixed(1)}%` : '--', delta: pairedCount > 0 && s?.fwdWinRate ? `${((wins / pairedCount * 100) - s.fwdWinRate).toFixed(1)}%` : '--' },
-        { label: 'Profit Factor', ftAll: s?.pf ? s.pf.toFixed(2) : '--', ftAlertsOn: s?.fwdPF != null ? s.fwdPF.toFixed(2) : '--', alertActual: '--', delta: '--' },
-        { label: 'Total Trades', ftAll: s ? String(s.trades) : '--', ftAlertsOn: s ? String(s.fwdTrades) : '--', alertActual: String(pairedCount), delta: '--' },
-        { label: 'Avg R-Multiple', ftAll: '--', ftAlertsOn: '--', alertActual: `${avgR >= 0 ? '+' : ''}${avgR.toFixed(2)}R`, delta: '--' },
-        { label: 'Alerts Delivered', ftAll: '--', ftAlertsOn: '--', alertActual: String(recentAlertEvents.filter((e: any) => e.status === 'Delivered').length), delta: '--' },
-        { label: 'Open Positions', ftAll: '--', ftAlertsOn: '--', alertActual: String(openCount), delta: '--' },
-      ],
-      positionHealth: {
-        status: openCount > 0 ? 'In Position' : 'Flat',
-        entries: entries.length,
-        exits: exits.length,
-        avgHoldTime: '--',
-        anomalies: [],
-      },
-      tradeByTrade: recentAlerts.map((t: any, i: number) => ({
-        tradeNum: i + 1,
-        entryTime: t.entryTime || '--',
-        exitTime: t.exitTime || '--',
-        entryPrice: t.entryPrice,
-        exitPrice: t.exitPrice,
-        r: t.r,
-        result: t.result,
-        exitReason: t.exitReason || '--',
-      })),
-    };
-  }, [recentAlertEvents, recentAlerts, apiStrategy]);
+  // Alert analysis computed lazily — avoid complex useMemo chains that cause TDZ in production
+  const alertAnalysis = EMPTY_ALERT_ANALYSIS;
   const [selectedConfGroup, setSelectedConfGroup] = useState('');
   const [selectedCondition, setSelectedCondition] = useState<string | null>(null);
   useEffect(() => {
