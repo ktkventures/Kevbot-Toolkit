@@ -660,10 +660,18 @@ def test_exec_type_classification():
     assert get_trigger_exec_type('vwap_default_cross_above_ib') == 'L0'
     assert get_trigger_exec_type('ema_pp_v2_custom_1_cross_short_up_ib') == 'L1'
 
+    # LC/CC exec types
+    assert get_trigger_exec_type('ema_pp_v2_cross_short_up_lc') == 'LC'
+    assert get_trigger_exec_type('ema_pp_v2_cross_mid_down_lc') == 'LC'
+    assert get_trigger_exec_type('ema_pp_v2_cross_short_up_cc') == 'CC'
+    assert get_trigger_exec_type('sw123_bull_c2_cc') == 'CC'
+
     assert _strip_exec_suffix('utbot_buy_ib') == 'utbot_buy'
     assert _strip_exec_suffix('utbot_buy_hm') == 'utbot_buy'
     assert _strip_exec_suffix('utbot_buy_hl') == 'utbot_buy'
     assert _strip_exec_suffix('ema_cross_bull') == 'ema_cross_bull'
+    assert _strip_exec_suffix('ema_pp_v2_cross_short_up_lc') == 'ema_pp_v2_cross_short_up'
+    assert _strip_exec_suffix('sw123_bull_c2_cc') == 'sw123_bull_c2'
 
     print("PASS")
 
@@ -932,12 +940,28 @@ def test_position_state_from_dict():
     assert ps2.initial_stop_price == 148.0
     assert ps2.entry_trigger == 'buy_hm'
 
+    # Test LC/CC fields round-trip
+    ps_lc = PositionState(
+        status='IN_POSITION', exec_type='LC',
+        pending_confirm_bar=52, bail_action='exit_limit_breakeven',
+        hold_seconds=3, direction='LONG',
+    )
+    d_lc = ps_lc.to_dict()
+    ps_lc2 = PositionState.from_dict(d_lc)
+    assert ps_lc2.exec_type == 'LC'
+    assert ps_lc2.pending_confirm_bar == 52
+    assert ps_lc2.bail_action == 'exit_limit_breakeven'
+    assert ps_lc2.hold_seconds == 3
+
     # Test backward compatibility: old dict without new fields
     old_d = {'status': 'FLAT', 'entry_price': 0.0, 'direction': 'SHORT'}
     ps3 = PositionState.from_dict(old_d)
     assert ps3.exec_type == 'C'
     assert ps3.pending_hm_exit is False
     assert ps3.pending_hl_limit is False
+    assert ps3.pending_confirm_bar == -1
+    assert ps3.bail_action == 'exit_market'
+    assert ps3.hold_seconds == 0
     assert ps3.initial_stop_price == 0.0
     assert ps3.direction == 'SHORT'
 
