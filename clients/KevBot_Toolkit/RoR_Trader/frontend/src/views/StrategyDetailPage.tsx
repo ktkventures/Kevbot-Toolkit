@@ -651,6 +651,59 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     });
   }, [recentAlerts, btTrades]);
 
+  // Match sets: which algo trades have matching alerts, and vice versa
+  // Match = entry timestamps within 2 bars (2× timeframe seconds) of each other
+  const { alertMatchSet, algoMatchSet } = useMemo(() => {
+    const alertSet = new Set<number>(); // indices into recentAlerts
+    const algoSet = new Set<number>();  // indices into [...fwdTrades, ...btTrades]
+    const algoAll = [...fwdTrades, ...btTrades];
+    const tfSec = (() => {
+      const tf = apiStrategy?.timeframe || '1Min';
+      if (tf.includes('Min')) return parseInt(tf) * 60;
+      if (tf.includes('Hour') || tf === '1H') return 3600;
+      if (tf.includes('Day') || tf === '1D') return 86400;
+      return 60;
+    })();
+    const tolerance = tfSec * 2 * 1000; // 2 bars in ms
+
+    for (let ai = 0; ai < recentAlerts.length; ai++) {
+      const a = recentAlerts[ai];
+      if (!a.entryTime || a.entryTime === '--') continue;
+      const aMs = new Date(a.entryTime).getTime();
+      for (let ti = 0; ti < algoAll.length; ti++) {
+        const t = algoAll[ti];
+        if (!t.entryTime || t.entryTime === '--') continue;
+        if (Math.abs(new Date(t.entryTime).getTime() - aMs) <= tolerance) {
+          alertSet.add(ai);
+          algoSet.add(ti);
+          break;
+        }
+      }
+    }
+    return { alertMatchSet: alertSet, algoMatchSet: algoSet };
+  }, [recentAlerts, fwdTrades, btTrades, apiStrategy]);
+
+  // Timezone-aware timestamp formatter
+  const formatTime = useMemo(() => {
+    // Map common aliases to IANA names
+    const TZ_MAP: Record<string, string> = {
+      'US/Eastern': 'America/New_York', 'US/Central': 'America/Chicago',
+      'US/Mountain': 'America/Denver', 'US/Pacific': 'America/Los_Angeles',
+      'US/Alaska': 'America/Anchorage', 'US/Hawaii': 'Pacific/Honolulu',
+    };
+    const rawTz = chartPrefs.timezone || 'US/Mountain';
+    const tz = TZ_MAP[rawTz] || rawTz;
+    return (iso: string | null | undefined) => {
+      if (!iso || iso === '--') return '--';
+      try {
+        return new Date(iso).toLocaleString('en-US', {
+          timeZone: tz, month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        });
+      } catch { return iso; }
+    };
+  }, [chartPrefs.timezone]);
+
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
     // Prefer building from trades
@@ -1844,7 +1897,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result'].map((h) => (
+                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h) => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -1852,29 +1905,37 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <tbody>
                           {recentAlerts.length === 0 ? (
                             <tr>
-                              <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No alerts available — enable monitoring to populate
                               </td>
                             </tr>
-                          ) : recentAlerts.map((row: any, i: number) => (
-                            <tr key={i}>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime || '--'}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime || '--'}</td>
-                              <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
-                              <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
-                              <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
-                                {row.r != null ? `${row.r >= 0 ? '+' : ''}${Number(row.r).toFixed(2)}` : '\u2014'}
-                              </td>
-                              <td style={tdStyle}>
-                                <span style={{
-                                  color: row.result === 'Win' ? 'var(--green)' : row.result === 'Loss' ? 'var(--red)' : 'var(--orange)',
-                                  fontWeight: 600, fontSize: '0.75rem',
-                                }}>
-                                  {row.result || '--'}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
+                          ) : recentAlerts.map((row: any, i: number) => {
+                            const matched = alertMatchSet.has(i);
+                            return (
+                              <tr key={i}>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
+                                <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
+                                <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
+                                  {row.r != null ? `${row.r >= 0 ? '+' : ''}${Number(row.r).toFixed(2)}` : '\u2014'}
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{
+                                    color: row.result === 'Win' ? 'var(--green)' : row.result === 'Loss' ? 'var(--red)' : 'var(--orange)',
+                                    fontWeight: 600, fontSize: '0.75rem',
+                                  }}>
+                                    {row.result || '--'}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{ color: matched ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {matched ? 'Yes' : 'No'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -1887,7 +1948,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Period'].map((h) => (
+                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Period', 'Match'].map((h) => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -1895,37 +1956,45 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <tbody>
                           {btTrades.length === 0 && fwdTrades.length === 0 ? (
                             <tr>
-                              <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No trades available — run backtest to populate
                               </td>
                             </tr>
-                          ) : [...fwdTrades, ...btTrades].map((row: any, i: number) => (
-                            <tr key={i}>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime || '--'}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime || '--'}</td>
-                              <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
-                              <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
-                              <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                                {row.pnlR != null ? `${row.pnlR >= 0 ? '+' : ''}${Number(row.pnlR).toFixed(2)}` : '--'}
-                              </td>
-                              <td style={tdStyle}>
-                                <span style={{
-                                  color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)',
-                                  fontWeight: 600, fontSize: '0.75rem',
-                                }}>
-                                  {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
-                                </span>
-                              </td>
-                              <td style={tdStyle}>
-                                <span style={{
-                                  color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
-                                  fontSize: '0.7rem',
-                                }}>
-                                  {row.isFwd ? 'FWD' : 'BT'}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
+                          ) : [...fwdTrades, ...btTrades].map((row: any, i: number) => {
+                            const matched = algoMatchSet.has(i);
+                            return (
+                              <tr key={i}>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
+                                <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
+                                <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                                  {row.pnlR != null ? `${row.pnlR >= 0 ? '+' : ''}${Number(row.pnlR).toFixed(2)}` : '--'}
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{
+                                    color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)',
+                                    fontWeight: 600, fontSize: '0.75rem',
+                                  }}>
+                                    {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{
+                                    color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
+                                    fontSize: '0.7rem',
+                                  }}>
+                                    {row.isFwd ? 'FWD' : 'BT'}
+                                  </span>
+                                </td>
+                                <td style={tdStyle}>
+                                  <span style={{ color: matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
+                                    {matched ? 'Yes' : 'No'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

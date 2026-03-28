@@ -19,6 +19,8 @@ export const CANDLE_THEMES: Record<string, { up: string; down: string; upBorder?
 };
 
 export interface ChartPrefs {
+  // Regional
+  timezone: string;
   // Price chart
   candleStyle: string;
   candleTheme: string;
@@ -47,6 +49,7 @@ export interface ChartPrefs {
 }
 
 const DEFAULTS: ChartPrefs = {
+  timezone: 'US/Mountain',
   candleStyle: 'Candle',
   candleTheme: 'neutral',
   candleUp: '#FFFFFF',
@@ -91,6 +94,7 @@ export function useChartPrefs(): ChartPrefs {
   const themeColors = CANDLE_THEMES[theme] || CANDLE_THEMES.neutral;
 
   return {
+    timezone: s.timezone ?? DEFAULTS.timezone,
     candleStyle: s.candleStyle ?? DEFAULTS.candleStyle,
     candleTheme: theme,
     candleUp: themeColors.up,
