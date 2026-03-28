@@ -955,7 +955,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       {/* Meta line */}
       <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
         {strategy.symbol} &middot; {strategy.direction} &middot; {strategy.timeframe} &middot; {strategy.session}
-        &nbsp;&middot;&nbsp;BT {strategy.btDays}d ({btTrades.length} trades) &middot; FWD {fwdDays}d ({fwdTrades.length} trades) &middot; Alert Accuracy {alertAccuracy}%
+        &nbsp;&middot;&nbsp;Algo: BT {strategy.btDays}d ({btTrades.length}) + FWD {fwdDays}d ({fwdTrades.length}) &middot; Alerts: {recentAlerts.length} &middot; Alert Accuracy {alertAccuracy}%
       </p>
 
       {/* Pack-aware variable display */}
@@ -1530,7 +1530,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                            (exitMs >= firstBarTime && exitMs <= lastBarTime);
                   });
 
-                  if (visibleTrades.length > 0) {
+                  if (visibleTrades.length > 0 || recentAlerts.length > 0) {
                     // Helper: snap a trade timestamp to nearest bar timestamp
                     // LWC v4 requires marker timestamps to exactly match a data point
                     const barTimestamps = bars.map((b: any) => b.timestamp);
@@ -1545,105 +1545,113 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       return bestDist < 120000 ? bestTs : null; // Within 2 minutes
                     };
 
-                    // Separate BT and FWD trades into different series (like Streamlit)
-                    const btVisible = visibleTrades.filter(t => !t.isFwd);
-                    const fwdVisible = visibleTrades.filter(t => t.isFwd);
+                    // --- Algo price markers (+) — BT + FWD trades (what the algo says should happen) ---
+                    const algoEntryData: any[] = [];
+                    const algoEntryMarkers: any[] = [];
+                    const seenAlgoEntry = new Set<string>();
+                    const algoExitData: any[] = [];
+                    const algoExitMarkers: any[] = [];
+                    const seenAlgoExit = new Set<string>();
 
-                    // BT entry price markers (+)
-                    const btEntryData: any[] = [];
-                    const btEntryMarkers: any[] = [];
-                    const seenBtEntry = new Set<string>();
-                    for (const t of btVisible) {
-                      if (!t.entryTime || t.entryTime === '--' || t.entryPrice <= 0) continue;
-                      if (new Date(t.entryTime).getTime() < firstBarTime || new Date(t.entryTime).getTime() > lastBarTime) continue;
-                      const snapped = snapToBar(t.entryTime);
-                      if (!snapped || seenBtEntry.has(snapped)) continue;
-                      seenBtEntry.add(snapped);
-                      btEntryData.push({ time: snapped, value: t.entryPrice });
-                      btEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
+                    for (const t of visibleTrades) {
+                      // Entry
+                      if (t.entryTime && t.entryTime !== '--' && t.entryPrice > 0) {
+                        const entryMs = new Date(t.entryTime).getTime();
+                        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
+                          const snapped = snapToBar(t.entryTime);
+                          if (snapped && !seenAlgoEntry.has(snapped)) {
+                            seenAlgoEntry.add(snapped);
+                            algoEntryData.push({ time: snapped, value: t.entryPrice });
+                            algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
+                          }
+                        }
+                      }
+                      // Exit
+                      if (t.exitTime && t.exitTime !== '--' && t.exitPrice > 0) {
+                        const exitMs = new Date(t.exitTime).getTime();
+                        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+                          const snapped = snapToBar(t.exitTime);
+                          if (snapped && !seenAlgoExit.has(snapped)) {
+                            seenAlgoExit.add(snapped);
+                            const reason = t.exitReason || '';
+                            let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                            if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+                            else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                            algoExitData.push({ time: snapped, value: t.exitPrice });
+                            algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
+                          }
+                        }
+                      }
                     }
-                    if (btEntryData.length > 0) {
+
+                    if (algoEntryData.length > 0) {
                       priceSeries.push({
-                        type: 'Line', data: btEntryData,
+                        type: 'Line', data: algoEntryData,
                         options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: btEntryMarkers,
+                        markers: algoEntryMarkers,
                       });
                     }
-
-                    // BT exit price markers (+)
-                    const btExitData: any[] = [];
-                    const btExitMarkers: any[] = [];
-                    const seenBtExit = new Set<string>();
-                    for (const t of btVisible) {
-                      if (!t.exitTime || t.exitTime === '--' || t.exitPrice <= 0) continue;
-                      if (new Date(t.exitTime).getTime() < firstBarTime || new Date(t.exitTime).getTime() > lastBarTime) continue;
-                      const snapped = snapToBar(t.exitTime);
-                      if (!snapped || seenBtExit.has(snapped)) continue;
-                      seenBtExit.add(snapped);
-                      const reason = t.exitReason || '';
-                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                      btExitData.push({ time: snapped, value: t.exitPrice });
-                      btExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
-                    }
-                    if (btExitData.length > 0) {
+                    if (algoExitData.length > 0) {
                       priceSeries.push({
-                        type: 'Line', data: btExitData,
+                        type: 'Line', data: algoExitData,
                         options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: btExitMarkers,
+                        markers: algoExitMarkers,
                       });
                     }
 
-                    // FWD/alert entry price markers (×)
-                    const fwdEntryData: any[] = [];
-                    const fwdEntryMarkers: any[] = [];
-                    const seenFwdEntry = new Set<string>();
-                    for (const t of fwdVisible) {
-                      if (!t.entryTime || t.entryTime === '--' || t.entryPrice <= 0) continue;
-                      if (new Date(t.entryTime).getTime() < firstBarTime || new Date(t.entryTime).getTime() > lastBarTime) continue;
-                      const snapped = snapToBar(t.entryTime);
-                      if (!snapped || seenFwdEntry.has(snapped)) continue;
-                      seenFwdEntry.add(snapped);
-                      fwdEntryData.push({ time: snapped, value: t.entryPrice });
-                      fwdEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: chartPrefs.entryColor, text: '', size: 1 });
+                    // --- Alert price markers (×) — actual alert executions ---
+                    const alertEntryData: any[] = [];
+                    const alertEntryMarkers: any[] = [];
+                    const seenAlertEntry = new Set<string>();
+                    const alertExitData: any[] = [];
+                    const alertExitMarkers: any[] = [];
+                    const seenAlertExit = new Set<string>();
+
+                    for (const a of recentAlerts) {
+                      // Entry
+                      if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
+                        const entryMs = new Date(a.entryTime).getTime();
+                        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
+                          const snapped = snapToBar(a.entryTime);
+                          if (snapped && !seenAlertEntry.has(snapped)) {
+                            seenAlertEntry.add(snapped);
+                            alertEntryData.push({ time: snapped, value: a.entryPrice });
+                            alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
+                          }
+                        }
+                      }
+                      // Exit
+                      if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
+                        const exitMs = new Date(a.exitTime).getTime();
+                        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+                          const snapped = snapToBar(a.exitTime);
+                          if (snapped && !seenAlertExit.has(snapped)) {
+                            seenAlertExit.add(snapped);
+                            const reason = a.exitReason || '';
+                            let color: string;
+                            if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
+                            else if (reason === 'bar_count_exit') color = 'rgba(38,166,154,0.8)';
+                            else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
+                            alertExitData.push({ time: snapped, value: a.exitPrice });
+                            alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
+                          }
+                        }
+                      }
                     }
-                    if (fwdEntryData.length > 0) {
+
+                    if (alertEntryData.length > 0) {
                       priceSeries.push({
-                        type: 'Line', data: fwdEntryData,
-                        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: fwdEntryMarkers,
+                        type: 'Line', data: alertEntryData,
+                        options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+                        markers: alertEntryMarkers,
                       });
                     }
-
-                    // FWD/alert exit price markers (×)
-                    const fwdExitData: any[] = [];
-                    const fwdExitMarkers: any[] = [];
-                    const seenFwdExit = new Set<string>();
-                    for (const t of fwdVisible) {
-                      if (!t.exitTime || t.exitTime === '--' || t.exitPrice <= 0) continue;
-                      if (new Date(t.exitTime).getTime() < firstBarTime || new Date(t.exitTime).getTime() > lastBarTime) continue;
-                      const snapped = snapToBar(t.exitTime);
-                      if (!snapped || seenFwdExit.has(snapped)) continue;
-                      seenFwdExit.add(snapped);
-                      const reason = t.exitReason || '';
-                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                      fwdExitData.push({ time: snapped, value: t.exitPrice });
-                      fwdExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
-                    }
-                    if (fwdExitData.length > 0) {
+                    if (alertExitData.length > 0) {
                       priceSeries.push({
-                        type: 'Line', data: fwdExitData,
-                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: fwdExitMarkers,
+                        type: 'Line', data: alertExitData,
+                        options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+                        markers: alertExitMarkers,
                       });
-                    }
-
-                    console.log('[CrossMarkers] BT entries:', btEntryData.length, 'BT exits:', btExitData.length, 'FWD entries:', fwdEntryData.length, 'FWD exits:', fwdExitData.length);
-                    if (btEntryData.length === 0 && btVisible.length > 0) {
-                      console.log('[CrossMarkers] BT trades exist but no entry markers. Sample:', btVisible.slice(0, 3).map(t => ({ entryTime: t.entryTime, entryPrice: t.entryPrice, exitTime: t.exitTime, exitPrice: t.exitPrice })));
                     }
                   }
 
@@ -1725,7 +1733,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>+</span> BT price</span>
+                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>+</span> Algo price</span>
                           <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&times;</span> Alert price</span>
                         </div>
                       </Card>
@@ -1827,11 +1835,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </div>
                 </Card>
 
-                {/* Alert History + Backtest Trade History side by side */}
+                {/* Alert History + Algo History side by side */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-                  {/* Alert History */}
+                  {/* Alert History (× on chart — actual alert executions) */}
                   <Card>
-                    <h4 className="text-sm font-medium mb-3">Alert History</h4>
+                    <h4 className="text-sm font-medium mb-3">Alert History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({recentAlerts.length})</span></h4>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
@@ -1872,26 +1880,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   </Card>
 
-                  {/* Backtest Trade History */}
+                  {/* Algo History (+ on chart — BT + FWD programmatic trades) */}
                   <Card>
-                    <h4 className="text-sm font-medium mb-3">Trade History (Backtest)</h4>
+                    <h4 className="text-sm font-medium mb-3">Algo History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({btTrades.length + fwdTrades.length})</span></h4>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result'].map((h) => (
+                            {['Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Result', 'Period'].map((h) => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
-                          {btTrades.length === 0 ? (
+                          {btTrades.length === 0 && fwdTrades.length === 0 ? (
                             <tr>
-                              <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No trades available — run backtest to populate
                               </td>
                             </tr>
-                          ) : btTrades.slice(0, 20).map((row: any, i: number) => (
+                          ) : [...fwdTrades, ...btTrades].map((row: any, i: number) => (
                             <tr key={i}>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.entryTime || '--'}</td>
                               <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.exitTime || '--'}</td>
@@ -1908,6 +1916,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                   {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
                                 </span>
                               </td>
+                              <td style={tdStyle}>
+                                <span style={{
+                                  color: row.isFwd ? 'var(--accent)' : 'var(--text-muted)',
+                                  fontSize: '0.7rem',
+                                }}>
+                                  {row.isFwd ? 'FWD' : 'BT'}
+                                </span>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1915,41 +1931,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   </Card>
                 </div>
-
-                {/* Forward Test Trades */}
-                <Card className="mb-4">
-                  <button
-                    className="flex items-center gap-2 w-full text-left text-sm font-medium mb-3"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', padding: 0 }}
-                    onClick={() => setFwdTradesOpen(!fwdTradesOpen)}
-                  >
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{fwdTradesOpen ? '\u25BC' : '\u25B6'}</span>
-                    Forward Test Trades
-                    <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({fwdTrades.length})</span>
-                  </button>
-                  {fwdTradesOpen && (
-                    fwdLoading ? (
-                      <div className="flex items-center gap-3 py-6 justify-center">
-                        <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                        <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading forward test trades from Polygon...</span>
-                      </div>
-                    ) : renderTradeTable(fwdTrades)
-                  )}
-                </Card>
-
-                {/* Backtest Trades */}
-                <Card>
-                  <button
-                    className="flex items-center gap-2 w-full text-left text-sm font-medium mb-3"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', padding: 0 }}
-                    onClick={() => setBtTradesOpen(!btTradesOpen)}
-                  >
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{btTradesOpen ? '\u25BC' : '\u25B6'}</span>
-                    Backtest Trades
-                    <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({btTrades.length})</span>
-                  </button>
-                  {btTradesOpen && renderTradeTable(btTrades)}
-                </Card>
               </div>
             )}
 
