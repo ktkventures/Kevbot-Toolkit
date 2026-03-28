@@ -809,6 +809,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }, [chartPrefs.timezone]);
 
+  // Two-line time renderer for table cells: "Mar 27" on top, "13:54:00" below
+  const renderTime = useMemo(() => {
+    const TZ_MAP: Record<string, string> = {
+      'US/Eastern': 'America/New_York', 'US/Central': 'America/Chicago',
+      'US/Mountain': 'America/Denver', 'US/Pacific': 'America/Los_Angeles',
+      'US/Alaska': 'America/Anchorage', 'US/Hawaii': 'Pacific/Honolulu',
+    };
+    const rawTz = chartPrefs.timezone || 'US/Mountain';
+    const tz = TZ_MAP[rawTz] || rawTz;
+    return (iso: string | null | undefined, badge?: string) => {
+      if (!iso || iso === '--') return <span>--</span>;
+      try {
+        const d = new Date(iso);
+        const datePart = d.toLocaleString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
+        const timePart = d.toLocaleString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        const isL = badge === 'L';
+        return (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.3 }}>
+            <span>
+              {badge && <span style={{ color: isL ? '#FF9800' : 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 2 }}>{badge}</span>}
+              {datePart}
+            </span>
+            <span style={{ fontSize: '0.7rem' }}>{timePart}</span>
+          </span>
+        );
+      } catch { return <span>{iso}</span>; }
+    };
+  }, [chartPrefs.timezone]);
+
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
     // Prefer building from trades
@@ -891,19 +920,22 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const thStyle: React.CSSProperties = {
     color: 'var(--text-muted)',
     background: 'var(--bg-secondary)',
-    textAlign: 'left' as const,
-    padding: '8px 12px',
-    fontSize: '0.75rem',
+    textAlign: 'center' as const,
+    padding: '6px 8px',
+    fontSize: '0.7rem',
     fontWeight: 600,
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
+    whiteSpace: 'nowrap' as const,
   };
 
   const tdStyle: React.CSSProperties = {
-    padding: '8px 12px',
+    padding: '6px 8px',
     fontSize: '0.8125rem',
     borderBottom: '1px solid var(--border)',
     color: 'var(--text-secondary)',
+    textAlign: 'center' as const,
+    verticalAlign: 'middle' as const,
   };
 
   /* ======================================================================= */
@@ -2079,13 +2111,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             return (
                               <tr key={si}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                  <span style={{ color: isL ? '#FF9800' : 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>{isL ? 'L' : 'C'}</span>
-                                  {formatTime(row.entryTimeDisplay)}
+                                  {renderTime(row.entryTimeDisplay, isL ? 'L' : 'C')}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                  {(() => { const xL = row.exitExecType === 'L'; return <span style={{ color: xL ? '#FF9800' : 'var(--accent)', fontSize: '0.6rem', fontWeight: 700, marginRight: 3 }}>{xL ? 'L' : 'C'}</span>; })()}
-                                  {formatTime(row.exitTimeDisplay)}
+                                  {renderTime(row.exitTimeDisplay, row.exitExecType === 'L' ? 'L' : 'C')}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
@@ -2136,9 +2166,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             return (
                               <tr key={i}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.entryTime)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.exitTime)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
