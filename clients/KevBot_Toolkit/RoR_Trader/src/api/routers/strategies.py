@@ -542,11 +542,21 @@ def get_confluence_chart(
         # Get interpreter state column
         state_col = interp_key if interp_key in df.columns else None
         if not state_col:
-            # Try uppercase
+            # Try case-insensitive match
             for c in df.columns:
                 if c.upper() == interp_key.upper():
                     state_col = c
                     break
+        if not state_col:
+            # Try with group ID prefix (some interpreters use GROUP_ID as column name)
+            for c in df.columns:
+                if interp_key in c.upper() and not c.startswith('trig_'):
+                    state_col = c
+                    break
+
+        logger.info("[CONFLUENCE-CHART] condition=%s, interp_key=%s, state_col=%s, needed=%s, cols_sample=%s",
+                    condition, interp_key, state_col, needed_state,
+                    [c for c in df.columns if interp_key.upper() in c.upper()][:5])
 
         # Serialize
         from api.services.backtest_service import _serialize_chart_data

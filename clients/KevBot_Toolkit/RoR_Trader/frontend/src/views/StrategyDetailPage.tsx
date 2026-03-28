@@ -1881,17 +1881,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         let regionMet = false;
                         for (let i = 0; i < confChartData.bars.length; i++) {
                           const bar = confChartData.bars[i];
-                          const met = bar._met === true;
+                          // Check _met (set by backend) or compute from _state + needed_state
+                          const met = bar._met === true || (bar._state != null && bar._state === confChartData.needed_state);
                           const t = Math.floor(new Date(bar.timestamp).getTime() / 1000);
                           if (regionStart === null) { regionStart = t; regionMet = met; }
                           else if (met !== regionMet) {
-                            stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)' });
+                            stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
                             regionStart = t; regionMet = met;
                           }
                         }
                         if (regionStart !== null) {
                           const lastT = Math.floor(new Date(confChartData.bars[confChartData.bars.length - 1].timestamp).getTime() / 1000);
-                          stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)' });
+                          stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
                         }
                         const primitives = stateRanges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges: stateRanges } }] : [];
 
