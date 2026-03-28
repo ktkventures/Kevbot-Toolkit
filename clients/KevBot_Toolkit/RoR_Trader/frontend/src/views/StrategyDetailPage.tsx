@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import Card from '@/components/Card';
@@ -532,6 +532,33 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [markovWindow, setMarkovWindow] = useState(20);
   const [edgeDecay, setEdgeDecay] = useState(0.5);
   const [candleCount, setCandleCount] = useState(200);
+  const [manualExitLoading, setManualExitLoading] = useState(false);
+  const [manualExitResult, setManualExitResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const handleManualExit = useCallback(async () => {
+    if (!strategyId || manualExitLoading) return;
+    if (!window.confirm('Are you sure you want to manually exit this position? This will fire exit webhooks to all linked portfolios.')) return;
+    setManualExitLoading(true);
+    setManualExitResult(null);
+    try {
+      const token = localStorage.getItem('ror_access_token');
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${apiUrl}/api/strategies/${strategyId}/manual-exit`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setManualExitResult({ ok: true, msg: `Exit sent — ${data.webhooks_delivered} webhook(s) delivered${data.price ? ` @ $${Number(data.price).toFixed(2)}` : ''}` });
+      } else {
+        setManualExitResult({ ok: false, msg: data.detail || 'Failed to send exit' });
+      }
+    } catch (e: any) {
+      setManualExitResult({ ok: false, msg: e.message || 'Network error' });
+    } finally {
+      setManualExitLoading(false);
+    }
+  }, [strategyId, manualExitLoading]);
   const [showConditions, setShowConditions] = useState(true);
   const [showTriggers, setShowTriggers] = useState(true);
   const [btTradesOpen, setBtTradesOpen] = useState(false);
@@ -1881,14 +1908,44 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                 {/* Position Status */}
                 <Card className="mb-4">
-                  <h4 className="text-sm font-medium mb-3">Position Status</h4>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium">Position Status</h4>
+                    {(() => {
+                      const hasOpenPosition = recentAlerts.some((t: any) => t.result === 'Open');
+                      return (
+                        <button
+                          onClick={handleManualExit}
+                          disabled={!hasOpenPosition || manualExitLoading}
+                          className="px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                          style={{
+                            background: hasOpenPosition ? 'var(--red)' : 'var(--bg-input)',
+                            color: hasOpenPosition ? 'white' : 'var(--text-muted)',
+                            border: hasOpenPosition ? 'none' : '1px solid var(--border)',
+                            opacity: manualExitLoading ? 0.6 : 1,
+                            cursor: hasOpenPosition ? 'pointer' : 'not-allowed',
+                          }}
+                        >
+                          {manualExitLoading ? 'Exiting...' : hasOpenPosition ? 'Manual Exit' : 'No Position'}
+                        </button>
+                      );
+                    })()}
+                  </div>
+                  {manualExitResult && (
+                    <div className="mb-3 px-3 py-2 rounded text-xs" style={{
+                      background: manualExitResult.ok ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)',
+                      color: manualExitResult.ok ? 'var(--green)' : 'var(--red)',
+                      border: `1px solid ${manualExitResult.ok ? 'var(--green)' : 'var(--red)'}`,
+                    }}>
+                      {manualExitResult.msg}
+                    </div>
+                  )}
                   {(() => {
                     const lastBar = chartDataResp?.chart_data?.length ? chartDataResp.chart_data[chartDataResp.chart_data.length - 1] : null;
                     const lastAlert = recentAlertEvents.length > 0 ? recentAlertEvents[0] : null;
                     const hasOpenPosition = recentAlerts.some((t: any) => t.result === 'Open');
                     const currentPrice = lastBar ? `$${Number(lastBar.close).toFixed(2)}` : '--';
                     const lastSignal = lastAlert ? `${lastAlert.type} (${lastAlert.trigger})` : '--';
-                    const signalTime = lastAlert?.time ? new Date(lastAlert.time).toLocaleString() : '--';
+                    const signalTime = lastAlert?.time ? formatTime(lastAlert.time) : '--';
                     const status = hasOpenPosition ? 'In Position' : 'Flat';
                     return (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -2002,7 +2059,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h, hi) => (
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
                               <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -2018,6 +2075,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             const m = algoMatches[row._origIdx] || { matched: false, entryDelta: null, exitDelta: null };
                             const execBadge = row.execType || 'C';
                             const isL = execBadge.includes('L') || execBadge.includes('HM') || execBadge.includes('HL');
+                            const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             return (
                               <tr key={si}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
@@ -2043,10 +2101,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                     {row.pnlR != null ? (row.pnlR >= 0 ? 'Win' : 'Loss') : '--'}
                                   </span>
                                 </td>
-                                <td style={tdStyle}>
-                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                    {m.matched ? 'Yes' : 'No'}
-                                  </span>
+                                <td style={{ ...tdStyle, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  {exitLabel}
                                 </td>
                               </tr>
                             );
@@ -2063,7 +2119,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Match'].map((h, hi) => (
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
                               <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -2077,6 +2133,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             </tr>
                           ) : recentAlerts.map((row: any, i: number) => {
                             const m = alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
+                            const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             return (
                               <tr key={i}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{formatTime(row.entryTime)}</td>
@@ -2096,10 +2153,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                     {row.result || '--'}
                                   </span>
                                 </td>
-                                <td style={tdStyle}>
-                                  <span style={{ color: m.matched ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: '0.75rem' }}>
-                                    {m.matched ? 'Yes' : 'No'}
-                                  </span>
+                                <td style={{ ...tdStyle, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  {exitLabel}
                                 </td>
                               </tr>
                             );

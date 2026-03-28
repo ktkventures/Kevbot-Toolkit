@@ -847,3 +847,73 @@ def _get_or_404(strategy_id: int, user) -> dict:
     if strat is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     return strat
+
+
+# =============================================================================
+# MANUAL EXIT
+# =============================================================================
+
+@router.post("/{strategy_id}/manual-exit")
+def manual_exit(strategy_id: int, user=Depends(get_current_user)):
+    """Fire a manual exit signal for the strategy.
+
+    Creates an exit_signal alert with exit_reason='manual', saves it to
+    Supabase, and delivers webhooks to all portfolios that include this
+    strategy — same pipeline as the alert monitor.
+    """
+    strat = _get_or_404(strategy_id, user)
+
+    from alerts import save_alert, load_alert_config
+    from alert_monitor import _deliver_alert_to_portfolios
+
+    # Build exit alert dict matching what the alert monitor produces
+    alert = {
+        "type": "exit_signal",
+        "strategy_id": strategy_id,
+        "strategy_name": strat.get("name", ""),
+        "symbol": strat.get("symbol", ""),
+        "direction": strat.get("direction", "LONG"),
+        "trigger": "manual_exit",
+        "exit_reason": "manual",
+        "message": f"Manual exit for {strat.get('name', '')} ({strat.get('symbol', '')})",
+    }
+
+    # Try to get current price for the alert
+    try:
+        from data_loader import load_latest_bars
+        latest = load_latest_bars(strat["symbol"], count=1)
+        if latest is not None and len(latest) > 0:
+            alert["price"] = float(latest.iloc[-1]["close"])
+    except Exception:
+        pass
+
+    # Enrich with portfolio context so webhook delivery knows which portfolios
+    try:
+        from alerts import enrich_signal_with_portfolio_context
+        alert = enrich_signal_with_portfolio_context(alert)
+    except Exception:
+        alert["portfolio_context"] = []
+
+    # Save alert to Supabase
+    try:
+        saved = save_alert(alert)
+        alert_id = saved.get("id")
+    except Exception as e:
+        logger.warning(f"Failed to save manual exit alert: {e}")
+        alert_id = None
+
+    # Deliver webhooks
+    deliveries = []
+    try:
+        config = load_alert_config()
+        deliveries = _deliver_alert_to_portfolios(alert, config)
+    except Exception as e:
+        logger.warning(f"Failed to deliver manual exit webhooks: {e}")
+
+    return {
+        "status": "ok",
+        "alert_id": alert_id,
+        "webhooks_delivered": len([d for d in deliveries if d.get("success")]),
+        "webhooks_failed": len([d for d in deliveries if not d.get("success")]),
+        "price": alert.get("price"),
+    }
