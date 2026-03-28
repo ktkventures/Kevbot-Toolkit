@@ -495,24 +495,50 @@ def get_confluence_chart(
             chart_tf = strat.get('timeframe', '1Min')
 
     try:
-        # For coarser timeframes (daily, hourly), load more history to ensure
-        # EMA/MACD indicators have enough warmup bars. Without this, a 180-day
-        # daily chart only has ~126 bars, and EMA(26) doesn't stabilize,
-        # producing inflated MACD values (80+ instead of ±5).
+        # Load 1-minute bars and resample to the target timeframe.
+        # This matches how the Chart & Trades heatmap and Streamlit app work:
+        # always start from 1-min bars (which are post-split and consistent)
+        # rather than loading native daily bars from Polygon (which can have
+        # split-adjustment issues and EMA warmup problems).
         base_days = days or strat.get('data_days', 30)
-        if chart_tf == '1Day':
-            chart_days = max(base_days, 365)  # ~1 year for daily EMA warmup
-        elif chart_tf in ('1Hour', '2Hour', '4Hour'):
-            chart_days = max(base_days, 180)  # 6 months for hourly
-        else:
-            chart_days = base_days
+        primary_tf = strat.get('timeframe', '1Min')
 
-        df = svc.prepare_data_with_indicators(
-            strat['symbol'],
-            days=chart_days,
-            timeframe=chart_tf,
-            session=strat.get('trading_session', 'RTH'),
-        )
+        if chart_tf == primary_tf or chart_tf == '1Min':
+            # Same timeframe as strategy — load directly
+            df = svc.prepare_data_with_indicators(
+                strat['symbol'],
+                days=base_days,
+                timeframe=primary_tf,
+                session=strat.get('trading_session', 'RTH'),
+            )
+        else:
+            # Different timeframe — load 1-min bars and resample
+            from data_loader import resample_to_timeframe
+            df_1m = svc.prepare_data_with_indicators(
+                strat['symbol'],
+                days=base_days,
+                timeframe='1Min',
+                session=strat.get('trading_session', 'RTH'),
+            )
+            if len(df_1m) == 0:
+                return {"bars": [], "indicator_columns": [], "overlay_indicators": [], "oscillator_indicators": [], "state_column": None, "needed_state": needed_state, "timeframe": chart_tf, "condition": condition, "matched_template": None}
+
+            # Resample OHLCV to target timeframe
+            df_resampled = resample_to_timeframe(
+                df_1m[['open', 'high', 'low', 'close', 'volume']].copy(), chart_tf
+            )
+            if len(df_resampled) == 0:
+                return {"bars": [], "indicator_columns": [], "overlay_indicators": [], "oscillator_indicators": [], "state_column": None, "needed_state": needed_state, "timeframe": chart_tf, "condition": condition, "matched_template": None}
+
+            # Run indicators and interpreters on the resampled bars
+            from indicators import run_all_indicators, run_indicators_for_group
+            from interpreters import run_all_interpreters
+            from confluence_groups import get_enabled_groups, load_confluence_groups
+
+            df = run_all_indicators(df_resampled)
+            for group in get_enabled_groups(load_confluence_groups()):
+                df = run_indicators_for_group(df, group)
+            df = run_all_interpreters(df)
 
         if len(df) == 0:
             return {"bars": [], "indicator_columns": [], "states": [], "timeframe": chart_tf}
