@@ -491,27 +491,53 @@ def get_confluence_chart(
 
         # Find indicator columns for this interpreter's template
         from confluence_groups import get_enabled_groups, get_template
-        indicator_cols = []
+
+        OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
+        OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
+
+        overlay_cols = []
+        oscillator_cols = []
+        matched_template = None
+
         for group in get_enabled_groups():
             template = get_template(group.base_template)
             if not template:
                 continue
-            if interp_key in [ik.upper() for ik in template.get("interpreters", [])] or \
-               interp_key in template.get("interpreters", []):
-                raw_cols = template.get("indicator_columns", [])
-                for col in raw_cols:
-                    if col in ("ema_short", "ema_mid", "ema_long"):
-                        p = group.parameters
-                        resolved = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
-                                   f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
-                                   f"ema_{p.get('long_period', 200)}"
-                        if resolved in df.columns:
-                            indicator_cols.append(resolved)
-                    elif col in df.columns:
-                        indicator_cols.append(col)
-                break  # found the matching group
+            # Match interpreter key: check both exact and case-insensitive
+            interp_list = template.get("interpreters", [])
+            if not any(ik == interp_key or ik.upper() == interp_key.upper() for ik in interp_list):
+                continue
 
-        indicator_cols = list(dict.fromkeys(indicator_cols))
+            matched_template = group.base_template
+            raw_cols = template.get("indicator_columns", [])
+            resolved = []
+            for col in raw_cols:
+                if col in ("ema_short", "ema_mid", "ema_long"):
+                    p = group.parameters
+                    name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                           f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                           f"ema_{p.get('long_period', 200)}"
+                    if name in df.columns:
+                        resolved.append(name)
+                elif col in df.columns:
+                    resolved.append(col)
+
+            # Classify as overlay or oscillator
+            if group.base_template in OVERLAY_TEMPLATES:
+                overlay_cols.extend(resolved)
+            elif group.base_template in OSCILLATOR_TEMPLATES:
+                oscillator_cols.extend(resolved)
+            else:
+                dt = template.get("display_type", "overlay")
+                if dt == "oscillator":
+                    oscillator_cols.extend(resolved)
+                else:
+                    overlay_cols.extend(resolved)
+            break  # found the matching group
+
+        overlay_cols = list(dict.fromkeys(overlay_cols))
+        oscillator_cols = list(dict.fromkeys(oscillator_cols))
+        all_cols = overlay_cols + oscillator_cols
 
         # Get interpreter state column
         state_col = interp_key if interp_key in df.columns else None
@@ -524,7 +550,7 @@ def get_confluence_chart(
 
         # Serialize
         from api.services.backtest_service import _serialize_chart_data
-        chart_data = _serialize_chart_data(df, indicator_cols)
+        chart_data = _serialize_chart_data(df, all_cols)
 
         # Add state values
         if state_col:
@@ -537,11 +563,14 @@ def get_confluence_chart(
 
         return {
             "bars": chart_data,
-            "indicator_columns": indicator_cols,
+            "indicator_columns": all_cols,
+            "overlay_indicators": overlay_cols,
+            "oscillator_indicators": oscillator_cols,
             "state_column": state_col,
             "needed_state": needed_state,
             "timeframe": chart_tf,
             "condition": condition,
+            "matched_template": matched_template,
         }
     except Exception as e:
         logger.exception("Failed to compute confluence chart for %s: %s", condition, e)

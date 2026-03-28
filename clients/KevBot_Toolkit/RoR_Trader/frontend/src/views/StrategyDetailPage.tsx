@@ -1842,68 +1842,92 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </div>
                       {confChartLoading ? (
                         <ChartPlaceholder label={`Loading ${selectedCondition.split('-')[0]} chart...`} height={350} />
-                      ) : confChartData && confChartData.bars.length > 0 ? (
-                        <SyncedChartPane
-                          panes={[{
-                            id: 'confluence-price',
-                            height: 350,
-                            series: [
-                              {
-                                type: 'Candlestick',
-                                data: confChartData.bars.map((b: any) => ({
-                                  time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                                })),
-                              },
-                              ...confChartData.indicator_columns.map((col: string, i: number) => ({
-                                type: 'Line' as const,
-                                data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({
-                                  time: b.timestamp, value: b[col],
-                                })),
-                                options: {
-                                  color: ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'][i % 4],
-                                  lineWidth: 2,
-                                  title: col.replace(/_/g, ' '),
-                                },
+                      ) : confChartData && confChartData.bars.length > 0 ? (() => {
+                        // Build state highlighting ranges
+                        const stateRanges: any[] = [];
+                        let regionStart: number | null = null;
+                        let regionMet = false;
+                        for (let i = 0; i < confChartData.bars.length; i++) {
+                          const bar = confChartData.bars[i];
+                          const met = bar._met === true;
+                          const t = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+                          if (regionStart === null) { regionStart = t; regionMet = met; }
+                          else if (met !== regionMet) {
+                            stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)' });
+                            regionStart = t; regionMet = met;
+                          }
+                        }
+                        if (regionStart !== null) {
+                          const lastT = Math.floor(new Date(confChartData.bars[confChartData.bars.length - 1].timestamp).getTime() / 1000);
+                          stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)' });
+                        }
+                        const primitives = stateRanges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges: stateRanges } }] : [];
+
+                        // Split indicators into overlay (on price chart) vs oscillator (separate pane)
+                        const confOverlays: string[] = (confChartData as any).overlay_indicators || [];
+                        const confOscillators: string[] = (confChartData as any).oscillator_indicators || [];
+                        const COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'];
+
+                        const confPanes: PaneConfig[] = [];
+
+                        // Price pane with overlay indicators
+                        confPanes.push({
+                          id: 'conf-price',
+                          height: 300,
+                          series: [
+                            {
+                              type: 'Candlestick',
+                              data: confChartData.bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+                            },
+                            ...confOverlays.map((col: string, i: number) => ({
+                              type: 'Line' as const,
+                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+                              options: { color: COLORS[i % COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
+                            })),
+                          ],
+                          primitives,
+                        });
+
+                        // Oscillator pane (if any oscillator indicators)
+                        if (confOscillators.length > 0) {
+                          const oscSeries: SeriesConfig[] = [];
+                          for (const col of confOscillators.filter(c => c.includes('hist'))) {
+                            oscSeries.push({
+                              type: 'Histogram',
+                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({
+                                time: b.timestamp, value: b[col], color: b[col] >= 0 ? '#4CAF50' : '#f44336',
                               })),
-                            ],
-                            primitives: (() => {
-                              // Build SessionHighlighting ranges for met/unmet regions
-                              const ranges: any[] = [];
-                              let regionStart: number | null = null;
-                              let regionMet = false;
-                              for (let i = 0; i < confChartData.bars.length; i++) {
-                                const bar = confChartData.bars[i];
-                                const met = bar._met === true;
-                                const t = Math.floor(new Date(bar.timestamp).getTime() / 1000);
-                                if (regionStart === null) {
-                                  regionStart = t;
-                                  regionMet = met;
-                                } else if (met !== regionMet) {
-                                  ranges.push({
-                                    startTime: regionStart,
-                                    endTime: t,
-                                    color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)',
-                                  });
-                                  regionStart = t;
-                                  regionMet = met;
-                                }
-                              }
-                              if (regionStart !== null && confChartData.bars.length > 0) {
-                                const lastT = Math.floor(new Date(confChartData.bars[confChartData.bars.length - 1].timestamp).getTime() / 1000);
-                                ranges.push({
-                                  startTime: regionStart,
-                                  endTime: lastT,
-                                  color: regionMet ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)',
-                                });
-                              }
-                              return ranges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges } }] : [];
-                            })(),
-                          }]}
-                          upColor={chartPrefs.candleUp}
-                          downColor={chartPrefs.candleDown}
-                          upBorderColor={chartPrefs.candleUpBorder}
-                          gridLines={chartPrefs.gridLines}
-                        />
+                              options: { priceLineVisible: false, title: 'Hist' },
+                            });
+                          }
+                          for (const col of confOscillators.filter(c => !c.includes('hist'))) {
+                            oscSeries.push({
+                              type: 'Line',
+                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+                              options: { color: col.includes('signal') ? '#FF9800' : '#2196F3', lineWidth: 1, priceLineVisible: false, title: col.replace(/_/g, ' ') },
+                            });
+                          }
+                          // Zero line
+                          if (confChartData.bars.length > 0) {
+                            oscSeries.push({
+                              type: 'Line',
+                              data: [{ time: confChartData.bars[0].timestamp, value: 0 }, { time: confChartData.bars[confChartData.bars.length - 1].timestamp, value: 0 }],
+                              options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
+                            });
+                          }
+                          confPanes.push({ id: 'conf-oscillator', height: 150, series: oscSeries });
+                        }
+
+                        return (
+                          <SyncedChartPane
+                            panes={confPanes}
+                            upColor={chartPrefs.candleUp}
+                            downColor={chartPrefs.candleDown}
+                            upBorderColor={chartPrefs.candleUpBorder}
+                            gridLines={chartPrefs.gridLines}
+                          />
+                        );
+                      })()
                       ) : (
                         <ChartPlaceholder label="No data for this condition" height={350} />
                       )}
@@ -1917,10 +1941,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           <span className="inline-block w-4 h-3 rounded" style={{ background: 'rgba(244,67,54,0.1)' }} />
                           Condition not met
                         </span>
-                        {confChartData?.indicator_columns.map((col: string, i: number) => (
+                        {((confChartData as any)?.overlay_indicators || []).map((col: string, i: number) => (
                           <span key={col} className="flex items-center gap-1">
                             <span className="inline-block w-3 h-0.5 rounded" style={{ background: ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'][i % 4] }} />
                             {col.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                        {((confChartData as any)?.oscillator_indicators || []).map((col: string) => (
+                          <span key={col} className="flex items-center gap-1">
+                            <span className="inline-block w-3 h-0.5 rounded" style={{ background: col.includes('signal') ? '#FF9800' : '#2196F3' }} />
+                            {col.replace(/_/g, ' ')} (oscillator)
                           </span>
                         ))}
                       </div>
