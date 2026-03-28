@@ -1927,8 +1927,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             gridLines={chartPrefs.gridLines}
                           />
                         );
-                      })()
-                      ) : (
+                      })() : (
                         <ChartPlaceholder label="No data for this condition" height={350} />
                       )}
                       {/* State legend */}
