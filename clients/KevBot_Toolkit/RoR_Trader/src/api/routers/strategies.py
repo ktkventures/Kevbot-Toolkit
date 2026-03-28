@@ -558,18 +558,28 @@ def get_confluence_chart(
                     condition, interp_key, state_col, needed_state,
                     [c for c in df.columns if interp_key.upper() in c.upper()][:5])
 
+        # Log sample state values for debugging
+        if state_col and state_col in df.columns:
+            sample_vals = df[state_col].dropna().unique()[:10]
+            logger.info("[CONFLUENCE-CHART] state_col=%s, unique_values=%s, needed=%s",
+                        state_col, list(sample_vals), needed_state)
+
         # Serialize
         from api.services.backtest_service import _serialize_chart_data
         chart_data = _serialize_chart_data(df, all_cols)
 
         # Add state values
-        if state_col:
+        if state_col and state_col in df.columns:
             reset_df = df.reset_index()
             for i, row_data in enumerate(chart_data):
                 if i < len(reset_df):
                     val = reset_df.iloc[i].get(state_col)
-                    row_data['_state'] = str(val) if pd.notna(val) else None
-                    row_data['_met'] = (str(val) == needed_state) if pd.notna(val) else False
+                    state_str = str(val).strip() if pd.notna(val) else None
+                    row_data['_state'] = state_str
+                    row_data['_met'] = (state_str == needed_state) if state_str else False
+        else:
+            logger.warning("[CONFLUENCE-CHART] state_col '%s' NOT FOUND in df.columns. Available: %s",
+                          interp_key, [c for c in df.columns if c.isupper()][:20])
 
         return {
             "bars": chart_data,
