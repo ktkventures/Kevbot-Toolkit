@@ -658,6 +658,8 @@ function OptimizableVariables({
   allTriggers,
   allConditions,
   allGeneralConditions,
+  stopPacks,
+  targetPacks,
   onRemoveCondition,
   onRemoveGeneral,
   onRemoveExit,
@@ -671,13 +673,15 @@ function OptimizableVariables({
   allTriggers: TriggerDef[];
   allConditions: ConfluenceCondition[];
   allGeneralConditions: ConfluenceCondition[];
+  stopPacks: RiskPack[];
+  targetPacks: RiskPack[];
   onRemoveCondition: (id: string) => void;
   onRemoveGeneral: (id: string) => void;
   onRemoveExit: (idx: number) => void;
 }) {
   const entryDef = allTriggers.find((t) => t.id === entryTrigger);
-  const stopPack = API_STOP_PACKS.find((p) => p.id === selectedStopPack);
-  const targetPack = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack);
+  const stopPack = stopPacks.find((p) => p.id === selectedStopPack);
+  const targetPack = targetPacks.find((p) => p.id === selectedTargetPack);
 
   function formatStopDisplay() {
     return stopPack ? `${stopPack.name} (${stopPack.version})` : 'None';
@@ -2051,6 +2055,8 @@ export default function StrategyBuilderPage() {
               allTriggers={API_TRIGGERS}
               allConditions={API_CONFLUENCE_CONDITIONS}
               allGeneralConditions={API_GENERAL_CONDITIONS}
+              stopPacks={API_STOP_PACKS}
+              targetPacks={API_TARGET_PACKS}
               onRemoveCondition={(id) => handleToggleCondition(id)}
               onRemoveGeneral={(id) => handleToggleGeneral(id)}
               onRemoveExit={handleRemoveExit}
