@@ -512,7 +512,9 @@ def _load_user_config(table: str, data_column: str, default):
         .maybe_single() \
         .execute()
     if result and result.data:
-        val = result.data[data_column]
+        val = result.data.get(data_column)
+        if val is None:
+            return default
         return json.loads(val) if isinstance(val, str) else val
     return default
 
