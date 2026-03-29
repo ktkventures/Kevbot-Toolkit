@@ -1486,11 +1486,19 @@ export default function StrategyBuilderPage() {
 
   const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
     if (!apiRmPacks) return [];
-    return apiRmPacks.filter((p: any) => p.base_template === 'rr_ratio' || p.base_template?.includes('target'))
-      .map((p: any) => ({
-        id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
-        summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
-      }));
+    // Show packs that have target-related parameters (rr_ratio, target_atr_mult, target_amount, target_pct)
+    return apiRmPacks.filter((p: any) => {
+      const params = p.parameters || {};
+      return p.base_template === 'rr_ratio' ||
+        p.base_template?.includes('target') ||
+        'rr_ratio' in params ||
+        'target_atr_mult' in params ||
+        'target_amount' in params ||
+        'target_pct' in params;
+    }).map((p: any) => ({
+      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
+      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+    }));
   }, [apiRmPacks]);
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
@@ -1577,6 +1585,7 @@ export default function StrategyBuilderPage() {
 
   // ---- Stop Loss (pack selection) ----
   const [selectedStopPack, setSelectedStopPack] = useState('');
+  const [eqXAxis, setEqXAxis] = useState<'trade' | 'time'>('trade');
 
   // ---- Target (pack selection) ----
   const [selectedTargetPack, setSelectedTargetPack] = useState('');
@@ -2078,19 +2087,36 @@ export default function StrategyBuilderPage() {
                         {backtestResult?.equityCurve && backtestResult.equityCurve.length > 0 ? (
                           <EquityCurve
                             data={backtestResult.equityCurve.map((pt: any, i: number) => ({
-                              trade_number: pt.trade_number ?? i + 1,
+                              trade_number: i + 1,
                               cumulative_r: pt.cumulative_r ?? 0,
                               timestamp: pt.timestamp,
                             }))}
                             height={500}
                             showZeroLine
                             showHWM
-                            xAxis="trade"
+                            xAxis={eqXAxis}
                           />
                         ) : (
                           <ChartPlaceholder label="Run backtest to see equity curve" height={500} />
                         )}
-                        <div className="mt-2 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        <div className="mt-2 flex gap-2 items-center">
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>X-Axis:</span>
+                          {(['trade', 'time'] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              className="px-2 py-0.5 rounded text-xs"
+                              style={{
+                                background: eqXAxis === mode ? 'var(--accent-muted)' : 'transparent',
+                                color: eqXAxis === mode ? 'var(--accent)' : 'var(--text-muted)',
+                                border: eqXAxis === mode ? '1px solid var(--accent)' : '1px solid var(--border)',
+                              }}
+                              onClick={() => setEqXAxis(mode)}
+                            >
+                              {mode === 'trade' ? 'Per Trade' : 'Per Day'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mt-1 flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
                           <span>
                             <span className="inline-block w-3 h-0.5 mr-1 rounded" style={{ background: '#2196F3' }} />
                             Equity
