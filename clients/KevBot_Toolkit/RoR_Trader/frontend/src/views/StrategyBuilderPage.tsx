@@ -1486,19 +1486,11 @@ export default function StrategyBuilderPage() {
 
   const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
     if (!apiRmPacks) return [];
-    // Show packs that have target-related parameters (rr_ratio, target_atr_mult, target_amount, target_pct)
-    return apiRmPacks.filter((p: any) => {
-      const params = p.parameters || {};
-      return p.base_template === 'rr_ratio' ||
-        p.base_template?.includes('target') ||
-        'rr_ratio' in params ||
-        'target_atr_mult' in params ||
-        'target_amount' in params ||
-        'target_pct' in params;
-    }).map((p: any) => ({
-      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
-      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
-    }));
+    return apiRmPacks.filter((p: any) => p.base_template === 'rr_ratio' || p.base_template?.includes('target'))
+      .map((p: any) => ({
+        id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
+        summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+      }));
   }, [apiRmPacks]);
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
