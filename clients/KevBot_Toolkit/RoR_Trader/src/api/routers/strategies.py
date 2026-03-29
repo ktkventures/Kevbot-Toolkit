@@ -38,7 +38,17 @@ def list_strategies(
 
     if enrich and strategies:
         import services as svc
-        strategies = [svc.enrich_strategy(s) for s in strategies]
+        enriched = []
+        for s in strategies:
+            try:
+                enriched.append(svc.enrich_strategy(s))
+            except Exception as e:
+                logger.warning(
+                    "[LIST] Failed to enrich strategy %s (%s): %s",
+                    s.get('id', '?'), s.get('name', '?'), e)
+                # Return the raw strategy so the list still loads
+                enriched.append(s)
+        strategies = enriched
 
     return strategies
 
