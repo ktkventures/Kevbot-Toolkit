@@ -1453,12 +1453,20 @@ export default function StrategyBuilderPage() {
   const API_TRIGGERS: TriggerDef[] = useMemo(() => {
     if (!apiEntryTriggers && !apiExitTriggers) return [];
     const triggers: TriggerDef[] = [];
+    const deriveExecType = (id: string): 'C' | 'L' | 'LC' | 'CC' => {
+      if (id.endsWith('_lc')) return 'LC';
+      if (id.endsWith('_cc')) return 'CC';
+      if (id.endsWith('_ib')) return 'L';
+      if (id.endsWith('_hm')) return 'LC'; // HM is functionally LC with same-bar confirm
+      if (id.endsWith('_hl')) return 'LC'; // HL is functionally LC with limit bail
+      return 'C';
+    };
     for (const [id, name] of Object.entries(apiEntryTriggers || {})) {
-      triggers.push({ id, name: String(name), execType: 'C', pack: id.split('_')[0] || 'unknown' });
+      triggers.push({ id, name: String(name), execType: deriveExecType(id), pack: id.split('_')[0] || 'unknown' });
     }
     for (const [id, name] of Object.entries(apiExitTriggers || {})) {
       if (!triggers.find(t => t.id === id)) {
-        triggers.push({ id, name: String(name), execType: 'C', pack: id.split('_')[0] || 'unknown' });
+        triggers.push({ id, name: String(name), execType: deriveExecType(id), pack: id.split('_')[0] || 'unknown' });
       }
     }
     return triggers.length > 0 ? triggers : API_TRIGGERS;
@@ -2298,27 +2306,27 @@ export default function StrategyBuilderPage() {
                                   <div className="grid grid-cols-6 gap-2">
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{trades}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{pf}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{wr}}%"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{avg_r}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{daily_r}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{r_sq}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                   </div>
                                 </div>
@@ -2402,27 +2410,27 @@ export default function StrategyBuilderPage() {
                                   <div className="grid grid-cols-6 gap-2">
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{trades}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{pf}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{wr}}%"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{avg_r}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>+{"{{daily_r}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
                                     </div>
                                     <div>
                                       <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"{{r_sq}}"}</div>
+                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
                                     </div>
                                   </div>
                                 </div>
