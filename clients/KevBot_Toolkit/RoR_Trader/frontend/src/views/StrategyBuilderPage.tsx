@@ -22,7 +22,7 @@ import TradingChart from '@/charts/TradingChart';
 import type { CandleData, TradeMarker } from '@/charts/TradingChart';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
-import { useRunBacktest } from '@/hooks/queries/useBacktest';
+import { useRunBacktest, useAnalyzeTriggers, type AnalyzeResult } from '@/hooks/queries/useBacktest';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useRiskManagementPacks } from '@/hooks/queries/usePacks';
 
@@ -1446,6 +1446,7 @@ export default function StrategyBuilderPage() {
 
   // ---- API Hooks ----
   const backtestMut = useRunBacktest();
+  const analyzeMut = useAnalyzeTriggers();
   const createMut = useCreateStrategy();
   const { data: apiEntryTriggers } = useConfluenceTriggers('LONG');
   const { data: apiExitTriggers } = useConfluenceTriggers('EXIT');
@@ -1609,6 +1610,37 @@ export default function StrategyBuilderPage() {
   // ---- Analysis State ----
   const [entryAnalysisRan, setEntryAnalysisRan] = useState(false);
   const [exitAnalysisRan, setExitAnalysisRan] = useState(false);
+  const [analysisResults, setAnalysisResults] = useState<AnalyzeResult[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const handleAnalyze = useCallback(() => {
+    if (!entryTrigger || isAnalyzing) return;
+    setIsAnalyzing(true);
+    setEntryAnalysisRan(false);
+    setExitAnalysisRan(false);
+    analyzeMut.mutate({
+      symbol, timeframe, direction: direction as 'LONG' | 'SHORT',
+      days: lookbackDays, session, data_feed: 'sip',
+      entry_trigger_confluence_id: entryTrigger,
+      exit_trigger_confluence_ids: exitTriggers,
+      confluence: Array.from(selectedConditions),
+      stop_loss_pack_id: selectedStopPack || undefined,
+      take_profit_pack_id: selectedTargetPack || undefined,
+      stop_atr_mult: 1.5,
+      lookback_mode: lookbackMode,
+    }, {
+      onSuccess: (data) => {
+        setAnalysisResults(data.results || []);
+        setEntryAnalysisRan(true);
+        setExitAnalysisRan(true);
+        setIsAnalyzing(false);
+      },
+      onError: () => {
+        setIsAnalyzing(false);
+      },
+    });
+  }, [analyzeMut, symbol, timeframe, direction, lookbackDays, session, lookbackMode,
+      entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, isAnalyzing]);
   const [analyzerSearch, setAnalyzerSearch] = useState('');
 
   // Compute derived values
@@ -2182,24 +2214,39 @@ export default function StrategyBuilderPage() {
                     if (tab === 'Entry') {
                       return (
                         <div>
-                          <AnalysisToolbar search={analyzerSearch} onSearch={setAnalyzerSearch} onAnalyze={() => setEntryAnalysisRan(true)} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search entry triggers..." />
+                          <AnalysisToolbar search={analyzerSearch} onSearch={setAnalyzerSearch} onAnalyze={handleAnalyze} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search entry triggers..." />
                           {entryDef && (
                             <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                               Current: <ExecBadge type={entryDef.execType} />{' '}
                               <strong>{entryDef.name}</strong>
                             </p>
                           )}
-                          {entryAnalysisRan ? (
+                          {isAnalyzing ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing triggers...</span>
+                            </div>
+                          ) : entryAnalysisRan ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {EMPTY_ENTRY_ANALYSIS.filter((r) =>
-                                !analyzerSearch || r.triggerName.toLowerCase().includes(analyzerSearch.toLowerCase())
+                              {analysisResults.filter((r) =>
+                                !analyzerSearch || r.trigger_name.toLowerCase().includes(analyzerSearch.toLowerCase())
                               ).map((result) => (
                                 <AnalyzerResultCard
-                                  key={result.triggerId}
-                                  result={result}
-                                  isCurrent={result.triggerId === entryTrigger}
+                                  key={result.trigger_id}
+                                  result={{
+                                    triggerId: result.trigger_id,
+                                    triggerName: result.trigger_name,
+                                    execType: result.exec_type,
+                                    totalTrades: result.total_trades,
+                                    profitFactor: result.profit_factor,
+                                    winRate: result.win_rate,
+                                    avgR: result.avg_r,
+                                    dailyR: result.daily_r,
+                                    rSquared: result.r_squared,
+                                  }}
+                                  isCurrent={result.trigger_id === entryTrigger}
                                   actionLabel="Replace"
-                                  onAction={() => setEntryTrigger(result.triggerId)}
+                                  onAction={() => setEntryTrigger(result.trigger_id)}
                                 />
                               ))}
                             </div>
@@ -2217,7 +2264,7 @@ export default function StrategyBuilderPage() {
                     if (tab === 'Exit') {
                       return (
                         <div>
-                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => setExitAnalysisRan(true)} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search exit triggers..." />
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={handleAnalyze} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search exit triggers..." />
                           {/* Active exit tags */}
                           {exitTriggers.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 mb-3">
@@ -2233,13 +2280,28 @@ export default function StrategyBuilderPage() {
                               })}
                             </div>
                           )}
-                          {exitAnalysisRan ? (
+                          {isAnalyzing ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing triggers...</span>
+                            </div>
+                          ) : exitAnalysisRan ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {EMPTY_EXIT_ANALYSIS.map((result) => (
+                              {analysisResults.map((result) => (
                                 <AnalyzerResultCard
-                                  key={result.triggerId}
-                                  result={result}
-                                  isCurrent={exitTriggers.includes(result.triggerId)}
+                                  key={result.trigger_id}
+                                  result={{
+                                    triggerId: result.trigger_id,
+                                    triggerName: result.trigger_name,
+                                    execType: result.exec_type,
+                                    totalTrades: result.total_trades,
+                                    profitFactor: result.profit_factor,
+                                    winRate: result.win_rate,
+                                    avgR: result.avg_r,
+                                    dailyR: result.daily_r,
+                                    rSquared: result.r_squared,
+                                  }}
+                                  isCurrent={exitTriggers.includes(result.trigger_id)}
                                   actionLabel={exitDepth >= 2 ? 'Replace' : 'Add'}
                                   onAction={() => {
                                     if (exitTriggers.length < 3 && !exitTriggers.includes(result.triggerId)) {
@@ -2268,7 +2330,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search indicators..." />
                             </div>
-                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                            <PrimaryButton onClick={handleAnalyze}>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
@@ -2372,7 +2434,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search general conditions..." />
                             </div>
-                            <PrimaryButton onClick={() => {}}>Analyze</PrimaryButton>
+                            <PrimaryButton onClick={handleAnalyze}>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>

@@ -50,3 +50,25 @@ export function useRunBacktest() {
       }),
   });
 }
+
+export interface AnalyzeResult {
+  trigger_id: string;
+  trigger_name: string;
+  exec_type: string;
+  total_trades: number;
+  profit_factor: number;
+  win_rate: number;
+  avg_r: number;
+  daily_r: number;
+  r_squared: number;
+}
+
+export function useAnalyzeTriggers() {
+  return useMutation({
+    mutationFn: (req: BacktestRequest) =>
+      apiFetch<{ results: AnalyzeResult[] }>('/api/backtest/analyze', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  });
+}
