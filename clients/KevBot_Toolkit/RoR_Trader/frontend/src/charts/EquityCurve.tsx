@@ -38,17 +38,45 @@ export default function EquityCurve({
   const chartData = useMemo(() => {
     if (!data || data.length === 0) return [];
 
-    const points = data.map((pt, i) => {
+    if (xAxis === 'time') {
+      // Per-day mode: group trades by exit date, sum daily R, build cumulative
+      const dailyR = new Map<string, { label: string; ts: number; totalR: number }>();
+      for (const pt of data) {
+        if (!pt.timestamp) continue;
+        const d = new Date(pt.timestamp);
+        const dateKey = d.toISOString().slice(0, 10); // YYYY-MM-DD for sorting
+        const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        // r_multiple for this trade = difference from previous cumulative
+        const existing = dailyR.get(dateKey);
+        if (existing) {
+          // This trade's individual R = current cumulative - previous point's cumulative
+          // But we only have cumulative_r, so daily total = last cumulative of this day
+          dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r });
+        } else {
+          dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r });
+        }
+      }
+      // Sort by date key (YYYY-MM-DD sorts correctly)
+      const sorted = Array.from(dailyR.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      return sorted.map(([, { label, totalR }]) => ({
+        x: label,
+        r: totalR,
+        bt: totalR,
+        fwd: null,
+        live: null,
+        btBridge: null,
+        fwdBridge: null,
+      }));
+    }
+
+    // Per-trade mode: sequential trade numbers
+    return data.map((pt, i) => {
       let segment: 'backtest' | 'forward' | 'live' = 'backtest';
       if (boundaryIndex != null && i >= boundaryIndex) segment = 'forward';
       if (alertBoundaryIndex != null && i >= alertBoundaryIndex) segment = 'live';
 
-      const timeLabel = pt.timestamp
-        ? new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-        : `#${i + 1}`;
-
       return {
-        x: xAxis === 'trade' ? pt.trade_number : timeLabel,
+        x: pt.trade_number,
         r: pt.cumulative_r,
         bt: segment === 'backtest' ? pt.cumulative_r : null,
         fwd: segment === 'forward' ? pt.cumulative_r : null,
@@ -57,42 +85,18 @@ export default function EquityCurve({
         fwdBridge: segment === 'live' && i === (alertBoundaryIndex ?? 0) ? pt.cumulative_r : null,
       };
     });
-
-    // For 'time' mode: deduplicate by date, keeping only the last trade per day
-    // Then sort chronologically by the original timestamp
-    if (xAxis === 'time') {
-      const withTs: { pt: typeof points[0]; ts: number }[] = [];
-      const seen = new Map<string, number>(); // label → index in withTs
-      for (let i = 0; i < points.length; i++) {
-        const label = String(points[i].x);
-        const rawTs = data[i]?.timestamp ? new Date(data[i].timestamp!).getTime() : i;
-        if (seen.has(label)) {
-          // Replace with later trade on same date
-          withTs[seen.get(label)!] = { pt: points[i], ts: rawTs };
-        } else {
-          seen.set(label, withTs.length);
-          withTs.push({ pt: points[i], ts: rawTs });
-        }
-      }
-      withTs.sort((a, b) => a.ts - b.ts);
-      return withTs.map(({ pt }) => pt);
-    }
-
-    return points;
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
 
   // HWM line
   const hwm = useMemo(() => {
-    if (!showHWM || data.length === 0) return [];
+    if (!showHWM || chartData.length === 0) return [];
     let max = -Infinity;
-    return data.map((pt, i) => {
-      max = Math.max(max, pt.cumulative_r);
-      const timeLabel = pt.timestamp
-        ? new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-        : `#${i + 1}`;
-      return { x: xAxis === 'trade' ? pt.trade_number : timeLabel, hwm: max };
+    return chartData.map((pt) => {
+      const val = pt.r ?? pt.bt ?? pt.fwd ?? pt.live ?? 0;
+      max = Math.max(max, val);
+      return { x: pt.x, hwm: max };
     });
-  }, [data, showHWM, xAxis]);
+  }, [chartData, showHWM]);
 
   if (chartData.length === 0) {
     return (

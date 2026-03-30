@@ -2074,6 +2074,27 @@ export default function StrategyBuilderPage() {
             </p>
           </div>
 
+          {/* Loading progress bar */}
+          {isBacktesting && (
+            <div className="mb-4">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                  Loading market data and running backtest...
+                </span>
+              </div>
+              <div className="w-full rounded-full overflow-hidden" style={{ height: 4, background: 'var(--bg-input)' }}>
+                <div
+                  className="h-full rounded-full animate-pulse"
+                  style={{ background: 'var(--accent)', width: '60%', transition: 'width 2s ease' }}
+                />
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Fetching {estimatedBars.toLocaleString()} bars from Polygon, computing indicators, running unified engine...
+              </p>
+            </div>
+          )}
+
           {/* KPIs */}
           <KPIDashboard kpis={backtestResult?.kpis ?? EMPTY_KPIS} backtestRan={backtestRan || !!backtestResult} />
 
