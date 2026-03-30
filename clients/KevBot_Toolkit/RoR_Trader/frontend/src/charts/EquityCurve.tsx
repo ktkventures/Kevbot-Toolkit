@@ -59,12 +59,23 @@ export default function EquityCurve({
     });
 
     // For 'time' mode: deduplicate by date, keeping only the last trade per day
+    // Then sort chronologically by the original timestamp
     if (xAxis === 'time') {
-      const byDate = new Map<string, typeof points[0]>();
-      for (const pt of points) {
-        byDate.set(String(pt.x), pt); // last trade on each date wins
+      const withTs: { pt: typeof points[0]; ts: number }[] = [];
+      const seen = new Map<string, number>(); // label → index in withTs
+      for (let i = 0; i < points.length; i++) {
+        const label = String(points[i].x);
+        const rawTs = data[i]?.timestamp ? new Date(data[i].timestamp!).getTime() : i;
+        if (seen.has(label)) {
+          // Replace with later trade on same date
+          withTs[seen.get(label)!] = { pt: points[i], ts: rawTs };
+        } else {
+          seen.set(label, withTs.length);
+          withTs.push({ pt: points[i], ts: rawTs });
+        }
       }
-      return Array.from(byDate.values());
+      withTs.sort((a, b) => a.ts - b.ts);
+      return withTs.map(({ pt }) => pt);
     }
 
     return points;
