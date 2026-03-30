@@ -667,6 +667,8 @@ function OptimizableVariables({
   onRemoveCondition,
   onRemoveGeneral,
   onRemoveExit,
+  onReload,
+  isLoading,
 }: {
   entryTrigger: string;
   exitTriggers: string[];
@@ -682,6 +684,8 @@ function OptimizableVariables({
   onRemoveCondition: (id: string) => void;
   onRemoveGeneral: (id: string) => void;
   onRemoveExit: (idx: number) => void;
+  onReload?: () => void;
+  isLoading?: boolean;
 }) {
   const entryDef = allTriggers.find((t) => t.id === entryTrigger);
   const stopPack = stopPacks.find((p) => p.id === selectedStopPack);
@@ -702,6 +706,21 @@ function OptimizableVariables({
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Optimizable Variables</span>
+        {onReload && (
+          <button
+            onClick={onReload}
+            disabled={isLoading}
+            className="px-3 py-1 rounded text-xs font-medium transition-colors"
+            style={{
+              background: 'var(--accent)',
+              color: 'white',
+              opacity: isLoading ? 0.6 : 1,
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {isLoading ? 'Loading...' : 'Reload'}
+          </button>
+        )}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {/* Entry */}
@@ -2181,6 +2200,8 @@ export default function StrategyBuilderPage() {
               onRemoveCondition={(id) => handleToggleCondition(id)}
               onRemoveGeneral={(id) => handleToggleGeneral(id)}
               onRemoveExit={handleRemoveExit}
+              onReload={handleRunBacktest}
+              isLoading={isBacktesting}
             />
           </div>
 
