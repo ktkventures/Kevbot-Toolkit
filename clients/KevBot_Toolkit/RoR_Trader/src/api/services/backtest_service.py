@@ -109,59 +109,123 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     trades = _serialize_trades(trades_df)
 
     # 9. Optional chart data with indicator classification
+    # Port from Strategy Detail chart-data endpoint (strategies.py lines 320-468)
     chart_data = None
     overlay_indicators = []
     oscillator_indicators = []
     heatmap_conditions = []
     if req.include_chart_data:
-        # Classify indicator columns as overlay vs oscillator
-        ohlcv_cols = {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
-        skip_cols = {'atr', 'atr_prev'}
-        oscillator_patterns = ('macd', 'rvol', 'rsi', 'stoch', 'hist')
+        from confluence_groups import get_enabled_groups, get_template, TEMPLATES
 
-        for col in df.columns:
-            if col in ohlcv_cols or col in skip_cols:
-                continue
-            if col.startswith(('trig_', 'GP_', '__')):
-                continue
-            if col.startswith('_state_'):
-                continue  # handled below for heatmap
-            if df[col].dtype not in ('float64', 'float32', 'int64'):
-                continue
-            col_lower = col.lower()
-            if any(p in col_lower for p in oscillator_patterns):
-                oscillator_indicators.append(col)
-            else:
-                overlay_indicators.append(col)
+        OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2", "swing_123"}
+        OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
-        # Build heatmap conditions from _state_ columns
-        state_cols_for_chart = []
-        for col in df.columns:
-            if col.startswith('_state_'):
-                indicator_col = col[7:]  # strip '_state_'
-                state_cols_for_chart.append(col)
-                unique_states = df[col].dropna().unique()
-                if len(unique_states) > 0:
-                    # Determine needed state from strategy confluence
-                    needed = None
-                    matched_conf = indicator_col
-                    for conf in req.confluence:
-                        parts = conf.split('-', 2)
-                        if len(parts) >= 3 and indicator_col.upper().startswith(parts[1].upper()):
-                            needed = parts[2]
-                            matched_conf = conf
+        # Determine which groups are relevant to this strategy
+        entry_conf_id = req.entry_trigger_confluence_id or ''
+        exit_conf_ids = req.exit_trigger_confluence_ids or []
+        confluence_records = list(req.confluence or [])
+
+        # Extract interpreter keys from confluence records
+        confluence_interpreters = set()
+        for record in confluence_records:
+            if record.startswith("GEN-"):
+                continue
+            parts = record.split("-")
+            if len(parts) >= 2:
+                confluence_interpreters.add(parts[1])
+
+        overlay_cols = []
+        oscillator_cols = []
+
+        for group in get_enabled_groups():
+            gid_prefix = group.id + "_"
+            is_relevant = (
+                entry_conf_id.startswith(gid_prefix)
+                or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
+            )
+            if not is_relevant:
+                template = get_template(group.base_template)
+                if template:
+                    for ik in template.get("interpreters", []):
+                        if ik in confluence_interpreters:
+                            is_relevant = True
                             break
-                    if needed:
-                        heatmap_conditions.append({
-                            'column': indicator_col,
-                            'label': matched_conf,
-                            'needed_state': needed,
-                            'has_data': True,
-                        })
+            if not is_relevant:
+                continue
 
-        # Include all indicator + state columns in chart data
-        all_chart_cols = overlay_indicators + oscillator_indicators + state_cols_for_chart
-        chart_data = _serialize_chart_data(df, all_chart_cols)
+            template = get_template(group.base_template)
+            if not template:
+                continue
+
+            # Resolve indicator columns (handle parameterized EMA names)
+            raw_cols = template.get("indicator_columns", [])
+            resolved = []
+            for col in raw_cols:
+                if col in ("ema_short", "ema_mid", "ema_long"):
+                    p = group.parameters
+                    resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                                    f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                                    f"ema_{p.get('long_period', 200)}"
+                    if resolved_name in df.columns:
+                        resolved.append(resolved_name)
+                elif col in df.columns:
+                    resolved.append(col)
+
+            if group.base_template in OVERLAY_TEMPLATES:
+                overlay_cols.extend(resolved)
+            elif group.base_template in OSCILLATOR_TEMPLATES:
+                oscillator_cols.extend(resolved)
+            else:
+                dt = template.get("display_type", "overlay")
+                if dt == "oscillator":
+                    oscillator_cols.extend(resolved)
+                else:
+                    overlay_cols.extend(resolved)
+
+        # Deduplicate
+        overlay_indicators = list(dict.fromkeys(overlay_cols))
+        oscillator_indicators = list(dict.fromkeys(oscillator_cols))
+        all_indicator_cols = overlay_indicators + oscillator_indicators
+
+        # Build heatmap conditions from confluence records (same as Strategy Detail)
+        from data_loader import get_tf_label
+        primary_tf = get_tf_label(req.timeframe).lower()
+
+        for record in confluence_records:
+            parts = record.split('-', 2)
+            if len(parts) < 3:
+                continue
+            rec_tf, interp_key, needed_state = parts
+            is_general = rec_tf == 'GEN'
+            is_cross_tf = not is_general and rec_tf.lower() != primary_tf
+
+            if is_general:
+                col_name = f"GP_{interp_key}"
+            elif is_cross_tf:
+                col_name = f"{interp_key}__{rec_tf.lower()}"
+            else:
+                col_name = interp_key
+
+            heatmap_conditions.append({
+                "label": record,
+                "column": col_name,
+                "needed_state": needed_state,
+                "has_data": col_name in df.columns,
+            })
+
+        # Serialize chart data: OHLCV + relevant indicators
+        chart_data = _serialize_chart_data(df, all_indicator_cols)
+
+        # Add interpreter state values for heatmap
+        state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
+        if state_cols:
+            reset_df = df.reset_index()
+            for i, row_dict in enumerate(chart_data):
+                if i < len(reset_df):
+                    r = reset_df.iloc[i]
+                    for sc in state_cols:
+                        val = r.get(sc)
+                        row_dict[f"_state_{sc}"] = str(val) if pd.notna(val) else None
 
     resp = BacktestResponse(
         trades=trades,
