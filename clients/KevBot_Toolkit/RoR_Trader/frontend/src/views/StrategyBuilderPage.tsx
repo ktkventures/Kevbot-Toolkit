@@ -1413,6 +1413,30 @@ function FilterSortModal({ isOpen, onClose, filters, onApply }: { isOpen: boolea
 // Analysis Toolbar (Search + Analyze + Filter button)
 // ---------------------------------------------------------------------------
 
+function AnalyzeProgressBar({ label }: { label: string }) {
+  return (
+    <div className="py-8 px-4">
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{label}</span>
+      </div>
+      <div className="w-full rounded-full overflow-hidden" style={{ height: 4, background: 'var(--bg-input)' }}>
+        <div className="h-full rounded-full" style={{
+          background: 'var(--accent)',
+          width: '100%',
+          animation: 'analyzeProgress 2s ease-in-out infinite',
+        }} />
+      </div>
+      <style>{`
+        @keyframes analyzeProgress {
+          0% { width: 5%; opacity: 0.6; }
+          50% { width: 80%; opacity: 1; }
+          100% { width: 5%; opacity: 0.6; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 function AnalysisToolbar({ search, onSearch, onAnalyze, onFilterClick, placeholder }: {
   search: string; onSearch: (v: string) => void; onAnalyze: () => void; onFilterClick: () => void; placeholder: string;
 }) {
@@ -2270,10 +2294,7 @@ export default function StrategyBuilderPage() {
                             </p>
                           )}
                           {isAnalyzing && analyzingMode === 'entry' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing entry triggers...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing entry triggers..." />
                           ) : (analysisResults.entry?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {applyAnalysisFilters(analysisResults.entry || [], filters, analyzerSearch).map((result) => (
@@ -2327,10 +2348,7 @@ export default function StrategyBuilderPage() {
                             </div>
                           )}
                           {isAnalyzing && analyzingMode === 'exit' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing exit triggers...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing exit triggers..." />
                           ) : (analysisResults.exit?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {applyAnalysisFilters(analysisResults.exit || [], filters).map((result) => (
@@ -2350,8 +2368,8 @@ export default function StrategyBuilderPage() {
                                   isCurrent={exitTriggers.includes(result.trigger_id)}
                                   actionLabel={exitDepth >= 2 ? 'Replace' : 'Add'}
                                   onAction={() => {
-                                    if (exitTriggers.length < 3 && !exitTriggers.includes(result.triggerId)) {
-                                      setExitTriggers((prev) => [...prev, result.triggerId]);
+                                    if (exitTriggers.length < 3 && !exitTriggers.includes(result.trigger_id)) {
+                                      setExitTriggers((prev) => [...prev, result.trigger_id]);
                                     }
                                   }}
                                 />
@@ -2406,10 +2424,7 @@ export default function StrategyBuilderPage() {
 
                           {/* Confluence drill-down results */}
                           {isAnalyzing && analyzingMode === 'condition' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing TF conditions...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing TF conditions..." />
                           ) : (analysisResults.condition?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {applyAnalysisFilters(analysisResults.condition || [], filters).map((result) => (
@@ -2471,10 +2486,7 @@ export default function StrategyBuilderPage() {
 
                           {/* General condition results */}
                           {isAnalyzing && analyzingMode === 'general' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing general conditions...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing general conditions..." />
                           ) : (analysisResults.general?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {applyAnalysisFilters(analysisResults.general || [], filters).map((result) => (
@@ -2507,10 +2519,7 @@ export default function StrategyBuilderPage() {
                             Current: <strong>{API_STOP_PACKS.find((p) => p.id === selectedStopPack)?.summary || 'None'}</strong>
                           </p>
                           {isAnalyzing && analyzingMode === 'stop' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing stop loss packs...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing stop loss packs..." />
                           ) : stopResults.length > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {stopResults.map((result) => (
@@ -2542,10 +2551,7 @@ export default function StrategyBuilderPage() {
                             Current: <strong>{API_TARGET_PACKS.find((p) => p.id === selectedTargetPack)?.summary || 'None'}</strong>
                           </p>
                           {isAnalyzing && analyzingMode === 'target' ? (
-                            <div className="flex items-center justify-center py-12 gap-3">
-                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing take profit packs...</span>
-                            </div>
+                            <AnalyzeProgressBar label="Analyzing take profit packs..." />
                           ) : tpResults.length > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
                               {tpResults.map((result) => (
