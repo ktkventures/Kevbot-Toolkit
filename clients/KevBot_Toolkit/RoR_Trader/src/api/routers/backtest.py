@@ -98,107 +98,38 @@ def analyze_triggers(
 
 
 def _analyze_triggers_impl(req: BacktestRequest):
+    """Test each available entry trigger while keeping exit/stop/target fixed."""
     import services as svc
-    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
-
-    # Resolve stop/target config from pack IDs
-    stop_config = req.stop_config
-    target_config = req.target_config
-    if req.stop_loss_pack_id and not stop_config:
-        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
-    if req.take_profit_pack_id and not target_config:
-        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
-    if not stop_config:
-        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
-
-    # Load data once (the expensive part)
-    sec_tfs = tuple(sorted(req.secondary_tfs))
-    start_date = end_date = None
-    if req.lookback_mode == 'Date Range' and req.lookback_start_date:
-        from datetime import datetime
-        start_date = datetime.fromisoformat(req.lookback_start_date)
-        if req.lookback_end_date:
-            end_date = datetime.fromisoformat(req.lookback_end_date)
-
-    try:
-        df = svc.prepare_data_with_indicators(
-            req.symbol, days=req.days, start_date=start_date,
-            end_date=end_date, timeframe=req.timeframe,
-            data_feed=req.data_feed, session=req.session,
-            secondary_tfs=sec_tfs,
-        )
-    except Exception as e:
-        logger.exception("Analyze data load failed for %s", req.symbol)
-        return {"results": [], "error": str(e)}
-
+    stop_config, target_config = _resolve_configs(req)
+    df, trading_days = _load_analyze_data(req)
     if len(df) == 0:
         return {"results": []}
 
-    trading_days = svc.count_trading_days(df)
-
-    # Get all available entry triggers for this direction
-    from confluence_groups import get_enabled_groups, get_entry_triggers, get_exit_triggers
+    from confluence_groups import get_enabled_groups, get_entry_triggers
     groups = get_enabled_groups()
-    if req.direction in ('LONG', 'SHORT'):
-        candidates = get_entry_triggers(req.direction, groups)
-    else:
-        candidates = get_exit_triggers(groups)
-
-    # Use the request's exit triggers for all runs
-    exit_triggers = req.exit_trigger_confluence_ids
+    candidates = get_entry_triggers(req.direction, groups) if req.direction in ('LONG', 'SHORT') else {}
 
     results = []
     for trigger_id, trigger_name in candidates.items():
-        # Build a strategy dict for this specific trigger
-        strategy = {
-            "id": f"analyze_{trigger_id}",
-            "symbol": req.symbol,
-            "timeframe": req.timeframe,
-            "direction": req.direction,
-            "session": req.session,
-            "entry_trigger_confluence_id": trigger_id,
-            "exit_trigger_confluence_ids": exit_triggers,
-            "confluence": list(req.confluence),
-            "stop_config": stop_config,
-            "target_config": target_config,
-            "stop_atr_mult": req.stop_atr_mult,
-            "risk_per_trade": req.risk_per_trade,
-            "bar_count_exit": req.bar_count_exit,
-        }
+        strategy = _build_base_strategy(req, stop_config, target_config)
+        strategy["id"] = f"analyze_{trigger_id}"
+        strategy["entry_trigger_confluence_id"] = trigger_id
 
         try:
             trades_df = svc.unified_trades(df, strategy, include_open_position=False)
             if len(trades_df) == 0:
                 continue
-
-            kpis = svc.calculate_kpis(
-                trades_df, risk_per_trade=req.risk_per_trade,
-                total_trading_days=trading_days,
-            )
-
-            # Derive exec type from trigger suffix
+            kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
+                                      total_trading_days=trading_days)
             exec_type = 'C'
             if trigger_id.endswith('_lc'): exec_type = 'LC'
             elif trigger_id.endswith('_cc'): exec_type = 'CC'
             elif trigger_id.endswith('_ib'): exec_type = 'L'
             elif trigger_id.endswith('_hm') or trigger_id.endswith('_hl'): exec_type = 'LC'
-
-            results.append({
-                "trigger_id": trigger_id,
-                "trigger_name": trigger_name,
-                "exec_type": exec_type,
-                "total_trades": kpis.get("total_trades", 0),
-                "profit_factor": round(kpis.get("profit_factor", 0), 2),
-                "win_rate": round(kpis.get("win_rate", 0), 1),
-                "avg_r": round(kpis.get("avg_r", 0), 3),
-                "daily_r": round(kpis.get("daily_r", 0), 3),
-                "r_squared": round(kpis.get("r_squared", 0), 3),
-            })
+            results.append(_kpis_to_result(kpis, trigger_id, trigger_name, exec_type))
         except Exception as e:
             logger.warning("Analyze failed for trigger %s: %s", trigger_id, e)
-            continue
 
-    # Sort by daily_r descending (best first)
     results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
     return {"results": results}
 
@@ -221,6 +152,20 @@ def _load_analyze_data(req):
     )
     trading_days = svc.count_trading_days(df) if len(df) > 0 else 1
     return df, trading_days
+
+
+def _resolve_configs(req):
+    """Resolve stop/target configs from pack IDs."""
+    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
+    stop_config = req.stop_config
+    target_config = req.target_config
+    if req.stop_loss_pack_id and not stop_config:
+        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
+    if req.take_profit_pack_id and not target_config:
+        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
+    if not stop_config:
+        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
+    return stop_config, target_config
 
 
 def _build_base_strategy(req, stop_config, target_config):
@@ -253,25 +198,24 @@ def _kpis_to_result(kpis, label, sub_label="", exec_type="C"):
     }
 
 
+def _run_base_trades(req, df, stop_config, target_config):
+    """Run ONE backtest with NO confluence filtering to get all possible trades."""
+    import services as svc
+    strategy = _build_base_strategy(req, stop_config, target_config)
+    strategy["confluence"] = []  # No confluence gating → all trades
+    strategy["id"] = "analyze_base"
+    return svc.unified_trades(df, strategy, include_open_position=False)
+
+
 def _analyze_exits_impl(req):
     """Test each available exit trigger while keeping entry fixed."""
     import services as svc
-    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
-    from confluence_groups import get_enabled_groups, get_exit_triggers
-
-    stop_config = req.stop_config
-    target_config = req.target_config
-    if req.stop_loss_pack_id and not stop_config:
-        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
-    if req.take_profit_pack_id and not target_config:
-        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
-    if not stop_config:
-        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
-
+    stop_config, target_config = _resolve_configs(req)
     df, trading_days = _load_analyze_data(req)
     if len(df) == 0:
         return {"results": []}
 
+    from confluence_groups import get_enabled_groups, get_exit_triggers
     groups = get_enabled_groups()
     candidates = get_exit_triggers(groups)
     results = []
@@ -280,7 +224,6 @@ def _analyze_exits_impl(req):
         strategy = _build_base_strategy(req, stop_config, target_config)
         strategy["id"] = f"analyze_exit_{trigger_id}"
         strategy["exit_trigger_confluence_ids"] = [trigger_id]
-        # Detect bar_count_exit from exit trigger
         if 'bar_count' in trigger_id:
             strategy["bar_count_exit"] = 4
 
@@ -303,42 +246,49 @@ def _analyze_exits_impl(req):
 
 
 def _analyze_conditions_impl(req):
-    """Test with/without each TF confluence condition."""
+    """Per-condition analysis using the fast Streamlit approach.
+
+    Runs ONE backtest with NO confluence filtering, then filters the
+    resulting trades by which conditions were active at entry time.
+    """
     import services as svc
-    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
-    from confluence_groups import get_enabled_groups, get_all_conditions
+    import pandas as pd
 
-    stop_config = req.stop_config
-    target_config = req.target_config
-    if req.stop_loss_pack_id and not stop_config:
-        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
-    if req.take_profit_pack_id and not target_config:
-        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
-    if not stop_config:
-        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
-
+    stop_config, target_config = _resolve_configs(req)
     df, trading_days = _load_analyze_data(req)
     if len(df) == 0:
         return {"results": []}
 
-    # Get all available TF conditions
-    groups = get_enabled_groups()
-    conditions = get_all_conditions(groups)
-    results = []
+    # Run ONE backtest with no confluence gating → get ALL possible trades
+    base_trades = _run_base_trades(req, df, stop_config, target_config)
+    if len(base_trades) == 0:
+        return {"results": []}
 
-    for cond_id, cond_label in conditions.items():
-        strategy = _build_base_strategy(req, stop_config, target_config)
-        strategy["id"] = f"analyze_cond_{cond_id}"
-        # Test with ONLY this condition as confluence
-        strategy["confluence"] = [cond_id]
+    # Extract all unique conditions from confluence_records
+    all_conditions = set()
+    for _, row in base_trades.iterrows():
+        cr = row.get('confluence_records')
+        if isinstance(cr, (set, frozenset)):
+            all_conditions.update(cr)
+        elif isinstance(cr, list):
+            all_conditions.update(cr)
+
+    # Filter out GEN- conditions (those belong in General tab)
+    tf_conditions = {c for c in all_conditions if not c.startswith('GEN-')}
+
+    results = []
+    for cond_id in sorted(tf_conditions):
+        # Filter trades where this condition was active at entry
+        mask = base_trades['confluence_records'].apply(
+            lambda r: isinstance(r, (set, frozenset, list)) and cond_id in r)
+        subset = base_trades[mask]
+        if len(subset) < 2:
+            continue
 
         try:
-            trades_df = svc.unified_trades(df, strategy, include_open_position=False)
-            if len(trades_df) == 0:
-                continue
-            kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
+            kpis = svc.calculate_kpis(subset, risk_per_trade=req.risk_per_trade,
                                       total_trading_days=trading_days)
-            results.append(_kpis_to_result(kpis, cond_id, cond_label))
+            results.append(_kpis_to_result(kpis, cond_id, cond_id))
         except Exception as e:
             logger.warning("Analyze condition failed for %s: %s", cond_id, e)
 
@@ -349,17 +299,12 @@ def _analyze_conditions_impl(req):
 def _analyze_stops_impl(req):
     """Test each available stop loss pack."""
     import services as svc
-    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
-    from risk_management_packs import load_risk_management_packs
-
-    target_config = req.target_config
-    if req.take_profit_pack_id and not target_config:
-        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
-
+    _, target_config = _resolve_configs(req)
     df, trading_days = _load_analyze_data(req)
     if len(df) == 0:
         return {"results": []}
 
+    from risk_management_packs import load_risk_management_packs
     packs = load_risk_management_packs()
     results = []
 
@@ -394,19 +339,12 @@ def _analyze_stops_impl(req):
 def _analyze_targets_impl(req):
     """Test each available take profit pack."""
     import services as svc
-    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
-    from risk_management_packs import load_risk_management_packs
-
-    stop_config = req.stop_config
-    if req.stop_loss_pack_id and not stop_config:
-        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
-    if not stop_config:
-        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
-
+    stop_config, _ = _resolve_configs(req)
     df, trading_days = _load_analyze_data(req)
     if len(df) == 0:
         return {"results": []}
 
+    from risk_management_packs import load_risk_management_packs
     packs = load_risk_management_packs()
     results = []
 
@@ -436,3 +374,18 @@ def _analyze_targets_impl(req):
 
     results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
     return {"results": results}
+    start_date = end_date = None
+    if req.lookback_mode == 'Date Range' and req.lookback_start_date:
+        start_date = datetime.fromisoformat(req.lookback_start_date)
+        if req.lookback_end_date:
+            end_date = datetime.fromisoformat(req.lookback_end_date)
+    sec_tfs = tuple(sorted(req.secondary_tfs))
+    df = svc.prepare_data_with_indicators(
+        req.symbol, days=req.days, start_date=start_date,
+        end_date=end_date, timeframe=req.timeframe,
+        data_feed=req.data_feed, session=req.session,
+        secondary_tfs=sec_tfs,
+    )
+    trading_days = svc.count_trading_days(df) if len(df) > 0 else 1
+    return df, trading_days
+

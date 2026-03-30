@@ -1286,6 +1286,31 @@ interface FilterConfig {
 
 const defaultFilters: FilterConfig = { sortBy: 'profitFactor', sortDir: 'desc', minPF: '', minWR: '', minTrades: '', minR2: '', minDailyR: '', minAvgR: '', tqFilter: 'None' };
 
+function applyAnalysisFilters(results: AnalyzeResult[], filters: FilterConfig, search?: string): AnalyzeResult[] {
+  let filtered = [...results];
+  // Text search
+  if (search) {
+    const q = search.toLowerCase();
+    filtered = filtered.filter(r => r.trigger_name.toLowerCase().includes(q));
+  }
+  // KPI thresholds
+  const minPF = parseFloat(filters.minPF); if (!isNaN(minPF)) filtered = filtered.filter(r => r.profit_factor >= minPF);
+  const minWR = parseFloat(filters.minWR); if (!isNaN(minWR)) filtered = filtered.filter(r => r.win_rate >= minWR);
+  const minTrades = parseInt(filters.minTrades); if (!isNaN(minTrades)) filtered = filtered.filter(r => r.total_trades >= minTrades);
+  const minR2 = parseFloat(filters.minR2); if (!isNaN(minR2)) filtered = filtered.filter(r => r.r_squared >= minR2);
+  const minDR = parseFloat(filters.minDailyR); if (!isNaN(minDR)) filtered = filtered.filter(r => r.daily_r >= minDR);
+  const minAR = parseFloat(filters.minAvgR); if (!isNaN(minAR)) filtered = filtered.filter(r => r.avg_r >= minAR);
+  // Sort
+  const keyMap: Record<string, keyof AnalyzeResult> = {
+    profitFactor: 'profit_factor', winRate: 'win_rate', trades: 'total_trades',
+    rSquared: 'r_squared', dailyR: 'daily_r', avgR: 'avg_r',
+  };
+  const sortKey = keyMap[filters.sortBy] || 'daily_r';
+  const dir = filters.sortDir === 'asc' ? 1 : -1;
+  filtered.sort((a, b) => ((a[sortKey] as number) - (b[sortKey] as number)) * dir);
+  return filtered;
+}
+
 function FilterSortModal({ isOpen, onClose, filters, onApply }: { isOpen: boolean; onClose: () => void; filters: FilterConfig; onApply: (f: FilterConfig) => void }) {
   const [local, setLocal] = useState<FilterConfig>(filters);
 
@@ -2251,9 +2276,7 @@ export default function StrategyBuilderPage() {
                             </div>
                           ) : (analysisResults.entry?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {(analysisResults.entry || []).filter((r) =>
-                                !analyzerSearch || r.trigger_name.toLowerCase().includes(analyzerSearch.toLowerCase())
-                              ).map((result) => (
+                              {applyAnalysisFilters(analysisResults.entry || [], filters, analyzerSearch).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{
@@ -2464,7 +2487,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search general conditions..." />
                             </div>
-                            <PrimaryButton onClick={handleAnalyze}>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
+                            <PrimaryButton onClick={() => handleAnalyze('condition')}>{isAnalyzing && analyzingMode === 'condition' ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
@@ -2560,52 +2583,70 @@ export default function StrategyBuilderPage() {
 
                     // ---- STOP LOSS TAB ----
                     if (tab === 'Stop Loss') {
-                      // {{stop_loss_analysis}} — not wired yet. Needs per-pack backtest comparison API.
-                      const stopResults: AnalyzerResult[] = [];
+                      const stopResults = analysisResults.stop || [];
                       return (
                         <div>
-                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search stop loss packs..." />
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => handleAnalyze('stop')} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search stop loss packs..." />
                           <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                             Current: <strong>{API_STOP_PACKS.find((p) => p.id === selectedStopPack)?.summary || 'None'}</strong>
                           </p>
-                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                            {stopResults.map((result) => (
-                              <AnalyzerResultCard
-                                key={result.triggerId}
-                                result={result}
-                                isCurrent={result.triggerId === 'atr-1.5'}
-                                actionLabel="Replace"
-                                onAction={() => {}}
-                              />
-                            ))}
-                          </div>
-
+                          {isAnalyzing && analyzingMode === 'stop' ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing stop loss packs...</span>
+                            </div>
+                          ) : stopResults.length > 0 ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {stopResults.map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.trigger_id}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  isCurrent={result.trigger_id === selectedStopPack}
+                                  actionLabel="Replace"
+                                  onAction={() => setSelectedStopPack(result.trigger_id)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare stop loss packs.
+                            </p>
+                          )}
                         </div>
                       );
                     }
 
                     // ---- TAKE PROFIT TAB ----
                     if (tab === 'Take Profit') {
-                      // {{take_profit_analysis}} — not wired yet. Needs per-pack backtest comparison API.
-                      const tpResults: AnalyzerResult[] = [];
+                      const tpResults = analysisResults.target || [];
                       return (
                         <div>
-                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => {}} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search take profit packs..." />
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => handleAnalyze('target')} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search take profit packs..." />
                           <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                             Current: <strong>{API_TARGET_PACKS.find((p) => p.id === selectedTargetPack)?.summary || 'None'}</strong>
                           </p>
-                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                            {tpResults.map((result) => (
-                              <AnalyzerResultCard
-                                key={result.triggerId}
-                                result={result}
-                                isCurrent={result.triggerId === 'tp-2r'}
-                                actionLabel="Replace"
-                                onAction={() => {}}
-                              />
-                            ))}
-                          </div>
-
+                          {isAnalyzing && analyzingMode === 'target' ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing take profit packs...</span>
+                            </div>
+                          ) : tpResults.length > 0 ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {tpResults.map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.trigger_id}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  isCurrent={result.trigger_id === selectedTargetPack}
+                                  actionLabel="Replace"
+                                  onAction={() => setSelectedTargetPack(result.trigger_id)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare take profit packs.
+                            </p>
+                          )}
                         </div>
                       );
                     }
