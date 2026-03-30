@@ -116,42 +116,52 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     if req.include_chart_data:
         # Classify indicator columns as overlay vs oscillator
         ohlcv_cols = {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
-        internal_prefixes = ('trig_', '_state_', '_')
+        skip_cols = {'atr', 'atr_prev'}
         oscillator_patterns = ('macd', 'rvol', 'rsi', 'stoch', 'hist')
 
         for col in df.columns:
-            if col in ohlcv_cols or col.startswith(internal_prefixes):
+            if col in ohlcv_cols or col in skip_cols:
                 continue
+            if col.startswith(('trig_', 'GP_', '__')):
+                continue
+            if col.startswith('_state_'):
+                continue  # handled below for heatmap
             if df[col].dtype not in ('float64', 'float32', 'int64'):
                 continue
             col_lower = col.lower()
             if any(p in col_lower for p in oscillator_patterns):
                 oscillator_indicators.append(col)
-            elif not col.startswith('GP_') and col not in ('atr',):
+            else:
                 overlay_indicators.append(col)
 
         # Build heatmap conditions from _state_ columns
+        state_cols_for_chart = []
         for col in df.columns:
             if col.startswith('_state_'):
                 indicator_col = col[7:]  # strip '_state_'
+                state_cols_for_chart.append(col)
                 unique_states = df[col].dropna().unique()
                 if len(unique_states) > 0:
                     # Determine needed state from strategy confluence
                     needed = None
+                    matched_conf = indicator_col
                     for conf in req.confluence:
                         parts = conf.split('-', 2)
                         if len(parts) >= 3 and indicator_col.upper().startswith(parts[1].upper()):
                             needed = parts[2]
+                            matched_conf = conf
                             break
                     if needed:
                         heatmap_conditions.append({
                             'column': indicator_col,
-                            'label': conf if needed else indicator_col,
+                            'label': matched_conf,
                             'needed_state': needed,
                             'has_data': True,
                         })
 
-        chart_data = _serialize_chart_data(df, overlay_indicators + oscillator_indicators)
+        # Include all indicator + state columns in chart data
+        all_chart_cols = overlay_indicators + oscillator_indicators + state_cols_for_chart
+        chart_data = _serialize_chart_data(df, all_chart_cols)
 
     resp = BacktestResponse(
         trades=trades,

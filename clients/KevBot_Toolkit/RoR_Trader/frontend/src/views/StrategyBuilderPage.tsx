@@ -1600,6 +1600,7 @@ export default function StrategyBuilderPage() {
       overlay_indicators: d.overlay_indicators || [],
       oscillator_indicators: d.oscillator_indicators || [],
       heatmap_conditions: d.heatmap_conditions || [],
+      rawTrades: d.trades || [],  // Raw trade data with ISO timestamps for chart rendering
     };
   }, [backtestMut.data]);
 
@@ -2252,7 +2253,7 @@ export default function StrategyBuilderPage() {
                             const heatmap: any[] = ((backtestResult as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
                             const panes = buildStrategyChartPanes({
                               bars: chartBars,
-                              trades: backtestResult.trades || [],
+                              trades: (backtestResult as any).rawTrades || [],
                               direction,
                               overlayNames: overlays,
                               oscNames: oscillators,
