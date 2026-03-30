@@ -1,4 +1,45 @@
-# Session Handoff: Strategy Builder Analysis Module Port
+# Session Handoff: Strategy Builder Price Chart + Analysis Tabs
+
+## Status
+The Strategy Builder analysis tabs are working (TF Conditions, General, Stop, Target, Entry, Exit). The price chart upgrade is IN PROGRESS — it renders the multi-pane SyncedChartPane but has two remaining issues.
+
+## Price Chart Issues to Fix Next
+
+### 1. Too many indicators loaded as overlays
+The backtest service dumps ALL float columns as overlay indicators. This includes vol_sma, trade_count, vwap bands, every EMA, etc. — many at wildly different scales (volume in millions vs price at ~635), which crushes the chart.
+
+**Fix needed**: Port the EXACT indicator classification logic from the Strategy Detail chart-data endpoint (`GET /api/strategies/{id}/chart-data` in strategies.py lines 313-473). This endpoint:
+- Determines which confluence groups the strategy uses
+- Only returns indicator columns relevant to those groups
+- Classifies as overlay vs oscillator based on template definitions
+- The key function is around lines 370-470 where it uses `TEMPLATES` to classify
+
+**DO NOT** just dump all float columns. Match the Strategy Detail approach.
+
+### 2. Heatmap not showing
+The heatmap conditions need `_state_` columns in the chart data AND the confluence condition matching. The current code tries to match but the `_state_` column naming may not align with what `buildStrategyChartPanes` expects.
+
+**Check**: The Strategy Detail page builds heatmap from `heatmap_conditions` array where each entry has `column`, `label`, `needed_state`, `has_data`. The chart builder looks for `b[_state_{cond.column}]` in the bar data. Verify the column names match.
+
+### 3. TF Conditions only showing same timeframe
+The analyze endpoint returns conditions from `confluence_records` in trades. If no secondary timeframe data is loaded (the backtest doesn't include `secondary_tfs`), only 1M conditions appear.
+
+**Fix**: The frontend needs to pass `secondary_tfs` in the backtest request, derived from the enabled TF Confluence Packs' timeframe settings. Port from Streamlit: `get_required_tfs_from_confluence()` in data_loader.py.
+
+## What Works Well
+- Entry/Exit/TF Conditions/General/Stop/Target analyze tabs with real KPIs
+- Fast condition analysis using ported analyze_confluences() (single backtest + filtering)
+- Equity curve (per-trade + per-day modes)
+- Trade markers on price chart (arrows + R-labels)
+- Filter/sort on analysis results
+- All Replace/Add buttons update Optimizable Variables
+
+## Key Files
+- `/src/api/services/backtest_service.py` — indicator classification code to fix
+- `/src/api/routers/strategies.py` lines 313-473 — the REFERENCE implementation to port
+- `/frontend/src/charts/buildStrategyChartPanes.ts` — shared chart builder
+- `/frontend/src/views/StrategyBuilderPage.tsx` — main page
+- `/src/services.py` — analyze_confluences(), find_best_combinations()
 
 ## Status
 The Strategy Builder analysis module (Entry/Exit/TF Conditions/General/Stop/Target tabs)
