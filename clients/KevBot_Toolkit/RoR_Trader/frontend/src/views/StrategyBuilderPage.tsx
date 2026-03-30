@@ -1536,12 +1536,14 @@ export default function StrategyBuilderPage() {
 
   const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
     if (!apiRmPacks) return [];
-    return apiRmPacks.filter((p: any) => p.base_template === 'rr_ratio' || p.base_template?.includes('target'))
-      .map((p: any) => ({
-        id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
-        summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
-      }));
+    // All RM packs are potential target packs — the backend analyze endpoint
+    // filters to only those with valid target configs
+    return apiRmPacks.map((p: any) => ({
+      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
+      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+    }));
   }, [apiRmPacks]);
+
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
     if (!apiConfluenceGroups) return [];
