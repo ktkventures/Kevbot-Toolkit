@@ -118,9 +118,11 @@ export default function EquityCurve({
 
         <XAxis
           dataKey="x"
+          type={xAxis === 'trade' ? 'number' : 'category'}
           tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
           axisLine={{ stroke: 'var(--border, rgba(255,255,255,0.1))' }}
           tickLine={false}
+          domain={xAxis === 'trade' ? ['dataMin', 'dataMax'] : undefined}
         />
         <YAxis
           tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}

@@ -77,9 +77,17 @@ def analyze_triggers(req: BacktestRequest, user=Depends(get_current_user)):
     Returns list of {trigger_id, trigger_name, exec_type, kpis} dicts.
     """
     import services as svc
-    from api.services.backtest_service import _resolve_stop_config
+    from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
 
-    stop_config = _resolve_stop_config(req)
+    # Resolve stop/target config from pack IDs
+    stop_config = req.stop_config
+    target_config = req.target_config
+    if req.stop_loss_pack_id and not stop_config:
+        stop_config = _resolve_stop_from_pack(req.stop_loss_pack_id)
+    if req.take_profit_pack_id and not target_config:
+        target_config = _resolve_target_from_pack(req.take_profit_pack_id)
+    if not stop_config:
+        stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
 
     # Load data once (the expensive part)
     sec_tfs = tuple(sorted(req.secondary_tfs))
@@ -107,8 +115,8 @@ def analyze_triggers(req: BacktestRequest, user=Depends(get_current_user)):
     trading_days = svc.count_trading_days(df)
 
     # Get all available entry triggers for this direction
-    from confluence_groups import load_confluence_groups, get_entry_triggers, get_exit_triggers
-    groups = load_confluence_groups()
+    from confluence_groups import get_enabled_groups, get_entry_triggers, get_exit_triggers
+    groups = get_enabled_groups()
     if req.direction in ('LONG', 'SHORT'):
         candidates = get_entry_triggers(req.direction, groups)
     else:
@@ -130,6 +138,7 @@ def analyze_triggers(req: BacktestRequest, user=Depends(get_current_user)):
             "exit_trigger_confluence_ids": exit_triggers,
             "confluence": list(req.confluence),
             "stop_config": stop_config,
+            "target_config": target_config,
             "stop_atr_mult": req.stop_atr_mult,
             "risk_per_trade": req.risk_per_trade,
             "bar_count_exit": req.bar_count_exit,

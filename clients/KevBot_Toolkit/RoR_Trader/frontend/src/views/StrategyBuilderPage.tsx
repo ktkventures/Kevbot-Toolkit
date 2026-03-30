@@ -1551,6 +1551,7 @@ export default function StrategyBuilderPage() {
       exit_trigger_confluence_ids: config.exit_trigger_confluence_ids || [],
       confluence: config.confluence || [],
       stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
+      bar_count_exit: config.bar_count_exit,
       include_chart_data: true,
     });
   }, [backtestMut]);
@@ -1675,6 +1676,8 @@ export default function StrategyBuilderPage() {
         confluence: Array.from(selectedConditions),
         stop_loss_pack_id: selectedStopPack,
         take_profit_pack_id: selectedTargetPack,
+        // Extract bar_count_exit if a bar count exit trigger is selected
+        bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
       });
     }
   }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack]);
