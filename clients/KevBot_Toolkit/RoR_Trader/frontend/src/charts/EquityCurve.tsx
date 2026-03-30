@@ -106,6 +106,22 @@ export default function EquityCurve({
     );
   }
 
+  // Debug: log chartData to diagnose per-day doubling issue
+  if (xAxis === 'time') {
+    console.log('[EquityCurve] Per-day chartData:', chartData.length, 'points', chartData.slice(0, 5), '...', chartData.slice(-3));
+    // Check for duplicate x values
+    const xVals = chartData.map((d: any) => d.x);
+    const uniqueX = new Set(xVals);
+    if (xVals.length !== uniqueX.size) {
+      console.warn('[EquityCurve] DUPLICATE x values detected!', xVals.length, 'total vs', uniqueX.size, 'unique');
+      // Log the duplicates
+      const counts = new Map<string, number>();
+      for (const x of xVals) { counts.set(x, (counts.get(x) || 0) + 1); }
+      const dupes = Array.from(counts.entries()).filter(([, c]) => c > 1);
+      console.warn('[EquityCurve] Duplicates:', dupes);
+    }
+  }
+
   if (mini) {
     return (
       <ResponsiveContainer width="100%" height={height}>
