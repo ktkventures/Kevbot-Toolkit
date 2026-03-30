@@ -48,8 +48,12 @@ export default function EquityCurve({
         segment = 'live';
       }
 
+      const timeLabel = pt.timestamp
+        ? new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        : `#${i + 1}`;
+
       return {
-        x: xAxis === 'trade' ? pt.trade_number : pt.timestamp,
+        x: xAxis === 'trade' ? pt.trade_number : timeLabel,
         r: pt.cumulative_r,
         // Split into segment-specific fields for multi-color rendering
         bt: segment === 'backtest' ? pt.cumulative_r : null,
@@ -66,9 +70,12 @@ export default function EquityCurve({
   const hwm = useMemo(() => {
     if (!showHWM || data.length === 0) return [];
     let max = -Infinity;
-    return data.map((pt) => {
+    return data.map((pt, i) => {
       max = Math.max(max, pt.cumulative_r);
-      return { x: xAxis === 'trade' ? pt.trade_number : pt.timestamp, hwm: max };
+      const timeLabel = pt.timestamp
+        ? new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        : `#${i + 1}`;
+      return { x: xAxis === 'trade' ? pt.trade_number : timeLabel, hwm: max };
     });
   }, [data, showHWM, xAxis]);
 

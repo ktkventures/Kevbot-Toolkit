@@ -68,14 +68,15 @@ def compute_kpis(trades: list[dict], user=Depends(get_current_user)):
 
 @router.post("/analyze")
 def analyze_triggers(req: BacktestRequest, user=Depends(get_current_user)):
-    """Run per-trigger analysis: backtest each candidate trigger individually.
+    """Run per-trigger analysis: backtest each candidate trigger individually."""
+    try:
+        return _analyze_triggers_impl(req)
+    except Exception as e:
+        logger.exception("Analyze endpoint failed for %s", req.symbol)
+        return {"results": [], "error": str(e)}
 
-    Loads market data once, then runs the unified engine with each trigger
-    to produce per-trigger KPIs. Used by the Strategy Builder's Analyze
-    button to compare triggers side by side.
 
-    Returns list of {trigger_id, trigger_name, exec_type, kpis} dicts.
-    """
+def _analyze_triggers_impl(req: BacktestRequest):
     import services as svc
     from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
 
