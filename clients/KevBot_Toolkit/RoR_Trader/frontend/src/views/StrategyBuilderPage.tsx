@@ -2124,8 +2124,7 @@ export default function StrategyBuilderPage() {
             {/* LEFT: Charts + Trade History                */}
             {/* =========================================== */}
             <div className="space-y-4">
-              <div style={{ height: 620 }}>
-              <Card className="h-full flex flex-col">
+              <Card className="flex flex-col">
                 <TabBar tabs={['Equity Curve', 'Price Chart']}>
                   {(tab) =>
                     tab === 'Equity Curve' ? (
@@ -2137,13 +2136,13 @@ export default function StrategyBuilderPage() {
                               cumulative_r: pt.cumulative_r ?? 0,
                               timestamp: pt.timestamp,
                             }))}
-                            height={500}
+                            height={400}
                             showZeroLine
                             showHWM
                             xAxis={eqXAxis}
                           />
                         ) : (
-                          <ChartPlaceholder label="Run backtest to see equity curve" height={500} />
+                          <ChartPlaceholder label="Run backtest to see equity curve" height={400} />
                         )}
                         <div className="mt-2 flex gap-2 items-center">
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>X-Axis:</span>
@@ -2199,14 +2198,13 @@ export default function StrategyBuilderPage() {
                             height={500}
                           />
                         ) : (
-                          <ChartPlaceholder label="Run backtest to see price chart with trade markers" height={500} />
+                          <ChartPlaceholder label="Run backtest to see price chart with trade markers" height={400} />
                         )}
                       </div>
                     )
                   }
                 </TabBar>
               </Card>
-              </div>
 
               {/* Trade History */}
               <Card>
@@ -2221,9 +2219,8 @@ export default function StrategyBuilderPage() {
             {/* RIGHT: Analysis Tabs + Advanced Analysis    */}
             {/* =========================================== */}
             <div className="space-y-4">
-              <div style={{ height: 620 }}>
-              <Card className="h-full flex flex-col overflow-hidden">
-                <div className="flex-1 min-h-0 overflow-hidden">
+              <Card className="flex flex-col overflow-hidden">
+                <div className="min-h-0 overflow-hidden">
                 <TabBar tabs={['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit']}>
                   {(tab) => {
                     // Track active tab for pinned depth selector
@@ -2616,7 +2613,6 @@ export default function StrategyBuilderPage() {
                   {activeAnalysisTab === 'Take Profit' && <DepthSelector depth={targetDepth} maxDepth={1} onChange={() => {}} />}
                 </div>
               </Card>
-              </div>
 
               {/* Advanced Analysis */}
               <AdvancedAnalysis />
