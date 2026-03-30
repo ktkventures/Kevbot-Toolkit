@@ -1525,7 +1525,7 @@ export default function StrategyBuilderPage() {
         exitTime: t.exit_time ? new Date(t.exit_time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
         direction: (t.direction || 'LONG') as 'LONG' | 'SHORT',
         entryPrice: t.entry_price || 0, exitPrice: t.exit_price || 0,
-        rMultiple: t.r_multiple || 0, execType: t.exec_type || 'C',
+        rMultiple: t.r_multiple || 0, execType: ({'HM': 'LC', 'HL': 'LC', 'L0': 'L', 'L1': 'L'} as Record<string,string>)[t.exec_type] || t.exec_type || 'C',
         exitReason: t.exit_reason || '', confluences: '',
       })),
       kpis: {
@@ -1585,9 +1585,7 @@ export default function StrategyBuilderPage() {
   const [selectedTargetPack, setSelectedTargetPack] = useState('');
 
   // ---- Confluence ----
-  const [selectedConditions, setSelectedConditions] = useState<Set<string>>(
-    new Set(['5M-EMA_STACK-BULL', '1D-MACD_LINE-BULL'])
-  );
+  const [selectedConditions, setSelectedConditions] = useState<Set<string>>(new Set());
   const [selectedGenerals, setSelectedGenerals] = useState<Set<string>>(new Set());
   const [confluenceModalOpen, setConfluenceModalOpen] = useState(false);
   const [generalModalOpen, setGeneralModalOpen] = useState(false);

@@ -38,15 +38,10 @@ export default function EquityCurve({
   const chartData = useMemo(() => {
     if (!data || data.length === 0) return [];
 
-    return data.map((pt, i) => {
-      // Determine which segment this point belongs to
+    const points = data.map((pt, i) => {
       let segment: 'backtest' | 'forward' | 'live' = 'backtest';
-      if (boundaryIndex != null && i >= boundaryIndex) {
-        segment = 'forward';
-      }
-      if (alertBoundaryIndex != null && i >= alertBoundaryIndex) {
-        segment = 'live';
-      }
+      if (boundaryIndex != null && i >= boundaryIndex) segment = 'forward';
+      if (alertBoundaryIndex != null && i >= alertBoundaryIndex) segment = 'live';
 
       const timeLabel = pt.timestamp
         ? new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -55,15 +50,24 @@ export default function EquityCurve({
       return {
         x: xAxis === 'trade' ? pt.trade_number : timeLabel,
         r: pt.cumulative_r,
-        // Split into segment-specific fields for multi-color rendering
         bt: segment === 'backtest' ? pt.cumulative_r : null,
         fwd: segment === 'forward' ? pt.cumulative_r : null,
         live: segment === 'live' ? pt.cumulative_r : null,
-        // Bridge point: duplicate last of prev segment as first of next
         btBridge: segment === 'forward' && i === (boundaryIndex ?? 0) ? pt.cumulative_r : null,
         fwdBridge: segment === 'live' && i === (alertBoundaryIndex ?? 0) ? pt.cumulative_r : null,
       };
     });
+
+    // For 'time' mode: deduplicate by date, keeping only the last trade per day
+    if (xAxis === 'time') {
+      const byDate = new Map<string, typeof points[0]>();
+      for (const pt of points) {
+        byDate.set(String(pt.x), pt); // last trade on each date wins
+      }
+      return Array.from(byDate.values());
+    }
+
+    return points;
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
 
   // HWM line
