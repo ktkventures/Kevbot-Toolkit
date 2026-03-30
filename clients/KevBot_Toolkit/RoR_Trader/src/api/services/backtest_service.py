@@ -108,12 +108,52 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     # 8. Serialize trades
     trades = _serialize_trades(trades_df)
 
-    # 9. Optional chart data
+    # 9. Optional chart data with indicator classification
     chart_data = None
+    overlay_indicators = []
+    oscillator_indicators = []
+    heatmap_conditions = []
     if req.include_chart_data:
-        chart_data = _serialize_chart_data(df, req.chart_indicators)
+        # Classify indicator columns as overlay vs oscillator
+        ohlcv_cols = {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
+        internal_prefixes = ('trig_', '_state_', '_')
+        oscillator_patterns = ('macd', 'rvol', 'rsi', 'stoch', 'hist')
 
-    return BacktestResponse(
+        for col in df.columns:
+            if col in ohlcv_cols or col.startswith(internal_prefixes):
+                continue
+            if df[col].dtype not in ('float64', 'float32', 'int64'):
+                continue
+            col_lower = col.lower()
+            if any(p in col_lower for p in oscillator_patterns):
+                oscillator_indicators.append(col)
+            elif not col.startswith('GP_') and col not in ('atr',):
+                overlay_indicators.append(col)
+
+        # Build heatmap conditions from _state_ columns
+        for col in df.columns:
+            if col.startswith('_state_'):
+                indicator_col = col[7:]  # strip '_state_'
+                unique_states = df[col].dropna().unique()
+                if len(unique_states) > 0:
+                    # Determine needed state from strategy confluence
+                    needed = None
+                    for conf in req.confluence:
+                        parts = conf.split('-', 2)
+                        if len(parts) >= 3 and indicator_col.upper().startswith(parts[1].upper()):
+                            needed = parts[2]
+                            break
+                    if needed:
+                        heatmap_conditions.append({
+                            'column': indicator_col,
+                            'label': conf if needed else indicator_col,
+                            'needed_state': needed,
+                            'has_data': True,
+                        })
+
+        chart_data = _serialize_chart_data(df, overlay_indicators + oscillator_indicators)
+
+    resp = BacktestResponse(
         trades=trades,
         kpis=kpis,
         secondary_kpis=secondary_kpis,
@@ -123,6 +163,12 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
         data_source=get_data_source(),
         chart_data=chart_data,
     )
+    # Attach indicator metadata as extra fields (not in Pydantic model, but JSON serializable)
+    resp_dict = resp.model_dump()
+    resp_dict['overlay_indicators'] = overlay_indicators
+    resp_dict['oscillator_indicators'] = oscillator_indicators
+    resp_dict['heatmap_conditions'] = heatmap_conditions
+    return resp_dict
 
 
 # =============================================================================

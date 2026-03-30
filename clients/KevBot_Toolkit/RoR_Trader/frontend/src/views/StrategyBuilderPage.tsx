@@ -19,7 +19,10 @@ import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import EquityCurve from '@/charts/EquityCurve';
 import TradingChart from '@/charts/TradingChart';
+const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 import type { CandleData, TradeMarker } from '@/charts/TradingChart';
+import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
+import { useChartPrefs } from '@/hooks/useChartPrefs';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import { useRunBacktest, useAnalyzeTriggers, type AnalyzeResult } from '@/hooks/queries/useBacktest';
@@ -1493,6 +1496,9 @@ export interface StrategyBuilderV5Props {
 export default function StrategyBuilderPage() {
   const router = useRouter();
 
+  // ---- Chart prefs for shared chart rendering ----
+  const chartPrefs = useChartPrefs();
+
   // ---- API Hooks ----
   const backtestMut = useRunBacktest();
   const analyzeMut = useAnalyzeTriggers();
@@ -1590,6 +1596,9 @@ export default function StrategyBuilderPage() {
       },
       equityCurve: d.equity_curve || [],
       chartData: d.chart_data, totalBars: d.total_bars || 0, dataSource: d.data_source || '',
+      overlay_indicators: d.overlay_indicators || [],
+      oscillator_indicators: d.oscillator_indicators || [],
+      heatmap_conditions: d.heatmap_conditions || [],
     };
   }, [backtestMut.data]);
 
@@ -2235,23 +2244,33 @@ export default function StrategyBuilderPage() {
                           </span>
                         </div>
                         {backtestResult?.chartData && backtestResult.chartData.length > 0 ? (
-                          <TradingChart
-                            ohlcv={backtestResult.chartData.map((c: any) => ({
-                              time: c.timestamp || c.time || '',
-                              open: c.open ?? 0,
-                              high: c.high ?? 0,
-                              low: c.low ?? 0,
-                              close: c.close ?? 0,
-                              volume: c.volume,
-                            }))}
-                            markers={(backtestResult.trades || []).flatMap((t: any): TradeMarker[] => {
-                              const markers: TradeMarker[] = [];
-                              if (t.entryTime) markers.push({ time: t.entryTime, position: direction === 'LONG' ? 'belowBar' : 'aboveBar', shape: direction === 'LONG' ? 'arrowUp' : 'arrowDown', color: 'var(--green)', text: 'Entry' });
-                              if (t.exitTime) markers.push({ time: t.exitTime, position: direction === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'circle', color: t.rMultiple >= 0 ? 'var(--green)' : 'var(--red)', text: `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple.toFixed(1)}R` });
-                              return markers;
-                            })}
-                            height={500}
-                          />
+                          (() => {
+                            const chartBars = backtestResult.chartData;
+                            const overlays: string[] = (backtestResult as any)?.overlay_indicators || [];
+                            const oscillators: string[] = (backtestResult as any)?.oscillator_indicators || [];
+                            const heatmap: any[] = ((backtestResult as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+                            const panes = buildStrategyChartPanes({
+                              bars: chartBars,
+                              trades: backtestResult.trades || [],
+                              direction,
+                              overlayNames: overlays,
+                              oscNames: oscillators,
+                              heatmapConds: heatmap,
+                              chartPrefs,
+                            });
+                            return panes.length > 0 ? (
+                              <SyncedChartPane
+                                panes={panes}
+                                upColor={chartPrefs.candleUp}
+                                downColor={chartPrefs.candleDown}
+                                upBorderColor={chartPrefs.candleUpBorder}
+                                gridLines={chartPrefs.gridLines}
+                                rightOffset={chartPrefs.rightOffset}
+                              />
+                            ) : (
+                              <ChartPlaceholder label="No chart data available" height={400} />
+                            );
+                          })()
                         ) : (
                           <ChartPlaceholder label="Run backtest to see price chart with trade markers" height={400} />
                         )}
