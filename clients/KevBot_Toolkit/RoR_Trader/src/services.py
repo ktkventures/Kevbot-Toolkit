@@ -925,3 +925,187 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     enriched['status'] = derive_strategy_status(fwd_kpis, sigma_fwd)
 
     return enriched
+
+
+# =============================================================================
+# CONFLUENCE ANALYSIS (ported from Streamlit app.py)
+# =============================================================================
+
+def _safe_subtract(a: float, b: float) -> float:
+    """Safely subtract two values that may be infinity."""
+    if a == float('inf') and b == float('inf'):
+        return 0.0
+    if a == float('-inf') and b == float('-inf'):
+        return 0.0
+    return a - b
+
+
+def analyze_confluences(
+    trades_df: pd.DataFrame,
+    required: set = None,
+    min_trades: int = 3,
+    starting_balance: float = 10000,
+    risk_per_trade: float = 100,
+    total_trading_days: int = None,
+    exclude_prefix: str = None,
+    include_prefix: str = None,
+) -> list[dict]:
+    """Analyze how different confluence conditions affect results.
+
+    Ported from Streamlit app.py:analyze_confluences (lines 1482-1544).
+
+    Runs on a SINGLE trades_df — no additional backtests needed.
+    Filters trades by confluence_records set membership per condition.
+
+    Args:
+        trades_df: Trades from a backtest (must have 'confluence_records' column)
+        required: If provided, only consider trades where required.issubset(confluence_records)
+        min_trades: Minimum trades per condition to include in results
+        exclude_prefix: Skip conditions starting with this (e.g. 'GEN-' for TF tab)
+        include_prefix: Only include conditions starting with this (e.g. 'GEN-' for General tab)
+
+    Returns: List of dicts with per-condition KPIs, sorted by profit_factor desc.
+    """
+    if len(trades_df) == 0 or 'confluence_records' not in trades_df.columns:
+        return []
+
+    # Normalize confluence_records: handle set, frozenset, list
+    def _as_set(r):
+        if isinstance(r, (set, frozenset)):
+            return set(r)
+        if isinstance(r, list):
+            return set(r)
+        return set()
+
+    # Get base trades (filtered by required confluences)
+    if required and len(required) > 0:
+        mask = trades_df['confluence_records'].apply(lambda r: required.issubset(_as_set(r)))
+        base_trades = trades_df[mask]
+    else:
+        base_trades = trades_df
+
+    if len(base_trades) < min_trades:
+        return []
+
+    base_kpis = calculate_kpis(base_trades, starting_balance=starting_balance,
+                               risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+
+    # Find all unique confluence records
+    all_records = set()
+    for records in base_trades['confluence_records']:
+        all_records.update(_as_set(records))
+
+    # Remove already-required records
+    if required:
+        all_records -= required
+
+    # Apply prefix filters
+    if exclude_prefix:
+        all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
+    if include_prefix:
+        all_records = {r for r in all_records if r.startswith(include_prefix)}
+
+    results = []
+    for record in sorted(all_records):
+        # Filter to trades with this record
+        mask = base_trades['confluence_records'].apply(lambda r, rec=record: rec in _as_set(r))
+        subset = base_trades[mask]
+
+        if len(subset) >= min_trades:
+            kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+            results.append({
+                'confluence': record,
+                'total_trades': kpis['total_trades'],
+                'win_rate': round(kpis.get('win_rate', 0), 1),
+                'profit_factor': round(kpis.get('profit_factor', 0), 2),
+                'avg_r': round(kpis.get('avg_r', 0), 3),
+                'total_r': round(kpis.get('total_r', 0), 2),
+                'daily_r': round(kpis.get('daily_r', 0), 3),
+                'r_squared': round(kpis.get('r_squared', 0), 3),
+                'pf_change': round(_safe_subtract(kpis.get('profit_factor', 0), base_kpis.get('profit_factor', 0)), 2),
+                'wr_change': round(kpis.get('win_rate', 0) - base_kpis.get('win_rate', 0), 1),
+            })
+
+    results.sort(key=lambda r: r.get('profit_factor', 0), reverse=True)
+    return results
+
+
+def find_best_combinations(
+    trades_df: pd.DataFrame,
+    max_depth: int = 3,
+    min_trades: int = 5,
+    top_n: int = 50,
+    starting_balance: float = 10000,
+    risk_per_trade: float = 100,
+    total_trading_days: int = None,
+    exclude_prefix: str = None,
+) -> list[dict]:
+    """Find the best confluence combinations automatically.
+
+    Ported from Streamlit app.py:find_best_combinations (lines 1547-1624).
+    Uses pre-computed numpy boolean masks for fast subset filtering.
+
+    Returns: List of dicts with combination KPIs, sorted by profit_factor desc.
+    """
+    import numpy as np
+    from itertools import combinations
+
+    if len(trades_df) == 0 or 'confluence_records' not in trades_df.columns:
+        return []
+
+    def _as_set(r):
+        if isinstance(r, (set, frozenset)):
+            return set(r)
+        if isinstance(r, list):
+            return set(r)
+        return set()
+
+    # Get all unique records
+    all_records = set()
+    for records in trades_df['confluence_records']:
+        all_records.update(_as_set(records))
+    if exclude_prefix:
+        all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
+
+    # Pre-compute boolean mask per record (vectorized)
+    n_trades = len(trades_df)
+    record_masks = {}
+    conf_list = trades_df['confluence_records'].tolist()
+    for r in all_records:
+        mask = np.zeros(n_trades, dtype=bool)
+        for i, recs in enumerate(conf_list):
+            if r in _as_set(recs):
+                mask[i] = True
+        record_masks[r] = mask
+
+    # Only test records that appear in >= min_trades
+    valid_records = sorted([r for r, m in record_masks.items() if m.sum() >= min_trades])
+
+    results = []
+    for depth in range(1, min(max_depth + 1, len(valid_records) + 1)):
+        for combo in combinations(valid_records, depth):
+            # AND the pre-computed masks
+            combined = record_masks[combo[0]]
+            for r in combo[1:]:
+                combined = combined & record_masks[r]
+
+            count = int(combined.sum())
+            if count >= min_trades:
+                subset = trades_df[combined]
+                kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                      risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+                results.append({
+                    'combination': list(sorted(combo)),
+                    'combo_str': ' + '.join(sorted(combo)),
+                    'depth': len(combo),
+                    'total_trades': kpis['total_trades'],
+                    'win_rate': round(kpis.get('win_rate', 0), 1),
+                    'profit_factor': round(kpis.get('profit_factor', 0), 2),
+                    'avg_r': round(kpis.get('avg_r', 0), 3),
+                    'daily_r': round(kpis.get('daily_r', 0), 3),
+                    'r_squared': round(kpis.get('r_squared', 0), 3),
+                })
+
+    results.sort(key=lambda r: (r.get('profit_factor', 0), r.get('total_trades', 0)), reverse=True)
+    return results[:top_n]

@@ -77,7 +77,8 @@ def analyze_triggers(
     Modes:
       - entry: test each available entry trigger (default)
       - exit: test each available exit trigger
-      - condition: test with/without each TF confluence condition
+      - condition: TF conditions — filter trades by confluence_records (fast)
+      - general: General conditions — filter for GEN- prefix conditions
       - stop: test each available stop loss pack
       - target: test each available take profit pack
     """
@@ -86,6 +87,8 @@ def analyze_triggers(
             return _analyze_exits_impl(req)
         elif mode == "condition":
             return _analyze_conditions_impl(req)
+        elif mode == "general":
+            return _analyze_general_impl(req)
         elif mode == "stop":
             return _analyze_stops_impl(req)
         elif mode == "target":
@@ -246,13 +249,13 @@ def _analyze_exits_impl(req):
 
 
 def _analyze_conditions_impl(req):
-    """Per-condition analysis using the fast Streamlit approach.
+    """TF Conditions analysis — ported from Streamlit analyze_confluences().
 
-    Runs ONE backtest with NO confluence filtering, then filters the
-    resulting trades by which conditions were active at entry time.
+    Runs ONE backtest with NO confluence filtering, then uses
+    analyze_confluences() to filter trades by confluence_records membership.
+    Excludes GEN- prefix conditions (those belong in General tab).
     """
     import services as svc
-    import pandas as pd
 
     stop_config, target_config = _resolve_configs(req)
     df, trading_days = _load_analyze_data(req)
@@ -264,35 +267,70 @@ def _analyze_conditions_impl(req):
     if len(base_trades) == 0:
         return {"results": []}
 
-    # Extract all unique conditions from confluence_records
-    all_conditions = set()
-    for _, row in base_trades.iterrows():
-        cr = row.get('confluence_records')
-        if isinstance(cr, (set, frozenset)):
-            all_conditions.update(cr)
-        elif isinstance(cr, list):
-            all_conditions.update(cr)
+    # Use the ported Streamlit function — fast trade filtering
+    condition_results = svc.analyze_confluences(
+        base_trades,
+        required=set(req.confluence) if req.confluence else None,
+        min_trades=3,
+        risk_per_trade=req.risk_per_trade,
+        total_trading_days=trading_days,
+        exclude_prefix='GEN-',  # TF tab excludes general conditions
+    )
 
-    # Filter out GEN- conditions (those belong in General tab)
-    tf_conditions = {c for c in all_conditions if not c.startswith('GEN-')}
+    # Convert to the standard result format
+    results = []
+    for cr in condition_results:
+        results.append({
+            'trigger_id': cr['confluence'],
+            'trigger_name': cr['confluence'],
+            'exec_type': 'C',
+            'total_trades': cr['total_trades'],
+            'profit_factor': cr['profit_factor'],
+            'win_rate': cr['win_rate'],
+            'avg_r': cr['avg_r'],
+            'daily_r': cr['daily_r'],
+            'r_squared': cr['r_squared'],
+            'pf_change': cr.get('pf_change', 0),
+            'wr_change': cr.get('wr_change', 0),
+        })
+    return {"results": results}
+
+
+def _analyze_general_impl(req):
+    """General conditions analysis — same as TF but only GEN- prefix."""
+    import services as svc
+
+    stop_config, target_config = _resolve_configs(req)
+    df, trading_days = _load_analyze_data(req)
+    if len(df) == 0:
+        return {"results": []}
+
+    base_trades = _run_base_trades(req, df, stop_config, target_config)
+    if len(base_trades) == 0:
+        return {"results": []}
+
+    condition_results = svc.analyze_confluences(
+        base_trades,
+        required=set(req.confluence) if req.confluence else None,
+        min_trades=3,
+        risk_per_trade=req.risk_per_trade,
+        total_trading_days=trading_days,
+        include_prefix='GEN-',  # General tab only shows GEN- conditions
+    )
 
     results = []
-    for cond_id in sorted(tf_conditions):
-        # Filter trades where this condition was active at entry
-        mask = base_trades['confluence_records'].apply(
-            lambda r: isinstance(r, (set, frozenset, list)) and cond_id in r)
-        subset = base_trades[mask]
-        if len(subset) < 2:
-            continue
-
-        try:
-            kpis = svc.calculate_kpis(subset, risk_per_trade=req.risk_per_trade,
-                                      total_trading_days=trading_days)
-            results.append(_kpis_to_result(kpis, cond_id, cond_id))
-        except Exception as e:
-            logger.warning("Analyze condition failed for %s: %s", cond_id, e)
-
-    results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
+    for cr in condition_results:
+        results.append({
+            'trigger_id': cr['confluence'],
+            'trigger_name': cr['confluence'],
+            'exec_type': 'C',
+            'total_trades': cr['total_trades'],
+            'profit_factor': cr['profit_factor'],
+            'win_rate': cr['win_rate'],
+            'avg_r': cr['avg_r'],
+            'daily_r': cr['daily_r'],
+            'r_squared': cr['r_squared'],
+        })
     return {"results": results}
 
 

@@ -2333,7 +2333,7 @@ export default function StrategyBuilderPage() {
                             </div>
                           ) : (analysisResults.exit?.length ?? 0) > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {(analysisResults.exit || []).map((result) => (
+                              {applyAnalysisFilters(analysisResults.exit || [], filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{
@@ -2404,75 +2404,29 @@ export default function StrategyBuilderPage() {
                             </div>
                           )}
 
-                          {/* Confluence drill-down results (mock) */}
-                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                            {isAnalyzing && analyzingMode === 'condition' && (
-                              <div className="flex items-center justify-center py-8 gap-3">
-                                <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                                <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing conditions...</span>
-                              </div>
-                            )}
-                            {API_CONFLUENCE_CONDITIONS.map((cond) => {
-                              const isActive = selectedConditions.has(cond.id);
-                              const condResult = (analysisResults.condition || []).find((r) => r.trigger_id === cond.id);
-                              return (
-                                <div
-                                  key={cond.id}
-                                  className="rounded-lg border p-3"
-                                  style={{
-                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
-                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
-                                  }}
-                                >
-                                  <div className="flex items-center justify-between mb-2">
-                                    <span
-                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
-                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
-                                    >
-                                      {cond.label}
-                                      {isActive && (
-                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
-                                          (active)
-                                        </span>
-                                      )}
-                                    </span>
-                                    {!isActive && (
-                                      <SecondaryButton onClick={() => handleToggleCondition(cond.id)}>
-                                        {tfDepth >= 2 ? 'Replace' : 'Add'}
-                                      </SecondaryButton>
-                                    )}
-                                  </div>
-                                  <div className="grid grid-cols-6 gap-2">
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
+                          {/* Confluence drill-down results */}
+                          {isAnalyzing && analyzingMode === 'condition' ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing TF conditions...</span>
+                            </div>
+                          ) : (analysisResults.condition?.length ?? 0) > 0 ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {applyAnalysisFilters(analysisResults.condition || [], filters).map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.trigger_id}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  isCurrent={selectedConditions.has(result.trigger_id)}
+                                  actionLabel={selectedConditions.has(result.trigger_id) ? 'Remove' : 'Add'}
+                                  onAction={() => handleToggleCondition(result.trigger_id)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to evaluate how each TF condition affects your strategy's performance.
+                            </p>
+                          )}
 
                         </div>
                       );
@@ -2487,7 +2441,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search general conditions..." />
                             </div>
-                            <PrimaryButton onClick={() => handleAnalyze('condition')}>{isAnalyzing && analyzingMode === 'condition' ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
+                            <PrimaryButton onClick={() => handleAnalyze('general')}>{isAnalyzing && analyzingMode === 'general' ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
@@ -2515,67 +2469,29 @@ export default function StrategyBuilderPage() {
                             </div>
                           )}
 
-                          {/* General condition drill-down */}
-                          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                            {API_GENERAL_CONDITIONS.map((cond) => {
-                              const isActive = selectedGenerals.has(cond.id);
-                              return (
-                                <div
-                                  key={cond.id}
-                                  className="rounded-lg border p-3"
-                                  style={{
-                                    background: isActive ? 'var(--accent-muted)' : 'var(--bg-card)',
-                                    borderColor: isActive ? 'var(--accent)' : 'var(--border)',
-                                  }}
-                                >
-                                  <div className="flex items-center justify-between mb-2">
-                                    <span
-                                      className={`text-sm ${isActive ? 'font-semibold' : ''}`}
-                                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
-                                    >
-                                      {cond.label}
-                                      {isActive && (
-                                        <span className="text-[10px] italic ml-2" style={{ color: 'var(--accent)' }}>
-                                          (active)
-                                        </span>
-                                      )}
-                                    </span>
-                                    {!isActive && (
-                                      <SecondaryButton onClick={() => handleToggleGeneral(cond.id)}>
-                                        {generalDepth >= 2 ? 'Replace' : 'Add'}
-                                      </SecondaryButton>
-                                    )}
-                                  </div>
-                                  <div className="grid grid-cols-6 gap-2">
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trades</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>PF</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>WR</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Avg R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Daily R</span>
-                                      <div className="text-xs" style={{ color: 'var(--green)' }}>{"--"}</div>
-                                    </div>
-                                    <div>
-                                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>R-sq</span>
-                                      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{"--"}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                          {/* General condition results */}
+                          {isAnalyzing && analyzingMode === 'general' ? (
+                            <div className="flex items-center justify-center py-12 gap-3">
+                              <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                              <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Analyzing general conditions...</span>
+                            </div>
+                          ) : (analysisResults.general?.length ?? 0) > 0 ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {applyAnalysisFilters(analysisResults.general || [], filters).map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.trigger_id}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  isCurrent={selectedGenerals.has(result.trigger_id)}
+                                  actionLabel={selectedGenerals.has(result.trigger_id) ? 'Remove' : 'Add'}
+                                  onAction={() => handleToggleGeneral(result.trigger_id)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to evaluate general conditions (time of day, session, calendar filters).
+                            </p>
+                          )}
 
                         </div>
                       );
