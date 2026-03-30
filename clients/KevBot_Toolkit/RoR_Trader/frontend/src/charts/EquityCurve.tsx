@@ -169,25 +169,33 @@ export default function EquityCurve({
           <ReferenceLine y={0} stroke="var(--text-secondary)" strokeDasharray="4 4" strokeOpacity={0.4} />
         )}
 
-        {/* Backtest segment (blue) */}
-        <Area
-          type="monotone" dataKey="bt" stroke="#2196F3" strokeWidth={2}
-          fill="url(#btGradient)" dot={false} isAnimationActive={false}
-          connectNulls={false}
-        />
-
-        {/* Forward test segment (orange) */}
-        <Area
-          type="monotone" dataKey="fwd" stroke="#FF9800" strokeWidth={2}
-          fill="url(#fwdGradient)" dot={false} isAnimationActive={false}
-          connectNulls={false}
-        />
-
-        {/* Live alert segment (green, no fill) */}
-        <Line
-          type="monotone" dataKey="live" stroke="#4CAF50" strokeWidth={2}
-          dot={false} isAnimationActive={false} connectNulls={false}
-        />
+        {/* Per-day mode: single combined line (no segment splitting) */}
+        {xAxis === 'time' ? (
+          <Area
+            type="monotone" dataKey="r" stroke="#2196F3" strokeWidth={2}
+            fill="url(#btGradient)" dot={false} isAnimationActive={false}
+          />
+        ) : (
+          <>
+            {/* Backtest segment (blue) */}
+            <Area
+              type="monotone" dataKey="bt" stroke="#2196F3" strokeWidth={2}
+              fill="url(#btGradient)" dot={false} isAnimationActive={false}
+              connectNulls={false}
+            />
+            {/* Forward test segment (orange) */}
+            <Area
+              type="monotone" dataKey="fwd" stroke="#FF9800" strokeWidth={2}
+              fill="url(#fwdGradient)" dot={false} isAnimationActive={false}
+              connectNulls={false}
+            />
+            {/* Live alert segment (green, no fill) */}
+            <Line
+              type="monotone" dataKey="live" stroke="#4CAF50" strokeWidth={2}
+              dot={false} isAnimationActive={false} connectNulls={false}
+            />
+          </>
+        )}
 
         {/* HWM line */}
         {showHWM && hwm.length > 0 && (
