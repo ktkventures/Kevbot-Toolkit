@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 
 
-@router.post("/run", response_model=BacktestResponse)
+@router.post("/run")
 def run_backtest(req: BacktestRequest, user=Depends(get_current_user)):
     """Run a full backtest.
 
