@@ -65,8 +65,8 @@ export interface AnalyzeResult {
 
 export function useAnalyzeTriggers() {
   return useMutation({
-    mutationFn: (req: BacktestRequest) =>
-      apiFetch<{ results: AnalyzeResult[] }>('/api/backtest/analyze', {
+    mutationFn: ({ mode, ...req }: BacktestRequest & { mode?: string }) =>
+      apiFetch<{ results: AnalyzeResult[] }>(`/api/backtest/analyze?mode=${mode || 'entry'}`, {
         method: 'POST',
         body: JSON.stringify(req),
       }),

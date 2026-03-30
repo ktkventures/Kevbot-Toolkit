@@ -1098,6 +1098,36 @@ def get_exit_triggers(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[st
     return result
 
 
+def get_all_conditions(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str, str]:
+    """Get all available TF confluence conditions from enabled groups.
+
+    Returns dict mapping condition_id -> display_label.
+    Condition IDs follow the format: "{tf_label}-{INTERPRETER}-{STATE}"
+    e.g. "5M-EMA_STACK-SML", "1D-MACD_LINE-BULL"
+    """
+    if groups is None:
+        groups = get_enabled_groups()
+
+    result = {}
+    for group in groups:
+        template = TEMPLATES.get(group.base_template)
+        if not template:
+            continue
+        outputs = template.get("outputs", [])
+        interpreters = template.get("interpreters", [])
+        if not outputs or not interpreters:
+            continue
+        interp_key = interpreters[0]
+        # Generate conditions for common timeframes
+        for tf_label in ('1M', '5M', '15M', '1H', '1D'):
+            for state in outputs:
+                cond_id = f"{tf_label}-{interp_key}-{state}"
+                label = f"{group.base_template} ({group.version}) — {tf_label} {state}"
+                result[cond_id] = label
+
+    return result
+
+
 # =============================================================================
 # TEMPLATE HELPERS
 # =============================================================================
