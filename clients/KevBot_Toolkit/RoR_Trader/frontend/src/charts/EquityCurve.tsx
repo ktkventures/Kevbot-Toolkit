@@ -88,15 +88,6 @@ export default function EquityCurve({
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
 
   // HWM line
-  const hwm = useMemo(() => {
-    if (!showHWM || chartData.length === 0) return [];
-    let max = -Infinity;
-    return chartData.map((pt) => {
-      const val = pt.r ?? pt.bt ?? pt.fwd ?? pt.live ?? 0;
-      max = Math.max(max, val);
-      return { x: pt.x, hwm: max };
-    });
-  }, [chartData, showHWM]);
 
   if (chartData.length === 0) {
     return (
@@ -106,21 +97,16 @@ export default function EquityCurve({
     );
   }
 
-  // Debug: log chartData to diagnose per-day doubling issue
-  if (xAxis === 'time') {
-    console.log('[EquityCurve] Per-day chartData:', chartData.length, 'points', chartData.slice(0, 5), '...', chartData.slice(-3));
-    // Check for duplicate x values
-    const xVals = chartData.map((d: any) => d.x);
-    const uniqueX = new Set(xVals);
-    if (xVals.length !== uniqueX.size) {
-      console.warn('[EquityCurve] DUPLICATE x values detected!', xVals.length, 'total vs', uniqueX.size, 'unique');
-      // Log the duplicates
-      const counts = new Map<string, number>();
-      for (const x of xVals) { counts.set(x, (counts.get(x) || 0) + 1); }
-      const dupes = Array.from(counts.entries()).filter(([, c]) => c > 1);
-      console.warn('[EquityCurve] Duplicates:', dupes);
-    }
-  }
+  // Merge HWM into chartData so it uses the same data array (no separate data prop)
+  const chartDataWithHwm = useMemo(() => {
+    if (!showHWM || chartData.length === 0) return chartData;
+    let max = -Infinity;
+    return chartData.map((pt: any) => {
+      const val = pt.r ?? pt.bt ?? pt.fwd ?? pt.live ?? 0;
+      max = Math.max(max, val);
+      return { ...pt, hwm: max };
+    });
+  }, [chartData, showHWM]);
 
   if (mini) {
     return (
@@ -144,7 +130,7 @@ export default function EquityCurve({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={chartData} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+      <AreaChart data={chartDataWithHwm} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
         <defs>
           <linearGradient id="btGradient" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#2196F3" stopOpacity={0.12} />
@@ -213,10 +199,10 @@ export default function EquityCurve({
           </>
         )}
 
-        {/* HWM line */}
-        {showHWM && hwm.length > 0 && (
+        {/* HWM line (data merged into chartDataWithHwm, no separate data prop) */}
+        {showHWM && (
           <Line
-            data={hwm} type="stepAfter" dataKey="hwm"
+            type="stepAfter" dataKey="hwm"
             stroke="var(--text-secondary)" strokeWidth={1} strokeDasharray="4 2"
             dot={false} isAnimationActive={false} strokeOpacity={0.4}
           />

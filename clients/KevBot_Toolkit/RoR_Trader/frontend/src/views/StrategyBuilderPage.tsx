@@ -2131,23 +2131,17 @@ export default function StrategyBuilderPage() {
                     tab === 'Equity Curve' ? (
                       <div className="flex-1">
                         {backtestResult?.equityCurve && backtestResult.equityCurve.length > 0 ? (
-                          (() => {
-                            const eqData = backtestResult.equityCurve.map((pt: any, i: number) => ({
+                          <EquityCurve
+                            data={backtestResult.equityCurve.map((pt: any, i: number) => ({
                               trade_number: i + 1,
                               cumulative_r: pt.cumulative_r ?? 0,
                               timestamp: pt.timestamp,
-                            }));
-                            console.log('[StrategyBuilder] equityCurve raw:', eqData.length, 'points, timestamps:', eqData.map((d: any) => d.timestamp?.slice(0, 10)).join(', '));
-                            return (
-                          <EquityCurve
-                            data={eqData}
+                            }))}
                             height={500}
                             showZeroLine
                             showHWM
                             xAxis={eqXAxis}
                           />
-                            );
-                          })()
                         ) : (
                           <ChartPlaceholder label="Run backtest to see equity curve" height={500} />
                         )}
