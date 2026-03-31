@@ -44,6 +44,7 @@ export default function EquityCurve({
       for (const pt of data) {
         if (!pt.timestamp) continue;
         const d = new Date(pt.timestamp);
+        if (isNaN(d.getTime())) continue;
         const dateKey = d.toISOString().slice(0, 10); // YYYY-MM-DD for sorting
         const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         // r_multiple for this trade = difference from previous cumulative

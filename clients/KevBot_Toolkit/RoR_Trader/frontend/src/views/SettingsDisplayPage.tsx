@@ -337,11 +337,12 @@ export default function SettingsDisplayPage() {
   // Table
   const [tableDensity, setTableDensity] = useState<'compact' | 'comfortable' | 'spacious'>('comfortable');
 
-  // Styling — tag appearance
-  const [badgeShape, setBadgeShape] = useState<BadgeShape>('rounded');
+  // Styling — tag appearance (initialize from Zustand store for persistence)
+  const displayStore = useDisplayStore();
+  const [badgeShape, setBadgeShape] = useState<BadgeShape>(displayStore.badgeShape || 'rounded');
   const [bracketStyle, setBracketStyle] = useState<BracketStyle>('brackets');
-  const [execColor, setExecColor] = useState('#2196F3');
-  const [fidelityColor, setFidelityColor] = useState('#26C6DA');
+  const [execColor, setExecColor] = useState(displayStore.execTypeColor || '#2196F3');
+  const [fidelityColor, setFidelityColor] = useState(displayStore.fidelityColor || '#26C6DA');
   const [variationStyle, setVariationStyle] = useState<VariationStyleKey>('badge');
 
   /* ---- Hydrate local state from API settings (once) ---- */

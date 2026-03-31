@@ -1191,16 +1191,31 @@ interface AnalyzerResult {
 const EMPTY_ENTRY_ANALYSIS: AnalyzerResult[] = [];
 const EMPTY_EXIT_ANALYSIS: AnalyzerResult[] = [];
 
+function FidelityBadge() {
+  const fidColor = useDisplayStore((s) => s.fidelityColor) || '#26C6DA';
+  const shape = useDisplayStore((s) => s.badgeShape);
+  return (
+    <span
+      className={`text-xs font-mono font-medium px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
+      style={{ color: fidColor, background: fidColor + '20' }}
+    >
+      [PB]
+    </span>
+  );
+}
+
 function AnalyzerResultCard({
   result,
   isCurrent,
   actionLabel,
   onAction,
+  badgeMode = 'exec',
 }: {
   result: AnalyzerResult;
   isCurrent: boolean;
   actionLabel: string;
   onAction?: () => void;
+  badgeMode?: 'exec' | 'fidelity' | 'none';
 }) {
   return (
     <div
@@ -1212,7 +1227,8 @@ function AnalyzerResultCard({
     >
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <ExecBadge type={result.execType} />
+          {badgeMode === 'exec' && <ExecBadge type={result.execType} />}
+          {badgeMode === 'fidelity' && <FidelityBadge />}
           <span
             className={`text-sm ${isCurrent ? 'font-semibold' : ''}`}
             style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-primary)' }}
@@ -2579,6 +2595,7 @@ export default function StrategyBuilderPage() {
                                   isCurrent={selectedConditions.has(result.trigger_id)}
                                   actionLabel={selectedConditions.has(result.trigger_id) ? 'Remove' : 'Add'}
                                   onAction={() => handleToggleCondition(result.trigger_id)}
+                                  badgeMode="fidelity"
                                 />
                               ))}
                             </div>
@@ -2644,6 +2661,7 @@ export default function StrategyBuilderPage() {
                                   isCurrent={selectedGenerals.has(result.trigger_id)}
                                   actionLabel={selectedGenerals.has(result.trigger_id) ? 'Remove' : 'Add'}
                                   onAction={() => handleToggleGeneral(result.trigger_id)}
+                                  badgeMode="none"
                                 />
                               ))}
                             </div>

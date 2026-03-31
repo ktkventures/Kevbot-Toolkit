@@ -70,14 +70,19 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const shiftIfCType = (iso: string, execType: string) => {
     if (!iso || iso === '--') return iso;
     if (execType === 'L' || execType === 'LC') return iso; // L-type: no shift
-    return new Date(new Date(iso).getTime() + tfMs).toISOString();
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return new Date(d.getTime() + tfMs).toISOString();
+    } catch { return iso; }
   };
 
   if (bars.length === 0) return [];
 
   const prefs = { ...DEFAULT_PREFS, ...chartPrefs };
-  const firstBarTime = new Date(bars[0].timestamp).getTime();
-  const lastBarTime = new Date(bars[bars.length - 1].timestamp).getTime();
+  const _safeMs = (v: string) => { const d = new Date(v); return isNaN(d.getTime()) ? 0 : d.getTime(); };
+  const firstBarTime = bars.length > 0 ? _safeMs(bars[0].timestamp) : 0;
+  const lastBarTime = bars.length > 0 ? _safeMs(bars[bars.length - 1].timestamp) : Infinity;
 
   // ---- Trade markers (arrows) with C-type shift ----
   const tradeMarkers = !showTriggers ? [] : trades.flatMap((t: any) => {
@@ -91,8 +96,8 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     // Shift C-type to next bar open
     const entryTime = shiftIfCType(rawEntryTime, entryExec);
     const exitTime = shiftIfCType(rawExitTime, exitExec);
-    const entryMs = entryTime && entryTime !== '--' ? new Date(entryTime).getTime() : 0;
-    const exitMs = exitTime && exitTime !== '--' ? new Date(exitTime).getTime() : 0;
+    const entryMs = entryTime && entryTime !== '--' ? _safeMs(entryTime) : 0;
+    const exitMs = exitTime && exitTime !== '--' ? _safeMs(exitTime) : 0;
     const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
 
     if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
@@ -126,11 +131,11 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   if (showTriggers) {
     const barTimestamps = bars.map((b: any) => b.timestamp);
     const snapToBar = (tradeTime: string): string | null => {
-      const tradeMs = new Date(tradeTime).getTime();
+      const tradeMs = _safeMs(tradeTime);
       let bestTs = barTimestamps[0];
       let bestDist = Infinity;
       for (const ts of barTimestamps) {
-        const dist = Math.abs(new Date(ts).getTime() - tradeMs);
+        const dist = Math.abs(_safeMs(ts) - tradeMs);
         if (dist < bestDist) { bestDist = dist; bestTs = ts; }
       }
       return bestDist < 120000 ? bestTs : null;
