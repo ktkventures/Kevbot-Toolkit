@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+logger = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -882,6 +883,27 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
             Used for detail endpoint. False (default) for list endpoint (faster).
     """
     enriched = dict(strategy)
+    sid = strategy.get('id', '?')
+
+    # Log data quality warnings
+    stored = strategy.get('stored_trades', [])
+    kpis = strategy.get('kpis', {})
+    if not stored:
+        logger.warning("[ENRICH] Strategy %s has 0 stored_trades", sid)
+    if not kpis:
+        logger.warning("[ENRICH] Strategy %s has no kpis object", sid)
+    for trade in stored[:5]:  # sample first 5 trades for date validation
+        et = trade.get('entry_time')
+        xt = trade.get('exit_time')
+        if et and not isinstance(et, str):
+            logger.warning("[ENRICH] Strategy %s trade has non-string entry_time: %s (%s)", sid, et, type(et).__name__)
+        if xt and not isinstance(xt, str):
+            logger.warning("[ENRICH] Strategy %s trade has non-string exit_time: %s (%s)", sid, xt, type(xt).__name__)
+    for k, v in kpis.items():
+        if isinstance(v, float) and (np.isinf(v) or np.isnan(v)):
+            logger.warning("[ENRICH] Strategy %s KPI '%s' is %s — sanitizing to 0", sid, k, v)
+            kpis[k] = 0.0
+    enriched['kpis'] = kpis
 
     # Alerts always on for forward testing strategies
     if strategy.get('forward_testing') and not strategy.get('alert_tracking_enabled'):

@@ -196,12 +196,13 @@ const EXEC_BADGE_COLOR_FALLBACK = '#2196F3';
 function ExecBadge({ type }: { type: string }) {
   const execColor = useDisplayStore((s) => s.execTypeColor) || EXEC_BADGE_COLOR_FALLBACK;
   const shape = useDisplayStore((s) => s.badgeShape);
+  const brackets = useDisplayStore((s) => s.showBrackets);
   return (
     <span
       className={`text-xs font-mono font-medium px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
       style={{ color: execColor, background: execColor + '20' }}
     >
-      [{type}]
+      {brackets ? `[${type}]` : type}
     </span>
   );
 }
@@ -1194,12 +1195,13 @@ const EMPTY_EXIT_ANALYSIS: AnalyzerResult[] = [];
 function FidelityBadge() {
   const fidColor = useDisplayStore((s) => s.fidelityColor) || '#26C6DA';
   const shape = useDisplayStore((s) => s.badgeShape);
+  const brackets = useDisplayStore((s) => s.showBrackets);
   return (
     <span
       className={`text-xs font-mono font-medium px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
       style={{ color: fidColor, background: fidColor + '20' }}
     >
-      [PB]
+      {brackets ? '[PB]' : 'PB'}
     </span>
   );
 }

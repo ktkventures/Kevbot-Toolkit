@@ -80,7 +80,11 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   if (bars.length === 0) return [];
 
   const prefs = { ...DEFAULT_PREFS, ...chartPrefs };
-  const _safeMs = (v: string) => { const d = new Date(v); return isNaN(d.getTime()) ? 0 : d.getTime(); };
+  const _safeMs = (v: string) => {
+    const d = new Date(v);
+    if (isNaN(d.getTime())) { console.warn('[ChartPanes] Invalid date:', v); return 0; }
+    return d.getTime();
+  };
   const firstBarTime = bars.length > 0 ? _safeMs(bars[0].timestamp) : 0;
   const lastBarTime = bars.length > 0 ? _safeMs(bars[bars.length - 1].timestamp) : Infinity;
 

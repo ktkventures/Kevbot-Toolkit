@@ -340,7 +340,7 @@ export default function SettingsDisplayPage() {
   // Styling — tag appearance (initialize from Zustand store for persistence)
   const displayStore = useDisplayStore();
   const [badgeShape, setBadgeShape] = useState<BadgeShape>(displayStore.badgeShape || 'rounded');
-  const [bracketStyle, setBracketStyle] = useState<BracketStyle>('brackets');
+  const [bracketStyle, setBracketStyle] = useState<BracketStyle>(displayStore.showBrackets === false ? 'no-brackets' : 'brackets');
   const [execColor, setExecColor] = useState(displayStore.execTypeColor || '#2196F3');
   const [fidelityColor, setFidelityColor] = useState(displayStore.fidelityColor || '#26C6DA');
   const [variationStyle, setVariationStyle] = useState<VariationStyleKey>('badge');
@@ -398,6 +398,7 @@ export default function SettingsDisplayPage() {
       ...(s.execColor && { execTypeColor: s.execColor }),
       ...(s.fidelityColor && { fidelityColor: s.fidelityColor }),
       ...(s.badgeShape && { badgeShape: s.badgeShape }),
+      ...(s.bracketStyle && { showBrackets: s.bracketStyle === 'brackets' }),
       ...(s.tableDensity && { tableDensity: s.tableDensity }),
       ...(s.timezone && { timezone: s.timezone }),
       ...(s.dateFormat && { dateFormat: s.dateFormat }),
@@ -1470,6 +1471,7 @@ export default function SettingsDisplayPage() {
               execTypeColor: settings.execColor,
               fidelityColor: settings.fidelityColor,
               badgeShape: settings.badgeShape as 'rounded' | 'square',
+              showBrackets: settings.bracketStyle === 'brackets',
               tableDensity: settings.tableDensity as 'compact' | 'comfortable' | 'spacious',
               timezone: settings.timezone,
               dateFormat: settings.dateFormat,

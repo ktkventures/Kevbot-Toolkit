@@ -40,6 +40,9 @@ const EQ_LIVE_COLOR = '#4CAF50';
 /* ========================================================================= */
 
 function apiToDetailStrategy(s: any) {
+  if (!s) { console.warn('[StrategyDetail] apiToDetailStrategy: null/undefined strategy'); return null; }
+  if (!s.kpis) console.warn('[StrategyDetail] Strategy', s.id, 'has no kpis object');
+  if (!s.stored_trades?.length) console.warn('[StrategyDetail] Strategy', s.id, 'has 0 stored_trades');
   const k = s.kpis || {};
   return {
     id: String(s.id),
@@ -268,11 +271,15 @@ function daysSince(dateStr: string): number {
   return Math.floor((now.getTime() - d.getTime()) / 86400000);
 }
 
-/** Safe date → milliseconds. Returns 0 for invalid/missing dates. */
+/** Safe date → milliseconds. Returns 0 for invalid/missing dates. Logs warnings for debugging. */
 function safeDateMs(val: string | null | undefined): number {
   if (!val || val === '--') return 0;
   const d = new Date(val);
-  return isNaN(d.getTime()) ? 0 : d.getTime();
+  if (isNaN(d.getTime())) {
+    console.warn('[StrategyDetail] Invalid date value:', val);
+    return 0;
+  }
+  return d.getTime();
 }
 
 function parseExecTag(entry: string): { exec: string; rest: string } {
@@ -313,6 +320,9 @@ const TABS = [
 function ExecBadge({ exec }: { exec: string }) {
   const execColor = useDisplayStore((s) => s.execTypeColor) || EXEC_BADGE_COLOR;
   const shape = useDisplayStore((s) => s.badgeShape);
+  const brackets = useDisplayStore((s) => s.showBrackets);
+  // exec comes as "[C]" from API — strip brackets and re-apply based on setting
+  const raw = exec.replace(/[[\]]/g, '');
   return (
     <span
       className={`text-xs font-mono font-semibold px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
@@ -321,7 +331,7 @@ function ExecBadge({ exec }: { exec: string }) {
         background: execColor + '20',
       }}
     >
-      {exec}
+      {brackets ? `[${raw}]` : raw}
     </span>
   );
 }
@@ -329,6 +339,9 @@ function ExecBadge({ exec }: { exec: string }) {
 function FidelityBadge({ label }: { label: string }) {
   const fidColor = useDisplayStore((s) => s.fidelityColor) || FIDELITY_BADGE_COLOR;
   const shape = useDisplayStore((s) => s.badgeShape);
+  const brackets = useDisplayStore((s) => s.showBrackets);
+  // label comes as "[PB]" — strip brackets and re-apply based on setting
+  const raw = label.replace(/[[\]]/g, '');
   return (
     <span
       className={`text-xs font-mono font-semibold px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
@@ -654,11 +667,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     if (!iso || iso === '--') return iso;
     try {
       const isL = execType.includes('L') || execType.includes('HM') || execType.includes('HL');
-      if (isL) return iso; // L-type fires mid-bar, no shift needed
+      if (isL) return iso;
       const d = new Date(iso);
-      if (isNaN(d.getTime())) return iso;
+      if (isNaN(d.getTime())) {
+        console.warn('[StrategyDetail] shiftCType: invalid date:', iso);
+        return iso;
+      }
       return new Date(d.getTime() + tfMs).toISOString();
-    } catch {
+    } catch (e) {
+      console.warn('[StrategyDetail] shiftCType error:', iso, e);
       return iso;
     }
   }, [tfMs]);
