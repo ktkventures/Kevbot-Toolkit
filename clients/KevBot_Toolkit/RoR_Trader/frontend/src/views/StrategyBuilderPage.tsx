@@ -12,7 +12,7 @@
  * - Save → useCreateStrategy() mutation
  */
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
