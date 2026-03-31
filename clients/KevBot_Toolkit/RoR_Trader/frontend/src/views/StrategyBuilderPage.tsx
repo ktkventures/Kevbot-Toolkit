@@ -1716,7 +1716,16 @@ export default function StrategyBuilderPage() {
       secondary_tfs: secondaryTfs,
     } as any, {
       onSuccess: (data) => {
-        setAnalysisResults(prev => ({ ...prev, [mode]: data.results || [] }));
+        // Clear sibling mode so stale results don't take priority
+        const siblingClear: Record<string, string> = {
+          condition: 'combinations', combinations: 'condition',
+          general: 'general_combinations', general_combinations: 'general',
+        };
+        setAnalysisResults(prev => {
+          const next = { ...prev, [mode]: data.results || [] };
+          if (siblingClear[mode]) delete next[siblingClear[mode]];
+          return next;
+        });
         if (mode === 'entry') setEntryAnalysisRan(true);
         if (mode === 'exit') setExitAnalysisRan(true);
         setIsAnalyzing(false);
