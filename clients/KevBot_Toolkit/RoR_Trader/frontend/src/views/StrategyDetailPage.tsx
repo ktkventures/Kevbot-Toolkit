@@ -14,6 +14,7 @@ import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
+import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 
 // Dynamic imports for chart components — forces separate webpack chunks
@@ -302,13 +303,14 @@ const TABS = [
 /* ========================================================================= */
 
 function ExecBadge({ exec }: { exec: string }) {
-  const color = execTypeColors[exec] || EXEC_BADGE_COLOR;
+  const execColor = useDisplayStore((s) => s.execTypeColor) || EXEC_BADGE_COLOR;
+  const shape = useDisplayStore((s) => s.badgeShape);
   return (
     <span
-      className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
+      className={`text-xs font-mono font-semibold px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
       style={{
-        color,
-        background: color + '20',
+        color: execColor,
+        background: execColor + '20',
       }}
     >
       {exec}
@@ -317,12 +319,14 @@ function ExecBadge({ exec }: { exec: string }) {
 }
 
 function FidelityBadge({ label }: { label: string }) {
+  const fidColor = useDisplayStore((s) => s.fidelityColor) || FIDELITY_BADGE_COLOR;
+  const shape = useDisplayStore((s) => s.badgeShape);
   return (
     <span
-      className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
+      className={`text-xs font-mono font-semibold px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
       style={{
-        color: FIDELITY_BADGE_COLOR,
-        background: FIDELITY_BADGE_COLOR + '20',
+        color: fidColor,
+        background: fidColor + '20',
       }}
     >
       {label}
@@ -640,9 +644,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Shift a C-type timestamp to the next bar open (more accurate to reality)
   const shiftCType = useMemo(() => (iso: string, execType: string): string => {
     if (!iso || iso === '--') return iso;
-    const isL = execType.includes('L') || execType.includes('HM') || execType.includes('HL');
-    if (isL) return iso; // L-type fires mid-bar, no shift needed
-    return new Date(new Date(iso).getTime() + tfMs).toISOString();
+    try {
+      const isL = execType.includes('L') || execType.includes('HM') || execType.includes('HL');
+      if (isL) return iso; // L-type fires mid-bar, no shift needed
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return new Date(d.getTime() + tfMs).toISOString();
+    } catch {
+      return iso;
+    }
   }, [tfMs]);
 
   // Derive exit exec type from exit_reason:
@@ -1022,8 +1032,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   <span
                     className="text-xs font-mono px-1.5 py-0.5 rounded-full"
                     style={{
-                      color: execTypeColors[t.execType] || EXEC_BADGE_COLOR,
-                      background: (execTypeColors[t.execType] || EXEC_BADGE_COLOR) + '20',
+                      color: EXEC_BADGE_COLOR,
+                      background: EXEC_BADGE_COLOR + '20',
                     }}
                   >
                     {t.execType}
@@ -3121,8 +3131,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 <span
                                   className="text-xs font-mono px-1 py-0.5 rounded-full"
                                   style={{
-                                    color: execTypeColors[row.exec] || EXEC_BADGE_COLOR,
-                                    background: (execTypeColors[row.exec] || EXEC_BADGE_COLOR) + '20',
+                                    color: EXEC_BADGE_COLOR,
+                                    background: EXEC_BADGE_COLOR + '20',
                                   }}
                                 >
                                   {row.exec}

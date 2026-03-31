@@ -67,7 +67,12 @@ const TARGET_TEMPLATE_KEYS = [
 
 function apiToTargetPack(dto: RiskManagementPackDTO, template?: RMTemplateDTO): TargetPack {
   const schema = template?.parameters_schema ?? {};
-  const params: PackParam[] = Object.entries(schema).map(([key, s]) => ({
+  // Only show target-relevant params (filter by target_params if available)
+  const targetKeys = (template as any)?.target_params as string[] | undefined;
+  const filteredEntries = targetKeys
+    ? Object.entries(schema).filter(([key]) => targetKeys.includes(key))
+    : Object.entries(schema);
+  const params: PackParam[] = filteredEntries.map(([key, s]) => ({
     key,
     label: s.label || key,
     type: (s.type === 'int' ? 'int' : 'float') as 'int' | 'float',

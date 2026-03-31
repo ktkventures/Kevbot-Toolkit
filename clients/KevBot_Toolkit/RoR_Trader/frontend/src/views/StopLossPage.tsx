@@ -66,7 +66,12 @@ const STOP_TEMPLATE_KEYS = [
 
 function apiToStopPack(dto: RiskManagementPackDTO, template?: RMTemplateDTO): StopPack {
   const schema = template?.parameters_schema ?? {};
-  const params: PackParam[] = Object.entries(schema).map(([key, s]) => ({
+  // Only show stop-relevant params (filter by stop_params if available)
+  const stopKeys = (template as any)?.stop_params as string[] | undefined;
+  const filteredEntries = stopKeys
+    ? Object.entries(schema).filter(([key]) => stopKeys.includes(key))
+    : Object.entries(schema);
+  const params: PackParam[] = filteredEntries.map(([key, s]) => ({
     key,
     label: s.label || key,
     type: (s.type === 'int' ? 'int' : 'float') as 'int' | 'float' | 'bool',

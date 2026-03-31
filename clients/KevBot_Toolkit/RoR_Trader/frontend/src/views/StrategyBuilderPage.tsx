@@ -29,7 +29,7 @@ import Modal from '@/components/Modal';
 import { useRunBacktest, useAnalyzeTriggers, type AnalyzeResult } from '@/hooks/queries/useBacktest';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
-import { useStrategyBuilderDefaults } from '@/providers/StoreProvider';
+import { useStrategyBuilderDefaults, useDisplayStore } from '@/providers/StoreProvider';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,21 +190,16 @@ const EMPTY_TRADES: TradeRow[] = [];
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Exec type color coding — distinct colors per execution type
-const EXEC_BADGE_COLOR = '#2196F3';
-const EXEC_TYPE_COLORS: Record<string, string> = {
-  'C': EXEC_BADGE_COLOR,
-  'L': '#4CAF50',
-  'LC': '#AB47BC',
-  'CC': '#FF9800',
-};
+// Exec type badge — uses display settings for color and shape
+const EXEC_BADGE_COLOR_FALLBACK = '#2196F3';
 
 function ExecBadge({ type }: { type: string }) {
-  const color = EXEC_TYPE_COLORS[type] || EXEC_BADGE_COLOR;
+  const execColor = useDisplayStore((s) => s.execTypeColor) || EXEC_BADGE_COLOR_FALLBACK;
+  const shape = useDisplayStore((s) => s.badgeShape);
   return (
     <span
-      className="text-xs font-mono font-medium px-2 py-0.5 rounded-full"
-      style={{ color, background: color + '20' }}
+      className={`text-xs font-mono font-medium px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
+      style={{ color: execColor, background: execColor + '20' }}
     >
       [{type}]
     </span>
