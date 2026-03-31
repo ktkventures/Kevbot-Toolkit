@@ -192,17 +192,22 @@ def _build_base_strategy(req, stop_config, target_config):
 
 
 def _kpis_to_result(kpis, label, sub_label="", exec_type="C"):
-    """Convert KPIs dict to a standard result dict."""
+    """Convert KPIs dict to a standard result dict. Sanitizes inf/nan for JSON."""
+    import math
+    def _sf(v):
+        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return 0.0
+        return v
     return {
         "trigger_id": label,
         "trigger_name": sub_label or label,
         "exec_type": exec_type,
         "total_trades": kpis.get("total_trades", 0),
-        "profit_factor": round(kpis.get("profit_factor", 0), 2),
-        "win_rate": round(kpis.get("win_rate", 0), 1),
-        "avg_r": round(kpis.get("avg_r", 0), 3),
-        "daily_r": round(kpis.get("daily_r", 0), 3),
-        "r_squared": round(kpis.get("r_squared", 0), 3),
+        "profit_factor": round(_sf(kpis.get("profit_factor", 0)), 2),
+        "win_rate": round(_sf(kpis.get("win_rate", 0)), 1),
+        "avg_r": round(_sf(kpis.get("avg_r", 0)), 3),
+        "daily_r": round(_sf(kpis.get("daily_r", 0)), 3),
+        "r_squared": round(_sf(kpis.get("r_squared", 0)), 3),
     }
 
 
@@ -482,6 +487,12 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
             if all(c.startswith(include_prefix) for c in cr.get('combination', []))
         ][:50]
 
+    import math
+    def _sf(v):
+        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return 0.0
+        return v
+
     results = []
     for cr in combo_results:
         results.append({
@@ -489,11 +500,11 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
             'trigger_name': cr.get('combo_str', ''),
             'exec_type': 'C',
             'total_trades': cr.get('total_trades', 0),
-            'profit_factor': cr.get('profit_factor', 0),
-            'win_rate': cr.get('win_rate', 0),
-            'avg_r': cr.get('avg_r', 0),
-            'daily_r': cr.get('daily_r', 0),
-            'r_squared': cr.get('r_squared', 0),
+            'profit_factor': round(_sf(cr.get('profit_factor', 0)), 2),
+            'win_rate': round(_sf(cr.get('win_rate', 0)), 1),
+            'avg_r': round(_sf(cr.get('avg_r', 0)), 3),
+            'daily_r': round(_sf(cr.get('daily_r', 0)), 3),
+            'r_squared': round(_sf(cr.get('r_squared', 0)), 3),
             'depth': cr.get('depth', 1),
             'combination': cr.get('combination', []),
         })
