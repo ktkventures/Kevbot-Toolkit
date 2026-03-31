@@ -430,21 +430,6 @@ def _analyze_targets_impl(req):
 
     results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
     return {"results": results}
-    start_date = end_date = None
-    if req.lookback_mode == 'Date Range' and req.lookback_start_date:
-        start_date = datetime.fromisoformat(req.lookback_start_date)
-        if req.lookback_end_date:
-            end_date = datetime.fromisoformat(req.lookback_end_date)
-    sec_tfs = tuple(sorted(req.secondary_tfs))
-    df = svc.prepare_data_with_indicators(
-        req.symbol, days=req.days, start_date=start_date,
-        end_date=end_date, timeframe=req.timeframe,
-        data_feed=req.data_feed, session=req.session,
-        secondary_tfs=sec_tfs,
-    )
-    trading_days = svc.count_trading_days(df) if len(df) > 0 else 1
-    return df, trading_days
-
 
 
 def _analyze_combinations_impl(req, max_depth: int = 2,
@@ -499,27 +484,27 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
             ][:50]
             logger.info("[ANALYZE-COMBO] After include_prefix filter: %d -> %d", before, len(combo_results))
 
-    import math
-    def _sf(v):
-        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-            return 0.0
-        return v
+        import math
+        def _sf(v):
+            if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+                return 0.0
+            return v
 
-    results = []
-    for cr in combo_results:
-        results.append({
-            'trigger_id': cr.get('combo_str', ''),
-            'trigger_name': cr.get('combo_str', ''),
-            'exec_type': 'C',
-            'total_trades': cr.get('total_trades', 0),
-            'profit_factor': round(_sf(cr.get('profit_factor', 0)), 2),
-            'win_rate': round(_sf(cr.get('win_rate', 0)), 1),
-            'avg_r': round(_sf(cr.get('avg_r', 0)), 3),
-            'daily_r': round(_sf(cr.get('daily_r', 0)), 3),
-            'r_squared': round(_sf(cr.get('r_squared', 0)), 3),
-            'depth': cr.get('depth', 1),
-            'combination': cr.get('combination', []),
-        })
+        results = []
+        for cr in combo_results:
+            results.append({
+                'trigger_id': cr.get('combo_str', ''),
+                'trigger_name': cr.get('combo_str', ''),
+                'exec_type': 'C',
+                'total_trades': cr.get('total_trades', 0),
+                'profit_factor': round(_sf(cr.get('profit_factor', 0)), 2),
+                'win_rate': round(_sf(cr.get('win_rate', 0)), 1),
+                'avg_r': round(_sf(cr.get('avg_r', 0)), 3),
+                'daily_r': round(_sf(cr.get('daily_r', 0)), 3),
+                'r_squared': round(_sf(cr.get('r_squared', 0)), 3),
+                'depth': cr.get('depth', 1),
+                'combination': cr.get('combination', []),
+            })
         logger.info("[ANALYZE-COMBO] Returning %d results", len(results))
         return {"results": results}
 
