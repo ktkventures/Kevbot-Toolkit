@@ -178,8 +178,17 @@ Replace `{{field_name}}` with real computed data. Working through these on Railw
 | C1.15 | **Real equity sparklines on My Strategies cards** | Not Started — equity_curve_data in API, need to replace V5 fake MiniEquityCurve with SparkLine reading real data |
 | C1.16 | **Real equity curve on Strategy Detail (3-segment)** | Not Started — EquityCurve component exists, need to wire to equity_curve_data with boundary_index |
 | C1.17 | **Live price chart on Strategy Detail (Chart & Trades tab)** | Not Started — TradingChart component exists, need data endpoint (OHLCV + indicators + trade markers) |
-| C1.18 | **Price chart on Strategy Builder (results panel)** | Not Started — backtest endpoint supports include_chart_data=true |
+| C1.18 | **Price chart on Strategy Builder (results panel)** | **DONE** — SyncedChartPane with overlays, oscillators, heatmap, entry/exit markers, C-type timestamp shift |
 | C1.19 | **Settings Display → chart preferences applied globally** | Not Started — candle style, colors, grid, visible candles from useDisplayStore |
+| C1.20 | **Strategy Builder: All 6 analysis tabs wired** | **DONE** — Entry, Exit, TF Conditions, General, Stop Loss, Take Profit with real backtest KPIs |
+| C1.21 | **Strategy Builder: Confluence depth combinations** | **DONE** — Depth 2+ via find_best_combinations() for TF Conditions (exclude GEN-) and General (include GEN-) |
+| C1.22 | **Strategy Builder: Equity curve (per-trade + per-day)** | **DONE** — HWM line merged into chartData, per-day grouping by YYYY-MM-DD |
+| C1.23 | **Strategy Builder: Filter/sort on analysis results** | **DONE** — min PF, min WR, sort column applied to all tabs |
+| C1.24 | **Strategy Builder: Replace/Add buttons update Optimizable Variables** | **DONE** — all tabs wire selected component back to strategy config |
+| C1.25 | Strategy Builder: Stop/Target pack parameter separation | Not Started — UI shows mixed params from RM packs |
+| C1.26 | Strategy Builder: Price chart show/hide toggles | Not Started — toggle individual conditions/triggers on chart |
+| C1.27 | Strategy Builder: TF Conditions fidelity badge (PB/CB) | Not Started — currently shows C/L exec type |
+| C1.28 | Strategy Builder: Progress tracking with scenario counts | Not Started — needs SSE for real progress (currently indeterminate bar) |
 
 ### C2: Dashboard Widgets
 | Task | Description | Status |
