@@ -452,40 +452,52 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
                                include_prefix: str = None):
     """Find best confluence condition combinations using find_best_combinations()."""
     import services as svc
+    import traceback
 
-    stop_config, target_config = _resolve_configs(req)
-    df, trading_days = _load_analyze_data(req)
-    if len(df) == 0:
-        return {"results": []}
+    logger.info("[ANALYZE-COMBO] max_depth=%d, exclude=%s, include=%s", max_depth, exclude_prefix, include_prefix)
 
-    base_trades = _run_base_trades(req, df, stop_config, target_config)
-    if len(base_trades) == 0:
-        return {"results": []}
+    try:
+        stop_config, target_config = _resolve_configs(req)
+        df, trading_days = _load_analyze_data(req)
+        logger.info("[ANALYZE-COMBO] Data loaded: %d bars", len(df))
+        if len(df) == 0:
+            return {"results": []}
 
-    # For include_prefix mode, we need a custom filter in find_best_combinations
-    # Use exclude_prefix to filter OUT non-matching, or pass include directly
-    effective_exclude = exclude_prefix
-    if include_prefix and not exclude_prefix:
-        # find_best_combinations only supports exclude_prefix, so we'll
-        # post-filter. Pass None to get all, then filter results.
-        effective_exclude = None
+        base_trades = _run_base_trades(req, df, stop_config, target_config)
+        logger.info("[ANALYZE-COMBO] Base trades: %d", len(base_trades))
+        if len(base_trades) == 0:
+            return {"results": []}
 
-    combo_results = svc.find_best_combinations(
-        base_trades,
-        max_depth=max_depth,
-        min_trades=3,
-        top_n=100 if include_prefix else 50,
-        risk_per_trade=req.risk_per_trade,
-        total_trading_days=trading_days,
-        exclude_prefix=effective_exclude,
-    )
+        # Log sample confluence_records
+        if 'confluence_records' in base_trades.columns and len(base_trades) > 0:
+            sample = base_trades.iloc[0].get('confluence_records')
+            gen_count = sum(1 for r in (sample or []) if isinstance(r, str) and r.startswith('GEN-'))
+            logger.info("[ANALYZE-COMBO] Sample CR: %d total, %d GEN-, type=%s",
+                        len(sample) if sample else 0, gen_count, type(sample).__name__)
 
-    # If include_prefix, post-filter to only combos where ALL conditions match prefix
-    if include_prefix:
-        combo_results = [
-            cr for cr in combo_results
-            if all(c.startswith(include_prefix) for c in cr.get('combination', []))
-        ][:50]
+        effective_exclude = exclude_prefix
+        if include_prefix and not exclude_prefix:
+            effective_exclude = None
+
+        logger.info("[ANALYZE-COMBO] Calling find_best_combinations with effective_exclude=%s", effective_exclude)
+        combo_results = svc.find_best_combinations(
+            base_trades,
+            max_depth=max_depth,
+            min_trades=3,
+            top_n=100 if include_prefix else 50,
+            risk_per_trade=req.risk_per_trade,
+            total_trading_days=trading_days,
+            exclude_prefix=effective_exclude,
+        )
+        logger.info("[ANALYZE-COMBO] Raw results: %d combos", len(combo_results))
+
+        if include_prefix:
+            before = len(combo_results)
+            combo_results = [
+                cr for cr in combo_results
+                if all(c.startswith(include_prefix) for c in cr.get('combination', []))
+            ][:50]
+            logger.info("[ANALYZE-COMBO] After include_prefix filter: %d -> %d", before, len(combo_results))
 
     import math
     def _sf(v):
@@ -508,4 +520,9 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
             'depth': cr.get('depth', 1),
             'combination': cr.get('combination', []),
         })
-    return {"results": results}
+        logger.info("[ANALYZE-COMBO] Returning %d results", len(results))
+        return {"results": results}
+
+    except Exception as e:
+        logger.exception("[ANALYZE-COMBO] FAILED: %s", e)
+        return {"results": [], "error": str(e)}

@@ -2575,7 +2575,10 @@ export default function StrategyBuilderPage() {
                             <AnalyzeProgressBar label="Analyzing general conditions..." />
                           ) : ((analysisResults.general?.length ?? 0) > 0 || (analysisResults.general_combinations?.length ?? 0) > 0) ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {applyAnalysisFilters(analysisResults.general_combinations || analysisResults.general || [], filters).map((result) => (
+                              {applyAnalysisFilters(
+                                (analysisResults.general_combinations?.length ? analysisResults.general_combinations : analysisResults.general) || [],
+                                filters
+                              ).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
