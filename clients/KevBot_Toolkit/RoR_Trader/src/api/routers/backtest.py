@@ -261,16 +261,24 @@ def _analyze_conditions_impl(req):
     import services as svc
 
     stop_config, target_config = _resolve_configs(req)
+    logger.info("[ANALYZE-COND] secondary_tfs=%s, confluence=%s", req.secondary_tfs, req.confluence)
     df, trading_days = _load_analyze_data(req)
+    logger.info("[ANALYZE-COND] Data: %d bars, columns with '__': %s",
+                len(df), [c for c in df.columns if '__' in c] if len(df) > 0 else [])
     if len(df) == 0:
         return {"results": []}
 
-    # Run ONE backtest with no confluence gating → get ALL possible trades
     base_trades = _run_base_trades(req, df, stop_config, target_config)
+    logger.info("[ANALYZE-COND] Base trades: %d", len(base_trades))
     if len(base_trades) == 0:
         return {"results": []}
 
-    # Use the ported Streamlit function — fast trade filtering
+    # Log sample confluence_records
+    if 'confluence_records' in base_trades.columns and len(base_trades) > 0:
+        sample_cr = base_trades.iloc[0].get('confluence_records')
+        logger.info("[ANALYZE-COND] Sample confluence_records (type=%s): %s",
+                    type(sample_cr).__name__, list(sample_cr)[:10] if sample_cr else 'None')
+
     condition_results = svc.analyze_confluences(
         base_trades,
         required=set(req.confluence) if req.confluence else None,
