@@ -931,6 +931,14 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
 # CONFLUENCE ANALYSIS (ported from Streamlit app.py)
 # =============================================================================
 
+def _safe_float(v: float, default: float = 0.0) -> float:
+    """Replace inf/nan with a safe default for JSON serialization."""
+    import math
+    if v is None or math.isnan(v) or math.isinf(v):
+        return default
+    return v
+
+
 def _safe_subtract(a: float, b: float) -> float:
     """Safely subtract two values that may be infinity."""
     if a == float('inf') and b == float('inf'):
@@ -1017,14 +1025,14 @@ def analyze_confluences(
             results.append({
                 'confluence': record,
                 'total_trades': kpis['total_trades'],
-                'win_rate': round(kpis.get('win_rate', 0), 1),
-                'profit_factor': round(kpis.get('profit_factor', 0), 2),
-                'avg_r': round(kpis.get('avg_r', 0), 3),
-                'total_r': round(kpis.get('total_r', 0), 2),
-                'daily_r': round(kpis.get('daily_r', 0), 3),
-                'r_squared': round(kpis.get('r_squared', 0), 3),
-                'pf_change': round(_safe_subtract(kpis.get('profit_factor', 0), base_kpis.get('profit_factor', 0)), 2),
-                'wr_change': round(kpis.get('win_rate', 0) - base_kpis.get('win_rate', 0), 1),
+                'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
+                'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),
+                'avg_r': round(_safe_float(kpis.get('avg_r', 0)), 3),
+                'total_r': round(_safe_float(kpis.get('total_r', 0)), 2),
+                'daily_r': round(_safe_float(kpis.get('daily_r', 0)), 3),
+                'r_squared': round(_safe_float(kpis.get('r_squared', 0)), 3),
+                'pf_change': round(_safe_float(_safe_subtract(kpis.get('profit_factor', 0), base_kpis.get('profit_factor', 0))), 2),
+                'wr_change': round(_safe_float(kpis.get('win_rate', 0) - base_kpis.get('win_rate', 0)), 1),
             })
 
     results.sort(key=lambda r: r.get('profit_factor', 0), reverse=True)
@@ -1100,11 +1108,11 @@ def find_best_combinations(
                     'combo_str': ' + '.join(sorted(combo)),
                     'depth': len(combo),
                     'total_trades': kpis['total_trades'],
-                    'win_rate': round(kpis.get('win_rate', 0), 1),
-                    'profit_factor': round(kpis.get('profit_factor', 0), 2),
-                    'avg_r': round(kpis.get('avg_r', 0), 3),
-                    'daily_r': round(kpis.get('daily_r', 0), 3),
-                    'r_squared': round(kpis.get('r_squared', 0), 3),
+                    'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
+                    'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),
+                    'avg_r': round(_safe_float(kpis.get('avg_r', 0)), 3),
+                    'daily_r': round(_safe_float(kpis.get('daily_r', 0)), 3),
+                    'r_squared': round(_safe_float(kpis.get('r_squared', 0)), 3),
                 })
 
     results.sort(key=lambda r: (r.get('profit_factor', 0), r.get('total_trades', 0)), reverse=True)
