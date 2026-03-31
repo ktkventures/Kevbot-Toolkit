@@ -1737,7 +1737,8 @@ export default function StrategyBuilderPage() {
       },
     });
   }, [analyzeMut, symbol, timeframe, direction, lookbackDays, session, lookbackMode,
-      entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, isAnalyzing]);
+      entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, isAnalyzing,
+      tfDepth, generalDepth]);
   const [analyzerSearch, setAnalyzerSearch] = useState('');
 
   // Compute derived values
@@ -2518,7 +2519,7 @@ export default function StrategyBuilderPage() {
                           )}
 
                           {/* Confluence drill-down results */}
-                          {isAnalyzing && analyzingMode === 'condition' ? (
+                          {isAnalyzing && (analyzingMode === 'condition' || analyzingMode === 'combinations') ? (
                             <AnalyzeProgressBar label="Analyzing TF conditions..." />
                           ) : ((analysisResults.condition?.length ?? 0) > 0 || (analysisResults.combinations?.length ?? 0) > 0) ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
@@ -2580,7 +2581,7 @@ export default function StrategyBuilderPage() {
                           )}
 
                           {/* General condition results */}
-                          {isAnalyzing && analyzingMode === 'general' ? (
+                          {isAnalyzing && (analyzingMode === 'general' || analyzingMode === 'general_combinations') ? (
                             <AnalyzeProgressBar label="Analyzing general conditions..." />
                           ) : ((analysisResults.general?.length ?? 0) > 0 || (analysisResults.general_combinations?.length ?? 0) > 0) ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
