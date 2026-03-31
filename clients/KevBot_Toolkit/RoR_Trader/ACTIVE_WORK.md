@@ -97,6 +97,7 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - [ ] 5f. **Swing 1-2-3 as first Pack Builder test case** — Don't fix the current broken swing_123 manually. Instead, use it as the first real test of the Pack Builder pipeline. Validates that the system can scalably produce packs with proper CC execution, correct trigger detection, and accurate backtests.
 - [ ] 5g. Backward compat: exec_variants optional, existing packs default C-only
 - [ ] 5h-new. **Trade qualification filter in Strategy Builder** — Add TQ filter dropdown to the filter/sort modal. Requires backend TQ rule application logic to be built first. Design exists in Frontend Migration Plan (Portfolio Requirements V5 spec).
+- [ ] 5i-new. **Pack variation nesting** — All pack pages (TF Confluence, General, Stop Loss, Take Profit) should group variations under their parent template with expand/collapse chevron. First variation = "Default", user-created variations nest underneath. Per Frontend Migration Plan: "Nested under defaults — Variations indent under parent template with expand/collapse chevron inside the card."
 
 ### Phase 6: Alert Monitor & Webhook Updates — NOT STARTED
 - [ ] 6a. Add exec_type to alert records + new placeholder tokens
