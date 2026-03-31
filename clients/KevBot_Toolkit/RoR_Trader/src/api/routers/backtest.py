@@ -69,7 +69,8 @@ def compute_kpis(trades: list[dict], user=Depends(get_current_user)):
 @router.post("/analyze")
 def analyze_triggers(
     req: BacktestRequest,
-    mode: str = Query("entry", description="entry|exit|condition|stop|target"),
+    mode: str = Query("entry", description="entry|exit|condition|general|combinations|stop|target"),
+    depth: int = Query(1, description="Max combination depth for combinations mode"),
     user=Depends(get_current_user),
 ):
     """Run per-component analysis: backtest with each candidate swapped in.
@@ -89,6 +90,8 @@ def analyze_triggers(
             return _analyze_conditions_impl(req)
         elif mode == "general":
             return _analyze_general_impl(req)
+        elif mode == "combinations":
+            return _analyze_combinations_impl(req, depth)
         elif mode == "stop":
             return _analyze_stops_impl(req)
         elif mode == "target":
@@ -427,3 +430,44 @@ def _analyze_targets_impl(req):
     trading_days = svc.count_trading_days(df) if len(df) > 0 else 1
     return df, trading_days
 
+
+
+def _analyze_combinations_impl(req, max_depth: int = 2):
+    """Find best confluence condition combinations using find_best_combinations()."""
+    import services as svc
+
+    stop_config, target_config = _resolve_configs(req)
+    df, trading_days = _load_analyze_data(req)
+    if len(df) == 0:
+        return {"results": []}
+
+    base_trades = _run_base_trades(req, df, stop_config, target_config)
+    if len(base_trades) == 0:
+        return {"results": []}
+
+    combo_results = svc.find_best_combinations(
+        base_trades,
+        max_depth=max_depth,
+        min_trades=3,
+        top_n=50,
+        risk_per_trade=req.risk_per_trade,
+        total_trading_days=trading_days,
+        exclude_prefix='GEN-',
+    )
+
+    results = []
+    for cr in combo_results:
+        results.append({
+            'trigger_id': cr.get('combo_str', ''),
+            'trigger_name': cr.get('combo_str', ''),
+            'exec_type': 'C',
+            'total_trades': cr.get('total_trades', 0),
+            'profit_factor': cr.get('profit_factor', 0),
+            'win_rate': cr.get('win_rate', 0),
+            'avg_r': cr.get('avg_r', 0),
+            'daily_r': cr.get('daily_r', 0),
+            'r_squared': cr.get('r_squared', 0),
+            'depth': cr.get('depth', 1),
+            'combination': cr.get('combination', []),
+        })
+    return {"results": results}

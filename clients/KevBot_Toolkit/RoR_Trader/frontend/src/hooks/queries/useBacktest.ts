@@ -65,10 +65,13 @@ export interface AnalyzeResult {
 
 export function useAnalyzeTriggers() {
   return useMutation({
-    mutationFn: ({ mode, ...req }: BacktestRequest & { mode?: string }) =>
-      apiFetch<{ results: AnalyzeResult[] }>(`/api/backtest/analyze?mode=${mode || 'entry'}`, {
+    mutationFn: ({ mode, depth, ...req }: BacktestRequest & { mode?: string; depth?: number }) => {
+      const params = new URLSearchParams({ mode: mode || 'entry' });
+      if (depth && depth > 1) params.set('depth', String(depth));
+      return apiFetch<{ results: AnalyzeResult[] }>(`/api/backtest/analyze?${params}`, {
         method: 'POST',
         body: JSON.stringify(req),
-      }),
+      });
+    },
   });
 }

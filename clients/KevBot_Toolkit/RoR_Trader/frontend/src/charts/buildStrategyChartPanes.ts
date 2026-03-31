@@ -22,6 +22,8 @@ interface ChartBuildOptions {
   heatmapConds?: any[];
   showConditions?: boolean;
   showTriggers?: boolean;
+  /** Timeframe duration in ms — used to shift C-type timestamps to next bar open */
+  tfMs?: number;
   chartPrefs?: {
     entryColor: string;
     exitWinColor: string;
@@ -48,8 +50,28 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     bars, trades, direction,
     overlayNames = [], oscNames = [], heatmapConds = [],
     showConditions = true, showTriggers = true,
+    tfMs = 60000,
     chartPrefs = DEFAULT_PREFS,
   } = opts;
+
+  // L-type exit reasons don't need timestamp shift (fire mid-bar)
+  const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']);
+
+  // Determine exec type from trigger suffix for C-type shift
+  const getExecType = (id: string) => {
+    if (!id) return 'C';
+    if (id.endsWith('_lc') || id.endsWith('_hm') || id.endsWith('_hl')) return 'L';
+    if (id.endsWith('_ib')) return 'L';
+    if (id.endsWith('_cc')) return 'CC';
+    return 'C';
+  };
+
+  // Shift C-type timestamps to next bar open for realistic plotting
+  const shiftIfCType = (iso: string, execType: string) => {
+    if (!iso || iso === '--') return iso;
+    if (execType === 'L' || execType === 'LC') return iso; // L-type: no shift
+    return new Date(new Date(iso).getTime() + tfMs).toISOString();
+  };
 
   if (bars.length === 0) return [];
 
@@ -57,25 +79,30 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const firstBarTime = new Date(bars[0].timestamp).getTime();
   const lastBarTime = new Date(bars[bars.length - 1].timestamp).getTime();
 
-  // ---- Trade markers (arrows) ----
+  // ---- Trade markers (arrows) with C-type shift ----
   const tradeMarkers = !showTriggers ? [] : trades.flatMap((t: any) => {
     const m: any[] = [];
     const dir = direction;
-    const entryTime = t.entry_time || t.entryTime;
-    const exitTime = t.exit_time || t.exitTime;
+    const rawEntryTime = t.entry_time || t.entryTime;
+    const rawExitTime = t.exit_time || t.exitTime;
+    const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
+    const exitReason = t.exit_reason || t.exitReason || '';
+    const exitExec = L_TYPE_EXITS.has(exitReason) ? 'L' : 'C';
+    // Shift C-type to next bar open
+    const entryTime = shiftIfCType(rawEntryTime, entryExec);
+    const exitTime = shiftIfCType(rawExitTime, exitExec);
     const entryMs = entryTime && entryTime !== '--' ? new Date(entryTime).getTime() : 0;
     const exitMs = exitTime && exitTime !== '--' ? new Date(exitTime).getTime() : 0;
     const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
-    const exitReason = t.exit_reason || t.exitReason || '';
 
-    if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
+    if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
       m.push({
         time: entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar',
         shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown',
         color: prefs.entryColor, text: prefs.showLabels ? 'Entry' : '', size: 1,
       });
     }
-    if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+    if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
       let color = rMult >= 0 ? prefs.exitWinColor : prefs.exitLossColor;
       if (exitReason === 'stop_loss') color = prefs.exitStopColor;
       else if (exitReason === 'bar_count_exit') color = prefs.exitBarCountColor;
@@ -89,10 +116,13 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     return m;
   });
 
-  // ---- Price-level cross markers (+) ----
-  const priceCrossEntries: any[] = [];
-  const priceCrossMarkers: any[] = [];
+  // ---- Price-level cross markers (+) for entry AND exit ----
+  const algoEntryData: any[] = [];
+  const algoEntryMarkers: any[] = [];
   const seenEntry = new Set<string>();
+  const algoExitData: any[] = [];
+  const algoExitMarkers: any[] = [];
+  const seenExit = new Set<string>();
   if (showTriggers) {
     const barTimestamps = bars.map((b: any) => b.timestamp);
     const snapToBar = (tradeTime: string): string | null => {
@@ -107,14 +137,36 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     };
 
     for (const t of trades) {
-      const entryTime = t.entry_time || t.entryTime;
+      const rawEntryTime = t.entry_time || t.entryTime;
+      const rawExitTime = t.exit_time || t.exitTime;
+      const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
+      const exitReason = t.exit_reason || t.exitReason || '';
+      const exitExec = L_TYPE_EXITS.has(exitReason) ? 'L' : 'C';
+      const entryTime = shiftIfCType(rawEntryTime, entryExec);
+      const exitTime = shiftIfCType(rawExitTime, exitExec);
       const entryPrice = t.entry_price ?? t.entryPrice ?? 0;
+      const exitPrice = t.exit_price ?? t.exitPrice ?? 0;
+      const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
+
+      // Entry cross (+)
       if (entryTime && entryTime !== '--' && entryPrice > 0) {
         const snapped = snapToBar(entryTime);
         if (snapped && !seenEntry.has(snapped)) {
           seenEntry.add(snapped);
-          priceCrossEntries.push({ time: snapped, value: entryPrice });
-          priceCrossMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: prefs.entryColor, text: '', size: 1 });
+          algoEntryData.push({ time: snapped, value: entryPrice });
+          algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: prefs.entryColor, text: '', size: 1 });
+        }
+      }
+      // Exit cross (+)
+      if (exitTime && exitTime !== '--' && exitPrice > 0) {
+        const snapped = snapToBar(exitTime);
+        if (snapped && !seenExit.has(snapped)) {
+          seenExit.add(snapped);
+          let color = rMult >= 0 ? prefs.exitWinColor : prefs.exitLossColor;
+          if (exitReason === 'stop_loss') color = prefs.exitStopColor;
+          else if (exitReason === 'bar_count_exit') color = prefs.exitBarCountColor;
+          algoExitData.push({ time: snapped, value: exitPrice });
+          algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
         }
       }
     }
@@ -147,13 +199,22 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     },
   ];
 
-  // Cross markers
-  if (priceCrossEntries.length > 0) {
+  // Entry cross markers (+)
+  if (algoEntryData.length > 0) {
     priceSeries.push({
       type: 'Line',
-      data: priceCrossEntries,
+      data: algoEntryData,
       options: { color: prefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-      markers: priceCrossMarkers,
+      markers: algoEntryMarkers,
+    });
+  }
+  // Exit cross markers (+)
+  if (algoExitData.length > 0) {
+    priceSeries.push({
+      type: 'Line',
+      data: algoExitData,
+      options: { color: prefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+      markers: algoExitMarkers,
     });
   }
 

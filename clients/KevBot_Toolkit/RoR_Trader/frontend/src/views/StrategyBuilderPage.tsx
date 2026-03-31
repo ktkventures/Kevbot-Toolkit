@@ -1633,6 +1633,7 @@ export default function StrategyBuilderPage() {
       confluence: config.confluence || [],
       stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
       bar_count_exit: config.bar_count_exit,
+      secondary_tfs: config.secondary_tfs || [],
       include_chart_data: true,
     });
   }, [backtestMut]);
@@ -1698,8 +1699,10 @@ export default function StrategyBuilderPage() {
     if (!entryTrigger || isAnalyzing) return;
     setIsAnalyzing(true);
     setAnalyzingMode(mode);
+    const analyzeDepth = mode === 'combinations' ? tfDepth : undefined;
     analyzeMut.mutate({
       mode,
+      depth: analyzeDepth,
       symbol, timeframe, direction: direction as 'LONG' | 'SHORT',
       days: lookbackDays, session, data_feed: 'sip',
       entry_trigger_confluence_id: entryTrigger,
@@ -1710,6 +1713,7 @@ export default function StrategyBuilderPage() {
       stop_atr_mult: 1.5,
       lookback_mode: lookbackMode,
       bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
+      secondary_tfs: secondaryTfs,
     } as any, {
       onSuccess: (data) => {
         setAnalysisResults(prev => ({ ...prev, [mode]: data.results || [] }));
@@ -1734,6 +1738,25 @@ export default function StrategyBuilderPage() {
     if (lookbackMode === 'Bars/Candles') return lookbackBars;
     return Math.round(lookbackDays * barsPerDay * sessionMult);
   }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);
+
+  // Derive secondary timeframes from selected TF conditions
+  const secondaryTfs = useMemo(() => {
+    const tfMap: Record<string, string> = {
+      '1M': '1Min', '2M': '2Min', '3M': '3Min', '5M': '5Min', '10M': '10Min',
+      '15M': '15Min', '30M': '30Min', '1H': '1Hour', '4H': '4Hour', '1D': '1Day',
+    };
+    const primaryLabel = timeframe === '1Min' ? '1M' : timeframe === '5Min' ? '5M' :
+      timeframe === '15Min' ? '15M' : timeframe === '1Hour' ? '1H' : timeframe === '1Day' ? '1D' : '1M';
+    const tfs = new Set<string>();
+    for (const cond of selectedConditions) {
+      const parts = cond.split('-');
+      if (parts.length >= 2 && parts[0] !== 'GEN' && parts[0] !== primaryLabel) {
+        const mapped = tfMap[parts[0]];
+        if (mapped) tfs.add(mapped);
+      }
+    }
+    return Array.from(tfs);
+  }, [selectedConditions, timeframe]);
 
   // Use API packs when provided, fall back to mocks
   const activeStopPacks = API_STOP_PACKS;
@@ -1761,9 +1784,10 @@ export default function StrategyBuilderPage() {
         take_profit_pack_id: selectedTargetPack,
         // Extract bar_count_exit if a bar count exit trigger is selected
         bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
+        secondary_tfs: secondaryTfs,
       });
     }
-  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack]);
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, secondaryTfs]);
 
   const handleToggleCondition = useCallback((id: string) => {
     setSelectedConditions((prev) => {
@@ -2272,6 +2296,12 @@ export default function StrategyBuilderPage() {
                             const overlays: string[] = (backtestResult as any)?.overlay_indicators || [];
                             const oscillators: string[] = (backtestResult as any)?.oscillator_indicators || [];
                             const heatmap: any[] = ((backtestResult as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+                            // Compute tfMs from timeframe for C-type shift
+                            const _tfMs = (() => {
+                              if (timeframe.includes('Min')) return parseInt(timeframe) * 60 * 1000;
+                              if (timeframe.includes('Hour') || timeframe === '1H') return 3600 * 1000;
+                              return 60000;
+                            })();
                             const panes = buildStrategyChartPanes({
                               bars: chartBars,
                               trades: (backtestResult as any).rawTrades || [],
@@ -2279,6 +2309,7 @@ export default function StrategyBuilderPage() {
                               overlayNames: overlays,
                               oscNames: oscillators,
                               heatmapConds: heatmap,
+                              tfMs: _tfMs,
                               chartPrefs,
                             });
                             return panes.length > 0 ? (
@@ -2438,7 +2469,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search indicators..." />
                             </div>
-                            <PrimaryButton onClick={() => handleAnalyze('condition')}>{isAnalyzing && analyzingMode === 'condition' ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
+                            <PrimaryButton onClick={() => handleAnalyze(tfDepth > 1 ? 'combinations' : 'condition')}>{isAnalyzing && (analyzingMode === 'condition' || analyzingMode === 'combinations') ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
@@ -2469,9 +2500,9 @@ export default function StrategyBuilderPage() {
                           {/* Confluence drill-down results */}
                           {isAnalyzing && analyzingMode === 'condition' ? (
                             <AnalyzeProgressBar label="Analyzing TF conditions..." />
-                          ) : (analysisResults.condition?.length ?? 0) > 0 ? (
+                          ) : ((analysisResults.condition?.length ?? 0) > 0 || (analysisResults.combinations?.length ?? 0) > 0) ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {applyAnalysisFilters(analysisResults.condition || [], filters).map((result) => (
+                              {applyAnalysisFilters(analysisResults.combinations || analysisResults.condition || [], filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
@@ -2566,7 +2597,7 @@ export default function StrategyBuilderPage() {
                             <AnalyzeProgressBar label="Analyzing stop loss packs..." />
                           ) : stopResults.length > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {stopResults.map((result) => (
+                              {applyAnalysisFilters(stopResults, filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
@@ -2598,7 +2629,7 @@ export default function StrategyBuilderPage() {
                             <AnalyzeProgressBar label="Analyzing take profit packs..." />
                           ) : tpResults.length > 0 ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {tpResults.map((result) => (
+                              {applyAnalysisFilters(tpResults, filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
