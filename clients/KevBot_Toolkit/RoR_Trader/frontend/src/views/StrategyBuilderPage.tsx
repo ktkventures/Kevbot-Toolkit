@@ -1739,7 +1739,8 @@ export default function StrategyBuilderPage() {
     return Math.round(lookbackDays * barsPerDay * sessionMult);
   }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);
 
-  // Derive secondary timeframes from selected TF conditions
+  // Derive secondary timeframes: load ALL timeframes from enabled TF packs
+  // (not just selected conditions — we need cross-TF data to DISCOVER conditions)
   const secondaryTfs = useMemo(() => {
     const tfMap: Record<string, string> = {
       '1M': '1Min', '2M': '2Min', '3M': '3Min', '5M': '5Min', '10M': '10Min',
@@ -1747,7 +1748,17 @@ export default function StrategyBuilderPage() {
     };
     const primaryLabel = timeframe === '1Min' ? '1M' : timeframe === '5Min' ? '5M' :
       timeframe === '15Min' ? '15M' : timeframe === '1Hour' ? '1H' : timeframe === '1Day' ? '1D' : '1M';
+
+    // Always include standard cross-TF timeframes that are coarser than primary
+    const standardTfs = ['5M', '15M', '1H', '1D'];
     const tfs = new Set<string>();
+    for (const tf of standardTfs) {
+      if (tf !== primaryLabel) {
+        const mapped = tfMap[tf];
+        if (mapped) tfs.add(mapped);
+      }
+    }
+    // Also add any from selected conditions
     for (const cond of selectedConditions) {
       const parts = cond.split('-');
       if (parts.length >= 2 && parts[0] !== 'GEN' && parts[0] !== primaryLabel) {
