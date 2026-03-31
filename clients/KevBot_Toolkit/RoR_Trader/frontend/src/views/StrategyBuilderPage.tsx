@@ -1699,7 +1699,7 @@ export default function StrategyBuilderPage() {
     if (!entryTrigger || isAnalyzing) return;
     setIsAnalyzing(true);
     setAnalyzingMode(mode);
-    const analyzeDepth = mode === 'combinations' ? tfDepth : undefined;
+    const analyzeDepth = mode === 'combinations' ? tfDepth : mode === 'general_combinations' ? generalDepth : undefined;
     analyzeMut.mutate({
       mode,
       depth: analyzeDepth,
@@ -2542,7 +2542,7 @@ export default function StrategyBuilderPage() {
                             <div className="flex-1">
                               <TextInput value="" onChange={() => {}} placeholder="Search general conditions..." />
                             </div>
-                            <PrimaryButton onClick={() => handleAnalyze('general')}>{isAnalyzing && analyzingMode === 'general' ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
+                            <PrimaryButton onClick={() => handleAnalyze(generalDepth > 1 ? 'general_combinations' : 'general')}>{isAnalyzing && (analyzingMode === 'general' || analyzingMode === 'general_combinations') ? 'Analyzing...' : 'Analyze'}</PrimaryButton>
                             <button onClick={() => setFilterModalOpen(true)} className="px-2.5 py-2 rounded-lg transition-colors" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)' }} title="Filter & Sort">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
                             </button>
@@ -2573,9 +2573,9 @@ export default function StrategyBuilderPage() {
                           {/* General condition results */}
                           {isAnalyzing && analyzingMode === 'general' ? (
                             <AnalyzeProgressBar label="Analyzing general conditions..." />
-                          ) : (analysisResults.general?.length ?? 0) > 0 ? (
+                          ) : ((analysisResults.general?.length ?? 0) > 0 || (analysisResults.general_combinations?.length ?? 0) > 0) ? (
                             <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
-                              {applyAnalysisFilters(analysisResults.general || [], filters).map((result) => (
+                              {applyAnalysisFilters(analysisResults.general_combinations || analysisResults.general || [], filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
                                   result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
@@ -2666,7 +2666,7 @@ export default function StrategyBuilderPage() {
                 {/* Pinned depth selector at bottom of card */}
                 <div className="flex-shrink-0 -mb-2">
                   {activeAnalysisTab === 'Entry' && <DepthSelector depth={entryDepth} maxDepth={1} onChange={() => {}} />}
-                  {activeAnalysisTab === 'Exit' && <DepthSelector depth={exitDepth} maxDepth={3} onChange={setExitDepth} />}
+                  {activeAnalysisTab === 'Exit' && <DepthSelector depth={1} maxDepth={1} onChange={() => {}} />}
                   {activeAnalysisTab === 'TF Conditions' && <DepthSelector depth={tfDepth} maxDepth={4} onChange={setTfDepth} />}
                   {activeAnalysisTab === 'General' && <DepthSelector depth={generalDepth} maxDepth={4} onChange={setGeneralDepth} />}
                   {activeAnalysisTab === 'Stop Loss' && <DepthSelector depth={stopDepth} maxDepth={1} onChange={() => {}} />}

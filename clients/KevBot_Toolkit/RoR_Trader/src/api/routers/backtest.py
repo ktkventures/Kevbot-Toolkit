@@ -69,7 +69,7 @@ def compute_kpis(trades: list[dict], user=Depends(get_current_user)):
 @router.post("/analyze")
 def analyze_triggers(
     req: BacktestRequest,
-    mode: str = Query("entry", description="entry|exit|condition|general|combinations|stop|target"),
+    mode: str = Query("entry", description="entry|exit|condition|general|combinations|general_combinations|stop|target"),
     depth: int = Query(1, description="Max combination depth for combinations mode"),
     user=Depends(get_current_user),
 ):
@@ -91,7 +91,9 @@ def analyze_triggers(
         elif mode == "general":
             return _analyze_general_impl(req)
         elif mode == "combinations":
-            return _analyze_combinations_impl(req, depth)
+            return _analyze_combinations_impl(req, depth, exclude_prefix='GEN-')
+        elif mode == "general_combinations":
+            return _analyze_combinations_impl(req, depth, include_prefix='GEN-')
         elif mode == "stop":
             return _analyze_stops_impl(req)
         elif mode == "target":
@@ -440,7 +442,9 @@ def _analyze_targets_impl(req):
 
 
 
-def _analyze_combinations_impl(req, max_depth: int = 2):
+def _analyze_combinations_impl(req, max_depth: int = 2,
+                               exclude_prefix: str = None,
+                               include_prefix: str = None):
     """Find best confluence condition combinations using find_best_combinations()."""
     import services as svc
 
@@ -453,15 +457,30 @@ def _analyze_combinations_impl(req, max_depth: int = 2):
     if len(base_trades) == 0:
         return {"results": []}
 
+    # For include_prefix mode, we need a custom filter in find_best_combinations
+    # Use exclude_prefix to filter OUT non-matching, or pass include directly
+    effective_exclude = exclude_prefix
+    if include_prefix and not exclude_prefix:
+        # find_best_combinations only supports exclude_prefix, so we'll
+        # post-filter. Pass None to get all, then filter results.
+        effective_exclude = None
+
     combo_results = svc.find_best_combinations(
         base_trades,
         max_depth=max_depth,
         min_trades=3,
-        top_n=50,
+        top_n=100 if include_prefix else 50,
         risk_per_trade=req.risk_per_trade,
         total_trading_days=trading_days,
-        exclude_prefix='GEN-',
+        exclude_prefix=effective_exclude,
     )
+
+    # If include_prefix, post-filter to only combos where ALL conditions match prefix
+    if include_prefix:
+        combo_results = [
+            cr for cr in combo_results
+            if all(c.startswith(include_prefix) for c in cr.get('combination', []))
+        ][:50]
 
     results = []
     for cr in combo_results:
