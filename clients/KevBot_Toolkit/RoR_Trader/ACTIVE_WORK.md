@@ -1,8 +1,8 @@
 # RoR Trader — Active Work Tracker
 
 **Last Updated:** 2026-03-31
-**Current Phase:** Phase 1 (Engine LC/CC + Reference Packs) — COMPLETE
-**Current Focus:** Strategy Builder polish before moving to Phase 2
+**Current Phase:** Phase 2 (Strategy Detail Page Refinements) — NOT STARTED
+**Current Focus:** Stop/Take Profit restructuring + Strategy Builder defaults before Strategy Detail work
 
 ---
 
@@ -36,18 +36,18 @@ All subtasks (1a-1i) completed in earlier sessions:
 
 ---
 
-## Strategy Builder — Noted for Later (Not Yet Started)
+## Strategy Builder — Noted for Later (Triaged → Assigned to Phases)
 
-These were identified during testing but deferred:
+Items identified during testing, now assigned to roadmap phases:
 
-- [ ] **Stop/Take Profit pack parameter separation** — UI shows mixed stop+target params, needs frontend filtering
-- [ ] **Strategy Builder defaults settings page** — user-configurable default entry, exit, conditions, stop, target
-- [ ] **Legacy pack cleanup** — remove LC/CC exec variants from legacy templates, tag properly
-- [ ] **Swing 1-2-3 not returning backtest data** — needs investigation
-- [ ] **Trade qualification feature in filter/sort modal** — design exists, backend not built
-- [ ] **TF Conditions fidelity badge** — should show PB/CB instead of C/L exec type
-- [ ] **Price chart legend** — add show/hide toggles for conditions and triggers (like Strategy Detail)
-- [ ] **Progress tracking with actual scenario counts** — needs SSE for real progress streaming
+- **Stop/Take Profit pack restructuring + parameter separation** → Phase 2 (item 2a-new)
+- **Strategy Builder defaults (entry, exit, stop)** → Phase 2 (item 2b-new)
+- **Legacy pack cleanup (mark as legacy, keep functional)** → Phase 5 (item 5a-new)
+- **Swing 1-2-3 — rebuild via Pack Builder as first test case** → Phase 5 (item 5e)
+- **Trade qualification filter in Strategy Builder** → Phase 5 (item 5g-new, needs backend first)
+- **TF Conditions fidelity badge (PB/CB)** → Phase 3 (item 3e-new, depends on Hi-Fi)
+- ~~**Price chart legend show/hide toggles**~~ → CANCELED (current behavior matches Strategy Detail, preferred as-is)
+- **Progress tracking with SSE scenario counts** → Phase 4 (item 4g-new, SSE infra benefits Chart Test too)
 
 ---
 
@@ -57,16 +57,23 @@ These were identified during testing but deferred:
 All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 ### Phase 2: Strategy Detail Page Refinements — NOT STARTED
-- [ ] 2a. Full/short trigger names with pack origin (e.g., "UT Bot v2 [Aggressive]: Buy")
-- [ ] 2b. PB/CB per-confluence breakdown using confluence_records field
-- [ ] 2c. Date range selector (state exists, needs wiring)
-- [ ] 2d. Exec type color coding for [L], [LC], [CC]
+
+**Priority items (from Strategy Builder triage):**
+- [ ] 2a-new. **Stop/Take Profit pack restructuring** — Split R:R target into standalone "Risk:Reward" take profit pack. Remove take profit side from "swing" RM pack (swing = stop-only). Rename packs so stop and target names are intuitive and independent. Fix frontend parameter display to only show relevant params per pack type. Update Strategy Builder + Strategy Detail to reflect new pack names.
+- [ ] 2b-new. **Strategy Builder defaults (entry, exit, stop)** — User-configurable defaults so the Strategy Builder opens with a meaningful starting configuration. These three are the minimum needed for a valid backtest. Stored as user preferences.
+
+**Existing items:**
+- [ ] 2c. Full/short trigger names with pack origin (e.g., "UT Bot v2 [Aggressive]: Buy")
+- [ ] 2d. PB/CB per-confluence breakdown using confluence_records field
+- [ ] 2e. Date range selector (state exists, needs wiring)
+- [ ] 2f. Exec type color coding for [L], [LC], [CC]
 
 ### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
 - [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)
 - [ ] 3b. 1-second bar loading from Polygon for ambiguous resolution
 - [ ] 3c. Hold time computation (hold_time_seconds, hold_bars in trade records)
 - [ ] 3d. Surface hold times in trades table + KPIs
+- [ ] 3e-new. **TF Conditions fidelity badge (PB/CB)** — Update TF condition displays to show [PB] (previous bar) or [CB] (current bar) fidelity type instead of C/L exec type. CB uses Hi-Fi 1-second drilling to determine cross-TF condition state at entry time. Depends on 3a-3b being complete.
 
 ### Phase 4: Chart Test Page + Replay — NOT STARTED
 - [ ] 4a. Page scaffold with chart + config panel
@@ -75,14 +82,21 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - [ ] 4d. Replay feature (TradingView-style bar-by-bar playback)
 - [ ] 4e. Trade markers with exec type colors, stop/target price lines
 - [ ] 4f. Lock chart range toggle, copy-to-strategy-builder
+- [ ] 4g-new. **Progress tracking with SSE** — Server-Sent Events for real scenario counts during Strategy Builder analysis + Chart Test backtests. Replace indeterminate progress bar with "Scenario 47 of 312" style updates. SSE infrastructure benefits both pages.
 
 ### Phase 5: Pack Builder Update + Swing 123 / Golden Candle — NOT STARTED
-- [ ] 5a. Extend pack_spec.py validation for exec_variants
-- [ ] 5b. Update pack_builder_context.md with exec_variants docs + examples
-- [ ] 5c. Update pack_builder.py LLM prompt
-- [ ] 5d. Update pack_registry.py to register LC/CC triggers
-- [ ] 5e. First Pack Builder test: generate a pack with LC/CC
-- [ ] 5f. Backward compat: exec_variants optional, existing packs default C-only
+
+**Priority items (from Strategy Builder triage):**
+- [ ] 5a-new. **Legacy pack cleanup** — Mark all current TF Confluence packs (except EMA Price Position V2) as "Legacy (Default)" in their display names. Keep them fully functional — legacy packs use the engine's generic LC/CC wrapping which works but isn't purpose-built like V2. Legacy label stays until packs are rebuilt through Pack Builder or manually updated to V2's explicit trigger variant structure. Do NOT delete or disable legacy packs.
+
+**Pack Builder pipeline (get EMA PP V2 perfect → inform Pack Builder → scale):**
+- [ ] 5b. Extend pack_spec.py validation for exec_variants
+- [ ] 5c. Update pack_builder_context.md with exec_variants docs + examples (modeled on EMA PP V2 as the reference)
+- [ ] 5d. Update pack_builder.py LLM prompt (include flicker logic, painting logic, execution fidelity checks)
+- [ ] 5e. Update pack_registry.py to register LC/CC triggers
+- [ ] 5f. **Swing 1-2-3 as first Pack Builder test case** — Don't fix the current broken swing_123 manually. Instead, use it as the first real test of the Pack Builder pipeline. Validates that the system can scalably produce packs with proper CC execution, correct trigger detection, and accurate backtests.
+- [ ] 5g. Backward compat: exec_variants optional, existing packs default C-only
+- [ ] 5h-new. **Trade qualification filter in Strategy Builder** — Add TQ filter dropdown to the filter/sort modal. Requires backend TQ rule application logic to be built first. Design exists in Frontend Migration Plan (Portfolio Requirements V5 spec).
 
 ### Phase 6: Alert Monitor & Webhook Updates — NOT STARTED
 - [ ] 6a. Add exec_type to alert records + new placeholder tokens
@@ -100,3 +114,6 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - Two reference packs — EMA PP V2 (known baseline) + Swing 123 (natural CC fit)
 - Replay in Phase 4 — saves days of live-data waiting for pack validation
 - HM/HL backward compat — continue working, eventually LC with offset=0 + bail=market is equivalent to HM
+- **Golden Child approach** — Perfect EMA PP V2 first (backtest, chart, alerts for all exec types), then use it as the template for Pack Builder prompts. Swing 1-2-3 is the first Pack Builder test. Legacy packs stay labeled but functional until rebuilt through the scalable pipeline.
+- **Legacy packs use generic engine wrapping** — Legacy pack interpreters only detect bar-close triggers. The engine wraps them with LC/CC confirmation logic at the position state machine level. V2 packs create explicit per-execution-type triggers. Both approaches work, but V2 is more testable and explicit.
+- **Stop/Take Profit decoupling** — The "swing" RM pack's take profit side is actually R:R math, not swing logic. Split into independent packs: "Swing" (stop-only) + "Risk:Reward" (universal take profit). Each take profit pack should work with any stop loss pack.
