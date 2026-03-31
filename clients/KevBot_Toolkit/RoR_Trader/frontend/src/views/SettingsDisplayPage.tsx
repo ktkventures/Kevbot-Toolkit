@@ -14,6 +14,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import { useSettings, useSaveSettings } from '@/hooks/queries/useSettings';
+import { useDisplayStore } from '@/providers/StoreProvider';
 
 /* ========================================================================= */
 /* TYPES & CONSTANTS                                                          */
@@ -279,6 +280,7 @@ export default function SettingsDisplayPage() {
   /* ---- API hooks (must be before any early return) ---- */
   const { data: savedSettings, isLoading } = useSettings();
   const saveSettingsMut = useSaveSettings();
+  const displayStoreUpdate = useDisplayStore((s) => s.update);
 
   const [activeTab, setActiveTab] = useState<TabKey>('Price Charts');
   const [hydrated, setHydrated] = useState(false);
@@ -390,8 +392,18 @@ export default function SettingsDisplayPage() {
     if (s.execColor) setExecColor(s.execColor);
     if (s.fidelityColor) setFidelityColor(s.fidelityColor);
     if (s.variationStyle) setVariationStyle(s.variationStyle);
+    // Sync API settings to Zustand store so badges/components reflect saved prefs
+    displayStoreUpdate({
+      ...(s.execColor && { execTypeColor: s.execColor }),
+      ...(s.fidelityColor && { fidelityColor: s.fidelityColor }),
+      ...(s.badgeShape && { badgeShape: s.badgeShape }),
+      ...(s.tableDensity && { tableDensity: s.tableDensity }),
+      ...(s.timezone && { timezone: s.timezone }),
+      ...(s.dateFormat && { dateFormat: s.dateFormat }),
+      ...(s.currencySymbol && { currencySymbol: s.currencySymbol }),
+    });
     setHydrated(true);
-  }, [savedSettings, hydrated]);
+  }, [savedSettings, hydrated, displayStoreUpdate]);
 
   /* ---- Collect all settings for save ---- */
   const collectSettings = useCallback(() => ({
@@ -1449,7 +1461,20 @@ export default function SettingsDisplayPage() {
       {/* Save button — always visible */}
       <div className="mt-6">
         <button
-          onClick={() => saveSettingsMut.mutate(collectSettings())}
+          onClick={() => {
+            const settings = collectSettings();
+            saveSettingsMut.mutate(settings);
+            // Sync to Zustand store so badges update globally without reload
+            displayStoreUpdate({
+              execTypeColor: settings.execColor,
+              fidelityColor: settings.fidelityColor,
+              badgeShape: settings.badgeShape as 'rounded' | 'square',
+              tableDensity: settings.tableDensity as 'compact' | 'comfortable' | 'spacious',
+              timezone: settings.timezone,
+              dateFormat: settings.dateFormat,
+              currencySymbol: settings.currencySymbol,
+            });
+          }}
           disabled={saveSettingsMut.isPending}
           className="px-6 py-2.5 rounded-lg text-sm font-medium"
           style={{ background: 'var(--accent)', color: 'white', opacity: saveSettingsMut.isPending ? 0.6 : 1 }}

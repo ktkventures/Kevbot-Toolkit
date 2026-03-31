@@ -86,18 +86,18 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 ### Phase 5: Pack Builder Update + Swing 123 / Golden Candle — NOT STARTED
 
-**Priority items (from Strategy Builder triage):**
-- [ ] 5a-new. **Legacy pack cleanup** — Mark all current TF Confluence packs (except EMA Price Position V2) as "Legacy (Default)" in their display names. Keep them fully functional — legacy packs use the engine's generic LC/CC wrapping which works but isn't purpose-built like V2. Legacy label stays until packs are rebuilt through Pack Builder or manually updated to V2's explicit trigger variant structure. Do NOT delete or disable legacy packs.
+**Priority items (foundational pack UX):**
+- [ ] 5a-new. **Pack variation nesting** — All pack pages (TF Confluence, General, Stop Loss, Take Profit) should group variations under their parent template with expand/collapse chevron. First variation = "Default", user-created variations nest underneath. Per Frontend Migration Plan: "Nested under defaults — Variations indent under parent template with expand/collapse chevron inside the card."
+- [ ] 5b-new. **Legacy pack cleanup** — Mark all current TF Confluence packs (except EMA Price Position V2) as "Legacy (Default)" in their display names. Keep them fully functional — legacy packs use the engine's generic LC/CC wrapping which works but isn't purpose-built like V2. Legacy label stays until packs are rebuilt through Pack Builder or manually updated to V2's explicit trigger variant structure. Do NOT delete or disable legacy packs.
 
 **Pack Builder pipeline (get EMA PP V2 perfect → inform Pack Builder → scale):**
-- [ ] 5b. Extend pack_spec.py validation for exec_variants
-- [ ] 5c. Update pack_builder_context.md with exec_variants docs + examples (modeled on EMA PP V2 as the reference)
-- [ ] 5d. Update pack_builder.py LLM prompt (include flicker logic, painting logic, execution fidelity checks)
-- [ ] 5e. Update pack_registry.py to register LC/CC triggers
-- [ ] 5f. **Swing 1-2-3 as first Pack Builder test case** — Don't fix the current broken swing_123 manually. Instead, use it as the first real test of the Pack Builder pipeline. Validates that the system can scalably produce packs with proper CC execution, correct trigger detection, and accurate backtests.
-- [ ] 5g. Backward compat: exec_variants optional, existing packs default C-only
-- [ ] 5h-new. **Trade qualification filter in Strategy Builder** — Add TQ filter dropdown to the filter/sort modal. Requires backend TQ rule application logic to be built first. Design exists in Frontend Migration Plan (Portfolio Requirements V5 spec).
-- [ ] 5i-new. **Pack variation nesting** — All pack pages (TF Confluence, General, Stop Loss, Take Profit) should group variations under their parent template with expand/collapse chevron. First variation = "Default", user-created variations nest underneath. Per Frontend Migration Plan: "Nested under defaults — Variations indent under parent template with expand/collapse chevron inside the card."
+- [ ] 5c. Extend pack_spec.py validation for exec_variants
+- [ ] 5d. Update pack_builder_context.md with exec_variants docs + examples (modeled on EMA PP V2 as the reference)
+- [ ] 5e. Update pack_builder.py LLM prompt (include flicker logic, painting logic, execution fidelity checks)
+- [ ] 5f. Update pack_registry.py to register LC/CC triggers
+- [ ] 5g. **Swing 1-2-3 as first Pack Builder test case** — Don't fix the current broken swing_123 manually. Instead, use it as the first real test of the Pack Builder pipeline. Validates that the system can scalably produce packs with proper CC execution, correct trigger detection, and accurate backtests.
+- [ ] 5h. Backward compat: exec_variants optional, existing packs default C-only
+- [ ] 5i-new. **Trade qualification filter in Strategy Builder** — Add TQ filter dropdown to the filter/sort modal. Requires backend TQ rule application logic to be built first. Design exists in Frontend Migration Plan (Portfolio Requirements V5 spec).
 
 ### Phase 6: Alert Monitor & Webhook Updates — NOT STARTED
 - [ ] 6a. Add exec_type to alert records + new placeholder tokens

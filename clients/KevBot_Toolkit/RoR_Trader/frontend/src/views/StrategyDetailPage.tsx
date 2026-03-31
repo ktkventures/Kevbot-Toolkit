@@ -263,8 +263,16 @@ const exitReasonColors: Record<string, string> = {
 
 function daysSince(dateStr: string): number {
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return 0;
   const now = new Date();
   return Math.floor((now.getTime() - d.getTime()) / 86400000);
+}
+
+/** Safe date → milliseconds. Returns 0 for invalid/missing dates. */
+function safeDateMs(val: string | null | undefined): number {
+  if (!val || val === '--') return 0;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
 function parseExecTag(entry: string): { exec: string; rest: string } {
@@ -591,7 +599,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const recentAlerts = useMemo(() => {
     const entries: any[] = [];
     const paired: any[] = [];
-    const sorted = [...recentAlertEvents].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    const sorted = [...recentAlertEvents].sort((a, b) => safeDateMs(a.time) - safeDateMs(b.time));
     for (const evt of sorted) {
       if (evt.type === 'ENTRY') {
         entries.push(evt);
@@ -705,17 +713,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const tradeAlertMapping = useMemo(() => {
     if (recentAlerts.length === 0) return [];
     return recentAlerts.filter((a: any) => a.entryTime && a.entryTime !== '--').map((alertTrade: any, i: number) => {
-      const alertEntryMs = new Date(alertTrade.entryTime).getTime();
+      const alertEntryMs = safeDateMs(alertTrade.entryTime);
       let closestBt: any = null;
       let closestDist = Infinity;
       for (const bt of btTrades) {
         if (!bt.entryTime || bt.entryTime === '--') continue;
-        const dist = Math.abs(new Date(bt.entryTime).getTime() - alertEntryMs);
+        const dist = Math.abs(safeDateMs(bt.entryTime) - alertEntryMs);
         if (dist < closestDist) { closestDist = dist; closestBt = bt; }
       }
       const entryDelta = closestBt ? `${Math.round(closestDist / 1000)}s` : '--';
       const exitDelta = closestBt && alertTrade.exitTime && closestBt.exitTime !== '--'
-        ? `${Math.round(Math.abs(new Date(alertTrade.exitTime).getTime() - new Date(closestBt.exitTime).getTime()) / 1000)}s` : '--';
+        ? `${Math.round(Math.abs(safeDateMs(alertTrade.exitTime) - safeDateMs(closestBt.exitTime)) / 1000)}s` : '--';
       return {
         tradeNum: i + 1,
         btEntry: closestBt?.entryTime ? new Date(closestBt.entryTime).toLocaleString() : '--',
@@ -745,22 +753,22 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
         continue;
       }
-      const aEntryMs = new Date(a.entryTime).getTime();
+      const aEntryMs = safeDateMs(a.entryTime);
       let bestIdx = -1;
       let bestDist = Infinity;
       for (let ti = 0; ti < algoAll.length; ti++) {
         const t = algoAll[ti];
         if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') continue;
-        const dist = Math.abs(new Date(t.entryTimeDisplay).getTime() - aEntryMs);
+        const dist = Math.abs(safeDateMs(t.entryTimeDisplay) - aEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ti; }
       }
       if (bestIdx >= 0 && bestDist <= searchWindow) {
         const algo = algoAll[bestIdx];
         // Delta from alert's perspective: negative = algo was earlier, positive = algo was later
-        const entryDelta = (new Date(algo.entryTimeDisplay).getTime() - aEntryMs) / 1000;
+        const entryDelta = (safeDateMs(algo.entryTimeDisplay) - aEntryMs) / 1000;
         let exitDelta: number | null = null;
         if (a.exitTime && a.exitTime !== '--' && algo.exitTimeDisplay && algo.exitTimeDisplay !== '--') {
-          exitDelta = (new Date(algo.exitTimeDisplay).getTime() - new Date(a.exitTime).getTime()) / 1000;
+          exitDelta = (safeDateMs(algo.exitTimeDisplay) - safeDateMs(a.exitTime)) / 1000;
         }
         alertResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
       } else {
@@ -776,21 +784,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
         continue;
       }
-      const tEntryMs = new Date(t.entryTimeDisplay).getTime();
+      const tEntryMs = safeDateMs(t.entryTimeDisplay);
       let bestIdx = -1;
       let bestDist = Infinity;
       for (let ai = 0; ai < recentAlerts.length; ai++) {
         const a = recentAlerts[ai];
         if (!a.entryTime || a.entryTime === '--') continue;
-        const dist = Math.abs(new Date(a.entryTime).getTime() - tEntryMs);
+        const dist = Math.abs(safeDateMs(a.entryTime) - tEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ai; }
       }
       if (bestIdx >= 0 && bestDist <= searchWindow) {
         const alert = recentAlerts[bestIdx];
-        const entryDelta = (new Date(alert.entryTime).getTime() - tEntryMs) / 1000;
+        const entryDelta = (safeDateMs(alert.entryTime) - tEntryMs) / 1000;
         let exitDelta: number | null = null;
         if (alert.exitTime && alert.exitTime !== '--' && t.exitTimeDisplay && t.exitTimeDisplay !== '--') {
-          exitDelta = (new Date(alert.exitTime).getTime() - new Date(t.exitTimeDisplay).getTime()) / 1000;
+          exitDelta = (safeDateMs(alert.exitTime) - safeDateMs(t.exitTimeDisplay)) / 1000;
         }
         algoResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
       } else {
@@ -1676,8 +1684,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
 
                   // Determine visible time range from sliced bars
-                  const firstBarTime = bars.length > 0 ? new Date(bars[0].timestamp).getTime() : 0;
-                  const lastBarTime = bars.length > 0 ? new Date(bars[bars.length - 1].timestamp).getTime() : Infinity;
+                  const firstBarTime = bars.length > 0 ? safeDateMs(bars[0].timestamp) : 0;
+                  const lastBarTime = bars.length > 0 ? safeDateMs(bars[bars.length - 1].timestamp) : Infinity;
 
                   // Build trade markers — only when Show Triggers is on
                   const tradeMarkers = !showTriggers ? [] : [...btTrades, ...fwdTrades].flatMap((t) => {
@@ -1685,8 +1693,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     const dir = strategy.direction;
                     const entryPlot = t.entryTimeDisplay || t.entryTime;
                     const exitPlot = t.exitTimeDisplay || t.exitTime;
-                    const entryMs = entryPlot && entryPlot !== '--' ? new Date(entryPlot).getTime() : 0;
-                    const exitMs = exitPlot && exitPlot !== '--' ? new Date(exitPlot).getTime() : 0;
+                    const entryMs = entryPlot && entryPlot !== '--' ? safeDateMs(entryPlot) : 0;
+                    const exitMs = exitPlot && exitPlot !== '--' ? safeDateMs(exitPlot) : 0;
                     if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
                       m.push({ time: entryPlot, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
                     }
@@ -1733,8 +1741,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const visibleTrades = !showTriggers ? [] : [...btTrades, ...fwdTrades].filter(t => {
                     const ep = t.entryTimeDisplay || t.entryTime;
                     const xp = t.exitTimeDisplay || t.exitTime;
-                    const entryMs = ep && ep !== '--' ? new Date(ep).getTime() : 0;
-                    const exitMs = xp && xp !== '--' ? new Date(xp).getTime() : 0;
+                    const entryMs = ep && ep !== '--' ? safeDateMs(ep) : 0;
+                    const exitMs = xp && xp !== '--' ? safeDateMs(xp) : 0;
                     return (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) ||
                            (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
                   });
@@ -1744,11 +1752,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     // LWC v4 requires marker timestamps to exactly match a data point
                     const barTimestamps = bars.map((b: any) => b.timestamp);
                     const snapToBar = (tradeTime: string): string | null => {
-                      const tradeMs = new Date(tradeTime).getTime();
+                      const tradeMs = safeDateMs(tradeTime);
                       let bestTs = barTimestamps[0];
                       let bestDist = Infinity;
                       for (const ts of barTimestamps) {
-                        const dist = Math.abs(new Date(ts).getTime() - tradeMs);
+                        const dist = Math.abs(safeDateMs(ts) - tradeMs);
                         if (dist < bestDist) { bestDist = dist; bestTs = ts; }
                       }
                       return bestDist < 120000 ? bestTs : null; // Within 2 minutes
@@ -1768,7 +1776,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       const exitPlot = t.exitTimeDisplay || t.exitTime;
                       // Entry
                       if (entryPlot && entryPlot !== '--' && t.entryPrice > 0) {
-                        const entryMs = new Date(entryPlot).getTime();
+                        const entryMs = safeDateMs(entryPlot);
                         if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
                           const snapped = snapToBar(entryPlot);
                           if (snapped && !seenAlgoEntry.has(snapped)) {
@@ -1780,7 +1788,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       }
                       // Exit
                       if (exitPlot && exitPlot !== '--' && t.exitPrice > 0) {
-                        const exitMs = new Date(exitPlot).getTime();
+                        const exitMs = safeDateMs(exitPlot);
                         if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
                           const snapped = snapToBar(exitPlot);
                           if (snapped && !seenAlgoExit.has(snapped)) {
@@ -1822,7 +1830,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     for (const a of recentAlerts) {
                       // Entry
                       if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
-                        const entryMs = new Date(a.entryTime).getTime();
+                        const entryMs = safeDateMs(a.entryTime);
                         if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
                           const snapped = snapToBar(a.entryTime);
                           if (snapped && !seenAlertEntry.has(snapped)) {
@@ -1834,7 +1842,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       }
                       // Exit
                       if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
-                        const exitMs = new Date(a.exitTime).getTime();
+                        const exitMs = safeDateMs(a.exitTime);
                         if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
                           const snapped = snapToBar(a.exitTime);
                           if (snapped && !seenAlertExit.has(snapped)) {
@@ -2094,8 +2102,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const sortedAlgo = [...fwdTrades, ...btTrades]
                     .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
                     .sort((a, b) => {
-                      const aMs = a.entryTime && a.entryTime !== '--' ? new Date(a.entryTime).getTime() : 0;
-                      const bMs = b.entryTime && b.entryTime !== '--' ? new Date(b.entryTime).getTime() : 0;
+                      const aMs = a.entryTime && a.entryTime !== '--' ? safeDateMs(a.entryTime) : 0;
+                      const bMs = b.entryTime && b.entryTime !== '--' ? safeDateMs(b.entryTime) : 0;
                       return bMs - aMs;
                     });
                   return (
@@ -2289,7 +2297,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           const bar = confChartData.bars[i];
                           // Check _met (set by backend) or compute from _state + needed_state
                           const met = bar._met === true || (bar._state != null && bar._state === confChartData.needed_state);
-                          const t = Math.floor(new Date(bar.timestamp).getTime() / 1000);
+                          const t = Math.floor(safeDateMs(bar.timestamp) / 1000);
                           if (regionStart === null) { regionStart = t; regionMet = met; }
                           else if (met !== regionMet) {
                             stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
@@ -2297,7 +2305,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           }
                         }
                         if (regionStart !== null) {
-                          const lastT = Math.floor(new Date(confChartData.bars[confChartData.bars.length - 1].timestamp).getTime() / 1000);
+                          const lastT = Math.floor(safeDateMs(confChartData.bars[confChartData.bars.length - 1].timestamp) / 1000);
                           stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
                         }
                         const primitives = stateRanges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges: stateRanges } }] : [];
