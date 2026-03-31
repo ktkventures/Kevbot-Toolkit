@@ -82,6 +82,38 @@ export const useDisplayStore = create<DisplayStore>()(
 );
 
 // =============================================================================
+// STRATEGY BUILDER DEFAULTS — persisted entry/exit/stop defaults
+// =============================================================================
+
+interface StrategyBuilderDefaults {
+  defaultEntryTrigger: string;
+  defaultExitTriggers: string[];
+  defaultStopPack: string;
+}
+
+interface StrategyBuilderDefaultsStore extends StrategyBuilderDefaults {
+  setDefaults: (partial: Partial<StrategyBuilderDefaults>) => void;
+  clearDefaults: () => void;
+}
+
+const EMPTY_DEFAULTS: StrategyBuilderDefaults = {
+  defaultEntryTrigger: '',
+  defaultExitTriggers: [],
+  defaultStopPack: '',
+};
+
+export const useStrategyBuilderDefaults = create<StrategyBuilderDefaultsStore>()(
+  persist(
+    (set) => ({
+      ...EMPTY_DEFAULTS,
+      setDefaults: (partial) => set(partial),
+      clearDefaults: () => set(EMPTY_DEFAULTS),
+    }),
+    { name: 'ror-strategy-builder-defaults' }
+  )
+);
+
+// =============================================================================
 // VIEW MODE — Toggle between Live (API data) and Design Reference (mock data)
 // =============================================================================
 

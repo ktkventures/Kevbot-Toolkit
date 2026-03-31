@@ -254,14 +254,19 @@ def _dict_to_general_pack(d: dict):
 
 def _rm_pack_to_dict(pack, include_configs: bool = False) -> dict:
     """Serialize a RiskManagementPack dataclass to dict."""
+    from risk_management_packs import TEMPLATES, format_stop_summary, format_target_summary
+    template = TEMPLATES.get(pack.base_template, {})
     d = {
         "id": pack.id,
         "base_template": pack.base_template,
+        "template_name": template.get("name", pack.base_template),
         "version": pack.version,
         "description": pack.description,
         "enabled": pack.enabled,
         "is_default": pack.is_default,
         "parameters": pack.parameters,
+        "stop_summary": format_stop_summary(pack),
+        "target_summary": format_target_summary(pack),
     }
     if include_configs:
         try:

@@ -1,8 +1,8 @@
 # RoR Trader — Active Work Tracker
 
 **Last Updated:** 2026-03-31
-**Current Phase:** Phase 2 (Strategy Detail Page Refinements) — NOT STARTED
-**Current Focus:** Stop/Take Profit restructuring + Strategy Builder defaults before Strategy Detail work
+**Current Phase:** Phase 2 (Strategy Detail Page Refinements) — IN PROGRESS
+**Current Focus:** Phase 2 implementation complete, pending QA verification
 
 ---
 
@@ -56,17 +56,17 @@ Items identified during testing, now assigned to roadmap phases:
 ### Phase 1: Engine LC/CC Support + Reference Packs — COMPLETE
 All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
-### Phase 2: Strategy Detail Page Refinements — NOT STARTED
+### Phase 2: Strategy Detail Page Refinements — IN PROGRESS
 
 **Priority items (from Strategy Builder triage):**
-- [ ] 2a-new. **Stop/Take Profit pack restructuring** — Split R:R target into standalone "Risk:Reward" take profit pack. Remove take profit side from "swing" RM pack (swing = stop-only). Rename packs so stop and target names are intuitive and independent. Fix frontend parameter display to only show relevant params per pack type. Update Strategy Builder + Strategy Detail to reflect new pack names.
-- [ ] 2b-new. **Strategy Builder defaults (entry, exit, stop)** — User-configurable defaults so the Strategy Builder opens with a meaningful starting configuration. These three are the minimum needed for a valid backtest. Stored as user preferences.
+- [x] 2a-new. **Stop/Take Profit pack restructuring** — Added stop_params/target_params to all 7 RM TEMPLATES. API now returns template_name, stop_summary, target_summary. Frontend uses dedicated useStopLossPacks()/useTakeProfitPacks() hooks with separated parameter display. Stop packs show only stop params, target packs show only target params.
+- [x] 2b-new. **Strategy Builder defaults (entry, exit, stop)** — Added useStrategyBuilderDefaults Zustand store with localStorage persistence. Strategy Builder auto-populates from saved defaults on mount. "Save as Default" / "Clear Defaults" buttons in config section.
 
 **Existing items:**
-- [ ] 2c. Full/short trigger names with pack origin (e.g., "UT Bot v2 [Aggressive]: Buy")
-- [ ] 2d. PB/CB per-confluence breakdown using confluence_records field
-- [ ] 2e. Date range selector (state exists, needs wiring)
-- [ ] 2f. Exec type color coding for [L], [LC], [CC]
+- [x] 2c. Full/short trigger names with pack origin — Changed trigger name format from "Group: Trigger" to "Group > Trigger". Strategy Builder now parses pack name from trigger name for grouped display.
+- [x] 2d. PB/CB per-confluence breakdown — Backend already had enrich_confluence_with_fidelity() returning confluence_enriched. Wired to frontend — [PB]/[CB] badges now data-driven per condition instead of hardcoded. All current conditions show [PB]; cross-TF conditions will show [CB] after Hi-Fi (Phase 3).
+- [x] 2e. Date range selector — Added date_range query param to GET /api/strategies/{id}. Backend filters stored_trades by date before enrichment. Frontend passes dateRange state to useStrategy hook, refetches on change. Supports: Last 7/30/90 Days, Backtest Only, Forward Only.
+- [x] 2f. Exec type color coding — Fixed ExecBadge on both Strategy Detail and Strategy Builder to use distinct colors: [C] blue, [L] green, [LC] purple, [CC] orange. Was dead code before (execTypeColors defined but never used).
 
 ### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
 - [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)

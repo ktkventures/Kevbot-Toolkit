@@ -57,6 +57,7 @@ function apiToDetailStrategy(s: any) {
     stop: s.stop_config?.method || '--',
     target: s.target_config?.method || 'Signal exit only',
     confluence: s.confluence || [],
+    confluenceEnriched: s.confluence_enriched || [],
     winRate: k.win_rate ?? 0,
     pf: k.profit_factor ?? 0,
     dailyR: k.daily_r ?? 0,
@@ -301,12 +302,13 @@ const TABS = [
 /* ========================================================================= */
 
 function ExecBadge({ exec }: { exec: string }) {
+  const color = execTypeColors[exec] || EXEC_BADGE_COLOR;
   return (
     <span
       className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
       style={{
-        color: EXEC_BADGE_COLOR,
-        background: EXEC_BADGE_COLOR + '20',
+        color,
+        background: color + '20',
       }}
     >
       {exec}
@@ -430,7 +432,8 @@ interface Props {
 }
 
 export default function StrategyDetailPage({ strategyId }: Props) {
-  const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
+  const [dateRange, setDateRange] = useState('Strategy Default');
+  const { data: apiStrategy, isLoading, error } = useStrategy(strategyId, dateRange);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
   const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
   const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
@@ -517,7 +520,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }, []);
 
   // State
-  const [dateRange, setDateRange] = useState('Strategy Default');
   const [kpiMode, setKpiMode] = useState('Overall');
   const [extKpiTab, setExtKpiTab] = useState('Performance');
   const [showExtKpis, setShowExtKpis] = useState(false);
@@ -1181,9 +1183,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             <TargetBadge text={strategy.target} />
             <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>confluence:</span>
-            <FidelityBadge label="[PB]" />
-            {strategy.confluence.map((c) => (
-              <ConditionBadge key={c} text={c} />
+            {(strategy.confluenceEnriched?.length > 0 ? strategy.confluenceEnriched : strategy.confluence.map((c: string) => ({ id: c, fidelity: null, label: c }))).map((c: any) => (
+              <span key={c.id} className="flex items-center gap-1">
+                {c.fidelity && <FidelityBadge label={`[${c.fidelity}]`} />}
+                <ConditionBadge text={c.id} />
+              </span>
             ))}
           </div>
         </div>
@@ -2520,9 +2524,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 <Card>
                   <h4 className="text-sm font-medium mb-3">Confluence Conditions</h4>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <FidelityBadge label="[PB]" />
-                    {strategy.confluence.map((c) => (
-                      <ConditionBadge key={c} text={c} />
+                    {(strategy.confluenceEnriched?.length > 0 ? strategy.confluenceEnriched : strategy.confluence.map((c: string) => ({ id: c, fidelity: null, label: c }))).map((c: any) => (
+                      <span key={c.id} className="flex items-center gap-1">
+                        {c.fidelity && <FidelityBadge label={`[${c.fidelity}]`} />}
+                        <ConditionBadge text={c.id} />
+                      </span>
                     ))}
                   </div>
                   {strategy.confluence.length === 0 && (

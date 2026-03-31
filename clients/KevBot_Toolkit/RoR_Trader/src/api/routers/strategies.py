@@ -2,7 +2,7 @@
 
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
@@ -12,6 +12,78 @@ from api.deps import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _filter_trades_by_date_range(strategy: dict, date_range: str) -> dict:
+    """Filter stored_trades by date range, returning a shallow copy of the strategy."""
+    trades = strategy.get('stored_trades', [])
+    if not trades:
+        return strategy
+
+    now = datetime.now(timezone.utc)
+    fwd_start = strategy.get('forward_test_start')
+
+    filtered = list(trades)  # default: all trades
+
+    if date_range == 'Last 7 Days':
+        cutoff = now - timedelta(days=7)
+        filtered = [t for t in trades if _trade_after(t, cutoff)]
+    elif date_range == 'Last 30 Days':
+        cutoff = now - timedelta(days=30)
+        filtered = [t for t in trades if _trade_after(t, cutoff)]
+    elif date_range == 'Last 90 Days':
+        cutoff = now - timedelta(days=90)
+        filtered = [t for t in trades if _trade_after(t, cutoff)]
+    elif date_range == 'Backtest Only':
+        if fwd_start:
+            boundary = datetime.fromisoformat(fwd_start)
+            if boundary.tzinfo is None:
+                boundary = boundary.replace(tzinfo=timezone.utc)
+            filtered = [t for t in trades if _trade_before(t, boundary)]
+    elif date_range == 'Forward Only':
+        if fwd_start:
+            boundary = datetime.fromisoformat(fwd_start)
+            if boundary.tzinfo is None:
+                boundary = boundary.replace(tzinfo=timezone.utc)
+            filtered = [t for t in trades if _trade_after(t, boundary)]
+        else:
+            filtered = []  # No forward test start = no forward trades
+
+    result = dict(strategy)
+    result['stored_trades'] = filtered
+    return result
+
+
+def _trade_after(trade: dict, cutoff: datetime) -> bool:
+    """Check if a trade's entry_time is after a cutoff datetime."""
+    et = trade.get('entry_time')
+    if not et:
+        return True
+    try:
+        t = datetime.fromisoformat(str(et))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t >= cutoff
+    except (ValueError, TypeError):
+        return True
+
+
+def _trade_before(trade: dict, cutoff: datetime) -> bool:
+    """Check if a trade's entry_time is before a cutoff datetime."""
+    et = trade.get('entry_time')
+    if not et:
+        return True
+    try:
+        t = datetime.fromisoformat(str(et))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t < cutoff
+    except (ValueError, TypeError):
+        return True
 
 
 # =============================================================================
@@ -87,8 +159,12 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
 
 
 @router.get("/{strategy_id}")
-def get_strategy(strategy_id: int, user=Depends(get_current_user)):
-    """Get a single strategy by ID, enriched with forward KPIs and sigma."""
+def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=Depends(get_current_user)):
+    """Get a single strategy by ID, enriched with forward KPIs and sigma.
+
+    date_range: 'Strategy Default' | 'All Data' | 'Last 7 Days' | 'Last 30 Days' |
+                'Last 90 Days' | 'Backtest Only' | 'Forward Only'
+    """
     from db import USE_DB
     import services as svc
     if USE_DB:
@@ -96,21 +172,24 @@ def get_strategy(strategy_id: int, user=Depends(get_current_user)):
         strat = get_strategy_by_id_db(strategy_id)
         if strat is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
-        try:
-            return svc.enrich_strategy(strat, full_compute=True)
-        except Exception as e:
-            logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
-            return strat
+    else:
+        strat = None
+        for s in list_strategies(enrich=False, user=user):
+            if s.get('id') == strategy_id:
+                strat = s
+                break
+        if strat is None:
+            raise HTTPException(status_code=404, detail="Strategy not found")
 
-    # JSON fallback
-    for s in list_strategies(enrich=False, user=user):
-        if s.get('id') == strategy_id:
-            try:
-                return svc.enrich_strategy(s, full_compute=True)
-            except Exception as e:
-                logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
-                return s
-    raise HTTPException(status_code=404, detail="Strategy not found")
+    # Apply date range filter to stored_trades before enrichment
+    if date_range and date_range not in ("Strategy Default", "All Data"):
+        strat = _filter_trades_by_date_range(strat, date_range)
+
+    try:
+        return svc.enrich_strategy(strat, full_compute=True)
+    except Exception as e:
+        logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
+        return strat
 
 
 @router.put("/{strategy_id}")

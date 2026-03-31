@@ -64,10 +64,13 @@ export function useStrategies() {
   });
 }
 
-export function useStrategy(id: number | null) {
+export function useStrategy(id: number | null, dateRange?: string) {
+  const params = dateRange && dateRange !== 'Strategy Default'
+    ? `?date_range=${encodeURIComponent(dateRange)}`
+    : '';
   return useQuery({
-    queryKey: ['strategy', id],
-    queryFn: () => apiFetch<StrategyDTO>(`/api/strategies/${id}`),
+    queryKey: ['strategy', id, dateRange || 'Strategy Default'],
+    queryFn: () => apiFetch<StrategyDTO>(`/api/strategies/${id}${params}`),
     enabled: id !== null,
   });
 }

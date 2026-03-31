@@ -5,7 +5,7 @@
  *
  * Mock data references replaced:
  * - API_TRIGGERS → useConfluenceTriggers() from API
- * - API_STOP_PACKS / API_TARGET_PACKS → useRiskManagementPacks()
+ * - API_STOP_PACKS → useStopLossPacks(), API_TARGET_PACKS → useTakeProfitPacks()
  * - API_CONFLUENCE_CONDITIONS → useConfluenceGroups() derived
  * - API_GENERAL_CONDITIONS → useGeneralPacks() derived
  * - EMPTY_KPIS / EMPTY_TRADES → useRunBacktest() mutation results
@@ -28,7 +28,8 @@ import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import { useRunBacktest, useAnalyzeTriggers, type AnalyzeResult } from '@/hooks/queries/useBacktest';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
-import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useRiskManagementPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
+import { useStrategyBuilderDefaults } from '@/providers/StoreProvider';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,14 +190,21 @@ const EMPTY_TRADES: TradeRow[] = [];
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Display settings V5: uniform blue for all exec types
+// Exec type color coding — distinct colors per execution type
 const EXEC_BADGE_COLOR = '#2196F3';
+const EXEC_TYPE_COLORS: Record<string, string> = {
+  'C': EXEC_BADGE_COLOR,
+  'L': '#4CAF50',
+  'LC': '#AB47BC',
+  'CC': '#FF9800',
+};
 
 function ExecBadge({ type }: { type: string }) {
+  const color = EXEC_TYPE_COLORS[type] || EXEC_BADGE_COLOR;
   return (
     <span
       className="text-xs font-mono font-medium px-2 py-0.5 rounded-full"
-      style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}
+      style={{ color, background: color + '20' }}
     >
       [{type}]
     </span>
@@ -1527,7 +1535,9 @@ export default function StrategyBuilderPage() {
   const { data: apiExitTriggers } = useConfluenceTriggers('EXIT');
   const { data: apiConfluenceGroups } = useConfluenceGroups();
   const { data: apiGeneralPacks } = useGeneralPacks();
-  const { data: apiRmPacks } = useRiskManagementPacks();
+  const { data: apiStopPacks } = useStopLossPacks();
+  const { data: apiTargetPacks } = useTakeProfitPacks();
+  const builderDefaults = useStrategyBuilderDefaults();
 
   // Derive trigger/pack/condition lists from API data
   const API_TRIGGERS: TriggerDef[] = useMemo(() => {
@@ -1541,34 +1551,38 @@ export default function StrategyBuilderPage() {
       if (id.endsWith('_hl')) return 'LC'; // HL is functionally LC with limit bail
       return 'C';
     };
+    const parseTriggerName = (raw: string) => {
+      const m = raw.match(/^(.+?)\s*>\s*(.+)$/);
+      return m ? { pack: m[1].trim(), trigger: m[2].trim() } : { pack: 'unknown', trigger: raw };
+    };
     for (const [id, name] of Object.entries(apiEntryTriggers || {})) {
-      triggers.push({ id, name: String(name), execType: deriveExecType(id), pack: id.split('_')[0] || 'unknown' });
+      const parsed = parseTriggerName(String(name));
+      triggers.push({ id, name: parsed.trigger, execType: deriveExecType(id), pack: parsed.pack });
     }
     for (const [id, name] of Object.entries(apiExitTriggers || {})) {
       if (!triggers.find(t => t.id === id)) {
-        triggers.push({ id, name: String(name), execType: deriveExecType(id), pack: id.split('_')[0] || 'unknown' });
+        const parsed = parseTriggerName(String(name));
+        triggers.push({ id, name: parsed.trigger, execType: deriveExecType(id), pack: parsed.pack });
       }
     }
     return triggers.length > 0 ? triggers : API_TRIGGERS;
   }, [apiEntryTriggers, apiExitTriggers]);
 
   const API_STOP_PACKS: RiskPack[] = useMemo(() => {
-    if (!apiRmPacks) return [];
-    return apiRmPacks.map((p: any) => ({
-      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
-      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+    if (!apiStopPacks) return [];
+    return apiStopPacks.map((p: any) => ({
+      id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
+      summary: p.stop_summary || p.version,
     }));
-  }, [apiRmPacks]);
+  }, [apiStopPacks]);
 
   const API_TARGET_PACKS: RiskPack[] = useMemo(() => {
-    if (!apiRmPacks) return [];
-    // All RM packs are potential target packs — the backend analyze endpoint
-    // filters to only those with valid target configs
-    return apiRmPacks.map((p: any) => ({
-      id: p.id, name: `${p.base_template}`, version: p.version || 'Default',
-      summary: Object.entries(p.parameters || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || p.version,
+    if (!apiTargetPacks) return [];
+    return apiTargetPacks.map((p: any) => ({
+      id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
+      summary: p.target_summary || p.version,
     }));
-  }, [apiRmPacks]);
+  }, [apiTargetPacks]);
 
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
@@ -1683,6 +1697,17 @@ export default function StrategyBuilderPage() {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [activeAnalysisTab, setActiveAnalysisTab] = useState('Entry');
   const [filters, setFilters] = useState<FilterConfig>(defaultFilters);
+
+  // ---- Apply saved defaults on mount ----
+  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  useEffect(() => {
+    if (defaultsApplied) return;
+    const { defaultEntryTrigger, defaultExitTriggers, defaultStopPack } = builderDefaults;
+    if (defaultEntryTrigger) setEntryTrigger(defaultEntryTrigger);
+    if (defaultExitTriggers.length > 0) setExitTriggers(defaultExitTriggers);
+    if (defaultStopPack) setSelectedStopPack(defaultStopPack);
+    setDefaultsApplied(true);
+  }, [defaultsApplied, builderDefaults]);
 
   // ---- Backtest State ----
   const [backtestRan, setBacktestRan] = useState(false);
@@ -2169,6 +2194,35 @@ export default function StrategyBuilderPage() {
                 <a href="/confluence-packs/take-profit" className="underline" style={{ color: 'var(--accent)' }}>Manage take profit packs</a>
               </p>
             </div>
+          </div>
+
+          {/* Save / Clear defaults */}
+          <div className="flex items-center gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+            <button
+              className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+              style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}
+              onClick={() => builderDefaults.setDefaults({
+                defaultEntryTrigger: entryTrigger,
+                defaultExitTriggers: exitTriggers,
+                defaultStopPack: selectedStopPack,
+              })}
+            >
+              Save as Default
+            </button>
+            {(builderDefaults.defaultEntryTrigger || builderDefaults.defaultStopPack) && (
+              <button
+                className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                onClick={() => builderDefaults.clearDefaults()}
+              >
+                Clear Defaults
+              </button>
+            )}
+            {(builderDefaults.defaultEntryTrigger || builderDefaults.defaultStopPack) && (
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Defaults saved
+              </span>
+            )}
           </div>
         )}
       </Card>

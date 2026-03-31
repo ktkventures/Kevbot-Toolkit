@@ -94,8 +94,8 @@ class ConfluenceGroup:
         return f"{self.id}_{base_trigger}"
 
     def get_trigger_name(self, base_trigger: str, base_name: str) -> str:
-        """Get the display name for a trigger: '{Confluence Group}: {Trigger}'."""
-        return f"{self.name}: {base_name}"
+        """Get the display name for a trigger: '{Confluence Group} > {Trigger}'."""
+        return f"{self.name} > {base_name}"
 
 
 # =============================================================================
