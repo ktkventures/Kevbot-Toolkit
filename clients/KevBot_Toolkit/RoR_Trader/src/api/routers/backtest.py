@@ -464,25 +464,18 @@ def _analyze_combinations_impl(req, max_depth: int = 2,
         if include_prefix and not exclude_prefix:
             effective_exclude = None
 
-        logger.info("[ANALYZE-COMBO] Calling find_best_combinations with effective_exclude=%s", effective_exclude)
+        logger.info("[ANALYZE-COMBO] Calling find_best_combinations with effective_exclude=%s, include_prefix=%s", effective_exclude, include_prefix)
         combo_results = svc.find_best_combinations(
             base_trades,
             max_depth=max_depth,
             min_trades=3,
-            top_n=100 if include_prefix else 50,
+            top_n=50,
             risk_per_trade=req.risk_per_trade,
             total_trading_days=trading_days,
             exclude_prefix=effective_exclude,
+            include_prefix=include_prefix,
         )
         logger.info("[ANALYZE-COMBO] Raw results: %d combos", len(combo_results))
-
-        if include_prefix:
-            before = len(combo_results)
-            combo_results = [
-                cr for cr in combo_results
-                if all(c.startswith(include_prefix) for c in cr.get('combination', []))
-            ][:50]
-            logger.info("[ANALYZE-COMBO] After include_prefix filter: %d -> %d", before, len(combo_results))
 
         import math
         def _sf(v):

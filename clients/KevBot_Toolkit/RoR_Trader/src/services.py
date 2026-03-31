@@ -1048,6 +1048,7 @@ def find_best_combinations(
     risk_per_trade: float = 100,
     total_trading_days: int = None,
     exclude_prefix: str = None,
+    include_prefix: str = None,
 ) -> list[dict]:
     """Find the best confluence combinations automatically.
 
@@ -1075,6 +1076,8 @@ def find_best_combinations(
         all_records.update(_as_set(records))
     if exclude_prefix:
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
+    if include_prefix:
+        all_records = {r for r in all_records if r.startswith(include_prefix)}
 
     # Pre-compute boolean mask per record (vectorized)
     n_trades = len(trades_df)
