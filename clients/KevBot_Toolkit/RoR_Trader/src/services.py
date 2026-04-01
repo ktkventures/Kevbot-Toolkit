@@ -791,33 +791,45 @@ def compute_alert_kpis(strategy: dict) -> dict | None:
     }
 
 
-def compute_sigma_deviation(actual_avg_r: float, bt_trades_df: pd.DataFrame) -> float | None:
-    """Compute sigma deviation of actual avg R per trade vs backtest baseline.
+def compute_sigma_deviation(actual_cumulative_r: float, n_trades: int, bt_trades_df: pd.DataFrame) -> float | None:
+    """Compute sigma deviation using Performance vs Plan formula.
 
-    Compares actual average R-multiple per trade against the backtest
-    distribution of R-multiples per trade. Returns number of standard
-    deviations from expected.
+    Compares actual cumulative R against the expected cumulative R at N trades,
+    using the backtest R distribution to set the plan line and confidence bands.
+
+    Formula: sigma = (actual_cumR - N × avg_r) / √(N × var_r)
+
+    This is more useful than per-trade comparison because it detects sustained
+    underperformance that compounds over many trades (a small per-trade deviation
+    can mask a huge cumulative shortfall).
 
     Args:
-        actual_avg_r: Average R-multiple per trade in the forward/alert period
+        actual_cumulative_r: Total cumulative R in the forward/alert period
+        n_trades: Number of trades in the forward/alert period
         bt_trades_df: Backtest trades DataFrame with 'r_multiple' column
 
     Returns float (sigma) or None if insufficient data.
     """
-    if len(bt_trades_df) < 5:
+    if len(bt_trades_df) < 10 or n_trades < 3:
         return None
 
     if 'r_multiple' not in bt_trades_df.columns:
         return None
 
     r_values = bt_trades_df['r_multiple'].values
-    expected = float(np.mean(r_values))
-    std = float(np.std(r_values, ddof=1))
+    avg_r = float(np.mean(r_values))
+    var_r = float(np.var(r_values, ddof=1))
 
-    if std == 0 or np.isnan(std):
+    if var_r <= 0 or np.isnan(var_r):
         return None
 
-    sigma = (actual_avg_r - expected) / std
+    expected = n_trades * avg_r
+    std_at_n = np.sqrt(n_trades * var_r)
+
+    if std_at_n == 0:
+        return None
+
+    sigma = (actual_cumulative_r - expected) / std_at_n
     return round(float(sigma), 2)
 
 
@@ -925,26 +937,30 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     alert_kpis = compute_alert_kpis(strategy)
     enriched['alert_kpis'] = alert_kpis
 
-    # Sigma deviation
+    # Sigma deviation (PvP formula: cumulative R vs expected at N trades)
     stored = strategy.get('stored_trades', [])
-    if stored and fwd_kpis and fwd_kpis.get('daily_r') is not None:
-        bt_df = trades_df_from_stored(stored)
-        if strategy.get('forward_test_start'):
+    sigma_fwd = None
+    sigma_alert = None
+    if stored and strategy.get('forward_test_start'):
+        try:
+            bt_df = trades_df_from_stored(stored)
             fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
-            bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
-        sigma_fwd = compute_sigma_deviation(fwd_kpis['avg_r'], bt_df)
-    else:
-        sigma_fwd = None
-    enriched['sigma_fwd'] = sigma_fwd
+            bt_df, fwd_df = split_trades_at_boundary(bt_df, fwd_start)
 
-    if alert_kpis and alert_kpis.get('daily_r') is not None and stored:
-        bt_df = trades_df_from_stored(stored)
-        if strategy.get('forward_test_start'):
-            fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
-            bt_df, _ = split_trades_at_boundary(bt_df, fwd_start)
-        sigma_alert = compute_sigma_deviation(alert_kpis['avg_r'], bt_df)
-    else:
-        sigma_alert = None
+            # FWD sigma from cumulative R
+            if fwd_kpis and len(fwd_df) >= 3 and 'r_multiple' in fwd_df.columns:
+                fwd_cum_r = float(fwd_df['r_multiple'].sum())
+                sigma_fwd = compute_sigma_deviation(fwd_cum_r, len(fwd_df), bt_df)
+
+            # Alert sigma — use alert_kpis total_r and trades count
+            if alert_kpis and alert_kpis.get('trades', 0) >= 3:
+                alert_cum_r = alert_kpis.get('total_r', 0.0)
+                alert_n = alert_kpis.get('trades', 0)
+                sigma_alert = compute_sigma_deviation(alert_cum_r, alert_n, bt_df)
+        except Exception as e:
+            logger.warning("[ENRICH] Sigma computation failed: %s", e)
+
+    enriched['sigma_fwd'] = sigma_fwd
     enriched['sigma_alert'] = sigma_alert
 
     # Status
