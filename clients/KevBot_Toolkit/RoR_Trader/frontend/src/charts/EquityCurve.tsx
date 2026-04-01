@@ -18,6 +18,8 @@ interface EquityCurveProps {
   boundaryIndex?: number | null;
   /** Index where forward test ends and live alerts begin */
   alertBoundaryIndex?: number | null;
+  /** Alert trades as separate overlay data (green line on top of FWD) */
+  alertOverlayData?: EquityPoint[];
   height?: number;
   showZeroLine?: boolean;
   showHWM?: boolean;
@@ -38,6 +40,7 @@ export default function EquityCurve({
   data,
   boundaryIndex,
   alertBoundaryIndex,
+  alertOverlayData,
   height = 300,
   showZeroLine = true,
   showHWM = false,
@@ -170,6 +173,38 @@ export default function EquityCurve({
     });
   }, [chartDataWithHwm, showEdgeCheck]);
 
+  // Merge alert overlay data into chart (green line overlaying FWD segment)
+  const chartDataWithAlerts = useMemo(() => {
+    if (!alertOverlayData || alertOverlayData.length === 0) return chartDataFinal;
+    if (xAxis === 'trade' && boundaryIndex != null) {
+      // In per-trade mode: map alert trades to positions starting at boundaryIndex
+      return chartDataFinal.map((pt: any, i: number) => {
+        const alertIdx = i - boundaryIndex;
+        if (alertIdx >= 0 && alertIdx < alertOverlayData.length) {
+          return { ...pt, alertR: alertOverlayData[alertIdx].cumulative_r };
+        }
+        return { ...pt, alertR: null };
+      });
+    }
+    // In per-day mode: map by matching timestamps
+    if (xAxis === 'time') {
+      const alertByDate = new Map<string, number>();
+      for (const apt of alertOverlayData) {
+        if (!apt.timestamp) continue;
+        const d = new Date(apt.timestamp);
+        if (!isNaN(d.getTime())) {
+          const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          alertByDate.set(label, apt.cumulative_r);
+        }
+      }
+      return chartDataFinal.map((pt: any) => ({
+        ...pt,
+        alertR: alertByDate.get(pt.x) ?? null,
+      }));
+    }
+    return chartDataFinal;
+  }, [chartDataFinal, alertOverlayData, xAxis, boundaryIndex]);
+
   if (chartData.length === 0) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
@@ -204,7 +239,7 @@ export default function EquityCurve({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={chartDataFinal} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+      <AreaChart data={chartDataWithAlerts} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
         <defs>
           <linearGradient id={btGradId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={btColor} stopOpacity={0.12} />
@@ -261,6 +296,12 @@ export default function EquityCurve({
         {/* Live alert segment (no fill) */}
         <Line
           type={curveType} dataKey="live" stroke={liveColor} strokeWidth={2}
+          dot={false} isAnimationActive={false} connectNulls={false}
+        />
+
+        {/* Alert overlay (green, overlays on FWD segment to show execution quality) */}
+        <Line
+          type={curveType} dataKey="alertR" stroke={liveColor} strokeWidth={2}
           dot={false} isAnimationActive={false} connectNulls={false}
         />
 

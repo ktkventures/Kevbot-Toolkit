@@ -12,7 +12,7 @@
  * - Actual line: cumulative R of forward test trades, color-coded by deviation
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
@@ -24,9 +24,17 @@ interface Trade {
   exit_time?: string;
 }
 
+interface AlertTrade {
+  r: number | null;
+  entryTime?: string;
+  exitTime?: string;
+}
+
 interface PerformanceVsPlanProps {
   btTrades: Trade[];
   fwdTrades: Trade[];
+  /** Paired alert trades for the Alert view */
+  alertTrades?: AlertTrade[];
   height?: number;
   projectionMultiplier?: number;
 }
@@ -34,9 +42,14 @@ interface PerformanceVsPlanProps {
 export default function PerformanceVsPlan({
   btTrades,
   fwdTrades,
+  alertTrades,
   height = 280,
   projectionMultiplier = 1.4,
 }: PerformanceVsPlanProps) {
+  const hasAlertData = (alertTrades || []).filter(a => a.r != null).length >= 3;
+  const [viewMode, setViewMode] = useState<'forward' | 'alerts'>('forward');
+  const activeMode = hasAlertData ? viewMode : 'forward';
+
   const chartData = useMemo(() => {
     if (btTrades.length < 10 || fwdTrades.length < 3) return null;
 
@@ -47,13 +60,22 @@ export default function PerformanceVsPlan({
     const varR = btR.reduce((s, r) => s + (r - avgR) ** 2, 0) / (n - 1);
 
     // Step 2: Build plan line and confidence bands centered on plan
-    const maxTrades = Math.ceil(fwdTrades.length * projectionMultiplier);
+    const actualTradeCount = actualCum.length || fwdTrades.length;
+    const maxTrades = Math.ceil(actualTradeCount * projectionMultiplier);
 
-    // Actual cumulative FWD R
+    // Actual cumulative R (from FWD trades or Alert trades based on mode)
+    const sourceTrades = activeMode === 'alerts' && alertTrades
+      ? alertTrades.filter(a => a.r != null).sort((a, b) => {
+          const aMs = a.entryTime ? new Date(a.entryTime).getTime() || 0 : 0;
+          const bMs = b.entryTime ? new Date(b.entryTime).getTime() || 0 : 0;
+          return aMs - bMs;
+        })
+      : fwdTrades;
     let cumActual = 0;
     const actualCum: number[] = [];
-    for (const t of fwdTrades) {
-      cumActual += t.r_multiple;
+    for (const t of sourceTrades) {
+      const r = 'r_multiple' in t ? (t as Trade).r_multiple : ((t as AlertTrade).r ?? 0);
+      cumActual += r;
       actualCum.push(cumActual);
     }
 
@@ -73,7 +95,7 @@ export default function PerformanceVsPlan({
       points.push({
         x: i,
         plan,
-        actual: i > 0 && i <= fwdTrades.length ? actualCum[i - 1] : null,
+        actual: i > 0 && i <= actualCum.length ? actualCum[i - 1] : null,
         // For band rendering: store upper and lower directly
         upper2sd,
         lower2sd,
@@ -89,9 +111,10 @@ export default function PerformanceVsPlan({
 
     // Summary metrics
     const lastActual = actualCum.length > 0 ? actualCum[actualCum.length - 1] : 0;
-    const expectedAtN = fwdTrades.length * avgR;
+    const tradeCount = actualCum.length;
+    const expectedAtN = tradeCount * avgR;
     const vsPlan = lastActual - expectedAtN;
-    const stdAtN = Math.sqrt(fwdTrades.length * varR);
+    const stdAtN = Math.sqrt(tradeCount * varR);
     const deviationSD = stdAtN > 0 ? (lastActual - expectedAtN) / stdAtN : 0;
 
     let status: 'on_track' | 'outperforming' | 'underperforming' | 'severe' = 'on_track';
@@ -99,8 +122,8 @@ export default function PerformanceVsPlan({
     else if (deviationSD < -1 && deviationSD >= -2) status = 'underperforming';
     else if (deviationSD < -2) status = 'severe';
 
-    return { points, summary: { trades: fwdTrades.length, actual: lastActual, expected: expectedAtN, vsPlan, deviationSD, status } };
-  }, [btTrades, fwdTrades, projectionMultiplier]);
+    return { points, summary: { trades: tradeCount, actual: lastActual, expected: expectedAtN, vsPlan, deviationSD, status } };
+  }, [btTrades, fwdTrades, alertTrades, activeMode, projectionMultiplier]);
 
   if (!chartData) return null;
 
@@ -122,6 +145,22 @@ export default function PerformanceVsPlan({
 
   return (
     <div>
+      {/* FWD / Alert toggle */}
+      {hasAlertData && (
+        <div className="flex items-center gap-1 mb-3 rounded-lg overflow-hidden w-fit" style={{ border: '1px solid var(--border)' }}>
+          {([{ id: 'forward' as const, label: 'Forward Test' }, { id: 'alerts' as const, label: 'Alert Trades' }]).map((opt) => (
+            <button
+              key={opt.id}
+              className="text-[10px] px-3 py-1 transition-colors"
+              style={{ background: viewMode === opt.id ? 'var(--accent-muted)' : 'transparent', color: viewMode === opt.id ? 'var(--accent)' : 'var(--text-muted)' }}
+              onClick={() => setViewMode(opt.id)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Summary KPIs */}
       <div className="flex items-center gap-6 mb-3 flex-wrap">
         <div>

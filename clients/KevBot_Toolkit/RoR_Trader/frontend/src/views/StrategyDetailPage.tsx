@@ -993,6 +993,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return [];
   }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
+  // Build alert equity points from paired alert trades (green overlay on FWD segment)
+  const alertEquityPoints = useMemo(() => {
+    const closedAlerts = recentAlerts.filter((a: any) => a.r != null && a.exitTime);
+    if (closedAlerts.length === 0) return [];
+    // Sort by entry time ascending
+    const sorted = [...closedAlerts].sort((a: any, b: any) => safeDateMs(a.entryTime) - safeDateMs(b.entryTime));
+    let cum = 0;
+    return sorted.map((a: any, i: number) => {
+      cum += (a.r ?? 0);
+      return { trade_number: i + 1, cumulative_r: cum, timestamp: a.exitTime || a.entryTime || '--' };
+    });
+  }, [recentAlerts]);
+
   // Compute boundary index from forward_test_start date
   const equityBoundaryIndex = useMemo(() => {
     const fwdStart = apiStrategy?.forward_test_start;
@@ -1608,6 +1621,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     liveColor={chartPrefs.eqLiveColor || EQ_LIVE_COLOR}
                     lineStyle={chartPrefs.eqLineStyle || 'solid'}
                     showGradient={chartPrefs.eqFillGradient !== false}
+                    alertOverlayData={alertEquityPoints}
                   />
                   <div className="flex items-center gap-6 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span className="flex items-center gap-1.5">
@@ -1652,6 +1666,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <PerformanceVsPlan
                       btTrades={pvpBtTrades}
                       fwdTrades={pvpFwdTrades}
+                      alertTrades={recentAlerts}
                       height={280}
                     />
                   </Card>
