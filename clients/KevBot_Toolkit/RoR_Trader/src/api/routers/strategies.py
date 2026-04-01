@@ -362,30 +362,34 @@ def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
 
 
 @router.get("/{strategy_id}/kpis")
-def get_strategy_kpis(strategy_id: int, user=Depends(get_current_user)):
-    """Get KPIs for a strategy (from stored kpis or computed)."""
+def get_strategy_kpis(strategy_id: int, date_range: str = "Strategy Default", user=Depends(get_current_user)):
+    """Get KPIs for a strategy (from stored kpis or computed). Supports date_range filtering."""
     strat = _get_or_404(strategy_id, user)
     import services as svc
 
-    primary_kpis = strat.get('kpis')
-    if primary_kpis:
-        # Stored KPIs exist — still need to compute secondary from trades
-        try:
-            stored = strat.get('stored_trades', [])
-            if stored:
-                trades_df = svc.trades_df_from_stored(stored)
-            else:
-                trades_df = svc.get_strategy_trades(strat)
-            secondary = svc.calculate_secondary_kpis(trades_df, primary_kpis)
-        except Exception:
-            secondary = None
-        return {"kpis": primary_kpis, "secondary_kpis": secondary}
+    # Apply date range filter
+    if date_range and date_range not in ("Strategy Default", "All Data"):
+        strat = _filter_trades_by_date_range(strat, date_range)
 
-    # No stored KPIs — compute both from trades
-    trades_df = svc.get_strategy_trades(strat)
-    kpis = svc.calculate_kpis(trades_df)
-    secondary = svc.calculate_secondary_kpis(trades_df, kpis)
-    return {"kpis": kpis, "secondary_kpis": secondary}
+    stored = strat.get('stored_trades', [])
+    if stored:
+        try:
+            trades_df = svc.trades_df_from_stored(stored)
+            primary_kpis = svc.calculate_kpis(trades_df)
+            secondary = svc.calculate_secondary_kpis(trades_df, primary_kpis)
+            return {"kpis": primary_kpis, "secondary_kpis": secondary}
+        except Exception as e:
+            logger.warning("[KPIs] Failed to compute from stored trades: %s", e)
+
+    # No stored trades or computation failed — try live computation
+    try:
+        trades_df = svc.get_strategy_trades(strat)
+        kpis = svc.calculate_kpis(trades_df)
+        secondary = svc.calculate_secondary_kpis(trades_df, kpis)
+        return {"kpis": kpis, "secondary_kpis": secondary}
+    except Exception as e:
+        logger.warning("[KPIs] Failed to compute: %s", e)
+        return {"kpis": strat.get('kpis', {}), "secondary_kpis": None}
 
 
 # =============================================================================

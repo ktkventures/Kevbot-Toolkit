@@ -96,12 +96,15 @@ export function useStrategyForwardTest(id: number | null) {
   });
 }
 
-export function useStrategyKPIs(id: number | null) {
+export function useStrategyKPIs(id: number | null, dateRange?: string) {
+  const params = dateRange && dateRange !== 'Strategy Default'
+    ? `?date_range=${encodeURIComponent(dateRange)}`
+    : '';
   return useQuery({
-    queryKey: ['strategy-kpis', id],
+    queryKey: ['strategy-kpis', id, dateRange || 'Strategy Default'],
     queryFn: () =>
       apiFetch<{ kpis: Record<string, number>; secondary_kpis: Record<string, any> }>(
-        `/api/strategies/${id}/kpis`
+        `/api/strategies/${id}/kpis${params}`
       ),
     enabled: id !== null,
   });

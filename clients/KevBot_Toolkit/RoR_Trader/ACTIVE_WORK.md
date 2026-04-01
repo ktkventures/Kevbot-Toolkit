@@ -73,16 +73,21 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 2f-ds. **Display settings persistence** — Color, shape, brackets persist across navigation. Zustand store syncs on save and hydration.
 
 **Strategy Detail items:**
-- 🔧 2g. **Date range selector not filtering** — Backend endpoint has filter but KPIs/equity curve not updating on change. Investigating.
-- 🔧 2h. **Brackets setting not applied on Strategy Detail** — Strategy Builder respects brackets, Detail page does not yet.
-- 🔧 2i. **Entry/Exit/Stop/Target need exec type badges** — Summary bar and Configuration tab show variables without exec badges. Need to add [C]/[L] etc. to entry, exit, stop, and target displays.
-- 🔧 2j. **Trigger names on Configuration tab** — Shows raw IDs (e.g., `utbot_v2_default_buy`) instead of "Pack > Variation > Trigger" long format. Need naming convention: long name = "Pack (Variation) > Trigger", short name = just trigger.
+- 🔧 2g. **Date range: Extended KPIs + equity curve not updating** — Primary KPIs update correctly. Extended KPIs and equity curve use separate data sources that bypass the filtered trades. Need to derive these from the same filtered dataset.
+- ✅ 2h. **Brackets setting on Strategy Detail** — Now respects display settings.
+- 🔧 2i. **Exit trigger showing blank** — "Signal exit only" is confusing. Bar Count Exit (4 bars) should appear as an exit trigger in the summary bar with pack naming convention: "Bar Count Exit (Default) > 4 Bars". Exit triggers should follow same naming as entry triggers.
+- ✅ 2j. **Trigger display names on Configuration tab** — Entry shows "Pack (Variation) > Trigger". Working for entry and configuration view.
 - 📋 2k. **Forward test start date indicator** — Equity curve should show when FWD started (date label or color boundary). Not currently visible.
 - 📋 2l. **Custom date range option** — Add "Custom" to date range dropdown with start/end date pickers.
 - 📋 2m. **3-segment equity curve** — BT (blue) → FWD (orange) → Alerts (green) coloring per display settings. Currently single color.
 - 📋 2n. **Equity curve toggles** — HWM, Edge Check, Confidence Bands toggles currently non-functional on Strategy Detail.
 - 📋 2o. **Stop/Target exec type badges (prep for Phase 5)** — Stops and targets should show exec type so we can later add candle-close variants for TradingView parity testing.
-- 📋 2p. **Diagnostic logging** — Added console.warn logging to safeDateMs, shiftCType, EquityCurve, buildStrategyChartPanes, apiToDetailStrategy. Backend enrich_strategy logs missing trades, bad dates, inf/NaN KPIs with [ENRICH] prefix.
+- ✅ 2p. **Diagnostic logging** — Frontend console.warn + backend [ENRICH] prefix logging deployed and working.
+- 📋 2q. **Date range: show specific dates** — Display the actual date range in thin text below the dropdown (e.g., "Mar 1 - Mar 31, 2026") so the user knows exactly what window they're looking at.
+- 📋 2r. **Date range: performance optimization** — Cache at least the strategy default period of data. Date ranges within the cached window should filter client-side for instant response. Only fetch new data if the range extends beyond what's cached. Consider scaling implications for 10,000+ strategies.
+- 📋 2s. **Stop/Target display names with pack origin** — Show "Pack (Variation) > Method" for stop and target in summary bar, same as entry triggers. May need display setting for name verbosity (long vs short).
+- 📋 2t. **Bar Count Exit as confluence pack** — Treat Bar Count Exit structurally like other confluence packs with a default pack and variations for different bar counts. Should appear in summary bar as an exit variable.
+- 📋 2u. **Trigger naming convention** — Establish long name (Pack (Variation) > Trigger) and short name (Trigger only). Long name used in Configuration and summary bar. Short name available for compact displays. Could be a display setting for user preference.
 
 ### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
 - [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)

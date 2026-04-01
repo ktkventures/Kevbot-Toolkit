@@ -465,7 +465,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId, dateRange);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
   const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
-  const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
+  const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId, dateRange);
   const { data: alerts } = useStrategyAlerts(strategyId);
   const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
   const deleteMut = useDeleteStrategy();
@@ -882,7 +882,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
-    // Prefer building from trades
+    // When date range is active, build equity from the filtered stored_trades in apiStrategy
+    if (dateRange && dateRange !== 'Strategy Default' && apiStrategy?.stored_trades?.length) {
+      let cum = 0;
+      return apiStrategy.stored_trades.map((t: any, i: number) => {
+        cum += (t.r_multiple ?? 0);
+        return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exit_time || '--' };
+      });
+    }
+    // Default: build from trades hooks
     const combined = [...btTrades, ...fwdTrades];
     if (combined.length > 0) {
       let cum = 0;
@@ -901,7 +909,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       }));
     }
     return [];
-  }, [btTrades, fwdTrades, apiStrategy]);
+  }, [btTrades, fwdTrades, apiStrategy, dateRange]);
 
   const equityBoundaryIndex = useMemo(() => btTrades.length > 0 ? btTrades.length : null, [btTrades]);
 
@@ -1215,7 +1223,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             </span>
             <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>exit:</span>
-            {exitsParsed.map((e, i) => (
+            {exitsParsed.length > 0 ? exitsParsed.map((e, i) => (
               <span key={i} className="flex items-center gap-1">
                 {e.exec && <ExecBadge exec={e.exec} />}
                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -1223,7 +1231,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 </span>
                 {i < exitsParsed.length - 1 && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>,</span>}
               </span>
-            ))}
+            )) : null}
+            {strategy.barCountExit && (
+              <span className="flex items-center gap-1">
+                {exitsParsed.length > 0 && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>,</span>}
+                <ExecBadge exec="[C]" />
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Bar Count Exit (Default) &gt; {strategy.barCountExit} bars</span>
+              </span>
+            )}
+            {exitsParsed.length === 0 && !strategy.barCountExit && (
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>--</span>
+            )}
           </div>
 
           {/* Row 2: Stop + Target + Confluence */}
