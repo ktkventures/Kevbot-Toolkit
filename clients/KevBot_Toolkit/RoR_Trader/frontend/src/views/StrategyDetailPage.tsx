@@ -968,26 +968,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }, [chartPrefs.timezone]);
 
-  // Build equity curve data for the EquityCurve chart
+  // Build equity curve data — always from stored_trades for instant load (no Polygon dependency)
   const equityPoints = useMemo(() => {
-    // When date range is active, build equity from client-filtered trades (instant)
-    if (isDateFiltered && filteredStoredTrades.length > 0) {
+    const raw = isDateFiltered ? filteredStoredTrades : (apiStrategy?.stored_trades || []);
+    if (raw.length > 0) {
       let cum = 0;
-      return filteredStoredTrades.map((t: any, i: number) => {
+      return raw.map((t: any, i: number) => {
         cum += (t.r_multiple ?? 0);
-        return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exit_time || '--' };
+        return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exit_time || t.entry_time || '--' };
       });
     }
-    // Default: build from trades hooks
-    const combined = [...btTrades, ...fwdTrades];
-    if (combined.length > 0) {
-      let cum = 0;
-      return combined.map((t, i) => {
-        cum += t.pnlR;
-        return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exitTime };
-      });
-    }
-    // Fallback: use stored equity_curve_data from strategy if trades not loaded
+    // Fallback: use stored equity_curve_data if no stored_trades
     const ecd = apiStrategy?.equity_curve_data;
     if (ecd?.cumulative_r?.length) {
       return ecd.cumulative_r.map((cr: number, i: number) => ({
@@ -997,9 +988,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       }));
     }
     return [];
-  }, [btTrades, fwdTrades, apiStrategy, dateRange]);
+  }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
-  const equityBoundaryIndex = useMemo(() => btTrades.length > 0 ? btTrades.length : null, [btTrades]);
+  // Compute boundary index from forward_test_start date
+  const equityBoundaryIndex = useMemo(() => {
+    const fwdStart = apiStrategy?.forward_test_start;
+    if (!fwdStart) return null;
+    const fwdMs = safeDateMs(fwdStart);
+    if (!fwdMs) return null;
+    const raw = isDateFiltered ? filteredStoredTrades : (apiStrategy?.stored_trades || []);
+    for (let i = 0; i < raw.length; i++) {
+      const ms = safeDateMs(raw[i].entry_time);
+      if (ms && ms >= fwdMs) return i;
+    }
+    return null;
+  }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
   // Early returns after all hooks
   if (isLoading || !strategy) {
