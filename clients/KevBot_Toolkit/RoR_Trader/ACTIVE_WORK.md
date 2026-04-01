@@ -135,7 +135,7 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 **Batch 1: Foundation**
 - 📋 3a. **1-second bar fetching + caching** — `fetch_1s_bars_for_window()` in data_loader.py with day-level caching. Reuses existing `_polygon_fetch_bars()`.
 - ✅ 3b. **Hold time computation** — Engine already computes `bars_held` and `hold_time_seconds` in `get_trade_record()`. Fields present in stored_trades.
-- 🔍 3c. **Surface hold times in UI** — Hold column in trade tables + Avg Hold / Median Hold in Extended KPIs. Deployed, awaiting QA.
+- ✅ 3c. **Surface hold times in UI** — Hold column in Algo History + Alert History tables. Avg Hold / Median Hold in Extended KPIs. Alert hold times computed from timestamps. Algo hold times show "--" for older strategies (need full backtest rerun to populate hold_time_seconds). New strategies will have hold times automatically.
 
 **Batch 2: Engine Resolution (1-second precision)**
 - 📋 3d. **Wire 1-second resolution into engine** — `resolve_trade_timing()` for every entry/exit bar. First-hit-wins for stop/target. `hifi_mode` config flag.
