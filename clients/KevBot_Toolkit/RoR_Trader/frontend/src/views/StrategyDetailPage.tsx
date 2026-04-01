@@ -1037,6 +1037,36 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }, [apiStrategy, equityBoundaryIndex]);
 
+  // Compute sigma badges from PvP formula (same as Performance vs Plan chart)
+  const clientSigma = useMemo(() => {
+    if (pvpBtTrades.length < 10) return { fwd: null, alert: null };
+    const btR = pvpBtTrades.map((t: any) => t.r_multiple ?? 0);
+    const n = btR.length;
+    const avgR = btR.reduce((s: number, r: number) => s + r, 0) / n;
+    const varR = btR.reduce((s: number, r: number) => s + (r - avgR) ** 2, 0) / (n - 1);
+
+    // FWD sigma
+    let fwdSigma: number | null = null;
+    if (pvpFwdTrades.length >= 3) {
+      const fwdCum = pvpFwdTrades.reduce((s: number, t: any) => s + (t.r_multiple ?? 0), 0);
+      const expected = pvpFwdTrades.length * avgR;
+      const stdAtN = Math.sqrt(pvpFwdTrades.length * varR);
+      fwdSigma = stdAtN > 0 ? (fwdCum - expected) / stdAtN : 0;
+    }
+
+    // Alert sigma
+    let alertSigma: number | null = null;
+    const closedAlerts = recentAlerts.filter((a: any) => a.r != null);
+    if (closedAlerts.length >= 3) {
+      const alertCum = closedAlerts.reduce((s: number, a: any) => s + (a.r ?? 0), 0);
+      const expected = closedAlerts.length * avgR;
+      const stdAtN = Math.sqrt(closedAlerts.length * varR);
+      alertSigma = stdAtN > 0 ? (alertCum - expected) / stdAtN : 0;
+    }
+
+    return { fwd: fwdSigma, alert: alertSigma };
+  }, [pvpBtTrades, pvpFwdTrades, recentAlerts]);
+
   // Early returns after all hooks
   if (isLoading || !strategy) {
     return (
@@ -1303,8 +1333,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         >
           {strategy.status}
         </span>
-        <SigmaBadge label="FWD" value={strategy.fwdSD} color={EQ_FWD_COLOR} />
-        <SigmaBadge label="Alert" value={strategy.alertSD} color={EQ_LIVE_COLOR} />
+        <SigmaBadge label="FWD" value={clientSigma.fwd ?? strategy.fwdSD} color={EQ_FWD_COLOR} />
+        <SigmaBadge label="Alert" value={clientSigma.alert ?? strategy.alertSD} color={EQ_LIVE_COLOR} />
         {strategy.monitored && (
           <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--green)' }}>
             <span style={{ position: 'relative', display: 'inline-block', width: 8, height: 8 }}>
