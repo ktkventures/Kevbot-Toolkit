@@ -112,7 +112,8 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 **Batch A Follow-up: Performance vs Plan** (2v)
 - ✅ 2v. **Performance vs Plan chart** — Bands centered on plan line, two distinct SD bands, summary KPIs, status badge. Positioned below R-Distribution. Loads instantly from stored_trades.
-- 📋 2w. **PvP: FWD vs Alert toggle** — Add toggle on Performance vs Plan chart to switch the "actual" line between forward test trades and alert trades. Plan line stays the same. Gives transparency on execution quality vs theoretical forward test.
+- 🔍 2w. **PvP: FWD vs Alert toggle** — Add toggle on Performance vs Plan chart to switch the "actual" line between forward test trades and alert trades. Plan line stays the same. Gives transparency on execution quality vs theoretical forward test.
+- 📋 2z. **Per-trade alert matching on equity curve** — In Per Trade mode, the green alert line currently uses its own trade numbering. Consider matching each alert trade to its corresponding algo trade number so they line up on the x-axis. Missed trades = gap in alert line, phantom trades = gap in FWD line. Needs investigation — may use Chart & Trades tab matching logic. Review at end of active work phases.
 - 📋 2x. **Sigma badge recalculation** — The sigma badges (FWD σ, Alert σ) shown across the site should use the same computation as Performance vs Plan (deviation from plan based on avg_r and var_r from BT trades). Currently may use a different formula. Audit and align.
 - 📋 2y. **Forward test: button-only loading** — Forward test computation now only runs on "Update Forward Tests" button click. "Update All Data" does full refresh. Page loads instantly with stored data. Consider adding similar bulk update buttons on My Strategies page.
 

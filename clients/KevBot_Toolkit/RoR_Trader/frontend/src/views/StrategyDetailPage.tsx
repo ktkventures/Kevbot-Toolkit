@@ -646,7 +646,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [eqShowHWM, setEqShowHWM] = useState(false);
   const [eqShowEdge, setEqShowEdge] = useState(false);
   const [eqShowConf, setEqShowConf] = useState(false);
-  const [eqXAxisLocal, setEqXAxisLocal] = useState<'trade' | 'time' | null>(null); // null = use display settings default
+  const [eqXAxisLocal, setEqXAxisLocal] = useState<'trade' | 'time' | null>(null);
+  const [pvpViewMode, setPvpViewMode] = useState<'forward' | 'alerts'>('forward');
   const [advancedTab, setAdvancedTab] = useState('Rolling Metrics');
   const [rollingWindow, setRollingWindow] = useState(20);
   const [rollingMetric, setRollingMetric] = useState('Win Rate');
@@ -1668,11 +1669,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* ---- Performance vs Plan ---- */}
                 {pvpFwdTrades.length >= 3 && (
                   <Card className="mb-4">
-                    <h4 className="text-sm font-medium mb-3">Performance vs Plan</h4>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-medium">Performance vs Plan</h4>
+                      {recentAlerts.filter((a: any) => a.r != null).length >= 3 && (
+                        <div className="flex items-center gap-1 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                          {([{ id: 'forward' as const, label: 'Forward Test' }, { id: 'alerts' as const, label: 'Alert Trades' }]).map((opt) => (
+                            <button
+                              key={opt.id}
+                              className="text-[10px] px-3 py-1 transition-colors"
+                              style={{ background: pvpViewMode === opt.id ? 'var(--accent-muted)' : 'transparent', color: pvpViewMode === opt.id ? 'var(--accent)' : 'var(--text-muted)' }}
+                              onClick={() => setPvpViewMode(opt.id)}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <PerformanceVsPlan
                       btTrades={pvpBtTrades}
                       fwdTrades={pvpFwdTrades}
                       alertTrades={recentAlerts}
+                      viewMode={pvpViewMode}
                       height={280}
                     />
                   </Card>

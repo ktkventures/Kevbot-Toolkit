@@ -33,10 +33,11 @@ interface AlertTrade {
 interface PerformanceVsPlanProps {
   btTrades: Trade[];
   fwdTrades: Trade[];
-  /** Paired alert trades for the Alert view */
   alertTrades?: AlertTrade[];
   height?: number;
   projectionMultiplier?: number;
+  /** Controlled view mode from parent */
+  viewMode?: 'forward' | 'alerts';
 }
 
 export default function PerformanceVsPlan({
@@ -45,10 +46,11 @@ export default function PerformanceVsPlan({
   alertTrades,
   height = 280,
   projectionMultiplier = 1.4,
+  viewMode: controlledViewMode,
 }: PerformanceVsPlanProps) {
-  const [viewMode, setViewMode] = useState<'forward' | 'alerts'>('forward');
+  const [localViewMode, setLocalViewMode] = useState<'forward' | 'alerts'>('forward');
   const hasAlertData = useMemo(() => (alertTrades || []).filter(a => a.r != null).length >= 3, [alertTrades]);
-  const activeMode = hasAlertData ? viewMode : 'forward';
+  const activeMode = hasAlertData ? (controlledViewMode ?? localViewMode) : 'forward';
 
   const chartData = useMemo(() => {
     if (btTrades.length < 10 || fwdTrades.length < 3) return null;
@@ -145,23 +147,8 @@ export default function PerformanceVsPlan({
 
   return (
     <div>
-      {/* Summary KPIs + toggle on same row */}
+      {/* Summary KPIs — left aligned */}
       <div className="flex items-center gap-6 mb-3 flex-wrap">
-        {/* FWD / Alert toggle — positioned at right */}
-        {hasAlertData && (
-          <div className="flex items-center gap-1 ml-auto rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-            {([{ id: 'forward' as const, label: 'Forward Test' }, { id: 'alerts' as const, label: 'Alert Trades' }]).map((opt) => (
-              <button
-                key={opt.id}
-                className="text-[10px] px-3 py-1 transition-colors"
-                style={{ background: viewMode === opt.id ? 'var(--accent-muted)' : 'transparent', color: viewMode === opt.id ? 'var(--accent)' : 'var(--text-muted)' }}
-                onClick={() => setViewMode(opt.id)}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
         <div>
           <span className="text-[10px] block" style={{ color: 'var(--text-muted)' }}>FWD Trades</span>
           <span className="text-sm font-semibold">{summary.trades}</span>
