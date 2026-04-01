@@ -2486,7 +2486,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Hold', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
                               <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -2494,7 +2494,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <tbody>
                           {sortedAlgo.length === 0 ? (
                             <tr>
-                              <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No trades available — run backtest to populate
                               </td>
                             </tr>
@@ -2513,6 +2513,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                   {renderTime(row.exitTimeDisplay, row.exitExecType === 'L' ? 'L' : 'C')}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{row.holdTime || '--'}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '--'}</td>
                                 <td style={{ ...tdStyle, color: row.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
@@ -2544,7 +2545,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
                           <tr>
-                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
+                            {['Entry Time', '\u0394', 'Exit Time', '\u0394', 'Hold', 'Entry $', 'Exit $', 'R', 'Result', 'Exit Reason'].map((h, hi) => (
                               <th key={hi} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -2552,19 +2553,23 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         <tbody>
                           {recentAlerts.length === 0 ? (
                             <tr>
-                              <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
                                 No alerts available — enable monitoring to populate
                               </td>
                             </tr>
                           ) : recentAlerts.map((row: any, i: number) => {
                             const m = alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
+                            // Compute alert hold time from entry/exit timestamps
+                            const alertHoldMs = safeDateMs(row.exitTime) && safeDateMs(row.entryTime) ? safeDateMs(row.exitTime) - safeDateMs(row.entryTime) : 0;
+                            const alertHold = alertHoldMs > 0 ? formatHoldTime(alertHoldMs / 1000, null) : '--';
                             return (
                               <tr key={i}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.entryTime)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.exitTime)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{alertHold}</td>
                                 <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
                                 <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
                                 <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
