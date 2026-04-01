@@ -643,6 +643,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [eqShowHWM, setEqShowHWM] = useState(false);
   const [eqShowEdge, setEqShowEdge] = useState(false);
   const [eqShowConf, setEqShowConf] = useState(false);
+  const [eqXAxisLocal, setEqXAxisLocal] = useState<'trade' | 'time' | null>(null); // null = use display settings default
   const [advancedTab, setAdvancedTab] = useState('Rolling Metrics');
   const [rollingWindow, setRollingWindow] = useState(20);
   const [rollingMetric, setRollingMetric] = useState('Win Rate');
@@ -1552,7 +1553,25 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                 {/* ---- Equity Curve ---- */}
                 <Card className="mb-4">
-                  <h4 className="text-sm font-medium mb-3">Equity Curve</h4>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium">Equity Curve</h4>
+                    {/* X-axis toggle */}
+                    <div className="flex items-center gap-1 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                      {([{ id: 'trade' as const, label: 'Per Trade' }, { id: 'time' as const, label: 'Per Day' }]).map((opt) => {
+                        const active = (eqXAxisLocal ?? chartPrefs.eqXAxis) === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            className="text-[10px] px-3 py-1 transition-colors"
+                            style={{ background: active ? 'var(--accent-muted)' : 'transparent', color: active ? 'var(--accent)' : 'var(--text-muted)' }}
+                            onClick={() => setEqXAxisLocal(opt.id)}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <EquityCurve
                     data={equityPoints}
                     boundaryIndex={equityBoundaryIndex}
@@ -1560,7 +1579,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     showZeroLine={chartPrefs.eqShowZeroLine}
                     showHWM={eqShowHWM || chartPrefs.eqShowHWM}
                     showEdgeCheck={eqShowEdge}
-                    xAxis={chartPrefs.eqXAxis}
+                    xAxis={eqXAxisLocal ?? chartPrefs.eqXAxis}
                     btColor={chartPrefs.eqBacktestColor || EQ_BT_COLOR}
                     fwdColor={chartPrefs.eqForwardColor || EQ_FWD_COLOR}
                     liveColor={chartPrefs.eqLiveColor || EQ_LIVE_COLOR}

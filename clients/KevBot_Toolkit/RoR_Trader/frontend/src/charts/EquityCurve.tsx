@@ -57,50 +57,66 @@ export default function EquityCurve({
     if (!data || data.length === 0) return [];
 
     if (xAxis === 'time') {
-      // Per-day mode: group trades by exit date, sum daily R, build cumulative
-      const dailyR = new Map<string, { label: string; ts: number; totalR: number; idx: number }>();
-      let tradeIdx = 0;
-      for (const pt of data) {
-        if (!pt.timestamp) { tradeIdx++; continue; }
+      // Per-day mode: group trades by exit date, track trade index for segment detection
+      const dailyR = new Map<string, { label: string; ts: number; totalR: number; maxIdx: number }>();
+      for (let i = 0; i < data.length; i++) {
+        const pt = data[i];
+        if (!pt.timestamp) continue;
         const d = new Date(pt.timestamp);
-        if (isNaN(d.getTime())) { console.warn('[EquityCurve] Invalid timestamp:', pt.timestamp); tradeIdx++; continue; }
+        if (isNaN(d.getTime())) { console.warn('[EquityCurve] Invalid timestamp:', pt.timestamp); continue; }
         const dateKey = d.toISOString().slice(0, 10);
         const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r, idx: tradeIdx });
-        tradeIdx++;
+        dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r, maxIdx: i });
       }
       const sorted = Array.from(dailyR.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
-      return sorted.map(([, { label, totalR, idx }]) => {
+      return sorted.map(([, { label, totalR, maxIdx }], dayIdx) => {
         let segment: 'backtest' | 'forward' | 'live' = 'backtest';
-        if (boundaryIndex != null && idx >= boundaryIndex) segment = 'forward';
-        if (alertBoundaryIndex != null && idx >= alertBoundaryIndex) segment = 'live';
+        if (boundaryIndex != null && maxIdx >= boundaryIndex) segment = 'forward';
+        if (alertBoundaryIndex != null && maxIdx >= alertBoundaryIndex) segment = 'live';
+
+        // Check if previous day was a different segment (for bridge connections)
+        let prevSegment: string | null = null;
+        if (dayIdx > 0) {
+          const prevIdx = sorted[dayIdx - 1][1].maxIdx;
+          prevSegment = 'backtest';
+          if (boundaryIndex != null && prevIdx >= boundaryIndex) prevSegment = 'forward';
+          if (alertBoundaryIndex != null && prevIdx >= alertBoundaryIndex) prevSegment = 'live';
+        }
+
         return {
           x: label,
           r: totalR,
           bt: segment === 'backtest' ? totalR : null,
           fwd: segment === 'forward' ? totalR : null,
           live: segment === 'live' ? totalR : null,
-          btBridge: segment === 'forward' && dailyR.size > 0 ? totalR : null,
-          fwdBridge: segment === 'live' ? totalR : null,
+          // Bridge: last BT day also gets fwd value, first FWD day also gets bt value
+          btBridge: (prevSegment === 'backtest' && segment === 'forward') ? totalR : null,
+          fwdBridge: (prevSegment === 'forward' && segment === 'live') ? totalR : null,
         };
       });
     }
 
-    // Per-trade mode: sequential trade numbers
+    // Per-trade mode: sequential trade numbers with overlap at segment boundaries
     return data.map((pt, i) => {
       let segment: 'backtest' | 'forward' | 'live' = 'backtest';
       if (boundaryIndex != null && i >= boundaryIndex) segment = 'forward';
       if (alertBoundaryIndex != null && i >= alertBoundaryIndex) segment = 'live';
 
+      // At segment boundaries, include value in BOTH segments so lines connect seamlessly
+      const isLastBT = boundaryIndex != null && i === boundaryIndex - 1;
+      const isFirstFWD = boundaryIndex != null && i === boundaryIndex;
+      const isLastFWD = alertBoundaryIndex != null && i === alertBoundaryIndex - 1;
+      const isFirstLive = alertBoundaryIndex != null && i === alertBoundaryIndex;
+
       return {
         x: pt.trade_number,
         r: pt.cumulative_r,
-        bt: segment === 'backtest' ? pt.cumulative_r : null,
-        fwd: segment === 'forward' ? pt.cumulative_r : null,
-        live: segment === 'live' ? pt.cumulative_r : null,
-        btBridge: segment === 'forward' && i === (boundaryIndex ?? 0) ? pt.cumulative_r : null,
-        fwdBridge: segment === 'live' && i === (alertBoundaryIndex ?? 0) ? pt.cumulative_r : null,
+        bt: (segment === 'backtest' || isFirstFWD) ? pt.cumulative_r : null,
+        fwd: (segment === 'forward' || isLastBT || isFirstLive) ? pt.cumulative_r : null,
+        live: (segment === 'live' || isLastFWD) ? pt.cumulative_r : null,
+        btBridge: null,
+        fwdBridge: null,
       };
     });
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
@@ -209,17 +225,12 @@ export default function EquityCurve({
           fill={showGradient ? `url(#${btGradId})` : 'none'} dot={false} isAnimationActive={false}
           connectNulls={false}
         />
-        {/* Bridge: connect BT end to FWD start */}
-        <Line type={curveType} dataKey="btBridge" stroke={btColor} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
-
         {/* Forward test segment */}
         <Area
           type={curveType} dataKey="fwd" stroke={fwdColor} strokeWidth={2}
           fill={showGradient ? `url(#${fwdGradId})` : 'none'} dot={false} isAnimationActive={false}
           connectNulls={false}
         />
-        {/* Bridge: connect FWD end to Live start */}
-        <Line type={curveType} dataKey="fwdBridge" stroke={fwdColor} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
 
         {/* Live alert segment (no fill) */}
         <Line

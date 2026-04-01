@@ -106,9 +106,10 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 **Remaining Phase 2 — Proposed Batch Order:**
 
 **Batch A: Equity Curve Polish** (2k + 2m + 2n)
-- 📋 2k. **Forward test start date indicator** — vertical line or color boundary on equity curve showing FWD start
-- 📋 2m. **3-segment equity curve** — BT (blue) → FWD (orange) → Alerts (green) per display settings
-- 📋 2n. **Equity curve toggles** — Wire HWM, Edge Check, Confidence Bands checkboxes
+- 🔧 2k. **Forward test start date indicator** — Segment color change marks the boundary. No separate label yet.
+- 🔧 2m. **3-segment equity curve** — BT/FWD/Live segments with overlap at boundaries to eliminate gaps. Time mode now properly tracks segment via trade index.
+- 🔧 2n. **Equity curve toggles** — HWM and Edge Check wired. X-axis toggle (Per Trade / Per Day) added directly on chart. Confidence Bands deferred (needs statistical computation).
+- 📋 2v. **Performance vs Plan chart** — Port from Streamlit portfolios. Expected daily R projection line with 1SD/2SD confidence bands. Measures forward test / alert performance against backtest expectations. Add below equity curve on Strategy Detail. Investigate as follow-up to Batch A.
 
 **Batch B: Pack Display + Naming** (2o + 2s + 2t + 2u)
 - 📋 2o. **Stop/Target exec type badges** — Add exec type to stop/target display (prep for candle-close variants in Phase 5)
