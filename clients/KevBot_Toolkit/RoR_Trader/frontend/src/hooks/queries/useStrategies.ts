@@ -164,6 +164,29 @@ export function useConfluenceChart(strategyId: number | null, condition: string 
   });
 }
 
+// =============================================================================
+// TRADE DRILL-DOWN (1-second zoom)
+// =============================================================================
+
+export interface TradeZoomResponse {
+  bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
+  trade: Record<string, any>;
+  side: 'entry' | 'exit';
+  timeframe: string;
+  symbol: string;
+}
+
+export function useTradeZoom(strategyId: number | null, tradeIdx: number | null, side: 'entry' | 'exit') {
+  return useQuery({
+    queryKey: ['trade-zoom', strategyId, tradeIdx, side],
+    queryFn: () => apiFetch<TradeZoomResponse>(
+      `/api/strategies/${strategyId}/trade-zoom?trade_idx=${tradeIdx}&side=${side}`
+    ),
+    enabled: strategyId !== null && tradeIdx !== null,
+    staleTime: 300000, // Cache for 5 min — 1s bars don't change
+  });
+}
+
 export function useTriggerAnalysis(id: number | null) {
   return useQuery({
     queryKey: ['trigger-analysis', id],

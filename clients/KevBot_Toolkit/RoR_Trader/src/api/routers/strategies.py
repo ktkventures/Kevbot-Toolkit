@@ -1030,3 +1030,108 @@ def manual_exit(strategy_id: int, user=Depends(get_current_user)):
         "webhooks_failed": len([d for d in deliveries if not d.get("success")]),
         "price": alert.get("price"),
     }
+
+
+# =============================================================================
+# TRADE DRILL-DOWN (1-second bar zoom)
+# =============================================================================
+
+@router.get("/{strategy_id}/trade-zoom")
+def trade_zoom(
+    strategy_id: int,
+    trade_idx: int = Query(..., description="Index into stored_trades"),
+    side: str = Query("exit", description="entry or exit — which bar to zoom into"),
+    padding_seconds: int = Query(60, description="Seconds of context before/after the bar"),
+    user=Depends(get_current_user),
+):
+    """Fetch 1-second OHLCV bars around a specific trade's entry or exit bar.
+
+    Returns bars for rendering in the trade drill-down modal.
+    """
+    from data_loader import fetch_1s_bars_for_window
+
+    strat = _get_or_404(strategy_id, user)
+    stored = strat.get('stored_trades', [])
+    if trade_idx < 0 or trade_idx >= len(stored):
+        raise HTTPException(status_code=404, detail=f"Trade index {trade_idx} out of range (0-{len(stored)-1})")
+
+    trade = stored[trade_idx]
+    symbol = strat.get('symbol', 'SPY')
+    timeframe = strat.get('timeframe', '1Min')
+
+    # Determine which timestamp to zoom into
+    if side == 'entry':
+        ts_str = trade.get('entry_time')
+    else:
+        ts_str = trade.get('exit_time')
+
+    if not ts_str:
+        raise HTTPException(status_code=400, detail=f"Trade has no {side}_time")
+
+    # Parse the timestamp
+    try:
+        import pandas as pd
+        ts = pd.Timestamp(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize('UTC')
+        ts_dt = ts.to_pydatetime()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot parse timestamp: {ts_str} ({e})")
+
+    # Determine bar duration for the window
+    tf_seconds = _tf_to_seconds_zoom(timeframe)
+    bar_end = ts_dt + timedelta(seconds=tf_seconds)
+
+    # Fetch 1-second bars
+    try:
+        bars_df = fetch_1s_bars_for_window(symbol, ts_dt, bar_end, padding_seconds=padding_seconds)
+    except Exception as e:
+        logger.warning("[TRADE-ZOOM] Error fetching 1s bars: %s", e)
+        return {"bars_1s": [], "trade": _serialize_trade_for_zoom(trade)}
+
+    # Convert to JSON-serializable list
+    bars_list = []
+    for idx_ts, row in bars_df.iterrows():
+        bars_list.append({
+            "time": idx_ts.isoformat(),
+            "open": float(row.get('open', 0)),
+            "high": float(row.get('high', 0)),
+            "low": float(row.get('low', 0)),
+            "close": float(row.get('close', 0)),
+            "volume": float(row.get('volume', 0)),
+        })
+
+    return {
+        "bars_1s": bars_list,
+        "trade": _serialize_trade_for_zoom(trade),
+        "side": side,
+        "timeframe": timeframe,
+        "symbol": symbol,
+    }
+
+
+def _serialize_trade_for_zoom(trade: dict) -> dict:
+    """Serialize a trade dict for the zoom response, handling Timestamps."""
+    import pandas as pd
+    result = {}
+    for k, v in trade.items():
+        if isinstance(v, pd.Timestamp):
+            result[k] = v.isoformat()
+        elif isinstance(v, set):
+            result[k] = list(v)
+        elif isinstance(v, float) and (v != v):  # NaN check
+            result[k] = None
+        else:
+            result[k] = v
+    return result
+
+
+def _tf_to_seconds_zoom(timeframe: str) -> int:
+    """Convert timeframe string to seconds for zoom window calculation."""
+    if 'Min' in timeframe:
+        return int(timeframe.replace('Min', '')) * 60
+    if 'Hour' in timeframe or timeframe == '1H':
+        return int(timeframe.replace('Hour', '').replace('H', '') or '1') * 3600
+    if 'Day' in timeframe or timeframe == '1D':
+        return 86400
+    return 60

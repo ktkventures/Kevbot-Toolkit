@@ -20,6 +20,7 @@ import { useChartPrefs } from '@/hooks/useChartPrefs';
 // Dynamic imports for chart components — forces separate webpack chunks
 const EquityCurve = dynamic(() => import('@/charts/EquityCurve'), { ssr: false });
 const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { ssr: false });
+const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
 const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
@@ -734,6 +735,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [eqShowConf, setEqShowConf] = useState(false);
   const [eqXAxisLocal, setEqXAxisLocal] = useState<'trade' | 'time' | null>(null);
   const [pvpViewMode, setPvpViewMode] = useState<'forward' | 'alerts'>('forward');
+  const [zoomTrade, setZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
   const [advancedTab, setAdvancedTab] = useState('Rolling Metrics');
   const [rollingWindow, setRollingWindow] = useState(20);
   const [rollingMetric, setRollingMetric] = useState('Win Rate');
@@ -2505,11 +2507,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             return (
                               <tr key={si}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
+                                    onClick={() => setZoomTrade({ idx: row._origIdx ?? si, side: 'entry', trade: row })}
+                                    title="Click to drill down into 1-second candles">
                                   {renderTime(row.entryTimeDisplay, isL ? 'L' : 'C')}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
+                                    onClick={() => setZoomTrade({ idx: row._origIdx ?? si, side: 'exit', trade: row })}
+                                    title="Click to drill down into 1-second candles">
                                   {renderTime(row.exitTimeDisplay, row.exitExecType === 'L' ? 'L' : 'C')}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
@@ -3622,6 +3628,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           </div>
         )}
       </TabBar>
+
+      {/* Trade Drill-Down Modal */}
+      {zoomTrade && (
+        <TradeZoomModal
+          isOpen={!!zoomTrade}
+          onClose={() => setZoomTrade(null)}
+          strategyId={strategyId}
+          tradeIdx={zoomTrade.idx}
+          side={zoomTrade.side}
+          trade={zoomTrade.trade}
+        />
+      )}
     </div>
   );
 }
