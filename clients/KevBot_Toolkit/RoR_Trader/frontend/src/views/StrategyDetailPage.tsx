@@ -111,6 +111,7 @@ const EMPTY_EXTENDED_KPIS = {
   maxRDD: 0, recoveryFactor: 0, ulcerIndex: 0, serenityIndex: 0,
   longestDDTrades: 0, longestDDDays: 0,
   maxConsecWins: 0, maxConsecLosses: 0,
+  avgHold: '--', medianHold: '--',
 };
 
 const ROLLING_METRIC_OPTIONS = ['Win Rate', 'PF', 'Sharpe'];
@@ -631,6 +632,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }, [strategyRaw, isDateFiltered, clientKPIs]);
 
+  // Compute hold time stats from stored trades
+  const holdTimeStats = useMemo(() => {
+    const raw = isDateFiltered ? filteredStoredTrades : (apiStrategy?.stored_trades || []);
+    const holdSeconds = raw
+      .map((t: any) => t.hold_time_seconds)
+      .filter((s: any) => s != null && s > 0) as number[];
+    if (holdSeconds.length === 0) {
+      const holdBars = raw.map((t: any) => t.bars_held).filter((b: any) => b != null && b > 0) as number[];
+      if (holdBars.length === 0) return { avgHold: '--', medianHold: '--' };
+      const avg = holdBars.reduce((s, b) => s + b, 0) / holdBars.length;
+      const sorted = [...holdBars].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      return { avgHold: `${avg.toFixed(1)} bars`, medianHold: `${median} bars` };
+    }
+    const avg = holdSeconds.reduce((s, v) => s + v, 0) / holdSeconds.length;
+    const sorted = [...holdSeconds].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return { avgHold: formatHoldTime(avg, null), medianHold: formatHoldTime(median, null) };
+  }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
+
   const extendedKPIs = useMemo(() => {
     // When date range is active, use client-computed extended KPIs
     if (isDateFiltered && clientKPIs) {
@@ -640,6 +661,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         wins: e.wins, losses: e.losses, bestTrade: e.bestTrade, worstTrade: e.worstTrade,
         avgWin: e.avgWin, avgLoss: e.avgLoss, payoffRatio: e.payoffRatio,
         expectedDailyR: e.expectedDailyR, rSquared: e.rSquared,
+        avgHold: holdTimeStats.avgHold, medianHold: holdTimeStats.medianHold,
       };
     }
     const s = kpiData?.secondary_kpis;
@@ -674,8 +696,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       longestDDDays: s.longest_dd_days ?? s.longestDDDays ?? 0,
       maxConsecWins: s.max_consec_wins ?? s.maxConsecWins ?? 0,
       maxConsecLosses: s.max_consec_losses ?? s.maxConsecLosses ?? 0,
+      avgHold: holdTimeStats.avgHold, medianHold: holdTimeStats.medianHold,
     };
-  }, [kpiData, isDateFiltered, clientKPIs]);
+  }, [kpiData, isDateFiltered, clientKPIs, holdTimeStats]);
   // Map API trades (snake_case) to V5 format — useMemo prevents Terser const-chaining TDZ
   const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => ({
     id: t.id ?? i + 1,
@@ -1623,6 +1646,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         { label: 'Avg Loss', value: `${extendedKPIs.avgLoss.toFixed(2)}R` },
                         { label: 'Payoff Ratio', value: extendedKPIs.payoffRatio.toFixed(2) },
                         { label: 'Expected Daily R', value: `+${extendedKPIs.expectedDailyR.toFixed(2)}` },
+                        { label: 'Avg Hold', value: extendedKPIs.avgHold || '--' },
+                        { label: 'Median Hold', value: extendedKPIs.medianHold || '--' },
                       ].map((kpi) => (
                         <Card key={kpi.label}>
                           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
