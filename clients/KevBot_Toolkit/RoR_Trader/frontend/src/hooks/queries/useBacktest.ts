@@ -26,6 +26,7 @@ export interface BacktestRequest {
   risk_per_trade?: number;
   bar_count_exit?: number;
   secondary_tfs?: string[];
+  hifi_mode?: boolean;
   include_chart_data?: boolean;
   chart_indicators?: string[];
 }

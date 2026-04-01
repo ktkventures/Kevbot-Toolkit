@@ -2026,13 +2026,6 @@ export default function StrategyBuilderPage() {
               ))}
             </div>
           </div>
-
-          {/* Load Data */}
-          <div className="flex items-end">
-            <PrimaryButton fullWidth onClick={handleRunBacktest}>
-              {backtestRan ? 'Reload' : 'Load Data'}
-            </PrimaryButton>
-          </div>
         </div>
         {/* Status line */}
         <div className="mt-2 flex items-center gap-2">
@@ -2272,9 +2265,10 @@ export default function StrategyBuilderPage() {
           <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
             Select your settings above, then click <strong>Load Data</strong> to begin analysis.
           </p>
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {symbol} | {direction} | {timeframe} | ~{estimatedBars.toLocaleString()} bars
+          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+            {symbol} | {direction} | {timeframe} | ~{estimatedBars.toLocaleString()} bars{hifiMode ? ' | Hi-Fi' : ''}
           </p>
+          <PrimaryButton onClick={handleRunBacktest}>Load Data</PrimaryButton>
         </Card>
       )}
 
