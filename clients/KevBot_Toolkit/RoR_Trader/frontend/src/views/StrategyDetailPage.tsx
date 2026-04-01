@@ -610,7 +610,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       maxConsecWins: s.max_consec_wins ?? s.maxConsecWins ?? 0,
       maxConsecLosses: s.max_consec_losses ?? s.maxConsecLosses ?? 0,
     };
-  }, [kpiData]);
+  }, [kpiData, isDateFiltered, clientKPIs]);
   // Map API trades (snake_case) to V5 format — useMemo prevents Terser const-chaining TDZ
   const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => ({
     id: t.id ?? i + 1,
