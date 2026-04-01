@@ -38,6 +38,8 @@ export interface ChartPrefs {
   eqShowZeroLine: boolean;
   eqShowHWM: boolean;
   eqXAxis: 'trade' | 'time';
+  eqLineStyle: 'solid' | 'smooth' | 'stepped';
+  eqFillGradient: boolean;
   // Alert slippage tolerance (seconds)
   alertSlippage: number;
   // Trade markers
@@ -67,6 +69,8 @@ const DEFAULTS: ChartPrefs = {
   eqShowZeroLine: true,
   eqShowHWM: false,
   eqXAxis: 'trade',
+  eqLineStyle: 'solid',
+  eqFillGradient: true,
   alertSlippage: 5,
   entryColor: '#4CAF50',
   exitWinColor: '#4CAF50',

@@ -1559,17 +1559,23 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     height={300}
                     showZeroLine={chartPrefs.eqShowZeroLine}
                     showHWM={eqShowHWM || chartPrefs.eqShowHWM}
+                    showEdgeCheck={eqShowEdge}
                     xAxis={chartPrefs.eqXAxis}
+                    btColor={chartPrefs.eqBacktestColor || EQ_BT_COLOR}
+                    fwdColor={chartPrefs.eqForwardColor || EQ_FWD_COLOR}
+                    liveColor={chartPrefs.eqLiveColor || EQ_LIVE_COLOR}
+                    lineStyle={chartPrefs.eqLineStyle || 'solid'}
+                    showGradient={chartPrefs.eqFillGradient !== false}
                   />
                   <div className="flex items-center gap-6 mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span className="flex items-center gap-1.5">
-                      <span style={{ display: 'inline-block', width: 16, height: 2, background: EQ_BT_COLOR }} /> Backtest
+                      <span style={{ display: 'inline-block', width: 16, height: 2, background: chartPrefs.eqBacktestColor || EQ_BT_COLOR }} /> Backtest
                     </span>
                     <span className="flex items-center gap-1.5">
-                      <span style={{ display: 'inline-block', width: 16, height: 2, background: EQ_FWD_COLOR }} /> Forward
+                      <span style={{ display: 'inline-block', width: 16, height: 2, background: chartPrefs.eqForwardColor || EQ_FWD_COLOR }} /> Forward
                     </span>
                     <span className="flex items-center gap-1.5">
-                      <span style={{ display: 'inline-block', width: 16, height: 2, background: EQ_LIVE_COLOR }} /> Alerts
+                      <span style={{ display: 'inline-block', width: 16, height: 2, background: chartPrefs.eqLiveColor || EQ_LIVE_COLOR }} /> Alerts
                     </span>
                   </div>
                   <div className="flex items-center gap-4 mt-3">

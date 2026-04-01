@@ -21,8 +21,17 @@ interface EquityCurveProps {
   height?: number;
   showZeroLine?: boolean;
   showHWM?: boolean;
+  showEdgeCheck?: boolean;
   xAxis?: 'trade' | 'time';
   mini?: boolean;
+  /** Segment colors from display settings */
+  btColor?: string;
+  fwdColor?: string;
+  liveColor?: string;
+  /** Line style: solid (default), smooth (monotone), stepped */
+  lineStyle?: 'solid' | 'smooth' | 'stepped';
+  /** Show gradient fill under BT and FWD segments */
+  showGradient?: boolean;
 }
 
 export default function EquityCurve({
@@ -32,42 +41,50 @@ export default function EquityCurve({
   height = 300,
   showZeroLine = true,
   showHWM = false,
+  showEdgeCheck = false,
   xAxis = 'trade',
   mini = false,
+  btColor = '#2196F3',
+  fwdColor = '#FF9800',
+  liveColor = '#4CAF50',
+  lineStyle = 'solid',
+  showGradient = true,
 }: EquityCurveProps) {
+  // Map lineStyle to Recharts curve type
+  const curveType = lineStyle === 'stepped' ? 'stepAfter' : lineStyle === 'smooth' ? 'monotone' : 'linear';
+
   const chartData = useMemo(() => {
     if (!data || data.length === 0) return [];
 
     if (xAxis === 'time') {
       // Per-day mode: group trades by exit date, sum daily R, build cumulative
-      const dailyR = new Map<string, { label: string; ts: number; totalR: number }>();
+      const dailyR = new Map<string, { label: string; ts: number; totalR: number; idx: number }>();
+      let tradeIdx = 0;
       for (const pt of data) {
-        if (!pt.timestamp) continue;
+        if (!pt.timestamp) { tradeIdx++; continue; }
         const d = new Date(pt.timestamp);
-        if (isNaN(d.getTime())) { console.warn('[EquityCurve] Invalid timestamp:', pt.timestamp); continue; }
-        const dateKey = d.toISOString().slice(0, 10); // YYYY-MM-DD for sorting
+        if (isNaN(d.getTime())) { console.warn('[EquityCurve] Invalid timestamp:', pt.timestamp); tradeIdx++; continue; }
+        const dateKey = d.toISOString().slice(0, 10);
         const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        // r_multiple for this trade = difference from previous cumulative
-        const existing = dailyR.get(dateKey);
-        if (existing) {
-          // This trade's individual R = current cumulative - previous point's cumulative
-          // But we only have cumulative_r, so daily total = last cumulative of this day
-          dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r });
-        } else {
-          dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r });
-        }
+        dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r, idx: tradeIdx });
+        tradeIdx++;
       }
-      // Sort by date key (YYYY-MM-DD sorts correctly)
       const sorted = Array.from(dailyR.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-      return sorted.map(([, { label, totalR }]) => ({
-        x: label,
-        r: totalR,
-        bt: totalR,
-        fwd: null,
-        live: null,
-        btBridge: null,
-        fwdBridge: null,
-      }));
+
+      return sorted.map(([, { label, totalR, idx }]) => {
+        let segment: 'backtest' | 'forward' | 'live' = 'backtest';
+        if (boundaryIndex != null && idx >= boundaryIndex) segment = 'forward';
+        if (alertBoundaryIndex != null && idx >= alertBoundaryIndex) segment = 'live';
+        return {
+          x: label,
+          r: totalR,
+          bt: segment === 'backtest' ? totalR : null,
+          fwd: segment === 'forward' ? totalR : null,
+          live: segment === 'live' ? totalR : null,
+          btBridge: segment === 'forward' && dailyR.size > 0 ? totalR : null,
+          fwdBridge: segment === 'live' ? totalR : null,
+        };
+      });
     }
 
     // Per-trade mode: sequential trade numbers
@@ -88,8 +105,6 @@ export default function EquityCurve({
     });
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
 
-  // HWM line
-
   if (chartData.length === 0) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
@@ -98,7 +113,7 @@ export default function EquityCurve({
     );
   }
 
-  // Merge HWM into chartData so it uses the same data array (no separate data prop)
+  // Merge HWM into chartData
   const chartDataWithHwm = useMemo(() => {
     if (!showHWM || chartData.length === 0) return chartData;
     let max = -Infinity;
@@ -109,19 +124,31 @@ export default function EquityCurve({
     });
   }, [chartData, showHWM]);
 
+  // Edge Check: 21-period moving average on cumulative R
+  const chartDataFinal = useMemo(() => {
+    if (!showEdgeCheck || chartDataWithHwm.length < 21) return chartDataWithHwm;
+    const window = 21;
+    return chartDataWithHwm.map((pt: any, i: number) => {
+      if (i < window - 1) return { ...pt, edgeMA: null };
+      let sum = 0;
+      for (let j = i - window + 1; j <= i; j++) sum += (chartDataWithHwm[j].r ?? 0);
+      return { ...pt, edgeMA: sum / window };
+    });
+  }, [chartDataWithHwm, showEdgeCheck]);
+
   if (mini) {
     return (
       <ResponsiveContainer width="100%" height={height}>
         <AreaChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
           <defs>
             <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2196F3" stopOpacity={0.15} />
-              <stop offset="100%" stopColor="#2196F3" stopOpacity={0} />
+              <stop offset="0%" stopColor={btColor} stopOpacity={0.15} />
+              <stop offset="100%" stopColor={btColor} stopOpacity={0} />
             </linearGradient>
           </defs>
           <Area
-            type="monotone" dataKey="r" stroke="#2196F3" strokeWidth={1.5}
-            fill="url(#btGrad)" dot={false} isAnimationActive={false}
+            type={curveType} dataKey="r" stroke={btColor} strokeWidth={1.5}
+            fill={showGradient ? 'url(#btGrad)' : 'none'} dot={false} isAnimationActive={false}
           />
           {showZeroLine && <ReferenceLine y={0} stroke="var(--text-secondary)" strokeDasharray="3 3" strokeOpacity={0.3} />}
         </AreaChart>
@@ -129,17 +156,21 @@ export default function EquityCurve({
     );
   }
 
+  // Unique gradient IDs to avoid SVG conflicts
+  const btGradId = `btGradient-${height}`;
+  const fwdGradId = `fwdGradient-${height}`;
+
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={chartDataWithHwm} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+      <AreaChart data={chartDataFinal} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
         <defs>
-          <linearGradient id="btGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#2196F3" stopOpacity={0.12} />
-            <stop offset="100%" stopColor="#2196F3" stopOpacity={0} />
+          <linearGradient id={btGradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={btColor} stopOpacity={0.12} />
+            <stop offset="100%" stopColor={btColor} stopOpacity={0} />
           </linearGradient>
-          <linearGradient id="fwdGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#FF9800" stopOpacity={0.12} />
-            <stop offset="100%" stopColor="#FF9800" stopOpacity={0} />
+          <linearGradient id={fwdGradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={fwdColor} stopOpacity={0.12} />
+            <stop offset="100%" stopColor={fwdColor} stopOpacity={0} />
           </linearGradient>
         </defs>
 
@@ -172,40 +203,45 @@ export default function EquityCurve({
           <ReferenceLine y={0} stroke="var(--text-secondary)" strokeDasharray="4 4" strokeOpacity={0.4} />
         )}
 
-        {/* Per-day mode: single combined line (no segment splitting) */}
-        {xAxis === 'time' ? (
-          <Area
-            type="monotone" dataKey="r" stroke="#2196F3" strokeWidth={2}
-            fill="url(#btGradient)" dot={false} isAnimationActive={false}
-          />
-        ) : (
-          <>
-            {/* Backtest segment (blue) */}
-            <Area
-              type="monotone" dataKey="bt" stroke="#2196F3" strokeWidth={2}
-              fill="url(#btGradient)" dot={false} isAnimationActive={false}
-              connectNulls={false}
-            />
-            {/* Forward test segment (orange) */}
-            <Area
-              type="monotone" dataKey="fwd" stroke="#FF9800" strokeWidth={2}
-              fill="url(#fwdGradient)" dot={false} isAnimationActive={false}
-              connectNulls={false}
-            />
-            {/* Live alert segment (green, no fill) */}
-            <Line
-              type="monotone" dataKey="live" stroke="#4CAF50" strokeWidth={2}
-              dot={false} isAnimationActive={false} connectNulls={false}
-            />
-          </>
-        )}
+        {/* Backtest segment */}
+        <Area
+          type={curveType} dataKey="bt" stroke={btColor} strokeWidth={2}
+          fill={showGradient ? `url(#${btGradId})` : 'none'} dot={false} isAnimationActive={false}
+          connectNulls={false}
+        />
+        {/* Bridge: connect BT end to FWD start */}
+        <Line type={curveType} dataKey="btBridge" stroke={btColor} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
 
-        {/* HWM line (data merged into chartDataWithHwm, no separate data prop) */}
+        {/* Forward test segment */}
+        <Area
+          type={curveType} dataKey="fwd" stroke={fwdColor} strokeWidth={2}
+          fill={showGradient ? `url(#${fwdGradId})` : 'none'} dot={false} isAnimationActive={false}
+          connectNulls={false}
+        />
+        {/* Bridge: connect FWD end to Live start */}
+        <Line type={curveType} dataKey="fwdBridge" stroke={fwdColor} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
+
+        {/* Live alert segment (no fill) */}
+        <Line
+          type={curveType} dataKey="live" stroke={liveColor} strokeWidth={2}
+          dot={false} isAnimationActive={false} connectNulls={false}
+        />
+
+        {/* HWM line */}
         {showHWM && (
           <Line
             type="stepAfter" dataKey="hwm"
             stroke="var(--text-secondary)" strokeWidth={1} strokeDasharray="4 2"
             dot={false} isAnimationActive={false} strokeOpacity={0.4}
+          />
+        )}
+
+        {/* Edge Check: 21-period MA on cumulative R */}
+        {showEdgeCheck && (
+          <Line
+            type="monotone" dataKey="edgeMA"
+            stroke="#AB47BC" strokeWidth={1.5} strokeDasharray="6 3"
+            dot={false} isAnimationActive={false} strokeOpacity={0.7}
           />
         )}
       </AreaChart>
