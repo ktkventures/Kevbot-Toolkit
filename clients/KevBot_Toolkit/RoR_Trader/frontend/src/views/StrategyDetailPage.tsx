@@ -466,7 +466,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Always load full data — date range filtering happens client-side for instant response
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
-  const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
+  // Forward test computation is expensive (Polygon API) — only run on explicit button click
+  const [fwdRequested, setFwdRequested] = useState(false);
+  const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(fwdRequested ? strategyId : null);
   const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
   const { data: alerts } = useStrategyAlerts(strategyId);
   const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
@@ -1220,11 +1222,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         actions={
           <>
             <button
+              style={{ ...btnSecondary, opacity: (fwdLoading || fwdRequested) ? 0.6 : 1 }}
+              disabled={fwdLoading}
+              onClick={() => setFwdRequested(true)}
+            >
+              {fwdLoading ? 'Loading FWD...' : 'Update Forward Tests'}
+            </button>
+            <button
               style={{ ...btnSecondary, opacity: refreshMut.isPending ? 0.6 : 1 }}
               disabled={refreshMut.isPending}
               onClick={() => refreshMut.mutate(strategyId)}
             >
-              {refreshMut.isPending ? 'Refreshing...' : 'Update Data'}
+              {refreshMut.isPending ? 'Refreshing...' : 'Update All Data'}
             </button>
             <button style={btnSecondary} onClick={() => dupMut.mutate(strategyId)}>Clone</button>
             <button
@@ -1624,18 +1633,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </div>
                 </Card>
 
-                {/* ---- Performance vs Plan ---- */}
-                {pvpFwdTrades.length >= 3 && (
-                  <Card className="mb-4">
-                    <h4 className="text-sm font-medium mb-3">Performance vs Plan</h4>
-                    <PerformanceVsPlan
-                      btTrades={pvpBtTrades}
-                      fwdTrades={pvpFwdTrades}
-                      height={280}
-                    />
-                  </Card>
-                )}
-
                 {/* ---- R-Distribution ---- */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <Card>
@@ -1647,6 +1644,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <DistributionChart values={fwdTrades.map(t => t.pnlR)} bins={20} height={200} />
                   </Card>
                 </div>
+
+                {/* ---- Performance vs Plan ---- */}
+                {pvpFwdTrades.length >= 3 && (
+                  <Card className="mb-4">
+                    <h4 className="text-sm font-medium mb-3">Performance vs Plan</h4>
+                    <PerformanceVsPlan
+                      btTrades={pvpBtTrades}
+                      fwdTrades={pvpFwdTrades}
+                      height={280}
+                    />
+                  </Card>
+                )}
 
                 {/* ---- Advanced Analysis (collapsible, if >= 20 trades) ---- */}
                 {strategy.trades >= 20 && (

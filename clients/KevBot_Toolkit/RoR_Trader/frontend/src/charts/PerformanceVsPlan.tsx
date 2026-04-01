@@ -7,14 +7,14 @@
  * Ported from Streamlit's compute_portfolio_benchmark() in portfolios.py.
  *
  * - Plan line: N × avg_r (expected cumulative R per trade)
- * - 1SD band: ±√(N × var_r) — 68% confidence
- * - 2SD band: ±2√(N × var_r) — 95% confidence
+ * - 1SD band: ±√(N × var_r) — 68% confidence, centered on plan
+ * - 2SD band: ±2√(N × var_r) — 95% confidence, centered on plan
  * - Actual line: cumulative R of forward test trades, color-coded by deviation
  */
 
 import { useMemo } from 'react';
 import {
-  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 
@@ -25,12 +25,9 @@ interface Trade {
 }
 
 interface PerformanceVsPlanProps {
-  /** Backtest trades — used to compute avg_r, std_r for the plan line */
   btTrades: Trade[];
-  /** Forward test trades — the "actual" line */
   fwdTrades: Trade[];
   height?: number;
-  /** How far to project the plan line beyond current FWD trades (in trade count) */
   projectionMultiplier?: number;
 }
 
@@ -49,9 +46,8 @@ export default function PerformanceVsPlan({
     const avgR = btR.reduce((s, r) => s + r, 0) / n;
     const varR = btR.reduce((s, r) => s + (r - avgR) ** 2, 0) / (n - 1);
 
-    // Step 2: Build plan line and confidence bands
+    // Step 2: Build plan line and confidence bands centered on plan
     const maxTrades = Math.ceil(fwdTrades.length * projectionMultiplier);
-    const points: any[] = [];
 
     // Actual cumulative FWD R
     let cumActual = 0;
@@ -61,25 +57,37 @@ export default function PerformanceVsPlan({
       actualCum.push(cumActual);
     }
 
+    const points: any[] = [];
     for (let i = 0; i <= maxTrades; i++) {
-      const tradeNum = i;
-      const plan = tradeNum * avgR;
-      const std = Math.sqrt(tradeNum * varR);
+      const plan = i * avgR;
+      const std = Math.sqrt(i * varR);
 
-      const point: any = {
-        x: tradeNum,
+      // For Recharts band rendering: we use stacked areas
+      // band2sd_base = lower2sd, band2sd_height = upper2sd - lower2sd (the full 2SD band)
+      // band1sd_base = lower1sd, band1sd_height = upper1sd - lower1sd (the full 1SD band)
+      const upper2sd = plan + 2 * std;
+      const lower2sd = plan - 2 * std;
+      const upper1sd = plan + 1 * std;
+      const lower1sd = plan - 1 * std;
+
+      points.push({
+        x: i,
         plan,
-        upper2sd: plan + 2 * std,
-        lower2sd: plan - 2 * std,
-        upper1sd: plan + 1 * std,
-        lower1sd: plan - 1 * std,
         actual: i > 0 && i <= fwdTrades.length ? actualCum[i - 1] : null,
-      };
-
-      points.push(point);
+        // For band rendering: store upper and lower directly
+        upper2sd,
+        lower2sd,
+        upper1sd,
+        lower1sd,
+        // Recharts trick: use base + range for stacked area bands
+        band2sdBase: lower2sd,
+        band2sdRange: upper2sd - lower2sd,
+        band1sdBase: lower1sd,
+        band1sdRange: upper1sd - lower1sd,
+      });
     }
 
-    // Compute summary metrics
+    // Summary metrics
     const lastActual = actualCum.length > 0 ? actualCum[actualCum.length - 1] : 0;
     const expectedAtN = fwdTrades.length * avgR;
     const vsPlan = lastActual - expectedAtN;
@@ -94,9 +102,7 @@ export default function PerformanceVsPlan({
     return { points, summary: { trades: fwdTrades.length, actual: lastActual, expected: expectedAtN, vsPlan, deviationSD, status } };
   }, [btTrades, fwdTrades, projectionMultiplier]);
 
-  if (!chartData) {
-    return null; // Not enough data — don't render
-  }
+  if (!chartData) return null;
 
   const { points, summary } = chartData;
 
@@ -153,18 +159,7 @@ export default function PerformanceVsPlan({
 
       {/* Chart */}
       <ResponsiveContainer width="100%" height={height}>
-        <AreaChart data={points} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
-          <defs>
-            <linearGradient id="band2sdGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2196F3" stopOpacity={0.08} />
-              <stop offset="100%" stopColor="#2196F3" stopOpacity={0.04} />
-            </linearGradient>
-            <linearGradient id="band1sdGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2196F3" stopOpacity={0.18} />
-              <stop offset="100%" stopColor="#2196F3" stopOpacity={0.08} />
-            </linearGradient>
-          </defs>
-
+        <ComposedChart data={points} margin={{ top: 8, right: 16, bottom: 20, left: 8 }}>
           <CartesianGrid stroke="var(--border, rgba(255,255,255,0.06))" strokeDasharray="3 3" />
 
           <XAxis
@@ -173,7 +168,7 @@ export default function PerformanceVsPlan({
             tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
             axisLine={{ stroke: 'var(--border, rgba(255,255,255,0.1))' }}
             tickLine={false}
-            label={{ value: 'Trade #', position: 'insideBottom', offset: -2, fill: 'var(--text-muted)', fontSize: 10 }}
+            label={{ value: 'Trade #', position: 'insideBottom', offset: -8, fill: 'var(--text-muted)', fontSize: 10 }}
             domain={[0, 'dataMax']}
           />
           <YAxis
@@ -189,21 +184,34 @@ export default function PerformanceVsPlan({
               borderRadius: '8px', fontSize: '12px', color: 'var(--text-primary)',
             }}
             formatter={(value: number | null, name: string) => {
-              if (value == null) return ['-', name];
-              const labels: Record<string, string> = { plan: 'Plan', actual: 'Actual', upper1sd: '1σ Upper', lower1sd: '1σ Lower', upper2sd: '2σ Upper', lower2sd: '2σ Lower' };
-              return [`${value.toFixed(2)}R`, labels[name] || name];
+              if (value == null) return ['-', ''];
+              const labels: Record<string, string> = { plan: 'Plan', actual: 'Actual', upper1sd: '+1σ', lower1sd: '-1σ', upper2sd: '+2σ', lower2sd: '-2σ' };
+              return [`${value.toFixed(2)}R`, labels[name] || ''];
             }}
+            labelFormatter={(v: number) => `Trade #${v}`}
           />
 
           <ReferenceLine y={0} stroke="var(--text-secondary)" strokeDasharray="4 4" strokeOpacity={0.3} />
 
-          {/* 2SD band (outermost, lightest) */}
-          <Area type="monotone" dataKey="upper2sd" stroke="none" fill="transparent" isAnimationActive={false} />
-          <Area type="monotone" dataKey="lower2sd" stroke="none" fill="url(#band2sdGrad)" isAnimationActive={false} />
+          {/* 2SD band: stacked area — invisible base + visible range */}
+          <Area
+            type="monotone" dataKey="band2sdBase" stackId="band2sd"
+            stroke="none" fill="transparent" isAnimationActive={false}
+          />
+          <Area
+            type="monotone" dataKey="band2sdRange" stackId="band2sd"
+            stroke="none" fill="rgba(33, 150, 243, 0.06)" isAnimationActive={false}
+          />
 
-          {/* 1SD band (inner, slightly darker) */}
-          <Area type="monotone" dataKey="upper1sd" stroke="none" fill="transparent" isAnimationActive={false} />
-          <Area type="monotone" dataKey="lower1sd" stroke="none" fill="url(#band1sdGrad)" isAnimationActive={false} />
+          {/* 1SD band: stacked area — invisible base + visible range */}
+          <Area
+            type="monotone" dataKey="band1sdBase" stackId="band1sd"
+            stroke="none" fill="transparent" isAnimationActive={false}
+          />
+          <Area
+            type="monotone" dataKey="band1sdRange" stackId="band1sd"
+            stroke="none" fill="rgba(33, 150, 243, 0.15)" isAnimationActive={false}
+          />
 
           {/* Plan line (white dashed) */}
           <Line
@@ -219,7 +227,7 @@ export default function PerformanceVsPlan({
             dot={false} isAnimationActive={false}
             connectNulls={false}
           />
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
 
       {/* Legend */}
@@ -228,13 +236,13 @@ export default function PerformanceVsPlan({
           <span style={{ display: 'inline-block', width: 16, height: 2, background: statusColor }} /> Actual
         </span>
         <span className="flex items-center gap-1">
-          <span style={{ display: 'inline-block', width: 16, height: 2, background: 'rgba(255,255,255,0.6)', borderTop: '1px dashed rgba(255,255,255,0.6)' }} /> Plan
+          <span style={{ display: 'inline-block', width: 16, height: 2, borderTop: '2px dashed rgba(255,255,255,0.6)' }} /> Plan
         </span>
         <span className="flex items-center gap-1">
-          <span style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(33,150,243,0.18)', borderRadius: 2 }} /> 68% Band (1SD)
+          <span style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(33,150,243,0.15)', borderRadius: 2 }} /> 68% Band (1SD)
         </span>
         <span className="flex items-center gap-1">
-          <span style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(33,150,243,0.08)', borderRadius: 2 }} /> 95% Band (2SD)
+          <span style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(33,150,243,0.06)', borderRadius: 2 }} /> 95% Band (2SD)
         </span>
       </div>
     </div>
