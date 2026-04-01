@@ -38,6 +38,7 @@ class BacktestRequest(BaseModel):
     # Advanced
     bar_count_exit: Optional[int] = None
     secondary_tfs: list[str] = []
+    hifi_mode: bool = False  # Enable 1-second resolution for every entry/exit
 
     # Output control
     include_chart_data: bool = False
@@ -58,7 +59,9 @@ class TradeRecord(BaseModel):
     exit_reason: Optional[str] = None
     exec_type: Optional[str] = None
     bars_held: Optional[int] = None
+    hold_time_seconds: Optional[float] = None
     entry_trigger: Optional[str] = None
+    hifi_resolved: bool = False  # True if this trade was resolved with 1-second data
 
 
 class BacktestResponse(BaseModel):

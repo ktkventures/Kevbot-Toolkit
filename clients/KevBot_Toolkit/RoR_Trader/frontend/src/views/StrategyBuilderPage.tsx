@@ -1722,6 +1722,9 @@ export default function StrategyBuilderPage() {
     setDefaultsApplied(true);
   }, [defaultsApplied, builderDefaults]);
 
+  // ---- Fidelity ----
+  const [hifiMode, setHifiMode] = useState(false);
+
   // ---- Backtest State ----
   const [backtestRan, setBacktestRan] = useState(false);
   const [configExpanded, setConfigExpanded] = useState(false);
@@ -1844,9 +1847,10 @@ export default function StrategyBuilderPage() {
         // Extract bar_count_exit if a bar count exit trigger is selected
         bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
         secondary_tfs: secondaryTfs,
+        hifi_mode: hifiMode,
       });
     }
-  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, secondaryTfs]);
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, secondaryTfs, hifiMode]);
 
   const handleToggleCondition = useCallback((id: string) => {
     setSelectedConditions((prev) => {
@@ -2001,6 +2005,26 @@ export default function StrategyBuilderPage() {
           <div className="xl:col-span-2">
             <SectionLabel>Name</SectionLabel>
             <TextInput value={strategyName} onChange={setStrategyName} />
+          </div>
+
+          {/* Fidelity */}
+          <div>
+            <SectionLabel>Fidelity</SectionLabel>
+            <div className="flex items-center gap-1 rounded-lg overflow-hidden h-[38px]" style={{ border: '1px solid var(--border)' }}>
+              {([{ id: false, label: 'Standard' }, { id: true, label: 'Hi-Fi' }] as const).map((opt) => (
+                <button
+                  key={String(opt.id)}
+                  className="flex-1 text-xs px-2 py-2 transition-colors"
+                  style={{
+                    background: hifiMode === opt.id ? 'var(--accent-muted)' : 'transparent',
+                    color: hifiMode === opt.id ? 'var(--accent)' : 'var(--text-muted)',
+                  }}
+                  onClick={() => setHifiMode(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Load Data */}

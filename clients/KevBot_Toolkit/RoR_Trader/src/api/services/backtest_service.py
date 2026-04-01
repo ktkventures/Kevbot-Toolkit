@@ -85,9 +85,16 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
             data_source=get_data_source(),
         )
 
-    # 5. Run unified engine
+    # 5. Run unified engine (Pass 1)
     trades_df = svc.unified_trades(df, strategy)
     print(f"[BACKTEST] Unified engine returned {len(trades_df)} trades")
+
+    # 5b. Hi-Fi Pass 2: Resolve every entry/exit with 1-second data
+    if req.hifi_mode and len(trades_df) > 0:
+        if 'hifi_resolved' not in trades_df.columns:
+            trades_df['hifi_resolved'] = False
+        trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
+
     if len(trades_df) > 0:
         print(f"[BACKTEST] First trade: {trades_df.iloc[0].to_dict()}")
         wins = trades_df['win'].sum() if 'win' in trades_df.columns else 'N/A'
@@ -368,3 +375,150 @@ def _resolve_target_from_pack(pack_id: str) -> dict | None:
         if pack.id == pack_id:
             return pack.get_target_config()
     return None
+
+
+# =============================================================================
+# HI-FI RESOLUTION (PASS 2)
+# =============================================================================
+
+def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -> pd.DataFrame:
+    """Resolve every entry/exit with 1-second data for precise timing.
+
+    For each trade:
+    1. Fetch 1-second bars for the exit bar window
+    2. Walk 1-second bars to find which level (stop or target) was hit first
+    3. Update exit_reason, exit_price, and hold_time_seconds if outcome changed
+
+    This is Pass 2 of the Hi-Fi backtest — runs after the normal engine Pass 1.
+    """
+    from data_loader import fetch_1s_bars_for_window
+    from datetime import datetime as _dt, timedelta, timezone
+
+    outcomes_changed = 0
+    total_resolved = 0
+
+    # Get timeframe duration in seconds for window calculation
+    tf_seconds = _tf_to_seconds(timeframe)
+
+    for idx in trades_df.index:
+        trade = trades_df.loc[idx]
+        entry_time_str = trade.get('entry_time')
+        exit_time_str = trade.get('exit_time')
+        stop_price = trade.get('stop_price')
+        target_price = trade.get('target_price')
+        direction = trade.get('direction', 'LONG')
+
+        if not exit_time_str or not stop_price or not target_price:
+            continue
+        if target_price == 0:
+            continue  # No target set (signal-only exit)
+
+        try:
+            exit_dt = _parse_dt(exit_time_str)
+            if exit_dt is None:
+                continue
+
+            # Fetch 1-second bars for the exit bar window
+            window_start = exit_dt
+            window_end = exit_dt + timedelta(seconds=tf_seconds)
+            bars_1s = fetch_1s_bars_for_window(symbol, window_start, window_end, padding_seconds=5)
+
+            if bars_1s is None or len(bars_1s) == 0:
+                continue
+
+            total_resolved += 1
+
+            # Walk 1-second bars to find which level hit first
+            original_reason = trade.get('exit_reason', '')
+            resolved = _walk_1s_for_exit(bars_1s, stop_price, target_price, direction)
+
+            if resolved:
+                new_reason = resolved['exit_reason']
+                new_price = resolved['exit_price']
+                new_time = resolved['exit_time']
+
+                if new_reason != original_reason:
+                    outcomes_changed += 1
+                    logger.info("[HIFI] Trade %s: %s → %s (price %.2f → %.2f)",
+                                idx, original_reason, new_reason,
+                                trade.get('exit_price', 0), new_price)
+
+                trades_df.at[idx, 'exit_reason'] = new_reason
+                trades_df.at[idx, 'exit_price'] = new_price
+                trades_df.at[idx, 'hifi_resolved'] = True
+
+                # Recompute R-multiple with resolved exit price
+                entry_price = trade.get('entry_price', 0)
+                initial_stop = trade.get('initial_stop_price', stop_price)
+                risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price * 0.01)
+                if risk <= 0:
+                    risk = entry_price * 0.01
+                if direction == 'LONG':
+                    pnl = new_price - entry_price
+                else:
+                    pnl = entry_price - new_price
+                trades_df.at[idx, 'r_multiple'] = pnl / risk if risk > 0 else 0
+                trades_df.at[idx, 'win'] = pnl > 0
+                trades_df.at[idx, 'pnl'] = pnl
+
+                # Update hold time with resolved exit time
+                if entry_time_str and new_time:
+                    entry_dt = _parse_dt(entry_time_str)
+                    exit_dt_resolved = _parse_dt(str(new_time))
+                    if entry_dt and exit_dt_resolved:
+                        trades_df.at[idx, 'hold_time_seconds'] = (exit_dt_resolved - entry_dt).total_seconds()
+
+        except Exception as e:
+            logger.warning("[HIFI] Error resolving trade %s: %s", idx, e)
+
+    logger.info("[HIFI] Resolved %d trades, %d outcomes changed", total_resolved, outcomes_changed)
+    return trades_df
+
+
+def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float, target: float, direction: str) -> dict | None:
+    """Walk 1-second bars to find which exit level was hit first.
+
+    Returns dict with exit_reason, exit_price, exit_time, or None if neither hit.
+    """
+    for ts, bar in bars_1s.iterrows():
+        high = bar.get('high', 0)
+        low = bar.get('low', 0)
+
+        if direction == 'LONG':
+            if low <= stop:
+                return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
+            if high >= target:
+                return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
+        else:  # SHORT
+            if high >= stop:
+                return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
+            if low <= target:
+                return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
+
+    return None
+
+
+def _tf_to_seconds(timeframe: str) -> int:
+    """Convert timeframe string to seconds."""
+    if 'Min' in timeframe:
+        return int(timeframe.replace('Min', '')) * 60
+    if 'Hour' in timeframe or timeframe == '1H':
+        return int(timeframe.replace('Hour', '').replace('H', '') or '1') * 3600
+    if 'Day' in timeframe or timeframe == '1D':
+        return 86400
+    return 60  # default 1 minute
+
+
+def _parse_dt(dt_str: str):
+    """Parse a datetime string, handling various formats."""
+    from datetime import datetime as _dt, timezone
+    if not dt_str or dt_str == '--':
+        return None
+    try:
+        s = str(dt_str).replace('Z', '+00:00')
+        d = _dt.fromisoformat(s)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d
+    except (ValueError, TypeError):
+        return None
