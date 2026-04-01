@@ -1548,21 +1548,21 @@ class PositionStateMachine:
             if direction == 'LONG' and low <= self.state.stop_price:
                 fill = min(self.state.stop_price, bar_open)
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('stop_loss', fill, bar_time)
+                return self._exit('stop_loss', fill, bar_time, bar_count)
             elif direction == 'SHORT' and high >= self.state.stop_price:
                 fill = max(self.state.stop_price, bar_open)
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('stop_loss', fill, bar_time)
+                return self._exit('stop_loss', fill, bar_time, bar_count)
 
         # Priority 2: HL limit exit at entry price (unconfirmed HL trade)
         if self.state.pending_hl_limit:
             ep = self.state.entry_price
             if direction == 'LONG' and high >= ep:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('unconfirmed_hl', ep, bar_time)
+                return self._exit('unconfirmed_hl', ep, bar_time, bar_count)
             elif direction == 'SHORT' and low <= ep:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('unconfirmed_hl', ep, bar_time)
+                return self._exit('unconfirmed_hl', ep, bar_time, bar_count)
 
         # Priority 2b: LC/CC bail exit — limit-based bail actions
         # pending_confirm_bar is set during entry; bail executes on the
@@ -1577,10 +1577,10 @@ class PositionStateMachine:
                 # Limit exit at entry price (breakeven or exact)
                 if direction == 'LONG' and high >= ep:
                     self.state.last_exit_bar_count = bar_count
-                    return self._exit(reason, ep, bar_time)
+                    return self._exit(reason, ep, bar_time, bar_count)
                 elif direction == 'SHORT' and low <= ep:
                     self.state.last_exit_bar_count = bar_count
-                    return self._exit(reason, ep, bar_time)
+                    return self._exit(reason, ep, bar_time, bar_count)
                 # Limit not reached yet — stay in position, stop/target still active
 
         # Priority 3: Target (also skipped on entry bar for L-type)
@@ -1588,11 +1588,11 @@ class PositionStateMachine:
             if direction == 'LONG' and high >= self.state.target_price:
                 fill = max(self.state.target_price, bar_open)
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('target', fill, bar_time)
+                return self._exit('target', fill, bar_time, bar_count)
             elif direction == 'SHORT' and low <= self.state.target_price:
                 fill = min(self.state.target_price, bar_open)
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('target', fill, bar_time)
+                return self._exit('target', fill, bar_time, bar_count)
 
         # Priority 3: Signal exit (C-type booleans + L-type fills)
         for et in self.exit_triggers:
@@ -1600,24 +1600,25 @@ class PositionStateMachine:
             # L-type exit
             if l_type_fills and et in l_type_fills:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit(et, l_type_fills[et], bar_time)
+                return self._exit(et, l_type_fills[et], bar_time, bar_count)
             # C-type exit
             if trigger_booleans.get(et, False) or \
                trigger_booleans.get(base_et, False):
                 self.state.last_exit_bar_count = bar_count
-                return self._exit(et, close, bar_time)
+                return self._exit(et, close, bar_time, bar_count)
 
         # Priority 4: Bar count exit (suppressed on partial bars)
         if self.bar_count_exit is not None and not suppress_bar_count:
             bars_held = bar_count - self.state.entry_bar_count
             if bars_held >= self.bar_count_exit:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('bar_count_exit', close, bar_time)
+                return self._exit('bar_count_exit', close, bar_time, bar_count)
 
         return None
 
     def get_trade_record(self, exit_price: float, exit_time,
                          exit_reason: str, exit_trigger: str = None,
+                         bar_count: int = None,
                          ) -> dict:
         """Build a trade record matching generate_trades() schema."""
         entry_price = self.state.entry_price
@@ -1632,6 +1633,20 @@ class PositionStateMachine:
         risk = abs(entry_price - initial_stop) if initial_stop else abs(entry_price * 0.01)
         if risk <= 0:
             risk = entry_price * 0.01
+
+        # Compute hold time
+        bars_held = None
+        hold_time_seconds = None
+        if bar_count is not None and self.state.entry_bar_count is not None:
+            bars_held = bar_count - self.state.entry_bar_count
+        if self.state.entry_time and exit_time:
+            try:
+                from datetime import datetime as _dt
+                entry_dt = _dt.fromisoformat(str(self.state.entry_time).replace('Z', '+00:00')) if isinstance(self.state.entry_time, str) else self.state.entry_time
+                exit_dt = _dt.fromisoformat(str(exit_time).replace('Z', '+00:00')) if isinstance(exit_time, str) else exit_time
+                hold_time_seconds = (exit_dt - entry_dt).total_seconds()
+            except Exception:
+                pass
 
         return {
             'entry_time': self.state.entry_time,
@@ -1650,6 +1665,8 @@ class PositionStateMachine:
             'exit_trigger': exit_trigger,
             'exec_type': self.state.exec_type or 'C',
             'confluence_records': self.state.confluence_records or set(),
+            'bars_held': bars_held,
+            'hold_time_seconds': hold_time_seconds,
         }
 
     def _reset_position(self):
@@ -1672,9 +1689,9 @@ class PositionStateMachine:
         self.state.hold_seconds = 0
         # last_exit_bar_count intentionally preserved for cooldown
 
-    def _exit(self, reason: str, price: float, bar_time) -> dict:
+    def _exit(self, reason: str, price: float, bar_time, bar_count: int = None) -> dict:
         """Execute exit transition and return trade record (backtest path)."""
-        record = self.get_trade_record(price, bar_time, reason, reason)
+        record = self.get_trade_record(price, bar_time, reason, reason, bar_count=bar_count)
         self._reset_position()
         return record
 

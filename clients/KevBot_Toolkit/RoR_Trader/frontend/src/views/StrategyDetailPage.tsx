@@ -336,6 +336,18 @@ function formatTargetDisplay(targetConfig: any): string {
 /* PULSE CSS                                                                   */
 /* ========================================================================= */
 
+/** Format hold time seconds into human-readable string. */
+function formatHoldTime(seconds: number | null | undefined, bars: number | null | undefined): string {
+  if (seconds != null && seconds > 0) {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+    return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+  }
+  if (bars != null && bars > 0) return `${bars} bars`;
+  return '--';
+}
+
 const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.5; } 50% { transform: scale(2.2); opacity: 0; } }`;
 
 /* ========================================================================= */
@@ -674,6 +686,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     pnlR: t.r_multiple ?? t.pnlR ?? 0,
     execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
     exitReason: t.exit_reason || t.exitReason || '--',
+    holdTime: formatHoldTime(t.hold_time_seconds, t.bars_held),
     isFwd: t.isFwd ?? false,
   })), [trades]);
 
@@ -848,6 +861,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       execType: rawExec,
       exitExecType: exitExec,
       exitReason,
+      holdTime: formatHoldTime(t.hold_time_seconds, t.bars_held),
       isFwd: true,
     };
   }), [fwdData, shiftCType]);
@@ -868,6 +882,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       execType: rawExec,
       exitExecType: exitExec,
       exitReason,
+      holdTime: formatHoldTime(t.hold_time_seconds ?? t.holdTimeSeconds, t.bars_held ?? t.barsHeld),
       isFwd: false,
     };
   }), [fwdData, allTrades, shiftCType]);
@@ -1266,7 +1281,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              {['#', 'Entry Time', 'Exit Time', 'Entry $', 'Exit $', 'R', 'Exec', 'Exit Reason'].map((h) => (
+              {['#', 'Entry Time', 'Exit Time', 'Hold', 'Entry $', 'Exit $', 'R', 'Exec', 'Exit Reason'].map((h) => (
                 <th key={h} style={{ ...thStyle, position: 'sticky' as const, top: 0, zIndex: 1, background: 'var(--bg-card)' }}>{h}</th>
               ))}
             </tr>
@@ -1277,6 +1292,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 <td style={tdStyle}>{t.id}</td>
                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.entryTime}</td>
                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.exitTime}</td>
+                <td style={{ ...tdStyle, fontSize: '0.75rem' }}>{t.holdTime || '--'}</td>
                 <td style={tdStyle}>${t.entryPrice.toFixed(2)}</td>
                 <td style={tdStyle}>${t.exitPrice.toFixed(2)}</td>
                 <td style={{ ...tdStyle, color: t.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>

@@ -435,6 +435,86 @@ def _polygon_fetch_bars(ticker: str, multiplier: int, timespan: str,
     return all_results
 
 
+# =============================================================================
+# HI-FI: 1-SECOND BAR FETCHING + DAY-LEVEL CACHING
+# =============================================================================
+
+_1s_cache: dict = {}  # In-memory cache: {ticker_YYYY-MM-DD: pd.DataFrame}
+
+
+def fetch_1s_bars_for_window(
+    ticker: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    padding_seconds: int = 30,
+) -> pd.DataFrame:
+    """Fetch 1-second OHLCV from Polygon for a specific time window + padding.
+
+    Used for Hi-Fi backtest resolution and trade drill-down visualization.
+    Uses day-level caching: fetches full trading day on first request,
+    reuses for subsequent requests on the same ticker+date.
+
+    Args:
+        ticker: Stock symbol (e.g., "SPY")
+        start_dt: Start of the window (UTC datetime)
+        end_dt: End of the window (UTC datetime)
+        padding_seconds: Extra seconds before/after the window
+
+    Returns:
+        DataFrame with 1-second OHLCV bars, indexed by timestamp.
+    """
+    import pandas as pd
+
+    padded_start = start_dt - timedelta(seconds=padding_seconds)
+    padded_end = end_dt + timedelta(seconds=padding_seconds)
+
+    # Collect all needed dates
+    dates_needed = set()
+    cursor = padded_start.date()
+    while cursor <= padded_end.date():
+        dates_needed.add(cursor)
+        cursor += timedelta(days=1)
+
+    # Fetch any missing dates
+    poly_ticker = _polygon_ticker(ticker)
+    for d in dates_needed:
+        cache_key = f"{poly_ticker}_{d.isoformat()}"
+        if cache_key not in _1s_cache:
+            from_str = d.isoformat()
+            to_str = d.isoformat()
+            logger.info("[HIFI] Fetching 1-second bars for %s on %s", ticker, from_str)
+            results = _polygon_fetch_bars(poly_ticker, 1, 'second', from_str, to_str)
+            if results:
+                _1s_cache[cache_key] = _polygon_bars_to_df(results)
+            else:
+                _1s_cache[cache_key] = pd.DataFrame()
+
+    # Combine cached data for all needed dates
+    frames = []
+    for d in sorted(dates_needed):
+        cache_key = f"{poly_ticker}_{d.isoformat()}"
+        df = _1s_cache.get(cache_key)
+        if df is not None and not df.empty:
+            frames.append(df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames)
+    combined.sort_index(inplace=True)
+
+    # Filter to padded window
+    mask = (combined.index >= pd.Timestamp(padded_start, tz='UTC')) & \
+           (combined.index <= pd.Timestamp(padded_end, tz='UTC'))
+    return combined.loc[mask]
+
+
+def clear_1s_cache():
+    """Clear the in-memory 1-second bar cache."""
+    global _1s_cache
+    _1s_cache = {}
+
+
 def load_from_polygon(
     symbol: str,
     days: int = 30,

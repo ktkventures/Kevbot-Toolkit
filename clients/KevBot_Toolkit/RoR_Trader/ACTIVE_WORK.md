@@ -128,12 +128,26 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 2l. **Custom date range** — "Custom" option in dropdown with native date pickers. Client-side filtering. Pattern from PortfoliosPage.
 - ✅ 2q. **Show specific date range text** — Thin text showing "Nov 20, 2025 — Mar 31, 2026" inline with the dropdown.
 
-### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
-- [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)
-- [ ] 3b. 1-second bar loading from Polygon for ambiguous resolution
-- [ ] 3c. Hold time computation (hold_time_seconds, hold_bars in trade records)
-- [ ] 3d. Surface hold times in trades table + KPIs
-- [ ] 3e-new. **TF Conditions fidelity badge (PB/CB)** — Update TF condition displays to show [PB] (previous bar) or [CB] (current bar) fidelity type instead of C/L exec type. CB uses Hi-Fi 1-second drilling to determine cross-TF condition state at entry time. Depends on 3a-3b being complete.
+### Phase 3: Hi-Fi Execution & Hold Times — IN PROGRESS
+
+**Status Key:** ✅ QA Passed | 🔍 QA Reviewing | 🔧 Fixing | 📋 TODO
+
+**Batch 1: Foundation**
+- 🔍 3a. **1-second bar fetching + caching** — `fetch_1s_bars_for_window()` in data_loader.py with day-level caching. Reuses existing `_polygon_fetch_bars()`.
+- 🔍 3b. **Hold time computation** — `bars_held` and `hold_time_seconds` added to trade records in unified_engine.py. All `_exit()` calls now pass `bar_count` for `bars_held` calculation. Hold time computed from entry/exit timestamps.
+- 🔍 3c. **Surface hold times in UI** — Hold column added to trade history table. `formatHoldTime()` helper shows "2m 30s", "1h 15m", etc.
+
+**Batch 2: Engine Resolution (1-second precision)**
+- 📋 3d. **Wire 1-second resolution into engine** — `resolve_trade_timing()` for every entry/exit bar. First-hit-wins for stop/target. `hifi_mode` config flag.
+- 📋 3e. **Strategy Builder fidelity setting** — Standard / High Fidelity selector.
+
+**Batch 3: Visualization (trade drill-down modal)**
+- 📋 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second bars + stepped indicators + confluence states.
+- 📋 3g. **Trade drill-down modal** — Click entry/exit time → 1-second candles with indicators, heatmap, markers.
+
+**Batch 4: Polish**
+- 📋 3h. **PB/CB fidelity variants on TF Conditions** — Like exec types on triggers. Each condition generates [PB] and [CB] variants as separate selectable items. Standard fidelity hides CB. HiFi shows both.
+- 📋 3i. **Mass Builder fidelity setting** — HiFi option in Mass Builder config.
 
 ### Phase 4: Chart Test Page + Replay — NOT STARTED
 - [ ] 4a. Page scaffold with chart + config panel
