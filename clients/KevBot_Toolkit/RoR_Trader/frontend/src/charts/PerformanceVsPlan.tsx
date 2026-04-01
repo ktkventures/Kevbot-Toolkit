@@ -59,10 +59,6 @@ export default function PerformanceVsPlan({
     const avgR = btR.reduce((s, r) => s + r, 0) / n;
     const varR = btR.reduce((s, r) => s + (r - avgR) ** 2, 0) / (n - 1);
 
-    // Step 2: Build plan line and confidence bands centered on plan
-    const actualTradeCount = actualCum.length || fwdTrades.length;
-    const maxTrades = Math.ceil(actualTradeCount * projectionMultiplier);
-
     // Actual cumulative R (from FWD trades or Alert trades based on mode)
     const sourceTrades = activeMode === 'alerts' && alertTrades
       ? alertTrades.filter(a => a.r != null).sort((a, b) => {
@@ -78,6 +74,10 @@ export default function PerformanceVsPlan({
       cumActual += r;
       actualCum.push(cumActual);
     }
+
+    // Step 2: Build plan line and confidence bands centered on plan
+    const actualTradeCount = actualCum.length || fwdTrades.length;
+    const maxTrades = Math.ceil(actualTradeCount * projectionMultiplier);
 
     const points: any[] = [];
     for (let i = 0; i <= maxTrades; i++) {
