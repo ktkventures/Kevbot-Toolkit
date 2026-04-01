@@ -188,7 +188,6 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
         filtered_trades = strat.get('stored_trades', [])
         if filtered_trades:
             import services as _svc
-            import pandas as _pd
             try:
                 trades_df = _svc.trades_df_from_stored(filtered_trades)
                 strat['kpis'] = _svc.calculate_kpis(trades_df)

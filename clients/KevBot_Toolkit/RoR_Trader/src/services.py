@@ -892,17 +892,21 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
         logger.warning("[ENRICH] Strategy %s has 0 stored_trades", sid)
     if not kpis:
         logger.warning("[ENRICH] Strategy %s has no kpis object", sid)
-    for trade in stored[:5]:  # sample first 5 trades for date validation
+        kpis = {}
+    # Validate trade dates (sample first 5)
+    for trade in stored[:5]:
         et = trade.get('entry_time')
         xt = trade.get('exit_time')
         if et and not isinstance(et, str):
             logger.warning("[ENRICH] Strategy %s trade has non-string entry_time: %s (%s)", sid, et, type(et).__name__)
         if xt and not isinstance(xt, str):
             logger.warning("[ENRICH] Strategy %s trade has non-string exit_time: %s (%s)", sid, xt, type(xt).__name__)
-    for k, v in kpis.items():
-        if isinstance(v, float) and (np.isinf(v) or np.isnan(v)):
-            logger.warning("[ENRICH] Strategy %s KPI '%s' is %s — sanitizing to 0", sid, k, v)
-            kpis[k] = 0.0
+    # Sanitize inf/NaN KPIs
+    if isinstance(kpis, dict):
+        for k, v in list(kpis.items()):
+            if isinstance(v, float) and (np.isinf(v) or np.isnan(v)):
+                logger.warning("[ENRICH] Strategy %s KPI '%s' is %s — sanitizing to 0", sid, k, v)
+                kpis[k] = 0.0
     enriched['kpis'] = kpis
 
     # Alerts always on for forward testing strategies
@@ -946,19 +950,20 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     # Status
     enriched['status'] = derive_strategy_status(fwd_kpis, sigma_fwd)
 
-    # Resolve trigger IDs to display names for frontend
-    try:
-        from confluence_groups import get_enabled_groups, get_all_triggers
-        all_triggers = get_all_triggers(get_enabled_groups())
-        entry_id = strategy.get('entry_trigger_confluence_id', '')
-        if entry_id and entry_id in all_triggers:
-            enriched['entry_trigger_display_name'] = all_triggers[entry_id].name
-        exit_ids = strategy.get('exit_trigger_confluence_ids', [])
-        enriched['exit_trigger_display_names'] = {
-            eid: all_triggers[eid].name for eid in exit_ids if eid in all_triggers
-        }
-    except Exception as e:
-        logger.warning("[ENRICH] Failed to resolve trigger names: %s", e)
+    # Resolve trigger IDs to display names (only for detail page, not list — too expensive)
+    if full_compute:
+        try:
+            from confluence_groups import get_enabled_groups, get_all_triggers
+            all_triggers = get_all_triggers(get_enabled_groups())
+            entry_id = strategy.get('entry_trigger_confluence_id', '')
+            if entry_id and entry_id in all_triggers:
+                enriched['entry_trigger_display_name'] = all_triggers[entry_id].name
+            exit_ids = strategy.get('exit_trigger_confluence_ids', [])
+            enriched['exit_trigger_display_names'] = {
+                eid: all_triggers[eid].name for eid in exit_ids if eid in all_triggers
+            }
+        except Exception as e:
+            logger.warning("[ENRICH] Failed to resolve trigger names: %s", e)
 
     return enriched
 
