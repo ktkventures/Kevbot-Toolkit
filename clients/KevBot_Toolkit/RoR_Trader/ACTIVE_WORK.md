@@ -2,7 +2,30 @@
 
 **Last Updated:** 2026-04-01
 **Current Phase:** Phase 2 (Strategy Detail Page Refinements) — IN PROGRESS
-**Current Focus:** QA round 3 — fixing date range, brackets, trigger names, exec badges on detail page
+**Current Focus:** Client-side date range filtering deployed, QA in progress
+
+---
+
+## QA Troubleshooting Guide
+
+When hitting errors during QA, please include the following in your report:
+
+**Browser console errors:** Copy the full error text (right-click → Copy in Chrome DevTools).
+
+**Railway API logs:** Go to Railway → API service → Logs tab, and filter for these terms:
+- **`statement timeout`** — Database query took too long (transient, try refreshing)
+- **`Error`** or **`Traceback`** — Python exception with stack trace
+- **`ENRICH`** — Our strategy enrichment logging (shows data quality issues)
+- **`DETAIL`** — Strategy detail endpoint logging
+- **`KPIs`** — KPI computation logging
+
+Grab the last 2-3 minutes of matching logs and paste them in.
+
+**Common issues:**
+- **503 (Service Unavailable)** — Usually a Supabase database timeout. Try refreshing. If persistent, check API logs for `statement timeout`.
+- **500 (Internal Server Error)** — Code error. Check API logs for `Traceback`.
+- **CORS error** — Follows a 500/503. Fix the underlying API error and CORS resolves.
+- **"Cannot access X before initialization"** — Terser TDZ error. Variables must be declared before use in source order.
 
 ---
 
