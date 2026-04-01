@@ -509,13 +509,22 @@ def _tf_to_seconds(timeframe: str) -> int:
     return 60  # default 1 minute
 
 
-def _parse_dt(dt_str: str):
-    """Parse a datetime string, handling various formats."""
+def _parse_dt(dt_val):
+    """Parse a datetime value, handling strings, Timestamps, and datetimes."""
     from datetime import datetime as _dt, timezone
-    if not dt_str or dt_str == '--':
+    import pandas as _pd
+    if dt_val is None or (isinstance(dt_val, str) and (not dt_val or dt_val == '--')):
         return None
     try:
-        s = str(dt_str).replace('Z', '+00:00')
+        # Handle pandas Timestamp directly
+        if isinstance(dt_val, _pd.Timestamp):
+            return dt_val.to_pydatetime()
+        if isinstance(dt_val, _dt):
+            if dt_val.tzinfo is None:
+                return dt_val.replace(tzinfo=timezone.utc)
+            return dt_val
+        # String parsing
+        s = str(dt_val).replace('Z', '+00:00')
         d = _dt.fromisoformat(s)
         if d.tzinfo is None:
             d = d.replace(tzinfo=timezone.utc)

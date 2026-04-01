@@ -503,9 +503,15 @@ def fetch_1s_bars_for_window(
     combined = pd.concat(frames)
     combined.sort_index(inplace=True)
 
-    # Filter to padded window
-    mask = (combined.index >= pd.Timestamp(padded_start, tz='UTC')) & \
-           (combined.index <= pd.Timestamp(padded_end, tz='UTC'))
+    # Filter to padded window (handle both tz-aware and tz-naive datetimes)
+    def _to_utc_ts(dt):
+        ts = pd.Timestamp(dt)
+        if ts.tzinfo is None:
+            return ts.tz_localize('UTC')
+        return ts.tz_convert('UTC')
+
+    mask = (combined.index >= _to_utc_ts(padded_start)) & \
+           (combined.index <= _to_utc_ts(padded_end))
     return combined.loc[mask]
 
 
