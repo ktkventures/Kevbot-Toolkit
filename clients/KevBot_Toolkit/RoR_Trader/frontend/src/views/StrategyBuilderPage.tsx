@@ -1756,6 +1756,7 @@ export default function StrategyBuilderPage() {
       lookback_mode: lookbackMode,
       bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
       secondary_tfs: secondaryTfs,
+      hifi_mode: hifiMode,
     } as any, {
       onSuccess: (data) => {
         // Clear sibling mode so stale results don't take priority
