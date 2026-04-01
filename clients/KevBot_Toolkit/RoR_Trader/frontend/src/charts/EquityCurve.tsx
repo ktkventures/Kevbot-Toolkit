@@ -57,42 +57,68 @@ export default function EquityCurve({
     if (!data || data.length === 0) return [];
 
     if (xAxis === 'time') {
-      // Per-day mode: group trades by exit date, track trade index for segment detection
-      const dailyR = new Map<string, { label: string; ts: number; totalR: number; maxIdx: number }>();
+      // Per-day mode: group trades by exit date, then fill non-trading days with flat lines
+      const dailyR = new Map<string, { totalR: number; maxIdx: number }>();
       for (let i = 0; i < data.length; i++) {
         const pt = data[i];
         if (!pt.timestamp) continue;
         const d = new Date(pt.timestamp);
         if (isNaN(d.getTime())) { console.warn('[EquityCurve] Invalid timestamp:', pt.timestamp); continue; }
         const dateKey = d.toISOString().slice(0, 10);
-        const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        dailyR.set(dateKey, { label, ts: d.getTime(), totalR: pt.cumulative_r, maxIdx: i });
+        dailyR.set(dateKey, { totalR: pt.cumulative_r, maxIdx: i });
       }
-      const sorted = Array.from(dailyR.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      if (dailyR.size === 0) return [];
 
-      return sorted.map(([, { label, totalR, maxIdx }], dayIdx) => {
+      // Get date range and fill ALL calendar days (weekdays only for equities)
+      const sortedKeys = Array.from(dailyR.keys()).sort();
+      const startDate = new Date(sortedKeys[0] + 'T00:00:00');
+      const endDate = new Date(sortedKeys[sortedKeys.length - 1] + 'T00:00:00');
+      const allDays: { dateKey: string; label: string; totalR: number; maxIdx: number }[] = [];
+      let lastR = 0;
+      let lastIdx = 0;
+      const cursor = new Date(startDate);
+      while (cursor <= endDate) {
+        const dow = cursor.getDay();
+        if (dow !== 0 && dow !== 6) { // Skip weekends
+          const dk = cursor.toISOString().slice(0, 10);
+          const label = cursor.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const entry = dailyR.get(dk);
+          if (entry) {
+            lastR = entry.totalR;
+            lastIdx = entry.maxIdx;
+            allDays.push({ dateKey: dk, label, totalR: entry.totalR, maxIdx: entry.maxIdx });
+          } else {
+            // Non-trading day: carry forward last known cumulative R
+            allDays.push({ dateKey: dk, label, totalR: lastR, maxIdx: lastIdx });
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      return allDays.map(({ label, totalR, maxIdx }, dayIdx) => {
         let segment: 'backtest' | 'forward' | 'live' = 'backtest';
         if (boundaryIndex != null && maxIdx >= boundaryIndex) segment = 'forward';
         if (alertBoundaryIndex != null && maxIdx >= alertBoundaryIndex) segment = 'live';
 
-        // Check if previous day was a different segment (for bridge connections)
+        // At segment transitions, include value in both segments for seamless connection
         let prevSegment: string | null = null;
         if (dayIdx > 0) {
-          const prevIdx = sorted[dayIdx - 1][1].maxIdx;
+          const pi = allDays[dayIdx - 1].maxIdx;
           prevSegment = 'backtest';
-          if (boundaryIndex != null && prevIdx >= boundaryIndex) prevSegment = 'forward';
-          if (alertBoundaryIndex != null && prevIdx >= alertBoundaryIndex) prevSegment = 'live';
+          if (boundaryIndex != null && pi >= boundaryIndex) prevSegment = 'forward';
+          if (alertBoundaryIndex != null && pi >= alertBoundaryIndex) prevSegment = 'live';
         }
+        const isBtToFwd = prevSegment === 'backtest' && segment === 'forward';
+        const isFwdToLive = prevSegment === 'forward' && segment === 'live';
 
         return {
           x: label,
           r: totalR,
-          bt: segment === 'backtest' ? totalR : null,
-          fwd: segment === 'forward' ? totalR : null,
-          live: segment === 'live' ? totalR : null,
-          // Bridge: last BT day also gets fwd value, first FWD day also gets bt value
-          btBridge: (prevSegment === 'backtest' && segment === 'forward') ? totalR : null,
-          fwdBridge: (prevSegment === 'forward' && segment === 'live') ? totalR : null,
+          bt: (segment === 'backtest' || isBtToFwd) ? totalR : null,
+          fwd: (segment === 'forward' || isBtToFwd || isFwdToLive) ? totalR : null,
+          live: (segment === 'live' || isFwdToLive) ? totalR : null,
+          btBridge: null,
+          fwdBridge: null,
         };
       });
     }
@@ -121,15 +147,7 @@ export default function EquityCurve({
     });
   }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
 
-  if (chartData.length === 0) {
-    return (
-      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
-        No trade data
-      </div>
-    );
-  }
-
-  // Merge HWM into chartData
+  // Merge HWM into chartData (MUST be before any early return — React hooks rule)
   const chartDataWithHwm = useMemo(() => {
     if (!showHWM || chartData.length === 0) return chartData;
     let max = -Infinity;
@@ -140,7 +158,7 @@ export default function EquityCurve({
     });
   }, [chartData, showHWM]);
 
-  // Edge Check: 21-period moving average on cumulative R
+  // Edge Check: 21-period moving average on cumulative R (MUST be before early return)
   const chartDataFinal = useMemo(() => {
     if (!showEdgeCheck || chartDataWithHwm.length < 21) return chartDataWithHwm;
     const window = 21;
@@ -151,6 +169,14 @@ export default function EquityCurve({
       return { ...pt, edgeMA: sum / window };
     });
   }, [chartDataWithHwm, showEdgeCheck]);
+
+  if (chartData.length === 0) {
+    return (
+      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
+        No trade data
+      </div>
+    );
+  }
 
   if (mini) {
     return (
