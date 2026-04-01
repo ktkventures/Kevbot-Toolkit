@@ -462,10 +462,11 @@ interface Props {
 
 export default function StrategyDetailPage({ strategyId }: Props) {
   const [dateRange, setDateRange] = useState('Strategy Default');
-  const { data: apiStrategy, isLoading, error } = useStrategy(strategyId, dateRange);
+  // Always load full data — date range filtering happens client-side for instant response
+  const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
   const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
-  const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId, dateRange);
+  const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
   const { data: alerts } = useStrategyAlerts(strategyId);
   const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
   const deleteMut = useDeleteStrategy();
@@ -487,9 +488,33 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
-  // Map API data to V5 shape
-  const strategy = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
+  // Map API data to V5 shape (client KPIs override when date range is active)
+  const strategyRaw = apiStrategy ? apiToDetailStrategy(apiStrategy) : null;
+  const strategy = useMemo(() => {
+    if (!strategyRaw) return null;
+    if (!isDateFiltered || !clientKPIs) return strategyRaw;
+    const k = clientKPIs.primary;
+    return {
+      ...strategyRaw,
+      winRate: k.win_rate,
+      pf: k.profit_factor,
+      dailyR: k.daily_r,
+      trades: k.total_trades,
+      maxDD: k.max_r_drawdown,
+    };
+  }, [strategyRaw, isDateFiltered, clientKPIs]);
+
   const extendedKPIs = useMemo(() => {
+    // When date range is active, use client-computed extended KPIs
+    if (isDateFiltered && clientKPIs) {
+      const e = clientKPIs.extended;
+      return {
+        ...EMPTY_EXTENDED_KPIS,
+        wins: e.wins, losses: e.losses, bestTrade: e.bestTrade, worstTrade: e.worstTrade,
+        avgWin: e.avgWin, avgLoss: e.avgLoss, payoffRatio: e.payoffRatio,
+        expectedDailyR: e.expectedDailyR, rSquared: e.rSquared,
+      };
+    }
     const s = kpiData?.secondary_kpis;
     if (!s) return EMPTY_EXTENDED_KPIS;
     return {
@@ -536,6 +561,89 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     exitReason: t.exit_reason || t.exitReason || '--',
     isFwd: t.isFwd ?? false,
   })), [trades]);
+
+  // ---- Client-side date range filtering (instant, no API calls) ----
+  const filteredStoredTrades = useMemo(() => {
+    const raw = apiStrategy?.stored_trades || [];
+    if (!raw.length || !dateRange || dateRange === 'Strategy Default' || dateRange === 'All Data') return raw;
+
+    const now = Date.now();
+    const fwdStart = apiStrategy?.forward_test_start;
+    const fwdMs = fwdStart ? safeDateMs(fwdStart) : 0;
+
+    return raw.filter((t: any) => {
+      const ms = safeDateMs(t.entry_time);
+      if (!ms) return true; // keep trades with missing dates
+      if (dateRange === 'Last 7 Days') return ms >= now - 7 * 86400000;
+      if (dateRange === 'Last 30 Days') return ms >= now - 30 * 86400000;
+      if (dateRange === 'Last 90 Days') return ms >= now - 90 * 86400000;
+      if (dateRange === 'Backtest Only') return fwdMs ? ms < fwdMs : true;
+      if (dateRange === 'Forward Only') return fwdMs ? ms >= fwdMs : false;
+      return true;
+    });
+  }, [apiStrategy, dateRange]);
+
+  // Client-side KPI computation from filtered trades
+  const clientKPIs = useMemo(() => {
+    const trades = filteredStoredTrades;
+    if (!trades.length) return null;
+    const rValues = trades.map((t: any) => t.r_multiple ?? 0);
+    const wins = rValues.filter((r: number) => r > 0);
+    const losses = rValues.filter((r: number) => r <= 0);
+    const totalR = rValues.reduce((s: number, r: number) => s + r, 0);
+    const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
+    const grossWin = wins.reduce((s: number, r: number) => s + r, 0);
+    const grossLoss = Math.abs(losses.reduce((s: number, r: number) => s + r, 0));
+    const pf = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0;
+    const avgR = trades.length > 0 ? totalR / trades.length : 0;
+
+    // Compute days spanned for daily metrics
+    const times = trades.map((t: any) => safeDateMs(t.exit_time || t.entry_time)).filter((ms: number) => ms > 0);
+    const daySpan = times.length >= 2 ? Math.max(1, Math.ceil((Math.max(...times) - Math.min(...times)) / 86400000)) : 1;
+    const dailyR = totalR / daySpan;
+
+    // Drawdown
+    let peak = 0, maxDD = 0, cum = 0;
+    for (const r of rValues) {
+      cum += r;
+      if (cum > peak) peak = cum;
+      const dd = cum - peak;
+      if (dd < maxDD) maxDD = dd;
+    }
+
+    // Extended KPIs
+    const avgWin = wins.length > 0 ? grossWin / wins.length : 0;
+    const avgLoss = losses.length > 0 ? grossLoss / losses.length : 0;
+    const payoff = avgLoss > 0 ? avgWin / avgLoss : 0;
+    const bestTrade = rValues.length > 0 ? Math.max(...rValues) : 0;
+    const worstTrade = rValues.length > 0 ? Math.min(...rValues) : 0;
+
+    // R² (linear regression of cumulative R)
+    let rSquared = 0;
+    if (rValues.length >= 3) {
+      const cumR = rValues.reduce((acc: number[], r: number, i: number) => { acc.push((acc[i - 1] ?? 0) + r); return acc; }, [] as number[]);
+      const n = cumR.length;
+      const xMean = (n - 1) / 2;
+      const yMean = cumR.reduce((s: number, v: number) => s + v, 0) / n;
+      let ssReg = 0, ssTot = 0;
+      const slope = cumR.reduce((s: number, y: number, i: number) => s + (i - xMean) * (y - yMean), 0) / cumR.reduce((s: number, _: number, i: number) => s + (i - xMean) ** 2, 0);
+      const intercept = yMean - slope * xMean;
+      for (let i = 0; i < n; i++) {
+        const predicted = slope * i + intercept;
+        ssReg += (cumR[i] - predicted) ** 2;
+        ssTot += (cumR[i] - yMean) ** 2;
+      }
+      rSquared = ssTot > 0 ? 1 - ssReg / ssTot : 0;
+    }
+
+    return {
+      primary: { win_rate: winRate, profit_factor: isFinite(pf) ? pf : 0, daily_r: dailyR, total_trades: trades.length, max_r_drawdown: maxDD, avg_r: avgR },
+      extended: { wins: wins.length, losses: losses.length, bestTrade, worstTrade, avgWin, avgLoss: -avgLoss, payoffRatio: payoff, expectedDailyR: dailyR * trades.length / daySpan, rSquared },
+    };
+  }, [filteredStoredTrades]);
+
+  // Use client-computed KPIs when date range is active, otherwise use API KPIs
+  const isDateFiltered = dateRange && dateRange !== 'Strategy Default' && dateRange !== 'All Data';
 
   // Inject pulse CSS
   useEffect(() => {
@@ -882,10 +990,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Build equity curve data for the EquityCurve chart
   const equityPoints = useMemo(() => {
-    // When date range is active, build equity from the filtered stored_trades in apiStrategy
-    if (dateRange && dateRange !== 'Strategy Default' && apiStrategy?.stored_trades?.length) {
+    // When date range is active, build equity from client-filtered trades (instant)
+    if (isDateFiltered && filteredStoredTrades.length > 0) {
       let cum = 0;
-      return apiStrategy.stored_trades.map((t: any, i: number) => {
+      return filteredStoredTrades.map((t: any, i: number) => {
         cum += (t.r_multiple ?? 0);
         return { trade_number: i + 1, cumulative_r: cum, timestamp: t.exit_time || '--' };
       });
@@ -2551,25 +2659,24 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       {/* Exit */}
                       <div>
                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Exit</span>
-                        {exitsParsed.length > 0 ? exitsParsed.map((e, i) => (
+                        {exitsParsed.length > 0 && exitsParsed.map((e, i) => (
                           <div key={i} className="flex items-center gap-2 mt-1 flex-wrap">
                             {e.exec && <ExecBadge exec={e.exec} />}
                             <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                               {e.pack && <>{e.pack} &gt; </>}{e.trigger}
                             </span>
                           </div>
-                        )) : (
-                          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Signal exit only</p>
-                        )}
+                        ))}
                         {strategy.barCountExit != null && (
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span className="text-xs font-mono px-2 py-0.5 rounded-full" style={{ color: '#009688', background: 'rgba(0,150,136,0.12)' }}>
-                              Bar Count Exit
-                            </span>
+                            <ExecBadge exec="[C]" />
                             <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                              Max {strategy.barCountExit} bars
+                              Bar Count Exit (Default) &gt; {strategy.barCountExit} bars
                             </span>
                           </div>
+                        )}
+                        {exitsParsed.length === 0 && !strategy.barCountExit && (
+                          <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>--</p>
                         )}
                       </div>
                       {/* Stop */}
