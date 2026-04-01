@@ -993,18 +993,27 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return [];
   }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
-  // Build alert equity points from paired alert trades (green overlay on FWD segment)
+  // Build alert equity points — offset by FWD cumulative R so the green line
+  // starts at the same level as the FWD curve (overlays to show slippage/gaps)
   const alertEquityPoints = useMemo(() => {
     const closedAlerts = recentAlerts.filter((a: any) => a.r != null && a.exitTime);
     if (closedAlerts.length === 0) return [];
-    // Sort by entry time ascending
     const sorted = [...closedAlerts].sort((a: any, b: any) => safeDateMs(a.entryTime) - safeDateMs(b.entryTime));
-    let cum = 0;
+
+    // Find the FWD cumulative R at the point where alerts started
+    // This is the cumulative R at equityBoundaryIndex in equityPoints
+    let fwdStartR = 0;
+    if (equityPoints.length > 0 && equityBoundaryIndex != null && equityBoundaryIndex > 0) {
+      // The cumulative R just before FWD starts (last BT trade)
+      fwdStartR = equityPoints[equityBoundaryIndex - 1]?.cumulative_r ?? 0;
+    }
+
+    let cum = fwdStartR; // Start from FWD level, not zero
     return sorted.map((a: any, i: number) => {
       cum += (a.r ?? 0);
       return { trade_number: i + 1, cumulative_r: cum, timestamp: a.exitTime || a.entryTime || '--' };
     });
-  }, [recentAlerts]);
+  }, [recentAlerts, equityPoints, equityBoundaryIndex]);
 
   // Compute boundary index from forward_test_start date
   const equityBoundaryIndex = useMemo(() => {
