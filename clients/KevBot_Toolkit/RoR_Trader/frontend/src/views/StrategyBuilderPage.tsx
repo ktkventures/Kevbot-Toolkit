@@ -1661,6 +1661,7 @@ export default function StrategyBuilderPage() {
       stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
       bar_count_exit: config.bar_count_exit,
       secondary_tfs: config.secondary_tfs || [],
+      hifi_mode: config.hifi_mode || false,
       include_chart_data: true,
     });
   }, [backtestMut]);
