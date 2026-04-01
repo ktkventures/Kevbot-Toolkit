@@ -119,14 +119,14 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - 📋 2y. **Forward test: button-only loading** — Forward test computation now only runs on "Update Forward Tests" button click. "Update All Data" does full refresh. Page loads instantly with stored data. Consider adding similar bulk update buttons on My Strategies page.
 
 **Batch B: Pack Display + Naming** (2o + 2s + 2t + 2u)
-- 📋 2o. **Stop/Target exec type badges** — Add exec type to stop/target display (prep for candle-close variants in Phase 5)
-- 📋 2s. **Stop/Target display names with pack origin** — "Pack (Variation) > Method" format
-- 📋 2t. **Bar Count Exit as confluence pack** — Proper pack structure with variations
-- 📋 2u. **Trigger naming convention** — Long name vs short name standard, possible display setting
+- ✅ 2o. **Stop/Target exec type badges** — [L] badge before stop and target in summary bar and Configuration tab. Target shows no badge when "Signal exit only".
+- ✅ 2s. **Stop/Target display names** — Client-side formatStopDisplay/formatTargetDisplay show readable strings (e.g., "ATR x1.5", "Swing (5 bars, $0.05 pad)", "2R") instead of raw method names.
+- 📋 2t. **Bar Count Exit wiring** — Deferred to Phase 5. Display workaround already in place.
+- ✅ 2u. **Trigger naming convention** — Documented. Long = "Pack (Variation) > Trigger", Short = "Trigger".
 
 **Batch C: Date Range Enhancements** (2l + 2q)
-- 📋 2l. **Custom date range** — Add "Custom" option with start/end date pickers
-- 📋 2q. **Show specific date range text** — Thin text below dropdown showing actual dates
+- ✅ 2l. **Custom date range** — "Custom" option in dropdown with native date pickers. Client-side filtering. Pattern from PortfoliosPage.
+- ✅ 2q. **Show specific date range text** — Thin text showing "Nov 20, 2025 — Mar 31, 2026" inline with the dropdown.
 
 ### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
 - [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)

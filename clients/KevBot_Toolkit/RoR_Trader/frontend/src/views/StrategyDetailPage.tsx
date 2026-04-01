@@ -63,8 +63,10 @@ function apiToDetailStrategy(s: any) {
     ),
     exitIds: s.exit_trigger_confluence_ids || s.exit_triggers || [],
     barCountExit: s.bar_count_exit ?? null,
-    stop: s.stop_config?.method || '--',
-    target: s.target_config?.method || 'Signal exit only',
+    stop: formatStopDisplay(s.stop_config),
+    stopConfig: s.stop_config || null,
+    target: formatTargetDisplay(s.target_config),
+    targetConfig: s.target_config || null,
     confluence: s.confluence || [],
     confluenceEnriched: s.confluence_enriched || [],
     winRate: k.win_rate ?? 0,
@@ -293,10 +295,41 @@ function parseExecTag(entry: string): { exec: string; rest: string } {
   return { exec: '', rest: entry };
 }
 
+/**
+ * Trigger naming convention:
+ * - Long name: "Pack (Variation) > Trigger" — used in summary bar, configuration tab
+ * - Short name: "Trigger" only — for compact card displays
+ * parsePack().pack gives the pack portion, parsePack().trigger gives the short name.
+ */
 function parsePack(text: string): { pack: string; trigger: string } {
   const match = text.match(/^(.+?)\s*>\s*(.+)$/);
   if (match) return { pack: match[1].trim(), trigger: match[2].trim() };
   return { pack: '', trigger: text };
+}
+
+/** Format stop_config into a readable display string. Matches risk_management_packs.py stop_summary templates. */
+function formatStopDisplay(stopConfig: any): string {
+  if (!stopConfig?.method) return '--';
+  const m = stopConfig.method;
+  let base = m;
+  if (m === 'atr') base = `ATR x${stopConfig.atr_mult ?? 1.5}`;
+  else if (m === 'fixed_dollar') base = `$${stopConfig.dollar_amount ?? 1}`;
+  else if (m === 'percentage') base = `${stopConfig.percentage ?? 0.5}%`;
+  else if (m === 'swing') base = `Swing (${stopConfig.lookback ?? 5} bars, $${stopConfig.padding ?? 0} pad)`;
+  if (stopConfig.trailing?.enabled) base += ` → Trail x${stopConfig.trailing.atr_mult ?? 1}`;
+  if (stopConfig.breakeven?.enabled) base += ` → BE at ${stopConfig.breakeven.activation_r ?? 1}R`;
+  return base;
+}
+
+/** Format target_config into a readable display string. Matches risk_management_packs.py target_summary templates. */
+function formatTargetDisplay(targetConfig: any): string {
+  if (!targetConfig?.method) return 'Signal exit only';
+  const m = targetConfig.method;
+  if (m === 'atr') return `ATR x${targetConfig.atr_mult ?? 3}`;
+  if (m === 'fixed_dollar') return `$${targetConfig.dollar_amount ?? 2}`;
+  if (m === 'percentage') return `${targetConfig.percentage ?? 1}%`;
+  if (m === 'risk_reward') return `${targetConfig.rr_ratio ?? 2}R`;
+  return m;
 }
 
 /* ========================================================================= */
@@ -463,6 +496,8 @@ interface Props {
 
 export default function StrategyDetailPage({ strategyId }: Props) {
   const [dateRange, setDateRange] = useState('Strategy Default');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   // Always load full data — date range filtering happens client-side for instant response
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
@@ -510,9 +545,24 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       if (dateRange === 'Last 90 Days') return ms >= now - 90 * 86400000;
       if (dateRange === 'Backtest Only') return fwdMs ? ms < fwdMs : true;
       if (dateRange === 'Forward Only') return fwdMs ? ms >= fwdMs : false;
+      if (dateRange === 'Custom') {
+        const startMs = customStart ? new Date(customStart + 'T00:00:00').getTime() : 0;
+        const endMs = customEnd ? new Date(customEnd + 'T23:59:59').getTime() : Infinity;
+        return ms >= startMs && ms <= endMs;
+      }
       return true;
     });
-  }, [apiStrategy, dateRange, isDateFiltered]);
+  }, [apiStrategy, dateRange, isDateFiltered, customStart, customEnd]);
+
+  // Date range text: show actual date range of currently visible trades
+  const dateRangeText = useMemo(() => {
+    const trades = filteredStoredTrades;
+    if (!trades.length) return '';
+    const times = trades.map((t: any) => safeDateMs(t.entry_time)).filter((ms: number) => ms > 0);
+    if (times.length < 1) return '';
+    const fmt = (ms: number) => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return `${fmt(Math.min(...times))} — ${fmt(Math.max(...times))}`;
+  }, [filteredStoredTrades]);
 
   const clientKPIs = useMemo(() => {
     const trades = filteredStoredTrades;
@@ -1408,9 +1458,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           {/* Row 2: Stop + Target + Confluence */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs" style={{ color: 'var(--text-muted)', minWidth: 48 }}>stop:</span>
+            <ExecBadge exec="[L]" />
             <StopBadge text={strategy.stop} />
             <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>target:</span>
+            {strategy.target !== 'Signal exit only' && strategy.target !== '--' && <ExecBadge exec="[L]" />}
             <TargetBadge text={strategy.target} />
             <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>confluence:</span>
@@ -1445,10 +1497,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       value={dateRange}
                       onChange={(e) => setDateRange(e.target.value)}
                     >
-                      {['Strategy Default', 'All Data', 'Last 7 Days', 'Last 30 Days', 'Last 90 Days', 'Backtest Only', 'Forward Only'].map((o) => (
+                      {['Strategy Default', 'All Data', 'Last 7 Days', 'Last 30 Days', 'Last 90 Days', 'Backtest Only', 'Forward Only', 'Custom'].map((o) => (
                         <option key={o} value={o}>{o}</option>
                       ))}
                     </select>
+                    {dateRange === 'Custom' && (
+                      <>
+                        <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} style={selectStyle} />
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>to</span>
+                        <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} style={selectStyle} />
+                      </>
+                    )}
+                    {dateRangeText && (
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{dateRangeText}</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="text-xs" style={{ color: 'var(--text-muted)' }}>KPI Mode:</label>
@@ -2790,14 +2852,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       {/* Stop */}
                       <div>
                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Stop</span>
-                        <div className="mt-1">
+                        <div className="mt-1 flex items-center gap-1">
+                          <ExecBadge exec="[L]" />
                           <StopBadge text={strategy.stop} />
                         </div>
                       </div>
                       {/* Target */}
                       <div>
                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Target</span>
-                        <div className="mt-1">
+                        <div className="mt-1 flex items-center gap-1">
+                          {strategy.target !== 'Signal exit only' && strategy.target !== '--' && <ExecBadge exec="[L]" />}
                           <TargetBadge text={strategy.target} />
                         </div>
                       </div>
