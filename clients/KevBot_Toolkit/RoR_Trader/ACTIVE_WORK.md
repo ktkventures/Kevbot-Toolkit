@@ -111,7 +111,10 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 2n. **Equity curve toggles** — X-axis toggle (Per Trade / Per Day) on chart card. Edge Check (21-MA) wired. HWM toggle has minor rendering issue (deferred). Confidence Bands deferred.
 
 **Batch A Follow-up: Performance vs Plan** (2v)
-- 🔍 2v. **Performance vs Plan chart** — Created PerformanceVsPlan.tsx component. Client-side computation from stored_trades: plan line = N × avg_r, 1SD/2SD confidence bands = ±σ√N. Actual FWD line color-coded by deviation status (on_track/outperforming/underperforming/severe). Summary KPIs: FWD Trades, Actual R, Expected R, vs Plan, Status badge. Shows below equity curve when ≥3 FWD trades. Deployed, awaiting QA.
+- ✅ 2v. **Performance vs Plan chart** — Bands centered on plan line, two distinct SD bands, summary KPIs, status badge. Positioned below R-Distribution. Loads instantly from stored_trades.
+- 📋 2w. **PvP: FWD vs Alert toggle** — Add toggle on Performance vs Plan chart to switch the "actual" line between forward test trades and alert trades. Plan line stays the same. Gives transparency on execution quality vs theoretical forward test.
+- 📋 2x. **Sigma badge recalculation** — The sigma badges (FWD σ, Alert σ) shown across the site should use the same computation as Performance vs Plan (deviation from plan based on avg_r and var_r from BT trades). Currently may use a different formula. Audit and align.
+- 📋 2y. **Forward test: button-only loading** — Forward test computation now only runs on "Update Forward Tests" button click. "Update All Data" does full refresh. Page loads instantly with stored data. Consider adding similar bulk update buttons on My Strategies page.
 
 **Batch B: Pack Display + Naming** (2o + 2s + 2t + 2u)
 - 📋 2o. **Stop/Target exec type badges** — Add exec type to stop/target display (prep for candle-close variants in Phase 5)
