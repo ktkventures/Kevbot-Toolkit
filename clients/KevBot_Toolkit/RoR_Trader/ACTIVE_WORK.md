@@ -133,21 +133,24 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 **Status Key:** ✅ QA Passed | 🔍 QA Reviewing | 🔧 Fixing | 📋 TODO
 
 **Batch 1: Foundation**
-- 📋 3a. **1-second bar fetching + caching** — `fetch_1s_bars_for_window()` in data_loader.py with day-level caching. Reuses existing `_polygon_fetch_bars()`.
+- ✅ 3a. **1-second bar fetching + caching** — `fetch_1s_bars_for_window()` already existed in data_loader.py. Fixed `_polygon_ticker` → `_to_polygon_ticker` typo. Fixed timezone handling for tz-aware Timestamps.
 - ✅ 3b. **Hold time computation** — Engine already computes `bars_held` and `hold_time_seconds` in `get_trade_record()`. Fields present in stored_trades.
 - ✅ 3c. **Surface hold times in UI** — Hold column in Algo History + Alert History tables. Avg Hold / Median Hold in Extended KPIs. Alert hold times computed from timestamps. Algo hold times show "--" for older strategies (need full backtest rerun to populate hold_time_seconds). New strategies will have hold times automatically.
 
 **Batch 2: Engine Resolution (1-second precision)**
-- 📋 3d. **Wire 1-second resolution into engine** — `resolve_trade_timing()` for every entry/exit bar. First-hit-wins for stop/target. `hifi_mode` config flag.
-- 📋 3e. **Strategy Builder fidelity setting** — Standard / High Fidelity selector.
+- ✅ 3d. **Wire 1-second resolution into engine** — `_hifi_resolve_trades()` in backtest_service.py. Resolves every entry/exit bar (no ambiguous-only detection). First-hit-wins for stop/target. Fetches 1-second data from Polygon with day-level caching. Verified: Standard vs Hi-Fi produce different KPIs (Total R: +4.1 vs -14.6 on same 737 trades).
+- ✅ 3e. **Strategy Builder fidelity setting** — Standard / High Fidelity toggle. Passes `hifi_mode` to both Load Data and Analyze requests.
 
 **Batch 3: Visualization (trade drill-down modal)**
 - 📋 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second bars + stepped indicators + confluence states.
 - 📋 3g. **Trade drill-down modal** — Click entry/exit time → 1-second candles with indicators, heatmap, markers.
 
+**Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
+- 📋 3h. **Wire Hi-Fi into analyze endpoints** — The analyze tabs (Entry, Exit, TF Conditions, General, Stop, Target) currently call `unified_trades()` directly without Hi-Fi Pass 2. Need to add `_hifi_resolve_trades()` after each `unified_trades()` call in `_analyze_triggers_impl`, `_analyze_exits_impl`, `_analyze_stops_impl`, `_analyze_targets_impl`. Critical: analysis results must reflect Hi-Fi accuracy when the user has selected Hi-Fi mode.
+
 **Batch 4: Polish**
-- 📋 3h. **PB/CB fidelity variants on TF Conditions** — Like exec types on triggers. Each condition generates [PB] and [CB] variants as separate selectable items. Standard fidelity hides CB. HiFi shows both.
-- 📋 3i. **Mass Builder fidelity setting** — HiFi option in Mass Builder config.
+- 📋 3i. **PB/CB fidelity variants on TF Conditions** — Like exec types on triggers. Each condition generates [PB] and [CB] variants as separate selectable items. Standard fidelity hides CB. HiFi shows both.
+- 📋 3j. **Mass Builder fidelity setting** — HiFi option in Mass Builder config.
 
 ### Phase 4: Chart Test Page + Replay — NOT STARTED
 - [ ] 4a. Page scaffold with chart + config panel
