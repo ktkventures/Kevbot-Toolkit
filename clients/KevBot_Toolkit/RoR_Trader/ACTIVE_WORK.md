@@ -167,6 +167,22 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 ---
 
+## Post-Phase Polish (After Active Work Phases Complete)
+
+These items improve consistency and UX but are NOT on the critical path to trading.
+Tackle after Phases 1-6 are complete and strategies are actively placing trades.
+
+- 📋 **My Strategies: replace MiniEquityCurve with shared EquityCurve** — The mini equity curve on strategy cards is a separate inline component that doesn't share display settings, alert overlay, or segment coloring. Replace with the shared EquityCurve component in mini mode for consistency.
+- 📋 **My Strategies: alert sigma from alerts API** — Alert sigma currently reads from `live_executions` (empty for many strategies). Compute client-side from alerts API like Strategy Detail does, or backfill `live_executions` from alert history.
+- 📋 **My Strategies: alert equity overlay on cards** — Wire green alert line onto strategy card equity curves.
+- 📋 **My Strategies: bulk "Update Forward Tests" button** — Like Strategy Detail's button but for all strategies at once.
+- 📋 **Per-trade alert matching on equity curve** — Match alert trades to algo trade numbers for aligned x-axis comparison. Detect missed/phantom trades visually. (Item 2z)
+- 📋 **Gradient fill toggle** — Settings page saves the preference but it's not consistently applied to all equity curves.
+- 📋 **Edge Check refinement** — Current implementation is simple 21-MA. Streamlit uses 21-MA + Bollinger Bands (2SD) as a shaded region. Port the full pattern from `_add_edge_check_traces()` in app.py.
+- 📋 **Confidence Bands** — Needs statistical computation (Monte Carlo or parametric). Currently checkbox exists but not implemented.
+
+---
+
 ## Key Decisions (Reference)
 
 - LC is a superset of HM — configurable confirm_bar_offset + bail_action vs HM's hardcoded same-bar + market bail
