@@ -46,8 +46,8 @@ export default function PerformanceVsPlan({
   height = 280,
   projectionMultiplier = 1.4,
 }: PerformanceVsPlanProps) {
-  const hasAlertData = (alertTrades || []).filter(a => a.r != null).length >= 3;
   const [viewMode, setViewMode] = useState<'forward' | 'alerts'>('forward');
+  const hasAlertData = useMemo(() => (alertTrades || []).filter(a => a.r != null).length >= 3, [alertTrades]);
   const activeMode = hasAlertData ? viewMode : 'forward';
 
   const chartData = useMemo(() => {
@@ -125,22 +125,22 @@ export default function PerformanceVsPlan({
     return { points, summary: { trades: tradeCount, actual: lastActual, expected: expectedAtN, vsPlan, deviationSD, status } };
   }, [btTrades, fwdTrades, alertTrades, activeMode, projectionMultiplier]);
 
-  if (!chartData) return null;
-
-  const { points, summary } = chartData;
-
-  const statusColors = {
+  const statusColors: Record<string, string> = {
     on_track: '#4CAF50',
     outperforming: '#2196F3',
     underperforming: '#FF9800',
     severe: '#F44336',
   };
-  const statusLabels = {
+  const statusLabels: Record<string, string> = {
     on_track: 'On Track',
     outperforming: 'Outperforming',
     underperforming: 'Below Plan',
     severe: 'Severe Deviation',
   };
+
+  if (!chartData) return null;
+
+  const { points, summary } = chartData;
   const statusColor = statusColors[summary.status];
 
   return (
