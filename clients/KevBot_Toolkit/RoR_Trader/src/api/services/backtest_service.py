@@ -68,6 +68,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     print(f"[BACKTEST] exits={req.exit_trigger_confluence_ids}")
     print(f"[BACKTEST] stop_config={stop_config}")
     print(f"[BACKTEST] confluence={req.confluence}")
+    print(f"[BACKTEST] hifi_mode={req.hifi_mode}")
 
     df = svc.prepare_data_with_indicators(
         req.symbol, days=req.days, start_date=start_date,
