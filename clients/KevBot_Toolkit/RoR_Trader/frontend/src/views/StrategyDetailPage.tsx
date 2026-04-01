@@ -19,6 +19,7 @@ import { useChartPrefs } from '@/hooks/useChartPrefs';
 
 // Dynamic imports for chart components — forces separate webpack chunks
 const EquityCurve = dynamic(() => import('@/charts/EquityCurve'), { ssr: false });
+const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { ssr: false });
 const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
@@ -1004,6 +1005,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return null;
   }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
+  // Split stored_trades into BT and FWD for Performance vs Plan chart
+  const { pvpBtTrades, pvpFwdTrades } = useMemo(() => {
+    const raw = apiStrategy?.stored_trades || [];
+    if (!equityBoundaryIndex || equityBoundaryIndex >= raw.length) return { pvpBtTrades: raw, pvpFwdTrades: [] };
+    return {
+      pvpBtTrades: raw.slice(0, equityBoundaryIndex),
+      pvpFwdTrades: raw.slice(equityBoundaryIndex),
+    };
+  }, [apiStrategy, equityBoundaryIndex]);
+
   // Early returns after all hooks
   if (isLoading || !strategy) {
     return (
@@ -1612,6 +1623,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </label>
                   </div>
                 </Card>
+
+                {/* ---- Performance vs Plan ---- */}
+                {pvpFwdTrades.length >= 3 && (
+                  <Card className="mb-4">
+                    <h4 className="text-sm font-medium mb-3">Performance vs Plan</h4>
+                    <PerformanceVsPlan
+                      btTrades={pvpBtTrades}
+                      fwdTrades={pvpFwdTrades}
+                      height={280}
+                    />
+                  </Card>
+                )}
 
                 {/* ---- R-Distribution ---- */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">

@@ -105,11 +105,13 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 **Remaining Phase 2 — Proposed Batch Order:**
 
-**Batch A: Equity Curve Polish** (2k + 2m + 2n)
-- 🔧 2k. **Forward test start date indicator** — Segment color change marks the boundary. No separate label yet.
-- 🔧 2m. **3-segment equity curve** — BT/FWD/Live segments with overlap at boundaries to eliminate gaps. Time mode now properly tracks segment via trade index.
-- 🔧 2n. **Equity curve toggles** — HWM and Edge Check wired. X-axis toggle (Per Trade / Per Day) added directly on chart. Confidence Bands deferred (needs statistical computation).
-- 📋 2v. **Performance vs Plan chart** — Port from Streamlit portfolios. Expected daily R projection line with 1SD/2SD confidence bands. Measures forward test / alert performance against backtest expectations. Add below equity curve on Strategy Detail. Investigate as follow-up to Batch A.
+**Batch A: Equity Curve Polish** (2k + 2m + 2n) — ✅ COMPLETE
+- ✅ 2k. **Forward test start date indicator** — Segment color change marks the BT→FWD boundary. Computed from forward_test_start date.
+- ✅ 2m. **3-segment equity curve** — BT (blue) / FWD (orange) segments with seamless overlap. Equity curve loads instantly from stored_trades (no Polygon dependency). Per Day mode fills non-trading weekdays.
+- ✅ 2n. **Equity curve toggles** — X-axis toggle (Per Trade / Per Day) on chart card. Edge Check (21-MA) wired. HWM toggle has minor rendering issue (deferred). Confidence Bands deferred.
+
+**Batch A Follow-up: Performance vs Plan** (2v)
+- 🔍 2v. **Performance vs Plan chart** — Created PerformanceVsPlan.tsx component. Client-side computation from stored_trades: plan line = N × avg_r, 1SD/2SD confidence bands = ±σ√N. Actual FWD line color-coded by deviation status (on_track/outperforming/underperforming/severe). Summary KPIs: FWD Trades, Actual R, Expected R, vs Plan, Status badge. Shows below equity curve when ≥3 FWD trades. Deployed, awaiting QA.
 
 **Batch B: Pack Display + Naming** (2o + 2s + 2t + 2u)
 - 📋 2o. **Stop/Target exec type badges** — Add exec type to stop/target display (prep for candle-close variants in Phase 5)
