@@ -409,10 +409,8 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
         target_price = trade.get('target_price')
         direction = trade.get('direction', 'LONG')
 
-        if not exit_time_str or not stop_price or not target_price:
+        if not exit_time_str:
             continue
-        if target_price == 0:
-            continue  # No target set (signal-only exit)
 
         try:
             exit_dt = _parse_dt(exit_time_str)
@@ -476,9 +474,10 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
     return trades_df
 
 
-def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float, target: float, direction: str) -> dict | None:
+def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float | None, target: float | None, direction: str) -> dict | None:
     """Walk 1-second bars to find which exit level was hit first.
 
+    Handles cases where only stop, only target, or both are set.
     Returns dict with exit_reason, exit_price, exit_time, or None if neither hit.
     """
     for ts, bar in bars_1s.iterrows():
@@ -486,14 +485,14 @@ def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float, target: float, directi
         low = bar.get('low', 0)
 
         if direction == 'LONG':
-            if low <= stop:
+            if stop is not None and low <= stop:
                 return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
-            if high >= target:
+            if target is not None and target > 0 and high >= target:
                 return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
         else:  # SHORT
-            if high >= stop:
+            if stop is not None and high >= stop:
                 return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
-            if low <= target:
+            if target is not None and target > 0 and low <= target:
                 return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
 
     return None

@@ -476,7 +476,7 @@ def fetch_1s_bars_for_window(
         cursor += timedelta(days=1)
 
     # Fetch any missing dates
-    poly_ticker = _polygon_ticker(ticker)
+    poly_ticker = _to_polygon_ticker(ticker)
     for d in dates_needed:
         cache_key = f"{poly_ticker}_{d.isoformat()}"
         if cache_key not in _1s_cache:
