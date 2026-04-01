@@ -55,8 +55,12 @@ function apiToDetailStrategy(s: any) {
     status: s.status || (s.forward_testing ? 'On Track' : 'Insufficient Data'),
     tags: s.tags || [],
     monitored: s.alert_tracking_enabled || false,
-    entry: s.entry_trigger_confluence_id || '--',
-    exit: s.exit_trigger_confluence_ids || s.exit_triggers || [],
+    entry: s.entry_trigger_display_name || s.entry_trigger_confluence_id || '--',
+    entryId: s.entry_trigger_confluence_id || '',
+    exit: (s.exit_trigger_confluence_ids || s.exit_triggers || []).map((eid: string) =>
+      s.exit_trigger_display_names?.[eid] || eid
+    ),
+    exitIds: s.exit_trigger_confluence_ids || s.exit_triggers || [],
     barCountExit: s.bar_count_exit ?? null,
     stop: s.stop_config?.method || '--',
     target: s.target_config?.method || 'Signal exit only',
@@ -350,7 +354,7 @@ function FidelityBadge({ label }: { label: string }) {
         background: fidColor + '20',
       }}
     >
-      {label}
+      {brackets !== false ? `[${raw}]` : raw}
     </span>
   );
 }
@@ -927,11 +931,24 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
     : '--';
 
-  // Parse entry for badges
+  // Derive exec type from trigger ID suffix
+  const deriveExecTag = (id: string): string => {
+    if (id.endsWith('_lc')) return '[LC]';
+    if (id.endsWith('_cc')) return '[CC]';
+    if (id.endsWith('_ib') || id.endsWith('_hm') || id.endsWith('_hl')) return '[L]';
+    return '[C]';
+  };
+
+  // Parse entry for badges — derive exec type from the raw trigger ID
   const entryParsed = parseExecTag(strategy.entry);
+  if (!entryParsed.exec && strategy.entryId) {
+    entryParsed.exec = deriveExecTag(strategy.entryId);
+  }
   const entryPack = parsePack(entryParsed.rest);
-  const exitsParsed = strategy.exit.map((e) => {
+  const exitsParsed = strategy.exit.map((e: string, i: number) => {
     const p = parseExecTag(e);
+    const rawId = strategy.exitIds?.[i] || e;
+    if (!p.exec && rawId && rawId !== '--') p.exec = deriveExecTag(rawId);
     return { exec: p.exec, ...parsePack(p.rest) };
   });
 

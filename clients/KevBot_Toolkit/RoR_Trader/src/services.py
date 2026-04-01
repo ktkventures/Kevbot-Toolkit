@@ -946,6 +946,20 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     # Status
     enriched['status'] = derive_strategy_status(fwd_kpis, sigma_fwd)
 
+    # Resolve trigger IDs to display names for frontend
+    try:
+        from confluence_groups import get_enabled_groups, get_all_triggers
+        all_triggers = get_all_triggers(get_enabled_groups())
+        entry_id = strategy.get('entry_trigger_confluence_id', '')
+        if entry_id and entry_id in all_triggers:
+            enriched['entry_trigger_display_name'] = all_triggers[entry_id].name
+        exit_ids = strategy.get('exit_trigger_confluence_ids', [])
+        enriched['exit_trigger_display_names'] = {
+            eid: all_triggers[eid].name for eid in exit_ids if eid in all_triggers
+        }
+    except Exception as e:
+        logger.warning("[ENRICH] Failed to resolve trigger names: %s", e)
+
     return enriched
 
 

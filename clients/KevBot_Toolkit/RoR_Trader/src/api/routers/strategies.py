@@ -184,6 +184,19 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
     # Apply date range filter to stored_trades before enrichment
     if date_range and date_range not in ("Strategy Default", "All Data"):
         strat = _filter_trades_by_date_range(strat, date_range)
+        # Recompute KPIs from filtered trades so date range actually affects displayed metrics
+        filtered_trades = strat.get('stored_trades', [])
+        if filtered_trades:
+            import services as _svc
+            import pandas as _pd
+            try:
+                trades_df = _svc.trades_df_from_stored(filtered_trades)
+                strat['kpis'] = _svc.calculate_kpis(trades_df)
+                logger.info("[DETAIL] Recomputed KPIs for strategy %s with date_range=%s (%d trades)", strategy_id, date_range, len(filtered_trades))
+            except Exception as e:
+                logger.warning("[DETAIL] Failed to recompute KPIs for date_range=%s: %s", date_range, e)
+        else:
+            strat['kpis'] = {}
 
     try:
         return svc.enrich_strategy(strat, full_compute=True)

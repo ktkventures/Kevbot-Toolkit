@@ -1,8 +1,8 @@
 # RoR Trader — Active Work Tracker
 
-**Last Updated:** 2026-03-31
+**Last Updated:** 2026-04-01
 **Current Phase:** Phase 2 (Strategy Detail Page Refinements) — IN PROGRESS
-**Current Focus:** Phase 2 implementation complete, pending QA verification
+**Current Focus:** QA round 3 — fixing date range, brackets, trigger names, exec badges on detail page
 
 ---
 
@@ -58,15 +58,31 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 ### Phase 2: Strategy Detail Page Refinements — IN PROGRESS
 
-**Priority items (from Strategy Builder triage):**
-- [x] 2a-new. **Stop/Take Profit pack restructuring** — Added stop_params/target_params to all 7 RM TEMPLATES. API now returns template_name, stop_summary, target_summary. Frontend uses dedicated useStopLossPacks()/useTakeProfitPacks() hooks with separated parameter display. Stop packs show only stop params, target packs show only target params.
-- [x] 2b-new. **Strategy Builder defaults (entry, exit, stop)** — Added useStrategyBuilderDefaults Zustand store with localStorage persistence. Strategy Builder auto-populates from saved defaults on mount. "Save as Default" / "Clear Defaults" buttons in config section.
+**Status Key:** ✅ QA Passed | 🔍 QA Reviewing | 🔧 Fixing | 📋 TODO
 
-**Existing items:**
-- [x] 2c. Full/short trigger names with pack origin — Changed trigger name format from "Group: Trigger" to "Group > Trigger". Strategy Builder now parses pack name from trigger name for grouped display.
-- [x] 2d. PB/CB per-confluence breakdown — Backend already had enrich_confluence_with_fidelity() returning confluence_enriched. Wired to frontend — [PB]/[CB] badges now data-driven per condition instead of hardcoded. All current conditions show [PB]; cross-TF conditions will show [CB] after Hi-Fi (Phase 3).
-- [x] 2e. Date range selector — Added date_range query param to GET /api/strategies/{id}. Backend filters stored_trades by date before enrichment. Frontend passes dateRange state to useStrategy hook, refetches on change. Supports: Last 7/30/90 Days, Backtest Only, Forward Only.
-- [x] 2f. Exec type color coding — Fixed ExecBadge on both Strategy Detail and Strategy Builder to use distinct colors: [C] blue, [L] green, [LC] purple, [CC] orange. Was dead code before (execTypeColors defined but never used).
+**Priority items (from Strategy Builder triage):**
+- ✅ 2a-new. **Stop/Take Profit pack restructuring** — Stop packs show only stop params, target packs show only target params. Strategy Builder uses dedicated hooks. "Swing" is stop-only, new "Risk:Reward Target" template added (take-profit-only, works with any stop).
+- ✅ 2b-new. **Strategy Builder defaults (entry, exit, stop)** — Zustand store with localStorage. Auto-populates on mount. "Save as Default" / "Clear Defaults" buttons.
+
+**Strategy Builder items (QA passed):**
+- ✅ 2c. **Trigger names with pack origin** — "Group > Trigger" format. Strategy Builder groups by pack name.
+- ✅ 2d-sb. **TF Conditions: fidelity badges** — TF Conditions tab shows [PB], General tab shows no badges.
+- ✅ 2e-sb. **Display settings wiring (Strategy Builder)** — ExecBadge and FidelityBadge respect color, shape, and brackets from useDisplayStore.
+
+**Display Settings items:**
+- ✅ 2f-ds. **Display settings persistence** — Color, shape, brackets persist across navigation. Zustand store syncs on save and hydration.
+
+**Strategy Detail items:**
+- 🔧 2g. **Date range selector not filtering** — Backend endpoint has filter but KPIs/equity curve not updating on change. Investigating.
+- 🔧 2h. **Brackets setting not applied on Strategy Detail** — Strategy Builder respects brackets, Detail page does not yet.
+- 🔧 2i. **Entry/Exit/Stop/Target need exec type badges** — Summary bar and Configuration tab show variables without exec badges. Need to add [C]/[L] etc. to entry, exit, stop, and target displays.
+- 🔧 2j. **Trigger names on Configuration tab** — Shows raw IDs (e.g., `utbot_v2_default_buy`) instead of "Pack > Variation > Trigger" long format. Need naming convention: long name = "Pack (Variation) > Trigger", short name = just trigger.
+- 📋 2k. **Forward test start date indicator** — Equity curve should show when FWD started (date label or color boundary). Not currently visible.
+- 📋 2l. **Custom date range option** — Add "Custom" to date range dropdown with start/end date pickers.
+- 📋 2m. **3-segment equity curve** — BT (blue) → FWD (orange) → Alerts (green) coloring per display settings. Currently single color.
+- 📋 2n. **Equity curve toggles** — HWM, Edge Check, Confidence Bands toggles currently non-functional on Strategy Detail.
+- 📋 2o. **Stop/Target exec type badges (prep for Phase 5)** — Stops and targets should show exec type so we can later add candle-close variants for TradingView parity testing.
+- 📋 2p. **Diagnostic logging** — Added console.warn logging to safeDateMs, shiftCType, EquityCurve, buildStrategyChartPanes, apiToDetailStrategy. Backend enrich_strategy logs missing trades, bad dates, inf/NaN KPIs with [ENRICH] prefix.
 
 ### Phase 3: Hi-Fi Execution & Hold Times — NOT STARTED
 - [ ] 3a. Ambiguous bar detection (stop + target both in bar's range)
