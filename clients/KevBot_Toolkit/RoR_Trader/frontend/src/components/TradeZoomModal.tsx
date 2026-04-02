@@ -152,16 +152,28 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
     // Build algo fill (+) and alert fill (×) as point marker series
     const fillMarkerSeries: any[] = [];
 
-    // Algo fill + marker at exact entry/exit price
+    // Helper: snap a timestamp to the nearest 1-second bar in the chart data
+    const barTimes = candleData.map((c: any) => c.time as number);
+    const snapTo1s = (ts: number): number => {
+      let bestTs = barTimes[0];
+      let bestDist = Infinity;
+      for (const bt of barTimes) {
+        const dist = Math.abs(bt - ts);
+        if (dist < bestDist) { bestDist = dist; bestTs = bt; }
+      }
+      return bestDist < 120 ? bestTs : ts; // Within 2 minutes
+    };
+
+    // Algo fill + marker at exact entry/exit price (uses 'cross' shape like main chart)
     if (t.entry_time && t.entry_price && t.entry_price > 0) {
       let algoMs = new Date(t.entry_time).getTime();
-      if (!isLType) algoMs += tfSeconds * 1000; // C-type shift
-      const algoTs = Math.floor(algoMs / 1000);
+      if (!isLType) algoMs += tfSeconds * 1000;
+      const algoTs = snapTo1s(Math.floor(algoMs / 1000));
       fillMarkerSeries.push({
         type: 'Line' as const,
         data: [{ time: algoTs, value: t.entry_price }],
         options: { color: '#4CAF50', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: [{ time: algoTs, position: 'inBar', shape: 'circle', color: '#4CAF50', text: '+', size: 2 }],
+        markers: [{ time: algoTs, position: 'inBar', shape: 'cross', color: '#4CAF50', text: '', size: 1 }],
       });
     }
     if (t.exit_time && t.exit_price && t.exit_price > 0) {
@@ -169,27 +181,27 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       const isLExit = ['stop_loss', 'stop', 'target'].some(r => exitReason.includes(r));
       let algoExitMs = new Date(t.exit_time).getTime();
       if (!isLExit) algoExitMs += tfSeconds * 1000;
-      const algoExitTs = Math.floor(algoExitMs / 1000);
+      const algoExitTs = snapTo1s(Math.floor(algoExitMs / 1000));
       const exitColor = (t.r_multiple ?? 0) >= 0 ? '#4CAF50' : '#F44336';
       fillMarkerSeries.push({
         type: 'Line' as const,
         data: [{ time: algoExitTs, value: t.exit_price }],
         options: { color: exitColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: [{ time: algoExitTs, position: 'inBar', shape: 'circle', color: exitColor, text: '+', size: 2 }],
+        markers: [{ time: algoExitTs, position: 'inBar', shape: 'cross', color: exitColor, text: '', size: 1 }],
       });
     }
 
-    // Alert fill × marker at alert entry/exit price
+    // Alert fill × marker at alert entry/exit price (uses 'square' shape for ×)
     if (alertMatch) {
       if (alertMatch.entryPrice && alertMatch.entryPrice > 0 && t.entry_time) {
         let alertMs = new Date(t.entry_time).getTime();
         if (!isLType) alertMs += tfSeconds * 1000;
-        const alertTs = Math.floor(alertMs / 1000);
+        const alertTs = snapTo1s(Math.floor(alertMs / 1000));
         fillMarkerSeries.push({
           type: 'Line' as const,
           data: [{ time: alertTs, value: alertMatch.entryPrice }],
           options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: [{ time: alertTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 2 }],
+          markers: [{ time: alertTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 1 }],
         });
       }
       if (alertMatch.exitPrice && alertMatch.exitPrice > 0 && t.exit_time) {
@@ -197,12 +209,12 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         const isLExit = ['stop_loss', 'stop', 'target'].some(r => exitReason.includes(r));
         let alertExitMs = new Date(t.exit_time).getTime();
         if (!isLExit) alertExitMs += tfSeconds * 1000;
-        const alertExitTs = Math.floor(alertExitMs / 1000);
+        const alertExitTs = snapTo1s(Math.floor(alertExitMs / 1000));
         fillMarkerSeries.push({
           type: 'Line' as const,
           data: [{ time: alertExitTs, value: alertMatch.exitPrice }],
           options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: [{ time: alertExitTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 2 }],
+          markers: [{ time: alertExitTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 1 }],
         });
       }
     }
