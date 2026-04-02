@@ -1101,9 +1101,57 @@ def trade_zoom(
             "volume": float(row.get('volume', 0)),
         })
 
+    # Compute stepped indicator values from the strategy's original timeframe
+    stepped_indicators = {}
+    try:
+        import services as svc
+        from confluence_groups import get_enabled_groups, get_template
+
+        # Load a small window of the original timeframe data with indicators
+        # We need enough bars for indicators to compute (at least 200 for EMAs)
+        indicator_df = svc.prepare_data_with_indicators(
+            symbol, days=5, timeframe=timeframe,
+            data_feed='sip', session=strat.get('trading_session', 'RTH'),
+        )
+
+        if len(indicator_df) > 0:
+            # Find indicator columns (numeric, not standard OHLCV)
+            standard_cols = {'open', 'high', 'low', 'close', 'volume', 'vwap', 'trade_count'}
+            indicator_cols = [c for c in indicator_df.columns
+                            if c not in standard_cols
+                            and indicator_df[c].dtype in ('float64', 'float32', 'int64')
+                            and not c.startswith('__')]
+
+            # Filter to columns that have values in our window
+            window_start = ts_dt - timedelta(seconds=padding_seconds + tf_seconds * 3)
+            window_end = ts_dt + timedelta(seconds=padding_seconds + tf_seconds * 3)
+
+            for col in indicator_cols[:20]:  # Limit to 20 indicators to keep response size reasonable
+                # Get the indicator values for bars in our window
+                mask = (indicator_df.index >= pd.Timestamp(window_start, tz='UTC')) & \
+                       (indicator_df.index <= pd.Timestamp(window_end, tz='UTC'))
+                window_data = indicator_df.loc[mask, col].dropna()
+                if len(window_data) == 0:
+                    continue
+
+                # Build stepped values: each bar's indicator value applies until the next bar
+                steps = []
+                for bar_ts, val in window_data.items():
+                    steps.append({
+                        "time": bar_ts.isoformat(),
+                        "value": float(val),
+                    })
+
+                if steps:
+                    stepped_indicators[col] = steps
+
+    except Exception as e:
+        logger.warning("[TRADE-ZOOM] Error computing indicators: %s", e)
+
     return {
         "bars_1s": bars_list,
         "trade": _serialize_trade_for_zoom(trade),
+        "indicators": stepped_indicators,
         "side": side,
         "timeframe": timeframe,
         "symbol": symbol,

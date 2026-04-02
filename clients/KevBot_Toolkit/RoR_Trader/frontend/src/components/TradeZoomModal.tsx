@@ -131,8 +131,49 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       });
     }
 
+    // Build stepped indicator Line series from original-timeframe data
+    const indicatorSeries: any[] = [];
+    const indicatorColors = ['#2196F3', '#FF9800', '#AB47BC', '#00BCD4', '#FFEB3B', '#E91E63', '#8BC34A', '#FF5722'];
+    if (zoomData.indicators) {
+      let colorIdx = 0;
+      for (const [colName, steps] of Object.entries(zoomData.indicators as Record<string, any[]>)) {
+        if (!steps || steps.length === 0) continue;
+        // Skip non-overlay indicators (oscillators, volumes, etc.) — only show price-level ones
+        const firstVal = steps[0]?.value ?? 0;
+        const priceRange = candleData.length > 0 ? Math.max(...candleData.map(c => c.high)) : 0;
+        if (firstVal <= 0 || (priceRange > 0 && (firstVal < priceRange * 0.5 || firstVal > priceRange * 1.5))) continue;
+
+        // Build stepped line: each bar's value applies as a horizontal line until the next bar
+        const lineData: any[] = [];
+        for (let i = 0; i < steps.length; i++) {
+          const stepTs = Math.floor(new Date(steps[i].time).getTime() / 1000);
+          const nextTs = i < steps.length - 1 ? Math.floor(new Date(steps[i + 1].time).getTime() / 1000) : stepTs + 300;
+          // Create a horizontal step: start of bar to start of next bar
+          lineData.push({ time: stepTs, value: steps[i].value });
+          if (i < steps.length - 1) {
+            lineData.push({ time: nextTs - 1, value: steps[i].value });
+          }
+        }
+
+        const color = indicatorColors[colorIdx % indicatorColors.length];
+        indicatorSeries.push({
+          type: 'Line' as const,
+          data: lineData,
+          options: {
+            color,
+            lineWidth: 1,
+            lineStyle: 0, // Solid
+            priceLineVisible: false,
+            lastValueVisible: true,
+            title: colName.replace(/_/g, ' '),
+          },
+        });
+        colorIdx++;
+      }
+    }
+
     return [{
-      height: 350,
+      height: 400,
       series: [{
         type: 'Candlestick' as const,
         data: candleData,
@@ -146,7 +187,10 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         },
         markers,
         priceLines,
-      }],
+      },
+      // Add stepped indicator overlay lines
+      ...indicatorSeries,
+      ],
     }];
   }, [zoomData, side]);
 
@@ -196,7 +240,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       )}
 
       {chartPanes && !isLoading && (
-        <div style={{ height: 350 }}>
+        <div style={{ height: 400 }}>
           <SyncedChartPane panes={chartPanes} />
         </div>
       )}
