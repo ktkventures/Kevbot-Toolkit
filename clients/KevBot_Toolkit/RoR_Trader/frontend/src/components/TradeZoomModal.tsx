@@ -164,7 +164,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       return bestDist < 120 ? bestTs : ts; // Within 2 minutes
     };
 
-    // Algo fill + marker at exact entry/exit price (uses 'cross' shape like main chart)
+    // Algo fill + marker at exact entry/exit price (uses patched 'cross' shape = + symbol)
     if (t.entry_time && t.entry_price && t.entry_price > 0) {
       let algoMs = new Date(t.entry_time).getTime();
       if (!isLType) algoMs += tfSeconds * 1000;
@@ -191,7 +191,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       });
     }
 
-    // Alert fill × marker at alert entry/exit price (uses 'square' shape for ×)
+    // Alert fill × marker at alert entry/exit price (uses patched 'xcross' shape = × symbol)
     if (alertMatch) {
       if (alertMatch.entryPrice && alertMatch.entryPrice > 0 && t.entry_time) {
         let alertMs = new Date(t.entry_time).getTime();
@@ -201,7 +201,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
           type: 'Line' as const,
           data: [{ time: alertTs, value: alertMatch.entryPrice }],
           options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: [{ time: alertTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 1 }],
+          markers: [{ time: alertTs, position: 'inBar', shape: 'xcross', color: '#FF9800', text: '', size: 1 }],
         });
       }
       if (alertMatch.exitPrice && alertMatch.exitPrice > 0 && t.exit_time) {
@@ -214,7 +214,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
           type: 'Line' as const,
           data: [{ time: alertExitTs, value: alertMatch.exitPrice }],
           options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: [{ time: alertExitTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 1 }],
+          markers: [{ time: alertExitTs, position: 'inBar', shape: 'xcross', color: '#FF9800', text: '', size: 1 }],
         });
       }
     }
