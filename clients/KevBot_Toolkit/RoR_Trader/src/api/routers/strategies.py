@@ -1115,12 +1115,40 @@ def trade_zoom(
         )
 
         if len(indicator_df) > 0:
-            # Find indicator columns (numeric, not standard OHLCV)
+            # Determine which indicators are relevant to this strategy
+            entry_id = strat.get('entry_trigger_confluence_id', '')
+            exit_ids = strat.get('exit_trigger_confluence_ids', [])
+            confluence = strat.get('confluence', [])
+
+            # Extract interpreter keys from triggers and confluence
+            relevant_prefixes = set()
+            for tid in [entry_id] + (exit_ids or []):
+                if tid:
+                    # Trigger IDs are like "utbot_v2_default_buy_ib" — extract the pack prefix
+                    parts = tid.split('_')
+                    if len(parts) >= 2:
+                        relevant_prefixes.add(parts[0])  # e.g., "utbot"
+                        relevant_prefixes.add('_'.join(parts[:2]))  # e.g., "utbot_v2"
+
+            # Also include indicators from confluence conditions
+            for cond in confluence:
+                # Conditions like "15m-EMA_STACK-SML" → extract "ema_stack"
+                cond_parts = cond.split('-')
+                if len(cond_parts) >= 2:
+                    relevant_prefixes.add(cond_parts[1].lower())
+
+            # Find indicator columns that match relevant prefixes
             standard_cols = {'open', 'high', 'low', 'close', 'volume', 'vwap', 'trade_count'}
-            indicator_cols = [c for c in indicator_df.columns
-                            if c not in standard_cols
-                            and indicator_df[c].dtype in ('float64', 'float32', 'int64')
-                            and not c.startswith('__')]
+            indicator_cols = []
+            for c in indicator_df.columns:
+                if c in standard_cols or c.startswith('__'):
+                    continue
+                if indicator_df[c].dtype not in ('float64', 'float32', 'int64'):
+                    continue
+                # Check if this column matches any relevant prefix
+                c_lower = c.lower()
+                if any(prefix in c_lower for prefix in relevant_prefixes):
+                    indicator_cols.append(c)
 
             # Filter to columns that have values in our window
             window_start = ts_dt - timedelta(seconds=padding_seconds + tf_seconds * 3)
