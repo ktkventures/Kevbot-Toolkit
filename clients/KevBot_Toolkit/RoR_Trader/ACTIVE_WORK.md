@@ -145,10 +145,10 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second OHLCV bars + trade details. Polygon day-level caching via `fetch_1s_bars_for_window`.
 - ✅ 3g. **Trade drill-down modal** — Click entry/exit time in Algo History → TradeZoomModal opens with 1-second candles via SyncedChartPane. Entry/exit arrow markers, trade details card. Stop/target/entry price lines (price lines need SyncedChartPane support refinement). Stepped indicators + confluence heatmap deferred to refinement pass.
 
-**Batch 3 Refinements (before moving to Batch 4):**
-- 📋 3f-r1. **Stepped indicators on drill-down modal** — Show original-timeframe indicators (EMAs, VWAP, etc.) as stepped horizontal lines on the 1-second chart. NOT fitted to 1-second data — fitted to the strategy's primary timeframe, so user can see where level crosses happen at sub-bar granularity.
-- 📋 3f-r2. **Entry/exit + and × markers** — Add + marker showing exact algo fill price on bar, × marker showing alert fill price. Same markers used on Strategy Detail price chart. Shows slippage between algo and alert execution.
-- 📋 3f-r3. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity) since the heatmap becomes meaningful only when CB conditions can show per-second state changes. In PB mode, it would just be a solid color block.
+**Batch 3 Refinements:**
+- ✅ 3f-r1. **Stepped indicators on drill-down modal** — Original-timeframe indicators (EMAs, VWAP, UT Bot stop) shown as stepped horizontal lines. Filtered to only strategy-relevant indicators.
+- ✅ 3f-r2. **Entry/exit markers + price lines** — C-type timestamp shift applied to drill-down markers. Stop/target/entry price lines visible. Main chart trade markers restored (arrows + algo/alert price markers). +/× markers working on main chart.
+- 📋 3f-r3. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity) since the heatmap becomes meaningful only when CB conditions can show per-second state changes.
 
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
 - ✅ 3h. **Wire Hi-Fi into analyze endpoints** — All 4 analyze implementations (entry, exit, stop, target) now call `_hifi_resolve_trades()` when hifi_mode=True. TF Conditions/General modes use the base backtest's already-resolved trades.
