@@ -1126,10 +1126,16 @@ def trade_zoom(
             window_start = ts_dt - timedelta(seconds=padding_seconds + tf_seconds * 3)
             window_end = ts_dt + timedelta(seconds=padding_seconds + tf_seconds * 3)
 
-            for col in indicator_cols[:20]:  # Limit to 20 indicators to keep response size reasonable
-                # Get the indicator values for bars in our window
-                mask = (indicator_df.index >= pd.Timestamp(window_start, tz='UTC')) & \
-                       (indicator_df.index <= pd.Timestamp(window_end, tz='UTC'))
+            # Handle timezone-aware index
+            def _to_utc_ts_zoom(dt):
+                ts_val = pd.Timestamp(dt)
+                if ts_val.tzinfo is None:
+                    return ts_val.tz_localize('UTC')
+                return ts_val.tz_convert('UTC')
+
+            for col in indicator_cols[:20]:
+                mask = (indicator_df.index >= _to_utc_ts_zoom(window_start)) & \
+                       (indicator_df.index <= _to_utc_ts_zoom(window_end))
                 window_data = indicator_df.loc[mask, col].dropna()
                 if len(window_data) == 0:
                     continue
