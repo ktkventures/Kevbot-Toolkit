@@ -144,37 +144,65 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         title: 'Target',
       });
     }
-    if (t.entry_price && t.entry_price > 0) {
-      priceLines.push({
-        price: t.entry_price,
-        color: '#2196F3',
-        lineWidth: 1,
-        lineStyle: 1, // Dotted
-        axisLabelVisible: true,
-        title: 'Entry',
+    // Entry price shown as + point marker instead of a price line
+
+    // Remove the entry price from priceLines (we'll show it as a + point marker instead)
+    // Keep stop and target as price lines since those ARE reference levels
+
+    // Build algo fill (+) and alert fill (×) as point marker series
+    const fillMarkerSeries: any[] = [];
+
+    // Algo fill + marker at exact entry/exit price
+    if (t.entry_time && t.entry_price && t.entry_price > 0) {
+      let algoMs = new Date(t.entry_time).getTime();
+      if (!isLType) algoMs += tfSeconds * 1000; // C-type shift
+      const algoTs = Math.floor(algoMs / 1000);
+      fillMarkerSeries.push({
+        type: 'Line' as const,
+        data: [{ time: algoTs, value: t.entry_price }],
+        options: { color: '#4CAF50', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: [{ time: algoTs, position: 'inBar', shape: 'circle', color: '#4CAF50', text: '+', size: 2 }],
+      });
+    }
+    if (t.exit_time && t.exit_price && t.exit_price > 0) {
+      const exitReason = t.exit_reason || '';
+      const isLExit = ['stop_loss', 'stop', 'target'].some(r => exitReason.includes(r));
+      let algoExitMs = new Date(t.exit_time).getTime();
+      if (!isLExit) algoExitMs += tfSeconds * 1000;
+      const algoExitTs = Math.floor(algoExitMs / 1000);
+      const exitColor = (t.r_multiple ?? 0) >= 0 ? '#4CAF50' : '#F44336';
+      fillMarkerSeries.push({
+        type: 'Line' as const,
+        data: [{ time: algoExitTs, value: t.exit_price }],
+        options: { color: exitColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: [{ time: algoExitTs, position: 'inBar', shape: 'circle', color: exitColor, text: '+', size: 2 }],
       });
     }
 
-    // Alert fill price markers (× symbol equivalent — shown as price lines)
+    // Alert fill × marker at alert entry/exit price
     if (alertMatch) {
-      if (side === 'entry' && alertMatch.entryPrice && alertMatch.entryPrice > 0) {
-        priceLines.push({
-          price: alertMatch.entryPrice,
-          color: '#FF9800',
-          lineWidth: 1,
-          lineStyle: 3, // Large dashed
-          axisLabelVisible: true,
-          title: '× Alert Entry',
+      if (alertMatch.entryPrice && alertMatch.entryPrice > 0 && t.entry_time) {
+        let alertMs = new Date(t.entry_time).getTime();
+        if (!isLType) alertMs += tfSeconds * 1000;
+        const alertTs = Math.floor(alertMs / 1000);
+        fillMarkerSeries.push({
+          type: 'Line' as const,
+          data: [{ time: alertTs, value: alertMatch.entryPrice }],
+          options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: [{ time: alertTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 2 }],
         });
       }
-      if (side === 'exit' && alertMatch.exitPrice && alertMatch.exitPrice > 0) {
-        priceLines.push({
-          price: alertMatch.exitPrice,
-          color: '#FF9800',
-          lineWidth: 1,
-          lineStyle: 3,
-          axisLabelVisible: true,
-          title: '× Alert Exit',
+      if (alertMatch.exitPrice && alertMatch.exitPrice > 0 && t.exit_time) {
+        const exitReason = t.exit_reason || '';
+        const isLExit = ['stop_loss', 'stop', 'target'].some(r => exitReason.includes(r));
+        let alertExitMs = new Date(t.exit_time).getTime();
+        if (!isLExit) alertExitMs += tfSeconds * 1000;
+        const alertExitTs = Math.floor(alertExitMs / 1000);
+        fillMarkerSeries.push({
+          type: 'Line' as const,
+          data: [{ time: alertExitTs, value: alertMatch.exitPrice }],
+          options: { color: '#FF9800', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: [{ time: alertExitTs, position: 'inBar', shape: 'square', color: '#FF9800', text: '×', size: 2 }],
         });
       }
     }
@@ -238,6 +266,8 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       },
       // Add stepped indicator overlay lines
       ...indicatorSeries,
+      // Add algo fill (+) and alert fill (×) point markers
+      ...fillMarkerSeries,
       ],
     }];
   }, [zoomData, side]);
