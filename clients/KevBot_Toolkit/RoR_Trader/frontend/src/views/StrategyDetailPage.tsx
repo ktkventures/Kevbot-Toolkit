@@ -980,7 +980,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     }
 
     // For each algo trade, find closest alert by entry time
-    const algoResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
+    const algoResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null; alertEntryPrice?: number; alertExitPrice?: number }[] = [];
     for (let ti = 0; ti < algoAll.length; ti++) {
       const t = algoAll[ti];
       if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') {
@@ -1003,7 +1003,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         if (alert.exitTime && alert.exitTime !== '--' && t.exitTimeDisplay && t.exitTimeDisplay !== '--') {
           exitDelta = (safeDateMs(alert.exitTime) - safeDateMs(t.exitTimeDisplay)) / 1000;
         }
-        algoResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
+        algoResults.push({
+          matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage,
+          entryDelta, exitDelta,
+          alertEntryPrice: alert.entryPrice ?? undefined,
+          alertExitPrice: alert.exitPrice ?? undefined,
+        });
       } else {
         algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
@@ -3653,11 +3658,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           tradeIdx={zoomTrade.idx}
           side={zoomTrade.side}
           trade={zoomTrade.trade}
-          alertMatch={zoomTrade.alertMatch ? {
-            entryPrice: zoomTrade.alertMatch.algoEntryPrice ?? zoomTrade.alertMatch.entryPrice,
-            exitPrice: zoomTrade.alertMatch.algoExitPrice ?? zoomTrade.alertMatch.exitPrice,
-            entryTime: zoomTrade.alertMatch.alertEntryTime ?? zoomTrade.alertMatch.entryTime,
-            exitTime: zoomTrade.alertMatch.alertExitTime ?? zoomTrade.alertMatch.exitTime,
+          alertMatch={zoomTrade.alertMatch?.matched ? {
+            entryPrice: zoomTrade.alertMatch.alertEntryPrice,
+            exitPrice: zoomTrade.alertMatch.alertExitPrice,
           } : null}
         />
       )}
