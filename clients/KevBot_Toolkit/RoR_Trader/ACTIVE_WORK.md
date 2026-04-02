@@ -145,21 +145,26 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second OHLCV bars + trade details. Polygon day-level caching via `fetch_1s_bars_for_window`.
 - ✅ 3g. **Trade drill-down modal** — Click entry/exit time in Algo History → TradeZoomModal opens with 1-second candles via SyncedChartPane. Entry/exit arrow markers, trade details card. Stop/target/entry price lines (price lines need SyncedChartPane support refinement). Stepped indicators + confluence heatmap deferred to refinement pass.
 
+**Batch 3 Refinements (before moving to Batch 4):**
+- 📋 3f-r1. **Stepped indicators on drill-down modal** — Show original-timeframe indicators (EMAs, VWAP, etc.) as stepped horizontal lines on the 1-second chart. NOT fitted to 1-second data — fitted to the strategy's primary timeframe, so user can see where level crosses happen at sub-bar granularity.
+- 📋 3f-r2. **Entry/exit + and × markers** — Add + marker showing exact algo fill price on bar, × marker showing alert fill price. Same markers used on Strategy Detail price chart. Shows slippage between algo and alert execution.
+- 📋 3f-r3. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity) since the heatmap becomes meaningful only when CB conditions can show per-second state changes. In PB mode, it would just be a solid color block.
+
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
-- 📋 3h. **Wire Hi-Fi into analyze endpoints** — The analyze tabs (Entry, Exit, TF Conditions, General, Stop, Target) currently call `unified_trades()` directly without Hi-Fi Pass 2. Need to add `_hifi_resolve_trades()` after each `unified_trades()` call in `_analyze_triggers_impl`, `_analyze_exits_impl`, `_analyze_stops_impl`, `_analyze_targets_impl`. Critical: analysis results must reflect Hi-Fi accuracy when the user has selected Hi-Fi mode.
+- ✅ 3h. **Wire Hi-Fi into analyze endpoints** — All 4 analyze implementations (entry, exit, stop, target) now call `_hifi_resolve_trades()` when hifi_mode=True. TF Conditions/General modes use the base backtest's already-resolved trades.
 
 **Batch 4: Polish**
 - 📋 3i. **PB/CB fidelity variants on TF Conditions** — Like exec types on triggers. Each condition generates [PB] and [CB] variants as separate selectable items. Standard fidelity hides CB. HiFi shows both.
 - 📋 3j. **Mass Builder fidelity setting** — HiFi option in Mass Builder config.
 
-### Phase 4: Chart Test Page + Replay — NOT STARTED
-- [ ] 4a. Page scaffold with chart + config panel
-- [ ] 4b. Configuration: symbol, timeframe, date range, trigger selector (C/L/LC/CC), stop/target
-- [ ] 4c. Instant backtest on config change
-- [ ] 4d. Replay feature (TradingView-style bar-by-bar playback)
-- [ ] 4e. Trade markers with exec type colors, stop/target price lines
-- [ ] 4f. Lock chart range toggle, copy-to-strategy-builder
-- [ ] 4g-new. **Progress tracking with SSE** — Server-Sent Events for real scenario counts during Strategy Builder analysis + Chart Test backtests. Replace indeterminate progress bar with "Scenario 47 of 312" style updates. SSE infrastructure benefits both pages.
+### Phase 4: Replay + Pack Validation — NOT STARTED
+
+Replay is critical for validating confluence packs before they're locked. Moved from original Phase 4 scope (dedicated chart test page — now covered by Strategy Builder + drill-down modal).
+
+- [ ] 4a. **Replay engine** — Bar-by-bar playback simulating real-time execution. Shows indicators updating, triggers firing, positions opening/closing in sequence. Essential for verifying confluence packs behave correctly before finalizing.
+- [ ] 4b. **Replay UI** — Play/pause/step controls, speed selector (1x/2x/5x/10x), bar-by-bar stepping. Can be integrated into Strategy Builder or as a dedicated panel.
+- [ ] 4c. **Pack validation environment** — Replay + trigger event log showing exactly when and why each trigger fired. Detects flicker logic, painting issues, and execution timing problems. Used during Pack Builder workflow before a pack is saved and locked.
+- [ ] 4d. **SSE progress tracking** — Server-Sent Events for real scenario counts during backtests and replay.
 
 ### Phase 5: Pack Builder Update + Swing 123 / Golden Candle — NOT STARTED
 
