@@ -2060,8 +2060,23 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const firstBarTime = bars.length > 0 ? safeDateMs(bars[0].timestamp) : 0;
                   const lastBarTime = bars.length > 0 ? safeDateMs(bars[bars.length - 1].timestamp) : Infinity;
 
-                  // Build trade markers — only when Show Triggers is on
-                  const tradeMarkers = !showTriggers ? [] : [...btTrades, ...fwdTrades].flatMap((t) => {
+                  // Build trade markers from stored_trades (always available) or btTrades+fwdTrades
+                  const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
+                    ? [...btTrades, ...fwdTrades]
+                    : (apiStrategy?.stored_trades || []).map((t: any, i: number) => ({
+                        id: i + 1,
+                        entryTime: t.entry_time || '--',
+                        exitTime: t.exit_time || '--',
+                        entryTimeDisplay: shiftCType(t.entry_time || '--', t.exec_type || 'C'),
+                        exitTimeDisplay: shiftCType(t.exit_time || '--', ['stop_loss', 'stop', 'target'].includes(t.exit_reason || '') ? 'L' : 'C'),
+                        entryPrice: t.entry_price ?? 0,
+                        exitPrice: t.exit_price ?? 0,
+                        pnlR: t.r_multiple ?? 0,
+                        execType: t.exec_type || 'C',
+                        exitReason: t.exit_reason || '--',
+                        isFwd: false,
+                      }));
+                  const tradeMarkers = !showTriggers ? [] : markerTrades.flatMap((t: any) => {
                     const m: any[] = [];
                     const dir = strategy.direction;
                     const entryPlot = t.entryTimeDisplay || t.entryTime;
@@ -2111,7 +2126,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                   // Add price-level cross markers (+ for algo, x for alert trades)
                   // Only when Show Triggers is on
-                  const visibleTrades = !showTriggers ? [] : [...btTrades, ...fwdTrades].filter(t => {
+                  const visibleTrades = !showTriggers ? [] : markerTrades.filter((t: any) => {
                     const ep = t.entryTimeDisplay || t.entryTime;
                     const xp = t.exitTimeDisplay || t.exitTime;
                     const entryMs = ep && ep !== '--' ? safeDateMs(ep) : 0;

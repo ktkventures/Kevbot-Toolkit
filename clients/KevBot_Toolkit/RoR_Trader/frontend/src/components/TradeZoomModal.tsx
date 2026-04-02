@@ -48,6 +48,13 @@ function formatHold(seconds: number | null | undefined): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+function _tfToSeconds(tf: string): number {
+  if (tf.includes('Min')) return parseInt(tf) * 60;
+  if (tf.includes('Hour') || tf === '1H') return 3600;
+  if (tf.includes('Day') || tf === '1D') return 86400;
+  return 60;
+}
+
 export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, side, trade }: TradeZoomModalProps) {
   const { data: zoomData, isLoading, error } = useTradeZoom(
     isOpen ? strategyId : null,
@@ -69,12 +76,17 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       close: b.close,
     }));
 
-    // Build markers
+    // Build markers — apply C-type timestamp shift (plot at next bar open for candle-close triggers)
     const markers: any[] = [];
     const t = zoomData.trade;
+    const tfSeconds = zoomData.timeframe ? _tfToSeconds(zoomData.timeframe) : 60;
+    const isLType = (t.exec_type || 'C').includes('L');
 
-    if (side === 'entry' && t.entry_time) {
-      const entryTs = Math.floor(new Date(t.entry_time).getTime() / 1000);
+    // Entry marker
+    if (t.entry_time) {
+      let entryMs = new Date(t.entry_time).getTime();
+      if (!isLType) entryMs += tfSeconds * 1000; // C-type: shift to next bar open
+      const entryTs = Math.floor(entryMs / 1000);
       markers.push({
         time: entryTs,
         position: 'belowBar',
@@ -85,8 +97,13 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       });
     }
 
-    if (side === 'exit' && t.exit_time) {
-      const exitTs = Math.floor(new Date(t.exit_time).getTime() / 1000);
+    // Exit marker
+    if (t.exit_time) {
+      const exitReason = t.exit_reason || '';
+      const isLExit = ['stop_loss', 'stop', 'target'].some(r => exitReason.includes(r));
+      let exitMs = new Date(t.exit_time).getTime();
+      if (!isLExit) exitMs += tfSeconds * 1000; // C-type exit: shift to next bar open
+      const exitTs = Math.floor(exitMs / 1000);
       const isWin = (t.r_multiple ?? 0) >= 0;
       markers.push({
         time: exitTs,
