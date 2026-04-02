@@ -1,8 +1,8 @@
 # RoR Trader — Active Work Tracker
 
 **Last Updated:** 2026-04-01
-**Current Phase:** Phase 3 (Hi-Fi Execution & Hold Times) — PLANNING
-**Current Focus:** Planning Phase 3 approach — ambiguous bar detection, 1-second resolution, hold times
+**Current Phase:** Phase 3 (Hi-Fi Execution & Hold Times) — IN PROGRESS
+**Current Focus:** Batch 3 (trade drill-down modal) QA passed. Next: Batch 3b (analyze Hi-Fi), then Batch 4 (PB/CB)
 
 ---
 
@@ -142,8 +142,8 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 3e. **Strategy Builder fidelity setting** — Standard / High Fidelity toggle. Passes `hifi_mode` to both Load Data and Analyze requests.
 
 **Batch 3: Visualization (trade drill-down modal)**
-- 📋 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second bars + stepped indicators + confluence states.
-- 📋 3g. **Trade drill-down modal** — Click entry/exit time → 1-second candles with indicators, heatmap, markers.
+- ✅ 3f. **Trade zoom API endpoint** — `/trade-zoom` returning 1-second OHLCV bars + trade details. Polygon day-level caching via `fetch_1s_bars_for_window`.
+- ✅ 3g. **Trade drill-down modal** — Click entry/exit time in Algo History → TradeZoomModal opens with 1-second candles via SyncedChartPane. Entry/exit arrow markers, trade details card. Stop/target/entry price lines (price lines need SyncedChartPane support refinement). Stepped indicators + confluence heatmap deferred to refinement pass.
 
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
 - 📋 3h. **Wire Hi-Fi into analyze endpoints** — The analyze tabs (Entry, Exit, TF Conditions, General, Stop, Target) currently call `unified_trades()` directly without Hi-Fi Pass 2. Need to add `_hifi_resolve_trades()` after each `unified_trades()` call in `_analyze_triggers_impl`, `_analyze_exits_impl`, `_analyze_stops_impl`, `_analyze_targets_impl`. Critical: analysis results must reflect Hi-Fi accuracy when the user has selected Hi-Fi mode.
