@@ -190,6 +190,24 @@ export default function SyncedChartPane({
           }
         }
 
+        // Price lines (horizontal reference lines for stop/target/entry)
+        if ((seriesCfg as any).priceLines && chartSeries) {
+          try {
+            for (const pl of (seriesCfg as any).priceLines) {
+              (chartSeries as any).createPriceLine({
+                price: pl.price,
+                color: pl.color || 'rgba(255,255,255,0.5)',
+                lineWidth: pl.lineWidth || 1,
+                lineStyle: pl.lineStyle || 2, // 0=solid, 1=dotted, 2=dashed
+                axisLabelVisible: pl.axisLabelVisible !== false,
+                title: pl.title || '',
+              });
+            }
+          } catch (e) {
+            console.warn('createPriceLine failed:', e);
+          }
+        }
+
         createdSeries.push(chartSeries);
       }
 

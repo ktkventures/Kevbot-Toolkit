@@ -125,6 +125,11 @@ def _analyze_triggers_impl(req: BacktestRequest):
 
         try:
             trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+            if req.hifi_mode and len(trades_df) > 0:
+                from api.services.backtest_service import _hifi_resolve_trades
+                if 'hifi_resolved' not in trades_df.columns:
+                    trades_df['hifi_resolved'] = False
+                trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
             if len(trades_df) == 0:
                 continue
             kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
@@ -242,6 +247,11 @@ def _analyze_exits_impl(req):
 
         try:
             trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+            if req.hifi_mode and len(trades_df) > 0:
+                from api.services.backtest_service import _hifi_resolve_trades
+                if 'hifi_resolved' not in trades_df.columns:
+                    trades_df['hifi_resolved'] = False
+                trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
             if len(trades_df) == 0:
                 continue
             kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
@@ -379,6 +389,11 @@ def _analyze_stops_impl(req):
 
         try:
             trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+            if req.hifi_mode and len(trades_df) > 0:
+                from api.services.backtest_service import _hifi_resolve_trades
+                if 'hifi_resolved' not in trades_df.columns:
+                    trades_df['hifi_resolved'] = False
+                trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
             if len(trades_df) == 0:
                 continue
             kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
@@ -419,6 +434,11 @@ def _analyze_targets_impl(req):
 
         try:
             trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+            if req.hifi_mode and len(trades_df) > 0:
+                from api.services.backtest_service import _hifi_resolve_trades
+                if 'hifi_resolved' not in trades_df.columns:
+                    trades_df['hifi_resolved'] = False
+                trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
             if len(trades_df) == 0:
                 continue
             kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
