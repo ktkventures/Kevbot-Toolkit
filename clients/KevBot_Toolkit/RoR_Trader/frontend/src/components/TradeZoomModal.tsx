@@ -17,6 +17,7 @@ import { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Modal from '@/components/Modal';
 import { useTradeZoom, type TradeZoomResponse } from '@/hooks/queries/useStrategies';
+import { useChartPrefs } from '@/hooks/useChartPrefs';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
@@ -63,6 +64,7 @@ function _tfToSeconds(tf: string): number {
 }
 
 export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, side, trade, alertMatch }: TradeZoomModalProps) {
+  const chartPrefs = useChartPrefs();
   const { data: zoomData, isLoading, error } = useTradeZoom(
     isOpen ? strategyId : null,
     isOpen ? tradeIdx : null,
@@ -266,12 +268,12 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         type: 'Candlestick' as const,
         data: candleData,
         options: {
-          upColor: '#4CAF50',
-          downColor: '#F44336',
-          borderUpColor: '#4CAF50',
-          borderDownColor: '#F44336',
-          wickUpColor: '#4CAF50',
-          wickDownColor: '#F44336',
+          upColor: (chartPrefs as any).candleUp || '#FFFFFF',
+          downColor: (chartPrefs as any).candleDown || '#787B86',
+          borderUpColor: (chartPrefs as any).candleUpBorder || (chartPrefs as any).candleUp || '#FFFFFF',
+          borderDownColor: (chartPrefs as any).candleDown || '#787B86',
+          wickUpColor: (chartPrefs as any).candleUp || '#FFFFFF',
+          wickDownColor: (chartPrefs as any).candleDown || '#787B86',
         },
         markers,
         priceLines,
