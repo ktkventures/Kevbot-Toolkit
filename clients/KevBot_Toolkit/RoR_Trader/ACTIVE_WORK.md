@@ -147,9 +147,10 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 
 **Batch 3 Refinements:**
 - ✅ 3f-r1. **Stepped indicators on drill-down modal** — Original-timeframe indicators shown as stepped horizontal lines. Filtered to strategy-relevant indicators only.
-- ✅ 3f-r2. **Entry/exit markers + price lines** — C-type timestamp shift applied. Stop/target/entry price lines visible. Main chart trade markers restored (arrows + algo/alert price markers).
-- 📋 3f-r3. **Alert price (×) on drill-down** — Alert entry/exit price lines need proper alert-to-algo trade matching by timestamp proximity. The match data (algoMatches) currently has timing deltas but not alert fill prices. Need to wire alert prices through the match lookup.
-- 📋 3f-r4. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity).
+- ✅ 3f-r2. **Entry/exit + and × markers** — Algo fill shown as + (cross shape, green) at exact fill price. Alert fill shown as × (xcross shape, orange). Uses patched lightweight-charts shapes that can overlap/intersect to form a star when prices match (zero slippage). Snapped to nearest 1-second bar. C-type timestamp shift applied.
+- ✅ 3f-r3. **Alert price data wiring** — Alert entry/exit prices now captured in algoMatches and passed through to drill-down modal.
+- ✅ 3f-r4. **Candlestick colors from display settings** — Drill-down modal reads candle colors from useChartPrefs(), matching main chart behavior.
+- 📋 3f-r5. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity).
 
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
 - ✅ 3h. **Wire Hi-Fi into analyze endpoints** — All 4 analyze implementations (entry, exit, stop, target) now call `_hifi_resolve_trades()` when hifi_mode=True. TF Conditions/General modes use the base backtest's already-resolved trades.
