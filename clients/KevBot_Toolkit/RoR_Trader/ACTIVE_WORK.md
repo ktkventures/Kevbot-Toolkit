@@ -146,9 +146,10 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 - ✅ 3g. **Trade drill-down modal** — Click entry/exit time in Algo History → TradeZoomModal opens with 1-second candles via SyncedChartPane. Entry/exit arrow markers, trade details card. Stop/target/entry price lines (price lines need SyncedChartPane support refinement). Stepped indicators + confluence heatmap deferred to refinement pass.
 
 **Batch 3 Refinements:**
-- ✅ 3f-r1. **Stepped indicators on drill-down modal** — Original-timeframe indicators (EMAs, VWAP, UT Bot stop) shown as stepped horizontal lines. Filtered to only strategy-relevant indicators.
-- ✅ 3f-r2. **Entry/exit markers + price lines** — C-type timestamp shift applied to drill-down markers. Stop/target/entry price lines visible. Main chart trade markers restored (arrows + algo/alert price markers). +/× markers working on main chart.
-- 📋 3f-r3. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity) since the heatmap becomes meaningful only when CB conditions can show per-second state changes.
+- ✅ 3f-r1. **Stepped indicators on drill-down modal** — Original-timeframe indicators shown as stepped horizontal lines. Filtered to strategy-relevant indicators only.
+- ✅ 3f-r2. **Entry/exit markers + price lines** — C-type timestamp shift applied. Stop/target/entry price lines visible. Main chart trade markers restored (arrows + algo/alert price markers).
+- 📋 3f-r3. **Alert price (×) on drill-down** — Alert entry/exit price lines need proper alert-to-algo trade matching by timestamp proximity. The match data (algoMatches) currently has timing deltas but not alert fill prices. Need to wire alert prices through the match lookup.
+- 📋 3f-r4. **Confluence heatmap on drill-down** — Deferred until Batch 4 (PB/CB fidelity).
 
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
 - ✅ 3h. **Wire Hi-Fi into analyze endpoints** — All 4 analyze implementations (entry, exit, stop, target) now call `_hifi_resolve_trades()` when hifi_mode=True. TF Conditions/General modes use the base backtest's already-resolved trades.
