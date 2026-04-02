@@ -39,6 +39,13 @@ interface TradeZoomModalProps {
     bars_held?: number;
     exec_type?: string;
   };
+  /** Matching alert trade data for × marker (optional) */
+  alertMatch?: {
+    entryPrice?: number;
+    exitPrice?: number;
+    entryTime?: string;
+    exitTime?: string;
+  } | null;
 }
 
 function formatHold(seconds: number | null | undefined): string {
@@ -55,7 +62,7 @@ function _tfToSeconds(tf: string): number {
   return 60;
 }
 
-export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, side, trade }: TradeZoomModalProps) {
+export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, side, trade, alertMatch }: TradeZoomModalProps) {
   const { data: zoomData, isLoading, error } = useTradeZoom(
     isOpen ? strategyId : null,
     isOpen ? tradeIdx : null,
@@ -146,6 +153,30 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         axisLabelVisible: true,
         title: 'Entry',
       });
+    }
+
+    // Alert fill price markers (× symbol equivalent — shown as price lines)
+    if (alertMatch) {
+      if (side === 'entry' && alertMatch.entryPrice && alertMatch.entryPrice > 0) {
+        priceLines.push({
+          price: alertMatch.entryPrice,
+          color: '#FF9800',
+          lineWidth: 1,
+          lineStyle: 3, // Large dashed
+          axisLabelVisible: true,
+          title: '× Alert Entry',
+        });
+      }
+      if (side === 'exit' && alertMatch.exitPrice && alertMatch.exitPrice > 0) {
+        priceLines.push({
+          price: alertMatch.exitPrice,
+          color: '#FF9800',
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: true,
+          title: '× Alert Exit',
+        });
+      }
     }
 
     // Build stepped indicator Line series from original-timeframe data
