@@ -287,65 +287,93 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
       let interpKeys = Object.keys(pbStates);
 
       // Filter to only show conditions the user selected (if provided)
+      // Also extract the required state for each condition
+      const conditionMap: { interpKey: string; requiredState: string; isCB: boolean; label: string }[] = [];
+
       if (selectedConditions && selectedConditions.length > 0) {
-        // selectedConditions are like "5m-EMA_PRICE_POSITION-PSLM" or "5m-EMA_PRICE_POSITION-PSLM[CB]"
-        // interpKeys are like "5m-EMA_PRICE_POSITION" (tf-interpreter, without state)
-        // Match if any selected condition starts with the interpKey prefix
-        interpKeys = interpKeys.filter((ik) =>
-          selectedConditions.some((cond) => {
-            const cleanCond = cond.replace('[CB]', '');
-            // Condition format: "5m-EMA_PRICE_POSITION-PSLM", interpKey format: "5m-EMA_PRICE_POSITION"
-            return cleanCond.startsWith(ik);
-          })
-        );
+        for (const cond of selectedConditions) {
+          const isCB = cond.endsWith('[CB]');
+          const cleanCond = cond.replace('[CB]', '');
+          // Condition format: "5m-EMA_PRICE_POSITION-PLMS"
+          // Split into tf-interp prefix and state
+          const lastDash = cleanCond.lastIndexOf('-');
+          if (lastDash === -1) continue;
+          const interpPrefix = cleanCond.substring(0, lastDash); // "5m-EMA_PRICE_POSITION"
+          const requiredState = cleanCond.substring(lastDash + 1); // "PLMS"
+
+          if (interpKeys.includes(interpPrefix)) {
+            conditionMap.push({
+              interpKey: interpPrefix,
+              requiredState,
+              isCB,
+              label: `${isCB ? '[CB]' : '[PB]'} ${cleanCond}`,
+            });
+          }
+        }
       }
 
-      if (interpKeys.length > 0) {
-        const hmSeries = interpKeys.map((interpKey, idx) => {
-          const tfLabel = interpKey.split('-')[0];
+      // Fallback: if no selected conditions matched, show all with PB comparison
+      if (conditionMap.length === 0) {
+        for (const ik of interpKeys) {
+          conditionMap.push({
+            interpKey: ik,
+            requiredState: pbStates[ik],
+            isCB: false,
+            label: `[PB] ${ik}: ${pbStates[ik]}`,
+          });
+        }
+      }
+
+      if (conditionMap.length > 0) {
+        const hmSeries = conditionMap.map((cm, idx) => {
+          const tfLabel = cm.interpKey.split('-')[0];
           const timelineForTf = timeline[tfLabel] || [];
 
           // Build a map of time → CB state for this interpreter
           const cbStateMap = new Map<number, string>();
           for (const entry of timelineForTf) {
             const ts = Math.floor(new Date(entry.time).getTime() / 1000);
-            const interpCol = interpKey.split('-').slice(1).join('-');
+            const interpCol = cm.interpKey.split('-').slice(1).join('-');
             const state = entry.states[interpCol];
             if (state) cbStateMap.set(ts, state);
           }
 
-          const pbState = pbStates[interpKey];
+          const pbState = pbStates[cm.interpKey];
 
           return {
             type: 'Histogram' as const,
             data: candleData.map((c: any) => {
               // Find the closest CB state at or before this timestamp
-              let cbState = pbState; // fallback to PB
-              let closestTs = 0;
-              for (const [ts, state] of cbStateMap.entries()) {
-                if (ts <= c.time && ts > closestTs) {
-                  closestTs = ts;
-                  cbState = state;
+              let currentState = pbState; // fallback to PB
+              if (cm.isCB) {
+                let closestTs = 0;
+                for (const [ts, state] of cbStateMap.entries()) {
+                  if (ts <= c.time && ts > closestTs) {
+                    closestTs = ts;
+                    currentState = state;
+                  }
                 }
               }
-              const matchesPB = cbState === pbState;
+              // Green = current state matches required state (condition met)
+              // Red = current state doesn't match (condition not met)
+              const conditionMet = currentState === cm.requiredState;
               return {
                 time: c.time,
-                value: interpKeys.length - idx,
-                color: matchesPB ? 'rgba(76,175,80,0.6)' : 'rgba(255,152,0,0.8)',
+                value: conditionMap.length - idx,
+                color: conditionMet ? 'rgba(76,175,80,0.7)' : 'rgba(244,67,54,0.5)',
               };
             }),
             options: {
               priceLineVisible: false,
               lastValueVisible: false,
-              title: `${interpKey} [PB:${pbState}]`,
+              title: cm.label,
             },
           };
         });
 
         panes.push({
           id: 'cb-heatmap',
-          height: Math.max(40, interpKeys.length * 20 + 10),
+          height: Math.max(40, conditionMap.length * 20 + 10),
           series: hmSeries,
           hideTimeAxis: true,
         });
