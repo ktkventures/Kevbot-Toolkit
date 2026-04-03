@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, Query
 
 from api.deps import get_current_user
-from api.schemas.backtest import BacktestRequest, BacktestResponse
+from api.schemas.backtest import BacktestRequest, BacktestTradeZoomRequest, BacktestResponse
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,74 @@ def compute_kpis(trades: list[dict], user=Depends(get_current_user)):
     kpis = svc.calculate_kpis(df)
     secondary = svc.calculate_secondary_kpis(df, kpis)
     return {"kpis": kpis, "secondary_kpis": secondary}
+
+
+@router.post("/trade-zoom")
+def backtest_trade_zoom(req: BacktestTradeZoomRequest, user=Depends(get_current_user)):
+    """Fetch 1-second bars around a trade from an unsaved backtest.
+
+    Like GET /api/strategies/{id}/trade-zoom but works without a saved strategy —
+    accepts the full backtest config, re-runs the engine, and zooms into the
+    specified trade.
+    """
+    from api.services.backtest_service import (
+        build_trade_zoom_response, extract_relevant_prefixes,
+        _hifi_resolve_trades,
+    )
+    import services as svc
+
+    try:
+        # Load enriched data (same as analyze endpoints)
+        df, _trading_days = _load_analyze_data(req)
+        if len(df) == 0:
+            return {"bars_1s": [], "trade": {}, "indicators": {},
+                    "side": req.side, "timeframe": req.timeframe, "symbol": req.symbol}
+
+        # Build strategy dict and run unified engine
+        stop_config, target_config = _resolve_configs(req)
+        strategy = _build_base_strategy(req, stop_config, target_config)
+        strategy["id"] = "trade_zoom_ephemeral"
+        trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+
+        # Hi-Fi pass if requested
+        if req.hifi_mode and len(trades_df) > 0:
+            if 'hifi_resolved' not in trades_df.columns:
+                trades_df['hifi_resolved'] = False
+            trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
+
+        # Validate trade index
+        if len(trades_df) == 0:
+            return {"bars_1s": [], "trade": {}, "indicators": {},
+                    "side": req.side, "timeframe": req.timeframe, "symbol": req.symbol}
+        if req.trade_idx < 0 or req.trade_idx >= len(trades_df):
+            return {"bars_1s": [], "trade": {}, "indicators": {},
+                    "side": req.side, "timeframe": req.timeframe, "symbol": req.symbol,
+                    "error": f"trade_idx {req.trade_idx} out of range (0-{len(trades_df)-1})"}
+
+        trade = trades_df.iloc[req.trade_idx].to_dict()
+
+        # Extract relevant indicator prefixes for stepped overlay
+        prefixes = extract_relevant_prefixes(
+            entry_id=req.entry_trigger_confluence_id,
+            exit_ids=req.exit_trigger_confluence_ids,
+            confluence=req.confluence,
+        )
+
+        return build_trade_zoom_response(
+            trade=trade,
+            symbol=req.symbol,
+            timeframe=req.timeframe,
+            side=req.side,
+            padding_seconds=req.padding_seconds,
+            indicator_df=df,
+            relevant_prefixes=prefixes,
+        )
+
+    except Exception as e:
+        logger.exception("Backtest trade-zoom failed for %s", req.symbol)
+        return {"bars_1s": [], "trade": {}, "indicators": {},
+                "side": req.side, "timeframe": req.timeframe, "symbol": req.symbol,
+                "error": str(e)}
 
 
 @router.post("/analyze")

@@ -45,6 +45,14 @@ class BacktestRequest(BaseModel):
     chart_indicators: list[str] = []
 
 
+class BacktestTradeZoomRequest(BacktestRequest):
+    """Extends BacktestRequest with trade-zoom specific fields."""
+
+    trade_idx: int
+    side: str = "exit"  # "entry" or "exit"
+    padding_seconds: int = 60
+
+
 class TradeRecord(BaseModel):
     """Single trade from a backtest."""
     entry_time: Optional[str] = None

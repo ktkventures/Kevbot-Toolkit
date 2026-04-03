@@ -171,6 +171,7 @@ export function useConfluenceChart(strategyId: number | null, condition: string 
 export interface TradeZoomResponse {
   bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
   trade: Record<string, any>;
+  indicators?: Record<string, { time: string; value: number }[]>;
   side: 'entry' | 'exit';
   timeframe: string;
   symbol: string;

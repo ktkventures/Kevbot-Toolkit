@@ -11,22 +11,35 @@
  * - Entry/exit markers (arrows)
  * - Stop/target price level lines
  * - Trade details card
+ *
+ * Data fetching is handled by the parent component — this modal is a
+ * pure render component that accepts a TradeZoomResponse (or loading/error state).
+ * This allows reuse across Strategy Detail, Strategy Builder, and Pack Builder Sandbox.
  */
 
 import { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Modal from '@/components/Modal';
-import { useTradeZoom, type TradeZoomResponse } from '@/hooks/queries/useStrategies';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
+/** The response shape from both trade-zoom endpoints. */
+export interface TradeZoomData {
+  bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
+  trade: Record<string, any>;
+  indicators?: Record<string, { time: string; value: number }[]>;
+  side: 'entry' | 'exit';
+  timeframe: string;
+  symbol: string;
+}
+
 interface TradeZoomModalProps {
   isOpen: boolean;
   onClose: () => void;
-  strategyId: number;
   tradeIdx: number;
   side: 'entry' | 'exit';
+  /** Fallback trade data shown in the details card while zoom data loads. */
   trade: {
     entry_time?: string;
     exit_time?: string;
@@ -40,6 +53,12 @@ interface TradeZoomModalProps {
     bars_held?: number;
     exec_type?: string;
   };
+  /** The fetched zoom data (from parent). Null while loading or on error. */
+  zoomData: TradeZoomData | null | undefined;
+  /** Whether the parent is currently fetching zoom data. */
+  isLoading: boolean;
+  /** Error message from the parent fetch, if any. */
+  error?: string | null;
   /** Matching alert trade data for × marker (optional) */
   alertMatch?: {
     entryPrice?: number;
@@ -63,13 +82,8 @@ function _tfToSeconds(tf: string): number {
   return 60;
 }
 
-export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, side, trade, alertMatch }: TradeZoomModalProps) {
+export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade, zoomData, isLoading, error, alertMatch }: TradeZoomModalProps) {
   const chartPrefs = useChartPrefs();
-  const { data: zoomData, isLoading, error } = useTradeZoom(
-    isOpen ? strategyId : null,
-    isOpen ? tradeIdx : null,
-    side,
-  );
 
   const chartPanes = useMemo(() => {
     if (!zoomData?.bars_1s?.length) return null;
@@ -146,10 +160,6 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
         title: 'Target',
       });
     }
-    // Entry price shown as + point marker instead of a price line
-
-    // Remove the entry price from priceLines (we'll show it as a + point marker instead)
-    // Keep stop and target as price lines since those ARE reference levels
 
     // Build algo fill (+) and alert fill (×) as point marker series
     const fillMarkerSeries: any[] = [];
@@ -284,7 +294,7 @@ export default function TradeZoomModal({ isOpen, onClose, strategyId, tradeIdx, 
       ...fillMarkerSeries,
       ],
     }];
-  }, [zoomData, side]);
+  }, [zoomData, side, chartPrefs, alertMatch]);
 
   const t = zoomData?.trade || trade;
   const tradeNum = tradeIdx + 1;

@@ -52,6 +52,36 @@ export function useRunBacktest() {
   });
 }
 
+/* ── Trade Zoom (for unsaved backtests — no strategy ID needed) ── */
+
+export interface BacktestTradeZoomRequest extends BacktestRequest {
+  trade_idx: number;
+  side: 'entry' | 'exit';
+  padding_seconds?: number;
+}
+
+export interface TradeZoomResponse {
+  bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
+  trade: Record<string, any>;
+  indicators?: Record<string, { time: string; value: number }[]>;
+  side: 'entry' | 'exit';
+  timeframe: string;
+  symbol: string;
+  error?: string;
+}
+
+export function useBacktestTradeZoom() {
+  return useMutation({
+    mutationFn: (req: BacktestTradeZoomRequest) =>
+      apiFetch<TradeZoomResponse>('/api/backtest/trade-zoom', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  });
+}
+
+/* ── Analyze ── */
+
 export interface AnalyzeResult {
   trigger_id: string;
   trigger_name: string;

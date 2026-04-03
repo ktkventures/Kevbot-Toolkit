@@ -10,7 +10,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
@@ -736,6 +736,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [eqXAxisLocal, setEqXAxisLocal] = useState<'trade' | 'time' | null>(null);
   const [pvpViewMode, setPvpViewMode] = useState<'forward' | 'alerts'>('forward');
   const [zoomTrade, setZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any; alertMatch?: any } | null>(null);
+  const zoomQuery = useTradeZoom(
+    zoomTrade ? strategyId : null,
+    zoomTrade ? zoomTrade.idx : null,
+    zoomTrade?.side ?? 'exit',
+  );
   const [advancedTab, setAdvancedTab] = useState('Rolling Metrics');
   const [rollingWindow, setRollingWindow] = useState(20);
   const [rollingMetric, setRollingMetric] = useState('Win Rate');
@@ -3654,10 +3659,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         <TradeZoomModal
           isOpen={!!zoomTrade}
           onClose={() => setZoomTrade(null)}
-          strategyId={strategyId}
           tradeIdx={zoomTrade.idx}
           side={zoomTrade.side}
           trade={zoomTrade.trade}
+          zoomData={zoomQuery.data ?? null}
+          isLoading={zoomQuery.isLoading}
+          error={zoomQuery.error ? String(zoomQuery.error) : null}
           alertMatch={zoomTrade.alertMatch?.matched ? {
             entryPrice: zoomTrade.alertMatch.alertEntryPrice,
             exitPrice: zoomTrade.alertMatch.alertExitPrice,

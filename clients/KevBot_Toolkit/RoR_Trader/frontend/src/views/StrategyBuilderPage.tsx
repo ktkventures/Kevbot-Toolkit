@@ -26,7 +26,8 @@ import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
-import { useRunBacktest, useAnalyzeTriggers, type AnalyzeResult } from '@/hooks/queries/useBacktest';
+import { useRunBacktest, useAnalyzeTriggers, useBacktestTradeZoom, type AnalyzeResult, type BacktestRequest } from '@/hooks/queries/useBacktest';
+const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
 import { useStrategyBuilderDefaults, useDisplayStore } from '@/providers/StoreProvider';
@@ -857,7 +858,7 @@ function OptimizableVariables({
   );
 }
 
-function TradeHistoryTable({ trades }: { trades: TradeRow[] }) {
+function TradeHistoryTable({ trades, onTradeClick }: { trades: TradeRow[]; onTradeClick?: (idx: number, side: 'entry' | 'exit', trade: TradeRow) => void }) {
   const [sortCol, setSortCol] = useState<keyof TradeRow>('id');
   const [sortAsc, setSortAsc] = useState(true);
 
@@ -931,10 +932,20 @@ function TradeHistoryTable({ trades }: { trades: TradeRow[] }) {
               <td className="px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>
                 {trade.id}
               </td>
-              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+              <td
+                className="px-2 py-2 whitespace-nowrap"
+                style={{ color: 'var(--text-secondary)', cursor: onTradeClick ? 'pointer' : undefined, fontFamily: 'monospace', fontSize: '0.75rem' }}
+                onClick={onTradeClick ? () => onTradeClick(trade.id - 1, 'entry', trade) : undefined}
+                title={onTradeClick ? 'Click to drill down into 1-second candles' : undefined}
+              >
                 {trade.entryTime}
               </td>
-              <td className="px-2 py-2 whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+              <td
+                className="px-2 py-2 whitespace-nowrap"
+                style={{ color: 'var(--text-secondary)', cursor: onTradeClick ? 'pointer' : undefined, fontFamily: 'monospace', fontSize: '0.75rem' }}
+                onClick={onTradeClick ? () => onTradeClick(trade.id - 1, 'exit', trade) : undefined}
+                title={onTradeClick ? 'Click to drill down into 1-second candles' : undefined}
+              >
                 {trade.exitTime}
               </td>
               <td className="px-2 py-2 text-center">
@@ -1652,7 +1663,7 @@ export default function StrategyBuilderPage() {
 
   const isBacktesting = backtestMut.isPending;
   const onRunBacktest = useCallback((config: Record<string, any>) => {
-    backtestMut.mutate({
+    const req: BacktestRequest = {
       symbol: config.symbol, timeframe: config.timeframe, direction: config.direction,
       days: config.days, session: config.session,
       entry_trigger_confluence_id: config.entry_trigger_confluence_id,
@@ -1663,7 +1674,9 @@ export default function StrategyBuilderPage() {
       secondary_tfs: config.secondary_tfs || [],
       hifi_mode: config.hifi_mode || false,
       include_chart_data: true,
-    });
+    };
+    setLastBacktestConfig(req);
+    backtestMut.mutate(req);
   }, [backtestMut]);
 
   const onSave = useCallback((strategy: Record<string, any>) => {
@@ -1725,6 +1738,11 @@ export default function StrategyBuilderPage() {
 
   // ---- Fidelity ----
   const [hifiMode, setHifiMode] = useState(false);
+
+  // ---- Trade Drill-Down ----
+  const [zoomTrade, setZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: TradeRow } | null>(null);
+  const tradeZoomMut = useBacktestTradeZoom();
+  const [lastBacktestConfig, setLastBacktestConfig] = useState<BacktestRequest | null>(null);
 
   // ---- Backtest State ----
   const [backtestRan, setBacktestRan] = useState(false);
@@ -2447,7 +2465,17 @@ export default function StrategyBuilderPage() {
                 <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
                   Trade History
                 </h3>
-                <TradeHistoryTable trades={backtestResult?.trades ?? EMPTY_TRADES} />
+                <TradeHistoryTable
+                  trades={backtestResult?.trades ?? EMPTY_TRADES}
+                  onTradeClick={lastBacktestConfig ? (idx, side, trade) => {
+                    setZoomTrade({ idx, side, trade });
+                    tradeZoomMut.mutate({
+                      ...lastBacktestConfig,
+                      trade_idx: idx,
+                      side,
+                    });
+                  } : undefined}
+                />
               </Card>
             </div>
 
@@ -2832,6 +2860,28 @@ export default function StrategyBuilderPage() {
         filters={filters}
         onApply={setFilters}
       />
+
+      {/* Trade Drill-Down Modal */}
+      {zoomTrade && (
+        <TradeZoomModal
+          isOpen={!!zoomTrade}
+          onClose={() => { setZoomTrade(null); tradeZoomMut.reset(); }}
+          tradeIdx={zoomTrade.idx}
+          side={zoomTrade.side}
+          trade={{
+            entry_time: zoomTrade.trade.entryTime,
+            exit_time: zoomTrade.trade.exitTime,
+            entry_price: zoomTrade.trade.entryPrice,
+            exit_price: zoomTrade.trade.exitPrice,
+            r_multiple: zoomTrade.trade.rMultiple,
+            exec_type: zoomTrade.trade.execType,
+            exit_reason: zoomTrade.trade.exitReason,
+          }}
+          zoomData={tradeZoomMut.data ?? null}
+          isLoading={tradeZoomMut.isPending}
+          error={tradeZoomMut.error ? String(tradeZoomMut.error) : null}
+        />
+      )}
     </div>
   );
 }

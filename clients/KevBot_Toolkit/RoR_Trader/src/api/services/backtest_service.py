@@ -531,3 +531,176 @@ def _parse_dt(dt_val):
         return d
     except (ValueError, TypeError):
         return None
+
+
+# =============================================================================
+# TRADE ZOOM HELPER (shared by strategy + backtest trade-zoom endpoints)
+# =============================================================================
+
+def build_trade_zoom_response(
+    trade: dict,
+    symbol: str,
+    timeframe: str,
+    side: str,
+    padding_seconds: int,
+    indicator_df: pd.DataFrame | None = None,
+    relevant_prefixes: set | None = None,
+) -> dict:
+    """Build a trade-zoom response with 1-second bars + stepped indicators.
+
+    This is the shared logic used by both:
+    - GET /api/strategies/{id}/trade-zoom  (saved strategy)
+    - POST /api/backtest/trade-zoom        (unsaved backtest)
+
+    Args:
+        trade: Trade dict with entry_time, exit_time, etc.
+        symbol: Ticker symbol.
+        timeframe: Strategy timeframe (e.g., "5Min").
+        side: "entry" or "exit" — which bar to zoom into.
+        padding_seconds: Seconds of context before/after the bar.
+        indicator_df: Optional enriched DataFrame with indicator columns.
+        relevant_prefixes: Optional set of prefix strings to filter indicator columns.
+
+    Returns:
+        Dict with bars_1s, trade, indicators, side, timeframe, symbol.
+    """
+    from data_loader import fetch_1s_bars_for_window
+    from datetime import timedelta
+
+    # Determine which timestamp to zoom into
+    ts_str = trade.get('entry_time') if side == 'entry' else trade.get('exit_time')
+    if not ts_str:
+        return {
+            "bars_1s": [], "trade": _serialize_trade_for_zoom(trade),
+            "indicators": {}, "side": side, "timeframe": timeframe, "symbol": symbol,
+        }
+
+    # Parse the timestamp
+    ts = pd.Timestamp(ts_str)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize('UTC')
+    ts_dt = ts.to_pydatetime()
+
+    # Determine bar duration for the window
+    tf_seconds = _tf_to_seconds(timeframe)
+    bar_end = ts_dt + timedelta(seconds=tf_seconds)
+
+    # Fetch 1-second bars
+    try:
+        bars_df = fetch_1s_bars_for_window(symbol, ts_dt, bar_end, padding_seconds=padding_seconds)
+    except Exception as e:
+        logger.warning("[TRADE-ZOOM] Error fetching 1s bars: %s", e)
+        return {
+            "bars_1s": [], "trade": _serialize_trade_for_zoom(trade),
+            "indicators": {}, "side": side, "timeframe": timeframe, "symbol": symbol,
+        }
+
+    # Convert to JSON-serializable list
+    bars_list = []
+    for idx_ts, row in bars_df.iterrows():
+        bars_list.append({
+            "time": idx_ts.isoformat(),
+            "open": float(row.get('open', 0)),
+            "high": float(row.get('high', 0)),
+            "low": float(row.get('low', 0)),
+            "close": float(row.get('close', 0)),
+            "volume": float(row.get('volume', 0)),
+        })
+
+    # Compute stepped indicator values from the original timeframe
+    stepped_indicators = {}
+    if indicator_df is not None and len(indicator_df) > 0 and relevant_prefixes:
+        try:
+            standard_cols = {'open', 'high', 'low', 'close', 'volume', 'vwap', 'trade_count'}
+            indicator_cols = []
+            for c in indicator_df.columns:
+                if c in standard_cols or c.startswith('__'):
+                    continue
+                if indicator_df[c].dtype not in ('float64', 'float32', 'int64'):
+                    continue
+                c_lower = c.lower()
+                if any(prefix in c_lower for prefix in relevant_prefixes):
+                    indicator_cols.append(c)
+
+            # Filter to columns that have values in our window
+            window_start = ts_dt - timedelta(seconds=padding_seconds + tf_seconds * 3)
+            window_end = ts_dt + timedelta(seconds=padding_seconds + tf_seconds * 3)
+
+            def _to_utc_ts(dt):
+                t = pd.Timestamp(dt)
+                return t.tz_localize('UTC') if t.tzinfo is None else t.tz_convert('UTC')
+
+            for col in indicator_cols[:20]:
+                mask = (indicator_df.index >= _to_utc_ts(window_start)) & \
+                       (indicator_df.index <= _to_utc_ts(window_end))
+                window_data = indicator_df.loc[mask, col].dropna()
+                if len(window_data) == 0:
+                    continue
+
+                steps = []
+                for bar_ts, val in window_data.items():
+                    steps.append({"time": bar_ts.isoformat(), "value": float(val)})
+
+                if steps:
+                    stepped_indicators[col] = steps
+
+        except Exception as e:
+            logger.warning("[TRADE-ZOOM] Error computing indicators: %s", e)
+
+    return {
+        "bars_1s": bars_list,
+        "trade": _serialize_trade_for_zoom(trade),
+        "indicators": stepped_indicators,
+        "side": side,
+        "timeframe": timeframe,
+        "symbol": symbol,
+    }
+
+
+def _serialize_trade_for_zoom(trade: dict) -> dict:
+    """Serialize a trade dict for the zoom response, handling Timestamps."""
+    result = {}
+    for k, v in trade.items():
+        if isinstance(v, pd.Timestamp):
+            result[k] = v.isoformat()
+        elif isinstance(v, set):
+            result[k] = list(v)
+        elif isinstance(v, float) and (v != v):  # NaN check
+            result[k] = None
+        else:
+            result[k] = v
+    return result
+
+
+def _tf_to_seconds(timeframe: str) -> int:
+    """Convert timeframe string to seconds."""
+    if 'Min' in timeframe:
+        return int(timeframe.replace('Min', '')) * 60
+    if 'Hour' in timeframe or timeframe == '1H':
+        return int(timeframe.replace('Hour', '').replace('H', '') or '1') * 3600
+    if 'Day' in timeframe or timeframe == '1D':
+        return 86400
+    return 60
+
+
+def extract_relevant_prefixes(
+    entry_id: str = '',
+    exit_ids: list[str] | None = None,
+    confluence: list[str] | None = None,
+) -> set:
+    """Extract indicator prefixes from trigger IDs and confluence conditions.
+
+    Used to filter indicator columns to only those relevant to a strategy.
+    """
+    prefixes = set()
+    for tid in [entry_id] + (exit_ids or []):
+        if tid:
+            parts = tid.split('_')
+            if len(parts) >= 2:
+                prefixes.add(parts[0])
+                prefixes.add('_'.join(parts[:2]))
+    for cond in (confluence or []):
+        cond_parts = cond.split('-')
+        if len(cond_parts) >= 2:
+            prefixes.add(cond_parts[1].lower())
+    return prefixes

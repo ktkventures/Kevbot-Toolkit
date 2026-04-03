@@ -1047,8 +1047,12 @@ def trade_zoom(
     """Fetch 1-second OHLCV bars around a specific trade's entry or exit bar.
 
     Returns bars for rendering in the trade drill-down modal.
+    Uses the shared build_trade_zoom_response() helper from backtest_service.
     """
-    from data_loader import fetch_1s_bars_for_window
+    from api.services.backtest_service import (
+        build_trade_zoom_response, extract_relevant_prefixes,
+    )
+    import services as svc
 
     strat = _get_or_404(strategy_id, user)
     stored = strat.get('stored_trades', [])
@@ -1059,161 +1063,28 @@ def trade_zoom(
     symbol = strat.get('symbol', 'SPY')
     timeframe = strat.get('timeframe', '1Min')
 
-    # Determine which timestamp to zoom into
-    if side == 'entry':
-        ts_str = trade.get('entry_time')
-    else:
-        ts_str = trade.get('exit_time')
-
-    if not ts_str:
-        raise HTTPException(status_code=400, detail=f"Trade has no {side}_time")
-
-    # Parse the timestamp
+    # Load indicator data for stepped overlays
+    indicator_df = None
+    prefixes = set()
     try:
-        import pandas as pd
-        ts = pd.Timestamp(ts_str)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize('UTC')
-        ts_dt = ts.to_pydatetime()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Cannot parse timestamp: {ts_str} ({e})")
-
-    # Determine bar duration for the window
-    tf_seconds = _tf_to_seconds_zoom(timeframe)
-    bar_end = ts_dt + timedelta(seconds=tf_seconds)
-
-    # Fetch 1-second bars
-    try:
-        bars_df = fetch_1s_bars_for_window(symbol, ts_dt, bar_end, padding_seconds=padding_seconds)
-    except Exception as e:
-        logger.warning("[TRADE-ZOOM] Error fetching 1s bars: %s", e)
-        return {"bars_1s": [], "trade": _serialize_trade_for_zoom(trade)}
-
-    # Convert to JSON-serializable list
-    bars_list = []
-    for idx_ts, row in bars_df.iterrows():
-        bars_list.append({
-            "time": idx_ts.isoformat(),
-            "open": float(row.get('open', 0)),
-            "high": float(row.get('high', 0)),
-            "low": float(row.get('low', 0)),
-            "close": float(row.get('close', 0)),
-            "volume": float(row.get('volume', 0)),
-        })
-
-    # Compute stepped indicator values from the strategy's original timeframe
-    stepped_indicators = {}
-    try:
-        import services as svc
-        from confluence_groups import get_enabled_groups, get_template
-
-        # Load a small window of the original timeframe data with indicators
-        # We need enough bars for indicators to compute (at least 200 for EMAs)
         indicator_df = svc.prepare_data_with_indicators(
             symbol, days=5, timeframe=timeframe,
             data_feed='sip', session=strat.get('trading_session', 'RTH'),
         )
-
-        if len(indicator_df) > 0:
-            # Determine which indicators are relevant to this strategy
-            entry_id = strat.get('entry_trigger_confluence_id', '')
-            exit_ids = strat.get('exit_trigger_confluence_ids', [])
-            confluence = strat.get('confluence', [])
-
-            # Extract interpreter keys from triggers and confluence
-            relevant_prefixes = set()
-            for tid in [entry_id] + (exit_ids or []):
-                if tid:
-                    # Trigger IDs are like "utbot_v2_default_buy_ib" — extract the pack prefix
-                    parts = tid.split('_')
-                    if len(parts) >= 2:
-                        relevant_prefixes.add(parts[0])  # e.g., "utbot"
-                        relevant_prefixes.add('_'.join(parts[:2]))  # e.g., "utbot_v2"
-
-            # Also include indicators from confluence conditions
-            for cond in confluence:
-                # Conditions like "15m-EMA_STACK-SML" → extract "ema_stack"
-                cond_parts = cond.split('-')
-                if len(cond_parts) >= 2:
-                    relevant_prefixes.add(cond_parts[1].lower())
-
-            # Find indicator columns that match relevant prefixes
-            standard_cols = {'open', 'high', 'low', 'close', 'volume', 'vwap', 'trade_count'}
-            indicator_cols = []
-            for c in indicator_df.columns:
-                if c in standard_cols or c.startswith('__'):
-                    continue
-                if indicator_df[c].dtype not in ('float64', 'float32', 'int64'):
-                    continue
-                # Check if this column matches any relevant prefix
-                c_lower = c.lower()
-                if any(prefix in c_lower for prefix in relevant_prefixes):
-                    indicator_cols.append(c)
-
-            # Filter to columns that have values in our window
-            window_start = ts_dt - timedelta(seconds=padding_seconds + tf_seconds * 3)
-            window_end = ts_dt + timedelta(seconds=padding_seconds + tf_seconds * 3)
-
-            # Handle timezone-aware index
-            def _to_utc_ts_zoom(dt):
-                ts_val = pd.Timestamp(dt)
-                if ts_val.tzinfo is None:
-                    return ts_val.tz_localize('UTC')
-                return ts_val.tz_convert('UTC')
-
-            for col in indicator_cols[:20]:
-                mask = (indicator_df.index >= _to_utc_ts_zoom(window_start)) & \
-                       (indicator_df.index <= _to_utc_ts_zoom(window_end))
-                window_data = indicator_df.loc[mask, col].dropna()
-                if len(window_data) == 0:
-                    continue
-
-                # Build stepped values: each bar's indicator value applies until the next bar
-                steps = []
-                for bar_ts, val in window_data.items():
-                    steps.append({
-                        "time": bar_ts.isoformat(),
-                        "value": float(val),
-                    })
-
-                if steps:
-                    stepped_indicators[col] = steps
-
+        prefixes = extract_relevant_prefixes(
+            entry_id=strat.get('entry_trigger_confluence_id', ''),
+            exit_ids=strat.get('exit_trigger_confluence_ids', []),
+            confluence=strat.get('confluence', []),
+        )
     except Exception as e:
-        logger.warning("[TRADE-ZOOM] Error computing indicators: %s", e)
+        logger.warning("[TRADE-ZOOM] Error loading indicator data: %s", e)
 
-    return {
-        "bars_1s": bars_list,
-        "trade": _serialize_trade_for_zoom(trade),
-        "indicators": stepped_indicators,
-        "side": side,
-        "timeframe": timeframe,
-        "symbol": symbol,
-    }
-
-
-def _serialize_trade_for_zoom(trade: dict) -> dict:
-    """Serialize a trade dict for the zoom response, handling Timestamps."""
-    import pandas as pd
-    result = {}
-    for k, v in trade.items():
-        if isinstance(v, pd.Timestamp):
-            result[k] = v.isoformat()
-        elif isinstance(v, set):
-            result[k] = list(v)
-        elif isinstance(v, float) and (v != v):  # NaN check
-            result[k] = None
-        else:
-            result[k] = v
-    return result
-
-
-def _tf_to_seconds_zoom(timeframe: str) -> int:
-    """Convert timeframe string to seconds for zoom window calculation."""
-    if 'Min' in timeframe:
-        return int(timeframe.replace('Min', '')) * 60
-    if 'Hour' in timeframe or timeframe == '1H':
-        return int(timeframe.replace('Hour', '').replace('H', '') or '1') * 3600
-    if 'Day' in timeframe or timeframe == '1D':
-        return 86400
-    return 60
+    return build_trade_zoom_response(
+        trade=trade,
+        symbol=symbol,
+        timeframe=timeframe,
+        side=side,
+        padding_seconds=padding_seconds,
+        indicator_df=indicator_df,
+        relevant_prefixes=prefixes,
+    )
