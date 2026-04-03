@@ -3,6 +3,9 @@ FastAPI dependencies — JWT auth, user context.
 
 Validates Supabase JWTs by calling Supabase's auth.getUser() endpoint,
 then sets the thread-local user context that db.py expects for RLS.
+
+For local development, set DEV_BYPASS_AUTH=true in .env to skip JWT validation
+and use the service role key for database access (bypasses RLS).
 """
 
 import os
@@ -16,6 +19,13 @@ from db import set_current_user
 
 logger = logging.getLogger(__name__)
 
+# Local dev auth bypass — NEVER set this on Railway/production
+_DEV_BYPASS = os.getenv("DEV_BYPASS_AUTH", "").lower() in ("true", "1", "yes")
+_DEV_USER_ID = os.getenv("DEV_USER_ID", "00000000-0000-0000-0000-000000000000")
+
+if _DEV_BYPASS:
+    logger.warning("⚠️  DEV_BYPASS_AUTH is enabled — all requests authenticated as %s", _DEV_USER_ID)
+
 
 def get_current_user(authorization: str = Header(default="")):
     """Extract and validate Supabase JWT. Sets thread-local user context for db.py.
@@ -23,7 +33,16 @@ def get_current_user(authorization: str = Header(default="")):
     Uses Supabase's own auth API to validate the token rather than
     local JWT verification — this handles all signing key formats
     (HS256 legacy, EdDSA new keys) without needing the signing secret.
+
+    In dev mode (DEV_BYPASS_AUTH=true), skips validation and uses the
+    service role key for database access.
     """
+    if _DEV_BYPASS:
+        # Use service role key so DB operations work without RLS
+        service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        set_current_user(_DEV_USER_ID, service_key)
+        return {"id": _DEV_USER_ID, "email": "dev@local"}
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
 
