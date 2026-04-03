@@ -1191,6 +1191,7 @@ interface AnalyzerResult {
   triggerId: string;
   triggerName: string;
   execType: string;
+  fidelityType?: 'PB' | 'CB';
   totalTrades: number;
   profitFactor: number;
   winRate: number;
@@ -1203,7 +1204,7 @@ interface AnalyzerResult {
 const EMPTY_ENTRY_ANALYSIS: AnalyzerResult[] = [];
 const EMPTY_EXIT_ANALYSIS: AnalyzerResult[] = [];
 
-function FidelityBadge() {
+function FidelityBadge({ type = 'PB' }: { type?: 'PB' | 'CB' }) {
   const fidColor = useDisplayStore((s) => s.fidelityColor) || '#26C6DA';
   const shape = useDisplayStore((s) => s.badgeShape);
   const brackets = useDisplayStore((s) => s.showBrackets);
@@ -1212,7 +1213,7 @@ function FidelityBadge() {
       className={`text-xs font-mono font-medium px-2 py-0.5 ${shape === 'square' ? 'rounded' : 'rounded-full'}`}
       style={{ color: fidColor, background: fidColor + '20' }}
     >
-      {brackets ? '[PB]' : 'PB'}
+      {brackets ? `[${type}]` : type}
     </span>
   );
 }
@@ -1241,7 +1242,7 @@ function AnalyzerResultCard({
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           {badgeMode === 'exec' && <ExecBadge type={result.execType} />}
-          {badgeMode === 'fidelity' && <FidelityBadge />}
+          {badgeMode === 'fidelity' && <FidelityBadge type={result.fidelityType || 'PB'} />}
           <span
             className={`text-sm ${isCurrent ? 'font-semibold' : ''}`}
             style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-primary)' }}
@@ -1855,16 +1856,24 @@ export default function StrategyBuilderPage() {
   const handleRunBacktest = useCallback(() => {
     setBacktestRan(true);
     if (onRunBacktest) {
+      // Separate PB and CB conditions
+      const allConds = Array.from(selectedConditions);
+      const cbConds = allConds.filter(c => c.endsWith('[CB]'));
+      const pbConds = allConds.filter(c => !c.endsWith('[CB]'));
+      // For CB conditions, strip the [CB] suffix for the confluence array
+      // (the base condition ID is used for PB matching, cb_conditions for CB matching)
+      const cbCondIds = cbConds.map(c => c.replace('[CB]', ''));
+
       onRunBacktest({
         symbol, timeframe, direction, session,
         days: lookbackDays,
         lookback_mode: lookbackMode,
         entry_trigger_confluence_id: entryTrigger,
         exit_trigger_confluence_ids: exitTriggers,
-        confluence: Array.from(selectedConditions),
+        confluence: pbConds,
+        cb_conditions: cbCondIds,
         stop_loss_pack_id: selectedStopPack,
         take_profit_pack_id: selectedTargetPack,
-        // Extract bar_count_exit if a bar count exit trigger is selected
         bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
         secondary_tfs: secondaryTfs,
         hifi_mode: hifiMode,
@@ -2641,7 +2650,7 @@ export default function StrategyBuilderPage() {
                               {applyAnalysisFilters(analysisResults.combinations || analysisResults.condition || [], filters).map((result) => (
                                 <AnalyzerResultCard
                                   key={result.trigger_id}
-                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', fidelityType: (result as any).fidelity_type || 'PB', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
                                   isCurrent={selectedConditions.has(result.trigger_id)}
                                   actionLabel={selectedConditions.has(result.trigger_id) ? 'Remove' : 'Add'}
                                   onAction={() => handleToggleCondition(result.trigger_id)}

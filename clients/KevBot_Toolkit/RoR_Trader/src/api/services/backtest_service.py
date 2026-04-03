@@ -96,6 +96,26 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
             trades_df['hifi_resolved'] = False
         trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
 
+    # 5c. CB Fidelity Pass 3: Recompute secondary-TF confluence at trigger moment
+    if req.hifi_mode and req.cb_conditions and req.secondary_tfs and len(trades_df) > 0:
+        trades_df = recompute_cb_confluence(
+            trades_df, req.symbol, req.timeframe,
+            secondary_tfs=list(req.secondary_tfs),
+            session=req.session,
+        )
+        # Filter trades: for CB conditions, check cb_confluence_records instead of confluence_records
+        cb_set = set(req.cb_conditions)
+        if 'cb_confluence_records' in trades_df.columns:
+            def _cb_filter(row):
+                cb_recs = row.get('cb_confluence_records')
+                if cb_recs is None or not isinstance(cb_recs, set):
+                    return False
+                return cb_set.issubset(cb_recs)
+            cb_mask = trades_df.apply(_cb_filter, axis=1)
+            before_count = len(trades_df)
+            trades_df = trades_df[cb_mask].copy()
+            print(f"[BACKTEST] CB filter: {before_count} → {len(trades_df)} trades")
+
     if len(trades_df) > 0:
         print(f"[BACKTEST] First trade: {trades_df.iloc[0].to_dict()}")
         wins = trades_df['win'].sum() if 'win' in trades_df.columns else 'N/A'
@@ -496,6 +516,150 @@ def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float | None, target: float |
                 return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
 
     return None
+
+
+# =============================================================================
+# CB FIDELITY — Current Bar Confluence Recomputation
+# =============================================================================
+
+def recompute_cb_confluence(
+    trades_df: pd.DataFrame,
+    symbol: str,
+    primary_tf: str,
+    secondary_tfs: list[str],
+    session: str = 'RTH',
+) -> pd.DataFrame:
+    """Recompute confluence state at the exact trigger moment for CB conditions.
+
+    For each trade, takes the entry timestamp and:
+    1. Identifies which secondary-TF bar was forming at that moment
+    2. Loads the completed secondary-TF bars leading up to the forming bar
+    3. Builds a partial bar from the primary-TF bars up to the trigger moment
+    4. Runs the full indicator + interpreter pipeline on this augmented series
+    5. Extracts the interpreter state at the partial bar → CB state
+    6. Stores as cb_confluence_records on each trade
+
+    PB state comes from the last CLOSED secondary-TF bar (already in confluence_records).
+    CB state comes from the FORMING secondary-TF bar at trigger time.
+    """
+    import services as svc
+    from data_loader import resample_to_timeframe, get_tf_label
+    from interpreters import INTERPRETERS
+
+    if len(trades_df) == 0 or not secondary_tfs:
+        return trades_df
+
+    # Ensure cb_confluence_records column exists
+    if 'cb_confluence_records' not in trades_df.columns:
+        trades_df['cb_confluence_records'] = None
+
+    # Load 1-min bars for resampling (generous window for indicator lookback)
+    primary_df = svc.load_market_data(symbol, days=10, timeframe='1Min',
+                                       feed='sip', session=session)
+    if len(primary_df) == 0:
+        return trades_df
+
+    for sec_tf in secondary_tfs:
+        tf_label = get_tf_label(sec_tf)
+        sec_period_seconds = _tf_to_seconds(sec_tf)
+
+        # Build complete secondary-TF series with indicators
+        sec_df = resample_to_timeframe(
+            primary_df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+        if len(sec_df) < 5:
+            continue
+
+        sec_df = svc.run_all_indicators(sec_df)
+        for group in svc.get_enabled_groups(svc.load_confluence_groups()):
+            sec_df = svc.run_indicators_for_group(sec_df, group)
+        sec_df = svc.run_all_interpreters(sec_df)
+
+        interp_cols = [c for c in sec_df.columns if c in INTERPRETERS]
+
+        for idx in trades_df.index:
+            entry_time_str = trades_df.at[idx, 'entry_time']
+            if not entry_time_str:
+                continue
+
+            try:
+                entry_dt = _parse_dt(str(entry_time_str))
+                if entry_dt is None:
+                    continue
+                entry_ts = pd.Timestamp(entry_dt)
+                if entry_ts.tzinfo is None:
+                    entry_ts = entry_ts.tz_localize('UTC')
+
+                # Find which secondary-TF bar was forming at entry time
+                sec_bar_start = _find_forming_bar_start(
+                    sec_df.index, entry_ts, sec_period_seconds)
+                if sec_bar_start is None:
+                    continue
+
+                # Get primary-TF bars within the forming bar, up to trigger moment
+                primary_mask = (primary_df.index >= sec_bar_start) & (primary_df.index <= entry_ts)
+                partial_1min = primary_df.loc[primary_mask, ['open', 'high', 'low', 'close', 'volume']]
+                if len(partial_1min) == 0:
+                    continue
+
+                # Build partial OHLCV bar
+                partial_bar = pd.DataFrame([{
+                    'open': float(partial_1min.iloc[0]['open']),
+                    'high': float(partial_1min['high'].max()),
+                    'low': float(partial_1min['low'].min()),
+                    'close': float(partial_1min.iloc[-1]['close']),
+                    'volume': float(partial_1min['volume'].sum()),
+                }], index=[sec_bar_start])
+
+                # Append partial bar to completed secondary-TF bars
+                completed_bars = sec_df.loc[sec_df.index < sec_bar_start,
+                                            ['open', 'high', 'low', 'close', 'volume']]
+                lookback = min(250, len(completed_bars))
+                cb_input = pd.concat([completed_bars.tail(lookback), partial_bar])
+
+                # Run indicator + interpreter pipeline
+                cb_input = svc.run_all_indicators(cb_input)
+                for group in svc.get_enabled_groups(svc.load_confluence_groups()):
+                    cb_input = svc.run_indicators_for_group(cb_input, group)
+                cb_input = svc.run_all_interpreters(cb_input)
+
+                # Extract CB state from the partial bar (last row)
+                cb_records = set()
+                if len(cb_input) > 0:
+                    last_row = cb_input.iloc[-1]
+                    for interp_col in interp_cols:
+                        val = last_row.get(interp_col)
+                        if val is not None and pd.notna(val):
+                            cb_records.add(f"{tf_label}-{interp_col}-{val}")
+
+                # Store CB confluence records
+                existing = trades_df.at[idx, 'cb_confluence_records']
+                if existing is None or not isinstance(existing, set):
+                    trades_df.at[idx, 'cb_confluence_records'] = cb_records
+                else:
+                    existing.update(cb_records)
+
+            except Exception as e:
+                logger.warning("[CB-RECOMPUTE] Error for trade %s, tf=%s: %s", idx, sec_tf, e)
+
+    logger.info("[CB-RECOMPUTE] Processed %d trades across %d secondary TFs",
+                len(trades_df), len(secondary_tfs))
+    return trades_df
+
+
+def _find_forming_bar_start(
+    sec_index: pd.DatetimeIndex,
+    entry_ts: pd.Timestamp,
+    period_seconds: int,
+) -> pd.Timestamp | None:
+    """Find the start of the secondary-TF bar forming at entry_ts."""
+    period = pd.Timedelta(seconds=period_seconds)
+    candidates = sec_index[sec_index <= entry_ts]
+    if len(candidates) == 0:
+        return None
+    last_bar_start = candidates[-1]
+    if entry_ts < last_bar_start + period:
+        return last_bar_start
+    return last_bar_start + period
 
 
 def _tf_to_seconds(timeframe: str) -> int:

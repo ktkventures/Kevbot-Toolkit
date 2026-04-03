@@ -40,6 +40,9 @@ class BacktestRequest(BaseModel):
     secondary_tfs: list[str] = []
     hifi_mode: bool = False  # Enable 1-second resolution for every entry/exit
 
+    # CB fidelity — condition IDs that should use Current Bar recomputation
+    cb_conditions: list[str] = []
+
     # Output control
     include_chart_data: bool = False
     chart_indicators: list[str] = []

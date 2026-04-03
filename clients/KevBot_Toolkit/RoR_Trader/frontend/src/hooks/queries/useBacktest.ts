@@ -27,6 +27,7 @@ export interface BacktestRequest {
   bar_count_exit?: number;
   secondary_tfs?: string[];
   hifi_mode?: boolean;
+  cb_conditions?: string[];
   include_chart_data?: boolean;
   chart_indicators?: string[];
 }
@@ -86,6 +87,7 @@ export interface AnalyzeResult {
   trigger_id: string;
   trigger_name: string;
   exec_type: string;
+  fidelity_type?: 'PB' | 'CB';
   total_trades: number;
   profit_factor: number;
   win_rate: number;

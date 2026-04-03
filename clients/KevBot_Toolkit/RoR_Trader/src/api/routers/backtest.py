@@ -342,6 +342,9 @@ def _analyze_conditions_impl(req):
     Runs ONE backtest with NO confluence filtering, then uses
     analyze_confluences() to filter trades by confluence_records membership.
     Excludes GEN- prefix conditions (those belong in General tab).
+
+    When hifi_mode is enabled, also generates [CB] variants by recomputing
+    secondary-TF indicators at the exact trigger moment.
     """
     import services as svc
 
@@ -364,21 +367,22 @@ def _analyze_conditions_impl(req):
         logger.info("[ANALYZE-COND] Sample confluence_records (type=%s): %s",
                     type(sample_cr).__name__, list(sample_cr)[:10] if sample_cr else 'None')
 
+    # PB analysis (standard — using last closed bar's state)
     condition_results = svc.analyze_confluences(
         base_trades,
         required=set(req.confluence) if req.confluence else None,
         min_trades=3,
         risk_per_trade=req.risk_per_trade,
         total_trading_days=trading_days,
-        exclude_prefix='GEN-',  # TF tab excludes general conditions
+        exclude_prefix='GEN-',
     )
 
-    # Convert to the standard result format
     results = []
     for cr in condition_results:
         results.append({
             'trigger_id': cr['confluence'],
             'trigger_name': cr['confluence'],
+            'fidelity_type': 'PB',
             'exec_type': 'C',
             'total_trades': cr['total_trades'],
             'profit_factor': cr['profit_factor'],
@@ -389,6 +393,47 @@ def _analyze_conditions_impl(req):
             'pf_change': cr.get('pf_change', 0),
             'wr_change': cr.get('wr_change', 0),
         })
+
+    # CB analysis (Hi-Fi only — recompute secondary-TF state at trigger moment)
+    if req.hifi_mode and req.secondary_tfs and len(base_trades) > 0:
+        try:
+            from api.services.backtest_service import recompute_cb_confluence
+            cb_trades = base_trades.copy()
+            cb_trades = recompute_cb_confluence(
+                cb_trades, req.symbol, req.timeframe,
+                secondary_tfs=list(req.secondary_tfs),
+                session=req.session,
+            )
+
+            if 'cb_confluence_records' in cb_trades.columns:
+                cb_condition_results = svc.analyze_confluences(
+                    cb_trades,
+                    required=set(req.confluence) if req.confluence else None,
+                    min_trades=3,
+                    risk_per_trade=req.risk_per_trade,
+                    total_trading_days=trading_days,
+                    exclude_prefix='GEN-',
+                    confluence_col='cb_confluence_records',
+                )
+
+                for cr in cb_condition_results:
+                    results.append({
+                        'trigger_id': cr['confluence'] + '[CB]',
+                        'trigger_name': cr['confluence'],
+                        'fidelity_type': 'CB',
+                        'exec_type': 'C',
+                        'total_trades': cr['total_trades'],
+                        'profit_factor': cr['profit_factor'],
+                        'win_rate': cr['win_rate'],
+                        'avg_r': cr['avg_r'],
+                        'daily_r': cr['daily_r'],
+                        'r_squared': cr['r_squared'],
+                        'pf_change': cr.get('pf_change', 0),
+                        'wr_change': cr.get('wr_change', 0),
+                    })
+        except Exception as e:
+            logger.warning("[ANALYZE-COND] CB recomputation failed: %s", e)
+
     return {"results": results}
 
 

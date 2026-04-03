@@ -1014,6 +1014,7 @@ def analyze_confluences(
     total_trading_days: int = None,
     exclude_prefix: str = None,
     include_prefix: str = None,
+    confluence_col: str = 'confluence_records',
 ) -> list[dict]:
     """Analyze how different confluence conditions affect results.
 
@@ -1023,15 +1024,17 @@ def analyze_confluences(
     Filters trades by confluence_records set membership per condition.
 
     Args:
-        trades_df: Trades from a backtest (must have 'confluence_records' column)
+        trades_df: Trades from a backtest (must have confluence_col column)
         required: If provided, only consider trades where required.issubset(confluence_records)
         min_trades: Minimum trades per condition to include in results
         exclude_prefix: Skip conditions starting with this (e.g. 'GEN-' for TF tab)
         include_prefix: Only include conditions starting with this (e.g. 'GEN-' for General tab)
+        confluence_col: Column name with confluence record sets (default 'confluence_records',
+                        use 'cb_confluence_records' for Current Bar fidelity analysis)
 
     Returns: List of dicts with per-condition KPIs, sorted by profit_factor desc.
     """
-    if len(trades_df) == 0 or 'confluence_records' not in trades_df.columns:
+    if len(trades_df) == 0 or confluence_col not in trades_df.columns:
         return []
 
     # Normalize confluence_records: handle set, frozenset, list
@@ -1044,7 +1047,7 @@ def analyze_confluences(
 
     # Get base trades (filtered by required confluences)
     if required and len(required) > 0:
-        mask = trades_df['confluence_records'].apply(lambda r: required.issubset(_as_set(r)))
+        mask = trades_df[confluence_col].apply(lambda r: required.issubset(_as_set(r)))
         base_trades = trades_df[mask]
     else:
         base_trades = trades_df
@@ -1057,7 +1060,7 @@ def analyze_confluences(
 
     # Find all unique confluence records
     all_records = set()
-    for records in base_trades['confluence_records']:
+    for records in base_trades[confluence_col]:
         all_records.update(_as_set(records))
 
     # Remove already-required records
@@ -1073,7 +1076,7 @@ def analyze_confluences(
     results = []
     for record in sorted(all_records):
         # Filter to trades with this record
-        mask = base_trades['confluence_records'].apply(lambda r, rec=record: rec in _as_set(r))
+        mask = base_trades[confluence_col].apply(lambda r, rec=record: rec in _as_set(r))
         subset = base_trades[mask]
 
         if len(subset) >= min_trades:
