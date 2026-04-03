@@ -709,6 +709,8 @@ def build_trade_zoom_response(
     padding_seconds: int,
     indicator_df: pd.DataFrame | None = None,
     relevant_prefixes: set | None = None,
+    secondary_tfs: list[str] | None = None,
+    session: str = 'RTH',
 ) -> dict:
     """Build a trade-zoom response with 1-second bars + stepped indicators.
 
@@ -811,7 +813,17 @@ def build_trade_zoom_response(
         except Exception as e:
             logger.warning("[TRADE-ZOOM] Error computing indicators: %s", e)
 
-    return {
+    # Compute CB confluence timeline if secondary TFs are provided
+    cb_timeline = {}
+    pb_states = {}
+    if secondary_tfs and ts_dt:
+        try:
+            cb_timeline, pb_states = _compute_cb_timeline(
+                symbol, ts_dt, tf_seconds, secondary_tfs, session, padding_seconds)
+        except Exception as e:
+            logger.warning("[TRADE-ZOOM] Error computing CB timeline: %s", e)
+
+    result = {
         "bars_1s": bars_list,
         "trade": _serialize_trade_for_zoom(trade),
         "indicators": stepped_indicators,
@@ -819,6 +831,142 @@ def build_trade_zoom_response(
         "timeframe": timeframe,
         "symbol": symbol,
     }
+    if cb_timeline:
+        result["cb_confluence_timeline"] = cb_timeline
+    if pb_states:
+        result["pb_states"] = pb_states
+    return result
+
+
+def _compute_cb_timeline(
+    symbol: str,
+    bar_dt: 'datetime',
+    tf_seconds: int,
+    secondary_tfs: list[str],
+    session: str,
+    padding_seconds: int,
+) -> tuple[dict, dict]:
+    """Compute second-by-second CB confluence state within the zoom window.
+
+    For each secondary TF, computes what the interpreter state would be
+    at each primary-TF bar within the window. Returns:
+      cb_timeline: {tf_label: [{time, state}, ...]} — state at each bar
+      pb_states: {tf_label: state} — the PB state (from last closed bar)
+    """
+    import services as svc
+    from data_loader import resample_to_timeframe, get_tf_label
+    from interpreters import INTERPRETERS
+    from datetime import timedelta
+
+    # Load 1-min bars covering the zoom window + indicator lookback
+    primary_df = svc.load_market_data(symbol, days=5, timeframe='1Min',
+                                       feed='sip', session=session)
+    if len(primary_df) == 0:
+        return {}, {}
+
+    cb_timeline = {}
+    pb_states = {}
+
+    for sec_tf in secondary_tfs:
+        tf_label = get_tf_label(sec_tf)
+        sec_period = _tf_to_seconds(sec_tf)
+
+        # Build complete secondary-TF series
+        sec_df = resample_to_timeframe(
+            primary_df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+        if len(sec_df) < 5:
+            continue
+
+        sec_df = svc.run_all_indicators(sec_df)
+        for group in svc.get_enabled_groups(svc.load_confluence_groups()):
+            sec_df = svc.run_indicators_for_group(sec_df, group)
+        sec_df = svc.run_all_interpreters(sec_df)
+
+        interp_cols = [c for c in sec_df.columns if c in INTERPRETERS]
+        if not interp_cols:
+            continue
+
+        # PB state: the last completed secondary-TF bar before the zoom bar
+        pb_ts = pd.Timestamp(bar_dt)
+        if pb_ts.tzinfo is None:
+            pb_ts = pb_ts.tz_localize('UTC')
+        completed = sec_df[sec_df.index < pb_ts]
+        if len(completed) > 0:
+            # PB is shifted forward by one period — the last completed bar's state
+            last_row = completed.iloc[-1]
+            for ic in interp_cols:
+                val = last_row.get(ic)
+                if val is not None and pd.notna(val):
+                    pb_states[f"{tf_label}-{ic}"] = str(val)
+
+        # CB timeline: at each 1-min bar within the zoom window, compute the forming bar state
+        window_start = bar_dt - timedelta(seconds=padding_seconds)
+        window_end = bar_dt + timedelta(seconds=tf_seconds + padding_seconds)
+
+        ws_ts = pd.Timestamp(window_start)
+        we_ts = pd.Timestamp(window_end)
+        if ws_ts.tzinfo is None:
+            ws_ts = ws_ts.tz_localize('UTC')
+        if we_ts.tzinfo is None:
+            we_ts = we_ts.tz_localize('UTC')
+
+        window_1min = primary_df[(primary_df.index >= ws_ts) & (primary_df.index <= we_ts)]
+
+        timeline_entries = []
+        # Sample at ~10-second intervals to avoid excessive computation
+        sample_indices = list(range(0, len(window_1min), max(1, len(window_1min) // 30)))
+        if len(window_1min) - 1 not in sample_indices:
+            sample_indices.append(len(window_1min) - 1)
+
+        for si in sample_indices:
+            sample_ts = window_1min.index[si]
+
+            # Find the forming secondary bar
+            sec_bar_start = _find_forming_bar_start(sec_df.index, sample_ts, sec_period)
+            if sec_bar_start is None:
+                continue
+
+            # Build partial bar up to this moment
+            partial_mask = (primary_df.index >= sec_bar_start) & (primary_df.index <= sample_ts)
+            partial_bars = primary_df.loc[partial_mask, ['open', 'high', 'low', 'close', 'volume']]
+            if len(partial_bars) == 0:
+                continue
+
+            partial_ohlcv = pd.DataFrame([{
+                'open': float(partial_bars.iloc[0]['open']),
+                'high': float(partial_bars['high'].max()),
+                'low': float(partial_bars['low'].min()),
+                'close': float(partial_bars.iloc[-1]['close']),
+                'volume': float(partial_bars['volume'].sum()),
+            }], index=[sec_bar_start])
+
+            # Append to completed bars and run pipeline
+            completed_sec = sec_df.loc[sec_df.index < sec_bar_start,
+                                       ['open', 'high', 'low', 'close', 'volume']]
+            lookback = min(250, len(completed_sec))
+            cb_input = pd.concat([completed_sec.tail(lookback), partial_ohlcv])
+
+            cb_input = svc.run_all_indicators(cb_input)
+            for group in svc.get_enabled_groups(svc.load_confluence_groups()):
+                cb_input = svc.run_indicators_for_group(cb_input, group)
+            cb_input = svc.run_all_interpreters(cb_input)
+
+            if len(cb_input) > 0:
+                last_row = cb_input.iloc[-1]
+                states = {}
+                for ic in interp_cols:
+                    val = last_row.get(ic)
+                    if val is not None and pd.notna(val):
+                        states[ic] = str(val)
+                timeline_entries.append({
+                    "time": sample_ts.isoformat(),
+                    "states": states,
+                })
+
+        if timeline_entries:
+            cb_timeline[tf_label] = timeline_entries
+
+    return cb_timeline, pb_states
 
 
 def _serialize_trade_for_zoom(trade: dict) -> dict:

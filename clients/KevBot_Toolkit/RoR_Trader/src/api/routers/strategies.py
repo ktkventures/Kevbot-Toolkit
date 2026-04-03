@@ -1087,4 +1087,6 @@ def trade_zoom(
         padding_seconds=padding_seconds,
         indicator_df=indicator_df,
         relevant_prefixes=prefixes,
+        secondary_tfs=strat.get('secondary_tfs'),
+        session=strat.get('trading_session', 'RTH'),
     )

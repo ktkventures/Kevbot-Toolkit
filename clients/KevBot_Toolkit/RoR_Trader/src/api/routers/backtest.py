@@ -125,6 +125,8 @@ def backtest_trade_zoom(req: BacktestTradeZoomRequest, user=Depends(get_current_
             padding_seconds=req.padding_seconds,
             indicator_df=df,
             relevant_prefixes=prefixes,
+            secondary_tfs=list(req.secondary_tfs) if req.secondary_tfs else None,
+            session=req.session,
         )
 
     except Exception as e:

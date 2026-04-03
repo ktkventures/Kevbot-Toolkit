@@ -29,6 +29,10 @@ export interface TradeZoomData {
   bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
   trade: Record<string, any>;
   indicators?: Record<string, { time: string; value: number }[]>;
+  /** CB confluence timeline: per secondary TF, array of {time, states} at sampled moments */
+  cb_confluence_timeline?: Record<string, { time: string; states: Record<string, string> }[]>;
+  /** PB confluence state: per "tf-interp" key, the state from the last closed bar */
+  pb_states?: Record<string, string>;
   side: 'entry' | 'exit';
   timeframe: string;
   symbol: string;
@@ -272,7 +276,68 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
       }
     }
 
-    return [{
+    const panes: any[] = [];
+
+    // Pane 1: CB confluence heatmap (if available)
+    if (zoomData.cb_confluence_timeline && zoomData.pb_states) {
+      const timeline = zoomData.cb_confluence_timeline;
+      const pbStates = zoomData.pb_states;
+      const interpKeys = Object.keys(pbStates);
+
+      if (interpKeys.length > 0) {
+        const hmSeries = interpKeys.map((interpKey, idx) => {
+          const tfLabel = interpKey.split('-')[0];
+          const timelineForTf = timeline[tfLabel] || [];
+
+          // Build a map of time → CB state for this interpreter
+          const cbStateMap = new Map<number, string>();
+          for (const entry of timelineForTf) {
+            const ts = Math.floor(new Date(entry.time).getTime() / 1000);
+            const interpCol = interpKey.split('-').slice(1).join('-');
+            const state = entry.states[interpCol];
+            if (state) cbStateMap.set(ts, state);
+          }
+
+          const pbState = pbStates[interpKey];
+
+          return {
+            type: 'Histogram' as const,
+            data: candleData.map((c: any) => {
+              // Find the closest CB state at or before this timestamp
+              let cbState = pbState; // fallback to PB
+              let closestTs = 0;
+              for (const [ts, state] of cbStateMap.entries()) {
+                if (ts <= c.time && ts > closestTs) {
+                  closestTs = ts;
+                  cbState = state;
+                }
+              }
+              const matchesPB = cbState === pbState;
+              return {
+                time: c.time,
+                value: interpKeys.length - idx,
+                color: matchesPB ? 'rgba(76,175,80,0.6)' : 'rgba(255,152,0,0.8)',
+              };
+            }),
+            options: {
+              priceLineVisible: false,
+              lastValueVisible: false,
+              title: `${interpKey} [PB:${pbState}]`,
+            },
+          };
+        });
+
+        panes.push({
+          id: 'cb-heatmap',
+          height: Math.max(40, interpKeys.length * 20 + 10),
+          series: hmSeries,
+          hideTimeAxis: true,
+        });
+      }
+    }
+
+    // Pane 2: 1-second candlestick chart
+    panes.push({
       height: 400,
       series: [{
         type: 'Candlestick' as const,
@@ -293,7 +358,9 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
       // Add algo fill (+) and alert fill (×) point markers
       ...fillMarkerSeries,
       ],
-    }];
+    });
+
+    return panes;
   }, [zoomData, side, chartPrefs, alertMatch]);
 
   const t = zoomData?.trade || trade;
