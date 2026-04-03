@@ -1,8 +1,16 @@
 # RoR Trader — Active Work Tracker
 
 **Last Updated:** 2026-04-03
-**Current Phase:** Phase 3 Batch 4 → Phase 5 (Pack Builder) — Golden child verification first, then Pack Builder pipeline
-**Current Focus:** Implementing 7-batch plan: (1) TradeZoomModal in Strategy Builder, (2) PB/CB fidelity with real CB recomputation, (3) CB heatmap on drill-down, (4) Pack Builder AI integration (Claude + OpenAI), (5) Sandbox tab in Pack Builder step 5, (6) Pipeline upgrades (exec_variants, LC/CC), (7) Swing 1-2-3 validation. Full plan: `/root/.claude/plans/resilient-roaming-newt.md`
+**Current Phase:** Phase 3 Batch 4 complete → Phase 5 (Pack Builder) ready to start
+**Current Focus:** Batches 1-3 COMPLETE (TradeZoom, PB/CB fidelity, CB heatmap). Golden child verification in progress. Next: Batch 4 (Pack Builder AI integration). Recommend VS Code for remaining batches — needs real network for API testing.
+
+**Session Progress (2026-04-03):**
+- Batches 1-3 implemented and deployed to Railway dev
+- QA found and fixed: entry trigger keyword filter, CB condition not passing through, CB heatmap crash on empty window, heatmap showing all interpreters instead of selected
+- Local dev environment set up (src/.env + frontend/.env.local, Python/Node deps installed)
+- DEV_BYPASS_AUTH added to deps.py for local API testing
+- CB recomputation caching optimized (groups + sec_df cached outside per-trade loop)
+- Browser environment limitation: outbound HTTPS blocked by proxy, can't fully test API locally
 
 ---
 
