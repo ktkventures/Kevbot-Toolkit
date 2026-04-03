@@ -783,10 +783,12 @@ function OptimizableVariables({
             <div className="space-y-1">
               {Array.from(selectedConditions).sort().map((cid) => {
                 const cDef = allConditions.find((c) => c.id === cid);
+                const isCB = cid.endsWith('[CB]');
                 return (
                   <div key={cid} className="flex items-center gap-1 text-xs group">
+                    <FidelityBadge type={isCB ? 'CB' : 'PB'} />
                     <span className="italic flex-1" style={{ color: 'var(--text-secondary)' }}>
-                      {cDef?.label || cid}
+                      {cDef?.label || (isCB ? cid.replace('[CB]', '') : cid)}
                     </span>
                     <button
                       className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]"

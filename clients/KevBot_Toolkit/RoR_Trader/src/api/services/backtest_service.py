@@ -861,10 +861,14 @@ def _compute_cb_timeline(
     from datetime import timedelta
 
     # Load 1-min bars covering the zoom window + indicator lookback
-    logger.info("[CB-TIMELINE] Loading 1-min bars for %s", symbol)
-    primary_df = svc.load_market_data(symbol, days=5, timeframe='1Min',
+    # Use 30 days to ensure we cover the trade's timestamp (backtest may span up to 90 days)
+    logger.info("[CB-TIMELINE] Loading 1-min bars for %s (bar_dt=%s)", symbol, bar_dt)
+    primary_df = svc.load_market_data(symbol, days=30, timeframe='1Min',
                                        feed='sip', session=session)
-    logger.info("[CB-TIMELINE] Loaded %d 1-min bars", len(primary_df))
+    logger.info("[CB-TIMELINE] Loaded %d 1-min bars, range: %s to %s",
+                len(primary_df),
+                primary_df.index[0] if len(primary_df) > 0 else 'N/A',
+                primary_df.index[-1] if len(primary_df) > 0 else 'N/A')
     if len(primary_df) == 0:
         return {}, {}
 
@@ -918,10 +922,14 @@ def _compute_cb_timeline(
 
         window_1min = primary_df[(primary_df.index >= ws_ts) & (primary_df.index <= we_ts)]
 
+        if len(window_1min) == 0:
+            logger.info("[CB-TIMELINE] No 1-min bars in window for %s, skipping timeline", sec_tf)
+            continue
+
         timeline_entries = []
-        # Sample at ~10-second intervals to avoid excessive computation
+        # Sample at ~30 points to avoid excessive computation
         sample_indices = list(range(0, len(window_1min), max(1, len(window_1min) // 30)))
-        if len(window_1min) - 1 not in sample_indices:
+        if len(window_1min) > 0 and (len(window_1min) - 1) not in sample_indices:
             sample_indices.append(len(window_1min) - 1)
 
         for si in sample_indices:
