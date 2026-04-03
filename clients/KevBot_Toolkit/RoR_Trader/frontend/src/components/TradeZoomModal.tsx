@@ -70,6 +70,8 @@ interface TradeZoomModalProps {
     entryTime?: string;
     exitTime?: string;
   } | null;
+  /** Selected confluence conditions — heatmap only shows these (optional) */
+  selectedConditions?: string[];
 }
 
 function formatHold(seconds: number | null | undefined): string {
@@ -86,7 +88,7 @@ function _tfToSeconds(tf: string): number {
   return 60;
 }
 
-export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade, zoomData, isLoading, error, alertMatch }: TradeZoomModalProps) {
+export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade, zoomData, isLoading, error, alertMatch, selectedConditions }: TradeZoomModalProps) {
   const chartPrefs = useChartPrefs();
 
   const chartPanes = useMemo(() => {
@@ -282,7 +284,21 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
     if (zoomData.cb_confluence_timeline && zoomData.pb_states) {
       const timeline = zoomData.cb_confluence_timeline;
       const pbStates = zoomData.pb_states;
-      const interpKeys = Object.keys(pbStates);
+      let interpKeys = Object.keys(pbStates);
+
+      // Filter to only show conditions the user selected (if provided)
+      if (selectedConditions && selectedConditions.length > 0) {
+        // selectedConditions are like "5m-EMA_PRICE_POSITION-PSLM" or "5m-EMA_PRICE_POSITION-PSLM[CB]"
+        // interpKeys are like "5m-EMA_PRICE_POSITION" (tf-interpreter, without state)
+        // Match if any selected condition starts with the interpKey prefix
+        interpKeys = interpKeys.filter((ik) =>
+          selectedConditions.some((cond) => {
+            const cleanCond = cond.replace('[CB]', '');
+            // Condition format: "5m-EMA_PRICE_POSITION-PSLM", interpKey format: "5m-EMA_PRICE_POSITION"
+            return cleanCond.startsWith(ik);
+          })
+        );
+      }
 
       if (interpKeys.length > 0) {
         const hmSeries = interpKeys.map((interpKey, idx) => {

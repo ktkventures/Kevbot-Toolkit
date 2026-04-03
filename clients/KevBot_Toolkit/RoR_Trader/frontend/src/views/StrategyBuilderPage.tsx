@@ -2122,21 +2122,7 @@ export default function StrategyBuilderPage() {
               />
               <div className="mt-2">
                 <TriggerGroupedList
-                  triggers={API_TRIGGERS.filter((t) => {
-                    // Show direction-appropriate triggers
-                    if (direction === 'LONG') {
-                      return !t.name.toLowerCase().includes('down') &&
-                             !t.name.toLowerCase().includes('bear') &&
-                             !t.name.toLowerCase().includes('sell') &&
-                             !t.name.toLowerCase().includes('short') &&
-                             !t.name.toLowerCase().includes('overbought');
-                    }
-                    return !t.name.toLowerCase().includes('up') &&
-                           !t.name.toLowerCase().includes('bull') &&
-                           !t.name.toLowerCase().includes('buy') &&
-                           !t.name.toLowerCase().includes('long') &&
-                           !t.name.toLowerCase().includes('oversold');
-                  })}
+                  triggers={API_TRIGGERS}
                   searchQuery={triggerSearch}
                   selectedId={entryTrigger}
                   onSelect={setEntryTrigger}
@@ -2181,21 +2167,7 @@ export default function StrategyBuilderPage() {
               )}
               <div className="mt-1">
                 <TriggerGroupedList
-                  triggers={API_TRIGGERS.filter((t) => {
-                    // Show direction-appropriate exit triggers
-                    if (direction === 'LONG') {
-                      return !t.name.toLowerCase().includes('up') &&
-                             !t.name.toLowerCase().includes('bull') &&
-                             !t.name.toLowerCase().includes('buy') &&
-                             !t.name.toLowerCase().includes('long') &&
-                             !t.name.toLowerCase().includes('oversold');
-                    }
-                    return !t.name.toLowerCase().includes('down') &&
-                           !t.name.toLowerCase().includes('bear') &&
-                           !t.name.toLowerCase().includes('sell') &&
-                           !t.name.toLowerCase().includes('short') &&
-                           !t.name.toLowerCase().includes('overbought');
-                  })}
+                  triggers={API_TRIGGERS}
                   searchQuery=""
                   selectedId=""
                   onSelect={(id) => {
@@ -2892,6 +2864,7 @@ export default function StrategyBuilderPage() {
           zoomData={tradeZoomMut.data ?? null}
           isLoading={tradeZoomMut.isPending}
           error={tradeZoomMut.error ? String(tradeZoomMut.error) : null}
+          selectedConditions={Array.from(selectedConditions)}
         />
       )}
     </div>
