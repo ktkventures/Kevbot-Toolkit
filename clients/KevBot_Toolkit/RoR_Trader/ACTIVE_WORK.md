@@ -1,8 +1,8 @@
 # RoR Trader — Active Work Tracker
 
-**Last Updated:** 2026-04-01
-**Current Phase:** Phase 3 (Hi-Fi Execution & Hold Times) — Batches 1-3 COMPLETE, Batch 4 remaining
-**Current Focus:** Next session: Plan Phase 5 (Pack Builder) approach — golden child verification, PB/CB fidelity, pack builder pipeline. Consider mock chart sandbox for trigger/pack verification.
+**Last Updated:** 2026-04-03
+**Current Phase:** Phase 3 Batch 4 → Phase 5 (Pack Builder) — Golden child verification first, then Pack Builder pipeline
+**Current Focus:** Implementing 7-batch plan: (1) TradeZoomModal in Strategy Builder, (2) PB/CB fidelity with real CB recomputation, (3) CB heatmap on drill-down, (4) Pack Builder AI integration (Claude + OpenAI), (5) Sandbox tab in Pack Builder step 5, (6) Pipeline upgrades (exec_variants, LC/CC), (7) Swing 1-2-3 validation. Full plan: `/root/.claude/plans/resilient-roaming-newt.md`
 
 ---
 
@@ -155,33 +155,49 @@ All subtasks 1a-1i done. Engine handles C, L, LC, CC execution types.
 **Batch 3b: Analyze Tabs Hi-Fi (must complete before leaving Phase 3)**
 - ✅ 3h. **Wire Hi-Fi into analyze endpoints** — All 4 analyze implementations (entry, exit, stop, target) now call `_hifi_resolve_trades()` when hifi_mode=True. TF Conditions/General modes use the base backtest's already-resolved trades.
 
-**Batch 4: Polish**
-- 📋 3i. **PB/CB fidelity variants on TF Conditions** — Like exec types on triggers. Each condition generates [PB] and [CB] variants as separate selectable items. Standard fidelity hides CB. HiFi shows both.
+**Batch 4: PB/CB Fidelity + Golden Child Verification**
+- 📋 3-b4a. **TradeZoomModal in Strategy Builder** — New `POST /api/backtest/trade-zoom` endpoint (no saved strategy ID required). Shared `build_trade_zoom_response()` helper used by both backtest and strategy endpoints. TradeZoomModal refactored to accept data as prop (data fetching moved to parent). Click handlers on Strategy Builder trade history table entry/exit time cells. Enables 1-second drill-down on unsaved backtests.
+- 📋 3-b4b. **PB/CB fidelity variants on TF Conditions** — Real CB recomputation: `_recompute_cb_confluence()` in backtest_service.py fetches 1-second bars for forming secondary-TF bar at trigger moment, resamples partial bar, runs indicator+interpreter pipeline. Each TF condition generates [PB] and [CB] variants as separate selectable items. CB only visible when Hi-Fi enabled. `cb_conditions` field added to BacktestRequest.
+- 📋 3-b4c. **CB heatmap on drill-down modal** — Trade-zoom response extended with `cb_confluence_timeline` (second-by-second CB state) + `pb_state`. TradeZoomModal adds heatmap pane showing PB (constant) vs CB (evolving) confluence state.
+- 📋 3-b4d. **Golden child verification checkpoint** — Use all above to verify EMA PP V2 across all 4 exec types (C/L/LC/CC) + PB/CB. Drill-down confirms execution timing. PB vs CB conditions show measurable KPI differences. This verified golden child becomes the Pack Builder template.
 - 📋 3j. **Mass Builder fidelity setting** — HiFi option in Mass Builder config.
 
-### Phase 4: Replay + Pack Validation — NOT STARTED
+### Phase 4: Replay + Pack Validation — DEPRIORITIZED
 
-Replay is critical for validating confluence packs before they're locked. Moved from original Phase 4 scope (dedicated chart test page — now covered by Strategy Builder + drill-down modal).
+Original replay scope replaced by Strategy Builder drill-down modal + Pack Builder Sandbox tab. Replay may revisit later if bar-by-bar playback proves necessary beyond what the Sandbox provides.
 
-- [ ] 4a. **Replay engine** — Bar-by-bar playback simulating real-time execution. Shows indicators updating, triggers firing, positions opening/closing in sequence. Essential for verifying confluence packs behave correctly before finalizing.
-- [ ] 4b. **Replay UI** — Play/pause/step controls, speed selector (1x/2x/5x/10x), bar-by-bar stepping. Can be integrated into Strategy Builder or as a dedicated panel.
-- [ ] 4c. **Pack validation environment** — Replay + trigger event log showing exactly when and why each trigger fired. Detects flicker logic, painting issues, and execution timing problems. Used during Pack Builder workflow before a pack is saved and locked.
-- [ ] 4d. **SSE progress tracking** — Server-Sent Events for real scenario counts during backtests and replay.
+- [ ] 4a. **Replay engine** — Bar-by-bar playback. Deprioritized — Sandbox tab (Phase 5) covers the core verification need.
+- [ ] 4b. **Replay UI** — Play/pause/step controls. Deprioritized.
+- [ ] 4c. **Pack validation environment** — Replaced by Pack Builder Sandbox tab with real backtests + drill-down.
+- [ ] 4d. **SSE progress tracking** — Server-Sent Events for real scenario counts during backtests.
 
-### Phase 5: Pack Builder Update + Swing 123 / Golden Candle — NOT STARTED
+### Phase 5: Pack Builder Update + Swing 123 / Golden Child — IN PROGRESS
 
-**Priority items (foundational pack UX):**
-- [ ] 5a-new. **Pack variation nesting** — All pack pages (TF Confluence, General, Stop Loss, Take Profit) should group variations under their parent template with expand/collapse chevron. First variation = "Default", user-created variations nest underneath. Per Frontend Migration Plan: "Nested under defaults — Variations indent under parent template with expand/collapse chevron inside the card."
-- [ ] 5b-new. **Legacy pack cleanup** — Mark all current TF Confluence packs (except EMA Price Position V2) as "Legacy (Default)" in their display names. Keep them fully functional — legacy packs use the engine's generic LC/CC wrapping which works but isn't purpose-built like V2. Legacy label stays until packs are rebuilt through Pack Builder or manually updated to V2's explicit trigger variant structure. Do NOT delete or disable legacy packs.
+**Prerequisite:** Golden child verification (Phase 3 Batch 4) must pass before Pack Builder templates are finalized.
 
-**Pack Builder pipeline (get EMA PP V2 perfect → inform Pack Builder → scale):**
-- [ ] 5c. Extend pack_spec.py validation for exec_variants
-- [ ] 5d. Update pack_builder_context.md with exec_variants docs + examples (modeled on EMA PP V2 as the reference)
+**Pack Builder AI Integration (Batch 4 of implementation plan):**
+- [ ] 5-ai1. **AI proxy router** — New `src/api/routers/ai_builder.py` with endpoints: generate-structure, generate-code, fix, validate, install. Routes to Claude or OpenAI based on model selector.
+- [ ] 5-ai2. **AI provider abstraction** — New `src/api/services/ai_provider.py` with `generate_completion()` adapter. Claude (anthropic SDK) + OpenAI (openai SDK). API keys stored server-side as env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY).
+- [ ] 5-ai3. **Wire into PackBuilderPage** — Replace all setTimeout placeholders in steps 2 (Generate Structure) and 4 (Generate Code) with real API calls. Auto-fix loop uses fix endpoint. Install button calls install endpoint.
+- [ ] 5-ai4. **Frontend hooks** — New `useAiBuilder.ts` with useGenerateStructure, useGenerateCode, useRequestFix, useValidatePack, useInstallPack mutations.
+
+**Sandbox Tab (Batch 5 of implementation plan):**
+- [ ] 5-sb1. **Sandbox tab in Pack Builder step 5** — Mini Strategy Detail chart experience. Left panel: optimizable variable selectors (entry/exit triggers, stop/target packs, symbol, timeframe, direction, Hi-Fi toggle, "Run Backtest" button). Right panel: SyncedChartPane via buildStrategyChartPanes + EquityCurve + TradeHistoryTable with click-to-zoom drill-down. Real backtests via `/api/backtest/run`.
+
+**Pack Builder pipeline upgrades (Batch 6 of implementation plan):**
+- [ ] 5c. Extend pack_spec.py validation for exec_variants (C/L/LC/CC keys, type-specific sub-fields)
+- [ ] 5d. Update pack_builder_context.md with exec_variants docs + EMA PP V2 as golden child reference + LC/CC execution types + PB/CB fidelity guidance
 - [ ] 5e. Update pack_builder.py LLM prompt (include flicker logic, painting logic, execution fidelity checks)
-- [ ] 5f. Update pack_registry.py to register LC/CC triggers
-- [ ] 5g. **Swing 1-2-3 as first Pack Builder test case** — Don't fix the current broken swing_123 manually. Instead, use it as the first real test of the Pack Builder pipeline. Validates that the system can scalably produce packs with proper CC execution, correct trigger detection, and accurate backtests.
+- [ ] 5f. Update pack_registry.py to register LC/CC triggers from user packs
 - [ ] 5h. Backward compat: exec_variants optional, existing packs default C-only
-- [ ] 5i-new. **Trade qualification filter in Strategy Builder** — Add TQ filter dropdown to the filter/sort modal. Requires backend TQ rule application logic to be built first. Design exists in Frontend Migration Plan (Portfolio Requirements V5 spec).
+
+**Swing 1-2-3 validation (Batch 7 of implementation plan):**
+- [ ] 5g. **Swing 1-2-3 as first Pack Builder test case** — Feed Pine Script into upgraded Pack Builder, generate pack with CC triggers, verify in Sandbox tab, compare KPIs against known Streamlit results.
+
+**Deferred foundational pack UX:**
+- [ ] 5a-new. **Pack variation nesting** — All pack pages group variations under parent template with expand/collapse chevron.
+- [ ] 5b-new. **Legacy pack cleanup** — Mark current TF Confluence packs (except EMA PP V2) as "Legacy (Default)". Keep functional.
+- [ ] 5i-new. **Trade qualification filter in Strategy Builder** — Requires backend TQ rule logic first.
 
 ### Phase 6: Alert Monitor & Webhook Updates — NOT STARTED
 - [ ] 6a. Add exec_type to alert records + new placeholder tokens
@@ -213,8 +229,12 @@ Tackle after Phases 1-6 are complete and strategies are actively placing trades.
 - CC is genuinely new — close-to-close with next-bar confirmation
 - Suffix-based dispatch — _lc/_cc suffixes, no database migration
 - Two reference packs — EMA PP V2 (known baseline) + Swing 123 (natural CC fit)
-- Replay in Phase 4 — saves days of live-data waiting for pack validation
+- Replay deprioritized — Sandbox tab in Pack Builder step 5 covers pack verification with real backtests + drill-down. Replay may revisit if bar-by-bar playback needed beyond Sandbox
 - HM/HL backward compat — continue working, eventually LC with offset=0 + bail=market is equivalent to HM
 - **Golden Child approach** — Perfect EMA PP V2 first (backtest, chart, alerts for all exec types), then use it as the template for Pack Builder prompts. Swing 1-2-3 is the first Pack Builder test. Legacy packs stay labeled but functional until rebuilt through the scalable pipeline.
 - **Legacy packs use generic engine wrapping** — Legacy pack interpreters only detect bar-close triggers. The engine wraps them with LC/CC confirmation logic at the position state machine level. V2 packs create explicit per-execution-type triggers. Both approaches work, but V2 is more testable and explicit.
 - **Stop/Take Profit decoupling** — The "swing" RM pack's take profit side is actually R:R math, not swing logic. Split into independent packs: "Swing" (stop-only) + "Risk:Reward" (universal take profit). Each take profit pack should work with any stop loss pack.
+- **TradeZoomModal as data-prop component** — Refactored to accept `data: TradeZoomResponse` as prop instead of fetching internally. Parent components handle data source: Strategy Detail uses `useTradeZoom` query, Strategy Builder uses `useBacktestTradeZoom` mutation, Sandbox tab reuses same pattern. Enables 1-second drill-down on unsaved backtests.
+- **CB recomputation is real, not badge-only** — CB fidelity fetches 1-second bars, resamples partial secondary-TF bar at trigger moment, runs full indicator+interpreter pipeline. Post-hifi pass filters out trades where CB state didn't match. PB remains the default; CB requires Hi-Fi mode.
+- **Pack Builder AI is server-side** — API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY) stored as env vars on Railway. AI provider abstraction supports Claude + OpenAI. Users select model in wizard UI; backend proxies the call.
+- **Sandbox tab replaces replay for pack verification** — Real backtest-powered chart tab in Pack Builder step 5. Select entry/exit/stop/target, run backtest, see chart + trade markers + drill-down. Proves "here's what a real strategy using this pack would look like" without bar-by-bar replay complexity.
