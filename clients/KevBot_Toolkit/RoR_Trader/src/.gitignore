@@ -11,3 +11,4 @@ alerts.json
 alert_config.json
 strategies.json
 __pycache__/
+.env

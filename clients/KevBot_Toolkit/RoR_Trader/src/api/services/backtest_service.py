@@ -563,18 +563,23 @@ def recompute_cb_confluence(
         tf_label = get_tf_label(sec_tf)
         sec_period_seconds = _tf_to_seconds(sec_tf)
 
-        # Build complete secondary-TF series with indicators
+        # Build complete secondary-TF series with indicators (ONCE — cached for all trades)
         sec_df = resample_to_timeframe(
             primary_df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
         if len(sec_df) < 5:
             continue
 
         sec_df = svc.run_all_indicators(sec_df)
-        for group in svc.get_enabled_groups(svc.load_confluence_groups()):
+        groups = svc.get_enabled_groups(svc.load_confluence_groups())
+        for group in groups:
             sec_df = svc.run_indicators_for_group(sec_df, group)
         sec_df = svc.run_all_interpreters(sec_df)
 
         interp_cols = [c for c in sec_df.columns if c in INTERPRETERS]
+
+        # Pre-cache: completed OHLCV bars for each secondary-TF bar start
+        # This avoids re-slicing sec_df per trade
+        sec_ohlcv = sec_df[['open', 'high', 'low', 'close', 'volume']]
 
         for idx in trades_df.index:
             entry_time_str = trades_df.at[idx, 'entry_time']
@@ -610,13 +615,17 @@ def recompute_cb_confluence(
                     'volume': float(partial_1min['volume'].sum()),
                 }], index=[sec_bar_start])
 
-                # Append partial bar to completed secondary-TF bars
-                completed_bars = sec_df.loc[sec_df.index < sec_bar_start,
-                                            ['open', 'high', 'low', 'close', 'volume']]
+                # Append partial bar to completed secondary-TF bars (cached slice)
+                completed_bars = sec_ohlcv.loc[sec_ohlcv.index < sec_bar_start]
                 lookback = min(250, len(completed_bars))
                 cb_input = pd.concat([completed_bars.tail(lookback), partial_bar])
 
-                # Run indicator + interpreter pipeline
+                # Run indicator + interpreter pipeline on the small augmented series
+                # This is fast: only ~251 bars (250 lookback + 1 partial)
+                cb_input = svc.run_all_indicators(cb_input)
+                for group in groups:
+                    cb_input = svc.run_indicators_for_group(cb_input, group)
+                cb_input = svc.run_all_interpreters(cb_input)
                 cb_input = svc.run_all_indicators(cb_input)
                 for group in svc.get_enabled_groups(svc.load_confluence_groups()):
                     cb_input = svc.run_indicators_for_group(cb_input, group)
