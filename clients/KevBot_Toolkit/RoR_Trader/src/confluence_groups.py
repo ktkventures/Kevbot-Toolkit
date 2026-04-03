@@ -1065,6 +1065,10 @@ def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] =
     """
     Get entry triggers for a specific direction.
 
+    Returns ALL entry-type triggers regardless of their declared direction.
+    Users should be free to use any trigger as an entry — the direction
+    declaration is informational, not a hard filter.
+
     Returns dict mapping trigger_id -> display_name
     """
     all_triggers = get_all_triggers(groups)
@@ -1072,8 +1076,7 @@ def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] =
     result = {}
     for trig_id, trig_def in all_triggers.items():
         if trig_def.trigger_type == "ENTRY":
-            if trig_def.direction == direction or trig_def.direction == "BOTH":
-                result[trig_id] = trig_def.name
+            result[trig_id] = trig_def.name
 
     return result
 

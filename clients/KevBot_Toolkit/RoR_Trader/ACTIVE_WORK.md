@@ -71,6 +71,7 @@ Items identified during testing, now assigned to roadmap phases:
 - **TF Conditions fidelity badge (PB/CB)** → Phase 3 (item 3e-new, depends on Hi-Fi)
 - ~~**Price chart legend show/hide toggles**~~ → CANCELED (current behavior matches Strategy Detail, preferred as-is)
 - **Progress tracking with SSE scenario counts** → Phase 4 (item 4g-new, SSE infra benefits Chart Test too)
+- **Search input in analyze cards non-functional** → Strategy Builder bug. TextInput on analyze tabs (Entry, TF Conditions, General, etc.) doesn't accept input or filter results. Intent: type to filter analyze results by name after clicking Analyze. Low priority — cosmetic.
 
 ---
 

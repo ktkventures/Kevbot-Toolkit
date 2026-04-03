@@ -172,6 +172,8 @@ export interface TradeZoomResponse {
   bars_1s: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
   trade: Record<string, any>;
   indicators?: Record<string, { time: string; value: number }[]>;
+  cb_confluence_timeline?: Record<string, { time: string; states: Record<string, string> }[]>;
+  pb_states?: Record<string, string>;
   side: 'entry' | 'exit';
   timeframe: string;
   symbol: string;

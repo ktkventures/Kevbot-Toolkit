@@ -1670,6 +1670,7 @@ export default function StrategyBuilderPage() {
       entry_trigger_confluence_id: config.entry_trigger_confluence_id,
       exit_trigger_confluence_ids: config.exit_trigger_confluence_ids || [],
       confluence: config.confluence || [],
+      cb_conditions: config.cb_conditions || [],
       stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
       bar_count_exit: config.bar_count_exit,
       secondary_tfs: config.secondary_tfs || [],

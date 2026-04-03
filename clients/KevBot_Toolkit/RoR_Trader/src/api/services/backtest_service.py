@@ -818,10 +818,12 @@ def build_trade_zoom_response(
     pb_states = {}
     if secondary_tfs and ts_dt:
         try:
+            logger.info("[TRADE-ZOOM] Computing CB timeline for %s, secondary_tfs=%s", symbol, secondary_tfs)
             cb_timeline, pb_states = _compute_cb_timeline(
                 symbol, ts_dt, tf_seconds, secondary_tfs, session, padding_seconds)
+            logger.info("[TRADE-ZOOM] CB timeline: %d TFs, pb_states: %s", len(cb_timeline), list(pb_states.keys()))
         except Exception as e:
-            logger.warning("[TRADE-ZOOM] Error computing CB timeline: %s", e)
+            logger.exception("[TRADE-ZOOM] Error computing CB timeline: %s", e)
 
     result = {
         "bars_1s": bars_list,
@@ -859,8 +861,10 @@ def _compute_cb_timeline(
     from datetime import timedelta
 
     # Load 1-min bars covering the zoom window + indicator lookback
+    logger.info("[CB-TIMELINE] Loading 1-min bars for %s", symbol)
     primary_df = svc.load_market_data(symbol, days=5, timeframe='1Min',
                                        feed='sip', session=session)
+    logger.info("[CB-TIMELINE] Loaded %d 1-min bars", len(primary_df))
     if len(primary_df) == 0:
         return {}, {}
 
@@ -870,11 +874,13 @@ def _compute_cb_timeline(
     for sec_tf in secondary_tfs:
         tf_label = get_tf_label(sec_tf)
         sec_period = _tf_to_seconds(sec_tf)
+        logger.info("[CB-TIMELINE] Processing sec_tf=%s (label=%s, period=%ds)", sec_tf, tf_label, sec_period)
 
         # Build complete secondary-TF series
         sec_df = resample_to_timeframe(
             primary_df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
         if len(sec_df) < 5:
+            logger.warning("[CB-TIMELINE] Only %d secondary bars for %s, skipping", len(sec_df), sec_tf)
             continue
 
         sec_df = svc.run_all_indicators(sec_df)
