@@ -322,6 +322,41 @@ All intra-bar and hybrid triggers use a gate: the previous bar's close must be o
 
 The gate is computed automatically by the unified engine — pack authors only need to declare `level_column` and `cross` in the trigger definition.
 
+### LC and CC Execution Types (Composite)
+
+In addition to the four base execution types, two composite types combine L-type entry with bar-close confirmation:
+
+| Execution | Description | Manifest Value |
+|-----------|-------------|----------------|
+| **Level-Close (LC)** | Enters at indicator level (like L-type), then requires bar-close confirmation. If the bar closes without confirming the direction, a bail action occurs. | `"level_close"` |
+| **Close-Close (CC)** | Enters at bar close, then requires the next bar to close confirming the direction. If the next bar doesn't confirm, exits at market. | `"close_close"` |
+
+**LC parameters:**
+- `confirm_bar_offset`: 0 (same bar) or 1 (next bar) — how many bars to wait for confirmation
+- `bail_action`: `"exit_market"` (exit at market on non-confirmation) or `"exit_limit"` (place limit order at entry price for break-even exit)
+
+**CC parameters:**
+- `confirm_bar_offset`: typically 1 (next bar close must confirm)
+- `bail_action`: `"exit_market"` (exit at market on non-confirmation)
+
+LC is a superset of HM — LC with `confirm_bar_offset=0` and `bail_action=exit_market` is equivalent to HM. CC is a genuinely new type that provides close-to-close confirmation.
+
+### Execution Configuration Is Pack-Level
+
+Execution type settings (which types are enabled, reference bar, order type, etc.) are configured on the **confluence pack** as a whole, not per-trigger. All triggers within a pack share the same execution configuration. This is stored as `_exec_config` in the pack's parameters.
+
+When a pack has C and L execution enabled, the engine automatically generates both a bar-close variant and a level variant for each trigger. Users select which variant to use when building a strategy.
+
+**Pack authors should focus on writing correct bar-close (C-type) trigger logic.** The engine handles L-type, LC, and CC variants automatically by applying the execution protocol to the trigger signal.
+
+### PB/CB Fidelity (Strategy Builder Concern)
+
+PB (Previous Bar) and CB (Current Bar) fidelity control how confluence conditions are evaluated:
+- **PB**: Conditions use the previous bar's closed indicator values (standard, fast)
+- **CB**: Conditions recompute indicators using the current forming bar's partial data (more accurate, requires Hi-Fi mode)
+
+Fidelity is NOT a pack-level setting — it's configured in the Strategy Builder when selecting TF Conditions. Both PB and CB variants are automatically available for any pack when Hi-Fi is enabled. Pack authors do not need to consider fidelity in their code.
+
 ---
 
 ## Complete Example: RSI Zones Pack

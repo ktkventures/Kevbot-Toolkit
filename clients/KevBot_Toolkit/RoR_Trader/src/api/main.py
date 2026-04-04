@@ -59,6 +59,7 @@ def create_app() -> FastAPI:
     from api.routers.monitor import router as monitor_router
     from api.routers.webhooks import router as webhooks_router
     from api.routers.mass_builder import router as mass_builder_router
+    from api.routers.ai_builder import router as ai_builder_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(monitor_router)
     app.include_router(webhooks_router)
     app.include_router(mass_builder_router)
+    app.include_router(ai_builder_router)
 
     # Health check
     @app.get("/health")

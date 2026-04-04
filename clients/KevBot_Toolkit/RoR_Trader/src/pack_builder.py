@@ -157,6 +157,220 @@ def generate_prompt(
 
 
 # =============================================================================
+# STRUCTURED PROMPT ASSEMBLY (for API endpoints)
+# =============================================================================
+
+_STRUCTURE_SYSTEM_PROMPT = """\
+You are an expert at designing technical indicator packs for a trading platform.
+
+A pack has three parts:
+- **parameters**: Configurable inputs (type: int, float, str, or bool). Each needs: name, type, default, label. Optional: min, max.
+- **outputs**: Mutually exclusive state classifications. Every bar maps to exactly one state. 3-7 states typical. Use UPPER_SNAKE_CASE.
+- **triggers**: Trade entry/exit signals. Each needs: name, base (snake_case key), direction (LONG/SHORT/BOTH), type (ENTRY/EXIT), execution (bar_close).
+
+Rules:
+- Output states must be mutually exclusive (no overlapping conditions)
+- Trigger base keys must be snake_case, unique, and descriptive
+- LONG triggers fire on bullish conditions, SHORT on bearish
+- Include both entry and exit triggers where appropriate
+- Parameters should cover the key tunables of the indicator
+- Design for 1-minute intraday data — ensure no single state dominates 90%+ of bars
+
+Respond with ONLY a JSON object. No markdown fencing, no explanation, no text outside the JSON.
+
+Required format:
+{
+  "parameters": [{"name": "...", "type": "int|float|str|bool", "default": ..., "label": "...", "min": ..., "max": ...}],
+  "outputs": [{"code": "STATE_NAME", "description": "When this state occurs"}],
+  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "LONG|SHORT|BOTH", "type": "ENTRY|EXIT", "execution": "bar_close"}],
+  "summary": "Brief description of the proposed structure"
+}
+"""
+
+
+def generate_structure_prompt(
+    pack_name: str,
+    pack_type: str = "tf_confluence",
+    category: str = "",
+    display_type: str = "oscillator",
+    description: str = "",
+    pine_script: str = "",
+) -> tuple:
+    """
+    Build (system_prompt, user_prompt) for Step 2: Generate Structure.
+
+    The LLM proposes parameters, outputs, and triggers based on the description.
+    Returns JSON only — no code generation at this stage.
+    """
+    parts = []
+    parts.append(f"Create a pack structure for: **{pack_name}**\n")
+    parts.append(f"Description: {description}\n")
+    if category:
+        parts.append(f"Category: {category}")
+    parts.append(f"Display type: {display_type}")
+    parts.append(f"Pack type: {pack_type}")
+
+    if pine_script.strip():
+        parts.append(f"\nTradingView Pine Script reference:\n```pine\n{pine_script.strip()}\n```")
+        parts.append("Use this Pine Script to inform the parameters, states, and triggers.")
+
+    return _STRUCTURE_SYSTEM_PROMPT, "\n".join(parts)
+
+
+def generate_code_prompt(
+    pack_name: str,
+    slug: str,
+    pack_type: str = "tf_confluence",
+    category: str = "",
+    display_type: str = "oscillator",
+    description: str = "",
+    parameters: Optional[List[Dict]] = None,
+    outputs: Optional[List[Dict]] = None,
+    triggers: Optional[List[Dict]] = None,
+    pine_script: str = "",
+) -> tuple:
+    """
+    Build (system_prompt, user_prompt) for Step 4: Generate Code.
+
+    Uses the full context document as system prompt and the refined
+    structure from Step 3 as the user prompt.
+    """
+    context = _load_context_document()
+
+    parts = []
+    parts.append(f"## Your Task\n")
+    parts.append(f"Generate a complete confluence pack for: **{pack_name}**\n")
+    parts.append(f"Description: {description}")
+    parts.append(f"Slug: `{slug}`")
+    parts.append(f"Category: {category}")
+    parts.append(f"Display type: {display_type}")
+    parts.append(f"Pack type: {pack_type}\n")
+
+    if parameters:
+        parts.append("### Parameters (use these exactly)")
+        for p in parameters:
+            line = f"- `{p['name']}` ({p.get('type', 'int')}): {p.get('label', p['name'])}"
+            if 'default' in p and p['default'] not in (None, ''):
+                line += f", default={p['default']}"
+            if 'min' in p and p['min'] not in (None, ''):
+                line += f", min={p['min']}"
+            if 'max' in p and p['max'] not in (None, ''):
+                line += f", max={p['max']}"
+            parts.append(line)
+        parts.append("")
+
+    if outputs:
+        parts.append("### Output States (use these exactly)")
+        for o in outputs:
+            parts.append(f"- `{o['code']}` — {o.get('description', '')}")
+        parts.append("")
+
+    if triggers:
+        parts.append("### Triggers (use these exactly)")
+        for t in triggers:
+            direction = t.get('direction', 'BOTH')
+            ttype = t.get('type', 'ENTRY')
+            execution = t.get('execution', 'bar_close')
+            parts.append(f"- `{t['base']}` — {t.get('name', t['base'])} ({direction}, {ttype}, {execution})")
+        parts.append("")
+
+    if pine_script.strip():
+        parts.append("### Pine Script Reference")
+        parts.append(f"```pine\n{pine_script.strip()}\n```")
+        parts.append("Translate this indicator logic to Python.\n")
+
+    parts.append("### Requirements")
+    parts.append("1. Generate all three files: manifest.json, indicator.py, interpreter.py")
+    parts.append("2. Follow the Pack Spec schema exactly as documented above")
+    parts.append(f"3. Use slug `{slug}` and trigger_prefix `{slug.split('_')[0]}` (or a short unique prefix)")
+    parts.append("4. Use the parameters, outputs, and triggers defined above — do not invent new ones")
+    parts.append("5. Use vectorized pandas/numpy operations where possible")
+    parts.append("6. Only import pandas, numpy, and math — nothing else")
+    parts.append("7. Return None for bars with insufficient data (NaN values)")
+    parts.append("8. Outputs MUST be mutually exclusive — every bar maps to exactly one state")
+    parts.append("9. Include column_color_map mapping each plottable indicator_column to its plot_schema color key")
+
+    user_prompt = "\n".join(parts)
+    return context, user_prompt
+
+
+_FIX_SYSTEM_PROMPT = """\
+You are fixing a technical indicator pack for a trading platform.
+
+The user will provide:
+1. The current manifest.json, indicator.py, and interpreter.py code
+2. A list of validation errors
+3. Optionally, a description of what's wrong
+
+Your job is to make minimal, targeted fixes to resolve the errors. Do NOT rewrite working code.
+
+Return your corrected code in the same format:
+```json
+// manifest.json
+{ ... }
+```
+
+```python
+# indicator.py
+...
+```
+
+```python
+# interpreter.py
+...
+```
+
+Rules:
+- Only import pandas, numpy, and math
+- Outputs must be mutually exclusive
+- Trigger keys must be {trigger_prefix}_{base}
+- Functions must match the names declared in the manifest
+- Do not use open(), exec(), eval(), os, sys, subprocess, or any I/O
+"""
+
+
+def generate_fix_prompt(
+    parsed_files: Dict,
+    validation_errors: List[str],
+    user_description: str = "",
+) -> tuple:
+    """
+    Build (system_prompt, user_prompt) for the fix endpoint.
+
+    Sends current code + validation errors to the LLM for targeted correction.
+    """
+    parts = []
+    parts.append("## Current Pack Code\n")
+
+    manifest = parsed_files.get("manifest")
+    if manifest:
+        parts.append("### manifest.json")
+        parts.append(f"```json\n{json.dumps(manifest, indent=2)}\n```\n")
+
+    indicator = parsed_files.get("indicator_code", "")
+    if indicator:
+        parts.append("### indicator.py")
+        parts.append(f"```python\n{indicator}\n```\n")
+
+    interpreter = parsed_files.get("interpreter_code", "")
+    if interpreter:
+        parts.append("### interpreter.py")
+        parts.append(f"```python\n{interpreter}\n```\n")
+
+    parts.append("## Validation Errors\n")
+    for err in validation_errors:
+        parts.append(f"- {err}")
+    parts.append("")
+
+    if user_description.strip():
+        parts.append(f"## User Description\n{user_description}\n")
+
+    parts.append("Fix these issues and return the corrected code. Make minimal changes.")
+
+    return _FIX_SYSTEM_PROMPT, "\n".join(parts)
+
+
+# =============================================================================
 # RESPONSE PARSER
 # =============================================================================
 

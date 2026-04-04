@@ -198,9 +198,11 @@ def _row_to_alert(row: dict) -> dict:
 
 def load_strategies_db() -> list:
     """Load all strategies for the current user from the database."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table('strategies') \
         .select('*') \
+        .eq('user_id', user_id) \
         .order('id') \
         .execute()
     return [_row_to_strategy(r) for r in result.data]
@@ -262,9 +264,11 @@ def delete_strategy_db(strategy_id: int) -> bool:
 
 def load_portfolios_db() -> list:
     """Load all portfolios for the current user."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table('portfolios') \
         .select('*') \
+        .eq('user_id', user_id) \
         .order('id') \
         .execute()
     return [_restore_portfolio_from_db(r) for r in result.data]
@@ -412,9 +416,11 @@ def delete_requirement_set_db(req_id: int) -> bool:
 
 def load_alerts_db(limit: int = 100) -> list:
     """Load recent alerts for the current user."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table('alerts') \
         .select('*') \
+        .eq('user_id', user_id) \
         .order('timestamp', desc=True) \
         .limit(limit) \
         .execute()
@@ -477,9 +483,11 @@ def clear_alerts_db() -> bool:
 
 def load_alert_config_db() -> dict:
     """Load alert config for the current user."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table('alert_config') \
         .select('config') \
+        .eq('user_id', user_id) \
         .maybe_single() \
         .execute()
     if result and result.data:
@@ -506,9 +514,11 @@ def save_alert_config_db(config: dict):
 
 def _load_user_config(table: str, data_column: str, default):
     """Generic: load a single-row config for the current user."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table(table) \
         .select(data_column) \
+        .eq('user_id', user_id) \
         .maybe_single() \
         .execute()
     if result and result.data:
@@ -605,9 +615,11 @@ def delete_webhook_template_db(template_id: str) -> bool:
 
 def load_monitor_status_db() -> dict:
     """Load monitor status for the current user."""
+    user_id = get_current_user_id()
     client = get_client()
     result = client.table('monitor_status') \
         .select('*') \
+        .eq('user_id', user_id) \
         .maybe_single() \
         .execute()
     if result and result.data:
@@ -662,9 +674,11 @@ def load_engine_state_db(user_id: str = None) -> dict:
             .maybe_single() \
             .execute()
     else:
+        uid = get_current_user_id()
         client = get_client()
         result = client.table('monitor_status') \
             .select('engine_state') \
+            .eq('user_id', uid) \
             .maybe_single() \
             .execute()
     if result and result.data:

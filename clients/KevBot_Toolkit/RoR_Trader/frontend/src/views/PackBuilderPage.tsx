@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Modal from '@/components/Modal';
+import { useGenerateStructure, useGenerateCode, useRequestFix, useValidatePack, useInstallPack } from '@/hooks/mutations/useAiBuilder';
 
 /* ========================================================================= */
 /* CONSTANTS                                                                   */
@@ -28,7 +29,8 @@ type PackType = 'tf_confluence' | 'general';
 
 interface ParamDef { id: string; name: string; label: string; type: string; defaultVal: string; min: string; max: string; }
 interface OutputDef { id: string; code: string; description: string; }
-interface TriggerDef { id: string; name: string; base: string; sentiment: 'bullish' | 'bearish' | 'neutral'; execTypes: string[]; fidelity: string; fromState: string; toState: string; }
+interface TriggerDef { id: string; name: string; base: string; sentiment: 'bullish' | 'bearish' | 'neutral'; fromState: string; toState: string; }
+interface ExecTypeConfig { enabled: boolean; referenceBar: 0 | -1; orderType: 'market' | 'limit'; holdSeconds?: number; confirmBarOffset?: 0 | 1; bailAction?: 'exit_market' | 'exit_limit'; }
 interface ValidationItem { id: string; label: string; category: string; status: 'pass' | 'fail' | 'warn' | 'pending'; message: string; }
 
 /* ========================================================================= */
@@ -106,8 +108,13 @@ export default function PackBuilderPage() {
   const [conversation, setConversation] = useState<{ role: string; content: string; time: string }[]>([]);
   const [aiModel, setAiModel] = useState('claude-sonnet');
 
-  // Exec type params modal
-  const [execParamsTriggerIdx, setExecParamsTriggerIdx] = useState<number | null>(null);
+  // Pack-level execution config (applies to all triggers)
+  const [execConfig, setExecConfig] = useState<Record<string, ExecTypeConfig>>({
+    C: { enabled: true, referenceBar: 0, orderType: 'market' },
+    L: { enabled: true, referenceBar: -1, orderType: 'market', holdSeconds: 0 },
+    LC: { enabled: false, referenceBar: -1, orderType: 'market', confirmBarOffset: 0, bailAction: 'exit_market' },
+    CC: { enabled: false, referenceBar: 0, orderType: 'market', confirmBarOffset: 1, bailAction: 'exit_market' },
+  });
 
   // Request Fix modal (Step 5)
   const [showFixModal, setShowFixModal] = useState(false);
@@ -115,6 +122,21 @@ export default function PackBuilderPage() {
   const [fixContext, setFixContext] = useState('');
   const [fixCount, setFixCount] = useState(0);
   const [activeReviewTab, setActiveReviewTab] = useState('Overview');
+
+  // Generated code state (populated by AI in Step 4)
+  const [generatedManifest, setGeneratedManifest] = useState<Record<string, unknown> | null>(null);
+  const [generatedIndicator, setGeneratedIndicator] = useState('');
+  const [generatedInterpreter, setGeneratedInterpreter] = useState('');
+  const [generatedPine, setGeneratedPine] = useState<string | null>(null);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [installResult, setInstallResult] = useState<{ success: boolean; slug: string; errors: string[] } | null>(null);
+
+  // AI mutation hooks (must be before any early returns per React rules)
+  const generateStructureMutation = useGenerateStructure();
+  const generateCodeMutation = useGenerateCode();
+  const requestFixMutation = useRequestFix();
+  const validatePackMutation = useValidatePack();
+  const installPackMutation = useInstallPack();
 
   // Derived
   const slug = useMemo(() => toSlug(packName), [packName]);
@@ -124,56 +146,133 @@ export default function PackBuilderPage() {
   const STEPS = ['Pack Info', 'Generate Structure', 'Refine Structure', 'Generate & Validate Code', 'Review & Install'];
 
   function handleGenerateStructure() {
-    // {{ai_response}} — Will call AI API to generate structure from description
     setIsGenerating(true);
     setConversation([{ role: 'system', content: 'Generating pack structure from description...', time: new Date().toLocaleTimeString() }]);
-    setTimeout(() => {
-      // {{ai_response}} — Replace with actual AI-generated params/outputs/triggers
-      setParams(PLACEHOLDER_PARAMS);
-      setOutputs(PLACEHOLDER_OUTPUTS);
-      setTriggers(PLACEHOLDER_TRIGGERS);
-      setStructureGenerated(true);
-      setIsGenerating(false);
-      setConversation((prev) => [...prev,
-        { role: 'assistant', content: `{{ai_response}} — AI will propose structure for "${packName}" here.`, time: new Date().toLocaleTimeString() },
-      ]);
-    }, 2000);
+
+    generateStructureMutation.mutate({
+      pack_name: packName,
+      pack_type: packType,
+      category,
+      display_type: displayType,
+      description,
+      pine_script: pineScript,
+      ai_model: aiModel,
+    }, {
+      onSuccess: (data) => {
+        setParams(data.parameters.map((p) => ({
+          id: generateId(),
+          name: p.name,
+          label: p.label || p.name,
+          type: p.type || 'int',
+          defaultVal: String(p.default ?? ''),
+          min: p.min != null ? String(p.min) : '',
+          max: p.max != null ? String(p.max) : '',
+        })));
+        setOutputs(data.outputs.map((o) => ({
+          id: generateId(),
+          code: o.code,
+          description: o.description || '',
+        })));
+        setTriggers(data.triggers.map((t) => ({
+          id: generateId(),
+          name: t.name,
+          base: t.base,
+          sentiment: (t.sentiment === 'bullish' || t.sentiment === 'bearish' || t.sentiment === 'neutral' ? t.sentiment : 'neutral') as 'bullish' | 'bearish' | 'neutral',
+          fromState: '',
+          toState: '',
+        })));
+        setStructureGenerated(true);
+        setIsGenerating(false);
+        setConversation((prev) => [...prev,
+          { role: 'assistant', content: data.ai_message, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+      onError: (error) => {
+        setIsGenerating(false);
+        setConversation((prev) => [...prev,
+          { role: 'error', content: `Generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+    });
   }
 
   function handleGenerateCode() {
-    // {{ai_response}} — Will call AI API to generate code from refined structure
     setIsGeneratingCode(true);
     setConversation((prev) => [...prev,
       { role: 'system', content: 'Generating code from refined structure...', time: new Date().toLocaleTimeString() },
     ]);
-    setTimeout(() => {
-      setCodeGenerated(true);
-      setIsGeneratingCode(false);
-      // {{ai_response}} — Replace with actual validation results from AI code generation
-      setValidation(PLACEHOLDER_VALIDATION);
-      setConversation((prev) => [...prev,
-        { role: 'assistant', content: '{{ai_response}} — AI will generate code and run validation here.', time: new Date().toLocaleTimeString() },
-      ]);
-    }, 3000);
+
+    generateCodeMutation.mutate({
+      pack_name: packName,
+      slug,
+      pack_type: packType,
+      category,
+      display_type: displayType,
+      description,
+      parameters: params.map((p) => ({ name: p.name, type: p.type, default: p.defaultVal, min: p.min, max: p.max, label: p.label })),
+      outputs: outputs.map((o) => ({ code: o.code, description: o.description })),
+      triggers: triggers.map((t) => ({ name: t.name, base: t.base, sentiment: t.sentiment, direction: t.sentiment === 'bullish' ? 'LONG' : t.sentiment === 'bearish' ? 'SHORT' : 'BOTH', type: 'ENTRY', execution: 'bar_close' })),
+      pine_script: pineScript,
+      ai_model: aiModel,
+    }, {
+      onSuccess: (data) => {
+        setGeneratedManifest(data.manifest);
+        setGeneratedIndicator(data.indicator_code);
+        setGeneratedInterpreter(data.interpreter_code);
+        setGeneratedPine(data.pine_script_code);
+        setCodeGenerated(true);
+        setIsGeneratingCode(false);
+        setValidation(data.validation.map((v) => ({ ...v, status: v.status as 'pass' | 'fail' | 'warn' | 'pending' })));
+        setConversation((prev) => [...prev,
+          { role: 'assistant', content: data.ai_message, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+      onError: (error) => {
+        setIsGeneratingCode(false);
+        setConversation((prev) => [...prev,
+          { role: 'error', content: `Code generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+    });
   }
 
   function handleAutoFix() {
-    // {{ai_response}} — Will send validation failures to AI for targeted correction
+    if (!generatedManifest || !generatedIndicator || !generatedInterpreter) return;
+
     const failedChecks = validation.filter((v) => v.status === 'fail' || v.status === 'warn');
     setIsAutoFixing(true);
     setConversation((prev) => [...prev,
       { role: 'error', content: `Issues found: ${failedChecks.map((v) => v.label).join(', ')}`, time: new Date().toLocaleTimeString() },
       { role: 'system', content: `Auto-fix attempt ${autoFixAttempt + 1}/3 — sending corrections to AI...`, time: new Date().toLocaleTimeString() },
     ]);
-    setTimeout(() => {
-      setAutoFixAttempt((prev) => prev + 1);
-      setIsAutoFixing(false);
-      // {{ai_response}} — AI will fix issues and update validation results
-      setValidation((prev) => prev.map((v) => v.status === 'warn' ? { ...v, status: 'pass' as const, message: '{{ai_response}}' } : v));
-      setConversation((prev) => [...prev,
-        { role: 'assistant', content: '{{ai_response}} — AI will describe the fix applied.', time: new Date().toLocaleTimeString() },
-      ]);
-    }, 2000);
+
+    requestFixMutation.mutate({
+      manifest: generatedManifest,
+      indicator_code: generatedIndicator,
+      interpreter_code: generatedInterpreter,
+      validation_errors: failedChecks.map((v) => `${v.label}: ${v.message}`),
+      ai_model: aiModel,
+    }, {
+      onSuccess: (data) => {
+        setGeneratedManifest(data.manifest);
+        setGeneratedIndicator(data.indicator_code);
+        setGeneratedInterpreter(data.interpreter_code);
+        if (data.pine_script_code) setGeneratedPine(data.pine_script_code);
+        setAutoFixAttempt((prev) => prev + 1);
+        setIsAutoFixing(false);
+        setValidation(data.validation.map((v) => ({ ...v, status: v.status as 'pass' | 'fail' | 'warn' | 'pending' })));
+        setConversation((prev) => [...prev,
+          { role: 'assistant', content: data.ai_message, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+      onError: (error) => {
+        setAutoFixAttempt((prev) => prev + 1);
+        setIsAutoFixing(false);
+        setConversation((prev) => [...prev,
+          { role: 'error', content: `Auto-fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: new Date().toLocaleTimeString() },
+        ]);
+      },
+    });
   }
 
   return (
@@ -455,10 +554,7 @@ export default function PackBuilderPage() {
           {/* Outputs */}
           <Card>
             <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-medium">States <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({outputs.length})</span></h4>
-                {packType === 'tf_confluence' && <FidelityBadge tag="[PB]" />}
-              </div>
+              <h4 className="text-sm font-medium">States <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({outputs.length})</span></h4>
               <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 10px' }} onClick={() => setOutputs([...outputs, { id: generateId(), code: '', description: '' }])}>+ Add</button>
             </div>
             <div className="space-y-2">
@@ -476,7 +572,7 @@ export default function PackBuilderPage() {
           <Card>
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium">Triggers <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({triggers.length})</span></h4>
-              <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 10px' }} onClick={() => setTriggers([...triggers, { id: generateId(), name: '', base: '', sentiment: 'neutral', execTypes: ['[C]'], fidelity: '[PB]', fromState: '', toState: '' }])}>+ Add</button>
+              <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 10px' }} onClick={() => setTriggers([...triggers, { id: generateId(), name: '', base: '', sentiment: 'neutral', fromState: '', toState: '' }])}>+ Add</button>
             </div>
             <div className="space-y-3">
               {triggers.map((t, i) => (
@@ -512,40 +608,7 @@ export default function PackBuilderPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Exec:</span>
-                      {EXEC_TYPES.map((et) => {
-                        const disabled = packType === 'general' && et !== '[C]';
-                        return (
-                          <label key={et} className="flex items-center gap-0.5" style={{ opacity: disabled ? 0.3 : 1 }}>
-                            <input type="checkbox" disabled={disabled} checked={t.execTypes.includes(et)}
-                              onChange={(e) => { const n = [...triggers]; if (e.target.checked) n[i].execTypes = [...n[i].execTypes, et]; else n[i].execTypes = n[i].execTypes.filter((x) => x !== et); setTriggers(n); }}
-                              className="w-3 h-3" style={{ accentColor: EXEC_BADGE_COLOR }} />
-                            <ExecBadge tag={et} />
-                          </label>
-                        );
-                      })}
-                      {packType === 'tf_confluence' && t.execTypes.length > 0 && (
-                        <button className="text-sm ml-1" style={{ color: 'var(--text-muted)', cursor: 'pointer', background: 'none', border: 'none' }}
-                          onClick={() => setExecParamsTriggerIdx(i)} title="Configure execution type default parameters">
-                          ⚙
-                        </button>
-                      )}
-                    </div>
-                    {packType === 'tf_confluence' && (
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Fidelity:</span>
-                        {['[PB]', '[CB]'].map((f) => (
-                          <button key={f} className="text-[10px] font-mono px-1.5 py-0.5 rounded-full" style={{
-                            color: t.fidelity === f ? FIDELITY_BADGE_COLOR : 'var(--text-muted)',
-                            background: t.fidelity === f ? FIDELITY_BADGE_COLOR + '20' : 'transparent',
-                            cursor: 'pointer', border: t.fidelity === f ? 'none' : '1px solid var(--border)',
-                          }} onClick={() => { const n = [...triggers]; n[i].fidelity = f; setTriggers(n); }}>{f}</button>
-                        ))}
-                      </div>
-                    )}
-                    <span className="flex-1" />
+                  <div className="flex items-center justify-end mt-1">
                     <button className="text-xs" style={{ color: 'var(--red)', cursor: 'pointer', background: 'transparent', border: 'none' }}
                       onClick={() => setTriggers(triggers.filter((_, j) => j !== i))}>Remove</button>
                   </div>
@@ -553,58 +616,92 @@ export default function PackBuilderPage() {
               ))}
             </div>
           </Card>
-        </div>
-      )}
 
-      {/* Exec Type Parameters Modal */}
-      {execParamsTriggerIdx !== null && triggers[execParamsTriggerIdx] && (
-        <Modal title={`Execution Parameters — ${triggers[execParamsTriggerIdx].name}`} isOpen={true} onClose={() => setExecParamsTriggerIdx(null)} width="600px">
-          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-            Configure default parameters for each execution type on this trigger. Users can create variations with different settings later.
-          </p>
-          {triggers[execParamsTriggerIdx].execTypes.map((et) => (
-            <div key={et} className="mb-4 rounded-lg p-3" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-              <div className="flex items-center gap-2 mb-2">
-                <ExecBadge tag={et} />
-                <span className="text-xs font-medium">{et === '[C]' ? 'Close' : et === '[L]' ? 'Level' : et === '[LC]' ? 'Level-Close' : 'Close-Close'}</span>
+          {/* Execution Defaults (pack-level — applies to all triggers) */}
+          {packType === 'tf_confluence' && (
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h4 className="text-sm font-medium">Execution Defaults</h4>
+                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    These settings apply to all triggers in this pack. Users can override per-variation on the TF Confluence page.
+                  </p>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                {et === '[C]' && (
-                  <>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Reference Bar</label><select style={inputStyle} defaultValue="0"><option value="0">Current (0)</option><option value="-1">Previous (-1)</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Order Type</label><select style={inputStyle} defaultValue="market"><option value="market">Market</option><option value="limit">Limit</option></select></div>
-                  </>
-                )}
-                {et === '[L]' && (
-                  <>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Reference Bar</label><select style={inputStyle} defaultValue="-1"><option value="0">Current (0)</option><option value="-1">Previous (-1)</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Order Type</label><select style={inputStyle} defaultValue="market"><option value="market">Market</option><option value="limit">Limit</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Hold Seconds</label><input type="number" defaultValue={0} min={0} style={inputStyle} /></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Limit Duration (s)</label><input type="number" defaultValue={10} min={1} style={inputStyle} /></div>
-                  </>
-                )}
-                {et === '[LC]' && (
-                  <>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Entry Order Type</label><select style={inputStyle} defaultValue="market"><option value="market">Market</option><option value="limit">Limit</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confirm Bar Offset</label><select style={inputStyle} defaultValue="0"><option value="0">Same bar</option><option value="1">Next bar</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bail Action</label><select style={inputStyle} defaultValue="exit_market"><option value="exit_market">Exit at market</option><option value="exit_limit">Exit at limit (entry price)</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Hold Seconds</label><input type="number" defaultValue={0} min={0} style={inputStyle} /></div>
-                  </>
-                )}
-                {et === '[CC]' && (
-                  <>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Entry Order Type</label><select style={inputStyle} defaultValue="market"><option value="market">Market</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confirm Bar Offset</label><select style={inputStyle} defaultValue="1"><option value="1">Next bar close</option></select></div>
-                    <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bail Action</label><select style={inputStyle} defaultValue="exit_market"><option value="exit_market">Exit at market</option></select></div>
-                  </>
-                )}
+                {(['C', 'L', 'LC', 'CC'] as const).map((et) => {
+                  const cfg = execConfig[et] as ExecTypeConfig;
+                  const label = et === 'C' ? 'Bar Close' : et === 'L' ? 'Level' : et === 'LC' ? 'Level-Close' : 'Close-Close';
+                  const updateField = (field: string, value: unknown) => {
+                    setExecConfig((prev) => ({ ...prev, [et]: { ...prev[et], [field]: value } }));
+                  };
+                  return (
+                    <div key={et} className="rounded-lg p-3" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', opacity: cfg.enabled ? 1 : 0.5 }}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={cfg.enabled} onChange={(e) => updateField('enabled', e.target.checked)}
+                            className="w-3.5 h-3.5" style={{ accentColor: EXEC_BADGE_COLOR }} />
+                          <ExecBadge tag={`[${et}]`} />
+                          <span className="text-xs font-medium">{label}</span>
+                        </label>
+                      </div>
+                      {cfg.enabled && (
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <div>
+                            <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Reference Bar</label>
+                            <select value={cfg.referenceBar} onChange={(e) => updateField('referenceBar', Number(e.target.value))}
+                              style={{ ...inputStyle, fontSize: '0.7rem' }}>
+                              <option value={0}>Current (0)</option>
+                              <option value={-1}>Previous (-1)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Order Type</label>
+                            <select value={cfg.orderType} onChange={(e) => updateField('orderType', e.target.value)}
+                              style={{ ...inputStyle, fontSize: '0.7rem' }}>
+                              <option value="market">Market</option>
+                              {et !== 'CC' && <option value="limit">Limit</option>}
+                            </select>
+                          </div>
+                          {(et === 'L' || et === 'LC') && (
+                            <div>
+                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Hold Seconds</label>
+                              <input type="number" value={cfg.holdSeconds ?? 0} min={0}
+                                onChange={(e) => updateField('holdSeconds', Number(e.target.value))}
+                                style={{ ...inputStyle, fontSize: '0.7rem' }} />
+                            </div>
+                          )}
+                          {(et === 'LC' || et === 'CC') && (
+                            <>
+                              <div>
+                                <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confirm Offset</label>
+                                <select value={cfg.confirmBarOffset ?? (et === 'CC' ? 1 : 0)}
+                                  onChange={(e) => updateField('confirmBarOffset', Number(e.target.value))}
+                                  style={{ ...inputStyle, fontSize: '0.7rem' }}>
+                                  <option value={0}>Same bar</option>
+                                  <option value={1}>Next bar</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bail Action</label>
+                                <select value={cfg.bailAction ?? 'exit_market'}
+                                  onChange={(e) => updateField('bailAction', e.target.value)}
+                                  style={{ ...inputStyle, fontSize: '0.7rem' }}>
+                                  <option value="exit_market">Exit at market</option>
+                                  {et === 'LC' && <option value="exit_limit">Exit at limit</option>}
+                                </select>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-          ))}
-          <div className="flex justify-end">
-            <button style={btnPrimary} onClick={() => setExecParamsTriggerIdx(null)}>Done</button>
-          </div>
-        </Modal>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* ================================================================= */}
@@ -666,11 +763,11 @@ export default function PackBuilderPage() {
                 </div>
                 <TabBar tabs={packType === 'tf_confluence' ? ['manifest.json', 'indicator.py', 'interpreter.py'] : ['manifest.json', 'evaluator.py']}>
                   {(tab) => (
-                    <div className="rounded-lg p-4 font-mono text-xs" style={{ background: '#0d1117', color: '#c9d1d9', maxHeight: 350, overflowY: 'auto', lineHeight: 1.6 }}>
-                      {tab === 'manifest.json' && <pre>{`{\n  "slug": "${slug}",\n  "name": "${packName}",\n  "pack_type": "${packType}",\n  "states": ${JSON.stringify(outputs.map(o => o.code))},\n  "triggers": [...],\n  "parameters_schema": {...}\n}`}</pre>}
-                      {tab === 'indicator.py' && <pre>{`import pandas as pd\nimport numpy as np\n\ndef calculate_${slug}(df, ${params.map(p => `${p.name}=${p.defaultVal}`).join(', ')}):\n    # ... indicator logic ...\n    return df`}</pre>}
-                      {tab === 'interpreter.py' && <pre>{`def interpret_${slug}(df, **params):\n    # ... classification ...\n    pass\n\ndef detect_${slug}_triggers(df, **params):\n    return {${triggers.map(t => `\n        "${t.base}": ...`).join(',')}\n    }`}</pre>}
-                      {tab === 'evaluator.py' && <pre>{`def evaluate_${slug}(timestamp, ${params.map(p => `${p.name}=${p.defaultVal}`).join(', ')}):\n    return "IN_WINDOW"`}</pre>}
+                    <div className="rounded-lg p-4 font-mono text-xs" style={{ background: '#0d1117', color: '#c9d1d9', maxHeight: 350, overflowY: 'auto', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {tab === 'manifest.json' && <pre>{generatedManifest ? JSON.stringify(generatedManifest, null, 2) : '// Generating...'}</pre>}
+                      {tab === 'indicator.py' && <pre>{generatedIndicator || '# Generating...'}</pre>}
+                      {tab === 'interpreter.py' && <pre>{generatedInterpreter || '# Generating...'}</pre>}
+                      {tab === 'evaluator.py' && <pre>{generatedIndicator || '# Generating...'}</pre>}
                     </div>
                   )}
                 </TabBar>
@@ -773,8 +870,6 @@ export default function PackBuilderPage() {
                           <div key={t.id} className="flex items-center gap-2 flex-wrap">
                             <SentimentBadge sentiment={t.sentiment} />
                             <span className="text-xs">{t.name}</span>
-                            {t.execTypes.map((et) => <ExecBadge key={et} tag={et} />)}
-                            {packType === 'tf_confluence' && <FidelityBadge tag={t.fidelity} />}
                             {t.fromState && t.toState && <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{t.fromState} → {t.toState}</span>}
                           </div>
                         ))}
@@ -918,8 +1013,11 @@ export default function PackBuilderPage() {
                       {(packType === 'tf_confluence' ? ['manifest.json', 'indicator.py', 'interpreter.py'] : ['manifest.json', 'evaluator.py']).map((file) => (
                         <details key={file}>
                           <summary className="text-xs font-mono font-medium cursor-pointer py-2" style={{ color: 'var(--accent)' }}>{file}</summary>
-                          <div className="rounded-lg p-3 font-mono text-xs mt-1" style={{ background: '#0d1117', color: '#c9d1d9', maxHeight: 250, overflowY: 'auto' }}>
-                            <pre>// {file} content from parsed LLM response</pre>
+                          <div className="rounded-lg p-3 font-mono text-xs mt-1" style={{ background: '#0d1117', color: '#c9d1d9', maxHeight: 250, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {file === 'manifest.json' && <pre>{generatedManifest ? JSON.stringify(generatedManifest, null, 2) : '// No code generated yet'}</pre>}
+                            {file === 'indicator.py' && <pre>{generatedIndicator || '# No code generated yet'}</pre>}
+                            {file === 'interpreter.py' && <pre>{generatedInterpreter || '# No code generated yet'}</pre>}
+                            {file === 'evaluator.py' && <pre>{generatedIndicator || '# No code generated yet'}</pre>}
                           </div>
                         </details>
                       ))}
@@ -933,7 +1031,40 @@ export default function PackBuilderPage() {
 
           {/* Action row */}
           <div className="flex items-center gap-3 mt-6">
-            <button style={btnPrimary}>Install Pack</button>
+            <button style={{ ...btnPrimary, opacity: (isInstalling || !generatedManifest || validation.some((v) => v.status === 'fail')) ? 0.5 : 1 }}
+              disabled={isInstalling || !generatedManifest || validation.some((v) => v.status === 'fail')}
+              onClick={() => {
+                if (!generatedManifest || !generatedIndicator || !generatedInterpreter) return;
+                setIsInstalling(true);
+                installPackMutation.mutate({
+                  manifest: generatedManifest,
+                  indicator_code: generatedIndicator,
+                  interpreter_code: generatedInterpreter,
+                  pine_script_code: generatedPine,
+                }, {
+                  onSuccess: (data) => {
+                    setIsInstalling(false);
+                    setInstallResult(data);
+                    if (data.success) {
+                      setConversation((prev) => [...prev,
+                        { role: 'assistant', content: `Pack "${data.slug}" installed successfully! It is now available in your confluence groups.`, time: new Date().toLocaleTimeString() },
+                      ]);
+                    } else {
+                      setConversation((prev) => [...prev,
+                        { role: 'error', content: `Install failed: ${data.errors.join(', ')}`, time: new Date().toLocaleTimeString() },
+                      ]);
+                    }
+                  },
+                  onError: (error) => {
+                    setIsInstalling(false);
+                    setConversation((prev) => [...prev,
+                      { role: 'error', content: `Install failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: new Date().toLocaleTimeString() },
+                    ]);
+                  },
+                });
+              }}>
+              {isInstalling ? 'Installing...' : installResult?.success ? 'Installed' : 'Install Pack'}
+            </button>
             <button style={btnSecondary}>Save Draft</button>
             <button style={btnSecondary}>Export JSON</button>
             <span className="flex-1" />
@@ -965,20 +1096,40 @@ export default function PackBuilderPage() {
               <button style={btnSecondary} onClick={() => setShowFixModal(false)}>Cancel</button>
               <button style={{ ...btnPrimary, background: 'var(--orange)' }}
                 onClick={() => {
+                  if (!generatedManifest || !generatedIndicator || !generatedInterpreter) return;
+
                   setFixCount(fixCount + 1);
                   setShowFixModal(false);
-                  // Add fix request to conversation and simulate AI response
                   setConversation((prev) => [
                     ...prev,
                     { role: 'error', content: `Fix requested (${activeReviewTab}): ${fixDescription}`, time: new Date().toLocaleTimeString() },
                     { role: 'system', content: `Sending targeted fix to AI (attempt ${fixCount + 1})...`, time: new Date().toLocaleTimeString() },
                   ]);
-                  setTimeout(() => {
-                    setConversation((prev) => [
-                      ...prev,
-                      { role: 'assistant', content: `Fix applied: ${fixDescription.substring(0, 60)}... Code updated. Re-running validation.`, time: new Date().toLocaleTimeString() },
-                    ]);
-                  }, 2000);
+
+                  requestFixMutation.mutate({
+                    manifest: generatedManifest,
+                    indicator_code: generatedIndicator,
+                    interpreter_code: generatedInterpreter,
+                    validation_errors: validation.filter((v) => v.status === 'fail' || v.status === 'warn').map((v) => `${v.label}: ${v.message}`),
+                    user_description: fixDescription,
+                    ai_model: aiModel,
+                  }, {
+                    onSuccess: (data) => {
+                      setGeneratedManifest(data.manifest);
+                      setGeneratedIndicator(data.indicator_code);
+                      setGeneratedInterpreter(data.interpreter_code);
+                      if (data.pine_script_code) setGeneratedPine(data.pine_script_code);
+                      setValidation(data.validation.map((v) => ({ ...v, status: v.status as 'pass' | 'fail' | 'warn' | 'pending' })));
+                      setConversation((prev) => [...prev,
+                        { role: 'assistant', content: data.ai_message, time: new Date().toLocaleTimeString() },
+                      ]);
+                    },
+                    onError: (error) => {
+                      setConversation((prev) => [...prev,
+                        { role: 'error', content: `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: new Date().toLocaleTimeString() },
+                      ]);
+                    },
+                  });
                   setFixDescription('');
                 }}>
                 Send Fix to AI
