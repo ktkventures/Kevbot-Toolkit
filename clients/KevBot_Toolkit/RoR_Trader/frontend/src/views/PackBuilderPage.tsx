@@ -1242,31 +1242,33 @@ export default function PackBuilderPage() {
                           {sbResult && (
                             <>
                               {/* KPI Strip */}
-                              <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
+                              <div className="grid grid-cols-4 sm:grid-cols-4 xl:grid-cols-8 gap-2">
                                 <MetricCard label="Trades" value={String(sbResult.kpis.totalTrades)} />
                                 <MetricCard label="Win Rate" value={`${sbResult.kpis.winRate.toFixed(1)}%`} positive={sbResult.kpis.winRate > 50} />
-                                <MetricCard label="Profit Factor" value={sbResult.kpis.profitFactor.toFixed(2)} positive={sbResult.kpis.profitFactor > 1} />
+                                <MetricCard label="PF" value={sbResult.kpis.profitFactor.toFixed(2)} positive={sbResult.kpis.profitFactor > 1} />
                                 <MetricCard label="Avg R" value={`${sbResult.kpis.avgR >= 0 ? '+' : ''}${sbResult.kpis.avgR.toFixed(2)}`} positive={sbResult.kpis.avgR > 0} />
                                 <MetricCard label="Total R" value={`${sbResult.kpis.totalR >= 0 ? '+' : ''}${sbResult.kpis.totalR.toFixed(1)}`} positive={sbResult.kpis.totalR > 0} />
                                 <MetricCard label="Daily R" value={`${sbResult.kpis.dailyR >= 0 ? '+' : ''}${sbResult.kpis.dailyR.toFixed(2)}`} positive={sbResult.kpis.dailyR > 0} />
-                                <MetricCard label="R-Squared" value={sbResult.kpis.rSquared.toFixed(2)} positive={sbResult.kpis.rSquared > 0.7} />
-                                <MetricCard label="Max R DD" value={`${sbResult.kpis.maxRDrawdown.toFixed(1)}R`} positive={false} />
+                                <MetricCard label="R²" value={sbResult.kpis.rSquared.toFixed(2)} positive={sbResult.kpis.rSquared > 0.7} />
+                                <MetricCard label="Max DD" value={`${sbResult.kpis.maxRDrawdown.toFixed(1)}R`} positive={false} />
                               </div>
 
                               {/* Price Chart */}
                               <Card>
-                                {sbChartPanes.length > 0 ? (
-                                  <SyncedChartPane
-                                    panes={sbChartPanes}
-                                    upColor={chartPrefs?.candleUp}
-                                    downColor={chartPrefs?.candleDown}
-                                    upBorderColor={chartPrefs?.candleUpBorder}
-                                    gridLines={chartPrefs?.gridLines}
-                                    rightOffset={chartPrefs?.rightOffset}
-                                  />
-                                ) : (
-                                  <ChartPlaceholder label="No chart data available" height={400} />
-                                )}
+                                <div style={{ minHeight: 400 }}>
+                                  {sbChartPanes.length > 0 ? (
+                                    <SyncedChartPane
+                                      panes={sbChartPanes}
+                                      upColor={chartPrefs?.candleUp}
+                                      downColor={chartPrefs?.candleDown}
+                                      upBorderColor={chartPrefs?.candleUpBorder}
+                                      gridLines={chartPrefs?.gridLines}
+                                      rightOffset={chartPrefs?.rightOffset}
+                                    />
+                                  ) : (
+                                    <ChartPlaceholder label="No chart data available" height={400} />
+                                  )}
+                                </div>
                               </Card>
 
                               {/* Equity Curve */}

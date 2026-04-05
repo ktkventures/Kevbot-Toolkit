@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Link from 'next/link';
+import { apiFetch } from '@/lib/api/client';
 
 /* ========================================================================
    Types
@@ -1380,6 +1381,39 @@ export default function UserPacksPage() {
   const [showCreateTemplateModal, setShowCreateTemplateModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState<string | null>(null);
+
+  // Fetch installed user packs from API
+  useEffect(() => {
+    apiFetch<any[]>('/api/packs/builder/user-packs')
+      .then((data) => {
+        const mapped: UserPack[] = data.map((p: any) => ({
+          id: p.slug,
+          name: p.name || p.slug,
+          version: p.version || '1.0.0',
+          packType: p.pack_type || 'tf_confluence',
+          category: p.category || 'Custom',
+          enabled: true,
+          isDefault: false,
+          visibility: 'private' as const,
+          strategiesUsing: 0,
+          lastModified: new Date().toISOString().slice(0, 10),
+          validationStatus: p.is_valid ? 'passed' as const : 'failed' as const,
+          parityScore: null,
+          params: (p.parameters || []).map((name: string) => ({
+            key: name, label: name.replace(/_/g, ' '), value: 0, min: 0, max: 100, type: 'int' as const,
+          })),
+          plotSettings: [],
+          outputs: (p.outputs || []).map((code: string) => ({ code, description: '' })),
+          triggers: (p.triggers || []).map((t: any) => ({
+            id: t.base || '', name: t.name || t.base || '',
+            direction: t.direction || 'BOTH', type: t.type || 'ENTRY',
+            exec: '[C]',
+          })),
+        }));
+        if (mapped.length > 0) setPacks(mapped);
+      })
+      .catch(() => { /* API not available — keep empty */ });
+  }, []);
 
   const enabledCount = packs.filter((p) => p.enabled).length;
 

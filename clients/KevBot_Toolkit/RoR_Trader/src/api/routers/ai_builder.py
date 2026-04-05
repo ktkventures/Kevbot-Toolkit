@@ -155,6 +155,32 @@ def _parse_structure_json(raw_text: str) -> dict:
 # Endpoints
 # =============================================================================
 
+@router.get("/user-packs")
+def list_user_packs(user=Depends(get_current_user)):
+    """List all installed user packs with their metadata."""
+    import pack_registry
+    packs = pack_registry.get_registered_packs()
+    result = []
+    for slug, pack in packs.items():
+        m = pack.manifest
+        result.append({
+            "slug": slug,
+            "name": m.get("name", slug),
+            "version": m.get("version", "1.0.0"),
+            "pack_type": m.get("pack_type", "tf_confluence"),
+            "category": m.get("category", ""),
+            "display_type": m.get("display_type", "oscillator"),
+            "description": m.get("description", ""),
+            "is_valid": pack.is_valid,
+            "validation_errors": pack.validation_errors,
+            "parameters": list(m.get("parameters_schema", {}).keys()),
+            "outputs": m.get("outputs", []),
+            "triggers": m.get("triggers", []),
+            "indicator_columns": m.get("indicator_columns", []),
+        })
+    return result
+
+
 @router.post("/generate-structure")
 def generate_structure(req: GenerateStructureRequest, user=Depends(get_current_user)):
     """Step 2: AI proposes pack structure from description."""
