@@ -86,9 +86,52 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
             data_source=get_data_source(),
         )
 
-    # 5. Run unified engine (Pass 1)
-    trades_df = svc.unified_trades(df, strategy)
-    print(f"[BACKTEST] Unified engine returned {len(trades_df)} trades")
+    # 5. Run trades — unified engine for built-in packs, batch for user packs
+    # The unified engine has hardcoded indicator/interpreter logic for built-in
+    # packs only. User packs use the batch pipeline (pre-computed columns in df).
+    _use_batch = False
+    try:
+        import pack_registry
+        _registered = pack_registry.get_registered_packs()
+        _entry_id = req.entry_trigger_confluence_id or ''
+        for _slug in _registered:
+            if _entry_id.startswith(_slug) or _entry_id.startswith(f"{_slug}_"):
+                _use_batch = True
+                break
+    except Exception:
+        pass
+
+    if _use_batch:
+        # Resolve confluence trigger ID to base trigger for batch engine
+        try:
+            from alerts import _get_base_trigger_id
+            _base_entry = _get_base_trigger_id(req.entry_trigger_confluence_id)
+            _base_exits = [_get_base_trigger_id(c) for c in (req.exit_trigger_confluence_ids or []) if c]
+        except Exception:
+            _base_entry = req.entry_trigger_confluence_id
+            _base_exits = req.exit_trigger_confluence_ids or []
+
+        from triggers import generate_trades
+        sec_tf_map = svc.get_secondary_tf_map(df)
+        confluence_set = set(req.confluence or []) if req.confluence else None
+        general_cols = [c for c in df.columns if c.startswith("GP_")]
+        trades_df = generate_trades(
+            df,
+            direction=req.direction,
+            entry_trigger=_base_entry,
+            exit_triggers=_base_exits if _base_exits else None,
+            confluence_required=confluence_set,
+            risk_per_trade=req.risk_per_trade,
+            stop_config=stop_config,
+            target_config=target_config,
+            bar_count_exit=req.bar_count_exit,
+            general_columns=general_cols if general_cols else None,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+        )
+        print(f"[BACKTEST] Batch engine returned {len(trades_df)} trades (user pack)")
+    else:
+        trades_df = svc.unified_trades(df, strategy)
+        print(f"[BACKTEST] Unified engine returned {len(trades_df)} trades")
 
     # 5b. Hi-Fi Pass 2: Resolve every entry/exit with 1-second data
     if req.hifi_mode and len(trades_df) > 0:

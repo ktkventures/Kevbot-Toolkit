@@ -224,6 +224,17 @@ def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
                     f"must be one of {VALID_TRIGGER_EXECUTIONS}"
                 )
 
+    # Validate trigger base doesn't repeat the trigger_prefix
+    prefix = manifest.get("trigger_prefix", "")
+    if isinstance(triggers, list) and prefix:
+        for i, trig in enumerate(triggers):
+            base = trig.get("base", "")
+            if base.startswith(prefix + "_"):
+                errors.append(
+                    f"triggers[{i}] base '{base}' starts with trigger_prefix '{prefix}_'. "
+                    f"The system auto-prepends the prefix — use '{base[len(prefix)+1:]}' instead"
+                )
+
     # Validate parameters_schema
     params = manifest["parameters_schema"]
     if isinstance(params, dict):

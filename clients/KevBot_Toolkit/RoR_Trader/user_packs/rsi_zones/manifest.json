@@ -1,0 +1,202 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "rsi_zones",
+  "name": "RSI Zones",
+  "category": "Mean Reversion",
+  "description": "Relative Strength Index with overbought, oversold, and extreme zone classification with midline and zone-crossing triggers",
+  "author": "user",
+  "version": "1.0.1",
+  "created_at": "2026-01-01T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "oscillator",
+  "interpreters": [
+    "RSI_ZONES"
+  ],
+  "trigger_prefix": "rsi",
+  "parameters_schema": {
+    "rsi_period": {
+      "type": "int",
+      "default": 14,
+      "min": 2,
+      "max": 50,
+      "label": "RSI Period"
+    },
+    "overbought_level": {
+      "type": "float",
+      "default": 70,
+      "min": 55,
+      "max": 95,
+      "label": "Overbought Level"
+    },
+    "oversold_level": {
+      "type": "float",
+      "default": 30,
+      "min": 5,
+      "max": 45,
+      "label": "Oversold Level"
+    },
+    "extreme_overbought_level": {
+      "type": "float",
+      "default": 80,
+      "min": 65,
+      "max": 99,
+      "label": "Extreme Overbought Level"
+    },
+    "extreme_oversold_level": {
+      "type": "float",
+      "default": 20,
+      "min": 1,
+      "max": 35,
+      "label": "Extreme Oversold Level"
+    },
+    "midline": {
+      "type": "float",
+      "default": 50,
+      "min": 40,
+      "max": 60,
+      "label": "Midline Level"
+    }
+  },
+  "plot_schema": {
+    "rsi_color": {
+      "type": "color",
+      "default": "#8b5cf6",
+      "label": "RSI Line Color"
+    },
+    "overbought_color": {
+      "type": "color",
+      "default": "#ef4444",
+      "label": "Overbought Level Color"
+    },
+    "oversold_color": {
+      "type": "color",
+      "default": "#22c55e",
+      "label": "Oversold Level Color"
+    },
+    "midline_color": {
+      "type": "color",
+      "default": "#94a3b8",
+      "label": "Midline Color"
+    }
+  },
+  "outputs": [
+    "EXTREME_OVERBOUGHT",
+    "OVERBOUGHT",
+    "BULLISH_NEUTRAL",
+    "BEARISH_NEUTRAL",
+    "OVERSOLD",
+    "EXTREME_OVERSOLD"
+  ],
+  "output_descriptions": {
+    "EXTREME_OVERBOUGHT": "RSI is at or above the extreme overbought level",
+    "OVERBOUGHT": "RSI is at or above the overbought level but below extreme overbought",
+    "BULLISH_NEUTRAL": "RSI is above the midline but below the overbought level",
+    "BEARISH_NEUTRAL": "RSI is below the midline but above the oversold level",
+    "OVERSOLD": "RSI is at or below the oversold level but above extreme oversold",
+    "EXTREME_OVERSOLD": "RSI is at or below the extreme oversold level"
+  },
+  "triggers": [
+    {
+      "base": "cross_into_overbought",
+      "name": "RSI Crosses Into Overbought",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_into_oversold",
+      "name": "RSI Crosses Into Oversold",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_overbought",
+      "name": "RSI Exits Overbought",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_oversold",
+      "name": "RSI Exits Oversold",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_into_extreme_overbought",
+      "name": "RSI Crosses Into Extreme Overbought",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_into_extreme_oversold",
+      "name": "RSI Crosses Into Extreme Oversold",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_above_midline",
+      "name": "RSI Crosses Above Midline",
+      "direction": "LONG",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "cross_below_midline",
+      "name": "RSI Crosses Below Midline",
+      "direction": "SHORT",
+      "type": "ENTRY",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_long_overbought",
+      "name": "Exit Long on Overbought",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_short_oversold",
+      "name": "Exit Short on Oversold",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_long_midline_down",
+      "name": "Exit Long on Midline Cross Down",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    },
+    {
+      "base": "exit_short_midline_up",
+      "name": "Exit Short on Midline Cross Up",
+      "direction": "BOTH",
+      "type": "EXIT",
+      "execution": "bar_close"
+    }
+  ],
+  "indicator_columns": [
+    "rsi_value"
+  ],
+  "column_color_map": {
+    "rsi_value": "rsi_color"
+  },
+  "plot_config": {
+    "reference_lines": [
+      { "value": 80, "color": "#ef4444", "label": "Extreme OB" },
+      { "value": 70, "color": "#f97316", "label": "Overbought" },
+      { "value": 50, "color": "#94a3b8", "label": "Midline" },
+      { "value": 30, "color": "#84cc16", "label": "Oversold" },
+      { "value": 20, "color": "#22c55e", "label": "Extreme OS" }
+    ]
+  },
+  "indicator_function": "calculate_rsi_zones",
+  "interpreter_function": "interpret_rsi_zones",
+  "trigger_function": "detect_rsi_zones_triggers"
+}

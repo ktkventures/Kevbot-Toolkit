@@ -171,8 +171,9 @@ A pack has three parts:
 Rules:
 - Output states must be mutually exclusive (no overlapping conditions)
 - Trigger base keys must be snake_case, unique, and descriptive
+- CRITICAL: Trigger base keys must NOT start with the indicator name/prefix. The system automatically prepends a trigger_prefix. For example, if the pack is "RSI Zones" with trigger_prefix "rsi", use base "cross_above_midline" NOT "rsi_cross_above_midline" — the system creates "rsi_cross_above_midline" automatically.
 - LONG triggers fire on bullish conditions, SHORT on bearish
-- Include both entry and exit triggers where appropriate
+- Include both ENTRY and EXIT triggers. EXIT triggers use type "EXIT", not "ENTRY"
 - Parameters should cover the key tunables of the indicator
 - Design for 1-minute intraday data — ensure no single state dominates 90%+ of bars
 
@@ -289,6 +290,12 @@ def generate_code_prompt(
     parts.append("7. Return None for bars with insufficient data (NaN values)")
     parts.append("8. Outputs MUST be mutually exclusive — every bar maps to exactly one state")
     parts.append("9. Include column_color_map mapping each plottable indicator_column to its plot_schema color key")
+    parts.append("10. CRITICAL — Trigger naming: In the manifest, trigger `base` must NOT start with the trigger_prefix. "
+                 "The system automatically creates the full key as `{trigger_prefix}_{base}`. "
+                 "Example: trigger_prefix='rsi', base='cross_above_midline' → key is 'rsi_cross_above_midline'. "
+                 "WRONG: base='rsi_cross_above_midline' → would create 'rsi_rsi_cross_above_midline'.")
+    parts.append("11. In detect_*_triggers(), the dict keys must be `{trigger_prefix}_{base}` matching the manifest triggers exactly")
+    parts.append("12. Exit triggers must use type 'EXIT' in the manifest, not 'ENTRY'")
 
     user_prompt = "\n".join(parts)
     return context, user_prompt
@@ -718,6 +725,28 @@ def validate_parsed_response(parsed: Dict) -> Tuple[bool, List[str]]:
                         errors.append(f"{label}: {err}")
         finally:
             os.unlink(tmp_path)
+
+    # 4. Cross-validate manifest triggers against interpreter code
+    if manifest and interpreter_code:
+        prefix = manifest.get("trigger_prefix", "")
+        trigger_list = manifest.get("triggers", [])
+        for trig in trigger_list:
+            base = trig.get("base", "")
+            expected_key = f"{prefix}_{base}" if prefix else base
+            if expected_key not in interpreter_code:
+                errors.append(
+                    f"Trigger key '{expected_key}' not found in interpreter code. "
+                    f"The detect_*_triggers() function must return a dict with key '{expected_key}'"
+                )
+
+    # 5. Check indicator columns are referenced in indicator code
+    if manifest and indicator_code:
+        for col in manifest.get("indicator_columns", []):
+            if col not in indicator_code:
+                errors.append(
+                    f"Indicator column '{col}' declared in manifest but not found in indicator code. "
+                    f"The calculate_*() function must create a column named '{col}'"
+                )
 
     return len(errors) == 0, errors
 
