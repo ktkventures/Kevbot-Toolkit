@@ -915,14 +915,14 @@ function DetailView({
         {pack.version} &middot; {pack.strategiesUsing} strategies &middot; Last modified {pack.lastModified}
       </p>
 
-      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Sandbox', 'Code', 'Danger Zone']}>
+      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Sandbox', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && <ParametersTab pack={pack} />}
             {tab === 'Plot Settings' && <PlotSettingsTab pack={pack} />}
             {tab === 'States & Triggers' && <OutputsTriggersTab pack={pack} />}
             {tab === 'Sandbox' && <SandboxPanel packSlug={pack.id} layout="horizontal" />}
-            {tab === 'DISABLED_Chart Preview' && (
+            {tab === 'Chart Preview' && (
               <div>
                 <Card className="mb-4">
                   <div className="flex items-center justify-between mb-3">
