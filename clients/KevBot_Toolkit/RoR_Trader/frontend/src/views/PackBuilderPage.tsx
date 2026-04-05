@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
@@ -285,8 +286,8 @@ export default function PackBuilderPage() {
           name: t.name,
           base: t.base,
           sentiment: (t.sentiment === 'bullish' || t.sentiment === 'bearish' || t.sentiment === 'neutral' ? t.sentiment : 'neutral') as 'bullish' | 'bearish' | 'neutral',
-          fromState: '',
-          toState: '',
+          fromState: (t as any).from_state || '',
+          toState: (t as any).to_state || '',
         })));
         setStructureGenerated(true);
         setIsGenerating(false);
@@ -1424,8 +1425,12 @@ export default function PackBuilderPage() {
               }}>
               {isInstalling ? 'Installing...' : installResult?.success ? 'Installed' : 'Install Pack'}
             </button>
-            <button style={btnSecondary}>Save Draft</button>
-            <button style={btnSecondary}>Export JSON</button>
+            {installResult?.success && (
+              <Link href={`/confluence-packs/user-packs?pack=${installResult.slug}`}
+                className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: 'var(--green-muted)', color: 'var(--green)', border: '1px solid var(--green)30', textDecoration: 'none' }}>
+                Test in User Packs
+              </Link>
+            )}
             <span className="flex-1" />
             <button style={{ ...btnSecondary, color: 'var(--orange)', borderColor: 'var(--orange)' }}
               onClick={() => { setFixContext(`Issue found on ${activeReviewTab} tab`); setShowFixModal(true); }}>

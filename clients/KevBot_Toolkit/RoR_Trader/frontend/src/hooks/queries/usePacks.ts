@@ -111,6 +111,24 @@ export function useTakeProfitTemplates() {
 }
 
 // =============================================================================
+// USER PACKS
+// =============================================================================
+
+export interface UserPackCodeResponse {
+  manifest: Record<string, unknown>;
+  indicator_code: string;
+  interpreter_code: string;
+}
+
+export function useUserPackCode(slug: string | null) {
+  return useQuery({
+    queryKey: ['user-pack-code', slug],
+    queryFn: () => apiFetch<UserPackCodeResponse>(`/api/packs/builder/user-packs/${slug}/code`),
+    enabled: !!slug,
+  });
+}
+
+// =============================================================================
 // TYPES — Mirror the Python dataclass shapes
 // =============================================================================
 

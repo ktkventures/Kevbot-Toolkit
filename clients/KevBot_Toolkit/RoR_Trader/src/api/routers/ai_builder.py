@@ -173,11 +173,39 @@ def list_user_packs(user=Depends(get_current_user)):
             "description": m.get("description", ""),
             "is_valid": pack.is_valid,
             "validation_errors": pack.validation_errors,
-            "parameters": list(m.get("parameters_schema", {}).keys()),
+            "parameters_schema": m.get("parameters_schema", {}),
+            "plot_schema": m.get("plot_schema", {}),
             "outputs": m.get("outputs", []),
+            "output_descriptions": m.get("output_descriptions", {}),
             "triggers": m.get("triggers", []),
             "indicator_columns": m.get("indicator_columns", []),
+            "status": "private" if pack.is_valid else "verification",
         })
+    return result
+
+
+@router.get("/user-packs/{slug}/code")
+def get_user_pack_code(slug: str, user=Depends(get_current_user)):
+    """Return the actual file contents of a user pack."""
+    import pack_registry
+    pack = pack_registry.get_pack(slug)
+    if not pack:
+        raise HTTPException(status_code=404, detail=f"Pack '{slug}' not found")
+
+    result = {"manifest": {}, "indicator_code": "", "interpreter_code": ""}
+
+    manifest_path = pack.pack_dir / "manifest.json"
+    if manifest_path.exists():
+        result["manifest"] = json.loads(manifest_path.read_text())
+
+    indicator_path = pack.pack_dir / "indicator.py"
+    if indicator_path.exists():
+        result["indicator_code"] = indicator_path.read_text()
+
+    interpreter_path = pack.pack_dir / "interpreter.py"
+    if interpreter_path.exists():
+        result["interpreter_code"] = interpreter_path.read_text()
+
     return result
 
 

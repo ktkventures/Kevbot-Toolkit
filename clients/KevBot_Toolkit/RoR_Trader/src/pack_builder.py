@@ -174,6 +174,7 @@ Rules:
 - CRITICAL: Trigger base keys must NOT start with the indicator name/prefix. The system automatically prepends a trigger_prefix. For example, if the pack is "RSI Zones" with trigger_prefix "rsi", use base "cross_above_midline" NOT "rsi_cross_above_midline" — the system creates "rsi_cross_above_midline" automatically.
 - LONG triggers fire on bullish conditions, SHORT on bearish
 - Include both ENTRY and EXIT triggers. EXIT triggers use type "EXIT", not "ENTRY"
+- Each trigger should specify from_state and to_state — the output states it transitions between. For example, a trigger that fires when RSI crosses from BEARISH_NEUTRAL into BULLISH_NEUTRAL would have from_state="BEARISH_NEUTRAL", to_state="BULLISH_NEUTRAL"
 - Parameters should cover the key tunables of the indicator
 - Design for 1-minute intraday data — ensure no single state dominates 90%+ of bars
 
@@ -183,7 +184,7 @@ Required format:
 {
   "parameters": [{"name": "...", "type": "int|float|str|bool", "default": ..., "label": "...", "min": ..., "max": ...}],
   "outputs": [{"code": "STATE_NAME", "description": "When this state occurs"}],
-  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "LONG|SHORT|BOTH", "type": "ENTRY|EXIT", "execution": "bar_close"}],
+  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "LONG|SHORT|BOTH", "type": "ENTRY|EXIT", "execution": "bar_close", "from_state": "STATE_A", "to_state": "STATE_B"}],
   "summary": "Brief description of the proposed structure"
 }
 """

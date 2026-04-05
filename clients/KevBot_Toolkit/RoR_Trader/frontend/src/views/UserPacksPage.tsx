@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
@@ -8,6 +9,10 @@ import Modal from '@/components/Modal';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api/client';
+import { useUserPackCode } from '@/hooks/queries/usePacks';
+import { useRequestFix, useInstallPack } from '@/hooks/mutations/useAiBuilder';
+
+const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 
 /* ========================================================================
    Types
@@ -620,112 +625,136 @@ function PreviewTab({ pack }: { pack: UserPack }) {
    ======================================================================== */
 
 function CodeTab({ pack }: { pack: UserPack }) {
-  const [showIndicatorCode, setShowIndicatorCode] = useState(false);
-  const [showInterpreterCode, setShowInterpreterCode] = useState(false);
+  const { data: code, isLoading, refetch } = useUserPackCode(pack.id);
+  const requestFixMut = useRequestFix();
+  const installPackMut = useInstallPack();
+  const [showFixModal, setShowFixModal] = useState(false);
+  const [fixDescription, setFixDescription] = useState('');
+  const [fixMessage, setFixMessage] = useState('');
+  const [aiModel, setAiModel] = useState('claude-sonnet');
 
   const codeBlockStyle: React.CSSProperties = {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-secondary)',
-    fontFamily: 'monospace',
-    fontSize: '12px',
-    lineHeight: '1.6',
-    padding: '16px',
-    borderRadius: '8px',
-    whiteSpace: 'pre-wrap',
-    overflowX: 'auto',
+    background: '#0d1117', color: '#c9d1d9', fontFamily: 'monospace',
+    fontSize: '12px', lineHeight: '1.6', padding: '16px', borderRadius: '8px',
+    whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 400, overflowY: 'auto',
   };
 
-  const packId = pack.id.replace(/-/g, '_');
+  function handleRequestFix() {
+    if (!code) return;
+    setShowFixModal(false);
+    setFixMessage('Sending fix request to AI...');
+
+    requestFixMut.mutate({
+      manifest: code.manifest as Record<string, unknown>,
+      indicator_code: code.indicator_code,
+      interpreter_code: code.interpreter_code,
+      validation_errors: [],
+      user_description: fixDescription,
+      ai_model: aiModel,
+    }, {
+      onSuccess: (data) => {
+        setFixMessage(data.ai_message);
+        // Offer to re-install
+        if (data.manifest && data.indicator_code && data.interpreter_code) {
+          installPackMut.mutate({
+            manifest: data.manifest,
+            indicator_code: data.indicator_code,
+            interpreter_code: data.interpreter_code,
+            pine_script_code: data.pine_script_code,
+          }, {
+            onSuccess: (installData) => {
+              if (installData.success) {
+                setFixMessage((prev) => prev + '\nPack re-installed successfully. Refresh to see changes.');
+                refetch();
+              } else {
+                setFixMessage((prev) => prev + `\nRe-install failed: ${installData.errors.join(', ')}`);
+              }
+            },
+          });
+        }
+      },
+      onError: (error) => {
+        setFixMessage(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      },
+    });
+    setFixDescription('');
+  }
+
+  if (isLoading) {
+    return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading code...</p></Card>;
+  }
 
   return (
     <div className="space-y-4">
-      {/* Active Configuration */}
+      {/* Active Parameters */}
       <Card>
-        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-          Active Parameters
-        </h3>
-        <div
-          className="rounded-lg px-4 py-3"
-          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
-        >
+        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Active Parameters</h3>
+        <div className="rounded-lg px-4 py-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
           <div className="grid grid-cols-2 gap-y-2 gap-x-8">
             {pack.params.map((p) => (
               <div key={p.key} className="flex justify-between">
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.label}</span>
-                <span className="text-xs font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {p.value}
-                </span>
+                <span className="text-xs font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>{p.value}</span>
               </div>
             ))}
           </div>
         </div>
       </Card>
 
-      {/* Indicator Function */}
+      {/* Code Files */}
+      {['manifest.json', 'indicator.py', 'interpreter.py'].map((file) => (
+        <Card key={file}>
+          <details>
+            <summary className="text-sm font-mono font-medium cursor-pointer py-1" style={{ color: 'var(--accent)' }}>{file}</summary>
+            <div className="mt-2">
+              <pre style={codeBlockStyle}>
+                {file === 'manifest.json' && (code?.manifest ? JSON.stringify(code.manifest, null, 2) : '// Not available')}
+                {file === 'indicator.py' && (code?.indicator_code || '# Not available')}
+                {file === 'interpreter.py' && (code?.interpreter_code || '# Not available')}
+              </pre>
+            </div>
+          </details>
+        </Card>
+      ))}
+
+      {/* AI Fix */}
       <Card>
-        <button
-          className="flex items-center justify-between w-full text-left"
-          onClick={() => setShowIndicatorCode(!showIndicatorCode)}
-        >
-          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Indicator Function
-          </h3>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {showIndicatorCode ? 'Collapse' : 'Expand'}
-          </span>
-        </button>
-        {showIndicatorCode && (
-          <div className="mt-3">
-            <pre style={codeBlockStyle}>
-{`def compute_${packId}(df, ${pack.params.map((p) => `${p.key}=${p.value}`).join(', ')}):
-    """
-    Compute ${pack.name} indicator values.
-    Category: ${pack.category}
-
-    Parameters:
-${pack.params.map((p) => `        ${p.key}: ${p.label} (${p.type}, range ${p.min}-${p.max})`).join('\n')}
-
-    Returns enriched DataFrame with indicator columns.
-    """
-    # Custom implementation
-    ...`}
-            </pre>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>AI Fix</h3>
+          <select value={aiModel} onChange={(e) => setAiModel(e.target.value)}
+            className="text-[10px] px-2 py-1 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+            <option value="claude-sonnet">Claude Sonnet</option>
+            <option value="claude-opus">Claude Opus</option>
+            <option value="gpt-4o">GPT-4o</option>
+          </select>
+        </div>
+        {fixMessage && (
+          <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: 'var(--accent-muted)', borderLeft: '3px solid var(--accent)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+            {fixMessage}
           </div>
         )}
-      </Card>
-
-      {/* Interpreter Function */}
-      <Card>
-        <button
-          className="flex items-center justify-between w-full text-left"
-          onClick={() => setShowInterpreterCode(!showInterpreterCode)}
-        >
-          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Interpreter Function
-          </h3>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {showInterpreterCode ? 'Collapse' : 'Expand'}
-          </span>
+        <button style={{ background: 'var(--orange)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }}
+          onClick={() => setShowFixModal(true)}
+          disabled={requestFixMut.isPending || installPackMut.isPending}>
+          {requestFixMut.isPending ? 'Fixing...' : 'Request Fix'}
         </button>
-        {showInterpreterCode && (
-          <div className="mt-3">
-            <pre style={codeBlockStyle}>
-{`def interpret_${packId}(row):
-    """
-    Classify bar state into one of ${pack.outputs.length} output categories.
-
-    Outputs:
-${pack.outputs.map((o) => `        ${o.code}: ${o.description}`).join('\n')}
-
-    Returns state string for confluence record.
-    """
-    # Custom implementation
-    ...`}
-            </pre>
-          </div>
-        )}
       </Card>
+
+      {/* Fix Modal */}
+      {showFixModal && (
+        <Modal title="Request AI Fix" isOpen={showFixModal} onClose={() => setShowFixModal(false)} width="600px">
+          <div className="mb-4">
+            <label className="text-xs font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>Describe what needs fixing</label>
+            <textarea value={fixDescription} onChange={(e) => setFixDescription(e.target.value)} rows={4}
+              placeholder="The trigger fires one bar late... / The OVERBOUGHT state never appears... / The interpreter returns NaN..."
+              style={{ ...codeBlockStyle, background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)', resize: 'vertical', width: '100%', maxHeight: 'none' }} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }} onClick={() => setShowFixModal(false)}>Cancel</button>
+            <button style={{ background: 'var(--orange)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }} onClick={handleRequestFix}>Send Fix to AI</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -836,10 +865,18 @@ function DetailView({
             <span className="text-xs" style={{ color: pack.enabled ? 'var(--green)' : 'var(--text-muted)' }}>
               {pack.enabled ? 'Enabled' : 'Disabled'}
             </span>
-            <select className="text-xs px-2 py-1 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} defaultValue={pack.visibility}>
-              <option value="private">Private</option>
-              <option value="public">Public</option>
-            </select>
+            <div className="flex gap-1">
+              {(['verification', 'private', 'public'] as const).map((s) => {
+                const isActive = (pack.visibility === s) || (pack.visibility === 'private' && s === 'private');
+                const colors = s === 'verification' ? { c: 'var(--orange)', bg: 'var(--orange)' } : s === 'private' ? { c: 'var(--accent)', bg: 'var(--accent)' } : { c: 'var(--green)', bg: 'var(--green)' };
+                return (
+                  <span key={s} className="text-[10px] px-2 py-1 rounded-full font-medium capitalize cursor-default"
+                    style={{ color: isActive ? colors.c : 'var(--text-muted)', background: isActive ? colors.bg + '20' : 'transparent', border: isActive ? 'none' : '1px solid var(--border)' }}>
+                    {s}
+                  </span>
+                );
+              })}
+            </div>
             <button onClick={onBack} className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>Back to Packs</button>
           </div>
         }
@@ -878,13 +915,14 @@ function DetailView({
         {pack.version} &middot; {pack.strategiesUsing} strategies &middot; Last modified {pack.lastModified}
       </p>
 
-      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
+      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Sandbox', 'Code', 'Danger Zone']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && <ParametersTab pack={pack} />}
             {tab === 'Plot Settings' && <PlotSettingsTab pack={pack} />}
             {tab === 'States & Triggers' && <OutputsTriggersTab pack={pack} />}
-            {tab === 'Chart Preview' && (
+            {tab === 'Sandbox' && <SandboxPanel packSlug={pack.id} layout="horizontal" />}
+            {tab === 'DISABLED_Chart Preview' && (
               <div>
                 <Card className="mb-4">
                   <div className="flex items-center justify-between mb-3">
@@ -1399,18 +1437,40 @@ export default function UserPacksPage() {
           lastModified: new Date().toISOString().slice(0, 10),
           validationStatus: p.is_valid ? 'passed' as const : 'failed' as const,
           parityScore: null,
-          params: (p.parameters || []).map((name: string) => ({
-            key: name, label: name.replace(/_/g, ' '), value: 0, min: 0, max: 100, type: 'int' as const,
+          params: Object.entries(p.parameters_schema || {}).map(([key, schema]: [string, any]) => ({
+            key,
+            label: schema.label || key.replace(/_/g, ' '),
+            value: schema.default ?? 0,
+            min: schema.min ?? 0,
+            max: schema.max ?? 100,
+            type: (schema.type === 'float' ? 'float' : 'int') as 'int' | 'float',
           })),
-          plotSettings: [],
-          outputs: (p.outputs || []).map((code: string) => ({ code, description: '' })),
+          plotSettings: Object.entries(p.plot_schema || {}).map(([key, schema]: [string, any]) => ({
+            key,
+            label: schema.label || key.replace(/_/g, ' '),
+            default: schema.default || '#8b5cf6',
+          })),
+          outputs: (p.outputs || []).map((code: string) => ({
+            code,
+            description: (p.output_descriptions || {})[code] || '',
+          })),
           triggers: (p.triggers || []).map((t: any) => ({
             id: t.base || '', name: t.name || t.base || '',
             direction: t.direction || 'BOTH', type: t.type || 'ENTRY',
             exec: '[C]',
           })),
         }));
-        if (mapped.length > 0) setPacks(mapped);
+        if (mapped.length > 0) {
+          setPacks(mapped);
+          // Auto-select pack from URL query param (?pack=slug)
+          if (typeof window !== 'undefined') {
+            const params = new URLSearchParams(window.location.search);
+            const packSlug = params.get('pack');
+            if (packSlug && mapped.some((p) => p.id === packSlug)) {
+              setDetailPackId(packSlug);
+            }
+          }
+        }
       })
       .catch(() => { /* API not available — keep empty */ });
   }, []);
