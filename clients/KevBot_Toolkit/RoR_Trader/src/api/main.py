@@ -76,6 +76,12 @@ def create_app() -> FastAPI:
     app.include_router(mass_builder_router)
     app.include_router(ai_builder_router)
 
+    # Load user packs at startup — registers indicators, interpreters,
+    # triggers, and intra-bar level maps. DB group creation is skipped
+    # (no user context at startup) and handled by the install endpoint.
+    import pack_registry
+    pack_registry.scan_and_load_all()
+
     # Health check
     @app.get("/health")
     def health():

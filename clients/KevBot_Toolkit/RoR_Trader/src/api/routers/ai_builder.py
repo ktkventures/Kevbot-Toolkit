@@ -340,6 +340,32 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
 
     success, slug, install_errors = install_pack_from_parsed(parsed)
 
+    # Ensure confluence group exists in DB (register_pack creates in-memory
+    # but _ensure_confluence_group may skip DB if no user context at startup)
+    if success:
+        try:
+            from confluence_groups import load_confluence_groups, save_confluence_groups, ConfluenceGroup, PlotSettings
+            groups = load_confluence_groups()
+            default_id = f"{slug}_default"
+            if not any(g.id == default_id for g in groups):
+                manifest = req.manifest
+                default_params = {k: v["default"] for k, v in manifest.get("parameters_schema", {}).items()}
+                plot_schema = manifest.get("plot_schema", {})
+                default_colors = {k: v["default"] for k, v in plot_schema.items() if v.get("type") == "color"}
+                groups.append(ConfluenceGroup(
+                    id=default_id,
+                    base_template=slug,
+                    version="Default",
+                    description="",
+                    enabled=True,
+                    is_default=True,
+                    parameters=default_params,
+                    plot_settings=PlotSettings(colors=default_colors),
+                ))
+                save_confluence_groups(groups)
+        except Exception as e:
+            logger.warning("Failed to create DB confluence group for %s: %s", slug, e)
+
     return {
         "success": success,
         "slug": slug,

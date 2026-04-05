@@ -165,6 +165,9 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
         overlay_cols = []
         oscillator_cols = []
 
+        # Track which templates we've already classified
+        _classified_templates = set()
+
         for group in get_enabled_groups():
             gid_prefix = group.id + "_"
             is_relevant = (
@@ -184,6 +187,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
             template = get_template(group.base_template)
             if not template:
                 continue
+            _classified_templates.add(group.base_template)
 
             # Resolve indicator columns (handle parameterized EMA names)
             raw_cols = template.get("indicator_columns", [])
@@ -209,6 +213,27 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
                     oscillator_cols.extend(resolved)
                 else:
                     overlay_cols.extend(resolved)
+
+        # Fallback: check user packs from registry if the entry trigger's pack
+        # wasn't found in enabled DB groups (e.g., newly installed pack)
+        try:
+            import pack_registry
+            for slug, pack in pack_registry.get_registered_packs().items():
+                if slug in _classified_templates:
+                    continue
+                trigger_prefix = pack.manifest.get("trigger_prefix", "")
+                if not (entry_conf_id.startswith(slug) or
+                        (trigger_prefix and f"_{trigger_prefix}_" in entry_conf_id)):
+                    continue
+                raw_cols = pack.manifest.get("indicator_columns", [])
+                resolved = [c for c in raw_cols if c in df.columns]
+                dt = pack.manifest.get("display_type", "overlay")
+                if dt == "oscillator":
+                    oscillator_cols.extend(resolved)
+                else:
+                    overlay_cols.extend(resolved)
+        except Exception:
+            pass
 
         # Deduplicate
         overlay_indicators = list(dict.fromkeys(overlay_cols))

@@ -505,7 +505,12 @@ def _ensure_confluence_group(manifest: dict) -> None:
         PlotSettings,
     )
 
-    groups = load_confluence_groups()
+    try:
+        groups = load_confluence_groups()
+    except Exception:
+        # No user context (e.g., during API startup) — skip group creation.
+        # Groups will be created when the pack is installed via the builder endpoint.
+        return
     default_id = f"{manifest['slug']}_default"
 
     if any(g.id == default_id for g in groups):

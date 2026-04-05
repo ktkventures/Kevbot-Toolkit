@@ -117,7 +117,7 @@ DISALLOWED_MODULES = {
 # Allowed builtins for restricted execution
 SAFE_BUILTINS = {
     "range", "len", "min", "max", "abs", "round",
-    "int", "float", "str", "bool", "list", "dict", "set", "tuple",
+    "int", "float", "str", "bool", "list", "dict", "set", "tuple", "object",
     "enumerate", "zip", "sorted", "reversed", "any", "all",
     "isinstance", "print", "True", "False", "None",
     "map", "filter", "sum", "pow", "divmod",
