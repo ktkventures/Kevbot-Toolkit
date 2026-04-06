@@ -32,6 +32,14 @@ If a feature works in the Strategy Builder, it must work the same way in the San
 **6. Build Bottom-Up**
 The stack builds in order: Packs → Strategies → Mass Builder → Portfolios → Scale. Each layer must be solid before building the next. Don't rush to portfolios if strategies aren't reliable.
 
+**7. Task Classification**
+Each task within a milestone is tagged with one of three priorities:
+- **[Required]** — Must be done before moving to the next milestone. Would cause problems downstream if skipped.
+- **[Polish]** — Should be done during this milestone if time allows. Cosmetic, UX, or minor behavior tweaks. Can be deferred without causing downstream issues.
+- **[Deferred]** — Noted for later. Good idea, but not blocking anything. Come back when the area is being polished.
+
+At milestone completion: all Required items done, Polish items reviewed (do now or defer), Deferred items stay in the doc. Kevin's feedback during a milestone gets added with the appropriate tag.
+
 ---
 
 ## Current State (as of 2026-04-05)
@@ -123,21 +131,22 @@ Wire the webhook/alert system for the Next.js frontend. The Streamlit-era webhoo
 Ensure packs created through the Pack Builder are consistently reliable and work seamlessly across all features.
 
 **Tasks:**
-- [ ] 4a. Fix remaining validation gaps (from testing — add checks as discovered)
-- [ ] 4b. Update `pack_builder_context.md` with golden child reference (EMA PP V2 as template)
-- [ ] 4c. Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
-- [ ] 4d. Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
-- [ ] 4e. Pack versioning: installed pack is immutable, new versions create new packs
-- [ ] 4f. Delete protection: warn if strategies reference the pack
-- [ ] 4g. Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
-- [ ] 4h. **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Remove duplicate chart module. Show conditions as background color changes, triggers as markers on candles.
-- [ ] 4i. **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached, per-trigger breakdown
-- [ ] 4j. **Parity Simulator tab** — Nice-to-have. Backtest ↔ live engine parity comparison. May be complex; evaluate feasibility.
-- [ ] 4k. Create several user packs through the full Pack Builder flow and verify each one end-to-end
-- [ ] 4l. **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants of each confluence condition. Display fidelity type in selector labels and heatmap legends.
-- [ ] 4m. **Sandbox: Confluence heatmap on trade drill-down** — Show PB/CB heatmap pane on the 1-second TradeZoomModal, matching how it appears in the Strategy Builder drill-down.
-- [ ] 4n. **Sandbox: Move Hi-Fi toggle before confluence** — Hi-Fi toggle should precede confluence selector so the user enables it first, then sees PB/CB variants appear in the dropdown.
-- [ ] 4o. **Bar count exit variations** — Read N from the confluence group's parameters instead of hardcoding 4. Different bar count exit variations (N=3, 4, 5, etc.) should pass the correct N to the engine.
+- [ ] 4a. [Required] Fix remaining validation gaps (from testing — add checks as discovered)
+- [ ] 4b. [Required] Update `pack_builder_context.md` with golden child reference (EMA PP V2 as template)
+- [ ] 4c. [Required] Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
+- [ ] 4d. [Polish] Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
+- [ ] 4e. [Polish] Pack versioning: installed pack is immutable, new versions create new packs
+- [ ] 4f. [Polish] Delete protection: warn if strategies reference the pack
+- [ ] 4g. [Deferred] Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
+- [ ] 4h. [Required] **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Remove duplicate chart module. Show conditions as background color changes, triggers as markers on candles.
+- [ ] 4i. [Polish] **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached, per-trigger breakdown
+- [ ] 4j. [Deferred] **Parity Simulator tab** — Nice-to-have. Backtest ↔ live engine parity comparison. May be complex; evaluate feasibility.
+- [ ] 4k. [Required] Create several user packs through the full Pack Builder flow and verify each one end-to-end
+- [ ] 4l. [Polish] **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants of each confluence condition. Display fidelity type in selector labels and heatmap legends.
+- [ ] 4m. [Polish] **Sandbox: Confluence heatmap on trade drill-down** — Show PB/CB heatmap pane on the 1-second TradeZoomModal, matching how it appears in the Strategy Builder drill-down.
+- [ ] 4n. [Polish] **Sandbox: Move Hi-Fi toggle before confluence** — Hi-Fi toggle should precede confluence selector so the user enables it first, then sees PB/CB variants appear in the dropdown.
+- [ ] 4o. [Polish] **Bar count exit variations** — Read N from the confluence group's parameters instead of hardcoding 4. Different bar count exit variations (N=3, 4, 5, etc.) should pass the correct N to the engine.
+- [ ] 4p. [Deferred] **Unify User Packs into TF Confluence page** — User packs are just TF confluence packs with a different author. Show all packs on one page with filter (Built-in / My Packs / Public) instead of separate User Packs page. Pack Builder creates packs of the appropriate type. Custom packs get a "My Pack" badge.
 
 **Exit Criteria:** User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder, Sandbox, and live alerts without manual intervention.
 
