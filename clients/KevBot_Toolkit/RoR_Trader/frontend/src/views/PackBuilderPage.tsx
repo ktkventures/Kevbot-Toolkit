@@ -42,7 +42,6 @@ type PackType = 'tf_confluence' | 'general';
 interface ParamDef { id: string; name: string; label: string; type: string; defaultVal: string; min: string; max: string; }
 interface OutputDef { id: string; code: string; description: string; }
 interface TriggerDef { id: string; name: string; base: string; sentiment: 'bullish' | 'bearish' | 'neutral'; fromState: string; toState: string; }
-interface ExecTypeConfig { enabled: boolean; referenceBar: 0 | -1; orderType: 'market' | 'limit'; holdSeconds?: number; confirmBarOffset?: 0 | 1; bailAction?: 'exit_market' | 'exit_limit'; }
 interface ValidationItem { id: string; label: string; category: string; status: 'pass' | 'fail' | 'warn' | 'pending'; message: string; }
 
 /* ========================================================================= */
@@ -120,13 +119,7 @@ export default function PackBuilderPage() {
   const [conversation, setConversation] = useState<{ role: string; content: string; time: string }[]>([]);
   const [aiModel, setAiModel] = useState('claude-sonnet');
 
-  // Pack-level execution config (applies to all triggers)
-  const [execConfig, setExecConfig] = useState<Record<string, ExecTypeConfig>>({
-    C: { enabled: true, referenceBar: 0, orderType: 'market' },
-    L: { enabled: true, referenceBar: -1, orderType: 'market', holdSeconds: 0 },
-    LC: { enabled: false, referenceBar: -1, orderType: 'market', confirmBarOffset: 0, bailAction: 'exit_market' },
-    CC: { enabled: false, referenceBar: 0, orderType: 'market', confirmBarOffset: 1, bailAction: 'exit_market' },
-  });
+  // Execution type config removed — managed on Execution Types page
 
   // Request Fix modal (Step 5)
   const [showFixModal, setShowFixModal] = useState(false);
@@ -743,90 +736,7 @@ export default function PackBuilderPage() {
             </div>
           </Card>
 
-          {/* Execution Defaults (pack-level — applies to all triggers) */}
-          {packType === 'tf_confluence' && (
-            <Card>
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <h4 className="text-sm font-medium">Execution Defaults</h4>
-                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                    These settings apply to all triggers in this pack. Users can override per-variation on the TF Confluence page.
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {(['C', 'L', 'LC', 'CC'] as const).map((et) => {
-                  const cfg = execConfig[et] as ExecTypeConfig;
-                  const label = et === 'C' ? 'Bar Close' : et === 'L' ? 'Level' : et === 'LC' ? 'Level-Close' : 'Close-Close';
-                  const updateField = (field: string, value: unknown) => {
-                    setExecConfig((prev) => ({ ...prev, [et]: { ...prev[et], [field]: value } }));
-                  };
-                  return (
-                    <div key={et} className="rounded-lg p-3" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', opacity: cfg.enabled ? 1 : 0.5 }}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <label className="flex items-center gap-1.5 cursor-pointer">
-                          <input type="checkbox" checked={cfg.enabled} onChange={(e) => updateField('enabled', e.target.checked)}
-                            className="w-3.5 h-3.5" style={{ accentColor: EXEC_BADGE_COLOR }} />
-                          <ExecBadge tag={`[${et}]`} />
-                          <span className="text-xs font-medium">{label}</span>
-                        </label>
-                      </div>
-                      {cfg.enabled && (
-                        <div className="grid grid-cols-2 gap-2 mt-2">
-                          <div>
-                            <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Reference Bar</label>
-                            <select value={cfg.referenceBar} onChange={(e) => updateField('referenceBar', Number(e.target.value))}
-                              style={{ ...inputStyle, fontSize: '0.7rem' }}>
-                              <option value={0}>Current (0)</option>
-                              <option value={-1}>Previous (-1)</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Order Type</label>
-                            <select value={cfg.orderType} onChange={(e) => updateField('orderType', e.target.value)}
-                              style={{ ...inputStyle, fontSize: '0.7rem' }}>
-                              <option value="market">Market</option>
-                              {et !== 'CC' && <option value="limit">Limit</option>}
-                            </select>
-                          </div>
-                          {(et === 'L' || et === 'LC') && (
-                            <div>
-                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Hold Seconds</label>
-                              <input type="number" value={cfg.holdSeconds ?? 0} min={0}
-                                onChange={(e) => updateField('holdSeconds', Number(e.target.value))}
-                                style={{ ...inputStyle, fontSize: '0.7rem' }} />
-                            </div>
-                          )}
-                          {(et === 'LC' || et === 'CC') && (
-                            <>
-                              <div>
-                                <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confirm Offset</label>
-                                <select value={cfg.confirmBarOffset ?? (et === 'CC' ? 1 : 0)}
-                                  onChange={(e) => updateField('confirmBarOffset', Number(e.target.value))}
-                                  style={{ ...inputStyle, fontSize: '0.7rem' }}>
-                                  <option value={0}>Same bar</option>
-                                  <option value={1}>Next bar</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bail Action</label>
-                                <select value={cfg.bailAction ?? 'exit_market'}
-                                  onChange={(e) => updateField('bailAction', e.target.value)}
-                                  style={{ ...inputStyle, fontSize: '0.7rem' }}>
-                                  <option value="exit_market">Exit at market</option>
-                                  {et === 'LC' && <option value="exit_limit">Exit at limit</option>}
-                                </select>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-          )}
+          {/* Execution types are now managed on the Execution Types page */}
         </div>
       )}
 
