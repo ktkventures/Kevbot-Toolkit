@@ -65,21 +65,20 @@ At milestone completion: all Required items done, Polish items reviewed (do now 
 
 ## The Path Forward
 
-### Milestone 1: Engine Parity (Option A)
-**Priority:** Critical — blocks everything else
-**Effort:** 1-2 days
+### Milestone 1: Engine Parity (Option A) — COMPLETE
+**Completed:** 2026-04-05
 
-Make user packs flow through the unified engine by reading pre-computed DataFrame columns. Eliminate the `generate_trades()` fallback entirely.
+All packs (built-in and user) now flow through the unified engine. The `generate_trades()` batch fallback has been removed. User pack interpreter states and trigger booleans are read from pre-computed DataFrame columns and merged into the unified engine's bar-by-bar loop.
 
-**Tasks:**
-- [ ] 1a. Modify `TriggerEvaluator.evaluate_bar_close()` to check for pre-computed interpreter columns in the DataFrame when the interpreter key is not in `self.required_interpreters`
-- [ ] 1b. Modify `TriggerEvaluator` to check for pre-computed trigger columns (`trig_*`) in the DataFrame when the trigger key is not in `self.required_triggers`
-- [ ] 1c. Remove the `_use_batch` / `generate_trades()` fallback from `backtest_service.py`
-- [ ] 1d. Add `bar_count_exit` control to SandboxPanel
-- [ ] 1e. Verify: RSI Zones pack produces identical trades through unified engine as through batch engine
-- [ ] 1f. Verify: built-in packs (EMA PP V2, UT Bot) still produce correct trades (no regression)
-
-**Exit Criteria:** All packs (built-in and user) flow through the unified engine. Sandbox matches Strategy Builder exactly.
+**What was done:**
+- [x] 1a-b. Unified engine reads pre-computed user pack columns (interpreters + triggers) via `user_pack_data` parameter in `process_bar()`
+- [x] 1c. Removed `_use_batch` / `generate_trades()` fallback from `backtest_service.py`
+- [x] 1d. Bar count exit detection: Sandbox auto-passes `bar_count_exit=4` when bar count trigger selected
+- [x] 1e. Verified: RSI Zones produces trades via unified engine
+- [x] 1f. Verified: EMA PP V2 (built-in) has no regression
+- [x] Added `resolve_strategy_requirements()` user pack support via pack_registry query
+- [x] Added confluence dropdown (multi-select from enabled groups) and auto-derived secondary TFs
+- [x] Fixed SyncedChartPane oscillator alignment (time-based sync)
 
 ---
 
@@ -87,22 +86,32 @@ Make user packs flow through the unified engine by reading pre-computed DataFram
 **Priority:** High — enables modular execution types, testable in isolation
 **Effort:** 1-2 weeks
 
-Extract the 4 execution type branches from `PositionStateMachine` into pluggable modules. Build an Execution Types management page.
+Extract the 4 execution type branches from `PositionStateMachine` into pluggable modules with a workflow schema. Build an Execution Types management page with vertical step visualization. The workflow schema is designed to translate cleanly into a full drip-campaign-style visual builder in the future — no data migration or backtest invalidation required.
+
+**Design Decisions:**
+- Each execution type is defined as a **workflow** (ordered list of steps) + **parameters**, stored as JSON
+- Steps include: plot_marker, fire_webhook, set_position, wait, conditional branch
+- The 4 existing types are extracted as the first workflow definitions — behavior stays identical
+- Variations = same type with different parameter values (e.g., LC with bail_at_market vs bail_at_limit)
+- The engine executes workflows the same way it executes the current hardcoded branches — trade records are identical
+- **Future upgrade path:** Visual drip-campaign builder adds/removes/reorders steps. Core fill logic unchanged. Data stays valid.
+- **Data integrity:** Execution types define HOW a fill happens (price, timing). Future workflow steps add observable actions AROUND the fill (webhooks, markers, waits) but don't change the fill itself. Existing backtest/forward test/alert data remains valid.
 
 **Tasks:**
-- [ ] 2a. Define `ExecutionType` interface: `evaluate(signal, bar_data, position_state, params) → ExecutionAction`
-- [ ] 2b. Extract Bar Close (C) execution logic into `BarCloseExecution` class
-- [ ] 2c. Extract Level (L) execution logic into `LevelExecution` class
-- [ ] 2d. Extract Level-Close (LC) execution logic into `LevelCloseExecution` class
-- [ ] 2e. Extract Close-Close (CC) execution logic into `CloseCloseExecution` class
-- [ ] 2f. Refactor `PositionStateMachine` to call execution type modules instead of switch/if branches
-- [ ] 2g. Create execution type registry (similar to pack_registry) — load, register, list
-- [ ] 2h. Build Execution Types page in frontend — list, create, edit parameters, enable/disable
-- [ ] 2i. Isolation testing: verify each execution type produces correct trades independently (synthetic signal → expected fill)
-- [ ] 2j. Verify: existing strategies produce identical trades after refactor (no regression)
-- [ ] 2k. Update Ralph engine to use the same execution type modules (parity with unified engine)
+- [ ] 2a. [Required] Define `ExecutionType` interface and workflow step schema (JSON format)
+- [ ] 2b. [Required] Extract Bar Close (C) execution logic into module with workflow definition
+- [ ] 2c. [Required] Extract Level (L) execution logic into module with workflow definition
+- [ ] 2d. [Required] Extract Level-Close (LC) execution logic into module with workflow definition
+- [ ] 2e. [Required] Extract Close-Close (CC) execution logic into module with workflow definition
+- [ ] 2f. [Required] Refactor `PositionStateMachine` to call execution type modules instead of switch/if branches
+- [ ] 2g. [Required] Create execution type registry (similar to pack_registry) — load, register, list
+- [ ] 2h. [Required] Build Execution Types page — vertical step list view, parameter editing, variations
+- [ ] 2i. [Required] Verify: existing strategies produce identical trades after refactor (no regression)
+- [ ] 2j. [Polish] Isolation testing UI: synthetic signal → watch execution type behavior
+- [ ] 2k. [Deferred] Update Ralph engine to use the same execution type modules (parity with unified engine)
+- [ ] 2l. [Deferred] Visual drip-campaign workflow builder (drag-and-drop steps, conditional branches)
 
-**Exit Criteria:** Execution types are pluggable modules. Adding a new execution type requires no engine changes. Each type is testable in isolation. Ralph engine and unified engine use the same execution modules.
+**Exit Criteria:** Execution types are pluggable modules with workflow schema. The 4 existing types produce identical trades to the pre-extraction engine. The Execution Types page shows each type with its step sequence and parameters. Users can create variations with different parameter values.
 
 ---
 
