@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     from api.routers.webhooks import router as webhooks_router
     from api.routers.mass_builder import router as mass_builder_router
     from api.routers.ai_builder import router as ai_builder_router
+    from api.routers.execution_types import router as execution_types_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(mass_builder_router)
     app.include_router(ai_builder_router)
+    app.include_router(execution_types_router)
 
     # Load user packs at startup — registers indicators, interpreters,
     # triggers, and intra-bar level maps. DB group creation is skipped
