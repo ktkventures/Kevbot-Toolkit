@@ -134,6 +134,10 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 - [ ] 4i. **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached, per-trigger breakdown
 - [ ] 4j. **Parity Simulator tab** — Nice-to-have. Backtest ↔ live engine parity comparison. May be complex; evaluate feasibility.
 - [ ] 4k. Create several user packs through the full Pack Builder flow and verify each one end-to-end
+- [ ] 4l. **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants of each confluence condition. Display fidelity type in selector labels and heatmap legends.
+- [ ] 4m. **Sandbox: Confluence heatmap on trade drill-down** — Show PB/CB heatmap pane on the 1-second TradeZoomModal, matching how it appears in the Strategy Builder drill-down.
+- [ ] 4n. **Sandbox: Move Hi-Fi toggle before confluence** — Hi-Fi toggle should precede confluence selector so the user enables it first, then sees PB/CB variants appear in the dropdown.
+- [ ] 4o. **Bar count exit variations** — Read N from the confluence group's parameters instead of hardcoding 4. Different bar count exit variations (N=3, 4, 5, etc.) should pass the correct N to the engine.
 
 **Exit Criteria:** User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder, Sandbox, and live alerts without manual intervention.
 
