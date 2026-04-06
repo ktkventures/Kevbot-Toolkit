@@ -14,7 +14,7 @@ import Card from '@/components/Card';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import MetricCard from '@/components/MetricCard';
 import { useRunBacktest, useBacktestTradeZoom } from '@/hooks/queries/useBacktest';
-import { useConfluenceTriggers, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceTriggers, useConfluenceGroups, useConfluenceTemplates, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 import EquityCurve from '@/charts/EquityCurve';
@@ -55,8 +55,7 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
   const [sbStopPack, setSbStopPack] = useState('');
   const [sbTargetPack, setSbTargetPack] = useState('');
   const [sbHifi, setSbHifi] = useState(false);
-  const [sbConfluence, setSbConfluence] = useState('');
-  const [sbSecondaryTfs, setSbSecondaryTfs] = useState('');
+  const [sbSelectedConfluence, setSbSelectedConfluence] = useState<string[]>([]);
   const [sbEqXAxis, setSbEqXAxis] = useState<'trade' | 'time'>('trade');
   const [sbZoomTrade, setSbZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
   const [sbLastConfig, setSbLastConfig] = useState<any>(null);
@@ -69,6 +68,8 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
   const { data: sbExitTriggers } = useConfluenceTriggers('EXIT');
   const { data: sbStopPacks } = useStopLossPacks();
   const { data: sbTargetPacks } = useTakeProfitPacks();
+  const { data: sbGroups } = useConfluenceGroups();
+  const { data: sbTemplates } = useConfluenceTemplates();
 
   // Derived: filter triggers to this pack
   const sbPackTriggers = useMemo(() => {
@@ -92,6 +93,40 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
     if (!sbTargetPacks) return [];
     return (sbTargetPacks as any[]).map((p) => ({ id: p.id, label: `${p.base_template} (${p.version})` }));
   }, [sbTargetPacks]);
+
+  // Build available confluence record options from enabled groups + templates
+  const sbConfluenceOptions = useMemo(() => {
+    if (!sbGroups || !sbTemplates) return [];
+    const TF_LABELS = ['1M', '5M', '15M', '1H', '1D'];
+    const options: { value: string; label: string }[] = [];
+    for (const group of sbGroups as any[]) {
+      if (!group.enabled) continue;
+      const tpl = (sbTemplates as Record<string, any>)[group.base_template];
+      if (!tpl) continue;
+      const interpreters = tpl.interpreters || [];
+      const outputs = tpl.outputs || [];
+      // For each interpreter, create records for each TF + state
+      for (const interp of interpreters) {
+        if (typeof outputs === 'object' && !Array.isArray(outputs)) {
+          // outputs is a dict {code: description}
+          for (const state of Object.keys(outputs)) {
+            for (const tf of TF_LABELS) {
+              const record = `${tf}-${interp}-${state}`;
+              options.push({ value: record, label: `${tf} ${interp} ${state}` });
+            }
+          }
+        } else if (Array.isArray(outputs)) {
+          for (const state of outputs) {
+            for (const tf of TF_LABELS) {
+              const record = `${tf}-${interp}-${state}`;
+              options.push({ value: record, label: `${tf} ${interp} ${state}` });
+            }
+          }
+        }
+      }
+    }
+    return options;
+  }, [sbGroups, sbTemplates]);
 
   const sbResult = useMemo(() => {
     if (!sbBacktestMut.data) return null;
@@ -156,8 +191,21 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
       take_profit_pack_id: sbTargetPack || undefined,
       hifi_mode: sbHifi, include_chart_data: true,
       ...(hasBarCountExit ? { bar_count_exit: 4 } : {}),
-      ...(sbConfluence.trim() ? { confluence: sbConfluence.split(',').map(s => s.trim()).filter(Boolean) } : {}),
-      ...(sbSecondaryTfs.trim() ? { secondary_tfs: sbSecondaryTfs.split(',').map(s => s.trim()).filter(Boolean) } : {}),
+      ...(sbSelectedConfluence.length > 0 ? {
+        confluence: sbSelectedConfluence,
+        // Derive secondary TFs from confluence records (e.g., "5M-EMA_STACK-SML" → "5Min")
+        secondary_tfs: (() => {
+          const TF_MAP: Record<string, string> = { '1M': '1Min', '5M': '5Min', '15M': '15Min', '1H': '1H', '1D': '1Day' };
+          const tfs = new Set<string>();
+          for (const rec of sbSelectedConfluence) {
+            const tf = rec.split('-')[0];
+            if (TF_MAP[tf]) tfs.add(TF_MAP[tf]);
+          }
+          // Remove primary TF
+          tfs.delete(sbTimeframe);
+          return tfs.size > 0 ? Array.from(tfs) : undefined;
+        })(),
+      } : {}),
     };
     setSbLastConfig(req);
     sbBacktestMut.mutate(req);
@@ -217,18 +265,35 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
         </select>
       </div>
       <div>
-        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confluence</label>
-        <input type="text" value={sbConfluence} onChange={(e) => setSbConfluence(e.target.value)}
-          placeholder="e.g. 5M-EMA_STACK-SML"
-          title="Comma-separated confluence records required for entry. Format: TF-INTERPRETER-STATE"
-          style={{ ...inputStyle, fontSize: '0.65rem' }} />
-      </div>
-      <div>
-        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Secondary TFs</label>
-        <input type="text" value={sbSecondaryTfs} onChange={(e) => setSbSecondaryTfs(e.target.value)}
-          placeholder="e.g. 15Min,1H"
-          title="Comma-separated secondary timeframes for cross-TF confluence"
-          style={{ ...inputStyle, fontSize: '0.65rem' }} />
+        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>
+          Confluence {sbSelectedConfluence.length > 0 && <span style={{ color: 'var(--accent)' }}>({sbSelectedConfluence.length})</span>}
+        </label>
+        <select
+          value=""
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val && !sbSelectedConfluence.includes(val)) {
+              setSbSelectedConfluence([...sbSelectedConfluence, val]);
+            }
+          }}
+          style={{ ...inputStyle, fontSize: '0.65rem' }}>
+          <option value="">Add condition...</option>
+          {sbConfluenceOptions
+            .filter((o) => !sbSelectedConfluence.includes(o.value))
+            .map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {sbSelectedConfluence.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {sbSelectedConfluence.map((rec) => (
+              <span key={rec} className="text-[9px] px-1.5 py-0.5 rounded-full flex items-center gap-1"
+                style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                {rec}
+                <button onClick={() => setSbSelectedConfluence(sbSelectedConfluence.filter((r) => r !== rec))}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '10px', padding: 0 }}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </>
   );
