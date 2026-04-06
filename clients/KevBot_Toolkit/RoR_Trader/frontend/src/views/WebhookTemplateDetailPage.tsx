@@ -17,7 +17,7 @@ import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import { useWebhookTemplate, useWebhookDeliveryLog } from '@/hooks/queries/useWebhooks';
-import { useDeleteWebhookTemplate } from '@/hooks/mutations/useWebhookMutations';
+import { useDeleteWebhookTemplate, useUpdateWebhookTemplate, useTestWebhook } from '@/hooks/mutations/useWebhookMutations';
 
 /* ========================================================================= */
 /* CONSTANTS                                                                   */
@@ -206,6 +206,8 @@ export default function WebhookTemplateDetailPage({ templateId }: WebhookTemplat
   const { data: rawTemplate, isLoading, error } = useWebhookTemplate(templateId);
   const { data: rawDeliveryLog } = useWebhookDeliveryLog();
   const deleteMutation = useDeleteWebhookTemplate();
+  const updateMutation = useUpdateWebhookTemplate();
+  const testMutation = useTestWebhook();
 
   const handleDelete = () => {
     if (!template) return;
@@ -373,8 +375,17 @@ export default function WebhookTemplateDetailPage({ templateId }: WebhookTemplat
                             <EventBadge event={activeEvent.event} category={activeEvent.category} />
                             <span className="text-sm font-medium">{activeEvent.label}</span>
                           </div>
-                          <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 10px' }}>
-                            Test Send
+                          <button style={{ ...btnSecondary, fontSize: '0.75rem', padding: '4px 10px' }}
+                            disabled={testMutation.isPending}
+                            onClick={() => {
+                              if (!template) return;
+                              testMutation.mutate({
+                                url: template.url,
+                                payload: activeEvent.payload,
+                                alert: { type: activeEvent.category === 'entry' ? 'entry_signal' : 'exit_signal', symbol: 'TEST', direction: 'LONG', strategy_name: 'Test Strategy' },
+                              });
+                            }}>
+                            {testMutation.isPending ? 'Sending...' : testMutation.isSuccess ? 'Sent!' : 'Test Send'}
                           </button>
                         </div>
 

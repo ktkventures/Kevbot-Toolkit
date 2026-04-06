@@ -99,6 +99,7 @@ PLACEHOLDER_CATALOG = {
     "quantity": "Shares (derived from risk / stop distance)",
     "atr": "ATR value at signal bar",
     "trigger_name": "Trigger ID that fired",
+    "exec_type": "Execution type (C, L0, L1, LC, CC)",
     "confluence_met": "Comma-separated confluence conditions",
     "portfolio_name": "Portfolio display name",
     "portfolio_id": "Portfolio numeric ID",
@@ -174,6 +175,7 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
         "quantity": quantity,
         "atr": str(alert.get("atr", "")),
         "trigger_name": str(alert.get("trigger", "")),
+        "exec_type": str(alert.get("exec_type", "C")),
         "confluence_met": ", ".join(alert.get("confluence_met", [])),
         "timestamp": str(alert.get("timestamp", "")),
         "rule_name": str(alert.get("rule_name", "")),
@@ -912,9 +914,14 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
                 effective_stop = strategy.get('stop_config') or {"method": "atr", "atr_mult": strategy.get("stop_atr_mult", 1.5)}
                 stop_price = calculate_stop_price(close_price, direction, last_bar, df, len(df) - 1, effective_stop)
 
+                # Resolve execution type from trigger suffix
+                from unified_engine import get_trigger_exec_type
+                _et = get_trigger_exec_type(entry_trigger)
+
                 signals.append({
                     "type": "entry_signal",
                     "trigger": entry_trigger,
+                    "exec_type": _et,
                     "confluence_met": list(confluence_records & confluence_set) if confluence_set else [],
                     "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,
@@ -925,9 +932,15 @@ def detect_signals(strategy: dict, df: pd.DataFrame = None, feed: str = "sip",
         # Look for exit signal on any exit trigger column
         for ec in exit_cols:
             if ec in df.columns and last_bar.get(ec, False):
+                # Resolve execution type from exit trigger suffix
+                _exit_trig = ec.replace("trig_", "")
+                from unified_engine import get_trigger_exec_type
+                _et = get_trigger_exec_type(_exit_trig)
+
                 signals.append({
                     "type": "exit_signal",
-                    "trigger": ec.replace("trig_", ""),
+                    "trigger": _exit_trig,
+                    "exec_type": _et,
                     "confluence_met": list(confluence_records),
                     "bar_time": str(last_bar.name) if hasattr(last_bar, 'name') else datetime.now(timezone.utc).isoformat(),
                     "price": close_price,

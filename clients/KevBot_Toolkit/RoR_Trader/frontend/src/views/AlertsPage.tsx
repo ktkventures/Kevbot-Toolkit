@@ -315,6 +315,20 @@ export default function AlertsPage() {
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{engineSymbols} symbols</span>
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{engineStrategies} strategies</span>
         <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>Last: {engineLastTime}</span>
+        <span className="flex-1" />
+        {engineRunning ? (
+          <button className="text-xs px-3 py-1 rounded-lg" style={{ background: 'var(--red-muted)', color: 'var(--red)', border: '1px solid var(--red)30', cursor: 'pointer' }}
+            disabled={stopMonitor.isPending}
+            onClick={() => stopMonitor.mutate()}>
+            {stopMonitor.isPending ? 'Stopping...' : 'Stop Engine'}
+          </button>
+        ) : (
+          <button className="text-xs px-3 py-1 rounded-lg" style={{ background: 'var(--green-muted)', color: 'var(--green)', border: '1px solid var(--green)30', cursor: 'pointer' }}
+            disabled={startMonitor.isPending}
+            onClick={() => startMonitor.mutate()}>
+            {startMonitor.isPending ? 'Starting...' : 'Start Engine'}
+          </button>
+        )}
       </div>
 
       <TabBar tabs={TABS}>
