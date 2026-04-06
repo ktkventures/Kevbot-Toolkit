@@ -227,30 +227,29 @@ class LevelExecution(ExecutionTypeModule):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CONFIRMED EXECUTION [LC, CC, HM, HL]
+# LEVEL-CLOSE EXECUTION [LC] (+ legacy HM, HL)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class ConfirmedExecution(ExecutionTypeModule):
-    """Two-stage entry: initial fill + bar-close confirmation.
+class LevelCloseExecution(ExecutionTypeModule):
+    """Level cross entry + bar-close confirmation.
 
-    LC: Level cross entry, configurable confirmation offset and bail.
-    CC: Bar-close entry, next-bar confirmation, configurable bail.
-    HM: Legacy — LC with confirm_bar_offset=0, bail=exit_market.
-    HL: Legacy — LC with confirm_bar_offset=0, bail=exit_limit.
+    Enters at indicator level when price crosses mid-bar, then waits for
+    bar-close confirmation. If unconfirmed, bails according to configured action.
+    HM/HL are legacy aliases with hardcoded parameters.
     """
 
-    slug = 'confirmed'
-    name = 'Confirmed [LC/CC]'
-    description = 'Two-stage entry: fill at level or close, then wait for bar-close confirmation. If unconfirmed, bail according to configured action.'
-    exec_type_codes = ('LC', 'CC', 'HM', 'HL')
+    slug = 'level_close'
+    name = 'Level-Close [LC]'
+    description = 'Enter at indicator level when price crosses, then confirm at bar close. Bail if unconfirmed.'
+    exec_type_codes = ('LC', 'HM', 'HL')
     contexts = ('entry',)
 
     steps = [
-        {'action': 'check_signal', 'label': 'Check entry signal (level cross for LC, bar close for CC)'},
-        {'action': 'fill', 'label': 'Fill at signal price'},
+        {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
+        {'action': 'fill', 'label': 'Fill at indicator level price'},
         {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
         {'action': 'wait_for_confirmation', 'label': 'Wait for bar-close confirmation'},
-        {'action': 'branch', 'label': 'Check confirmation',
+        {'action': 'branch', 'label': 'Check if bar close confirms direction',
          'if_confirmed': [
              {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
          ],
@@ -261,10 +260,11 @@ class ConfirmedExecution(ExecutionTypeModule):
     ]
 
     parameters_schema = {
+        'reference_bar': {'type': 'int', 'default': -1, 'options': [0, -1], 'label': 'Reference Bar'},
+        'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
         'confirm_bar_offset': {'type': 'int', 'default': 0, 'options': [0, 1], 'label': 'Confirmation Offset (bars)'},
         'bail_action': {'type': 'str', 'default': 'exit_market', 'options': ['exit_market', 'exit_limit'], 'label': 'Bail Action'},
-        'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
-        'hold_seconds': {'type': 'int', 'default': 0, 'min': 0, 'label': 'Hold Seconds (LC only)'},
+        'hold_seconds': {'type': 'int', 'default': 0, 'min': 0, 'label': 'Hold Seconds'},
     }
 
     def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
@@ -272,21 +272,19 @@ class ConfirmedExecution(ExecutionTypeModule):
         fill_price = None
         is_ltype = False
 
-        if exec_type in ('LC', 'HM', 'HL'):
-            # Level-based entry (same as L-type)
-            if l_type_fills:
-                # LC uses _ib suffix for level lookup
-                if exec_type == 'LC':
-                    ib_lookup = strip_exec_suffix(trigger_id) + '_ib'
-                    if ib_lookup in l_type_fills:
-                        fill_price = l_type_fills[ib_lookup]
-                        is_ltype = True
-                if fill_price is None and trigger_id in l_type_fills:
-                    fill_price = l_type_fills[trigger_id]
+        # Level-based entry
+        if l_type_fills:
+            if exec_type == 'LC':
+                ib_lookup = strip_exec_suffix(trigger_id) + '_ib'
+                if ib_lookup in l_type_fills:
+                    fill_price = l_type_fills[ib_lookup]
                     is_ltype = True
+            if fill_price is None and trigger_id in l_type_fills:
+                fill_price = l_type_fills[trigger_id]
+                is_ltype = True
 
         if fill_price is None:
-            # CC uses bar-close entry, or fallback for LC/HM/HL
+            # Fallback to bar-close
             base_trigger = strip_exec_suffix(trigger_id)
             if c_triggers.get(trigger_id, False) or c_triggers.get(base_trigger, False):
                 fill_price = current_values.get('close', 0)
@@ -297,88 +295,128 @@ class ConfirmedExecution(ExecutionTypeModule):
 
     def get_confirmation_config(self, trigger_id, exec_type, bar_count, get_variant_param):
         if exec_type == 'HM':
-            # Legacy HM: same-bar confirmation, bail at market
-            return ConfirmationConfig(
-                needs_confirm=True, confirm_bar_offset=0,
-                bail_action='exit_market')
+            return ConfirmationConfig(needs_confirm=True, confirm_bar_offset=0, bail_action='exit_market')
         elif exec_type == 'HL':
-            # Legacy HL: same-bar confirmation, bail at limit (entry price)
-            return ConfirmationConfig(
-                needs_confirm=True, confirm_bar_offset=0,
-                bail_action='exit_limit')
-        elif exec_type == 'LC':
+            return ConfirmationConfig(needs_confirm=True, confirm_bar_offset=0, bail_action='exit_limit')
+        else:  # LC
             cbo = get_variant_param(trigger_id, 'LC', 'confirm_bar_offset', 0)
             bail = get_variant_param(trigger_id, 'LC', 'bail_action', 'exit_market')
             hold = get_variant_param(trigger_id, 'L', 'hold_seconds', 0)
-            return ConfirmationConfig(
-                needs_confirm=True, confirm_bar_offset=cbo,
-                bail_action=bail, hold_seconds=hold)
-        elif exec_type == 'CC':
-            bail = get_variant_param(trigger_id, 'CC', 'bail_action', 'exit_market')
-            return ConfirmationConfig(
-                needs_confirm=True, confirm_bar_offset=1,
-                bail_action=bail)
-        return ConfirmationConfig(needs_confirm=False)
+            return ConfirmationConfig(needs_confirm=True, confirm_bar_offset=cbo, bail_action=bail, hold_seconds=hold)
 
-    def should_check_confirmation(self, exec_type, entry_bar_count,
-                                  current_bar_count, pending_confirm_bar):
+    def should_check_confirmation(self, exec_type, entry_bar_count, current_bar_count, pending_confirm_bar):
         if exec_type in ('HM', 'HL'):
             return entry_bar_count == current_bar_count
-        if pending_confirm_bar >= 0 and current_bar_count == pending_confirm_bar:
-            return True
-        return False
+        return pending_confirm_bar >= 0 and current_bar_count == pending_confirm_bar
 
     def on_confirmation_failed(self, exec_type, state):
         if exec_type == 'HM':
             state.pending_hm_exit = True
         elif exec_type == 'HL':
             state.pending_hl_limit = True
-        # LC/CC: pending_confirm_bar stays set, check_exit handles bail
 
     def on_confirmation_passed(self, exec_type, state):
-        if exec_type in ('LC', 'CC'):
-            state.pending_confirm_bar = -1
+        state.pending_confirm_bar = -1
 
     def check_bail_at_market(self, exec_type, state, bar_count, bar_open):
-        # HM: always bail at market on next bar
         if state.pending_hm_exit:
             return BailResult(should_bail=True, reason='unconfirmed_hm', fill_price=bar_open)
-
-        # LC/CC with exit_market bail: bail at market when past confirmation bar
-        if (state.pending_confirm_bar >= 0 and
-                bar_count > state.pending_confirm_bar and
-                state.bail_action == 'exit_market'):
-            reason = f'unconfirmed_{state.exec_type.lower()}'
-            return BailResult(should_bail=True, reason=reason, fill_price=bar_open)
-
+        if (state.pending_confirm_bar >= 0 and bar_count > state.pending_confirm_bar
+                and state.bail_action == 'exit_market'):
+            return BailResult(should_bail=True, reason=f'unconfirmed_{state.exec_type.lower()}', fill_price=bar_open)
         return None
 
     def check_bail_exit(self, exec_type, state, bar_count, direction, high, low):
         ep = state.entry_price
-
-        # HL limit exit at entry price
         if state.pending_hl_limit:
             if direction == 'LONG' and high >= ep:
                 return BailResult(should_bail=True, reason='unconfirmed_hl', fill_price=ep)
             elif direction == 'SHORT' and low <= ep:
                 return BailResult(should_bail=True, reason='unconfirmed_hl', fill_price=ep)
-
-        # LC/CC limit-based bail
-        if (state.pending_confirm_bar >= 0 and
-                bar_count > state.pending_confirm_bar and
-                state.bail_action in ('exit_limit', 'exit_limit_breakeven')):
+        if (state.pending_confirm_bar >= 0 and bar_count > state.pending_confirm_bar
+                and state.bail_action in ('exit_limit', 'exit_limit_breakeven')):
             reason = f'unconfirmed_{state.exec_type.lower()}'
             if direction == 'LONG' and high >= ep:
                 return BailResult(should_bail=True, reason=reason, fill_price=ep)
             elif direction == 'SHORT' and low <= ep:
                 return BailResult(should_bail=True, reason=reason, fill_price=ep)
-
         return None
 
     def skip_stop_target_on_entry_bar(self, exec_type):
-        # LC, HM, HL are L-type entries — skip stop/target on entry bar
-        # CC is bar-close entry — don't skip
-        return exec_type in ('LC', 'HM', 'HL')
+        return True  # LC, HM, HL are all L-type entries
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CLOSE-CLOSE EXECUTION [CC]
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CloseCloseExecution(ExecutionTypeModule):
+    """Bar-close entry + next-bar-close confirmation.
+
+    Enters at bar close price when trigger fires, then requires the next
+    bar to close confirming the direction. If unconfirmed, bails.
+    """
+
+    slug = 'close_close'
+    name = 'Close-Close [CC]'
+    description = 'Enter at bar close, then confirm on next bar close. Bail if next bar does not confirm direction.'
+    exec_type_codes = ('CC',)
+    contexts = ('entry',)
+
+    steps = [
+        {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
+        {'action': 'fill', 'label': 'Fill at bar close price'},
+        {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
+        {'action': 'wait_for_next_bar', 'label': 'Wait for next bar to close'},
+        {'action': 'branch', 'label': 'Check if next bar confirms direction',
+         'if_confirmed': [
+             {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
+         ],
+         'if_not_confirmed': [
+             {'action': 'bail', 'label': 'Execute bail action (exit at market)'},
+             {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
+         ]},
+    ]
+
+    parameters_schema = {
+        'reference_bar': {'type': 'int', 'default': 0, 'options': [0, -1], 'label': 'Reference Bar'},
+        'order_type': {'type': 'str', 'default': 'market', 'options': ['market'], 'label': 'Order Type'},
+        'bail_action': {'type': 'str', 'default': 'exit_market', 'options': ['exit_market'], 'label': 'Bail Action'},
+    }
+
+    def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
+                           current_values, strip_exec_suffix):
+        # CC: bar-close entry only
+        base_trigger = strip_exec_suffix(trigger_id)
+        if c_triggers.get(trigger_id, False) or c_triggers.get(base_trigger, False):
+            return EntryResult(fired=True, fill_price=current_values.get('close', 0), is_ltype=False)
+        return EntryResult(fired=False)
+
+    def get_confirmation_config(self, trigger_id, exec_type, bar_count, get_variant_param):
+        bail = get_variant_param(trigger_id, 'CC', 'bail_action', 'exit_market')
+        return ConfirmationConfig(needs_confirm=True, confirm_bar_offset=1, bail_action=bail)
+
+    def should_check_confirmation(self, exec_type, entry_bar_count, current_bar_count, pending_confirm_bar):
+        return pending_confirm_bar >= 0 and current_bar_count == pending_confirm_bar
+
+    def on_confirmation_failed(self, exec_type, state):
+        pass  # pending_confirm_bar stays set, check_exit handles bail
+
+    def on_confirmation_passed(self, exec_type, state):
+        state.pending_confirm_bar = -1
+
+    def check_bail_at_market(self, exec_type, state, bar_count, bar_open):
+        if (state.pending_confirm_bar >= 0 and bar_count > state.pending_confirm_bar
+                and state.bail_action == 'exit_market'):
+            return BailResult(should_bail=True, reason='unconfirmed_cc', fill_price=bar_open)
+        return None
+
+    def check_bail_exit(self, exec_type, state, bar_count, direction, high, low):
+        # CC with limit bail (future feature — currently CC always bails at market)
+        return None
+
+    def skip_stop_target_on_entry_bar(self, exec_type):
+        return False  # CC is bar-close entry, no skip
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -413,4 +451,5 @@ def list_modules() -> List[ExecutionTypeModule]:
 # Auto-register built-in modules
 register(BarCloseExecution())
 register(LevelExecution())
-register(ConfirmedExecution())
+register(LevelCloseExecution())
+register(CloseCloseExecution())
