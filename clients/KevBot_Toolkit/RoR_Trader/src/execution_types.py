@@ -173,7 +173,6 @@ class BarCloseExecution(ExecutionTypeModule):
     ]
 
     parameters_schema = {
-        'reference_bar': {'type': 'int', 'default': 0, 'options': [0, -1], 'label': 'Reference Bar'},
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
     }
 
@@ -197,9 +196,9 @@ class LevelExecution(ExecutionTypeModule):
 
     slug = 'level'
     name = 'Level [L]'
-    description = 'Enter at the indicator level price when price crosses the level within the bar. The indicator determines whether the current or previous bar level is used.'
+    description = 'Enter at the indicator level price when price crosses the level within the bar. The confluence pack indicator determines which bar level is used.'
     exec_type_codes = ('L0', 'L1')
-    display_code = 'L'  # Simplified display for UI
+    display_code = 'L'
     contexts = ('entry', 'exit_signal', 'stop', 'target')
 
     steps = [
@@ -209,7 +208,6 @@ class LevelExecution(ExecutionTypeModule):
     ]
 
     parameters_schema = {
-        'reference_bar': {'type': 'int', 'default': -1, 'options': [0, -1], 'label': 'Reference Bar'},
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
         'hold_seconds': {'type': 'int', 'default': 0, 'min': 0, 'label': 'Hold Seconds'},
     }
@@ -246,7 +244,7 @@ class LevelCloseExecution(ExecutionTypeModule):
     name = 'Level-Close [LC]'
     description = 'Enter at indicator level when price crosses, then confirm at bar close. Bail if unconfirmed.'
     exec_type_codes = ('LC', 'HM', 'HL')
-    display_code = 'LC'  # Simplified display for UI
+    display_code = 'LC'
     contexts = ('entry',)
 
     steps = [
@@ -265,7 +263,6 @@ class LevelCloseExecution(ExecutionTypeModule):
     ]
 
     parameters_schema = {
-        'reference_bar': {'type': 'int', 'default': -1, 'options': [0, -1], 'label': 'Reference Bar'},
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
         'confirm_bar_offset': {'type': 'int', 'default': 0, 'options': [0, 1], 'label': 'Confirmation Offset (bars)'},
         'bail_action': {'type': 'str', 'default': 'exit_market', 'options': ['exit_market', 'exit_limit'], 'label': 'Bail Action'},
@@ -364,7 +361,7 @@ class CloseCloseExecution(ExecutionTypeModule):
 
     slug = 'close_close'
     name = 'Close-Close [CC]'
-    description = 'Enter at bar close, then confirm on next bar close. Bail if next bar does not confirm direction.'
+    description = 'Enter at bar close, then confirm on next bar close. Bail at market if next bar does not confirm direction.'
     exec_type_codes = ('CC',)
     display_code = 'CC'
     contexts = ('entry',)
@@ -379,16 +376,13 @@ class CloseCloseExecution(ExecutionTypeModule):
              {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
          ],
          'if_not_confirmed': [
-             {'action': 'bail', 'label': 'Execute bail action (exit at market)'},
+             {'action': 'bail', 'label': 'Exit at market (bail)'},
              {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
          ]},
     ]
 
-    parameters_schema = {
-        'reference_bar': {'type': 'int', 'default': 0, 'options': [0, -1], 'label': 'Reference Bar'},
-        'order_type': {'type': 'str', 'default': 'market', 'options': ['market'], 'label': 'Order Type'},
-        'bail_action': {'type': 'str', 'default': 'exit_market', 'options': ['exit_market'], 'label': 'Bail Action'},
-    }
+    # CC has fixed behavior — no configurable parameters
+    parameters_schema = {}
 
     def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
                            current_values, strip_exec_suffix):
