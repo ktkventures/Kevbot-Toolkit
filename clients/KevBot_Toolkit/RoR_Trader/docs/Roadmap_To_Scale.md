@@ -113,44 +113,104 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
-### Milestone 5: Scale Infrastructure
+### Milestone 5: Strategy Builder & Strategy Detail Polish
+**Priority:** High — strategies are the core product
+**Effort:** 1-2 weeks
+
+Ensure the Strategy Builder and Strategy Detail pages work flawlessly with both built-in and user packs. Fix any remaining bugs, polish the UX, and verify end-to-end consistency.
+
+**Tasks:**
+- [ ] 5a. Verify Strategy Builder works with user pack triggers (entry + exit)
+- [ ] 5b. Verify bar count exit, stop loss packs, take profit packs all work correctly with user packs
+- [ ] 5c. Verify Strategy Detail page renders correctly for strategies using user packs (chart, KPIs, equity curve, trade history)
+- [ ] 5d. Fix any chart/indicator display issues for user pack strategies
+- [ ] 5e. Verify forward testing works with user packs
+- [ ] 5f. Verify alert tracking works with user packs
+- [ ] 5g. Fix any remaining Strategy Detail bugs surfaced during testing
+- [ ] 5h. Polish Strategy Builder UX: ensure trigger dropdowns, analysis tabs, and backtest flow are smooth
+- [ ] 5i. Create several real strategies using user packs — QA the full flow end-to-end
+
+**Exit Criteria:** User can create a strategy using any combination of built-in and user packs, run backtests, view detailed results, enable forward testing, and enable alert tracking — all working correctly.
+
+---
+
+### Milestone 6: Mass Strategy Builder
+**Priority:** High — required for scale testing
+**Effort:** 1-2 weeks
+
+Wire the Mass Strategy Builder to work with the unified engine and user packs. This is the tool that enables testing hundreds of strategy variations in one batch.
+
+**Tasks:**
+- [ ] 6a. Verify Mass Builder works with unified engine (not legacy `generate_trades()`)
+- [ ] 6b. Wire user pack triggers into Mass Builder trigger selection
+- [ ] 6c. Verify Mass Builder results are consistent with individual Strategy Builder backtests
+- [ ] 6d. Wire Hi-Fi mode into Mass Builder
+- [ ] 6e. Bulk save: save top N strategies from Mass Builder results
+- [ ] 6f. Progress tracking: show real-time progress during mass backtest runs
+- [ ] 6g. Performance optimization: parallelize mass backtests where possible
+
+**Exit Criteria:** User can run 100+ strategy variations through Mass Builder, results match individual backtests, top strategies can be saved in bulk.
+
+---
+
+### Milestone 7: Portfolios Polish
+**Priority:** High — portfolios combine strategies into tradeable units
+**Effort:** 1-2 weeks
+
+Polish the portfolio system to work reliably with user pack strategies. Verify aggregation, risk management, and visualization.
+
+**Tasks:**
+- [ ] 7a. Verify portfolio KPI aggregation works with user pack strategies
+- [ ] 7b. Verify portfolio equity curve correctly combines multiple strategies
+- [ ] 7c. Verify Monte Carlo simulation works with user pack strategies
+- [ ] 7d. Verify buying power tracking and compliance rules
+- [ ] 7e. Verify anomaly detection works correctly
+- [ ] 7f. Portfolio live dashboard: wire real data (currently placeholder in some areas)
+- [ ] 7g. Fix any portfolio-level bugs surfaced during testing
+- [ ] 7h. Portfolio creation from strategy selection (select strategies → create portfolio)
+
+**Exit Criteria:** User can build portfolios from strategies (including user pack strategies), view aggregated performance, run Monte Carlo simulations, and track portfolio health — all working correctly.
+
+---
+
+### Milestone 8: Scale Infrastructure
 **Priority:** Medium — required before AI agents
 **Effort:** 1-2 weeks
 
 Ensure the system can handle thousands of strategies, portfolios, and packs.
 
 **Tasks:**
-- [ ] 5a. Batch backtest optimization: run multiple strategies in parallel
-- [ ] 5b. Strategy creation API: create strategy from config without UI (for AI agents)
-- [ ] 5c. Portfolio creation API: create portfolio from strategy list without UI
-- [ ] 5d. Bulk forward test updates: refresh all strategies in one operation
-- [ ] 5e. Performance profiling: identify bottlenecks at 100/1000/10000 strategies
-- [ ] 5f. Database indexing: ensure queries scale with strategy count
-- [ ] 5g. Worker scaling: Railway auto-scale for alert processing
+- [ ] 8a. Batch backtest optimization: run multiple strategies in parallel
+- [ ] 8b. Strategy creation API: create strategy from config without UI (for AI agents)
+- [ ] 8c. Portfolio creation API: create portfolio from strategy list without UI
+- [ ] 8d. Bulk forward test updates: refresh all strategies in one operation
+- [ ] 8e. Performance profiling: identify bottlenecks at 100/1000/10000 strategies
+- [ ] 8f. Database indexing: ensure queries scale with strategy count
+- [ ] 8g. Worker scaling: Railway auto-scale for alert processing
 
 **Exit Criteria:** System handles 1000+ strategies per user without degradation. API endpoints exist for programmatic strategy/portfolio creation.
 
 ---
 
-### Milestone 6: AI Agent Integration
-**Priority:** Future — after Milestones 1-5 are stable
+### Milestone 9: AI Agent Integration
+**Priority:** Future — after Milestones 1-8 are stable
 **Effort:** 2-4 weeks
 
 Enable AI agents to autonomously create packs, test strategies, and surface the best trading opportunities.
 
 **Tasks:**
-- [ ] 6a. Agent API: create pack → install → run backtests → evaluate → save or discard
-- [ ] 6b. Strategy scoring system: rank strategies by risk-adjusted return, consistency, edge quality
-- [ ] 6c. Agent orchestration: manage multiple agents running concurrently
-- [ ] 6d. Results dashboard: surface top-performing strategies/packs found by agents
-- [ ] 6e. Cost management: rate-limit AI API calls, track token usage per agent
-- [ ] 6f. Human review workflow: agent proposes → human approves → strategy goes live
+- [ ] 9a. Agent API: create pack → install → run backtests → evaluate → save or discard
+- [ ] 9b. Strategy scoring system: rank strategies by risk-adjusted return, consistency, edge quality
+- [ ] 9c. Agent orchestration: manage multiple agents running concurrently
+- [ ] 9d. Results dashboard: surface top-performing strategies/packs found by agents
+- [ ] 9e. Cost management: rate-limit AI API calls, track token usage per agent
+- [ ] 9f. Human review workflow: agent proposes → human approves → strategy goes live
 
 **Exit Criteria:** AI agent can autonomously create 100 packs, generate 1000 strategy variations, and surface the top 10 by risk-adjusted return — all without human intervention.
 
 ---
 
-### Milestone 7: Marketplace Foundation
+### Milestone 10: Marketplace Foundation
 **Priority:** Future — after live trading is proven
 **Effort:** 4-8 weeks
 
