@@ -110,6 +110,10 @@ Extract the 4 execution type branches from `PositionStateMachine` into pluggable
 - [ ] 2j. [Polish] Isolation testing UI: synthetic signal → watch execution type behavior
 - [ ] 2k. [Deferred] Update Ralph engine to use the same execution type modules (parity with unified engine)
 - [ ] 2l. [Deferred] Visual drip-campaign workflow builder (drag-and-drop steps, conditional branches)
+- [ ] 2m. [Deferred] **Split Confirmed into LC and CC as separate modules** — Currently LC and CC are grouped in one ConfirmedExecution module because they share confirmation/bail logic. Future: split into separate modules (4 cards on the page), each with its own reference_bar, order_type, confirm_bar_offset, bail_action parameters. Move these params from TF Confluence pack's _exec_config to the execution type definition itself.
+- [ ] 2n. [Deferred] **Parameters on execution type, not confluence pack** — Currently execution type params (reference_bar, order_type, etc.) are stored on the confluence group's _exec_config and inherited. Future: store on the execution type variation directly. Confluence pack just selects which execution type variations to enable.
+
+**Completed:** 2026-04-06. All Required tasks done. Parity verified (EMA PP V2 = 11 trades/-10.0R, RSI Zones = 13/-14.7R — identical before and after).
 
 **Exit Criteria:** Execution types are pluggable modules with workflow schema. The 4 existing types produce identical trades to the pre-extraction engine. The Execution Types page shows each type with its step sequence and parameters. Users can create variations with different parameter values.
 
@@ -122,12 +126,12 @@ Extract the 4 execution type branches from `PositionStateMachine` into pluggable
 Wire the webhook/alert system for the Next.js frontend. The Streamlit-era webhook system needs to be connected to the new API layer.
 
 **Tasks:**
-- [ ] 3a. Wire alert monitor enable/disable from Next.js frontend (currently Streamlit-only)
-- [ ] 3b. Wire webhook template CRUD (create, edit, test) in Next.js settings/webhooks page
-- [ ] 3c. Connect Ralph engine alert dispatch to webhook delivery system
-- [ ] 3d. Add execution type to alert records and webhook payload templates
-- [ ] 3e. Test end-to-end: strategy triggers → alert record → webhook fires → Discord/broker receives
-- [ ] 3f. Account-level webhook templates (per-user defaults)
+- [ ] 3a. [Required] Wire alert monitor enable/disable from Next.js frontend (currently Streamlit-only)
+- [ ] 3b. [Required] Wire webhook template CRUD (create, edit, test) in Next.js settings/webhooks page
+- [ ] 3c. [Required] Connect Ralph engine alert dispatch to webhook delivery system
+- [ ] 3d. [Required] Add execution type to alert records and webhook payload templates
+- [ ] 3e. [Required] Test end-to-end: strategy triggers → alert record → webhook fires → Discord/broker receives
+- [ ] 3f. [Polish] Account-level webhook templates (per-user defaults)
 
 **Exit Criteria:** User can enable alerts on a strategy, configure webhook URLs, and receive real-time notifications when triggers fire. Webhook payload includes execution type, fill price, and position details.
 
