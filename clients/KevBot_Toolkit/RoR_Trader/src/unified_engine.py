@@ -369,6 +369,35 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
             pass
     params['ema_periods'] = ema_periods
 
+    # Resolve user pack requirements (triggers not matched by built-in prefixes)
+    # User pack indicators/interpreters are computed by the batch pipeline and
+    # stored as pre-computed columns in the DataFrame. The unified engine reads
+    # these columns instead of computing them incrementally.
+    try:
+        import pack_registry
+        from confluence_groups import TEMPLATES
+        registered = pack_registry.get_registered_packs()
+        for slug, pack in registered.items():
+            manifest = pack.manifest
+            tp = manifest.get('trigger_prefix', '')
+            if not tp:
+                continue
+            # Check if any required trigger matches this pack's prefix
+            pack_triggers_used = any(
+                t.startswith(tp + '_') or t == tp
+                for t in triggers
+            )
+            if not pack_triggers_used:
+                continue
+            # Add pack's interpreter keys to required set
+            for ik in manifest.get('interpreters', []):
+                interpreters.add(ik)
+            # Mark that user pack indicators need batch computation
+            # (the batch pipeline will run them via run_indicators_for_group)
+            indicators.add(f'_user_pack_{slug}')
+    except Exception:
+        pass
+
     return indicators, interpreters, triggers, params
 
 
@@ -2087,6 +2116,7 @@ class UnifiedStrategy:
 
     def process_bar(self, bar: dict, mtf_records: Set[str] = None,
                     partial: bool = False,
+                    user_pack_data: dict = None,
                     ) -> Tuple[List[dict], Dict[str, float],
                                Dict[str, str], Dict[str, bool]]:
         """Process one completed bar.
@@ -2098,6 +2128,9 @@ class UnifiedStrategy:
             partial: If True, this bar is still forming (live chart).
                 Only L-type (intra-bar) signals are evaluated; bar-close
                 entries/exits (C-type, bar_count_exit) are suppressed.
+            user_pack_data: Optional dict with pre-computed user pack data:
+                {'interps': {key: state}, 'triggers': {key: bool}}
+                Merged into interpreter/trigger results after built-in evaluation.
 
         Returns:
             (trade_records, indicator_values, interpreter_states, trigger_bools)
@@ -2119,6 +2152,17 @@ class UnifiedStrategy:
         # 2. Evaluate triggers (C-type + L-type)
         interps, c_triggers, l_fills = self.trigger_eval.evaluate_bar_for_backtest(
             current, prev, self.indicators.state.prev2_macd_hist)
+
+        # 2b. Merge pre-computed user pack interpreter states and trigger booleans.
+        # These come from the batch pipeline (DataFrame columns) and are passed
+        # through for user packs whose indicators aren't computed incrementally.
+        if user_pack_data:
+            for ik, state_val in user_pack_data.get('interps', {}).items():
+                if ik not in interps:  # Don't override built-in
+                    interps[ik] = state_val
+            for tk, fired in user_pack_data.get('triggers', {}).items():
+                if tk not in c_triggers:  # Don't override built-in
+                    c_triggers[tk] = fired
 
         # 3. Build confluence records
         bar_time = bar['timestamp']
@@ -2266,6 +2310,29 @@ def run_unified_backtest(
 
     strat = UnifiedStrategy(strategy, general_packs)
 
+    # Identify user pack columns in the DataFrame for pre-computed fallback.
+    # Built-in interpreters are computed incrementally by the engine; user pack
+    # interpreters and triggers exist as pre-computed columns in the DataFrame.
+    _BUILTIN_INTERPS = {
+        'EMA_STACK', 'EMA_PRICE_POSITION', 'EMA_PRICE_POSITION_V2',
+        'MACD_LINE', 'MACD_HISTOGRAM', 'VWAP', 'RVOL', 'UTBOT', 'UTBOT_V2',
+    }
+    _user_interp_cols = [
+        ik for ik in strat.trigger_eval.required_interpreters
+        if ik not in _BUILTIN_INTERPS and ik in df.columns
+    ]
+    _user_trig_cols = [
+        col for col in df.columns
+        if col.startswith('trig_') and col not in {
+            f'trig_{t}' for t in strat.trigger_eval.required_triggers
+            if any(t.startswith(p + '_') for p in TRIGGER_PREFIX_TO_TEMPLATE)
+        }
+        and any(col == f'trig_{t}' for t in strat.trigger_eval.required_triggers)
+    ]
+    # Simpler approach: collect all trig_ columns that match required triggers
+    _required_trig_set = {f'trig_{t}' for t in strat.trigger_eval.required_triggers}
+    _user_trig_cols = [col for col in df.columns if col in _required_trig_set and col.startswith('trig_')]
+
     trades = []
     indicator_rows = []
     interp_rows = []
@@ -2295,9 +2362,27 @@ def run_unified_backtest(
             if mtf_set:
                 mtf_records = mtf_set
 
+        # Read pre-computed user pack interpreter states and trigger booleans
+        user_pack_data = None
+        if _user_interp_cols or _user_trig_cols:
+            up_interps = {}
+            up_triggers = {}
+            for col in _user_interp_cols:
+                val = row.get(col)
+                if val is not None and pd.notna(val):
+                    up_interps[col] = str(val)
+            for col in _user_trig_cols:
+                val = row.get(col)
+                # Strip 'trig_' prefix to get the trigger key
+                trig_key = col[5:]  # len('trig_') == 5
+                up_triggers[trig_key] = bool(val) if pd.notna(val) else False
+            if up_interps or up_triggers:
+                user_pack_data = {'interps': up_interps, 'triggers': up_triggers}
+
         is_partial = last_bar_partial and (i == len(df) - 1)
         bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(
-            bar, mtf_records=mtf_records, partial=is_partial)
+            bar, mtf_records=mtf_records, partial=is_partial,
+            user_pack_data=user_pack_data)
         trades.extend(bar_trades)
         indicator_rows.append(ind_vals)
         interp_rows.append(interp_states)

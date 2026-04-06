@@ -55,6 +55,7 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
   const [sbStopPack, setSbStopPack] = useState('');
   const [sbTargetPack, setSbTargetPack] = useState('');
   const [sbHifi, setSbHifi] = useState(false);
+  const [sbBarCountExit, setSbBarCountExit] = useState<number | null>(null);
   const [sbEqXAxis, setSbEqXAxis] = useState<'trade' | 'time'>('trade');
   const [sbZoomTrade, setSbZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
   const [sbLastConfig, setSbLastConfig] = useState<any>(null);
@@ -150,6 +151,7 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
       stop_loss_pack_id: sbStopPack || undefined,
       take_profit_pack_id: sbTargetPack || undefined,
       hifi_mode: sbHifi, include_chart_data: true,
+      bar_count_exit: sbBarCountExit || undefined,
     };
     setSbLastConfig(req);
     sbBacktestMut.mutate(req);
@@ -207,6 +209,11 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
           <option value="">None</option>
           {sbTargetPackList.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
         </select>
+      </div>
+      <div>
+        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bar Count Exit</label>
+        <input type="number" value={sbBarCountExit ?? ''} min={1} max={100} placeholder="None"
+          onChange={(e) => setSbBarCountExit(e.target.value ? parseInt(e.target.value) : null)} style={inputStyle} />
       </div>
     </>
   );
