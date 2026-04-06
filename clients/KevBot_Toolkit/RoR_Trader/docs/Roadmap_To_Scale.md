@@ -162,35 +162,54 @@ Split execution types into 4 separate modules with clean parameter schemas. Exec
 
 ---
 
-### Milestone 4: Pack Builder Polish
-**Priority:** Medium — reliability of pack creation
+### Milestone 4: Execution Type Polish
+**Priority:** High — execution types must be validated before building packs on top of them
 **Effort:** 3-5 days
 
-Ensure packs created through the Pack Builder are consistently reliable and work seamlessly across all features.
+Flesh out the execution type detail page with validation/testing capabilities. Define how execution types should behave going forward (not just documenting legacy behavior). The goal: each execution type can be tested in isolation, proving it works correctly for ANY trigger before it's applied to confluence packs.
 
 **Tasks:**
-- [ ] 4a. [Required] Fix remaining validation gaps (from testing — add checks as discovered)
-- [ ] 4b. [Required] Update `pack_builder_context.md` with golden child reference (EMA PP V2 as template)
-- [ ] 4c. [Required] Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
-- [ ] 4d. [Polish] Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
-- [ ] 4e. [Polish] Pack versioning: installed pack is immutable, new versions create new packs
-- [ ] 4f. [Polish] Delete protection: warn if strategies reference the pack
-- [ ] 4g. [Deferred] Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
-- [ ] 4h. [Required] **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Remove duplicate chart module. Show conditions as background color changes, triggers as markers on candles.
-- [ ] 4i. [Polish] **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached, per-trigger breakdown
-- [ ] 4j. [Deferred] **Parity Simulator tab** — Nice-to-have. Backtest ↔ live engine parity comparison. May be complex; evaluate feasibility.
-- [ ] 4k. [Required] Create several user packs through the full Pack Builder flow and verify each one end-to-end
-- [ ] 4l. [Polish] **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants of each confluence condition. Display fidelity type in selector labels and heatmap legends.
-- [ ] 4m. [Polish] **Sandbox: Confluence heatmap on trade drill-down** — Show PB/CB heatmap pane on the 1-second TradeZoomModal, matching how it appears in the Strategy Builder drill-down.
-- [ ] 4n. [Polish] **Sandbox: Move Hi-Fi toggle before confluence** — Hi-Fi toggle should precede confluence selector so the user enables it first, then sees PB/CB variants appear in the dropdown.
-- [ ] 4o. [Polish] **Bar count exit variations** — Read N from the confluence group's parameters instead of hardcoding 4. Different bar count exit variations (N=3, 4, 5, etc.) should pass the correct N to the engine.
-- [ ] 4p. [Deferred] **Unify User Packs into TF Confluence page** — User packs are just TF confluence packs with a different author. Show all packs on one page with filter (Built-in / My Packs / Public) instead of separate User Packs page. Pack Builder creates packs of the appropriate type. Custom packs get a "My Pack" badge.
+- [ ] 4a. [Required] **Simulation tab** — On execution type detail page. Pick a symbol + timeframe, system generates a synthetic trigger at a specific bar, shows: fill price, confirmation timing, bail behavior, stop/target placement. Mini chart with entry/exit markers.
+- [ ] 4b. [Required] **Webhook step integration** — Add webhook event steps to workflow definitions. Each step shows which webhook event would fire (entry_signal, confirm, bail, etc.). This defines the execution PROCESS, not just the engine behavior.
+- [ ] 4c. [Required] **Execution type variations** — Create variations with different parameter values (nested under parent). Default is immutable. Variations are separate entries with their own names.
+- [ ] 4d. [Required] **Execution type immutability** — Default execution types cannot be edited. Users must create a variation to change parameters. Protects forward test data integrity.
+- [ ] 4e. [Required] **Wire execution types into trigger generation** — Enabled execution types × pack triggers = all trigger options in Strategy Builder. Remove dependency on `_exec_config` in confluence groups.
+- [ ] 4f. [Polish] **Execution type documentation** — Each type has a clear description of when it fills, at what price, what confirmation/bail behavior applies, and what webhook events fire.
+- [ ] 4g. [Deferred] **Custom execution type creation** — Users can define new execution types via the drip-campaign workflow builder.
+
+**Exit Criteria:** Each of the 4 execution types can be tested in isolation via the Simulation tab. Webhook events are visible in the workflow steps. Variations can be created without affecting defaults. Strategy Builder trigger count matches enabled execution types × pack triggers.
+
+---
+
+### Milestone 5: Pack Builder & User Packs Polish
+**Priority:** Medium — reliability of pack creation
+**Effort:** 1-2 weeks
+
+Ensure packs created through the Pack Builder are consistently reliable and work seamlessly across all features. Now that execution types are solid, packs can be built and tested with confidence.
+
+**Tasks:**
+- [ ] 5a. [Required] Fix remaining validation gaps (from testing — add checks as discovered)
+- [ ] 5b. [Required] Update `pack_builder_context.md` with golden child reference (EMA PP V2 as template)
+- [ ] 5c. [Required] Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
+- [ ] 5d. [Required] **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Show conditions as background color changes, triggers as markers on candles.
+- [ ] 5e. [Required] Create several user packs through the full Pack Builder flow and verify each one end-to-end
+- [ ] 5f. [Polish] Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
+- [ ] 5g. [Polish] Pack versioning: installed pack is immutable, new versions create new packs
+- [ ] 5h. [Polish] Delete protection: warn if strategies reference the pack
+- [ ] 5i. [Polish] **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached
+- [ ] 5j. [Polish] **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants
+- [ ] 5k. [Polish] **Sandbox: Confluence heatmap on trade drill-down**
+- [ ] 5l. [Polish] **Sandbox: Move Hi-Fi toggle before confluence**
+- [ ] 5m. [Polish] **Bar count exit variations** — Read N from confluence group parameters
+- [ ] 5n. [Deferred] Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
+- [ ] 5o. [Deferred] **Unify User Packs into TF Confluence page** — Filter by author instead of separate page
+- [ ] 5p. [Deferred] **Parity Simulator tab**
 
 **Exit Criteria:** User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder, Sandbox, and live alerts without manual intervention.
 
 ---
 
-### Milestone 5: Strategy Builder & Strategy Detail Polish
+### Milestone 6: Strategy Builder & Strategy Detail Polish
 **Priority:** High — strategies are the core product
 **Effort:** 1-2 weeks
 
@@ -211,7 +230,7 @@ Ensure the Strategy Builder and Strategy Detail pages work flawlessly with both 
 
 ---
 
-### Milestone 6: Mass Strategy Builder
+### Milestone 7: Mass Strategy Builder
 **Priority:** High — required for scale testing
 **Effort:** 1-2 weeks
 
@@ -230,7 +249,7 @@ Wire the Mass Strategy Builder to work with the unified engine and user packs. T
 
 ---
 
-### Milestone 7: Portfolios Polish
+### Milestone 8: Portfolios Polish
 **Priority:** High — portfolios combine strategies into tradeable units
 **Effort:** 1-2 weeks
 
@@ -250,7 +269,7 @@ Polish the portfolio system to work reliably with user pack strategies. Verify a
 
 ---
 
-### Milestone 8: Scale Infrastructure
+### Milestone 9: Scale Infrastructure
 **Priority:** Medium — required before AI agents
 **Effort:** 1-2 weeks
 
@@ -269,8 +288,8 @@ Ensure the system can handle thousands of strategies, portfolios, and packs.
 
 ---
 
-### Milestone 9: AI Agent Integration
-**Priority:** Future — after Milestones 1-8 are stable
+### Milestone 10: AI Agent Integration
+**Priority:** Future — after Milestones 1-9 are stable
 **Effort:** 2-4 weeks
 
 Enable AI agents to autonomously create packs, test strategies, and surface the best trading opportunities.
@@ -287,7 +306,7 @@ Enable AI agents to autonomously create packs, test strategies, and surface the 
 
 ---
 
-### Milestone 10: Marketplace Foundation
+### Milestone 11: Marketplace Foundation
 **Priority:** Future — after live trading is proven
 **Effort:** 4-8 weeks
 
