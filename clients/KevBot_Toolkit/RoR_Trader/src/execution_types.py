@@ -63,6 +63,7 @@ class ExecutionTypeModule:
     name: str = ''
     description: str = ''
     exec_type_codes: tuple = ()
+    display_code: str = ''  # Simplified code shown in UI (e.g., 'L' instead of 'L0'/'L1')
     contexts: tuple = ('entry',)  # Which contexts this type supports
 
     # Workflow steps for UI visualization
@@ -143,6 +144,7 @@ class ExecutionTypeModule:
             'slug': self.slug,
             'name': self.name,
             'description': self.description,
+            'display_code': self.display_code or (self.exec_type_codes[0] if self.exec_type_codes else ''),
             'exec_type_codes': list(self.exec_type_codes),
             'contexts': list(self.contexts),
             'steps': self.steps,
@@ -161,6 +163,7 @@ class BarCloseExecution(ExecutionTypeModule):
     name = 'Bar Close [C]'
     description = 'Enter at bar close price when the trigger condition is met at bar close.'
     exec_type_codes = ('C',)
+    display_code = 'C'
     contexts = ('entry', 'exit_signal')
 
     steps = [
@@ -194,8 +197,9 @@ class LevelExecution(ExecutionTypeModule):
 
     slug = 'level'
     name = 'Level [L]'
-    description = 'Enter at the indicator level price when price crosses the level within the bar. L0 uses current bar level, L1 uses previous bar level.'
+    description = 'Enter at the indicator level price when price crosses the level within the bar. The indicator determines whether the current or previous bar level is used.'
     exec_type_codes = ('L0', 'L1')
+    display_code = 'L'  # Simplified display for UI
     contexts = ('entry', 'exit_signal', 'stop', 'target')
 
     steps = [
@@ -242,6 +246,7 @@ class LevelCloseExecution(ExecutionTypeModule):
     name = 'Level-Close [LC]'
     description = 'Enter at indicator level when price crosses, then confirm at bar close. Bail if unconfirmed.'
     exec_type_codes = ('LC', 'HM', 'HL')
+    display_code = 'LC'  # Simplified display for UI
     contexts = ('entry',)
 
     steps = [
@@ -361,6 +366,7 @@ class CloseCloseExecution(ExecutionTypeModule):
     name = 'Close-Close [CC]'
     description = 'Enter at bar close, then confirm on next bar close. Bail if next bar does not confirm direction.'
     exec_type_codes = ('CC',)
+    display_code = 'CC'
     contexts = ('entry',)
 
     steps = [

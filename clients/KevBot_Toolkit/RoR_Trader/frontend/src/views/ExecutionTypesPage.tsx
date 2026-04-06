@@ -54,15 +54,11 @@ function ExecCard({ mod, onToggle, onDetails }: { mod: ExecTypeModule; onToggle:
     <Card>
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2 cursor-pointer" onClick={onDetails}>
+          <span className="text-xs font-mono font-bold px-2 py-1 rounded-full"
+            style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
+            [{mod.display_code}]
+          </span>
           <h3 className="text-sm font-semibold">{mod.name}</h3>
-          <div className="flex gap-1">
-            {mod.exec_type_codes.map((code) => (
-              <span key={code} className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-full"
-                style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
-                [{code}]
-              </span>
-            ))}
-          </div>
         </div>
         <Toggle enabled={mod.enabled} onToggle={onToggle} />
       </div>
@@ -111,14 +107,12 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         }
       />
 
-      {/* Exec type badges + contexts */}
+      {/* Badge + contexts */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
-        {mod.exec_type_codes.map((code) => (
-          <span key={code} className="text-[10px] font-mono font-semibold px-2 py-1 rounded-full"
-            style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
-            [{code}]
-          </span>
-        ))}
+        <span className="text-xs font-mono font-bold px-2 py-1 rounded-full"
+          style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
+          [{mod.display_code}]
+        </span>
         {mod.contexts.map((ctx) => {
           const colors = CONTEXT_COLORS[ctx] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
           return (
@@ -255,7 +249,7 @@ export default function ExecutionTypesPage() {
     <div>
       <PageHeader title="Execution Types" subtitle="How trades are entered and managed after a trigger fires. Enabled types are applied to all confluence pack triggers." />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="space-y-3">
         {(modules || []).map((mod) => (
           <ExecCard
             key={mod.slug}

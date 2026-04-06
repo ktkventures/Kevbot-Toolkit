@@ -9,6 +9,7 @@ export interface ExecTypeModule {
   slug: string;
   name: string;
   description: string;
+  display_code: string;
   exec_type_codes: string[];
   contexts: string[];
   enabled: boolean;
