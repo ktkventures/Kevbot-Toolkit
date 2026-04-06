@@ -55,6 +55,8 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
   const [sbStopPack, setSbStopPack] = useState('');
   const [sbTargetPack, setSbTargetPack] = useState('');
   const [sbHifi, setSbHifi] = useState(false);
+  const [sbConfluence, setSbConfluence] = useState('');
+  const [sbSecondaryTfs, setSbSecondaryTfs] = useState('');
   const [sbEqXAxis, setSbEqXAxis] = useState<'trade' | 'time'>('trade');
   const [sbZoomTrade, setSbZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
   const [sbLastConfig, setSbLastConfig] = useState<any>(null);
@@ -143,13 +145,19 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
 
   function handleRunBacktest() {
     if (!sbEntryTrigger) return;
+    // Detect bar count exit trigger and pass N as strategy-level param
+    const exitIds = sbExitTrigger ? [sbExitTrigger] : [];
+    const hasBarCountExit = exitIds.some(t => t.includes('bar_count'));
     const req: any = {
       symbol: sbSymbol, timeframe: sbTimeframe, direction: sbDirection, days: sbDays,
       entry_trigger_confluence_id: sbEntryTrigger,
-      exit_trigger_confluence_ids: sbExitTrigger ? [sbExitTrigger] : [],
+      exit_trigger_confluence_ids: exitIds,
       stop_loss_pack_id: sbStopPack || undefined,
       take_profit_pack_id: sbTargetPack || undefined,
       hifi_mode: sbHifi, include_chart_data: true,
+      ...(hasBarCountExit ? { bar_count_exit: 4 } : {}),
+      ...(sbConfluence.trim() ? { confluence: sbConfluence.split(',').map(s => s.trim()).filter(Boolean) } : {}),
+      ...(sbSecondaryTfs.trim() ? { secondary_tfs: sbSecondaryTfs.split(',').map(s => s.trim()).filter(Boolean) } : {}),
     };
     setSbLastConfig(req);
     sbBacktestMut.mutate(req);
@@ -207,6 +215,20 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
           <option value="">None</option>
           {sbTargetPackList.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
         </select>
+      </div>
+      <div>
+        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Confluence</label>
+        <input type="text" value={sbConfluence} onChange={(e) => setSbConfluence(e.target.value)}
+          placeholder="e.g. 5M-EMA_STACK-SML"
+          title="Comma-separated confluence records required for entry. Format: TF-INTERPRETER-STATE"
+          style={{ ...inputStyle, fontSize: '0.65rem' }} />
+      </div>
+      <div>
+        <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Secondary TFs</label>
+        <input type="text" value={sbSecondaryTfs} onChange={(e) => setSbSecondaryTfs(e.target.value)}
+          placeholder="e.g. 15Min,1H"
+          title="Comma-separated secondary timeframes for cross-TF confluence"
+          style={{ ...inputStyle, fontSize: '0.65rem' }} />
       </div>
     </>
   );

@@ -231,16 +231,19 @@ export default function SyncedChartPane({
 
     chartsRef.current = charts;
 
-    // ---- Cross-pane synchronization ----
-    // Ported from streamlit_lwc_fork/LightweightCharts.tsx lines 123-145
+    // ---- Cross-pane synchronization (time-based) ----
+    // Use visible time range instead of logical range to avoid index misalignment
+    // when panes have different numbers of data points (e.g., oscillator warmup).
     if (charts.length > 1) {
       for (const chart of charts) {
-        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
           if (syncingRef.current || !range) return;
           syncingRef.current = true;
           for (const other of charts) {
             if (other !== chart) {
-              other.timeScale().setVisibleLogicalRange({ from: range.from, to: range.to });
+              try {
+                other.timeScale().setVisibleRange(range);
+              } catch { /* ignore if range is invalid for this chart */ }
             }
           }
           syncingRef.current = false;
@@ -248,16 +251,9 @@ export default function SyncedChartPane({
       }
     }
 
-    // Fit content on the first (price) chart and let sync propagate
-    if (charts.length > 0) {
-      charts[0].timeScale().fitContent();
-      // Sync others to the same range
-      const range = charts[0].timeScale().getVisibleLogicalRange();
-      if (range && charts.length > 1) {
-        for (let ci = 1; ci < charts.length; ci++) {
-          charts[ci].timeScale().setVisibleLogicalRange(range);
-        }
-      }
+    // Fit all charts to content independently, then sync via time range
+    for (const chart of charts) {
+      chart.timeScale().fitContent();
     }
 
     // Resize handler
