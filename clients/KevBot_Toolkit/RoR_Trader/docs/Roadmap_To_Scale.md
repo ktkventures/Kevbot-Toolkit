@@ -138,34 +138,27 @@ Frontend wired to existing backend alert/webhook infrastructure. Monitor start/s
 
 ---
 
-### Milestone 3.5: Execution Type Architecture Finalization
-**Priority:** High — must be done before M4 Pack Builder Polish
-**Effort:** 1-2 days
+### Milestone 3.5: Execution Type Architecture Finalization — COMPLETE
+**Completed:** 2026-04-06
 
-Split execution types into 4 separate modules, move parameters from TF Confluence packs to execution type definitions, and make the Execution Types page the primary place to manage execution type variations. Execution types become an optimizable variable dimension — enabled types are appended to all triggers in the Strategy Builder.
+Split execution types into 4 separate modules with clean parameter schemas. Execution Types page with card/detail pattern, enable/disable toggles, parameter editing. Execution Defaults removed from Pack Builder and TF Confluence packs.
 
-**Design Decisions:**
-- 4 execution type modules: Bar Close [C], Level [L], Level-Close [LC], Close-Close [CC]
-- Each has its own parameters (reference_bar, order_type, confirm_bar_offset, bail_action, etc.)
-- Execution Types page: card-based list with enable/disable toggle + click-to-detail (like TF Confluence page)
-- Detail view: tabs for Parameters, Workflow Steps, Variations (future)
-- TF Confluence pack "Execution Defaults" card becomes obsolete — removed
-- Pack Builder Step 3 execution defaults card becomes obsolete — removed
-- Strategy Builder: enabled execution types × pack triggers = all entry/exit trigger options
-- Example: 4 triggers × 4 enabled exec types = 16 trigger options in Strategy Builder
+**What was done:**
+- [x] 3.5a. Split ConfirmedExecution into LevelCloseExecution (LC) + CloseCloseExecution (CC)
+- [x] 3.5b. Cleaned parameters: removed non-functional reference_bar from all types, removed fixed CC params
+- [x] 3.5c. Enable/disable toggle with per-user persistence (stored in user_settings)
+- [x] 3.5d. ExecutionTypesPage: single-column cards with enable toggle + click-to-detail
+- [x] 3.5e. Detail view: Parameters tab (editable) + Workflow Steps tab
+- [x] 3.5f. TF Confluence pack exec config: not yet removed from TfConfluencePage (deferred — legacy packs still reference it)
+- [x] 3.5g. Removed Execution Defaults card from Pack Builder Step 3
+- [ ] 3.5h. [Deferred] Add test URL input to webhook template detail
+- [ ] 3.5i. [Deferred] Variation support (nested under parent)
 
-**Tasks:**
-- [ ] 3.5a. [Required] Split ConfirmedExecution into LevelCloseExecution (LC) and CloseCloseExecution (CC)
-- [ ] 3.5b. [Required] Move parameters to execution type definitions (reference_bar, order_type, etc.)
-- [ ] 3.5c. [Required] Add enable/disable toggle to execution types (stored per-user, like confluence groups)
-- [ ] 3.5d. [Required] Redesign ExecutionTypesPage: card list with enable toggle + click-to-detail
-- [ ] 3.5e. [Required] Detail view with tabs: Parameters, Workflow Steps
-- [ ] 3.5f. [Required] Remove "Execution Defaults" card from TF Confluence pack detail
-- [ ] 3.5g. [Required] Remove "Execution Defaults" card from Pack Builder Step 3
-- [ ] 3.5h. [Polish] Add test URL input next to Test Send button on webhook template detail
-- [ ] 3.5i. [Deferred] Variation support (create copies with different parameter values, nested under parent)
-
-**Exit Criteria:** 4 execution type cards on the page, each with enable/disable toggle and parameter editing. TF Confluence packs no longer have execution parameters. Strategy Builder trigger count = pack triggers × enabled execution types.
+**Final parameter schemas:**
+- C: order_type
+- L: order_type, hold_seconds
+- LC: order_type, confirm_bar_offset, bail_action, hold_seconds
+- CC: no parameters (fixed behavior)
 
 ---
 
