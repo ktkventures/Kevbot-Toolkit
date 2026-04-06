@@ -226,7 +226,7 @@ export default function SyncedChartPane({
         }
       }
 
-      chart.timeScale().fitContent();
+      // Don't fitContent per-chart yet — do it once after sync is set up
     }
 
     chartsRef.current = charts;
@@ -245,6 +245,18 @@ export default function SyncedChartPane({
           }
           syncingRef.current = false;
         });
+      }
+    }
+
+    // Fit content on the first (price) chart and let sync propagate
+    if (charts.length > 0) {
+      charts[0].timeScale().fitContent();
+      // Sync others to the same range
+      const range = charts[0].timeScale().getVisibleLogicalRange();
+      if (range && charts.length > 1) {
+        for (let ci = 1; ci < charts.length; ci++) {
+          charts[ci].timeScale().setVisibleLogicalRange(range);
+        }
       }
     }
 

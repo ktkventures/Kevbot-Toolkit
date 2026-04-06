@@ -130,6 +130,10 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 - [ ] 4e. Pack versioning: installed pack is immutable, new versions create new packs
 - [ ] 4f. Delete protection: warn if strategies reference the pack
 - [ ] 4g. Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
+- [ ] 4h. **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Remove duplicate chart module. Show conditions as background color changes, triggers as markers on candles.
+- [ ] 4i. **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached, per-trigger breakdown
+- [ ] 4j. **Parity Simulator tab** — Nice-to-have. Backtest ↔ live engine parity comparison. May be complex; evaluate feasibility.
+- [ ] 4k. Create several user packs through the full Pack Builder flow and verify each one end-to-end
 
 **Exit Criteria:** User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder, Sandbox, and live alerts without manual intervention.
 
