@@ -175,11 +175,11 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                 {scenario.entry_drill && scenario.entry_drill.length > 0 && (
                   <div>
                     <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Drill-Down</p>
-                    <div style={{ minHeight: 120 }}>
+                    <div style={{ minHeight: 200 }}>
                       <SyncedChartPane
                         panes={[{
                           id: `entry-drill-${scenario.id}`,
-                          height: 120,
+                          height: 200,
                           series: [{
                             type: 'Candlestick' as const,
                             data: scenario.entry_drill.map((b: any) => ({
@@ -195,11 +195,11 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                 {scenario.exit_drill && scenario.exit_drill.length > 0 && (
                   <div>
                     <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Drill-Down</p>
-                    <div style={{ minHeight: 120 }}>
+                    <div style={{ minHeight: 200 }}>
                       <SyncedChartPane
                         panes={[{
                           id: `exit-drill-${scenario.id}`,
-                          height: 120,
+                          height: 200,
                           series: [{
                             type: 'Candlestick' as const,
                             data: scenario.exit_drill.map((b: any) => ({

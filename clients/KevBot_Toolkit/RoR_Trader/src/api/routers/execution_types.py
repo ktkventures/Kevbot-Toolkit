@@ -158,14 +158,14 @@ def get_execution_type_code(slug: str, user=Depends(get_current_user)):
 
 @router.get("/{slug}/scenarios")
 def get_scenarios(slug: str, user=Depends(get_current_user)):
-    """Find real trades that demonstrate each scenario type.
+    """Return cherry-picked scenario examples from static fixtures.
 
-    Runs a quick backtest on NVDA 5Min, then categorizes trades by exit reason
-    to find examples of: stop loss, target hit, signal exit, bar count exit,
-    and confirmation bail (LC/CC). Returns chart bars + workflow trace for each.
+    Uses pre-saved trade data from NVDA 5Min with EMA PP V2. The chart bars
+    and indicator data are static; the workflow trace is built dynamically
+    based on the execution type being viewed.
     """
     from execution_types import list_modules
-    import pandas as pd
+    from pathlib import Path
 
     module = None
     for m in list_modules():
@@ -177,7 +177,76 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
 
     exec_code = module.display_code
 
-    # Run a real backtest to get trades with different exit reasons
+    # Load static fixture data (cherry-picked trades from NVDA 5Min with EMA PP V2)
+    fixture_path = Path(__file__).resolve().parent.parent.parent / "scenario_fixtures.json"
+    if not fixture_path.exists():
+        return {'slug': slug, 'display_code': exec_code, 'scenarios': [],
+                'error': 'Scenario fixtures not found. Run scenario fixture generator.'}
+
+    fixture = json.loads(fixture_path.read_text())
+
+    SCENARIO_META = {
+        'stop_loss': {'name': 'Stop Loss Hit', 'description': 'Price entered on EMA 9 cross, then reversed and hit the ATR-based stop loss. Exit at stop level (or bar open if gapped past).'},
+        'target': {'name': 'Target Hit', 'description': 'Price entered on EMA 9 cross, then ran to the 2R take profit target. Exit at target level.'},
+        'bar_count_exit': {'name': 'Bar Count Exit', 'description': 'Price entered on EMA 9 cross. Position held for 8 bars without hitting stop or target. Exit at bar close.'},
+    }
+
+    scenarios = []
+    for reason, trade_data in fixture.get('scenarios', {}).items():
+        meta = SCENARIO_META.get(reason, {'name': reason.replace('_', ' ').title(), 'description': f'Exit reason: {reason}'})
+        ep = trade_data['entry_price']
+        xp = trade_data['exit_price']
+        sp = trade_data['stop_price']
+        tp = trade_data.get('target_price')
+        rm = trade_data['r_multiple']
+        d = trade_data['direction']
+        et = trade_data.get('entry_time', '')
+        xt = trade_data.get('exit_time', '')
+
+        markers = [{'time': et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
+        xc = '#4CAF50' if rm >= 0 else '#F44336'
+        if xt:
+            markers.append({'time': xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
+
+        # Dynamic workflow trace based on THIS execution type
+        ws = []
+        if exec_code in ('C', 'CC'):
+            ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
+        else:
+            ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
+        ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'price': ep, 'color': 'var(--green)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{d.lower()}_market', 'isWebhook': True})
+        if exec_code in ('LC', 'CC'):
+            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation'})
+            ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
+        ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else '')})
+        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{d.lower()}_market', 'isWebhook': True})
+
+        scenarios.append({
+            'id': reason, 'name': meta['name'], 'description': meta['description'],
+            'direction': d, 'entry_price': ep, 'exit_price': xp,
+            'stop_price': sp, 'target_price': tp, 'exit_reason': reason,
+            'r_multiple': rm, 'passed': True,
+            'chart_bars': trade_data['chart_bars'],
+            'ema_data': trade_data.get('ema_data', []),
+            'ema_label': fixture.get('indicator', 'EMA 9'),
+            'markers': markers, 'workflow_steps': ws,
+            'entry_drill': trade_data.get('entry_drill', []),
+            'exit_drill': trade_data.get('exit_drill', []),
+            'entry_markers': [{'time': et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
+            'exit_markers': [{'time': xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if xt else [],
+        })
+
+    return {
+        'slug': slug, 'display_code': exec_code,
+        'symbol': fixture.get('symbol', 'NVDA'),
+        'indicator': fixture.get('indicator', 'EMA 9'),
+        'pack': fixture.get('pack', 'EMA Price Position V2'),
+        'scenarios': scenarios,
+    }
+
+    # === OLD DYNAMIC CODE BELOW (kept as reference, never reached) ===
     try:
         from services import prepare_data_with_indicators, unified_trades
         from confluence_groups import get_entry_triggers, get_enabled_groups
