@@ -75,8 +75,11 @@ class ExecutionTypeModule:
     # Detailed description for the Description tab
     detailed_description: dict = {}
 
-    # Placeholder definitions — how each webhook placeholder is determined for this exec type
+    # Placeholder definitions — how each webhook placeholder is determined (for AI context)
     placeholder_definitions: dict = {}
+
+    # Technical specs — fixed values/decisions visible to the user as a reference
+    technical_specs: list = []
 
     def check_entry_signal(
         self,
@@ -157,6 +160,7 @@ class ExecutionTypeModule:
             'parameters_schema': self.parameters_schema,
             'detailed_description': self.detailed_description,
             'placeholder_definitions': self.placeholder_definitions,
+            'technical_specs': self.technical_specs,
         }
 
 
@@ -242,6 +246,16 @@ class BarCloseExecution(ExecutionTypeModule):
             },
         },
     }
+
+    technical_specs = [
+        {'key': 'Order Type', 'value': 'Market', 'note': 'Fills at market price (bar close). No limit order placement.'},
+        {'key': 'Fill Price', 'value': 'Bar close price', 'note': 'The last traded price when the bar closes.'},
+        {'key': 'Reference Bar', 'value': 'Current bar', 'note': 'Evaluates the bar that just closed. Indicators use current bar values.'},
+        {'key': 'Stop Calculation', 'value': 'Current bar indicators', 'note': 'ATR and other indicators from the bar that triggered entry.'},
+        {'key': 'Entry Bar Protection', 'value': 'None', 'note': 'Stop/target are checked immediately — no skip on entry bar.'},
+        {'key': 'Confirmation', 'value': 'None', 'note': 'No confirmation step. Entry is final at bar close.'},
+        {'key': 'Webhook Event', 'value': 'entry_long_market / entry_short_market', 'note': 'Fires immediately on fill.'},
+    ]
 
     steps = {
         'entry': [
@@ -335,6 +349,17 @@ class LevelExecution(ExecutionTypeModule):
             },
         },
     }
+
+    technical_specs = [
+        {'key': 'Order Type', 'value': 'Market', 'note': 'Fills at market price (indicator level). No limit order.'},
+        {'key': 'Fill Price', 'value': 'Indicator level', 'note': 'The exact indicator value at the cross. More favorable than bar close.'},
+        {'key': 'Reference Bar', 'value': 'From confluence pack', 'note': 'The indicator determines current vs previous bar level. Not set by the execution type.'},
+        {'key': 'Stop Calculation', 'value': 'Previous bar indicators', 'note': 'Uses previous bar ATR/indicators since entry happens mid-bar (current bar not closed).'},
+        {'key': 'Entry Bar Protection', 'value': 'Yes — stop/target skipped', 'note': 'The entry bar\'s OHLC includes pre-entry price action, so stop/target are not checked until the next bar.'},
+        {'key': 'Confirmation', 'value': 'None', 'note': 'No confirmation. Entry is final at level cross.'},
+        {'key': 'Webhook Event', 'value': 'entry_long_market / entry_short_market', 'note': 'Fires immediately on fill at level.'},
+        {'key': 'Also Used For', 'value': 'Stops and Targets', 'note': 'Level [L] is the default execution type for stop loss and take profit (level cross detection).'},
+    ]
 
     steps = {
         'entry': [
@@ -445,6 +470,17 @@ class LevelCloseExecution(ExecutionTypeModule):
             },
         },
     }
+
+    technical_specs = [
+        {'key': 'Order Type', 'value': 'Market', 'note': 'Initial fill is at market (level price). Bail is at market or limit.'},
+        {'key': 'Fill Price', 'value': 'Indicator level', 'note': 'Same as L-type for the initial entry fill.'},
+        {'key': 'Confirmation', 'value': 'Same-bar close (default)', 'note': 'After filling at the level, waits for the bar to close. Checks if close is on the correct side of the indicator level.'},
+        {'key': 'Confirmation Offset', 'value': '0 bars (same bar)', 'note': 'Can be 0 (same bar close) or 1 (next bar close). Fixed per execution type definition.'},
+        {'key': 'Bail Action', 'value': 'Exit at market', 'note': 'If confirmation fails, exit at market (next bar open). Alternative: exit at limit (entry price for breakeven).'},
+        {'key': 'Stop Calculation', 'value': 'Previous bar indicators', 'note': 'Same as L-type — entry happens mid-bar.'},
+        {'key': 'Entry Bar Protection', 'value': 'Yes — stop/target skipped', 'note': 'Same as L-type.'},
+        {'key': 'Webhook Events', 'value': 'entry → bail/exit', 'note': 'Entry webhook fires on fill. If bail: exit webhook fires. If confirmed: normal exit webhook on later exit.'},
+    ]
 
     steps = {
         'entry': [
@@ -610,6 +646,17 @@ class CloseCloseExecution(ExecutionTypeModule):
             },
         },
     }
+
+    technical_specs = [
+        {'key': 'Order Type', 'value': 'Market', 'note': 'Entry fills at market (bar close). Bail fills at market (next bar open).'},
+        {'key': 'Fill Price', 'value': 'Bar close price', 'note': 'Same as C-type for the initial entry.'},
+        {'key': 'Confirmation', 'value': 'Next bar close (always)', 'note': 'After entry, waits for the next bar to close. Checks if it confirms the entry direction.'},
+        {'key': 'Confirmation Offset', 'value': '1 bar (fixed)', 'note': 'Always waits exactly one bar. Cannot be adjusted.'},
+        {'key': 'Bail Action', 'value': 'Exit at market (fixed)', 'note': 'If next bar doesn\'t confirm, exit at the following bar\'s open price. Always market, no limit option.'},
+        {'key': 'Stop Calculation', 'value': 'Current bar indicators', 'note': 'Same as C-type — entry is at bar close, so current bar indicators are available.'},
+        {'key': 'Entry Bar Protection', 'value': 'None', 'note': 'Same as C-type — no skip. Stop/target checked from entry bar.'},
+        {'key': 'Webhook Events', 'value': 'entry → bail/exit', 'note': 'Entry webhook fires on fill. If bail: exit webhook on next bar open. If confirmed: normal exit webhook later.'},
+    ]
 
     steps = {
         'entry': [

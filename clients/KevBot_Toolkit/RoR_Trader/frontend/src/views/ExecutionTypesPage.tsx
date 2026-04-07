@@ -271,7 +271,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Description', 'Placeholders', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Description' && (
@@ -374,39 +374,26 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                           </Card>
                         )}
                       </div>
+                      {/* Technical Specifications */}
+                      {(mod as any).technical_specs && (mod as any).technical_specs.length > 0 && (
+                        <Card>
+                          <h4 className="text-sm font-medium mb-3">Technical Specifications</h4>
+                          <div className="space-y-2">
+                            {((mod as any).technical_specs as any[]).map((spec: any, i: number) => (
+                              <div key={i} className="flex items-start gap-3 rounded-lg px-3 py-2"
+                                style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                                <span className="text-[10px] font-medium w-36 flex-shrink-0 pt-0.5" style={{ color: 'var(--text-muted)' }}>{spec.key}</span>
+                                <div className="flex-1">
+                                  <span className="text-xs font-mono font-bold" style={{ color: 'var(--accent)' }}>{spec.value}</span>
+                                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{spec.note}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </Card>
+                      )}
                     </>
                   );
-                })()}
-              </div>
-            )}
-
-            {tab === 'Placeholders' && (
-              <div className="space-y-4">
-                {(() => {
-                  const defs = (mod as any).placeholder_definitions || {};
-                  if (Object.keys(defs).length === 0) {
-                    return <Card><p className="text-xs" style={{ color: 'var(--text-muted)' }}>No placeholder definitions available.</p></Card>;
-                  }
-                  return Object.entries(defs).map(([groupKey, group]: [string, any]) => (
-                    <Card key={groupKey}>
-                      <h4 className="text-sm font-medium mb-3">{group.label}</h4>
-                      <div className="space-y-3">
-                        {Object.entries(group.placeholders as Record<string, any>).map(([key, ph]: [string, any]) => (
-                          <div key={key} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
-                                {`{{${key}}}`}
-                              </span>
-                              <span className="text-[10px] font-mono" style={{ color: 'var(--green)' }}>
-                                {ph.value}
-                              </span>
-                            </div>
-                            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>{ph.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </Card>
-                  ));
                 })()}
               </div>
             )}
