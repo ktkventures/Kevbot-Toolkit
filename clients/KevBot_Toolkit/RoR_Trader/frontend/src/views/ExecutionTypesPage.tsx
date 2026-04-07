@@ -8,7 +8,7 @@ import TabBar from '@/components/TabBar';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
-import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
+import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
 /* STYLES                                                                      */
@@ -90,8 +90,6 @@ function ExecCard({ mod, onToggle, onDetails }: { mod: ExecTypeModule; onToggle:
 /* ========================================================================= */
 /* DETAIL VIEW                                                                 */
 /* ========================================================================= */
-
-const SIM_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H'] as const;
 
 function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
   const [scenarios, setScenarios] = useState<any>(null);
@@ -223,14 +221,7 @@ function CodeBlock({ slug }: { slug: string }) {
 function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }) {
   const updateParams = useUpdateExecTypeParams();
   const toggleMut = useToggleExecutionType();
-  const simulateMut = useSimulateExecType();
   const createVariation = useCreateVariation();
-
-  // Simulation config
-  const [simSymbol, setSimSymbol] = useState('NVDA');
-  const [simTimeframe, setSimTimeframe] = useState('5Min');
-  const [simDirection, setSimDirection] = useState<'LONG' | 'SHORT'>('LONG');
-  const [simDays, setSimDays] = useState(7);
 
   return (
     <div>
@@ -335,46 +326,71 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
             )}
 
             {tab === 'Workflow Steps' && (
-              <Card>
-                <h4 className="text-sm font-medium mb-4">Execution Workflow</h4>
-                <div className="space-y-0">
-                  {mod.steps.map((step, i) => (
-                    <div key={i}>
-                      <div className="flex items-start gap-3">
-                        <div className="flex flex-col items-center">
-                          <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                            style={{ background: 'var(--accent)', color: 'white' }}>
-                            {i + 1}
-                          </div>
-                          {i < mod.steps.length - 1 && (
-                            <div className="w-0.5 h-6" style={{ background: 'var(--border)' }} />
-                          )}
+              <div className="space-y-4">
+                {(() => {
+                  const CONTEXT_LABELS: Record<string, { label: string; color: string; badge: string }> = {
+                    entry: { label: 'Entry Workflow', color: 'var(--green)', badge: mod.display_code },
+                    exit_signal: { label: 'Exit Signal Workflow', color: 'var(--red)', badge: mod.display_code },
+                    stop: { label: 'Stop Loss Workflow', color: 'var(--orange)', badge: 'L' },
+                    target: { label: 'Take Profit Workflow', color: 'var(--accent)', badge: 'L' },
+                  };
+                  const stepsDict = (mod.steps && typeof mod.steps === 'object' && !Array.isArray(mod.steps))
+                    ? mod.steps as Record<string, any[]>
+                    : { entry: mod.steps as any[] || [] };
+
+                  return Object.entries(stepsDict).map(([context, contextSteps]) => {
+                    const meta = CONTEXT_LABELS[context] || { label: context, color: 'var(--text-muted)', badge: '?' };
+                    return (
+                      <Card key={context}>
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-xs font-mono font-bold px-1.5 py-0.5 rounded-full"
+                            style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
+                            [{meta.badge}]
+                          </span>
+                          <h4 className="text-sm font-medium" style={{ color: meta.color }}>{meta.label}</h4>
                         </div>
-                        <div className="pb-3">
-                          <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{step.label}</p>
-                          <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{step.action}</p>
-                          {step.action === 'branch' && step.if_confirmed && (
-                            <div className="mt-2 ml-2 space-y-2">
-                              <div className="rounded px-2 py-1" style={{ background: 'var(--green-muted)', borderLeft: '2px solid var(--green)' }}>
-                                <p className="text-[10px] font-medium" style={{ color: 'var(--green)' }}>If confirmed:</p>
-                                {(step.if_confirmed as any[]).map((s: any, j: number) => (
-                                  <p key={j} className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
-                                ))}
-                              </div>
-                              <div className="rounded px-2 py-1" style={{ background: 'var(--red-muted)', borderLeft: '2px solid var(--red)' }}>
-                                <p className="text-[10px] font-medium" style={{ color: 'var(--red)' }}>If NOT confirmed:</p>
-                                {(step.if_not_confirmed as any[]).map((s: any, j: number) => (
-                                  <p key={j} className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
-                                ))}
+                        <div className="space-y-0">
+                          {(contextSteps as any[]).map((step: any, i: number) => (
+                            <div key={i}>
+                              <div className="flex items-start gap-3">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                                    style={{ background: step.action === 'fire_webhook' ? 'var(--accent)' : 'var(--bg-input)', color: step.action === 'fire_webhook' ? 'white' : 'var(--text-muted)', border: step.action === 'fire_webhook' ? 'none' : '1px solid var(--border)' }}>
+                                    {i + 1}
+                                  </div>
+                                  {i < contextSteps.length - 1 && (
+                                    <div className="w-0.5 h-4" style={{ background: 'var(--border)' }} />
+                                  )}
+                                </div>
+                                <div className="pb-2">
+                                  <p className="text-xs" style={{ color: step.action === 'fire_webhook' ? 'var(--accent)' : 'var(--text-primary)' }}>{step.label}</p>
+                                  <p className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>{step.action}</p>
+                                  {step.action === 'branch' && step.if_confirmed && (
+                                    <div className="mt-2 ml-2 space-y-2">
+                                      <div className="rounded px-2 py-1" style={{ background: 'var(--green-muted)', borderLeft: '2px solid var(--green)' }}>
+                                        <p className="text-[10px] font-medium" style={{ color: 'var(--green)' }}>If confirmed:</p>
+                                        {(step.if_confirmed as any[]).map((s: any, j: number) => (
+                                          <p key={j} className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
+                                        ))}
+                                      </div>
+                                      <div className="rounded px-2 py-1" style={{ background: 'var(--red-muted)', borderLeft: '2px solid var(--red)' }}>
+                                        <p className="text-[10px] font-medium" style={{ color: 'var(--red)' }}>If NOT confirmed:</p>
+                                        {(step.if_not_confirmed as any[]).map((s: any, j: number) => (
+                                          <p key={j} className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          )}
+                          ))}
                         </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
+                      </Card>
+                    );
+                  });
+                })()}
+              </div>
             )}
             {tab === 'Backtest' && (
               <div className="space-y-4">
@@ -387,167 +403,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
               </div>
             )}
 
-            {tab === 'OLD_Simulation' && (
-              <div className="space-y-4">
-                <Card>
-                  <h4 className="text-sm font-medium mb-3">Legacy Simulation</h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
-                    <div>
-                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
-                      <input type="text" value={simSymbol} onChange={(e) => setSimSymbol(e.target.value.toUpperCase())} style={inputStyle} />
-                    </div>
-                    <div>
-                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
-                      <select value={simTimeframe} onChange={(e) => setSimTimeframe(e.target.value)} style={inputStyle}>
-                        {SIM_TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Direction</label>
-                      <select value={simDirection} onChange={(e) => setSimDirection(e.target.value as 'LONG' | 'SHORT')} style={inputStyle}>
-                        <option value="LONG">LONG</option>
-                        <option value="SHORT">SHORT</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
-                      <input type="number" value={simDays} min={1} max={30} onChange={(e) => setSimDays(parseInt(e.target.value) || 7)} style={inputStyle} />
-                    </div>
-                    <button style={{ ...btnPrimary, opacity: simulateMut.isPending ? 0.5 : 1 }}
-                      disabled={simulateMut.isPending}
-                      onClick={() => simulateMut.mutate({ slug: mod.slug, params: { symbol: simSymbol, timeframe: simTimeframe, direction: simDirection, days: simDays } })}>
-                      {simulateMut.isPending ? 'Running...' : 'Run Simulation'}
-                    </button>
-                  </div>
-                </Card>
-
-                {/* Error */}
-                {simulateMut.isError && (
-                  <Card>
-                    <p className="text-sm" style={{ color: 'var(--red)' }}>
-                      Simulation failed: {simulateMut.error instanceof Error ? simulateMut.error.message : 'Unknown error'}
-                    </p>
-                  </Card>
-                )}
-
-                {/* Results */}
-                {simulateMut.data && (
-                  <Card>
-                    <div className="flex items-center justify-between mb-4">
-                      <h4 className="text-sm font-medium">Execution Trace</h4>
-                      <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                        <span>{simulateMut.data.symbol}</span>
-                        <span>{simulateMut.data.direction}</span>
-                        <span>{simulateMut.data.timeframe}</span>
-                        <span className={simulateMut.data.confirmed ? '' : ''} style={{ color: simulateMut.data.confirmed ? 'var(--green)' : 'var(--red)' }}>
-                          {simulateMut.data.confirmed ? 'Confirmed' : 'Not Confirmed (Bail)'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Summary strip */}
-                    <div className="grid grid-cols-4 gap-3 mb-4">
-                      <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                        <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Fill Price</p>
-                        <p className="text-sm font-mono font-bold">${simulateMut.data.fill_price?.toFixed(2)}</p>
-                      </div>
-                      {simulateMut.data.stop_price && (
-                        <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Stop</p>
-                          <p className="text-sm font-mono font-bold" style={{ color: 'var(--red)' }}>${simulateMut.data.stop_price?.toFixed(2)}</p>
-                        </div>
-                      )}
-                      {simulateMut.data.target_price && (
-                        <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Target</p>
-                          <p className="text-sm font-mono font-bold" style={{ color: 'var(--green)' }}>${simulateMut.data.target_price?.toFixed(2)}</p>
-                        </div>
-                      )}
-                      <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                        <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trigger</p>
-                        <p className="text-sm font-mono">{simulateMut.data.trigger_time?.substring(11, 19)}</p>
-                      </div>
-                    </div>
-
-                    {/* Mini chart */}
-                    {simulateMut.data.chart_bars && simulateMut.data.chart_bars.length > 0 && (
-                      <div className="mb-4" style={{ minHeight: 250 }}>
-                        <SyncedChartPane
-                          panes={[{
-                            id: 'sim-price',
-                            height: 250,
-                            series: [{
-                              type: 'Candlestick' as const,
-                              data: simulateMut.data.chart_bars.map((b) => ({
-                                time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                              })),
-                              markers: simulateMut.data.chart_markers || [],
-                              priceLines: [
-                                ...(simulateMut.data.stop_price ? [{
-                                  price: simulateMut.data.stop_price,
-                                  color: '#F44336', lineWidth: 1, lineStyle: 2,
-                                  axisLabelVisible: true, title: 'Stop',
-                                }] : []),
-                                ...(simulateMut.data.target_price ? [{
-                                  price: simulateMut.data.target_price,
-                                  color: '#4CAF50', lineWidth: 1, lineStyle: 2,
-                                  axisLabelVisible: true, title: 'Target',
-                                }] : []),
-                              ],
-                            }],
-                          }]}
-                        />
-                      </div>
-                    )}
-
-                    {/* Step-by-step trace */}
-                    <div className="space-y-0">
-                      {simulateMut.data.steps.map((step, i) => {
-                        const isWebhook = step.action === 'fire_webhook';
-                        const isExit = step.action === 'exit';
-                        const isBail = step.action === 'bail';
-                        const isConfirm = step.action === 'confirmation_check';
-                        const stepColor = isWebhook ? 'var(--accent)' : isBail ? 'var(--red)' : isExit ? (step.r_multiple != null && step.r_multiple >= 0 ? 'var(--green)' : 'var(--red)') : isConfirm ? (step.confirmed ? 'var(--green)' : 'var(--red)') : 'var(--text-primary)';
-
-                        return (
-                          <div key={i} className="flex items-start gap-3">
-                            <div className="flex flex-col items-center">
-                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
-                                style={{ background: isWebhook ? 'var(--accent)' : 'var(--bg-input)', color: isWebhook ? 'white' : 'var(--text-muted)', border: isWebhook ? 'none' : '1px solid var(--border)' }}>
-                                {i + 1}
-                              </div>
-                              {i < simulateMut.data!.steps.length - 1 && (
-                                <div className="w-0.5 h-4" style={{ background: 'var(--border)' }} />
-                              )}
-                            </div>
-                            <div className="pb-2">
-                              <p className="text-xs" style={{ color: stepColor }}>{step.label}</p>
-                              <div className="flex gap-2 mt-0.5">
-                                <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>{step.action}</span>
-                                {step.time && <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>bar {step.bar}</span>}
-                                {step.price != null && <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>${step.price.toFixed(2)}</span>}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </Card>
-                )}
-
-                {/* Empty state */}
-                {!simulateMut.data && !simulateMut.isPending && !simulateMut.isError && (
-                  <Card>
-                    <div className="text-center py-8">
-                      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Click <strong>Run Simulation</strong> to test this execution type on real market data.</p>
-                      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                        The simulation finds a trigger signal and traces the [{mod.display_code}] execution process step by step, including webhook events.
-                      </p>
-                    </div>
-                  </Card>
-                )}
-              </div>
-            )}
+            {/* Old simulation removed — replaced by Backtest tab with SandboxPanel */}
 
             {tab === 'Scenarios' && <ScenariosTab slug={mod.slug} displayCode={mod.display_code} />}
 

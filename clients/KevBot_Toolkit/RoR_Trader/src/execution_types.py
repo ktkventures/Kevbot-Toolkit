@@ -147,7 +147,7 @@ class ExecutionTypeModule:
             'display_code': self.display_code or (self.exec_type_codes[0] if self.exec_type_codes else ''),
             'exec_type_codes': list(self.exec_type_codes),
             'contexts': list(self.contexts),
-            'steps': self.steps,
+            'steps': self.steps,  # dict keyed by context (entry, exit_signal, stop, target)
             'parameters_schema': self.parameters_schema,
         }
 
@@ -166,14 +166,20 @@ class BarCloseExecution(ExecutionTypeModule):
     display_code = 'C'
     contexts = ('entry', 'exit_signal')
 
-    steps = [
-        {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
-        {'action': 'fill', 'label': 'Fill at bar close price', 'price': 'close'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
-        {'action': 'plot_marker', 'label': 'Plot entry marker', 'symbol': 'cross', 'color_key': 'entry_color'},
-        {'action': 'manage_position', 'label': 'Monitor stop/target/exit triggers until exit'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
-    ]
+    steps = {
+        'entry': [
+            {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
+            {'action': 'fill', 'label': 'Fill at bar close price', 'price': 'close'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot entry marker', 'symbol': 'cross', 'color_key': 'entry_color'},
+        ],
+        'exit_signal': [
+            {'action': 'check_trigger', 'label': 'Check bar-close exit trigger boolean'},
+            {'action': 'fill', 'label': 'Fill at bar close price', 'price': 'close'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot exit marker', 'symbol': 'cross', 'color_key': 'exit_color'},
+        ],
+    }
 
     parameters_schema = {
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
@@ -204,14 +210,32 @@ class LevelExecution(ExecutionTypeModule):
     display_code = 'L'
     contexts = ('entry', 'exit_signal', 'stop', 'target')
 
-    steps = [
-        {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
-        {'action': 'fill', 'label': 'Fill at indicator level price', 'price': 'level'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
-        {'action': 'plot_marker', 'label': 'Plot entry marker at level', 'symbol': 'cross', 'color_key': 'entry_color'},
-        {'action': 'manage_position', 'label': 'Monitor stop/target/exit triggers until exit'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
-    ]
+    steps = {
+        'entry': [
+            {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
+            {'action': 'fill', 'label': 'Fill at indicator level price', 'price': 'level'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot entry marker at level', 'symbol': 'cross', 'color_key': 'entry_color'},
+        ],
+        'exit_signal': [
+            {'action': 'check_level_cross', 'label': 'Check if price crossed exit level within bar'},
+            {'action': 'fill', 'label': 'Fill at level price', 'price': 'level'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot exit marker', 'symbol': 'cross', 'color_key': 'exit_color'},
+        ],
+        'stop': [
+            {'action': 'check_level_cross', 'label': 'Check if price crossed stop level within bar'},
+            {'action': 'fill', 'label': 'Fill at stop level (gap-aware: fill at bar open if gapped past)'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot stop marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
+        ],
+        'target': [
+            {'action': 'check_level_cross', 'label': 'Check if price crossed target level within bar'},
+            {'action': 'fill', 'label': 'Fill at target level (gap-aware: fill at bar open if gapped past)'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot target marker', 'symbol': 'cross', 'color_key': 'exit_win_color'},
+        ],
+    }
 
     parameters_schema = {
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
@@ -253,24 +277,24 @@ class LevelCloseExecution(ExecutionTypeModule):
     display_code = 'LC'
     contexts = ('entry',)
 
-    steps = [
-        {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
-        {'action': 'fill', 'label': 'Fill at indicator level price'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
-        {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
-        {'action': 'wait_for_confirmation', 'label': 'Wait for bar-close confirmation (offset: confirm_bar_offset bars)'},
-        {'action': 'branch', 'label': 'Check if bar close confirms direction',
-         'if_confirmed': [
-             {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
-             {'action': 'manage_position', 'label': 'Monitor stop/target/exit triggers until exit'},
-             {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
-         ],
-         'if_not_confirmed': [
-             {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market (bail)', 'event': 'exit_{{direction}}_market'},
-             {'action': 'bail', 'label': 'Execute bail action (market exit or limit at entry price)'},
-             {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
-         ]},
-    ]
+    steps = {
+        'entry': [
+            {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
+            {'action': 'fill', 'label': 'Fill at indicator level price'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
+            {'action': 'wait_for_confirmation', 'label': 'Wait for bar-close confirmation (offset: confirm_bar_offset bars)'},
+            {'action': 'branch', 'label': 'Check if bar close confirms direction',
+             'if_confirmed': [
+                 {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
+             ],
+             'if_not_confirmed': [
+                 {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market (bail)', 'event': 'exit_{{direction}}_market'},
+                 {'action': 'bail', 'label': 'Execute bail action (market exit or limit at entry price)'},
+                 {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
+             ]},
+        ],
+    }
 
     parameters_schema = {
         'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
@@ -376,24 +400,24 @@ class CloseCloseExecution(ExecutionTypeModule):
     display_code = 'CC'
     contexts = ('entry',)
 
-    steps = [
-        {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
-        {'action': 'fill', 'label': 'Fill at bar close price'},
-        {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
-        {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
-        {'action': 'wait_for_next_bar', 'label': 'Wait for next bar to close'},
-        {'action': 'branch', 'label': 'Check if next bar confirms direction',
-         'if_confirmed': [
-             {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
-             {'action': 'manage_position', 'label': 'Monitor stop/target/exit triggers until exit'},
-             {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market', 'event': 'exit_{{direction}}_market'},
-         ],
-         'if_not_confirmed': [
-             {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market (bail)', 'event': 'exit_{{direction}}_market'},
-             {'action': 'bail', 'label': 'Exit at market (bail)'},
-             {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
-         ]},
-    ]
+    steps = {
+        'entry': [
+            {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
+            {'action': 'fill', 'label': 'Fill at bar close price'},
+            {'action': 'fire_webhook', 'label': 'Fire webhook: entry_{{direction}}_market', 'event': 'entry_{{direction}}_market'},
+            {'action': 'plot_marker', 'label': 'Plot pending entry marker', 'symbol': 'circle', 'color_key': 'entry_color'},
+            {'action': 'wait_for_next_bar', 'label': 'Wait for next bar to close'},
+            {'action': 'branch', 'label': 'Check if next bar confirms direction',
+             'if_confirmed': [
+                 {'action': 'plot_marker', 'label': 'Plot confirmed marker', 'symbol': 'cross', 'color_key': 'entry_color'},
+             ],
+             'if_not_confirmed': [
+                 {'action': 'fire_webhook', 'label': 'Fire webhook: exit_{{direction}}_market (bail)', 'event': 'exit_{{direction}}_market'},
+                 {'action': 'bail', 'label': 'Exit at market (bail)'},
+                 {'action': 'plot_marker', 'label': 'Plot bail marker', 'symbol': 'xcross', 'color_key': 'exit_stop_color'},
+             ]},
+        ],
+    }
 
     # CC has fixed behavior — no configurable parameters
     parameters_schema = {}
