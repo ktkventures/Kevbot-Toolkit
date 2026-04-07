@@ -10,7 +10,7 @@
  * Data flows via props (not refs) to avoid Next.js dynamic() ref forwarding issues.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import ReplayControls from '@/components/ReplayControls';
@@ -201,6 +201,19 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     return [{ data: replay.exitBars, markers: arrows }, crossData];
   }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers, scenario.exit_price, trade, isWin]);
 
+  // Match main chart height to workflow panel
+  const workflowRef = useRef<HTMLDivElement>(null);
+  const [chartHeight, setChartHeight] = useState(300);
+  useEffect(() => {
+    if (!workflowRef.current) return;
+    const ro = new ResizeObserver(() => {
+      const h = workflowRef.current?.offsetHeight || 300;
+      setChartHeight(Math.max(300, h)); // minimum 300px
+    });
+    ro.observe(workflowRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   // Format placeholder times
   const formatPlaceholderTime = (unixSec: number) => {
     const d = new Date(unixSec * 1000);
@@ -226,12 +239,12 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
 
       {/* Row 1: Main chart (60%) + Controls & Workflow (40%) */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Main chart */}
+        {/* Main chart — height matches workflow panel */}
         <div className="lg:col-span-3">
-          <div style={{ minHeight: 300 }}>
+          <div style={{ minHeight: 300, height: chartHeight }}>
             <ReplayableChart
               id={`main-${scenario.id}`}
-              height={300}
+              height={chartHeight}
               seriesSetup={mainSeriesSetup}
               seriesData={mainSeriesData}
               upColor={chartPrefs.candleUp}
@@ -242,7 +255,7 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
         </div>
 
         {/* Controls + Workflow */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2" ref={workflowRef}>
           <div className="rounded-lg p-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
             {/* Replay controls */}
             <div className="mb-3">

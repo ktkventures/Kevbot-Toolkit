@@ -216,6 +216,13 @@ export default function ReplayableChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Update chart height when prop changes
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({ height });
+    }
+  }, [height]);
+
   // Push data to series whenever seriesData prop changes
   useEffect(() => {
     if (!seriesData || seriesRef.current.length === 0) return;
