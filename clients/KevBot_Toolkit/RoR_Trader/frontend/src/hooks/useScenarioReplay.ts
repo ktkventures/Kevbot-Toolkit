@@ -57,6 +57,10 @@ export interface ReplayState {
   mainChartMarkers: any[];
   mainChartOverlays: { name: string; data: any[] }[];
 
+  // Trade times (unix seconds)
+  entryTime: number;
+  exitTime: number;
+
   // Hi-Fi charts (1s bars)
   entryBars: any[] | null;
   exitBars: any[] | null;
@@ -400,6 +404,7 @@ export default function useScenarioReplay(
   return {
     currentTime, startTime, endTime, totalDurationSec, elapsedSec,
     interval, isAtStart, isAtEnd,
+    entryTime, exitTime,
     mainChartBars, mainChartMarkers, mainChartOverlays,
     entryBars, exitBars, entryVisible, exitVisible,
     entryFullyRevealed, exitFullyRevealed,

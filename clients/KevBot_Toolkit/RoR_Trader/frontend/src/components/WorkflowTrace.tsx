@@ -43,62 +43,6 @@ export default function WorkflowTrace({
       {/* Inject pulse animation */}
       <style>{pulseKeyframes}</style>
 
-      {/* ---- Pre-entry: Confluence Monitoring ---- */}
-      {hasMonitoring && (
-        <div className="mb-3 rounded-lg p-2" style={{
-          background: 'var(--bg-primary)',
-          border: `1px solid ${confluenceAllMet ? 'var(--green)' : 'var(--border)'}`,
-        }}>
-          <div className="flex items-center gap-2 mb-1.5">
-            <div
-              className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{
-                background: confluenceAllMet ? 'var(--green)' : 'var(--orange)',
-                animation: confluenceAllMet ? 'none' : 'wf-pulse 1.5s ease-in-out infinite',
-              }}
-            />
-            <span className="text-[9px] font-medium" style={{
-              color: confluenceAllMet ? 'var(--green)' : 'var(--text-muted)',
-            }}>
-              Confluence Gate: {confluenceConditions!.filter(c => c.met).length}/{confluenceConditions!.length} conditions met
-            </span>
-          </div>
-          {/* Condition list */}
-          <div className="space-y-0.5 ml-4">
-            {confluenceConditions!.map((cond, i) => (
-              <div key={i} className="flex items-center gap-1.5">
-                <span style={{ color: cond.met ? 'var(--green)' : 'var(--red)', fontSize: 8 }}>
-                  {cond.met ? '\u2713' : '\u2717'}
-                </span>
-                <span className="text-[8px]" style={{
-                  color: cond.met ? 'var(--text-secondary)' : 'var(--text-muted)',
-                  opacity: cond.met ? 1 : 0.6,
-                }}>
-                  {cond.label}
-                </span>
-              </div>
-            ))}
-          </div>
-          {/* Trigger status */}
-          <div className="flex items-center gap-1.5 mt-1.5 ml-4">
-            <span style={{
-              color: triggerStatus === 'fired' ? 'var(--green)' : 'var(--orange)',
-              fontSize: 8,
-            }}>
-              {triggerStatus === 'fired' ? '\u2713' : '\u25CB'}
-            </span>
-            <span className="text-[8px]" style={{
-              color: triggerStatus === 'fired' ? 'var(--green)' : 'var(--text-muted)',
-            }}>
-              {triggerStatus === 'fired'
-                ? `Trigger FIRED: ${triggerName || 'entry signal'}`
-                : `Waiting for trigger: ${triggerName || 'entry signal'}...`
-              }
-            </span>
-          </div>
-        </div>
-      )}
-
       {/* ---- Trade Execution Workflow ---- */}
       <div className="space-y-0">
         {steps.map((step: any, i: number) => {

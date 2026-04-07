@@ -6,15 +6,17 @@
  * Wires useScenarioReplay → ReplayableChart + ReplayControls + WorkflowTrace.
  * On initial load, currentTime = endTime (fully revealed, identical to static view).
  * User clicks Reset or uses controls to step through the trade.
+ *
+ * Data flows via props (not refs) to avoid Next.js dynamic() ref forwarding issues.
  */
 
-import { useRef, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import ReplayControls from '@/components/ReplayControls';
 import WorkflowTrace from '@/components/WorkflowTrace';
 import useScenarioReplay, { type ScenarioData } from '@/hooks/useScenarioReplay';
-import type { ReplayableChartHandle, SeriesSetup } from '@/charts/ReplayableChart';
+import type { SeriesSetup, SeriesDataInput } from '@/charts/ReplayableChart';
 
 const ReplayableChart = dynamic(() => import('@/charts/ReplayableChart'), { ssr: false });
 
@@ -29,9 +31,6 @@ interface ScenarioReplayCardProps {
 
 export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioReplayCardProps) {
   const replay = useScenarioReplay(scenario as ScenarioData, 300);
-  const mainChartRef = useRef<ReplayableChartHandle>(null);
-  const entryChartRef = useRef<ReplayableChartHandle>(null);
-  const exitChartRef = useRef<ReplayableChartHandle>(null);
 
   const overlayNames = scenario.overlay_indicators || [];
   const trade = (scenario.raw_trades || [])[0];
@@ -39,11 +38,11 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
   const triggerName = trade?.entry_trigger?.replace(/_/g, ' ') || 'entry signal';
 
   // ---- Main chart series setup (stable, set once) ----
+  // Series order: [0] Candlestick, [1..N] overlay lines, [N+1] entry cross, [N+2] exit cross
   const mainSeriesSetup = useMemo((): SeriesSetup[] => {
     const setup: SeriesSetup[] = [
       { type: 'Candlestick' },
     ];
-    // One Line series per overlay indicator
     for (let i = 0; i < overlayNames.length; i++) {
       setup.push({
         type: 'Line',
@@ -54,8 +53,59 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
         },
       });
     }
+    // Entry cross (+) — invisible line, marker only
+    setup.push({
+      type: 'Line',
+      options: { color: '#4CAF50', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    });
+    // Exit cross (+) — invisible line, marker only
+    setup.push({
+      type: 'Line',
+      options: { color: isWin ? '#4CAF50' : '#F44336', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    });
     return setup;
-  }, [overlayNames]);
+  }, [overlayNames, isWin]);
+
+  // ---- Main chart data (changes on every replay step) ----
+  const mainSeriesData = useMemo((): SeriesDataInput[] => {
+    const result: SeriesDataInput[] = [
+      { data: replay.mainChartBars, markers: replay.mainChartMarkers },
+    ];
+    // Overlay line data
+    for (const overlay of replay.mainChartOverlays) {
+      result.push({ data: overlay.data });
+    }
+    // Entry cross (+) — show when entry time reached
+    const entryTime = trade?.entry_time;
+    const exitTime = trade?.exit_time;
+    const entryPrice = scenario.entry_price;
+    const exitPrice = scenario.exit_price;
+    const exitReason = trade?.exit_reason || '';
+
+    if (replay.triggerStatus === 'fired' && entryTime && entryPrice) {
+      result.push({
+        data: [{ time: entryTime, value: entryPrice }],
+        markers: [{ time: entryTime, position: 'inBar', shape: 'cross', color: '#4CAF50', text: '', size: 1 }],
+      });
+    } else {
+      result.push({ data: [] });
+    }
+    // Exit cross (+) — show when exit time reached
+    if (replay.currentTime >= replay.exitTime && exitTime && exitPrice) {
+      let exitColor = isWin ? '#4CAF50' : '#F44336';
+      if (exitReason === 'stop_loss') exitColor = '#FF9800';
+      else if (exitReason === 'bar_count_exit') exitColor = '#26A69A';
+      result.push({
+        data: [{ time: exitTime, value: exitPrice }],
+        markers: [{ time: exitTime, position: 'inBar', shape: 'cross', color: exitColor, text: '', size: 1 }],
+      });
+    } else {
+      result.push({ data: [] });
+    }
+    return result;
+  }, [replay.mainChartBars, replay.mainChartMarkers, replay.mainChartOverlays,
+      replay.triggerStatus, replay.currentTime, replay.exitTime,
+      trade, scenario.entry_price, scenario.exit_price, isWin]);
 
   // ---- Entry Hi-Fi series setup ----
   const entrySeriesSetup = useMemo((): SeriesSetup[] => {
@@ -79,6 +129,13 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     }
     return [{ type: 'Candlestick', priceLines }];
   }, [scenario, overlayNames]);
+
+  // ---- Entry Hi-Fi data ----
+  const entrySeriesData = useMemo((): SeriesDataInput[] | undefined => {
+    if (!replay.entryBars) return undefined;
+    const markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
+    return [{ data: replay.entryBars, markers }];
+  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers]);
 
   // ---- Exit Hi-Fi series setup ----
   const exitSeriesSetup = useMemo((): SeriesSetup[] => {
@@ -107,42 +164,12 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     return [{ type: 'Candlestick', priceLines }];
   }, [scenario, overlayNames, isWin]);
 
-  // ---- Push data to charts on every replay step ----
-  useEffect(() => {
-    // Main chart: candlestick + overlays
-    if (mainChartRef.current) {
-      mainChartRef.current.setSeriesData(0, replay.mainChartBars);
-      mainChartRef.current.setSeriesMarkers(0, replay.mainChartMarkers);
-      // Overlay line series (series index 1, 2, 3, ...)
-      for (let i = 0; i < replay.mainChartOverlays.length; i++) {
-        mainChartRef.current.setSeriesData(i + 1, replay.mainChartOverlays[i].data);
-      }
-      mainChartRef.current.fitContent();
-    }
-
-    // Entry Hi-Fi
-    if (entryChartRef.current && replay.entryBars) {
-      entryChartRef.current.setSeriesData(0, replay.entryBars);
-      if (replay.entryFullyRevealed && scenario.entry_markers) {
-        entryChartRef.current.setSeriesMarkers(0, scenario.entry_markers);
-      }
-      entryChartRef.current.fitContent();
-    }
-
-    // Exit Hi-Fi
-    if (exitChartRef.current && replay.exitBars) {
-      exitChartRef.current.setSeriesData(0, replay.exitBars);
-      if (replay.exitFullyRevealed && scenario.exit_markers) {
-        exitChartRef.current.setSeriesMarkers(0, scenario.exit_markers);
-      }
-      exitChartRef.current.fitContent();
-    }
-  }, [
-    replay.currentTime, replay.mainChartBars, replay.mainChartMarkers,
-    replay.mainChartOverlays, replay.entryBars, replay.exitBars,
-    replay.entryFullyRevealed, replay.exitFullyRevealed,
-    scenario.entry_markers, scenario.exit_markers,
-  ]);
+  // ---- Exit Hi-Fi data ----
+  const exitSeriesData = useMemo((): SeriesDataInput[] | undefined => {
+    if (!replay.exitBars) return undefined;
+    const markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
+    return [{ data: replay.exitBars, markers }];
+  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers]);
 
   // Format placeholder times
   const formatPlaceholderTime = (unixSec: number) => {
@@ -173,10 +200,10 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
         <div className="lg:col-span-3">
           <div style={{ minHeight: 300 }}>
             <ReplayableChart
-              ref={mainChartRef}
               id={`main-${scenario.id}`}
               height={300}
               seriesSetup={mainSeriesSetup}
+              seriesData={mainSeriesData}
             />
           </div>
         </div>
@@ -184,7 +211,7 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
         {/* Controls + Workflow */}
         <div className="lg:col-span-2">
           <div className="rounded-lg p-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
-            {/* Replay controls — in the gap above workflow */}
+            {/* Replay controls */}
             <div className="mb-3">
               <ReplayControls
                 currentTime={replay.currentTime}
@@ -223,10 +250,10 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
           <div style={{ minHeight: 250 }}>
             {replay.entryVisible ? (
               <ReplayableChart
-                ref={entryChartRef}
                 id={`entry-1s-${scenario.id}`}
                 height={250}
                 seriesSetup={entrySeriesSetup}
+                seriesData={entrySeriesData}
               />
             ) : (
               <div className="flex items-center justify-center h-full rounded-lg"
@@ -244,10 +271,10 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
           <div style={{ minHeight: 250 }}>
             {replay.exitVisible ? (
               <ReplayableChart
-                ref={exitChartRef}
                 id={`exit-1s-${scenario.id}`}
                 height={250}
                 seriesSetup={exitSeriesSetup}
+                seriesData={exitSeriesData}
               />
             ) : (
               <div className="flex items-center justify-center h-full rounded-lg"
