@@ -127,16 +127,28 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     if (scenario.entry_price) {
       priceLines.push({ price: scenario.entry_price, color: '#4CAF50', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Entry' });
     }
-    return [{ type: 'Candlestick', priceLines }];
+    // Entry cross (+) — invisible line for price-level marker
+    return [
+      { type: 'Candlestick', priceLines },
+      { type: 'Line', options: { color: '#4CAF50', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' } },
+    ];
   }, [scenario, overlayNames]);
 
   // ---- Entry Hi-Fi data ----
-  // API already handles C-type shift — markers have correct timestamps
   const entrySeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.entryBars) return undefined;
-    const markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
-    return [{ data: replay.entryBars, markers }];
-  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers]);
+    // Arrow markers when fully revealed
+    const arrows = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
+    // Cross (+) at fill price — show as soon as the fill bar is visible in the chart
+    const fillTime = (scenario.entry_markers || [])[0]?.time;
+    const fillBarVisible = fillTime && replay.entryBars.some(
+      (b: any) => b.time === fillTime || b.timestamp === fillTime
+    );
+    const crossData = fillBarVisible && scenario.entry_price
+      ? { data: [{ time: fillTime, value: scenario.entry_price }], markers: [{ time: fillTime, position: 'inBar', shape: 'cross', color: '#4CAF50', text: '', size: 1 }] }
+      : { data: [] };
+    return [{ data: replay.entryBars, markers: arrows }, crossData];
+  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers, scenario.entry_price]);
 
   // ---- Exit Hi-Fi series setup ----
   const exitSeriesSetup = useMemo((): SeriesSetup[] => {
@@ -162,16 +174,32 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
         lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Exit',
       });
     }
-    return [{ type: 'Candlestick', priceLines }];
+    // Exit cross (+) — invisible line for price-level marker
+    const exitCrossColor = isWin ? '#4CAF50' : '#F44336';
+    return [
+      { type: 'Candlestick', priceLines },
+      { type: 'Line', options: { color: exitCrossColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' } },
+    ];
   }, [scenario, overlayNames, isWin]);
 
   // ---- Exit Hi-Fi data ----
-  // API already handles C-type shift — markers have correct timestamps
   const exitSeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.exitBars) return undefined;
-    const markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
-    return [{ data: replay.exitBars, markers }];
-  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers]);
+    const arrows = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
+    // Cross (+) at fill price
+    const fillTime = (scenario.exit_markers || [])[0]?.time;
+    const fillBarVisible = fillTime && replay.exitBars.some(
+      (b: any) => b.time === fillTime || b.timestamp === fillTime
+    );
+    const exitReason = trade?.exit_reason || '';
+    let crossColor = isWin ? '#4CAF50' : '#F44336';
+    if (exitReason === 'stop_loss') crossColor = '#FF9800';
+    else if (exitReason === 'bar_count_exit') crossColor = '#26A69A';
+    const crossData = fillBarVisible && scenario.exit_price
+      ? { data: [{ time: fillTime, value: scenario.exit_price }], markers: [{ time: fillTime, position: 'inBar', shape: 'cross', color: crossColor, text: '', size: 1 }] }
+      : { data: [] };
+    return [{ data: replay.exitBars, markers: arrows }, crossData];
+  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers, scenario.exit_price, trade, isWin]);
 
   // Format placeholder times
   const formatPlaceholderTime = (unixSec: number) => {
