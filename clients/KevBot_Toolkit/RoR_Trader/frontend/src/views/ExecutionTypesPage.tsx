@@ -91,9 +91,18 @@ function ExecCard({ mod, onToggle, onDetails }: { mod: ExecTypeModule; onToggle:
 /* DETAIL VIEW                                                                 */
 /* ========================================================================= */
 
+const SCENARIO_CATEGORIES = [
+  { key: 'common', label: 'Common' },
+  { key: 'ambiguous', label: 'Ambiguous Candles' },
+  { key: 'ltype', label: 'L-Type' },
+  { key: 'confirmation', label: 'Confirmation (LC/CC)' },
+  { key: 'edge', label: 'Edge Cases' },
+] as const;
+
 function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
   const [scenarios, setScenarios] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [activeCategory, setActiveCategory] = useState('common');
 
   if (scenarios === null && !loading) {
     setLoading(true);
@@ -108,22 +117,63 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
     return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios from real market data...</p></Card>;
   }
 
+  const allScenarios = scenarios.scenarios || [];
+  const filtered = allScenarios.filter((s: any) => (s.category || 'common') === activeCategory);
+  const availableCategories = SCENARIO_CATEGORIES.filter(
+    cat => allScenarios.some((s: any) => (s.category || 'common') === cat.key)
+  );
+
   return (
     <div className="space-y-4">
       <Card>
         <h4 className="text-sm font-medium mb-2">Scenario Examples</h4>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Real trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Chart (with EMA overlay for demonstration) on the left, execution workflow on the right. Entry and exit drill-down charts shown below.
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Real trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Use replay controls to step through each trade second by second.
         </p>
+        {/* Category pills */}
+        <div className="flex gap-2 flex-wrap">
+          {availableCategories.map(cat => (
+            <button
+              key={cat.key}
+              onClick={() => setActiveCategory(cat.key)}
+              className="text-[10px] font-medium px-3 py-1 rounded-full transition-colors"
+              style={{
+                background: activeCategory === cat.key ? 'var(--accent)' : 'var(--bg-input)',
+                color: activeCategory === cat.key ? 'white' : 'var(--text-muted)',
+                border: `1px solid ${activeCategory === cat.key ? 'var(--accent)' : 'var(--border)'}`,
+                cursor: 'pointer',
+              }}
+            >
+              {cat.label}
+            </button>
+          ))}
+          {/* Disabled pills for upcoming categories */}
+          {SCENARIO_CATEGORIES.filter(cat => !availableCategories.some(a => a.key === cat.key)).map(cat => (
+            <span
+              key={cat.key}
+              className="text-[10px] font-medium px-3 py-1 rounded-full"
+              style={{
+                background: 'var(--bg-input)',
+                color: 'var(--text-muted)',
+                border: '1px solid var(--border)',
+                opacity: 0.4,
+              }}
+            >
+              {cat.label}
+            </span>
+          ))}
+        </div>
       </Card>
 
-      {(scenarios.scenarios || []).map((scenario: any) => (
+      {filtered.map((scenario: any) => (
         <ScenarioReplayCard key={scenario.id} scenario={scenario} displayCode={displayCode} />
       ))}
 
-      {scenarios.scenarios && scenarios.scenarios.length === 0 && (
+      {filtered.length === 0 && (
         <Card>
-          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No scenario trades found. Try enabling more execution types or running a longer backtest period.</p>
+          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            No scenarios in this category yet. More scenarios coming soon.
+          </p>
         </Card>
       )}
     </div>

@@ -187,9 +187,10 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
     fixture = json.loads(fixture_path.read_text())
 
     SCENARIO_META = {
-        'stop_loss': {'name': 'Stop Loss Hit', 'description': 'Price entered on EMA 9 cross, then reversed and hit the ATR-based stop loss. Exit at stop level (or bar open if gapped past).'},
-        'target': {'name': 'Target Hit', 'description': 'Price entered on EMA 9 cross, then ran to the 2R take profit target. Exit at target level.'},
-        'bar_count_exit': {'name': 'Bar Count Exit', 'description': 'Price entered on EMA 9 cross. Position held for 8 bars without hitting stop or target. Exit at bar close.'},
+        'stop_loss': {'name': 'Stop Loss Hit', 'category': 'common', 'description': 'Price entered on EMA 9 cross, then reversed and hit the ATR-based stop loss. Exit at stop level (or bar open if gapped past).'},
+        'target': {'name': 'Target Hit', 'category': 'common', 'description': 'Price entered on EMA 9 cross, then ran to the 2R take profit target. Exit at target level.'},
+        'bar_count_exit': {'name': 'Bar Count Exit', 'category': 'common', 'description': 'Price entered on EMA 9 cross. Position held for 8 bars without hitting stop or target. Exit at bar close.'},
+        'opposite_signal': {'name': 'Signal Exit (EMA Cross)', 'category': 'common', 'description': 'Price entered on EMA cross above. The opposite EMA cross (below) triggered the exit before stop or target was reached. This is the most common exit type in trend-following strategies.'},
     }
 
     scenarios = []
@@ -245,6 +246,7 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
 
         scenarios.append({
             'id': reason, 'name': meta['name'], 'description': meta['description'],
+            'category': meta.get('category', 'common'),
             'direction': d, 'entry_price': ep, 'exit_price': xp,
             'stop_price': sp, 'target_price': tp, 'exit_reason': reason,
             'r_multiple': rm, 'passed': True,
