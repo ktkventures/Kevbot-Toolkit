@@ -197,19 +197,33 @@ First iteration of AI-assisted execution type creation and scenario-based valida
 **Tasks:**
 - [ ] 4.5a. [Required] **Unique badges** — Each execution type and variation gets a unique 1-5 char badge. Show badge consistently across all pages (Strategy Builder, Detail, Execution Types).
 - [ ] 4.5b. [Required] **Mini chart on simulation** — Add a small price chart to the simulation trace showing entry/exit markers on actual candles, so users can visually verify behavior.
-- [ ] 4.5c. [Required] **Preset validation scenarios** — 3-5 deterministic test scenarios with mock data:
-  1. Clean entry → stop loss hit
-  2. Clean entry → target hit
-  3. Entry → confirmation success (LC/CC)
-  4. Entry → confirmation fail / bail (LC/CC)
-  5. Gap scenario (price gaps past stop/target)
-  Each shows a mini chart + step trace. Execution type passes or fails each scenario.
+- [x] 4.5c. [Required] **Preset validation scenarios** — COMPLETE. Static fixture-based scenarios with real NVDA 5Min data:
+  1. Bar count exit (position held max bars)
+  2. Target hit (clean winner)
+  3. Stop loss hit (reversal)
+  Each shows: main 5-min chart with EMA overlays + entry/exit markers, execution workflow trace with timestamps, entry/exit 1-second Hi-Fi drill-down charts with price-level cross markers. C-type shift (next bar open fill) applied throughout.
+- [x] 4.5g. [Required] **Replay mode** — COMPLETE. Second-by-second replay with:
+  - ReplayableChart (prop-driven LWC, no flicker)
+  - ReplayControls (arrows, time display, 1s/5s/10s/60s interval, seek bar)
+  - WorkflowTrace (completed/active/pending states with timestamps)
+  - Forming candle interpolation on main chart
+  - Hi-Fi charts appear at fill time windows
+  - Candle colors respect user display settings (useChartPrefs)
+  - Backup branch: `dev-backup-pre-scenario-expansion`
+- [ ] 4.5c2. [Required] **Expanded scenarios** — Add scenario tabs + more categories:
+  - Common tab: add signal-based exit (EMA cross below) to existing 3
+  - Ambiguous Candles tab: stop+target same bar, stop on entry bar, entry+immediate reversal
+  - L-Type tab, LC/CC Confirmation tab, Edge Cases tab (later)
+- [ ] 4.5c3. [Required] **Execution type selectors** — Per-trigger exec type dropdowns (entry, exit, stop, target). Dynamically re-simulates scenarios with different exec type configs. Turns scenarios into a "what-if" tool.
 - [ ] 4.5d. [Required] **AI-assisted creation** — Describe execution behavior in plain English → AI generates workflow steps. Similar to Pack Builder's AI integration but for execution types. Uses the same AI provider infrastructure.
 - [ ] 4.5e. [Required] **Execution type builder page** — Step-by-step wizard or simple form: describe behavior → AI generates steps → review/edit steps → validate with scenarios → save.
 - [ ] 4.5f. [Polish] **Code tab** — Show the generated execution type code (like user packs' Code tab). Enables advanced users to understand exactly what the execution type does.
-- [ ] 4.5g. [Polish] **Replay mode** — Replay a scenario bar-by-bar on a chart, showing each step firing in sequence. Like watching the execution type work in slow motion.
 
 **Exit Criteria:** User can describe a new execution type in plain English, AI generates the workflow, user validates it against preset scenarios with mini charts, saves it with a unique badge, and it appears in the Strategy Builder trigger dropdowns.
+
+**Polish items (noted for later):**
+- Hi-Fi cross (+) marker not rendering during replay mid-step (shows at end only)
+- Add timeframe label to chart headers (e.g., "5Min", "1s")
 
 ---
 
