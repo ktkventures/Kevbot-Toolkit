@@ -21,6 +21,7 @@ import EquityCurve from '@/charts/EquityCurve';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
+const TradeWorkflowModal = dynamic(() => import('@/components/TradeWorkflowModal'), { ssr: false });
 
 const SB_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '1D'] as const;
 
@@ -58,6 +59,7 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
   const [sbSelectedConfluence, setSbSelectedConfluence] = useState<string[]>([]);
   const [sbEqXAxis, setSbEqXAxis] = useState<'trade' | 'time'>('trade');
   const [sbZoomTrade, setSbZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
+  const [sbWorkflowTrade, setSbWorkflowTrade] = useState<any>(null);
   const [sbLastConfig, setSbLastConfig] = useState<any>(null);
 
   // Hooks (must all be called unconditionally)
@@ -418,7 +420,10 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
                       <td className="px-2 py-1.5 text-right font-mono">${t.entryPrice.toFixed(2)}</td>
                       <td className="px-2 py-1.5 text-right font-mono">${t.exitPrice.toFixed(2)}</td>
                       <td className="px-2 py-1.5 text-right font-mono" style={{ color: t.rMultiple >= 0 ? 'var(--green)' : 'var(--red)' }}>{t.rMultiple >= 0 ? '+' : ''}{t.rMultiple.toFixed(2)}R</td>
-                      <td className="px-2 py-1.5"><ExecBadge tag={`[${t.execType}]`} /></td>
+                      <td className="px-2 py-1.5" style={{ cursor: 'pointer' }} title="Click to see execution workflow"
+                        onClick={(e) => { e.stopPropagation(); setSbWorkflowTrade(t); }}>
+                        <ExecBadge tag={`[${t.execType}]`} />
+                      </td>
                       <td className="px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>{t.exitReason.replace(/_/g, ' ')}</td>
                     </tr>
                   ))}
@@ -446,6 +451,15 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
           zoomData={sbTradeZoomMut.data ?? null}
           isLoading={sbTradeZoomMut.isPending}
           error={sbTradeZoomMut.error ? String(sbTradeZoomMut.error) : null}
+        />
+      )}
+
+      {/* Trade Workflow Modal — click exec badge on trade table */}
+      {sbWorkflowTrade && (
+        <TradeWorkflowModal
+          isOpen={!!sbWorkflowTrade}
+          onClose={() => setSbWorkflowTrade(null)}
+          trade={sbWorkflowTrade}
         />
       )}
     </div>
