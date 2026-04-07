@@ -204,25 +204,44 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         et = trade_data.get('entry_time', '')
         xt = trade_data.get('exit_time', '')
 
-        markers = [{'time': et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
-        xc = '#4CAF50' if rm >= 0 else '#F44336'
-        if xt:
-            markers.append({'time': xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
+        # C-type shift: fill happens at next bar open
+        from datetime import datetime as _dt, timedelta as _td
+        TF_MS = 5 * 60  # 5-min in seconds
+        L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
+        entry_is_ltype = exec_code in ('L', 'LC')
+        exit_is_ltype = reason in L_TYPE_EXITS
 
-        # Dynamic workflow trace based on THIS execution type
+        def _shift(iso, is_ltype):
+            if is_ltype or not iso:
+                return iso
+            try:
+                dt = _dt.fromisoformat(iso)
+                return (dt + _td(seconds=TF_MS)).isoformat()
+            except Exception:
+                return iso
+
+        shifted_et = _shift(et, entry_is_ltype)
+        shifted_xt = _shift(xt, exit_is_ltype)
+
+        markers = [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
+        xc = '#4CAF50' if rm >= 0 else '#F44336'
+        if shifted_xt:
+            markers.append({'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
+
+        # Dynamic workflow trace based on THIS execution type (with timestamps on every step)
         ws = []
         if exec_code in ('C', 'CC'):
             ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
         else:
             ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
-        ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'price': ep, 'color': 'var(--green)'})
-        ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{d.lower()}_market', 'isWebhook': True})
+        ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'time': shifted_et, 'price': ep, 'color': 'var(--green)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{d.lower()}_market', 'time': shifted_et, 'isWebhook': True})
         if exec_code in ('LC', 'CC'):
-            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation'})
+            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation', 'time': shifted_et})
             ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
-        ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else '')})
-        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
-        ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{d.lower()}_market', 'isWebhook': True})
+        ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else ''), 'time': shifted_et})
+        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{d.lower()}_market', 'time': shifted_xt or xt, 'isWebhook': True})
 
         scenarios.append({
             'id': reason, 'name': meta['name'], 'description': meta['description'],
@@ -239,8 +258,9 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
             'exit_drill': trade_data.get('exit_drill', []),
             'entry_1s_bars': trade_data.get('entry_1s_bars', []),
             'exit_1s_bars': trade_data.get('exit_1s_bars', []),
-            'entry_markers': [{'time': et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
-            'exit_markers': [{'time': xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if xt else [],
+            'exec_type': exec_code,
+            'entry_markers': [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
+            'exit_markers': [{'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if shifted_xt else [],
         })
 
     return {

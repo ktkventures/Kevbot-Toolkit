@@ -10,7 +10,7 @@
  * Data flows via props (not refs) to avoid Next.js dynamic() ref forwarding issues.
  */
 
-import { useMemo, useCallback } from 'react';
+import { useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import ReplayControls from '@/components/ReplayControls';
@@ -67,60 +67,37 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     return setup;
   }, [overlayNames, isWin]);
 
-  // ---- C-type shift: move marker to next bar open for realistic fill timing ----
-  const TF_MS = 5 * 60 * 1000; // 5-min bars
-  const L_TYPE_EXITS = useMemo(() => new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']), []);
-
-  const shiftIfCType = useCallback((iso: string, isLType: boolean): string => {
-    if (!iso || isLType) return iso; // L-type fires mid-bar, no shift
-    try {
-      return new Date(new Date(iso).getTime() + TF_MS).toISOString();
-    } catch { return iso; }
-  }, []);
-
   // ---- Main chart data (changes on every replay step) ----
+  // C-type shifting is handled by the API — markers already have correct timestamps
   const mainSeriesData = useMemo((): SeriesDataInput[] => {
     const result: SeriesDataInput[] = [
       { data: replay.mainChartBars, markers: replay.mainChartMarkers },
     ];
-    // Overlay line data
     for (const overlay of replay.mainChartOverlays) {
       result.push({ data: overlay.data });
     }
-    // Entry/exit cross (+) with C-type shift to next bar open
-    const rawEntryTime = trade?.entry_time;
-    const rawExitTime = trade?.exit_time;
+    // Entry cross (+) — uses pre-shifted entry marker time from scenario
+    const entryMarker = (scenario.markers || [])[0]; // first marker = entry
     const entryPrice = scenario.entry_price;
-    const exitPrice = scenario.exit_price;
-    const exitReason = trade?.exit_reason || '';
-    const entryTrigger = trade?.entry_trigger || '';
-    const execType = scenario.exec_type || 'C';
-
-    // Entry is L-type if trigger ends with _ib, _lc, _hm, _hl
-    const entryIsLType = execType === 'L' || execType === 'LC' ||
-      entryTrigger.endsWith('_ib') || entryTrigger.endsWith('_lc') ||
-      entryTrigger.endsWith('_hm') || entryTrigger.endsWith('_hl');
-    const exitIsLType = L_TYPE_EXITS.has(exitReason);
-
-    const shiftedEntryTime = rawEntryTime ? shiftIfCType(rawEntryTime, entryIsLType) : null;
-    const shiftedExitTime = rawExitTime ? shiftIfCType(rawExitTime, exitIsLType) : null;
-
-    if (replay.triggerStatus === 'fired' && shiftedEntryTime && entryPrice) {
+    if (replay.triggerStatus === 'fired' && entryMarker && entryPrice) {
       result.push({
-        data: [{ time: shiftedEntryTime, value: entryPrice }],
-        markers: [{ time: shiftedEntryTime, position: 'inBar', shape: 'cross', color: '#4CAF50', text: '', size: 1 }],
+        data: [{ time: entryMarker.time, value: entryPrice }],
+        markers: [{ time: entryMarker.time, position: 'inBar', shape: 'cross', color: '#4CAF50', text: '', size: 1 }],
       });
     } else {
       result.push({ data: [] });
     }
-    // Exit cross (+)
-    if (replay.currentTime >= replay.exitTime && shiftedExitTime && exitPrice) {
+    // Exit cross (+) — uses pre-shifted exit marker time from scenario
+    const exitMarker = (scenario.markers || [])[1]; // second marker = exit
+    const exitPrice = scenario.exit_price;
+    if (replay.currentTime >= replay.exitTime && exitMarker && exitPrice) {
+      const exitReason = trade?.exit_reason || '';
       let exitColor = isWin ? '#4CAF50' : '#F44336';
       if (exitReason === 'stop_loss') exitColor = '#FF9800';
       else if (exitReason === 'bar_count_exit') exitColor = '#26A69A';
       result.push({
-        data: [{ time: shiftedExitTime, value: exitPrice }],
-        markers: [{ time: shiftedExitTime, position: 'inBar', shape: 'cross', color: exitColor, text: '', size: 1 }],
+        data: [{ time: exitMarker.time, value: exitPrice }],
+        markers: [{ time: exitMarker.time, position: 'inBar', shape: 'cross', color: exitColor, text: '', size: 1 }],
       });
     } else {
       result.push({ data: [] });
@@ -128,8 +105,7 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
     return result;
   }, [replay.mainChartBars, replay.mainChartMarkers, replay.mainChartOverlays,
       replay.triggerStatus, replay.currentTime, replay.exitTime,
-      trade, scenario.entry_price, scenario.exit_price, scenario.exec_type, isWin,
-      shiftIfCType, L_TYPE_EXITS]);
+      scenario.markers, scenario.entry_price, scenario.exit_price, trade, isWin]);
 
   // ---- Entry Hi-Fi series setup ----
   const entrySeriesSetup = useMemo((): SeriesSetup[] => {
@@ -155,24 +131,12 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
   }, [scenario, overlayNames]);
 
   // ---- Entry Hi-Fi data ----
-  // Shift markers for C-type: entry fill happens at next 5-min bar open
+  // API already handles C-type shift — markers have correct timestamps
   const entrySeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.entryBars) return undefined;
-    let markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
-    // For C-type entry, shift marker times to next 5-min bar open
-    const execType = scenario.exec_type || 'C';
-    const entryTrigger = trade?.entry_trigger || '';
-    const entryIsLType = execType === 'L' || execType === 'LC' ||
-      entryTrigger.endsWith('_ib') || entryTrigger.endsWith('_lc') ||
-      entryTrigger.endsWith('_hm') || entryTrigger.endsWith('_hl');
-    if (!entryIsLType && markers.length > 0) {
-      markers = markers.map((m: any) => ({
-        ...m,
-        time: m.time ? new Date(new Date(m.time).getTime() + TF_MS).toISOString() : m.time,
-      }));
-    }
+    const markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
     return [{ data: replay.entryBars, markers }];
-  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers, scenario.exec_type, trade]);
+  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers]);
 
   // ---- Exit Hi-Fi series setup ----
   const exitSeriesSetup = useMemo((): SeriesSetup[] => {
@@ -202,20 +166,12 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
   }, [scenario, overlayNames, isWin]);
 
   // ---- Exit Hi-Fi data ----
-  // Shift markers for C-type exits: fill happens at next 5-min bar open
+  // API already handles C-type shift — markers have correct timestamps
   const exitSeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.exitBars) return undefined;
-    let markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
-    const exitReason = trade?.exit_reason || '';
-    const exitIsLType = L_TYPE_EXITS.has(exitReason);
-    if (!exitIsLType && markers.length > 0) {
-      markers = markers.map((m: any) => ({
-        ...m,
-        time: m.time ? new Date(new Date(m.time).getTime() + TF_MS).toISOString() : m.time,
-      }));
-    }
+    const markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
     return [{ data: replay.exitBars, markers }];
-  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers, trade, L_TYPE_EXITS]);
+  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers]);
 
   // Format placeholder times
   const formatPlaceholderTime = (unixSec: number) => {
