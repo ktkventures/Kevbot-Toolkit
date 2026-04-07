@@ -271,58 +271,113 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Parameters', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
-            {tab === 'Parameters' && (
-              <Card>
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-sm font-medium">Parameters</h4>
-                  {mod.is_default && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                      Default (create a variation to customize)
-                    </span>
-                  )}
-                </div>
-                {Object.entries(mod.parameters_schema).length === 0 ? (
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No configurable parameters</p>
-                ) : (
-                  <div className="space-y-4">
-                    {Object.entries(mod.parameters_schema).map(([key, schema]) => {
-                      const currentValue = mod.user_params?.[key] ?? schema.default;
-                      return (
-                        <div key={key} className="flex items-center gap-4">
-                          <div className="w-48 flex-shrink-0">
-                            <p className="text-xs font-medium">{schema.label}</p>
-                            <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{key} ({schema.type})</p>
+            {tab === 'Description' && (
+              <div className="space-y-4">
+                {(() => {
+                  const desc = (mod as any).detailed_description || {};
+                  if (!desc.overview) {
+                    return <Card><p className="text-xs" style={{ color: 'var(--text-muted)' }}>{mod.description}</p></Card>;
+                  }
+                  return (
+                    <>
+                      {/* Overview */}
+                      <Card>
+                        <h4 className="text-sm font-medium mb-2">Overview</h4>
+                        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{desc.overview}</p>
+                      </Card>
+
+                      {/* How It Works */}
+                      {desc.how_it_works && (
+                        <Card>
+                          <h4 className="text-sm font-medium mb-2">How It Works</h4>
+                          <ol className="space-y-1.5">
+                            {(desc.how_it_works as string[]).map((step: string, i: number) => (
+                              <li key={i} className="flex gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                <span className="text-[10px] font-bold flex-shrink-0" style={{ color: 'var(--accent)' }}>{i + 1}.</span>
+                                {step}
+                              </li>
+                            ))}
+                          </ol>
+                        </Card>
+                      )}
+
+                      {/* Fill Price + Pros/Cons */}
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        {desc.fill_price && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Fill Price</h5>
+                            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{desc.fill_price}</p>
+                          </Card>
+                        )}
+                        {desc.pros && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-1" style={{ color: 'var(--green)' }}>Pros</h5>
+                            <ul className="space-y-0.5">
+                              {(desc.pros as string[]).map((p: string, i: number) => (
+                                <li key={i} className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>+ {p}</li>
+                              ))}
+                            </ul>
+                          </Card>
+                        )}
+                        {desc.cons && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-1" style={{ color: 'var(--red)' }}>Cons</h5>
+                            <ul className="space-y-0.5">
+                              {(desc.cons as string[]).map((c: string, i: number) => (
+                                <li key={i} className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>- {c}</li>
+                              ))}
+                            </ul>
+                          </Card>
+                        )}
+                      </div>
+
+                      {/* Webhook Context */}
+                      {desc.webhook_context && (
+                        <Card>
+                          <h4 className="text-sm font-medium mb-2">Webhook Payload Context</h4>
+                          <div className="space-y-2">
+                            {Object.entries(desc.webhook_context as Record<string, string>).map(([key, value]) => (
+                              <div key={key} className="flex gap-3">
+                                <span className="text-[10px] font-mono font-bold w-28 flex-shrink-0 px-1.5 py-0.5 rounded" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
+                                  {`{{${key}}}`}
+                                </span>
+                                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{value}</span>
+                              </div>
+                            ))}
                           </div>
-                          <div className="flex-1">
-                            {schema.options ? (
-                              <select value={String(currentValue)} style={inputStyle}
-                                onChange={(e) => {
-                                  const val = schema.type === 'int' ? parseInt(e.target.value) : e.target.value;
-                                  updateParams.mutate({ slug: mod.slug, params: { ...mod.user_params, [key]: val } });
-                                }}>
-                                {schema.options.map((opt: any) => (
-                                  <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input type="number" value={currentValue} min={schema.min} style={inputStyle}
-                                onChange={(e) => {
-                                  updateParams.mutate({ slug: mod.slug, params: { ...mod.user_params, [key]: parseInt(e.target.value) } });
-                                }} />
-                            )}
-                          </div>
-                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                            default: {String(schema.default)}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </Card>
+                        </Card>
+                      )}
+
+                      {/* What's determined by pack vs exec type */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {desc.determined_by_pack && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Determined by Confluence Pack</h5>
+                            <ul className="space-y-1">
+                              {(desc.determined_by_pack as string[]).map((item: string, i: number) => (
+                                <li key={i} className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>{item}</li>
+                              ))}
+                            </ul>
+                          </Card>
+                        )}
+                        {desc.determined_by_exec_type && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>Determined by Execution Type</h5>
+                            <ul className="space-y-1">
+                              {(desc.determined_by_exec_type as string[]).map((item: string, i: number) => (
+                                <li key={i} className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>{item}</li>
+                              ))}
+                            </ul>
+                          </Card>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             )}
 
             {tab === 'Workflow Steps' && (

@@ -66,11 +66,14 @@ class ExecutionTypeModule:
     display_code: str = ''  # Simplified code shown in UI (e.g., 'L' instead of 'L0'/'L1')
     contexts: tuple = ('entry',)  # Which contexts this type supports
 
-    # Workflow steps for UI visualization
-    steps: list = []
+    # Workflow steps for UI visualization (dict keyed by context)
+    steps: dict = {}
 
-    # Parameters schema for UI editing
+    # Parameters schema for UI editing (empty = no configurable params)
     parameters_schema: dict = {}
+
+    # Detailed description for the Description tab
+    detailed_description: dict = {}
 
     def check_entry_signal(
         self,
@@ -147,8 +150,9 @@ class ExecutionTypeModule:
             'display_code': self.display_code or (self.exec_type_codes[0] if self.exec_type_codes else ''),
             'exec_type_codes': list(self.exec_type_codes),
             'contexts': list(self.contexts),
-            'steps': self.steps,  # dict keyed by context (entry, exit_signal, stop, target)
+            'steps': self.steps,
             'parameters_schema': self.parameters_schema,
+            'detailed_description': self.detailed_description,
         }
 
 
@@ -166,6 +170,27 @@ class BarCloseExecution(ExecutionTypeModule):
     display_code = 'C'
     contexts = ('entry', 'exit_signal')
 
+    detailed_description = {
+        'overview': 'The simplest execution type. When a confluence pack trigger fires at bar close, the trade is entered (or exited) at the bar close price. This is the most common execution type for strategies that don\'t need intra-bar precision.',
+        'how_it_works': [
+            'The confluence pack evaluates its trigger condition at the moment the bar closes.',
+            'If the trigger fires, the execution type fills at the close price of that bar.',
+            'A webhook event is sent immediately with the fill details.',
+            'The position is then managed by stop/target/exit triggers until exit.',
+        ],
+        'fill_price': 'Bar close price — determined at the moment the bar closes. This is the last traded price of the bar.',
+        'pros': ['Simple and predictable', 'No slippage within the bar', 'Works with any indicator'],
+        'cons': ['May miss better intra-bar fill prices', 'Bar close can differ from the trigger level for crossover indicators'],
+        'webhook_context': {
+            'order_price': 'Bar close price at the moment the trigger fired',
+            'quantity': 'Calculated from portfolio risk_per_trade ÷ |entry_price - stop_price|',
+            'direction': 'Determined by the confluence pack trigger (LONG or SHORT)',
+            'stop_price': 'Calculated by the stop loss pack using ATR, swing, or other method',
+        },
+        'determined_by_pack': ['When the trigger fires (timing)', 'Direction (LONG/SHORT)', 'Which indicator conditions must be met'],
+        'determined_by_exec_type': ['Fill price (always bar close)', 'Webhook event type (entry_X_market)', 'No confirmation needed'],
+    }
+
     steps = {
         'entry': [
             {'action': 'check_trigger', 'label': 'Check bar-close trigger boolean'},
@@ -181,9 +206,7 @@ class BarCloseExecution(ExecutionTypeModule):
         ],
     }
 
-    parameters_schema = {
-        'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
-    }
+    parameters_schema = {}
 
     def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
                            current_values, strip_exec_suffix):
@@ -209,6 +232,27 @@ class LevelExecution(ExecutionTypeModule):
     exec_type_codes = ('L0', 'L1')
     display_code = 'L'
     contexts = ('entry', 'exit_signal', 'stop', 'target')
+
+    detailed_description = {
+        'overview': 'Enters at the exact indicator level when price crosses it within the bar. More realistic fill prices for crossover-based strategies — instead of waiting for bar close, the trade fills at the moment the cross happens.',
+        'how_it_works': [
+            'The engine checks if the bar\'s high/low range crossed the indicator level.',
+            'If price crossed the level, the trade fills at the indicator level price (not bar close).',
+            'The confluence pack\'s indicator determines which level is used (current bar vs previous bar).',
+            'Stop and target are NOT checked on the entry bar (the bar\'s OHLC includes pre-entry price action).',
+        ],
+        'fill_price': 'Indicator level price — the exact value of the indicator line at the moment of the cross. This is typically more favorable than bar close for crossover strategies.',
+        'pros': ['More realistic fill prices', 'Better represents actual crossover entry timing', 'Standard for stops and targets (level cross detection)'],
+        'cons': ['Requires the indicator to have a defined level (not all do)', 'Stop/target skip on entry bar means first-bar protection is delayed'],
+        'webhook_context': {
+            'order_price': 'Indicator level price at the cross moment',
+            'quantity': 'Calculated from portfolio risk_per_trade ÷ |entry_price - stop_price|',
+            'direction': 'Determined by the confluence pack trigger',
+            'stop_price': 'Calculated using previous bar\'s indicators (not current bar, since entry happens mid-bar)',
+        },
+        'determined_by_pack': ['Which indicator level to cross', 'Whether to use current or previous bar level', 'Cross direction (above/below)'],
+        'determined_by_exec_type': ['Fill at level price (not close)', 'Skip stop/target on entry bar', 'Webhook: entry_X_market'],
+    }
 
     steps = {
         'entry': [
@@ -237,10 +281,7 @@ class LevelExecution(ExecutionTypeModule):
         ],
     }
 
-    parameters_schema = {
-        'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
-        'hold_seconds': {'type': 'int', 'default': 0, 'min': 0, 'label': 'Hold Seconds'},
-    }
+    parameters_schema = {}
 
     def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
                            current_values, strip_exec_suffix):
@@ -277,6 +318,27 @@ class LevelCloseExecution(ExecutionTypeModule):
     display_code = 'LC'
     contexts = ('entry',)
 
+    detailed_description = {
+        'overview': 'Two-stage entry: first fills at the indicator level when price crosses (like L-type), then waits for bar close to confirm the direction. If the bar closes on the wrong side of the level, the position is exited (bail). This reduces false entries from temporary intra-bar spikes.',
+        'how_it_works': [
+            'Price crosses the indicator level within the bar → fill at the level price.',
+            'Wait for the bar to close (or next bar, depending on confirm_bar_offset).',
+            'If bar close is on the correct side of the level → CONFIRMED. Position continues.',
+            'If bar close is on the wrong side → NOT CONFIRMED. Bail at market (or limit at entry price).',
+        ],
+        'fill_price': 'Indicator level price (same as L-type). The confirmation check happens after the fill.',
+        'pros': ['Filters out false intra-bar crosses', 'Better entry quality than pure L-type', 'Configurable confirmation timing and bail behavior'],
+        'cons': ['Bailed trades incur a small loss (entry → bail spread)', 'More complex to understand and verify'],
+        'webhook_context': {
+            'order_price': 'Indicator level price at the cross moment',
+            'quantity': 'Calculated from portfolio risk_per_trade ÷ |entry_price - stop_price|',
+            'on_confirm': 'Position continues — no additional webhook',
+            'on_bail': 'exit_X_market webhook fires with bail reason',
+        },
+        'determined_by_pack': ['Which indicator level to cross', 'Cross direction'],
+        'determined_by_exec_type': ['Fill at level price', 'Confirmation check at bar close', 'Bail behavior (market or limit at entry price)'],
+    }
+
     steps = {
         'entry': [
             {'action': 'check_level_cross', 'label': 'Check if price crossed indicator level within bar'},
@@ -296,12 +358,7 @@ class LevelCloseExecution(ExecutionTypeModule):
         ],
     }
 
-    parameters_schema = {
-        'order_type': {'type': 'str', 'default': 'market', 'options': ['market', 'limit'], 'label': 'Order Type'},
-        'confirm_bar_offset': {'type': 'int', 'default': 0, 'options': [0, 1], 'label': 'Confirmation Offset (bars)'},
-        'bail_action': {'type': 'str', 'default': 'exit_market', 'options': ['exit_market', 'exit_limit'], 'label': 'Bail Action'},
-        'hold_seconds': {'type': 'int', 'default': 0, 'min': 0, 'label': 'Hold Seconds'},
-    }
+    parameters_schema = {}
 
     def check_entry_signal(self, trigger_id, exec_type, c_triggers, l_type_fills,
                            current_values, strip_exec_suffix):
@@ -399,6 +456,29 @@ class CloseCloseExecution(ExecutionTypeModule):
     exec_type_codes = ('CC',)
     display_code = 'CC'
     contexts = ('entry',)
+
+    detailed_description = {
+        'overview': 'Two-stage entry: first fills at bar close (like C-type), then waits for the NEXT bar to close confirming the direction. If the next bar closes against the entry direction, bail at market. This adds an extra layer of confirmation to bar-close entries.',
+        'how_it_works': [
+            'The confluence pack trigger fires at bar close → fill at close price.',
+            'Wait for the next bar to close.',
+            'If next bar closes in the entry direction → CONFIRMED. Position continues.',
+            'If next bar closes against the entry direction → NOT CONFIRMED. Bail at market (next bar open).',
+        ],
+        'fill_price': 'Bar close price (same as C-type). The confirmation uses the next bar\'s close.',
+        'pros': ['Filters out single-bar reversals', 'Confirms momentum continues into next bar', 'Simple to understand'],
+        'cons': ['Always delays confirmation by one full bar', 'Bailed trades lose the entry-to-bail spread', 'Cannot adjust confirmation offset (always next bar)'],
+        'webhook_context': {
+            'order_price': 'Bar close price when trigger fired',
+            'on_confirm': 'Position continues — no additional webhook',
+            'on_bail': 'exit_X_market webhook fires at next bar open',
+        },
+        'determined_by_pack': ['When the trigger fires', 'Direction'],
+        'determined_by_exec_type': ['Fill at bar close', 'Next-bar confirmation required', 'Bail at market if unconfirmed'],
+    }
+
+    # CC has fixed behavior — no configurable parameters
+    parameters_schema = {}
 
     steps = {
         'entry': [
