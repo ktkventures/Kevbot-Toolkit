@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
-import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, type ExecTypeModule, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
+import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
 /* STYLES                                                                      */
@@ -93,6 +93,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
   const updateParams = useUpdateExecTypeParams();
   const toggleMut = useToggleExecutionType();
   const simulateMut = useSimulateExecType();
+  const createVariation = useCreateVariation();
 
   // Simulation config
   const [simSymbol, setSimSymbol] = useState('NVDA');
@@ -111,6 +112,19 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
             <span className="text-xs" style={{ color: mod.enabled ? 'var(--green)' : 'var(--text-muted)' }}>
               {mod.enabled ? 'Enabled' : 'Disabled'}
             </span>
+            {mod.is_default && Object.keys(mod.parameters_schema).length > 0 && (
+              <button className="px-3 py-1.5 rounded-lg text-xs"
+                style={{ ...btnSecondary, color: 'var(--accent)', borderColor: 'var(--accent)' }}
+                onClick={() => {
+                  const defaultParams: Record<string, any> = {};
+                  for (const [k, v] of Object.entries(mod.parameters_schema)) {
+                    defaultParams[k] = v.default;
+                  }
+                  createVariation.mutate({ slug: mod.slug, name: `${mod.name} (Custom)`, params: defaultParams });
+                }}>
+                Create Variation
+              </button>
+            )}
             <button onClick={onBack} className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>Back</button>
           </div>
         }
@@ -138,7 +152,14 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
           <div>
             {tab === 'Parameters' && (
               <Card>
-                <h4 className="text-sm font-medium mb-4">Parameters</h4>
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-sm font-medium">Parameters</h4>
+                  {mod.is_default && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                      Default (create a variation to customize)
+                    </span>
+                  )}
+                </div>
                 {Object.entries(mod.parameters_schema).length === 0 ? (
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No configurable parameters</p>
                 ) : (
@@ -391,12 +412,35 @@ export default function ExecutionTypesPage() {
 
       <div className="space-y-3">
         {(modules || []).map((mod) => (
-          <ExecCard
-            key={mod.slug}
-            mod={mod}
-            onToggle={() => toggleMut.mutate(mod.slug)}
-            onDetails={() => setDetailSlug(mod.slug)}
-          />
+          <div key={mod.slug}>
+            <ExecCard
+              mod={mod}
+              onToggle={() => toggleMut.mutate(mod.slug)}
+              onDetails={() => setDetailSlug(mod.slug)}
+            />
+            {/* Nested variations */}
+            {mod.variations && mod.variations.length > 0 && (
+              <div className="ml-8 mt-1 space-y-1">
+                {mod.variations.map((v) => (
+                  <div key={v.id} className="flex items-center gap-3 px-3 py-2 rounded-lg"
+                    style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderLeft: '3px solid var(--accent)' }}>
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full"
+                      style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
+                      [{mod.display_code}]
+                    </span>
+                    <span className="text-xs font-medium flex-1">{v.name}</span>
+                    <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                      {Object.entries(v.params).map(([k, val]) => `${k}=${val}`).join(', ') || 'default params'}
+                    </span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full`}
+                      style={{ color: v.enabled ? 'var(--green)' : 'var(--text-muted)', background: v.enabled ? 'var(--green-muted)' : 'var(--bg-input)' }}>
+                      {v.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         ))}
       </div>
 

@@ -14,12 +14,16 @@ def list_execution_types(user=Depends(get_current_user)):
     # Load user's config (enabled state + parameter overrides)
     config = _load_config()
 
+    variations = config.get('_variations', [])
+
     result = []
     for m in list_modules():
         d = m.to_dict()
         user_cfg = config.get(m.slug, {})
         d['enabled'] = user_cfg.get('enabled', m.slug in ('bar_close', 'level'))  # C and L enabled by default
         d['user_params'] = user_cfg.get('params', {})
+        d['is_default'] = True
+        d['variations'] = [v for v in variations if v.get('parent_slug') == m.slug]
         result.append(d)
     return result
 
@@ -73,6 +77,57 @@ def update_params(slug: str, params: dict = Body(...), user=Depends(get_current_
     config[slug] = current
     _save_config(config)
     return {"slug": slug, "params": params}
+
+
+# ---- Variations ----
+
+@router.post("/{slug}/variations")
+def create_variation(slug: str, body: dict = Body(...), user=Depends(get_current_user)):
+    """Create a variation of an execution type with custom parameters."""
+    from execution_types import list_modules
+    parent = None
+    for m in list_modules():
+        if m.slug == slug:
+            parent = m
+            break
+    if not parent:
+        raise HTTPException(status_code=404, detail=f"Execution type '{slug}' not found")
+
+    config = _load_config()
+    variations = config.get('_variations', [])
+
+    name = body.get('name', f'{parent.name} (Custom)')
+    params = body.get('params', {})
+    var_id = f'{slug}_{len(variations) + 1}'
+
+    variation = {
+        'id': var_id,
+        'parent_slug': slug,
+        'name': name,
+        'params': params,
+        'enabled': True,
+    }
+    variations.append(variation)
+    config['_variations'] = variations
+    _save_config(config)
+    return variation
+
+
+@router.delete("/variations/{var_id}")
+def delete_variation(var_id: str, user=Depends(get_current_user)):
+    """Delete a variation."""
+    config = _load_config()
+    variations = config.get('_variations', [])
+    config['_variations'] = [v for v in variations if v.get('id') != var_id]
+    _save_config(config)
+    return {"status": "deleted", "id": var_id}
+
+
+@router.get("/variations")
+def list_variations(user=Depends(get_current_user)):
+    """List all user-created variations."""
+    config = _load_config()
+    return config.get('_variations', [])
 
 
 # ---- Storage helpers ----

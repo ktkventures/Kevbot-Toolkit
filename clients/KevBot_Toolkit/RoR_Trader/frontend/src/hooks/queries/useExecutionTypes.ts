@@ -13,7 +13,9 @@ export interface ExecTypeModule {
   exec_type_codes: string[];
   contexts: string[];
   enabled: boolean;
+  is_default: boolean;
   user_params: Record<string, any>;
+  variations: ExecTypeVariation[];
   steps: Array<{
     action: string;
     label: string;
@@ -88,6 +90,39 @@ export function useSimulateExecType() {
         method: 'POST',
         body: JSON.stringify(params),
       }),
+  });
+}
+
+export interface ExecTypeVariation {
+  id: string;
+  parent_slug: string;
+  name: string;
+  params: Record<string, any>;
+  enabled: boolean;
+}
+
+export function useCreateVariation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, name, params }: { slug: string; name: string; params: Record<string, any> }) =>
+      apiFetch<ExecTypeVariation>(`/api/execution-types/${slug}/variations`, {
+        method: 'POST',
+        body: JSON.stringify({ name, params }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['execution-types'] });
+    },
+  });
+}
+
+export function useDeleteVariation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (varId: string) =>
+      apiFetch(`/api/execution-types/variations/${varId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['execution-types'] });
+    },
   });
 }
 

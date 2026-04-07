@@ -1061,21 +1061,71 @@ def get_all_triggers(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str
     return all_triggers
 
 
+def _get_enabled_exec_suffixes() -> set:
+    """Get the set of trigger suffixes for enabled execution types.
+
+    Reads the user's execution type config to determine which exec types
+    are enabled. Returns suffixes like {'', '_ib', '_lc', '_cc'}.
+    Empty string = C-type (no suffix).
+    """
+    enabled_suffixes = set()
+    try:
+        from db import USE_DB
+        if USE_DB:
+            from db import load_settings_db
+            settings = load_settings_db()
+            et_config = settings.get('execution_types', {})
+        else:
+            et_config = {}
+
+        # Map execution type slugs to their trigger suffixes
+        SLUG_TO_SUFFIXES = {
+            'bar_close': {''},          # C-type: no suffix
+            'level': {'_ib'},           # L-type: _ib suffix
+            'level_close': {'_lc'},     # LC-type: _lc suffix (also _hm, _hl legacy)
+            'close_close': {'_cc'},     # CC-type: _cc suffix
+        }
+
+        for slug, suffixes in SLUG_TO_SUFFIXES.items():
+            cfg = et_config.get(slug, {})
+            # Default: C and L enabled, LC and CC disabled
+            is_enabled = cfg.get('enabled', slug in ('bar_close', 'level'))
+            if is_enabled:
+                enabled_suffixes.update(suffixes)
+    except Exception:
+        # Fallback: C and L enabled
+        enabled_suffixes = {'', '_ib'}
+
+    return enabled_suffixes
+
+
 def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str, str]:
     """
-    Get entry triggers for a specific direction.
-
-    Returns ALL entry-type triggers regardless of their declared direction.
-    Users should be free to use any trigger as an entry — the direction
-    declaration is informational, not a hard filter.
+    Get entry triggers for a specific direction, filtered by enabled execution types.
 
     Returns dict mapping trigger_id -> display_name
     """
     all_triggers = get_all_triggers(groups)
+    enabled_suffixes = _get_enabled_exec_suffixes()
 
     result = {}
     for trig_id, trig_def in all_triggers.items():
-        if trig_def.trigger_type == "ENTRY":
+        if trig_def.trigger_type != "ENTRY":
+            continue
+
+        # Check if this trigger's execution type suffix is enabled
+        base = trig_def.base_trigger
+        suffix = ''
+        for s in ('_ib', '_hm', '_hl', '_lc', '_cc'):
+            if base.endswith(s):
+                suffix = s
+                break
+
+        # Map legacy suffixes
+        if suffix in ('_hm', '_hl'):
+            suffix = '_lc'  # HM/HL are LC variants
+
+        if suffix in enabled_suffixes:
             result[trig_id] = trig_def.name
 
     return result
@@ -1083,16 +1133,29 @@ def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] =
 
 def get_exit_triggers(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str, str]:
     """
-    Get all exit-eligible triggers.
+    Get all exit-eligible triggers, filtered by enabled execution types.
 
     Returns dict mapping trigger_id -> display_name.
     Includes both EXIT-type triggers and all ENTRY triggers (which can
     serve as opposite-signal exits when the direction is reversed).
     """
     all_triggers = get_all_triggers(groups)
+    enabled_suffixes = _get_enabled_exec_suffixes()
 
     result = {}
     for trig_id, trig_def in all_triggers.items():
+        # Determine suffix
+        base = trig_def.base_trigger
+        suffix = ''
+        for s in ('_ib', '_hm', '_hl', '_lc', '_cc'):
+            if base.endswith(s):
+                suffix = s
+                break
+        if suffix in ('_hm', '_hl'):
+            suffix = '_lc'
+        if suffix not in enabled_suffixes:
+            continue
+
         if trig_def.trigger_type == "EXIT":
             result[trig_id] = trig_def.name
         elif trig_def.trigger_type == "ENTRY":
