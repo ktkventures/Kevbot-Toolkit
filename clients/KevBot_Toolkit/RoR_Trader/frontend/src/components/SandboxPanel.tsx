@@ -73,7 +73,11 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
 
   // Derived: filter triggers to this pack
   const sbPackTriggers = useMemo(() => {
-    if (!sbEntryTriggers || !packSlug) return [];
+    if (!sbEntryTriggers) return [];
+    // If packSlug is empty, show ALL triggers (for execution type testing)
+    if (!packSlug) {
+      return Object.entries(sbEntryTriggers).map(([id, name]) => ({ id, name: String(name) }));
+    }
     return Object.entries(sbEntryTriggers)
       .filter(([id]) => id.includes(packSlug))
       .map(([id, name]) => ({ id, name: String(name) }));

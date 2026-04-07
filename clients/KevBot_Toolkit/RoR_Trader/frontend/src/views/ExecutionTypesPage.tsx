@@ -7,6 +7,7 @@ import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
+const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
@@ -279,7 +280,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Parameters', 'Workflow Steps', 'Simulation', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Parameters', 'Workflow Steps', 'Backtest', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && (
@@ -375,11 +376,21 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                 </div>
               </Card>
             )}
-            {tab === 'Simulation' && (
+            {tab === 'Backtest' && (
               <div className="space-y-4">
-                {/* Config */}
                 <Card>
-                  <h4 className="text-sm font-medium mb-3">Simulation Config</h4>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Run a real backtest to verify [{mod.display_code}] execution behavior. Select any entry/exit trigger, stop/target, and confluence conditions — the same inputs as the Strategy Builder. The chart and trade results show exactly how this execution type handles each trade.
+                  </p>
+                </Card>
+                <SandboxPanel packSlug="" layout="horizontal" />
+              </div>
+            )}
+
+            {tab === 'OLD_Simulation' && (
+              <div className="space-y-4">
+                <Card>
+                  <h4 className="text-sm font-medium mb-3">Legacy Simulation</h4>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
                     <div>
                       <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
