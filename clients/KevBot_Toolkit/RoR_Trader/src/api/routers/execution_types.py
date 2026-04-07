@@ -166,6 +166,7 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
     """
     from execution_types import list_modules
     from pathlib import Path
+    import json
 
     module = None
     for m in list_modules():
@@ -178,7 +179,7 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
     exec_code = module.display_code
 
     # Load static fixture data (cherry-picked trades from NVDA 5Min with EMA PP V2)
-    fixture_path = Path(__file__).resolve().parent.parent.parent / "scenario_fixtures.json"
+    fixture_path = Path(__file__).resolve().parent.parent.parent.parent / "scenario_fixtures.json"
     if not fixture_path.exists():
         return {'slug': slug, 'display_code': exec_code, 'scenarios': [],
                 'error': 'Scenario fixtures not found. Run scenario fixture generator.'}
@@ -246,189 +247,11 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         'scenarios': scenarios,
     }
 
-    # === OLD DYNAMIC CODE BELOW (kept as reference, never reached) ===
-    try:
-        from services import prepare_data_with_indicators, unified_trades
-        from confluence_groups import get_entry_triggers, get_enabled_groups
 
-        groups = get_enabled_groups()
-        triggers = get_entry_triggers('LONG', groups)
-        if not triggers:
-            return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
 
-        # Pick first available LONG trigger
-        entry_trigger_id = next(iter(triggers))
 
-        df = prepare_data_with_indicators('NVDA', days=30, timeframe='5Min')
-        if len(df) < 20:
-            return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
+# Old dynamic scenarios code removed — using static fixtures now
 
-        # Use bar_count_exit to get bar count exit scenarios too
-        strategy = {
-            'symbol': 'NVDA', 'direction': 'LONG', 'timeframe': '5Min',
-            'entry_trigger_confluence_id': entry_trigger_id,
-            'stop_config': {'method': 'atr', 'atr_mult': 1.5},
-            'target_config': {'method': 'risk_reward', 'rr_ratio': 2.0},
-            'bar_count_exit': 8,
-        }
-
-        # Find EMA column for overlay
-        ema_col = None
-        for col in ['ema_9', 'ema_21', 'ema_50']:
-            if col in df.columns:
-                ema_col = col
-                break
-        trades_df = unified_trades(df, strategy)
-    except Exception as e:
-        return {'slug': slug, 'display_code': exec_code, 'scenarios': [],
-                'error': f'Backtest failed: {e}'}
-
-    if not isinstance(trades_df, pd.DataFrame) or len(trades_df) == 0:
-        return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
-
-    # Categorize trades by exit reason and pick one example of each
-    SCENARIO_MAP = {
-        'stop_loss': {'name': 'Stop Loss Hit', 'description': 'Price entered, then reversed and hit the stop loss. Exit at stop level (or bar open if gapped past).'},
-        'target': {'name': 'Target Hit', 'description': 'Price entered, then ran to the take profit target. Exit at target level.'},
-        'bar_count_exit': {'name': 'Bar Count Exit', 'description': 'Position held for the maximum number of bars. Exit at bar close.'},
-    }
-    # Add signal exit (any exit reason that's a trigger ID)
-    seen_reasons = set()
-    scenarios = []
-
-    for _, trade in trades_df.iterrows():
-        reason = trade.get('exit_reason', '')
-        if not reason or reason in seen_reasons:
-            continue
-
-        # Map to scenario type
-        scenario_type = reason if reason in SCENARIO_MAP else 'signal_exit'
-        if scenario_type == 'signal_exit' and 'signal_exit' in seen_reasons:
-            continue
-
-        seen_reasons.add(reason if reason in SCENARIO_MAP else 'signal_exit')
-
-        entry_time = trade.get('entry_time')
-        exit_time = trade.get('exit_time')
-        entry_price = float(trade.get('entry_price', 0))
-        exit_price = float(trade.get('exit_price', 0))
-        r_mult = float(trade.get('r_multiple', 0))
-        stop_price = float(trade.get('initial_stop_price', 0))
-        target_price = float(trade.get('target_price', 0)) if trade.get('target_price') else None
-
-        # Get chart bars around this trade (15 before entry, 5 after exit)
-        try:
-            entry_idx = df.index.get_indexer([pd.Timestamp(entry_time)], method='nearest')[0]
-            exit_idx = df.index.get_indexer([pd.Timestamp(exit_time)], method='nearest')[0] if exit_time else entry_idx + 10
-        except Exception:
-            continue
-
-        chart_start = max(0, entry_idx - 15)
-        chart_end = min(len(df), exit_idx + 5)
-        chart_bars = []
-        ema_data = []
-        for i in range(chart_start, chart_end):
-            row = df.iloc[i]
-            chart_bars.append({
-                'timestamp': str(df.index[i]),
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-            })
-            if ema_col and pd.notna(row.get(ema_col)):
-                ema_data.append({'time': str(df.index[i]), 'value': float(row[ema_col])})
-
-        # Entry/exit drill-down bars (5 bars around each event)
-        entry_drill = []
-        exit_drill = []
-        for i in range(max(0, entry_idx - 3), min(len(df), entry_idx + 3)):
-            row = df.iloc[i]
-            entry_drill.append({
-                'timestamp': str(df.index[i]),
-                'open': float(row['open']), 'high': float(row['high']),
-                'low': float(row['low']), 'close': float(row['close']),
-            })
-        if exit_time:
-            for i in range(max(0, exit_idx - 3), min(len(df), exit_idx + 3)):
-                row = df.iloc[i]
-                exit_drill.append({
-                    'timestamp': str(df.index[i]),
-                    'open': float(row['open']), 'high': float(row['high']),
-                    'low': float(row['low']), 'close': float(row['close']),
-                })
-
-        # Build markers
-        markers = [
-            {'time': str(entry_time), 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-        ]
-        if exit_time:
-            exit_color = '#4CAF50' if r_mult >= 0 else '#F44336'
-            if reason == 'stop_loss':
-                exit_color = '#F44336'
-            elif reason == 'target':
-                exit_color = '#4CAF50'
-            markers.append({
-                'time': str(exit_time), 'position': 'aboveBar', 'shape': 'arrowDown',
-                'color': exit_color, 'text': f'{r_mult:+.1f}R', 'size': 1,
-            })
-
-        # Build workflow trace for this trade
-        workflow_steps = []
-        direction = trade.get('direction', 'LONG')
-        et = trade.get('exec_type', 'C')
-
-        # Entry steps
-        if et in ('C', 'CC'):
-            workflow_steps.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': str(entry_time), 'badge': et})
-        else:
-            workflow_steps.append({'action': 'check_level_cross', 'label': 'Level cross detected', 'time': str(entry_time), 'badge': et})
-
-        workflow_steps.append({'action': 'fill', 'label': f'Entry filled at ${entry_price:.2f}', 'price': entry_price, 'color': 'var(--green)'})
-        workflow_steps.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{direction.lower()}_market', 'isWebhook': True})
-        workflow_steps.append({'action': 'manage_position', 'label': f'Position open — stop ${stop_price:.2f}' + (f', target ${target_price:.2f}' if target_price else '')})
-
-        # Exit steps
-        exit_label = SCENARIO_MAP.get(reason, {}).get('name', f'Exit: {reason.replace("_", " ")}')
-        workflow_steps.append({
-            'action': 'exit', 'label': f'{exit_label} at ${exit_price:.2f} ({r_mult:+.2f}R)',
-            'time': str(exit_time) if exit_time else None, 'price': exit_price,
-            'color': 'var(--green)' if r_mult >= 0 else 'var(--red)',
-        })
-        workflow_steps.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{direction.lower()}_market', 'isWebhook': True})
-
-        meta = SCENARIO_MAP.get(reason, {'name': f'Signal Exit ({reason})', 'description': f'Exit triggered by signal: {reason.replace("_", " ")}'})
-        scenarios.append({
-            'id': reason if reason in SCENARIO_MAP else 'signal_exit',
-            'name': meta['name'],
-            'description': meta['description'],
-            'direction': direction,
-            'entry_price': entry_price,
-            'exit_price': exit_price,
-            'stop_price': stop_price,
-            'target_price': target_price,
-            'exit_reason': reason,
-            'r_multiple': round(r_mult, 2),
-            'passed': True,
-            'chart_bars': chart_bars,
-            'ema_data': ema_data,
-            'ema_label': ema_col.upper().replace('_', ' ') if ema_col else None,
-            'markers': markers,
-            'workflow_steps': workflow_steps,
-            'entry_drill': entry_drill,
-            'exit_drill': exit_drill,
-            'entry_markers': [{'time': str(entry_time), 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
-            'exit_markers': [{'time': str(exit_time), 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336' if r_mult < 0 else '#4CAF50', 'text': f'{r_mult:+.1f}R', 'size': 1}] if exit_time else [],
-        })
-
-        if len(scenarios) >= 5:
-            break
-
-    return {
-        'slug': slug,
-        'display_code': exec_code,
-        'scenarios': scenarios,
-    }
 
 
 @router.post("/{slug}/simulate")
