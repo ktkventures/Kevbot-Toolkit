@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
@@ -8,7 +8,8 @@ import TabBar from '@/components/TabBar';
 
 const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 const ScenarioReplayCard = dynamic(() => import('@/components/ScenarioReplayCard'), { ssr: false });
-import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
+import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, useGenerateScenarios, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
+import { useConfluenceTriggers } from '@/hooks/queries/usePacks';
 
 /* ========================================================================= */
 /* STYLES                                                                      */
@@ -99,11 +100,41 @@ const SCENARIO_CATEGORIES = [
   { key: 'edge', label: 'Edge Cases' },
 ] as const;
 
+const GEN_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '1Day'] as const;
+
 function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
+  // Static fixture scenarios
   const [scenarios, setScenarios] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [activeCategory, setActiveCategory] = useState('common');
 
+  // Custom scenario generator state
+  const [genSymbol, setGenSymbol] = useState('NVDA');
+  const [genTimeframe, setGenTimeframe] = useState('5Min');
+  const [genDirection, setGenDirection] = useState<'LONG' | 'SHORT'>('LONG');
+  const [genDays, setGenDays] = useState(30);
+  const [genEntryTrigger, setGenEntryTrigger] = useState('');
+  const [genExitTrigger, setGenExitTrigger] = useState('');
+  const [genStopAtr, setGenStopAtr] = useState(1.5);
+  const [genTargetR, setGenTargetR] = useState(2.0);
+  const [genBarCount, setGenBarCount] = useState(8);
+  const [customScenarios, setCustomScenarios] = useState<any>(null);
+
+  const generateMut = useGenerateScenarios(slug);
+  const { data: entryTriggers } = useConfluenceTriggers(genDirection);
+  const { data: exitTriggers } = useConfluenceTriggers('EXIT');
+
+  const entryOptions = useMemo(() => {
+    if (!entryTriggers) return [];
+    return Object.entries(entryTriggers).map(([id, name]) => ({ id, name: String(name) }));
+  }, [entryTriggers]);
+
+  const exitOptions = useMemo(() => {
+    if (!exitTriggers) return [];
+    return Object.entries(exitTriggers).map(([id, name]) => ({ id, name: String(name) }));
+  }, [exitTriggers]);
+
+  // Load static fixtures
   if (scenarios === null && !loading) {
     setLoading(true);
     import('@/lib/api/client').then(({ apiFetch }) => {
@@ -112,6 +143,23 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
         .catch(() => { setScenarios({ scenarios: [] }); setLoading(false); });
     });
   }
+
+  const handleGenerate = () => {
+    if (!genEntryTrigger) return;
+    generateMut.mutate({
+      symbol: genSymbol,
+      timeframe: genTimeframe,
+      direction: genDirection,
+      days: genDays,
+      entry_trigger_confluence_id: genEntryTrigger,
+      exit_trigger_confluence_ids: genExitTrigger ? [genExitTrigger] : [],
+      stop_atr_mult: genStopAtr,
+      target_r_multiple: genTargetR,
+      bar_count_exit: genBarCount || null,
+    }, {
+      onSuccess: (data) => setCustomScenarios(data),
+    });
+  };
 
   if (loading || !scenarios) {
     return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios from real market data...</p></Card>;
@@ -122,13 +170,123 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
   const availableCategories = SCENARIO_CATEGORIES.filter(
     cat => allScenarios.some((s: any) => (s.category || 'common') === cat.key)
   );
+  const customList = customScenarios?.scenarios || [];
 
   return (
     <div className="space-y-4">
+      {/* ---- Custom Scenario Generator ---- */}
       <Card>
-        <h4 className="text-sm font-medium mb-2">Scenario Examples</h4>
+        <h4 className="text-sm font-medium mb-2">Generate Custom Scenarios</h4>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Real trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Use replay controls to step through each trade second by second.
+          Select triggers and configuration to generate scenario examples from real backtest data. The system finds representative trades for each exit type (stop, target, signal, bar count).
+        </p>
+        {/* Config row */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-3">
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
+            <input value={genSymbol} onChange={e => setGenSymbol(e.target.value.toUpperCase())} style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
+            <select value={genTimeframe} onChange={e => setGenTimeframe(e.target.value)} style={inputStyle}>
+              {GEN_TIMEFRAMES.map(tf => <option key={tf} value={tf}>{tf}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Direction</label>
+            <select value={genDirection} onChange={e => setGenDirection(e.target.value as 'LONG' | 'SHORT')} style={inputStyle}>
+              <option value="LONG">LONG</option>
+              <option value="SHORT">SHORT</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
+            <input type="number" value={genDays} onChange={e => setGenDays(Number(e.target.value))} min={5} max={90} style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Stop ATR</label>
+            <input type="number" value={genStopAtr} onChange={e => setGenStopAtr(Number(e.target.value))} step={0.5} min={0.5} style={inputStyle} />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
+          <div className="lg:col-span-1">
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Entry Trigger</label>
+            <select value={genEntryTrigger} onChange={e => setGenEntryTrigger(e.target.value)} style={inputStyle}>
+              <option value="">Select entry trigger...</option>
+              {entryOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <div className="lg:col-span-1">
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Exit Trigger</label>
+            <select value={genExitTrigger} onChange={e => setGenExitTrigger(e.target.value)} style={inputStyle}>
+              <option value="">(none — stop/target/bar count only)</option>
+              {exitOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Target R</label>
+            <input type="number" value={genTargetR} onChange={e => setGenTargetR(Number(e.target.value))} step={0.5} min={0} style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bar Count Exit</label>
+            <input type="number" value={genBarCount} onChange={e => setGenBarCount(Number(e.target.value))} min={0} style={inputStyle} />
+          </div>
+        </div>
+        <button
+          onClick={handleGenerate}
+          disabled={!genEntryTrigger || generateMut.isPending}
+          className="text-xs font-medium px-4 py-1.5 rounded-lg transition-colors"
+          style={{
+            background: genEntryTrigger && !generateMut.isPending ? 'var(--accent)' : 'var(--bg-input)',
+            color: genEntryTrigger && !generateMut.isPending ? 'white' : 'var(--text-muted)',
+            border: `1px solid ${genEntryTrigger ? 'var(--accent)' : 'var(--border)'}`,
+            cursor: genEntryTrigger && !generateMut.isPending ? 'pointer' : 'default',
+            opacity: generateMut.isPending ? 0.6 : 1,
+          }}
+        >
+          {generateMut.isPending ? 'Generating scenarios...' : 'Generate Scenarios'}
+        </button>
+      </Card>
+
+      {/* Custom scenario results */}
+      {generateMut.isPending && (
+        <Card>
+          <p className="text-sm py-6 text-center" style={{ color: 'var(--text-muted)' }}>
+            Running backtest and fetching 1-second bars... This may take 5-15 seconds.
+          </p>
+        </Card>
+      )}
+      {generateMut.isError && (
+        <Card>
+          <p className="text-sm py-4 text-center" style={{ color: 'var(--red)' }}>
+            Failed to generate scenarios. {(generateMut.error as any)?.message || 'Check API connection.'}
+          </p>
+        </Card>
+      )}
+      {customList.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 px-1">
+            <h5 className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Generated Scenarios ({customList.length})</h5>
+            <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{genSymbol} {genTimeframe} {genDirection}</span>
+          </div>
+          {customList.map((scenario: any, i: number) => (
+            <ScenarioReplayCard key={`gen-${scenario.id}-${i}`} scenario={scenario} displayCode={displayCode} />
+          ))}
+        </>
+      )}
+      {customScenarios && customList.length === 0 && !generateMut.isPending && (
+        <Card>
+          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            No trades found for this configuration. Try a longer lookback period or different triggers.
+          </p>
+        </Card>
+      )}
+
+      {/* ---- Reference Scenarios (static fixtures) ---- */}
+      <Card>
+        <h4 className="text-sm font-medium mb-2">Reference Scenarios (NVDA 5Min)</h4>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Pre-curated trades showing how [{displayCode}] handles different exit conditions.
         </p>
         {/* Category pills */}
         <div className="flex gap-2 flex-wrap">
@@ -147,7 +305,6 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
               {cat.label}
             </button>
           ))}
-          {/* Disabled pills for upcoming categories */}
           {SCENARIO_CATEGORIES.filter(cat => !availableCategories.some(a => a.key === cat.key)).map(cat => (
             <span
               key={cat.key}

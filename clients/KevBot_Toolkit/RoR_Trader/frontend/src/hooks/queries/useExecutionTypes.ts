@@ -142,3 +142,27 @@ export function useUpdateExecTypeParams() {
     },
   });
 }
+
+// --- Dynamic scenario generation ---
+
+export interface GenerateScenariosRequest {
+  symbol: string;
+  timeframe: string;
+  direction: 'LONG' | 'SHORT';
+  days: number;
+  entry_trigger_confluence_id: string;
+  exit_trigger_confluence_ids: string[];
+  stop_atr_mult: number;
+  target_r_multiple: number;
+  bar_count_exit: number | null;
+}
+
+export function useGenerateScenarios(slug: string) {
+  return useMutation({
+    mutationFn: (req: GenerateScenariosRequest) =>
+      apiFetch<any>(`/api/execution-types/${slug}/generate-scenarios`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  });
+}

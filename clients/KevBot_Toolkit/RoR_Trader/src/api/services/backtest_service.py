@@ -1067,3 +1067,240 @@ def extract_relevant_prefixes(
         if len(cond_parts) >= 2:
             prefixes.add(cond_parts[1].lower())
     return prefixes
+
+
+# ---------------------------------------------------------------------------
+# Dynamic scenario generation
+# ---------------------------------------------------------------------------
+
+# Exit reason categories for cherry-picking
+_EXIT_CATEGORY_MAP = {
+    'stop_loss': 'stop_loss',
+    'stop': 'stop_loss',
+    'target': 'target',
+    'bar_count_exit': 'bar_count_exit',
+}
+
+_CATEGORY_META = {
+    'stop_loss': {'name': 'Stop Loss Hit', 'description': 'Price reversed and hit the ATR-based stop loss.'},
+    'target': {'name': 'Target Hit', 'description': 'Price ran to the take profit target level.'},
+    'bar_count_exit': {'name': 'Bar Count Exit', 'description': 'Position held for the maximum bar count without hitting stop or target. Exit at bar close.'},
+    'signal_exit': {'name': 'Signal Exit', 'description': 'The exit trigger signal fired before stop or target was reached.'},
+}
+
+
+def cherry_pick_scenarios(
+    backtest_result: dict,
+    symbol: str,
+    timeframe: str,
+    exec_code: str,
+    entry_trigger: str,
+    direction: str,
+) -> list[dict]:
+    """Cherry-pick representative trades by exit reason and build scenario dicts.
+
+    Returns a list of scenario dicts matching the ScenarioData format consumed
+    by the frontend ScenarioReplayCard component.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from data_loader import fetch_1s_bars_for_window
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    trades = backtest_result.get('trades', [])
+    chart_data = backtest_result.get('chart_data', [])
+    overlay_indicators = backtest_result.get('overlay_indicators', [])
+    oscillator_indicators = backtest_result.get('oscillator_indicators', [])
+
+    if not trades or not chart_data:
+        return []
+
+    # Parse timeframe to seconds for C-type shift
+    TF_MAP = {'1Min': 60, '5Min': 300, '15Min': 900, '1H': 3600, '1Hour': 3600, '1Day': 86400}
+    tf_seconds = TF_MAP.get(timeframe, 300)
+
+    # L-type exit reasons (no C-type shift)
+    L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
+
+    # Determine if entry is L-type
+    entry_is_ltype = exec_code in ('L', 'LC') or entry_trigger.endswith(('_ib', '_lc', '_hm', '_hl'))
+
+    def _shift(iso: str, is_ltype: bool) -> str:
+        if is_ltype or not iso:
+            return iso
+        try:
+            dt = _dt.fromisoformat(iso)
+            return (dt + _td(seconds=tf_seconds)).isoformat()
+        except Exception:
+            return iso
+
+    # --- Group trades by exit category ---
+    categorized: dict[str, list[dict]] = {}
+    for t in trades:
+        reason = t.get('exit_reason', '')
+        cat = _EXIT_CATEGORY_MAP.get(reason, 'signal_exit')
+        categorized.setdefault(cat, []).append(t)
+
+    # --- Pick best representative per category ---
+    picked: list[tuple[str, dict]] = []
+    for cat, cat_trades in categorized.items():
+        if not cat_trades:
+            continue
+        # Score: prefer median R, bars_held > 1, middle of dataset
+        r_values = [t.get('r_multiple', 0) for t in cat_trades]
+        median_r = sorted(r_values)[len(r_values) // 2]
+        mid_idx = len(cat_trades) // 2
+
+        def score(i: int, t: dict) -> float:
+            r_dist = abs(t.get('r_multiple', 0) - median_r)
+            bars_penalty = 0 if t.get('bars_held', 0) > 1 else 1.0
+            idx_dist = abs(i - mid_idx) / max(len(cat_trades), 1)
+            return r_dist + bars_penalty + idx_dist * 0.5
+
+        best_idx = min(range(len(cat_trades)), key=lambda i: score(i, cat_trades[i]))
+        picked.append((cat, cat_trades[best_idx]))
+
+    if not picked:
+        return []
+
+    # --- Build chart data index for fast window extraction ---
+    chart_timestamps = [bar.get('timestamp', '') for bar in chart_data]
+
+    def _find_chart_window(entry_time: str, exit_time: str, padding: int = 5):
+        """Extract chart bars around a trade with padding."""
+        # Find entry and exit indices
+        entry_idx = 0
+        exit_idx = len(chart_timestamps) - 1
+        for i, ts in enumerate(chart_timestamps):
+            try:
+                if _dt.fromisoformat(ts) <= _dt.fromisoformat(entry_time):
+                    entry_idx = i
+                if _dt.fromisoformat(ts) <= _dt.fromisoformat(exit_time):
+                    exit_idx = i
+            except Exception:
+                continue
+        start = max(0, entry_idx - padding)
+        end = min(len(chart_data), exit_idx + padding + 1)
+        return chart_data[start:end]
+
+    # --- Fetch 1-second bars in parallel ---
+    fetch_tasks = []
+    for cat, trade in picked:
+        et = trade.get('entry_time', '')
+        xt = trade.get('exit_time', '')
+        exit_reason = trade.get('exit_reason', '')
+        exit_is_ltype = exit_reason in L_TYPE_EXITS
+
+        # Fill times (C-type shifted)
+        fill_entry = _shift(et, entry_is_ltype)
+        fill_exit = _shift(xt, exit_is_ltype)
+        fetch_tasks.append((cat, trade, fill_entry, fill_exit))
+
+    # Parallel fetch
+    one_sec_results: dict[str, dict] = {}
+
+    def _fetch_1s(center_iso: str, label: str):
+        try:
+            dt = _dt.fromisoformat(center_iso)
+            start = dt - _td(seconds=60)
+            end = dt + _td(seconds=60)
+            bars_df = fetch_1s_bars_for_window(symbol, start, end, padding_seconds=0)
+            if bars_df is not None and len(bars_df) > 0:
+                return [{
+                    'timestamp': ts.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                } for ts, row in bars_df.iterrows()]
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to fetch 1s bars for {label}: {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {}
+        for cat, trade, fill_entry, fill_exit in fetch_tasks:
+            futures[(cat, 'entry')] = pool.submit(_fetch_1s, fill_entry, f"{cat}_entry")
+            futures[(cat, 'exit')] = pool.submit(_fetch_1s, fill_exit, f"{cat}_exit")
+        for key, future in futures.items():
+            one_sec_results[f"{key[0]}_{key[1]}"] = future.result()
+
+    # --- Build scenario dicts ---
+    scenarios = []
+    for cat, trade in picked:
+        et = trade.get('entry_time', '')
+        xt = trade.get('exit_time', '')
+        ep = trade.get('entry_price', 0)
+        xp = trade.get('exit_price', 0)
+        sp = trade.get('stop_price', 0)
+        tp = trade.get('target_price', 0)
+        rm = trade.get('r_multiple', 0)
+        exit_reason = trade.get('exit_reason', '')
+        exit_is_ltype = exit_reason in L_TYPE_EXITS
+
+        shifted_et = _shift(et, entry_is_ltype)
+        shifted_xt = _shift(xt, exit_is_ltype)
+
+        meta = _CATEGORY_META.get(cat, {'name': cat.replace('_', ' ').title(), 'description': f'Exit: {exit_reason}'})
+
+        # Chart window
+        window = _find_chart_window(et, xt)
+
+        # Workflow steps
+        ws = []
+        if exec_code in ('C', 'CC'):
+            ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
+        else:
+            ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
+        ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'time': shifted_et, 'price': ep, 'color': 'var(--green)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{direction.lower()}_market', 'time': shifted_et, 'isWebhook': True})
+        if exec_code in ('LC', 'CC'):
+            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation', 'time': shifted_et})
+            ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
+        ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else ''), 'time': shifted_et})
+        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
+        ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{direction.lower()}_market', 'time': shifted_xt or xt, 'isWebhook': True})
+
+        # Markers
+        xc = '#4CAF50' if rm >= 0 else '#F44336'
+        markers = [{'time': shifted_et, 'position': 'belowBar' if direction == 'LONG' else 'aboveBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
+        if shifted_xt:
+            markers.append({'time': shifted_xt, 'position': 'aboveBar' if direction == 'LONG' else 'belowBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
+
+        entry_1s = one_sec_results.get(f"{cat}_entry", [])
+        exit_1s = one_sec_results.get(f"{cat}_exit", [])
+
+        # Entry/exit drill (3 bars around each event from chart window)
+        entry_drill = window[:3] if len(window) >= 3 else window
+        exit_drill = window[-3:] if len(window) >= 3 else window
+
+        scenarios.append({
+            'id': cat,
+            'name': meta['name'],
+            'description': meta['description'],
+            'category': 'generated',
+            'direction': direction,
+            'entry_price': ep,
+            'exit_price': xp,
+            'stop_price': sp,
+            'target_price': tp,
+            'exit_reason': exit_reason,
+            'r_multiple': rm,
+            'passed': True,
+            'exec_type': exec_code,
+            'chart_data': window,
+            'raw_trades': [trade],
+            'overlay_indicators': overlay_indicators,
+            'oscillator_indicators': oscillator_indicators,
+            'heatmap_conditions': [],
+            'markers': markers,
+            'workflow_steps': ws,
+            'entry_drill': entry_drill,
+            'exit_drill': exit_drill,
+            'entry_1s_bars': entry_1s,
+            'exit_1s_bars': exit_1s,
+            'entry_markers': [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
+            'exit_markers': [{'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if shifted_xt else [],
+        })
+
+    return scenarios

@@ -278,7 +278,73 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
 
 
 
-# Old dynamic scenarios code removed — using static fixtures now
+@router.post("/{slug}/generate-scenarios")
+def generate_custom_scenarios(slug: str, body: dict = Body(...), user=Depends(get_current_user)):
+    """Generate scenario examples from a real backtest with user-selected triggers.
+
+    Runs a backtest, cherry-picks one trade per exit reason (stop, target, signal,
+    bar count), fetches 1-second Polygon bars for each, and returns scenario dicts
+    in the same format as the static GET /{slug}/scenarios endpoint.
+    """
+    from execution_types import list_modules
+    from api.schemas.backtest import BacktestRequest
+    from api.services.backtest_service import run_backtest, cherry_pick_scenarios
+
+    module = None
+    for m in list_modules():
+        if m.slug == slug:
+            module = m
+            break
+    if not module:
+        raise HTTPException(status_code=404, detail=f"Execution type '{slug}' not found")
+
+    exec_code = module.display_code
+
+    # Build backtest request from body
+    entry_trigger = body.get('entry_trigger_confluence_id', '')
+    exit_triggers = body.get('exit_trigger_confluence_ids', [])
+    if isinstance(exit_triggers, str):
+        exit_triggers = [exit_triggers] if exit_triggers else []
+
+    symbol = body.get('symbol', 'NVDA')
+    timeframe = body.get('timeframe', '5Min')
+    direction = body.get('direction', 'LONG')
+
+    req = BacktestRequest(
+        symbol=symbol,
+        timeframe=timeframe,
+        direction=direction,
+        days=body.get('days', 30),
+        entry_trigger_confluence_id=entry_trigger,
+        exit_trigger_confluence_ids=exit_triggers,
+        stop_atr_mult=body.get('stop_atr_mult', 1.5),
+        target_config={'method': 'r_multiple', 'r_multiple': body.get('target_r_multiple', 2.0)} if body.get('target_r_multiple') else None,
+        bar_count_exit=body.get('bar_count_exit'),
+        include_chart_data=True,
+        hifi_mode=False,
+    )
+
+    try:
+        result = run_backtest(req)
+    except Exception as e:
+        return {'slug': slug, 'display_code': exec_code, 'symbol': symbol, 'scenarios': [], 'error': str(e)}
+
+    scenarios = cherry_pick_scenarios(
+        backtest_result=result,
+        symbol=symbol,
+        timeframe=timeframe,
+        exec_code=exec_code,
+        entry_trigger=entry_trigger,
+        direction=direction,
+    )
+
+    return {
+        'slug': slug,
+        'display_code': exec_code,
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'scenarios': scenarios,
+    }
 
 
 
