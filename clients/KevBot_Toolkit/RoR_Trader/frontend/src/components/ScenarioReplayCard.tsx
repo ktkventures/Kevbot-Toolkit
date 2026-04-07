@@ -16,6 +16,7 @@ import Card from '@/components/Card';
 import ReplayControls from '@/components/ReplayControls';
 import WorkflowTrace from '@/components/WorkflowTrace';
 import useScenarioReplay, { type ScenarioData } from '@/hooks/useScenarioReplay';
+import { useChartPrefs } from '@/hooks/useChartPrefs';
 import type { SeriesSetup, SeriesDataInput } from '@/charts/ReplayableChart';
 
 const ReplayableChart = dynamic(() => import('@/charts/ReplayableChart'), { ssr: false });
@@ -31,11 +32,11 @@ interface ScenarioReplayCardProps {
 
 export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioReplayCardProps) {
   const replay = useScenarioReplay(scenario as ScenarioData, 300);
+  const chartPrefs = useChartPrefs();
 
   const overlayNames = scenario.overlay_indicators || [];
   const trade = (scenario.raw_trades || [])[0];
   const isWin = (scenario.r_multiple || 0) >= 0;
-  const triggerName = trade?.entry_trigger?.replace(/_/g, ' ') || 'entry signal';
 
   // ---- Main chart series setup (stable, set once) ----
   // Series order: [0] Candlestick, [1..N] overlay lines, [N+1] entry cross, [N+2] exit cross
@@ -154,12 +155,24 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
   }, [scenario, overlayNames]);
 
   // ---- Entry Hi-Fi data ----
-  // Uses pre-built entry_markers from API (already correctly positioned)
+  // Shift markers for C-type: entry fill happens at next 5-min bar open
   const entrySeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.entryBars) return undefined;
-    const markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
+    let markers = replay.entryFullyRevealed ? (scenario.entry_markers || []) : [];
+    // For C-type entry, shift marker times to next 5-min bar open
+    const execType = scenario.exec_type || 'C';
+    const entryTrigger = trade?.entry_trigger || '';
+    const entryIsLType = execType === 'L' || execType === 'LC' ||
+      entryTrigger.endsWith('_ib') || entryTrigger.endsWith('_lc') ||
+      entryTrigger.endsWith('_hm') || entryTrigger.endsWith('_hl');
+    if (!entryIsLType && markers.length > 0) {
+      markers = markers.map((m: any) => ({
+        ...m,
+        time: m.time ? new Date(new Date(m.time).getTime() + TF_MS).toISOString() : m.time,
+      }));
+    }
     return [{ data: replay.entryBars, markers }];
-  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers]);
+  }, [replay.entryBars, replay.entryFullyRevealed, scenario.entry_markers, scenario.exec_type, trade]);
 
   // ---- Exit Hi-Fi series setup ----
   const exitSeriesSetup = useMemo((): SeriesSetup[] => {
@@ -189,14 +202,20 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
   }, [scenario, overlayNames, isWin]);
 
   // ---- Exit Hi-Fi data ----
-  // Uses pre-built exit_markers from API (already correctly positioned)
+  // Shift markers for C-type exits: fill happens at next 5-min bar open
   const exitSeriesData = useMemo((): SeriesDataInput[] | undefined => {
     if (!replay.exitBars) return undefined;
-    const markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
-    return [
-      { data: replay.exitBars, markers },
-    ];
-  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers]);
+    let markers = replay.exitFullyRevealed ? (scenario.exit_markers || []) : [];
+    const exitReason = trade?.exit_reason || '';
+    const exitIsLType = L_TYPE_EXITS.has(exitReason);
+    if (!exitIsLType && markers.length > 0) {
+      markers = markers.map((m: any) => ({
+        ...m,
+        time: m.time ? new Date(new Date(m.time).getTime() + TF_MS).toISOString() : m.time,
+      }));
+    }
+    return [{ data: replay.exitBars, markers }];
+  }, [replay.exitBars, replay.exitFullyRevealed, scenario.exit_markers, trade, L_TYPE_EXITS]);
 
   // Format placeholder times
   const formatPlaceholderTime = (unixSec: number) => {
@@ -231,6 +250,9 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
               height={300}
               seriesSetup={mainSeriesSetup}
               seriesData={mainSeriesData}
+              upColor={chartPrefs.candleUp}
+              downColor={chartPrefs.candleDown}
+              upBorderColor={chartPrefs.candleUpBorder}
             />
           </div>
         </div>
@@ -260,10 +282,6 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
             <WorkflowTrace
               steps={scenario.workflow_steps || []}
               stepStates={replay.workflowStepStates}
-              confluenceConditions={replay.confluenceConditions}
-              confluenceAllMet={replay.confluenceAllMet}
-              triggerStatus={replay.triggerStatus}
-              triggerName={triggerName}
             />
           </div>
         </div>
@@ -281,6 +299,9 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
                 height={250}
                 seriesSetup={entrySeriesSetup}
                 seriesData={entrySeriesData}
+                upColor={chartPrefs.candleUp}
+                downColor={chartPrefs.candleDown}
+                upBorderColor={chartPrefs.candleUpBorder}
               />
             ) : (
               <div className="flex items-center justify-center h-full rounded-lg"
@@ -302,6 +323,9 @@ export default function ScenarioReplayCard({ scenario, displayCode }: ScenarioRe
                 height={250}
                 seriesSetup={exitSeriesSetup}
                 seriesData={exitSeriesData}
+                upColor={chartPrefs.candleUp}
+                downColor={chartPrefs.candleDown}
+                upBorderColor={chartPrefs.candleUpBorder}
               />
             ) : (
               <div className="flex items-center justify-center h-full rounded-lg"

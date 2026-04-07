@@ -10,18 +10,13 @@
  * data is provided.
  */
 
-import type { StepState, ConfluenceCondition } from '@/hooks/useScenarioReplay';
+import type { StepState } from '@/hooks/useScenarioReplay';
 
 const EXEC_BADGE_COLOR = '#2196F3';
 
 interface WorkflowTraceProps {
   steps: any[];
   stepStates?: StepState[];
-  // Pre-entry monitoring
-  confluenceConditions?: ConfluenceCondition[];
-  confluenceAllMet?: boolean;
-  triggerStatus?: 'waiting' | 'fired';
-  triggerName?: string;
 }
 
 // Pulse animation via inline keyframes
@@ -32,12 +27,7 @@ const pulseKeyframes = `
 }
 `;
 
-export default function WorkflowTrace({
-  steps, stepStates,
-  confluenceConditions, confluenceAllMet, triggerStatus, triggerName,
-}: WorkflowTraceProps) {
-  const hasMonitoring = confluenceConditions && confluenceConditions.length > 0;
-
+export default function WorkflowTrace({ steps, stepStates }: WorkflowTraceProps) {
   return (
     <div>
       {/* Inject pulse animation */}
@@ -85,20 +75,27 @@ export default function WorkflowTrace({
                 )}
               </div>
               <div className="pb-1.5" style={isPending ? { opacity: 0.35 } : {}}>
-                <p className="text-[10px]" style={{
-                  color: isPending ? 'var(--text-muted)'
-                    : step.color || (step.isWebhook ? 'var(--accent)' : 'var(--text-primary)'),
-                }}>
-                  {step.label}
-                </p>
-                {step.badge && (
-                  <span className="text-[8px] font-mono font-bold px-1 py-0.5 rounded-full"
-                    style={{
-                      color: EXEC_BADGE_COLOR,
-                      background: EXEC_BADGE_COLOR + '20',
-                      ...(isPending ? { opacity: 0.5 } : {}),
-                    }}>
-                    [{step.badge}]
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-[10px]" style={{
+                    color: isPending ? 'var(--text-muted)'
+                      : step.color || (step.isWebhook ? 'var(--accent)' : 'var(--text-primary)'),
+                  }}>
+                    {step.label}
+                  </p>
+                  {step.badge && (
+                    <span className="text-[8px] font-mono font-bold px-1 py-0.5 rounded-full"
+                      style={{
+                        color: EXEC_BADGE_COLOR,
+                        background: EXEC_BADGE_COLOR + '20',
+                        ...(isPending ? { opacity: 0.5 } : {}),
+                      }}>
+                      [{step.badge}]
+                    </span>
+                  )}
+                </div>
+                {step.time && (
+                  <span className="text-[8px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                    @ {(() => { try { return new Date(step.time).toISOString().slice(11, 19); } catch { return step.time; } })()}
                   </span>
                 )}
               </div>
