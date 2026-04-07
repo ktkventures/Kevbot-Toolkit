@@ -407,15 +407,20 @@ export default function SandboxPanel({ packSlug, layout = 'horizontal' }: Sandbo
                   {sbResult.trades.length === 0 ? (
                     <tr><td colSpan={9} className="py-4 px-2 text-center" style={{ color: 'var(--text-muted)' }}>No trades</td></tr>
                   ) : sbResult.trades.map((t: any) => (
-                    <tr key={t.id} style={{ borderBottom: '1px solid var(--border)', cursor: sbLastConfig ? 'pointer' : undefined }}
-                      onClick={() => {
-                        if (!sbLastConfig) return;
-                        setSbZoomTrade({ idx: t.id - 1, side: 'entry', trade: t });
-                        sbTradeZoomMut.mutate({ ...sbLastConfig, trade_idx: t.id - 1, side: 'entry' });
-                      }}>
+                    <tr key={t.id} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td className="px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>{t.id}</td>
-                      <td className="px-2 py-1.5 font-mono" style={{ color: 'var(--text-secondary)', fontSize: '0.65rem' }}>{t.entryTime}</td>
-                      <td className="px-2 py-1.5 font-mono" style={{ color: 'var(--text-secondary)', fontSize: '0.65rem' }}>{t.exitTime}</td>
+                      <td className="px-2 py-1.5 font-mono" style={{ color: 'var(--text-secondary)', fontSize: '0.65rem', cursor: sbLastConfig ? 'pointer' : undefined, textDecoration: sbLastConfig ? 'underline' : undefined }}
+                        onClick={() => {
+                          if (!sbLastConfig) return;
+                          setSbZoomTrade({ idx: t.id - 1, side: 'entry', trade: t });
+                          sbTradeZoomMut.mutate({ ...sbLastConfig, trade_idx: t.id - 1, side: 'entry' });
+                        }}>{t.entryTime}</td>
+                      <td className="px-2 py-1.5 font-mono" style={{ color: 'var(--text-secondary)', fontSize: '0.65rem', cursor: sbLastConfig ? 'pointer' : undefined, textDecoration: sbLastConfig ? 'underline' : undefined }}
+                        onClick={() => {
+                          if (!sbLastConfig) return;
+                          setSbZoomTrade({ idx: t.id - 1, side: 'exit', trade: t });
+                          sbTradeZoomMut.mutate({ ...sbLastConfig, trade_idx: t.id - 1, side: 'exit' });
+                        }}>{t.exitTime}</td>
                       <td className="px-2 py-1.5"><span style={{ color: t.direction === 'LONG' ? 'var(--green)' : 'var(--red)' }}>{t.direction}</span></td>
                       <td className="px-2 py-1.5 text-right font-mono">${t.entryPrice.toFixed(2)}</td>
                       <td className="px-2 py-1.5 text-right font-mono">${t.exitPrice.toFixed(2)}</td>
