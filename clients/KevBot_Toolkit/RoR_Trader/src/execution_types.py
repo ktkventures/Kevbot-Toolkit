@@ -75,6 +75,9 @@ class ExecutionTypeModule:
     # Detailed description for the Description tab
     detailed_description: dict = {}
 
+    # Placeholder definitions — how each webhook placeholder is determined for this exec type
+    placeholder_definitions: dict = {}
+
     def check_entry_signal(
         self,
         trigger_id: str,
@@ -153,6 +156,7 @@ class ExecutionTypeModule:
             'steps': self.steps,
             'parameters_schema': self.parameters_schema,
             'detailed_description': self.detailed_description,
+            'placeholder_definitions': self.placeholder_definitions,
         }
 
 
@@ -189,6 +193,54 @@ class BarCloseExecution(ExecutionTypeModule):
         },
         'determined_by_pack': ['When the trigger fires (timing)', 'Direction (LONG/SHORT)', 'Which indicator conditions must be met'],
         'determined_by_exec_type': ['Fill price (always bar close)', 'Webhook event type (entry_X_market)', 'No confirmation needed'],
+    }
+
+    placeholder_definitions = {
+        'execution': {
+            'label': 'Execution Type',
+            'placeholders': {
+                'exec_type': {'value': 'C', 'description': 'Always "C" for Bar Close execution'},
+                'order_action': {'value': 'buy (LONG) / sell (SHORT) / close (exit)', 'description': 'Derived from direction and signal type. Entry LONG = buy, Entry SHORT = sell, Exit = close.'},
+                'order_price': {'value': 'Bar close price', 'description': 'The last traded price of the bar when the trigger fired. This is the fill price for both entry and exit.'},
+                'market_position': {'value': 'long / short / flat', 'description': 'After entry: "long" or "short". After exit: "flat".'},
+                'event_type': {'value': 'entry_signal / exit_signal', 'description': 'Determined by whether this is an entry or exit event.'},
+            },
+        },
+        'signal': {
+            'label': 'Signal Context',
+            'placeholders': {
+                'symbol': {'value': 'From strategy', 'description': 'The ticker symbol being traded (e.g., NVDA, SPY). Set by the strategy.'},
+                'direction': {'value': 'LONG or SHORT', 'description': 'Set by the confluence pack trigger. Determines order_action.'},
+                'timeframe': {'value': 'From strategy', 'description': 'The bar timeframe (e.g., 1Min, 5Min). Set by the strategy.'},
+                'trigger_name': {'value': 'Trigger ID', 'description': 'The specific trigger that fired (e.g., ema_pp_v2_cross_short_up). From the confluence pack.'},
+                'timestamp': {'value': 'Bar close time', 'description': 'ISO timestamp of the bar close when the trigger fired.'},
+            },
+        },
+        'order': {
+            'label': 'Order Details',
+            'placeholders': {
+                'quantity': {'value': 'risk_per_trade ÷ |entry - stop|', 'description': 'Number of shares. Calculated from portfolio risk_per_trade divided by the distance between entry price and stop price.'},
+                'stop_price': {'value': 'From stop loss pack', 'description': 'Calculated by the stop loss pack (ATR, swing, fixed dollar, or percentage method). Set at entry time.'},
+                'atr': {'value': 'Current ATR value', 'description': 'Average True Range at the signal bar. Used for stop/target calculations.'},
+                'risk_per_trade': {'value': 'From portfolio', 'description': 'Dollar amount risked per trade. Set at the portfolio level.'},
+            },
+        },
+        'strategy': {
+            'label': 'Strategy Context',
+            'placeholders': {
+                'strategy_name': {'value': 'Strategy display name', 'description': 'The name of the strategy that generated this signal.'},
+                'strategy_id': {'value': 'Strategy numeric ID', 'description': 'Database ID of the strategy.'},
+                'confluence_met': {'value': 'Comma-separated conditions', 'description': 'List of confluence conditions that were met at entry time (e.g., "5M-EMA_STACK-SML, 1H-MACD_LINE-M>S+").'},
+            },
+        },
+        'portfolio': {
+            'label': 'Portfolio Context',
+            'placeholders': {
+                'portfolio_name': {'value': 'Portfolio display name', 'description': 'The portfolio containing this strategy.'},
+                'portfolio_id': {'value': 'Portfolio numeric ID', 'description': 'Database ID of the portfolio.'},
+                'position_risk': {'value': 'Position risk amount', 'description': 'Dollar risk for this position within the portfolio.'},
+            },
+        },
     }
 
     steps = {
@@ -252,6 +304,36 @@ class LevelExecution(ExecutionTypeModule):
         },
         'determined_by_pack': ['Which indicator level to cross', 'Whether to use current or previous bar level', 'Cross direction (above/below)'],
         'determined_by_exec_type': ['Fill at level price (not close)', 'Skip stop/target on entry bar', 'Webhook: entry_X_market'],
+    }
+
+    placeholder_definitions = {
+        'execution': {
+            'label': 'Execution Type',
+            'placeholders': {
+                'exec_type': {'value': 'L', 'description': 'Always "L" (L0 or L1 internally, based on indicator)'},
+                'order_action': {'value': 'buy / sell / close', 'description': 'Same as C-type. Derived from direction and signal type.'},
+                'order_price': {'value': 'Indicator level price', 'description': 'The indicator level at the moment of the cross. More favorable than bar close for crossover strategies.'},
+                'market_position': {'value': 'long / short / flat', 'description': 'Same as C-type.'},
+            },
+        },
+        'signal': {
+            'label': 'Signal Context',
+            'placeholders': {
+                'symbol': {'value': 'From strategy', 'description': 'Ticker symbol.'},
+                'direction': {'value': 'LONG or SHORT', 'description': 'From confluence pack trigger.'},
+                'timeframe': {'value': 'From strategy', 'description': 'Bar timeframe.'},
+                'trigger_name': {'value': 'Trigger ID', 'description': 'The trigger with _ib suffix (e.g., ema_pp_v2_cross_short_up_ib).'},
+                'timestamp': {'value': 'Bar timestamp', 'description': 'Timestamp of the bar where the level cross was detected.'},
+            },
+        },
+        'order': {
+            'label': 'Order Details',
+            'placeholders': {
+                'quantity': {'value': 'risk_per_trade ÷ |entry - stop|', 'description': 'Shares. Stop is calculated from PREVIOUS bar indicators (since entry happens mid-bar).'},
+                'stop_price': {'value': 'From stop loss pack (prev bar)', 'description': 'Stop uses previous bar indicators — current bar not yet closed at entry time.'},
+                'atr': {'value': 'Previous bar ATR', 'description': 'ATR from previous bar (current bar incomplete at entry).'},
+            },
+        },
     }
 
     steps = {
@@ -337,6 +419,31 @@ class LevelCloseExecution(ExecutionTypeModule):
         },
         'determined_by_pack': ['Which indicator level to cross', 'Cross direction'],
         'determined_by_exec_type': ['Fill at level price', 'Confirmation check at bar close', 'Bail behavior (market or limit at entry price)'],
+    }
+
+    placeholder_definitions = {
+        'execution': {
+            'label': 'Execution Type',
+            'placeholders': {
+                'exec_type': {'value': 'LC', 'description': 'Level-Close execution type'},
+                'order_action': {'value': 'buy / sell / close', 'description': 'Entry: buy/sell. Bail: close. Confirmed exit: close.'},
+                'order_price': {'value': 'Indicator level (entry) / market (bail)', 'description': 'Entry fills at the indicator level. If confirmation fails, bail fills at bar open (market) or entry price (limit).'},
+            },
+        },
+        'confirmation': {
+            'label': 'Confirmation',
+            'placeholders': {
+                'confirm_bar_offset': {'value': '0 (same bar) or 1 (next bar)', 'description': 'How many bars to wait before checking confirmation. 0 = check at same bar close. 1 = check at next bar close.'},
+                'bail_action': {'value': 'exit_market or exit_limit', 'description': 'What to do if confirmation fails. Market = exit at next bar open. Limit = place limit order at entry price (breakeven exit).'},
+            },
+        },
+        'order': {
+            'label': 'Order Details',
+            'placeholders': {
+                'quantity': {'value': 'risk_per_trade ÷ |entry - stop|', 'description': 'Same as L-type. Stop uses previous bar indicators.'},
+                'stop_price': {'value': 'From stop loss pack (prev bar)', 'description': 'Calculated from previous bar (entry happens mid-bar).'},
+            },
+        },
     }
 
     steps = {
@@ -477,8 +584,32 @@ class CloseCloseExecution(ExecutionTypeModule):
         'determined_by_exec_type': ['Fill at bar close', 'Next-bar confirmation required', 'Bail at market if unconfirmed'],
     }
 
-    # CC has fixed behavior — no configurable parameters
     parameters_schema = {}
+
+    placeholder_definitions = {
+        'execution': {
+            'label': 'Execution Type',
+            'placeholders': {
+                'exec_type': {'value': 'CC', 'description': 'Close-Close execution type'},
+                'order_action': {'value': 'buy / sell / close', 'description': 'Entry: buy/sell at bar close. Bail: close at next bar open.'},
+                'order_price': {'value': 'Bar close (entry) / bar open (bail)', 'description': 'Entry fills at bar close. If next bar doesn\'t confirm, bail at the following bar\'s open price.'},
+            },
+        },
+        'confirmation': {
+            'label': 'Confirmation',
+            'placeholders': {
+                'confirm_bar_offset': {'value': '1 (always next bar)', 'description': 'CC always waits for the next bar to close before confirming. Cannot be adjusted.'},
+                'bail_action': {'value': 'exit_market (always)', 'description': 'CC always bails at market (next bar open) if unconfirmed. Cannot be adjusted.'},
+            },
+        },
+        'order': {
+            'label': 'Order Details',
+            'placeholders': {
+                'quantity': {'value': 'risk_per_trade ÷ |entry - stop|', 'description': 'Same as C-type. Stop uses current bar indicators (entry is at bar close).'},
+                'stop_price': {'value': 'From stop loss pack', 'description': 'Calculated from current bar indicators (same as C-type).'},
+            },
+        },
+    }
 
     steps = {
         'entry': [

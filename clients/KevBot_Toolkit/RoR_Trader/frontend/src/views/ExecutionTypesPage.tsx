@@ -271,7 +271,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Description', 'Placeholders', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Description' && (
@@ -376,6 +376,37 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                       </div>
                     </>
                   );
+                })()}
+              </div>
+            )}
+
+            {tab === 'Placeholders' && (
+              <div className="space-y-4">
+                {(() => {
+                  const defs = (mod as any).placeholder_definitions || {};
+                  if (Object.keys(defs).length === 0) {
+                    return <Card><p className="text-xs" style={{ color: 'var(--text-muted)' }}>No placeholder definitions available.</p></Card>;
+                  }
+                  return Object.entries(defs).map(([groupKey, group]: [string, any]) => (
+                    <Card key={groupKey}>
+                      <h4 className="text-sm font-medium mb-3">{group.label}</h4>
+                      <div className="space-y-3">
+                        {Object.entries(group.placeholders as Record<string, any>).map(([key, ph]: [string, any]) => (
+                          <div key={key} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}>
+                                {`{{${key}}}`}
+                              </span>
+                              <span className="text-[10px] font-mono" style={{ color: 'var(--green)' }}>
+                                {ph.value}
+                              </span>
+                            </div>
+                            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>{ph.description}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  ));
                 })()}
               </div>
             )}
