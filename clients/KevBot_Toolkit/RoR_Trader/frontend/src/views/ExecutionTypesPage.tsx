@@ -161,36 +161,34 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                       <SyncedChartPane panes={panes} />
                     </div>
 
-                    {/* Drill-down charts: entry + exit */}
-                    {/* Shows 5-min candles zoomed in with EMA levels as horizontal reference lines */}
+                    {/* Hi-Fi 1-second drill-down charts: entry + exit */}
                     <div className="grid grid-cols-2 gap-2 mt-2">
-                      {scenario.entry_drill && scenario.entry_drill.length > 0 && (
+                      {scenario.entry_1s_bars && scenario.entry_1s_bars.length > 0 && (
                         <div>
-                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Drill-Down</p>
+                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Hi-Fi (1-second)</p>
                           <div style={{ minHeight: 250 }}>
                             {(() => {
-                              // Get EMA values at entry bar for stepped reference lines
-                              const entryBar = scenario.entry_drill[Math.floor(scenario.entry_drill.length / 2)] || scenario.entry_drill[0];
+                              // EMA levels as stepped reference lines (5-min values on 1-second chart)
+                              const refBar = (scenario.entry_drill || [])[Math.floor((scenario.entry_drill || []).length / 2)];
                               const emaLines: any[] = [];
                               const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
                               (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                                const val = entryBar?.[col];
+                                const val = refBar?.[col];
                                 if (val != null && isFinite(val)) {
                                   emaLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
                                 }
                               });
-                              // Add stop/target lines
                               if (scenario.stop_price) emaLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
                               if (scenario.entry_price) emaLines.push({ price: scenario.entry_price, color: '#4CAF50', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Entry' });
 
                               return (
                                 <SyncedChartPane
                                   panes={[{
-                                    id: `entry-drill-${scenario.id}`,
+                                    id: `entry-1s-${scenario.id}`,
                                     height: 250,
                                     series: [{
                                       type: 'Candlestick' as const,
-                                      data: scenario.entry_drill.map((b: any) => ({
+                                      data: scenario.entry_1s_bars.map((b: any) => ({
                                         time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
                                       })),
                                       markers: scenario.entry_markers || [],
@@ -203,16 +201,16 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                           </div>
                         </div>
                       )}
-                      {scenario.exit_drill && scenario.exit_drill.length > 0 && (
+                      {scenario.exit_1s_bars && scenario.exit_1s_bars.length > 0 && (
                         <div>
-                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Drill-Down</p>
+                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Hi-Fi (1-second)</p>
                           <div style={{ minHeight: 250 }}>
                             {(() => {
-                              const exitBar = scenario.exit_drill[Math.floor(scenario.exit_drill.length / 2)] || scenario.exit_drill[0];
+                              const refBar = (scenario.exit_drill || [])[Math.floor((scenario.exit_drill || []).length / 2)];
                               const emaLines: any[] = [];
                               const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
                               (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                                const val = exitBar?.[col];
+                                const val = refBar?.[col];
                                 if (val != null && isFinite(val)) {
                                   emaLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
                                 }
@@ -223,11 +221,11 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                               return (
                                 <SyncedChartPane
                                   panes={[{
-                                    id: `exit-drill-${scenario.id}`,
+                                    id: `exit-1s-${scenario.id}`,
                                     height: 250,
                                     series: [{
                                       type: 'Candlestick' as const,
-                                      data: scenario.exit_drill.map((b: any) => ({
+                                      data: scenario.exit_1s_bars.map((b: any) => ({
                                         time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
                                       })),
                                       markers: scenario.exit_markers || [],
