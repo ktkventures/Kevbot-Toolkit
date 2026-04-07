@@ -271,7 +271,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Parameters', 'Workflow Steps', 'Backtest', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Parameters', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && (
@@ -392,7 +392,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                 })()}
               </div>
             )}
-            {tab === 'Backtest' && (
+            {tab === 'Sandbox' && (
               <div className="space-y-4">
                 <Card>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
