@@ -177,7 +177,39 @@ Flesh out the execution type detail page with validation/testing capabilities. D
 - [ ] 4f. [Polish] **Execution type documentation** — Each type has a clear description of when it fills, at what price, what confirmation/bail behavior applies, and what webhook events fire.
 - [ ] 4g. [Deferred] **Custom execution type creation** — Users can define new execution types via the drip-campaign workflow builder.
 
-**Exit Criteria:** Each of the 4 execution types can be tested in isolation via the Simulation tab. Webhook events are visible in the workflow steps. Variations can be created without affecting defaults. Strategy Builder trigger count matches enabled execution types × pack triggers.
+**Completed:** 2026-04-06. Phases 1-4 done. Webhook steps, simulation tab, variations, trigger filtering all working.
+
+---
+
+### Milestone 4.5: Execution Type Creation & Validation
+**Priority:** Critical — prove the concept before building on top of it
+**Effort:** 3-5 days
+
+First iteration of AI-assisted execution type creation and scenario-based validation. This proves that new execution types can be reliably created, tested, and trusted. Everything downstream (packs, strategies, portfolios) depends on this being solid.
+
+**Key Principles:**
+- Primary interface is plain English description + workflow steps, not raw parameters
+- Each execution type gets a unique 1-5 character badge (C, L, LC, CC, or custom)
+- Validation uses preset deterministic scenarios (mock data), not random market data
+- AI translates user intent into workflow steps
+- Users can see a mini chart for each scenario showing exactly what happened
+
+**Tasks:**
+- [ ] 4.5a. [Required] **Unique badges** — Each execution type and variation gets a unique 1-5 char badge. Show badge consistently across all pages (Strategy Builder, Detail, Execution Types).
+- [ ] 4.5b. [Required] **Mini chart on simulation** — Add a small price chart to the simulation trace showing entry/exit markers on actual candles, so users can visually verify behavior.
+- [ ] 4.5c. [Required] **Preset validation scenarios** — 3-5 deterministic test scenarios with mock data:
+  1. Clean entry → stop loss hit
+  2. Clean entry → target hit
+  3. Entry → confirmation success (LC/CC)
+  4. Entry → confirmation fail / bail (LC/CC)
+  5. Gap scenario (price gaps past stop/target)
+  Each shows a mini chart + step trace. Execution type passes or fails each scenario.
+- [ ] 4.5d. [Required] **AI-assisted creation** — Describe execution behavior in plain English → AI generates workflow steps. Similar to Pack Builder's AI integration but for execution types. Uses the same AI provider infrastructure.
+- [ ] 4.5e. [Required] **Execution type builder page** — Step-by-step wizard or simple form: describe behavior → AI generates steps → review/edit steps → validate with scenarios → save.
+- [ ] 4.5f. [Polish] **Code tab** — Show the generated execution type code (like user packs' Code tab). Enables advanced users to understand exactly what the execution type does.
+- [ ] 4.5g. [Polish] **Replay mode** — Replay a scenario bar-by-bar on a chart, showing each step firing in sequence. Like watching the execution type work in slow motion.
+
+**Exit Criteria:** User can describe a new execution type in plain English, AI generates the workflow, user validates it against preset scenarios with mini charts, saves it with a unique badge, and it appears in the Strategy Builder trigger dropdowns.
 
 ---
 
