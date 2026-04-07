@@ -1,9 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
+
+const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
@@ -89,6 +92,133 @@ function ExecCard({ mod, onToggle, onDetails }: { mod: ExecTypeModule; onToggle:
 
 const SIM_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H'] as const;
 
+function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
+  const [scenarios, setScenarios] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  if (scenarios === null && !loading) {
+    setLoading(true);
+    import('@/lib/api/client').then(({ apiFetch }) => {
+      apiFetch<any>(`/api/execution-types/${slug}/scenarios`)
+        .then((data) => { setScenarios(data); setLoading(false); })
+        .catch(() => { setScenarios({ scenarios: [] }); setLoading(false); });
+    });
+  }
+
+  if (loading || !scenarios) {
+    return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios...</p></Card>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h4 className="text-sm font-medium mb-2">Validation Scenarios</h4>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Deterministic test scenarios using mock data. Each scenario shows how [{displayCode}] handles a specific market condition.
+        </p>
+      </Card>
+
+      {(scenarios.scenarios || []).map((scenario: any) => (
+        <Card key={scenario.id}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full"
+                style={{
+                  color: scenario.passed ? 'var(--green)' : 'var(--red)',
+                  background: (scenario.passed ? 'var(--green)' : 'var(--red)') + '20',
+                }}>
+                {scenario.passed ? 'PASS' : 'FAIL'}
+              </span>
+              <h5 className="text-sm font-medium">{scenario.name}</h5>
+            </div>
+            {scenario.r_multiple != null && (
+              <span className="text-xs font-mono font-bold"
+                style={{ color: scenario.r_multiple >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {scenario.r_multiple >= 0 ? '+' : ''}{scenario.r_multiple.toFixed(1)}R
+              </span>
+            )}
+          </div>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>{scenario.description}</p>
+
+          {/* Mini chart */}
+          {scenario.chart_bars && scenario.chart_bars.length > 0 && (
+            <div style={{ minHeight: 180 }}>
+              <SyncedChartPane
+                panes={[{
+                  id: `scenario-${scenario.id}`,
+                  height: 180,
+                  series: [{
+                    type: 'Candlestick' as const,
+                    data: scenario.chart_bars.map((b: any) => ({
+                      time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                    })),
+                    markers: scenario.markers || [],
+                    priceLines: [
+                      ...(scenario.stop_price ? [{ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' }] : []),
+                      ...(scenario.target_price ? [{ price: scenario.target_price, color: '#4CAF50', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Target' }] : []),
+                    ],
+                  }],
+                }]}
+              />
+            </div>
+          )}
+
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-3 mt-3">
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Entry: bar {scenario.entry_bar} @ ${scenario.entry_price?.toFixed(2)}
+            </div>
+            {scenario.exit_bar != null && (
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Exit: bar {scenario.exit_bar} @ ${scenario.exit_price?.toFixed(2)}
+              </div>
+            )}
+            {scenario.exit_reason && (
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Reason: {scenario.exit_reason}
+              </div>
+            )}
+            {scenario.confirmed !== undefined && (
+              <div className="text-[10px]" style={{ color: scenario.confirmed ? 'var(--green)' : 'var(--red)' }}>
+                Confirmation: {scenario.confirmed ? 'Passed' : 'Failed'} (bar {scenario.confirm_bar})
+              </div>
+            )}
+          </div>
+        </Card>
+      ))}
+
+      {scenarios.scenarios.length === 0 && (
+        <Card>
+          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No scenarios available for this execution type.</p>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function CodeBlock({ slug }: { slug: string }) {
+  const [code, setCode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  if (code === null && !loading) {
+    setLoading(true);
+    import('@/lib/api/client').then(({ apiFetch }) => {
+      apiFetch<{ source: string }>(`/api/execution-types/${slug}/code`)
+        .then((data) => { setCode(data.source); setLoading(false); })
+        .catch(() => { setCode('// Failed to load code'); setLoading(false); });
+    });
+  }
+
+  return (
+    <div className="rounded-lg p-4 font-mono text-xs" style={{
+      background: '#0d1117', color: '#c9d1d9', maxHeight: 500, overflowY: 'auto',
+      lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+    }}>
+      <pre>{loading ? '# Loading...' : (code || '# No code available')}</pre>
+    </div>
+  );
+}
+
 function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }) {
   const updateParams = useUpdateExecTypeParams();
   const toggleMut = useToggleExecutionType();
@@ -120,7 +250,9 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                   for (const [k, v] of Object.entries(mod.parameters_schema)) {
                     defaultParams[k] = v.default;
                   }
-                  createVariation.mutate({ slug: mod.slug, name: `${mod.name} (Custom)`, params: defaultParams });
+                  const varNum = (mod.variations?.length || 0) + 1;
+                  const badge = `${mod.display_code}${varNum}`;
+                  createVariation.mutate({ slug: mod.slug, name: `${mod.name} (Custom)`, params: defaultParams, badge });
                 }}>
                 Create Variation
               </button>
@@ -147,7 +279,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Parameters', 'Workflow Steps', 'Simulation']}>
+      <TabBar tabs={['Parameters', 'Workflow Steps', 'Simulation', 'Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && (
@@ -326,6 +458,37 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                       </div>
                     </div>
 
+                    {/* Mini chart */}
+                    {simulateMut.data.chart_bars && simulateMut.data.chart_bars.length > 0 && (
+                      <div className="mb-4" style={{ minHeight: 250 }}>
+                        <SyncedChartPane
+                          panes={[{
+                            id: 'sim-price',
+                            height: 250,
+                            series: [{
+                              type: 'Candlestick' as const,
+                              data: simulateMut.data.chart_bars.map((b) => ({
+                                time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                              })),
+                              markers: simulateMut.data.chart_markers || [],
+                              priceLines: [
+                                ...(simulateMut.data.stop_price ? [{
+                                  price: simulateMut.data.stop_price,
+                                  color: '#F44336', lineWidth: 1, lineStyle: 2,
+                                  axisLabelVisible: true, title: 'Stop',
+                                }] : []),
+                                ...(simulateMut.data.target_price ? [{
+                                  price: simulateMut.data.target_price,
+                                  color: '#4CAF50', lineWidth: 1, lineStyle: 2,
+                                  axisLabelVisible: true, title: 'Target',
+                                }] : []),
+                              ],
+                            }],
+                          }]}
+                        />
+                      </div>
+                    )}
+
                     {/* Step-by-step trace */}
                     <div className="space-y-0">
                       {simulateMut.data.steps.map((step, i) => {
@@ -373,6 +536,19 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                   </Card>
                 )}
               </div>
+            )}
+
+            {tab === 'Scenarios' && <ScenariosTab slug={mod.slug} displayCode={mod.display_code} />}
+
+            {tab === 'Code' && (
+              <Card>
+                <h4 className="text-sm font-medium mb-3">Execution Type Implementation</h4>
+                <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                  This is the Python class that defines how [{mod.display_code}] {mod.name} executes trades.
+                  It determines entry detection, fill price, confirmation behavior, and bail logic.
+                </p>
+                <CodeBlock slug={mod.slug} />
+              </Card>
             )}
           </div>
         )}
@@ -426,7 +602,7 @@ export default function ExecutionTypesPage() {
                     style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderLeft: '3px solid var(--accent)' }}>
                     <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full"
                       style={{ color: EXEC_BADGE_COLOR, background: EXEC_BADGE_COLOR + '20' }}>
-                      [{mod.display_code}]
+                      [{v.badge || mod.display_code}]
                     </span>
                     <span className="text-xs font-medium flex-1">{v.name}</span>
                     <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>

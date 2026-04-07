@@ -81,6 +81,8 @@ export interface SimulationResult {
     stop_price?: number;
     target_price?: number;
   }>;
+  chart_bars?: Array<{ timestamp: string; open: number; high: number; low: number; close: number }>;
+  chart_markers?: Array<{ time: string; position: string; shape: string; color: string; text: string; size: number }>;
 }
 
 export function useSimulateExecType() {
@@ -97,6 +99,7 @@ export interface ExecTypeVariation {
   id: string;
   parent_slug: string;
   name: string;
+  badge: string;
   params: Record<string, any>;
   enabled: boolean;
 }
@@ -104,10 +107,10 @@ export interface ExecTypeVariation {
 export function useCreateVariation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ slug, name, params }: { slug: string; name: string; params: Record<string, any> }) =>
+    mutationFn: ({ slug, name, params, badge }: { slug: string; name: string; params: Record<string, any>; badge?: string }) =>
       apiFetch<ExecTypeVariation>(`/api/execution-types/${slug}/variations`, {
         method: 'POST',
-        body: JSON.stringify({ name, params }),
+        body: JSON.stringify({ name, params, badge }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['execution-types'] });

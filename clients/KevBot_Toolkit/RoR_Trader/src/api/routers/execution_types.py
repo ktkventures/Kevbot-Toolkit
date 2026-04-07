@@ -97,6 +97,7 @@ def create_variation(slug: str, body: dict = Body(...), user=Depends(get_current
     variations = config.get('_variations', [])
 
     name = body.get('name', f'{parent.name} (Custom)')
+    badge = body.get('badge', f'{parent.display_code}{len(variations) + 1}')
     params = body.get('params', {})
     var_id = f'{slug}_{len(variations) + 1}'
 
@@ -104,6 +105,7 @@ def create_variation(slug: str, body: dict = Body(...), user=Depends(get_current
         'id': var_id,
         'parent_slug': slug,
         'name': name,
+        'badge': badge,
         'params': params,
         'enabled': True,
     }
@@ -132,6 +134,223 @@ def list_variations(user=Depends(get_current_user)):
 
 # ---- Storage helpers ----
 # Store execution type config in user_settings under the key 'execution_types'
+
+@router.get("/{slug}/code")
+def get_execution_type_code(slug: str, user=Depends(get_current_user)):
+    """Return the source code of an execution type module."""
+    from execution_types import list_modules
+    import inspect
+
+    for m in list_modules():
+        if m.slug == slug:
+            source = inspect.getsource(m.__class__)
+            return {
+                'slug': slug,
+                'name': m.name,
+                'class_name': m.__class__.__name__,
+                'source': source,
+                'description': m.description,
+                'steps': m.steps,
+                'parameters_schema': m.parameters_schema,
+            }
+    raise HTTPException(status_code=404, detail=f"Execution type '{slug}' not found")
+
+
+@router.get("/{slug}/scenarios")
+def get_scenarios(slug: str, user=Depends(get_current_user)):
+    """Run preset validation scenarios with mock data.
+
+    Returns deterministic results for 5 scenarios:
+    1. Clean entry → stop loss hit
+    2. Clean entry → target hit
+    3. Entry → confirmation success (LC/CC only)
+    4. Entry → confirmation fail / bail (LC/CC only)
+    5. Gap scenario (price gaps past stop)
+    """
+    from execution_types import list_modules
+    module = None
+    for m in list_modules():
+        if m.slug == slug:
+            module = m
+            break
+    if not module:
+        raise HTTPException(status_code=404, detail=f"Execution type '{slug}' not found")
+
+    exec_code = module.display_code
+    has_confirmation = exec_code in ('LC', 'CC')
+
+    scenarios = []
+
+    # Helper: generate mock bars
+    def _mock_bars(start_price, moves):
+        """Generate mock OHLCV bars from a starting price and list of (close_delta, range_pct) tuples."""
+        bars = []
+        price = start_price
+        for i, (delta, spread) in enumerate(moves):
+            close = price + delta
+            high = max(price, close) + abs(spread)
+            low = min(price, close) - abs(spread)
+            bars.append({
+                'timestamp': f'2026-01-01T10:{i:02d}:00Z',
+                'open': round(price, 2),
+                'high': round(high, 2),
+                'low': round(low, 2),
+                'close': round(close, 2),
+            })
+            price = close
+        return bars
+
+    # Scenario 1: Clean entry → stop loss hit (LONG)
+    entry_price = 100.0
+    stop_distance = 1.5
+    stop_price = entry_price - stop_distance
+    target_price = entry_price + stop_distance * 2
+    bars = _mock_bars(99.0, [
+        (0.5, 0.3), (0.5, 0.2),  # Run up to 100
+        (0.0, 0.1),               # Trigger bar (entry at 100)
+        (-0.3, 0.2),              # Drift down
+        (-0.5, 0.3),              # More down
+        (-1.0, 0.5),              # Hit stop at 98.5
+        (-0.2, 0.1),              # After stop
+    ])
+    scenarios.append({
+        'id': 'stop_loss',
+        'name': 'Stop Loss Hit',
+        'description': 'Price enters, then reverses and hits the stop loss.',
+        'direction': 'LONG',
+        'entry_bar': 2,
+        'entry_price': entry_price,
+        'stop_price': stop_price,
+        'target_price': target_price,
+        'exit_bar': 5,
+        'exit_price': stop_price,
+        'exit_reason': 'stop_loss',
+        'r_multiple': -1.0,
+        'passed': True,
+        'chart_bars': bars,
+        'markers': [
+            {'time': bars[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+            {'time': bars[5]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336', 'text': '-1.0R', 'size': 1},
+        ],
+    })
+
+    # Scenario 2: Clean entry → target hit (LONG)
+    bars2 = _mock_bars(99.0, [
+        (0.5, 0.3), (0.5, 0.2),
+        (0.0, 0.1),               # Entry at 100
+        (0.5, 0.2),               # Up
+        (1.0, 0.3),               # More up
+        (1.5, 0.5),               # Hit target at 103
+        (0.2, 0.1),
+    ])
+    scenarios.append({
+        'id': 'target_hit',
+        'name': 'Target Hit',
+        'description': 'Price enters, then runs to the target.',
+        'direction': 'LONG',
+        'entry_bar': 2,
+        'entry_price': entry_price,
+        'stop_price': stop_price,
+        'target_price': target_price,
+        'exit_bar': 5,
+        'exit_price': target_price,
+        'exit_reason': 'target',
+        'r_multiple': 2.0,
+        'passed': True,
+        'chart_bars': bars2,
+        'markers': [
+            {'time': bars2[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+            {'time': bars2[5]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#4CAF50', 'text': '+2.0R', 'size': 1},
+        ],
+    })
+
+    # Scenario 3: Confirmation success (LC/CC only)
+    if has_confirmation:
+        bars3 = _mock_bars(99.0, [
+            (0.5, 0.3), (0.5, 0.2),
+            (0.0, 0.1),               # Entry at 100 (level cross or bar close)
+            (0.3, 0.1),               # Confirmation bar — closes above entry (CONFIRMED)
+            (0.5, 0.2),
+            (1.0, 0.3),
+        ])
+        scenarios.append({
+            'id': 'confirm_success',
+            'name': 'Confirmation Success',
+            'description': f'[{exec_code}] Entry fires, next bar confirms direction. Position continues.',
+            'direction': 'LONG',
+            'entry_bar': 2,
+            'entry_price': entry_price,
+            'confirmed': True,
+            'confirm_bar': 3,
+            'passed': True,
+            'chart_bars': bars3,
+            'markers': [
+                {'time': bars3[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+                {'time': bars3[3]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#2196F3', 'text': 'Confirmed', 'size': 0.5},
+            ],
+        })
+
+    # Scenario 4: Confirmation fail / bail (LC/CC only)
+    if has_confirmation:
+        bars4 = _mock_bars(99.0, [
+            (0.5, 0.3), (0.5, 0.2),
+            (0.0, 0.1),               # Entry at 100
+            (-0.5, 0.3),              # Confirmation bar — closes BELOW entry (NOT CONFIRMED)
+            (-0.3, 0.1),              # Bail bar
+        ])
+        scenarios.append({
+            'id': 'confirm_bail',
+            'name': 'Confirmation Fail (Bail)',
+            'description': f'[{exec_code}] Entry fires, but next bar does NOT confirm. Bail at market.',
+            'direction': 'LONG',
+            'entry_bar': 2,
+            'entry_price': entry_price,
+            'confirmed': False,
+            'confirm_bar': 3,
+            'bail_bar': 4 if exec_code == 'CC' else 3,
+            'bail_price': float(bars4[4 if exec_code == 'CC' else 3]['open']),
+            'passed': True,
+            'chart_bars': bars4,
+            'markers': [
+                {'time': bars4[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+                {'time': bars4[3]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#FF9800', 'text': 'Bail', 'size': 1},
+            ],
+        })
+
+    # Scenario 5: Gap scenario (price gaps past stop overnight)
+    bars5 = _mock_bars(99.0, [
+        (0.5, 0.3), (0.5, 0.2),
+        (0.0, 0.1),               # Entry at 100
+        (0.3, 0.1),               # Normal bar
+        (-3.0, 0.1),              # GAP DOWN past stop (opens at 97.3, well below 98.5 stop)
+        (0.1, 0.1),
+    ])
+    scenarios.append({
+        'id': 'gap_stop',
+        'name': 'Gap Past Stop',
+        'description': 'Price gaps past the stop loss (e.g., overnight). Exit at gap open, not stop price.',
+        'direction': 'LONG',
+        'entry_bar': 2,
+        'entry_price': entry_price,
+        'stop_price': stop_price,
+        'exit_bar': 4,
+        'exit_price': float(bars5[4]['open']),  # Exit at open, not stop
+        'exit_reason': 'stop_loss (gap)',
+        'r_multiple': round((float(bars5[4]['open']) - entry_price) / stop_distance, 2),
+        'passed': True,
+        'chart_bars': bars5,
+        'markers': [
+            {'time': bars5[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+            {'time': bars5[4]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336', 'text': 'Gap Stop', 'size': 1},
+        ],
+    })
+
+    return {
+        'slug': slug,
+        'display_code': exec_code,
+        'scenarios': scenarios,
+    }
+
 
 @router.post("/{slug}/simulate")
 def simulate_execution_type(
@@ -374,6 +593,48 @@ def simulate_execution_type(
             'event': f'exit_{direction.lower()}_market',
         })
 
+    # Build chart data window (20 bars before trigger, 20 after exit)
+    chart_start = max(0, trigger_bar_idx - 20)
+    chart_end_idx = trigger_bar_idx + 20
+    for s in trace_steps:
+        if s.get('bar') and s['bar'] > chart_end_idx - 5:
+            chart_end_idx = s['bar'] + 10
+    chart_end = min(len(df), chart_end_idx)
+
+    chart_bars = []
+    for i in range(chart_start, chart_end):
+        row = df.iloc[i]
+        chart_bars.append({
+            'timestamp': str(df.index[i]),
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close']),
+        })
+
+    # Build trade markers for the chart
+    chart_markers = []
+    for s in trace_steps:
+        if s['action'] == 'fill':
+            chart_markers.append({
+                'time': s['time'], 'position': 'belowBar' if direction == 'LONG' else 'aboveBar',
+                'shape': 'arrowUp' if direction == 'LONG' else 'arrowDown',
+                'color': '#4CAF50', 'text': 'Entry', 'size': 1,
+            })
+        elif s['action'] == 'exit':
+            color = '#4CAF50' if s.get('r_multiple', 0) >= 0 else '#F44336'
+            chart_markers.append({
+                'time': s['time'], 'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
+                'shape': 'arrowDown', 'color': color,
+                'text': f'{s.get("r_multiple", 0):+.1f}R', 'size': 1,
+            })
+        elif s['action'] == 'bail':
+            chart_markers.append({
+                'time': s['time'], 'position': 'aboveBar' if direction == 'LONG' else 'belowBar',
+                'shape': 'arrowDown', 'color': '#FF9800',
+                'text': 'Bail', 'size': 1,
+            })
+
     return {
         'slug': slug,
         'display_code': module.display_code,
@@ -387,6 +648,8 @@ def simulate_execution_type(
         'target_price': target_price if confirmed else None,
         'confirmed': confirmed,
         'steps': trace_steps,
+        'chart_bars': chart_bars,
+        'chart_markers': chart_markers,
     }
 
 
