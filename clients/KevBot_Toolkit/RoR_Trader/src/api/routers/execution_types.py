@@ -191,6 +191,8 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         'target': {'name': 'Target Hit', 'category': 'common', 'description': 'Price entered on EMA 9 cross, then ran to the 2R take profit target. Exit at target level.'},
         'bar_count_exit': {'name': 'Bar Count Exit', 'category': 'common', 'description': 'Price entered on EMA 9 cross. Position held for 8 bars without hitting stop or target. Exit at bar close.'},
         'opposite_signal': {'name': 'Signal Exit (EMA Cross)', 'category': 'common', 'description': 'Price entered on EMA cross above. The opposite EMA cross (below) triggered the exit before stop or target was reached. This is the most common exit type in trend-following strategies.'},
+        'stop_on_entry_bar': {'name': 'Stop Hit on Next Bar', 'category': 'ambiguous', 'description': 'Entry signal detected at bar close. The very next bar immediately reversed and hit the ATR-based stop loss. Hi-Fi 1-second analysis shows the exact stop fill timing.'},
+        'immediate_reversal': {'name': 'Entry + Immediate Reversal', 'category': 'ambiguous', 'description': 'Entry filled at next bar open, but price immediately moved against the position and hit the stop within 2-3 bars. A short-lived trade showing rapid adverse movement.'},
     }
 
     scenarios = []
