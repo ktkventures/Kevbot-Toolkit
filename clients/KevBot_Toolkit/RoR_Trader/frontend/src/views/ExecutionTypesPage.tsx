@@ -6,9 +6,8 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 
-const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
-import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
+const ScenarioReplayCard = dynamic(() => import('@/components/ScenarioReplayCard'), { ssr: false });
 import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
@@ -109,8 +108,6 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
     return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios from real market data...</p></Card>;
   }
 
-  const EXEC_BADGE_COLOR_LOCAL = '#2196F3';
-
   return (
     <div className="space-y-4">
       <Card>
@@ -121,142 +118,7 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
       </Card>
 
       {(scenarios.scenarios || []).map((scenario: any) => (
-        <Card key={scenario.id}>
-          {/* Header */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <h5 className="text-sm font-medium">{scenario.name}</h5>
-              {scenario.r_multiple != null && (
-                <span className="text-xs font-mono font-bold"
-                  style={{ color: scenario.r_multiple >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                  {scenario.r_multiple >= 0 ? '+' : ''}{scenario.r_multiple.toFixed(1)}R
-                </span>
-              )}
-            </div>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{scenario.direction}</span>
-          </div>
-          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>{scenario.description}</p>
-
-          {/* Row 1: Main chart (60%) + Workflow trace (40%) */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            <div className="lg:col-span-3">
-              {(() => {
-                const chartData = scenario.chart_data || [];
-                if (chartData.length === 0) return null;
-                const panes = buildStrategyChartPanes({
-                  bars: chartData, trades: scenario.raw_trades || [],
-                  direction: scenario.direction || 'LONG',
-                  overlayNames: scenario.overlay_indicators || [],
-                  oscNames: scenario.oscillator_indicators || [],
-                  heatmapConds: scenario.heatmap_conditions || [],
-                  tfMs: 5 * 60 * 1000,
-                });
-                return <div style={{ minHeight: 300 }}><SyncedChartPane panes={panes} /></div>;
-              })()}
-            </div>
-            <div className="lg:col-span-2">
-              <div className="rounded-lg p-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
-                <h6 className="text-[10px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Execution Workflow</h6>
-                <div className="space-y-0">
-                  {(scenario.workflow_steps || []).map((step: any, i: number) => (
-                    <div key={i} className="flex items-start gap-2">
-                      <div className="flex flex-col items-center">
-                        <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0"
-                          style={{
-                            background: step.isWebhook ? 'var(--accent)' : step.action === 'exit' ? (step.color === 'var(--green)' ? 'var(--green)' : 'var(--red)') : 'var(--bg-input)',
-                            color: step.isWebhook || step.action === 'exit' ? 'white' : 'var(--text-muted)',
-                            border: step.isWebhook || step.action === 'exit' ? 'none' : '1px solid var(--border)',
-                          }}>
-                          {i + 1}
-                        </div>
-                        {i < (scenario.workflow_steps || []).length - 1 && (
-                          <div className="w-0.5 h-3" style={{ background: 'var(--border)' }} />
-                        )}
-                      </div>
-                      <div className="pb-1.5">
-                        <p className="text-[10px]" style={{ color: step.color || (step.isWebhook ? 'var(--accent)' : 'var(--text-primary)') }}>
-                          {step.label}
-                        </p>
-                        {step.badge && (
-                          <span className="text-[8px] font-mono font-bold px-1 py-0.5 rounded-full"
-                            style={{ color: EXEC_BADGE_COLOR_LOCAL, background: EXEC_BADGE_COLOR_LOCAL + '20' }}>
-                            [{step.badge}]
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Row 2: Hi-Fi 1-second drill-downs (50/50 full width) */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-3">
-            {scenario.entry_1s_bars && scenario.entry_1s_bars.length > 0 && (
-              <div>
-                <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Hi-Fi (1-second)</p>
-                <div style={{ minHeight: 250 }}>
-                  {(() => {
-                    const refBar = (scenario.entry_drill || [])[Math.floor((scenario.entry_drill || []).length / 2)];
-                    const priceLines: any[] = [];
-                    const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
-                    (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                      const val = refBar?.[col];
-                      if (val != null && isFinite(val)) {
-                        priceLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
-                      }
-                    });
-                    if (scenario.stop_price) priceLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
-                    if (scenario.entry_price) priceLines.push({ price: scenario.entry_price, color: '#4CAF50', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Entry' });
-                    return (
-                      <SyncedChartPane panes={[{
-                        id: `entry-1s-${scenario.id}`, height: 250,
-                        series: [{
-                          type: 'Candlestick' as const,
-                          data: scenario.entry_1s_bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
-                          markers: scenario.entry_markers || [],
-                          priceLines,
-                        }],
-                      }]} />
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
-            {scenario.exit_1s_bars && scenario.exit_1s_bars.length > 0 && (
-              <div>
-                <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Hi-Fi (1-second)</p>
-                <div style={{ minHeight: 250 }}>
-                  {(() => {
-                    const refBar = (scenario.exit_drill || [])[Math.floor((scenario.exit_drill || []).length / 2)];
-                    const priceLines: any[] = [];
-                    const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
-                    (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                      const val = refBar?.[col];
-                      if (val != null && isFinite(val)) {
-                        priceLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
-                      }
-                    });
-                    if (scenario.stop_price) priceLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
-                    if (scenario.exit_price) priceLines.push({ price: scenario.exit_price, color: scenario.r_multiple >= 0 ? '#4CAF50' : '#F44336', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Exit' });
-                    return (
-                      <SyncedChartPane panes={[{
-                        id: `exit-1s-${scenario.id}`, height: 250,
-                        series: [{
-                          type: 'Candlestick' as const,
-                          data: scenario.exit_1s_bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
-                          markers: scenario.exit_markers || [],
-                          priceLines,
-                        }],
-                      }]} />
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
-          </div>
-        </Card>
+        <ScenarioReplayCard key={scenario.id} scenario={scenario} displayCode={displayCode} />
       ))}
 
       {scenarios.scenarios && scenarios.scenarios.length === 0 && (
