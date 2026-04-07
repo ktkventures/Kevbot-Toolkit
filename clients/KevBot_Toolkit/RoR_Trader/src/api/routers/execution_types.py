@@ -194,12 +194,21 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         if len(df) < 20:
             return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
 
+        # Use bar_count_exit to get bar count exit scenarios too
         strategy = {
             'symbol': 'NVDA', 'direction': 'LONG', 'timeframe': '5Min',
             'entry_trigger_confluence_id': entry_trigger_id,
             'stop_config': {'method': 'atr', 'atr_mult': 1.5},
             'target_config': {'method': 'risk_reward', 'rr_ratio': 2.0},
+            'bar_count_exit': 8,
         }
+
+        # Find EMA column for overlay
+        ema_col = None
+        for col in ['ema_9', 'ema_21', 'ema_50']:
+            if col in df.columns:
+                ema_col = col
+                break
         trades_df = unified_trades(df, strategy)
     except Exception as e:
         return {'slug': slug, 'display_code': exec_code, 'scenarios': [],
@@ -238,16 +247,17 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         stop_price = float(trade.get('initial_stop_price', 0))
         target_price = float(trade.get('target_price', 0)) if trade.get('target_price') else None
 
-        # Get chart bars around this trade (10 before entry, 5 after exit)
+        # Get chart bars around this trade (15 before entry, 5 after exit)
         try:
             entry_idx = df.index.get_indexer([pd.Timestamp(entry_time)], method='nearest')[0]
             exit_idx = df.index.get_indexer([pd.Timestamp(exit_time)], method='nearest')[0] if exit_time else entry_idx + 10
         except Exception:
             continue
 
-        chart_start = max(0, entry_idx - 10)
+        chart_start = max(0, entry_idx - 15)
         chart_end = min(len(df), exit_idx + 5)
         chart_bars = []
+        ema_data = []
         for i in range(chart_start, chart_end):
             row = df.iloc[i]
             chart_bars.append({
@@ -257,6 +267,27 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
                 'low': float(row['low']),
                 'close': float(row['close']),
             })
+            if ema_col and pd.notna(row.get(ema_col)):
+                ema_data.append({'time': str(df.index[i]), 'value': float(row[ema_col])})
+
+        # Entry/exit drill-down bars (5 bars around each event)
+        entry_drill = []
+        exit_drill = []
+        for i in range(max(0, entry_idx - 3), min(len(df), entry_idx + 3)):
+            row = df.iloc[i]
+            entry_drill.append({
+                'timestamp': str(df.index[i]),
+                'open': float(row['open']), 'high': float(row['high']),
+                'low': float(row['low']), 'close': float(row['close']),
+            })
+        if exit_time:
+            for i in range(max(0, exit_idx - 3), min(len(df), exit_idx + 3)):
+                row = df.iloc[i]
+                exit_drill.append({
+                    'timestamp': str(df.index[i]),
+                    'open': float(row['open']), 'high': float(row['high']),
+                    'low': float(row['low']), 'close': float(row['close']),
+                })
 
         # Build markers
         markers = [
@@ -311,8 +342,14 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
             'r_multiple': round(r_mult, 2),
             'passed': True,
             'chart_bars': chart_bars,
+            'ema_data': ema_data,
+            'ema_label': ema_col.upper().replace('_', ' ') if ema_col else None,
             'markers': markers,
             'workflow_steps': workflow_steps,
+            'entry_drill': entry_drill,
+            'exit_drill': exit_drill,
+            'entry_markers': [{'time': str(entry_time), 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
+            'exit_markers': [{'time': str(exit_time), 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336' if r_mult < 0 else '#4CAF50', 'text': f'{r_mult:+.1f}R', 'size': 1}] if exit_time else [],
         })
 
         if len(scenarios) >= 5:

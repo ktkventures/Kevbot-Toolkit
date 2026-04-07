@@ -115,7 +115,7 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
       <Card>
         <h4 className="text-sm font-medium mb-2">Scenario Examples</h4>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Real trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Chart on the left, execution workflow on the right.
+          Real trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Chart (with EMA overlay for demonstration) on the left, execution workflow on the right. Entry and exit drill-down charts shown below.
         </p>
       </Card>
 
@@ -138,7 +138,7 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
 
           {/* Side-by-side: Chart (60%) + Workflow (40%) */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            {/* Left: Chart */}
+            {/* Left: Chart with indicator overlay */}
             <div className="lg:col-span-3">
               {scenario.chart_bars && scenario.chart_bars.length > 0 && (
                 <div style={{ minHeight: 220 }}>
@@ -146,21 +146,74 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                     panes={[{
                       id: `scenario-${scenario.id}`,
                       height: 220,
-                      series: [{
-                        type: 'Candlestick' as const,
-                        data: scenario.chart_bars.map((b: any) => ({
-                          time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                        })),
-                        markers: scenario.markers || [],
-                        priceLines: [
-                          ...(scenario.stop_price ? [{ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' }] : []),
-                          ...(scenario.target_price ? [{ price: scenario.target_price, color: '#4CAF50', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Target' }] : []),
-                        ],
-                      }],
+                      series: [
+                        {
+                          type: 'Candlestick' as const,
+                          data: scenario.chart_bars.map((b: any) => ({
+                            time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                          })),
+                          markers: scenario.markers || [],
+                          priceLines: [
+                            ...(scenario.stop_price ? [{ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' }] : []),
+                            ...(scenario.target_price ? [{ price: scenario.target_price, color: '#4CAF50', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Target' }] : []),
+                          ],
+                        },
+                        // EMA overlay
+                        ...(scenario.ema_data && scenario.ema_data.length > 0 ? [{
+                          type: 'Line' as const,
+                          data: scenario.ema_data,
+                          options: { color: '#FF9800', lineWidth: 2, title: scenario.ema_label || 'EMA' },
+                        }] : []),
+                      ],
                     }]}
                   />
                 </div>
               )}
+
+              {/* Drill-down charts: entry + exit */}
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                {scenario.entry_drill && scenario.entry_drill.length > 0 && (
+                  <div>
+                    <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Drill-Down</p>
+                    <div style={{ minHeight: 120 }}>
+                      <SyncedChartPane
+                        panes={[{
+                          id: `entry-drill-${scenario.id}`,
+                          height: 120,
+                          series: [{
+                            type: 'Candlestick' as const,
+                            data: scenario.entry_drill.map((b: any) => ({
+                              time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                            })),
+                            markers: scenario.entry_markers || [],
+                          }],
+                        }]}
+                      />
+                    </div>
+                  </div>
+                )}
+                {scenario.exit_drill && scenario.exit_drill.length > 0 && (
+                  <div>
+                    <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Drill-Down</p>
+                    <div style={{ minHeight: 120 }}>
+                      <SyncedChartPane
+                        panes={[{
+                          id: `exit-drill-${scenario.id}`,
+                          height: 120,
+                          series: [{
+                            type: 'Candlestick' as const,
+                            data: scenario.exit_drill.map((b: any) => ({
+                              time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+                            })),
+                            markers: scenario.exit_markers || [],
+                            priceLines: scenario.stop_price ? [{ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '' }] : [],
+                          }],
+                        }]}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Right: Workflow trace */}
