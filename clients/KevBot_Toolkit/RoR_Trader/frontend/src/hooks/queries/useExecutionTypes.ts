@@ -54,6 +54,43 @@ export function useToggleExecutionType() {
   });
 }
 
+export interface SimulationResult {
+  slug: string;
+  display_code: string;
+  symbol: string;
+  timeframe: string;
+  direction: string;
+  trigger_bar: number;
+  trigger_time: string;
+  fill_price: number;
+  stop_price: number | null;
+  target_price: number | null;
+  confirmed: boolean;
+  steps: Array<{
+    bar: number;
+    time: string;
+    action: string;
+    label: string;
+    price?: number;
+    event?: string;
+    confirmed?: boolean;
+    reason?: string;
+    r_multiple?: number;
+    stop_price?: number;
+    target_price?: number;
+  }>;
+}
+
+export function useSimulateExecType() {
+  return useMutation({
+    mutationFn: ({ slug, params }: { slug: string; params: { symbol: string; timeframe: string; direction: string; days: number } }) =>
+      apiFetch<SimulationResult>(`/api/execution-types/${slug}/simulate`, {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+  });
+}
+
 export function useUpdateExecTypeParams() {
   const qc = useQueryClient();
   return useMutation({

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
-import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, type ExecTypeModule } from '@/hooks/queries/useExecutionTypes';
+import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useSimulateExecType, type ExecTypeModule, type SimulationResult } from '@/hooks/queries/useExecutionTypes';
 
 /* ========================================================================= */
 /* STYLES                                                                      */
@@ -87,9 +87,18 @@ function ExecCard({ mod, onToggle, onDetails }: { mod: ExecTypeModule; onToggle:
 /* DETAIL VIEW                                                                 */
 /* ========================================================================= */
 
+const SIM_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H'] as const;
+
 function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }) {
   const updateParams = useUpdateExecTypeParams();
   const toggleMut = useToggleExecutionType();
+  const simulateMut = useSimulateExecType();
+
+  // Simulation config
+  const [simSymbol, setSimSymbol] = useState('NVDA');
+  const [simTimeframe, setSimTimeframe] = useState('5Min');
+  const [simDirection, setSimDirection] = useState<'LONG' | 'SHORT'>('LONG');
+  const [simDays, setSimDays] = useState(7);
 
   return (
     <div>
@@ -124,7 +133,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Parameters', 'Workflow Steps']}>
+      <TabBar tabs={['Parameters', 'Workflow Steps', 'Simulation']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && (
@@ -212,6 +221,137 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                   ))}
                 </div>
               </Card>
+            )}
+            {tab === 'Simulation' && (
+              <div className="space-y-4">
+                {/* Config */}
+                <Card>
+                  <h4 className="text-sm font-medium mb-3">Simulation Config</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
+                    <div>
+                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
+                      <input type="text" value={simSymbol} onChange={(e) => setSimSymbol(e.target.value.toUpperCase())} style={inputStyle} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
+                      <select value={simTimeframe} onChange={(e) => setSimTimeframe(e.target.value)} style={inputStyle}>
+                        {SIM_TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Direction</label>
+                      <select value={simDirection} onChange={(e) => setSimDirection(e.target.value as 'LONG' | 'SHORT')} style={inputStyle}>
+                        <option value="LONG">LONG</option>
+                        <option value="SHORT">SHORT</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
+                      <input type="number" value={simDays} min={1} max={30} onChange={(e) => setSimDays(parseInt(e.target.value) || 7)} style={inputStyle} />
+                    </div>
+                    <button style={{ ...btnPrimary, opacity: simulateMut.isPending ? 0.5 : 1 }}
+                      disabled={simulateMut.isPending}
+                      onClick={() => simulateMut.mutate({ slug: mod.slug, params: { symbol: simSymbol, timeframe: simTimeframe, direction: simDirection, days: simDays } })}>
+                      {simulateMut.isPending ? 'Running...' : 'Run Simulation'}
+                    </button>
+                  </div>
+                </Card>
+
+                {/* Error */}
+                {simulateMut.isError && (
+                  <Card>
+                    <p className="text-sm" style={{ color: 'var(--red)' }}>
+                      Simulation failed: {simulateMut.error instanceof Error ? simulateMut.error.message : 'Unknown error'}
+                    </p>
+                  </Card>
+                )}
+
+                {/* Results */}
+                {simulateMut.data && (
+                  <Card>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-sm font-medium">Execution Trace</h4>
+                      <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        <span>{simulateMut.data.symbol}</span>
+                        <span>{simulateMut.data.direction}</span>
+                        <span>{simulateMut.data.timeframe}</span>
+                        <span className={simulateMut.data.confirmed ? '' : ''} style={{ color: simulateMut.data.confirmed ? 'var(--green)' : 'var(--red)' }}>
+                          {simulateMut.data.confirmed ? 'Confirmed' : 'Not Confirmed (Bail)'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Summary strip */}
+                    <div className="grid grid-cols-4 gap-3 mb-4">
+                      <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                        <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Fill Price</p>
+                        <p className="text-sm font-mono font-bold">${simulateMut.data.fill_price?.toFixed(2)}</p>
+                      </div>
+                      {simulateMut.data.stop_price && (
+                        <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Stop</p>
+                          <p className="text-sm font-mono font-bold" style={{ color: 'var(--red)' }}>${simulateMut.data.stop_price?.toFixed(2)}</p>
+                        </div>
+                      )}
+                      {simulateMut.data.target_price && (
+                        <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Target</p>
+                          <p className="text-sm font-mono font-bold" style={{ color: 'var(--green)' }}>${simulateMut.data.target_price?.toFixed(2)}</p>
+                        </div>
+                      )}
+                      <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                        <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Trigger</p>
+                        <p className="text-sm font-mono">{simulateMut.data.trigger_time?.substring(11, 19)}</p>
+                      </div>
+                    </div>
+
+                    {/* Step-by-step trace */}
+                    <div className="space-y-0">
+                      {simulateMut.data.steps.map((step, i) => {
+                        const isWebhook = step.action === 'fire_webhook';
+                        const isExit = step.action === 'exit';
+                        const isBail = step.action === 'bail';
+                        const isConfirm = step.action === 'confirmation_check';
+                        const stepColor = isWebhook ? 'var(--accent)' : isBail ? 'var(--red)' : isExit ? (step.r_multiple != null && step.r_multiple >= 0 ? 'var(--green)' : 'var(--red)') : isConfirm ? (step.confirmed ? 'var(--green)' : 'var(--red)') : 'var(--text-primary)';
+
+                        return (
+                          <div key={i} className="flex items-start gap-3">
+                            <div className="flex flex-col items-center">
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                                style={{ background: isWebhook ? 'var(--accent)' : 'var(--bg-input)', color: isWebhook ? 'white' : 'var(--text-muted)', border: isWebhook ? 'none' : '1px solid var(--border)' }}>
+                                {i + 1}
+                              </div>
+                              {i < simulateMut.data!.steps.length - 1 && (
+                                <div className="w-0.5 h-4" style={{ background: 'var(--border)' }} />
+                              )}
+                            </div>
+                            <div className="pb-2">
+                              <p className="text-xs" style={{ color: stepColor }}>{step.label}</p>
+                              <div className="flex gap-2 mt-0.5">
+                                <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>{step.action}</span>
+                                {step.time && <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>bar {step.bar}</span>}
+                                {step.price != null && <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>${step.price.toFixed(2)}</span>}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                )}
+
+                {/* Empty state */}
+                {!simulateMut.data && !simulateMut.isPending && !simulateMut.isError && (
+                  <Card>
+                    <div className="text-center py-8">
+                      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Click <strong>Run Simulation</strong> to test this execution type on real market data.</p>
+                      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                        The simulation finds a trigger signal and traces the [{mod.display_code}] execution process step by step, including webhook events.
+                      </p>
+                    </div>
+                  </Card>
+                )}
+              </div>
             )}
           </div>
         )}
