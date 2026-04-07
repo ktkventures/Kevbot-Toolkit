@@ -237,6 +237,8 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
             'markers': markers, 'workflow_steps': ws,
             'entry_drill': trade_data.get('entry_drill', []),
             'exit_drill': trade_data.get('exit_drill', []),
+            'entry_1s_bars': trade_data.get('entry_1s_bars', []),
+            'exit_1s_bars': trade_data.get('exit_1s_bars', []),
             'entry_markers': [{'time': et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
             'exit_markers': [{'time': xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if xt else [],
         })
