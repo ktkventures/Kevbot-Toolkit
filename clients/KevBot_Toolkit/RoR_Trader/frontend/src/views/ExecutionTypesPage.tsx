@@ -161,46 +161,46 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                       <SyncedChartPane panes={panes} />
                     </div>
 
-                    {/* Drill-down charts: entry + exit */}
+                    {/* Drill-down charts: entry + exit (using buildStrategyChartPanes) */}
                     <div className="grid grid-cols-2 gap-2 mt-2">
                       {scenario.entry_drill && scenario.entry_drill.length > 0 && (
                         <div>
                           <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Drill-Down</p>
-                          <div style={{ minHeight: 200 }}>
-                            <SyncedChartPane
-                              panes={[{
-                                id: `entry-drill-${scenario.id}`,
-                                height: 200,
-                                series: [{
-                                  type: 'Candlestick' as const,
-                                  data: scenario.entry_drill.map((b: any) => ({
-                                    time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                                  })),
-                                  markers: scenario.entry_markers || [],
-                                }],
-                              }]}
-                            />
+                          <div style={{ minHeight: 250 }}>
+                            {(() => {
+                              const entryPanes = buildStrategyChartPanes({
+                                bars: scenario.entry_drill,
+                                trades: scenario.raw_trades || [],
+                                direction: scenario.direction || 'LONG',
+                                overlayNames: scenario.overlay_indicators || [],
+                                oscNames: [],
+                                heatmapConds: [],
+                                tfMs: 5 * 60 * 1000,
+                              });
+                              // Override height for drill-down
+                              entryPanes.forEach((p: any) => { p.height = Math.min(p.height, 250); });
+                              return <SyncedChartPane panes={entryPanes} />;
+                            })()}
                           </div>
                         </div>
                       )}
                       {scenario.exit_drill && scenario.exit_drill.length > 0 && (
                         <div>
                           <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Drill-Down</p>
-                          <div style={{ minHeight: 200 }}>
-                            <SyncedChartPane
-                              panes={[{
-                                id: `exit-drill-${scenario.id}`,
-                                height: 200,
-                                series: [{
-                                  type: 'Candlestick' as const,
-                                  data: scenario.exit_drill.map((b: any) => ({
-                                    time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                                  })),
-                                  markers: scenario.exit_markers || [],
-                                  priceLines: scenario.stop_price ? [{ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '' }] : [],
-                                }],
-                              }]}
-                            />
+                          <div style={{ minHeight: 250 }}>
+                            {(() => {
+                              const exitPanes = buildStrategyChartPanes({
+                                bars: scenario.exit_drill,
+                                trades: scenario.raw_trades || [],
+                                direction: scenario.direction || 'LONG',
+                                overlayNames: scenario.overlay_indicators || [],
+                                oscNames: [],
+                                heatmapConds: [],
+                                tfMs: 5 * 60 * 1000,
+                              });
+                              exitPanes.forEach((p: any) => { p.height = Math.min(p.height, 250); });
+                              return <SyncedChartPane panes={exitPanes} />;
+                            })()}
                           </div>
                         </div>
                       )}
