@@ -256,17 +256,34 @@ export default function useScenarioReplay(
     return { mainChartBars: bars, mainChartOverlays: overlayData };
   }, [scenario, currentTime, barTimestamps, chartBarDurationSec]);
 
-  // ---- Derived: Main chart markers ----
+  // ---- Derived: Main chart markers (with C-type shift to next bar open) ----
   const mainChartMarkers = useMemo(() => {
     const trade = (scenario.raw_trades || [])[0];
     if (!trade) return [];
     const markers: any[] = [];
     const dir = (scenario.direction || 'LONG').toUpperCase();
+    const tfMs = chartBarDurationSec * 1000;
+    const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']);
 
-    // Entry marker — only show when entry time reached
+    // Determine if entry/exit are L-type (no shift) or C-type (shift to next bar)
+    const entryTrigger = trade.entry_trigger || '';
+    const execType = trade.exec_type || '';
+    const entryIsLType = execType === 'L' || execType === 'LC' ||
+      entryTrigger.endsWith('_ib') || entryTrigger.endsWith('_lc') ||
+      entryTrigger.endsWith('_hm') || entryTrigger.endsWith('_hl');
+    const exitReason = trade.exit_reason || '';
+    const exitIsLType = L_TYPE_EXITS.has(exitReason);
+
+    const shiftTime = (iso: string, isLType: boolean): string => {
+      if (isLType) return iso;
+      try { return new Date(new Date(iso).getTime() + tfMs).toISOString(); }
+      catch { return iso; }
+    };
+
+    // Entry arrow — shifted for C-type
     if (currentTime >= entryTime) {
       markers.push({
-        time: trade.entry_time,
+        time: shiftTime(trade.entry_time, entryIsLType),
         position: dir === 'LONG' ? 'belowBar' : 'aboveBar',
         shape: 'arrowUp',
         color: '#4CAF50',
@@ -274,20 +291,20 @@ export default function useScenarioReplay(
       });
     }
 
-    // Exit marker — only show when exit time reached
+    // Exit arrow — shifted for C-type
     if (currentTime >= exitTime) {
       const isWin = (trade.r_multiple || 0) >= 0;
       markers.push({
-        time: trade.exit_time,
+        time: shiftTime(trade.exit_time, exitIsLType),
         position: dir === 'LONG' ? 'aboveBar' : 'belowBar',
         shape: 'arrowDown',
         color: isWin ? '#4CAF50' : '#F44336',
-        text: trade.exit_reason === 'stop_loss' ? 'Stop' : trade.exit_reason === 'target' ? 'Target' : 'Exit',
+        text: exitReason === 'stop_loss' ? 'Stop' : exitReason === 'target' ? 'Target' : 'Exit',
       });
     }
 
     return markers;
-  }, [scenario, currentTime, entryTime, exitTime]);
+  }, [scenario, currentTime, entryTime, exitTime, chartBarDurationSec]);
 
   // ---- Derived: Hi-Fi bars ----
   const { entryBars, entryVisible, entryFullyRevealed } = useMemo(() => {
