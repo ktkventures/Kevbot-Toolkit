@@ -158,16 +158,15 @@ def get_execution_type_code(slug: str, user=Depends(get_current_user)):
 
 @router.get("/{slug}/scenarios")
 def get_scenarios(slug: str, user=Depends(get_current_user)):
-    """Run preset validation scenarios with mock data.
+    """Find real trades that demonstrate each scenario type.
 
-    Returns deterministic results for 5 scenarios:
-    1. Clean entry → stop loss hit
-    2. Clean entry → target hit
-    3. Entry → confirmation success (LC/CC only)
-    4. Entry → confirmation fail / bail (LC/CC only)
-    5. Gap scenario (price gaps past stop)
+    Runs a quick backtest on NVDA 5Min, then categorizes trades by exit reason
+    to find examples of: stop loss, target hit, signal exit, bar count exit,
+    and confirmation bail (LC/CC). Returns chart bars + workflow trace for each.
     """
     from execution_types import list_modules
+    import pandas as pd
+
     module = None
     for m in list_modules():
         if m.slug == slug:
@@ -177,173 +176,147 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail=f"Execution type '{slug}' not found")
 
     exec_code = module.display_code
-    has_confirmation = exec_code in ('LC', 'CC')
 
+    # Run a real backtest to get trades with different exit reasons
+    try:
+        from services import prepare_data_with_indicators, unified_trades
+        from confluence_groups import get_entry_triggers, get_enabled_groups
+
+        groups = get_enabled_groups()
+        triggers = get_entry_triggers('LONG', groups)
+        if not triggers:
+            return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
+
+        # Pick first available LONG trigger
+        entry_trigger_id = next(iter(triggers))
+
+        df = prepare_data_with_indicators('NVDA', days=30, timeframe='5Min')
+        if len(df) < 20:
+            return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
+
+        strategy = {
+            'symbol': 'NVDA', 'direction': 'LONG', 'timeframe': '5Min',
+            'entry_trigger_confluence_id': entry_trigger_id,
+            'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+            'target_config': {'method': 'risk_reward', 'rr_ratio': 2.0},
+        }
+        trades_df = unified_trades(df, strategy)
+    except Exception as e:
+        return {'slug': slug, 'display_code': exec_code, 'scenarios': [],
+                'error': f'Backtest failed: {e}'}
+
+    if not isinstance(trades_df, pd.DataFrame) or len(trades_df) == 0:
+        return {'slug': slug, 'display_code': exec_code, 'scenarios': []}
+
+    # Categorize trades by exit reason and pick one example of each
+    SCENARIO_MAP = {
+        'stop_loss': {'name': 'Stop Loss Hit', 'description': 'Price entered, then reversed and hit the stop loss. Exit at stop level (or bar open if gapped past).'},
+        'target': {'name': 'Target Hit', 'description': 'Price entered, then ran to the take profit target. Exit at target level.'},
+        'bar_count_exit': {'name': 'Bar Count Exit', 'description': 'Position held for the maximum number of bars. Exit at bar close.'},
+    }
+    # Add signal exit (any exit reason that's a trigger ID)
+    seen_reasons = set()
     scenarios = []
 
-    # Helper: generate mock bars
-    def _mock_bars(start_price, moves):
-        """Generate mock OHLCV bars from a starting price and list of (close_delta, range_pct) tuples."""
-        bars = []
-        price = start_price
-        for i, (delta, spread) in enumerate(moves):
-            close = price + delta
-            high = max(price, close) + abs(spread)
-            low = min(price, close) - abs(spread)
-            bars.append({
-                'timestamp': f'2026-01-01T10:{i:02d}:00Z',
-                'open': round(price, 2),
-                'high': round(high, 2),
-                'low': round(low, 2),
-                'close': round(close, 2),
+    for _, trade in trades_df.iterrows():
+        reason = trade.get('exit_reason', '')
+        if not reason or reason in seen_reasons:
+            continue
+
+        # Map to scenario type
+        scenario_type = reason if reason in SCENARIO_MAP else 'signal_exit'
+        if scenario_type == 'signal_exit' and 'signal_exit' in seen_reasons:
+            continue
+
+        seen_reasons.add(reason if reason in SCENARIO_MAP else 'signal_exit')
+
+        entry_time = trade.get('entry_time')
+        exit_time = trade.get('exit_time')
+        entry_price = float(trade.get('entry_price', 0))
+        exit_price = float(trade.get('exit_price', 0))
+        r_mult = float(trade.get('r_multiple', 0))
+        stop_price = float(trade.get('initial_stop_price', 0))
+        target_price = float(trade.get('target_price', 0)) if trade.get('target_price') else None
+
+        # Get chart bars around this trade (10 before entry, 5 after exit)
+        try:
+            entry_idx = df.index.get_indexer([pd.Timestamp(entry_time)], method='nearest')[0]
+            exit_idx = df.index.get_indexer([pd.Timestamp(exit_time)], method='nearest')[0] if exit_time else entry_idx + 10
+        except Exception:
+            continue
+
+        chart_start = max(0, entry_idx - 10)
+        chart_end = min(len(df), exit_idx + 5)
+        chart_bars = []
+        for i in range(chart_start, chart_end):
+            row = df.iloc[i]
+            chart_bars.append({
+                'timestamp': str(df.index[i]),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
             })
-            price = close
-        return bars
 
-    # Scenario 1: Clean entry → stop loss hit (LONG)
-    entry_price = 100.0
-    stop_distance = 1.5
-    stop_price = entry_price - stop_distance
-    target_price = entry_price + stop_distance * 2
-    bars = _mock_bars(99.0, [
-        (0.5, 0.3), (0.5, 0.2),  # Run up to 100
-        (0.0, 0.1),               # Trigger bar (entry at 100)
-        (-0.3, 0.2),              # Drift down
-        (-0.5, 0.3),              # More down
-        (-1.0, 0.5),              # Hit stop at 98.5
-        (-0.2, 0.1),              # After stop
-    ])
-    scenarios.append({
-        'id': 'stop_loss',
-        'name': 'Stop Loss Hit',
-        'description': 'Price enters, then reverses and hits the stop loss.',
-        'direction': 'LONG',
-        'entry_bar': 2,
-        'entry_price': entry_price,
-        'stop_price': stop_price,
-        'target_price': target_price,
-        'exit_bar': 5,
-        'exit_price': stop_price,
-        'exit_reason': 'stop_loss',
-        'r_multiple': -1.0,
-        'passed': True,
-        'chart_bars': bars,
-        'markers': [
-            {'time': bars[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-            {'time': bars[5]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336', 'text': '-1.0R', 'size': 1},
-        ],
-    })
+        # Build markers
+        markers = [
+            {'time': str(entry_time), 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
+        ]
+        if exit_time:
+            exit_color = '#4CAF50' if r_mult >= 0 else '#F44336'
+            if reason == 'stop_loss':
+                exit_color = '#F44336'
+            elif reason == 'target':
+                exit_color = '#4CAF50'
+            markers.append({
+                'time': str(exit_time), 'position': 'aboveBar', 'shape': 'arrowDown',
+                'color': exit_color, 'text': f'{r_mult:+.1f}R', 'size': 1,
+            })
 
-    # Scenario 2: Clean entry → target hit (LONG)
-    bars2 = _mock_bars(99.0, [
-        (0.5, 0.3), (0.5, 0.2),
-        (0.0, 0.1),               # Entry at 100
-        (0.5, 0.2),               # Up
-        (1.0, 0.3),               # More up
-        (1.5, 0.5),               # Hit target at 103
-        (0.2, 0.1),
-    ])
-    scenarios.append({
-        'id': 'target_hit',
-        'name': 'Target Hit',
-        'description': 'Price enters, then runs to the target.',
-        'direction': 'LONG',
-        'entry_bar': 2,
-        'entry_price': entry_price,
-        'stop_price': stop_price,
-        'target_price': target_price,
-        'exit_bar': 5,
-        'exit_price': target_price,
-        'exit_reason': 'target',
-        'r_multiple': 2.0,
-        'passed': True,
-        'chart_bars': bars2,
-        'markers': [
-            {'time': bars2[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-            {'time': bars2[5]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#4CAF50', 'text': '+2.0R', 'size': 1},
-        ],
-    })
+        # Build workflow trace for this trade
+        workflow_steps = []
+        direction = trade.get('direction', 'LONG')
+        et = trade.get('exec_type', 'C')
 
-    # Scenario 3: Confirmation success (LC/CC only)
-    if has_confirmation:
-        bars3 = _mock_bars(99.0, [
-            (0.5, 0.3), (0.5, 0.2),
-            (0.0, 0.1),               # Entry at 100 (level cross or bar close)
-            (0.3, 0.1),               # Confirmation bar — closes above entry (CONFIRMED)
-            (0.5, 0.2),
-            (1.0, 0.3),
-        ])
+        # Entry steps
+        if et in ('C', 'CC'):
+            workflow_steps.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': str(entry_time), 'badge': et})
+        else:
+            workflow_steps.append({'action': 'check_level_cross', 'label': 'Level cross detected', 'time': str(entry_time), 'badge': et})
+
+        workflow_steps.append({'action': 'fill', 'label': f'Entry filled at ${entry_price:.2f}', 'price': entry_price, 'color': 'var(--green)'})
+        workflow_steps.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{direction.lower()}_market', 'isWebhook': True})
+        workflow_steps.append({'action': 'manage_position', 'label': f'Position open — stop ${stop_price:.2f}' + (f', target ${target_price:.2f}' if target_price else '')})
+
+        # Exit steps
+        exit_label = SCENARIO_MAP.get(reason, {}).get('name', f'Exit: {reason.replace("_", " ")}')
+        workflow_steps.append({
+            'action': 'exit', 'label': f'{exit_label} at ${exit_price:.2f} ({r_mult:+.2f}R)',
+            'time': str(exit_time) if exit_time else None, 'price': exit_price,
+            'color': 'var(--green)' if r_mult >= 0 else 'var(--red)',
+        })
+        workflow_steps.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{direction.lower()}_market', 'isWebhook': True})
+
+        meta = SCENARIO_MAP.get(reason, {'name': f'Signal Exit ({reason})', 'description': f'Exit triggered by signal: {reason.replace("_", " ")}'})
         scenarios.append({
-            'id': 'confirm_success',
-            'name': 'Confirmation Success',
-            'description': f'[{exec_code}] Entry fires, next bar confirms direction. Position continues.',
-            'direction': 'LONG',
-            'entry_bar': 2,
+            'id': reason if reason in SCENARIO_MAP else 'signal_exit',
+            'name': meta['name'],
+            'description': meta['description'],
+            'direction': direction,
             'entry_price': entry_price,
-            'confirmed': True,
-            'confirm_bar': 3,
+            'exit_price': exit_price,
+            'stop_price': stop_price,
+            'target_price': target_price,
+            'exit_reason': reason,
+            'r_multiple': round(r_mult, 2),
             'passed': True,
-            'chart_bars': bars3,
-            'markers': [
-                {'time': bars3[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-                {'time': bars3[3]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#2196F3', 'text': 'Confirmed', 'size': 0.5},
-            ],
+            'chart_bars': chart_bars,
+            'markers': markers,
+            'workflow_steps': workflow_steps,
         })
 
-    # Scenario 4: Confirmation fail / bail (LC/CC only)
-    if has_confirmation:
-        bars4 = _mock_bars(99.0, [
-            (0.5, 0.3), (0.5, 0.2),
-            (0.0, 0.1),               # Entry at 100
-            (-0.5, 0.3),              # Confirmation bar — closes BELOW entry (NOT CONFIRMED)
-            (-0.3, 0.1),              # Bail bar
-        ])
-        scenarios.append({
-            'id': 'confirm_bail',
-            'name': 'Confirmation Fail (Bail)',
-            'description': f'[{exec_code}] Entry fires, but next bar does NOT confirm. Bail at market.',
-            'direction': 'LONG',
-            'entry_bar': 2,
-            'entry_price': entry_price,
-            'confirmed': False,
-            'confirm_bar': 3,
-            'bail_bar': 4 if exec_code == 'CC' else 3,
-            'bail_price': float(bars4[4 if exec_code == 'CC' else 3]['open']),
-            'passed': True,
-            'chart_bars': bars4,
-            'markers': [
-                {'time': bars4[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-                {'time': bars4[3]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#FF9800', 'text': 'Bail', 'size': 1},
-            ],
-        })
-
-    # Scenario 5: Gap scenario (price gaps past stop overnight)
-    bars5 = _mock_bars(99.0, [
-        (0.5, 0.3), (0.5, 0.2),
-        (0.0, 0.1),               # Entry at 100
-        (0.3, 0.1),               # Normal bar
-        (-3.0, 0.1),              # GAP DOWN past stop (opens at 97.3, well below 98.5 stop)
-        (0.1, 0.1),
-    ])
-    scenarios.append({
-        'id': 'gap_stop',
-        'name': 'Gap Past Stop',
-        'description': 'Price gaps past the stop loss (e.g., overnight). Exit at gap open, not stop price.',
-        'direction': 'LONG',
-        'entry_bar': 2,
-        'entry_price': entry_price,
-        'stop_price': stop_price,
-        'exit_bar': 4,
-        'exit_price': float(bars5[4]['open']),  # Exit at open, not stop
-        'exit_reason': 'stop_loss (gap)',
-        'r_multiple': round((float(bars5[4]['open']) - entry_price) / stop_distance, 2),
-        'passed': True,
-        'chart_bars': bars5,
-        'markers': [
-            {'time': bars5[2]['timestamp'], 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1},
-            {'time': bars5[4]['timestamp'], 'position': 'aboveBar', 'shape': 'arrowDown', 'color': '#F44336', 'text': 'Gap Stop', 'size': 1},
-        ],
-    })
+        if len(scenarios) >= 5:
+            break
 
     return {
         'slug': slug,
