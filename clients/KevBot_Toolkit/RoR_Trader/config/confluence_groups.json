@@ -209,6 +209,98 @@
         "line_width": 1,
         "visible": true
       }
+    },
+    {
+      "id": "swing_123_default",
+      "base_template": "swing_123",
+      "version": "Default",
+      "description": "Swing 1-2-3 candle pattern detection with C2/C3 entries",
+      "enabled": true,
+      "is_default": true,
+      "parameters": {},
+      "plot_settings": {
+        "colors": {
+          "bull_c2_color": "#FFD11A",
+          "bull_c3_color": "#FFFF00",
+          "bear_c2_color": "#FF66B3",
+          "bear_c3_color": "#FF33CC"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "rsi_zones_default",
+      "base_template": "rsi_zones",
+      "version": "Default",
+      "description": "Default RSI Zones configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "rsi_period": 14,
+        "overbought_level": 70,
+        "oversold_level": 30,
+        "extreme_overbought_level": 80,
+        "extreme_oversold_level": 20,
+        "midline": 50,
+        "source": "close"
+      },
+      "plot_settings": {
+        "colors": {
+          "rsi_color": "#8b5cf6",
+          "overbought_color": "#ef4444",
+          "oversold_color": "#22c55e",
+          "midline_color": "#94a3b8"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "rsi_zones_2_default",
+      "base_template": "rsi_zones_2",
+      "version": "Default",
+      "description": "Default RSI Zones 2 configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "rsi_period": 14,
+        "overbought_level": 70,
+        "oversold_level": 30,
+        "extreme_overbought_level": 80,
+        "extreme_oversold_level": 20,
+        "source": "close"
+      },
+      "plot_settings": {
+        "colors": {
+          "rsi_color": "#8b5cf6"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
+      "id": "rsi_zones_3_default",
+      "base_template": "rsi_zones_3",
+      "version": "Default",
+      "description": "Default RSI Zones 3 configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "rsi_period": 14,
+        "overbought_level": 70,
+        "oversold_level": 30,
+        "source": "close",
+        "smoothing": 1
+      },
+      "plot_settings": {
+        "colors": {
+          "rsi_color": "#8b5cf6",
+          "signal_color": "#f59e0b"
+        },
+        "line_width": 1,
+        "visible": true
+      }
     }
   ]
 }

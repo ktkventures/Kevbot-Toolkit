@@ -137,114 +137,23 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
           </div>
           <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>{scenario.description}</p>
 
-          {/* Side-by-side: Chart (60%) + Workflow (40%) */}
+          {/* Row 1: Main chart (60%) + Workflow trace (40%) */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            {/* Left: Chart using buildStrategyChartPanes (same as Sandbox) */}
             <div className="lg:col-span-3">
               {(() => {
-                const chartData = scenario.chart_data || scenario.chart_bars || [];
+                const chartData = scenario.chart_data || [];
                 if (chartData.length === 0) return null;
-
                 const panes = buildStrategyChartPanes({
-                  bars: chartData,
-                  trades: scenario.raw_trades || [],
+                  bars: chartData, trades: scenario.raw_trades || [],
                   direction: scenario.direction || 'LONG',
                   overlayNames: scenario.overlay_indicators || [],
                   oscNames: scenario.oscillator_indicators || [],
                   heatmapConds: scenario.heatmap_conditions || [],
                   tfMs: 5 * 60 * 1000,
                 });
-
-                return (
-                  <>
-                    <div style={{ minHeight: 300 }}>
-                      <SyncedChartPane panes={panes} />
-                    </div>
-
-                    {/* Hi-Fi 1-second drill-down charts: entry + exit */}
-                    <div className="grid grid-cols-2 gap-2 mt-2">
-                      {scenario.entry_1s_bars && scenario.entry_1s_bars.length > 0 && (
-                        <div>
-                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Hi-Fi (1-second)</p>
-                          <div style={{ minHeight: 250 }}>
-                            {(() => {
-                              // EMA levels as stepped reference lines (5-min values on 1-second chart)
-                              const refBar = (scenario.entry_drill || [])[Math.floor((scenario.entry_drill || []).length / 2)];
-                              const emaLines: any[] = [];
-                              const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
-                              (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                                const val = refBar?.[col];
-                                if (val != null && isFinite(val)) {
-                                  emaLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
-                                }
-                              });
-                              if (scenario.stop_price) emaLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
-                              if (scenario.entry_price) emaLines.push({ price: scenario.entry_price, color: '#4CAF50', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Entry' });
-
-                              return (
-                                <SyncedChartPane
-                                  panes={[{
-                                    id: `entry-1s-${scenario.id}`,
-                                    height: 250,
-                                    series: [{
-                                      type: 'Candlestick' as const,
-                                      data: scenario.entry_1s_bars.map((b: any) => ({
-                                        time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                                      })),
-                                      markers: scenario.entry_markers || [],
-                                      priceLines: emaLines,
-                                    }],
-                                  }]}
-                                />
-                              );
-                            })()}
-                          </div>
-                        </div>
-                      )}
-                      {scenario.exit_1s_bars && scenario.exit_1s_bars.length > 0 && (
-                        <div>
-                          <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Hi-Fi (1-second)</p>
-                          <div style={{ minHeight: 250 }}>
-                            {(() => {
-                              const refBar = (scenario.exit_drill || [])[Math.floor((scenario.exit_drill || []).length / 2)];
-                              const emaLines: any[] = [];
-                              const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
-                              (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
-                                const val = refBar?.[col];
-                                if (val != null && isFinite(val)) {
-                                  emaLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
-                                }
-                              });
-                              if (scenario.stop_price) emaLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
-                              if (scenario.exit_price) emaLines.push({ price: scenario.exit_price, color: scenario.r_multiple >= 0 ? '#4CAF50' : '#F44336', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Exit' });
-
-                              return (
-                                <SyncedChartPane
-                                  panes={[{
-                                    id: `exit-1s-${scenario.id}`,
-                                    height: 250,
-                                    series: [{
-                                      type: 'Candlestick' as const,
-                                      data: scenario.exit_1s_bars.map((b: any) => ({
-                                        time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-                                      })),
-                                      markers: scenario.exit_markers || [],
-                                      priceLines: emaLines,
-                                    }],
-                                  }]}
-                                />
-                              );
-                            })()}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                );
+                return <div style={{ minHeight: 300 }}><SyncedChartPane panes={panes} /></div>;
               })()}
             </div>
-
-            {/* Right: Workflow trace */}
             <div className="lg:col-span-2">
               <div className="rounded-lg p-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
                 <h6 className="text-[10px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Execution Workflow</h6>
@@ -280,6 +189,72 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Row 2: Hi-Fi 1-second drill-downs (50/50 full width) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-3">
+            {scenario.entry_1s_bars && scenario.entry_1s_bars.length > 0 && (
+              <div>
+                <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Hi-Fi (1-second)</p>
+                <div style={{ minHeight: 250 }}>
+                  {(() => {
+                    const refBar = (scenario.entry_drill || [])[Math.floor((scenario.entry_drill || []).length / 2)];
+                    const priceLines: any[] = [];
+                    const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
+                    (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
+                      const val = refBar?.[col];
+                      if (val != null && isFinite(val)) {
+                        priceLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
+                      }
+                    });
+                    if (scenario.stop_price) priceLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
+                    if (scenario.entry_price) priceLines.push({ price: scenario.entry_price, color: '#4CAF50', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Entry' });
+                    return (
+                      <SyncedChartPane panes={[{
+                        id: `entry-1s-${scenario.id}`, height: 250,
+                        series: [{
+                          type: 'Candlestick' as const,
+                          data: scenario.entry_1s_bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+                          markers: scenario.entry_markers || [],
+                          priceLines,
+                        }],
+                      }]} />
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+            {scenario.exit_1s_bars && scenario.exit_1s_bars.length > 0 && (
+              <div>
+                <p className="text-[9px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Exit Hi-Fi (1-second)</p>
+                <div style={{ minHeight: 250 }}>
+                  {(() => {
+                    const refBar = (scenario.exit_drill || [])[Math.floor((scenario.exit_drill || []).length / 2)];
+                    const priceLines: any[] = [];
+                    const EMA_COLORS = ['#2196F3', '#FF9800', '#4CAF50'];
+                    (scenario.overlay_indicators || []).forEach((col: string, i: number) => {
+                      const val = refBar?.[col];
+                      if (val != null && isFinite(val)) {
+                        priceLines.push({ price: val, color: EMA_COLORS[i % EMA_COLORS.length], lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: col.replace(/_/g, ' ').toUpperCase() });
+                      }
+                    });
+                    if (scenario.stop_price) priceLines.push({ price: scenario.stop_price, color: '#F44336', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Stop' });
+                    if (scenario.exit_price) priceLines.push({ price: scenario.exit_price, color: scenario.r_multiple >= 0 ? '#4CAF50' : '#F44336', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Exit' });
+                    return (
+                      <SyncedChartPane panes={[{
+                        id: `exit-1s-${scenario.id}`, height: 250,
+                        series: [{
+                          type: 'Candlestick' as const,
+                          data: scenario.exit_1s_bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+                          markers: scenario.exit_markers || [],
+                          priceLines,
+                        }],
+                      }]} />
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       ))}
