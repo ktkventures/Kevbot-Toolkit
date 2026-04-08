@@ -206,9 +206,36 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         'gap_through_target': {'name': 'Gap Open Through Target', 'category': 'edge', 'description': 'Position held overnight. Market opens with a gap past the target — limit fill at target price. Favorable gap execution.'},
     }
 
+    # Which scenario categories are relevant to this execution type?
+    EXEC_TO_CATEGORIES = {
+        'C':  {'common', 'ambiguous', 'edge'},
+        'L':  {'common', 'ambiguous', 'ltype', 'edge'},
+        'LC': {'common', 'confirmation', 'edge'},
+        'CC': {'common', 'confirmation', 'edge'},
+    }
+    allowed_categories = EXEC_TO_CATEGORIES.get(exec_code, {'common', 'edge'})
+
+    from datetime import datetime as _dt, timedelta as _td
+    TF_SEC = 5 * 60  # 5-min bars
+    L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
+
+    def _shift(iso, is_ltype):
+        if is_ltype or not iso:
+            return iso
+        try:
+            return (_dt.fromisoformat(iso) + _td(seconds=TF_SEC)).isoformat()
+        except Exception:
+            return iso
+
     scenarios = []
     for reason, trade_data in fixture.get('scenarios', {}).items():
         meta = SCENARIO_META.get(reason, {'name': reason.replace('_', ' ').title(), 'description': f'Exit reason: {reason}'})
+        category = meta.get('category', 'common')
+
+        # Skip scenarios not relevant to this execution type
+        if category not in allowed_categories:
+            continue
+
         ep = trade_data['entry_price']
         xp = trade_data['exit_price']
         sp = trade_data['stop_price']
@@ -218,21 +245,10 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         et = trade_data.get('entry_time', '')
         xt = trade_data.get('exit_time', '')
 
-        # C-type shift: fill happens at next bar open
-        from datetime import datetime as _dt, timedelta as _td
-        TF_MS = 5 * 60  # 5-min in seconds
-        L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
-        entry_is_ltype = exec_code in ('L', 'LC')
+        # Use the SCENARIO's exec_type for shift logic (not the page's exec_code)
+        scenario_exec = trade_data.get('exec_type', exec_code)
+        entry_is_ltype = scenario_exec in ('L', 'LC')
         exit_is_ltype = reason in L_TYPE_EXITS
-
-        def _shift(iso, is_ltype):
-            if is_ltype or not iso:
-                return iso
-            try:
-                dt = _dt.fromisoformat(iso)
-                return (dt + _td(seconds=TF_MS)).isoformat()
-            except Exception:
-                return iso
 
         shifted_et = _shift(et, entry_is_ltype)
         shifted_xt = _shift(xt, exit_is_ltype)
@@ -242,19 +258,22 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         if shifted_xt:
             markers.append({'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
 
-        # Dynamic workflow trace based on THIS execution type (with timestamps on every step)
+        # Determine exit exec type for badge
+        exit_exec_code = 'L' if exit_is_ltype else exec_code
+
+        # Dynamic workflow trace with exec type badges on entry AND exit
         ws = []
-        if exec_code in ('C', 'CC'):
-            ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
+        if scenario_exec in ('C', 'CC'):
+            ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': scenario_exec})
         else:
-            ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
+            ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': scenario_exec})
         ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'time': shifted_et, 'price': ep, 'color': 'var(--green)'})
         ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{d.lower()}_market', 'time': shifted_et, 'isWebhook': True})
-        if exec_code in ('LC', 'CC'):
-            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation', 'time': shifted_et})
+        if scenario_exec in ('LC', 'CC'):
+            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if scenario_exec == "CC" else "bar"} close confirmation', 'time': shifted_et})
             ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
         ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else ''), 'time': shifted_et})
-        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
+        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'badge': exit_exec_code, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
         ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{d.lower()}_market', 'time': shifted_xt or xt, 'isWebhook': True})
 
         scenarios.append({
@@ -273,7 +292,7 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
             'exit_drill': trade_data.get('exit_drill', []),
             'entry_1s_bars': trade_data.get('entry_1s_bars', []),
             'exit_1s_bars': trade_data.get('exit_1s_bars', []),
-            'exec_type': exec_code,
+            'exec_type': scenario_exec,
             'entry_markers': [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
             'exit_markers': [{'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if shifted_xt else [],
         })
