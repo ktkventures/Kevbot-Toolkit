@@ -193,6 +193,17 @@ def get_scenarios(slug: str, user=Depends(get_current_user)):
         'opposite_signal': {'name': 'Signal Exit (EMA Cross)', 'category': 'common', 'description': 'Price entered on EMA cross above. The opposite EMA cross (below) triggered the exit before stop or target was reached. This is the most common exit type in trend-following strategies.'},
         'stop_on_entry_bar': {'name': 'Stop Hit on Next Bar', 'category': 'ambiguous', 'description': 'Entry signal detected at bar close. The very next bar immediately reversed and hit the ATR-based stop loss. Hi-Fi 1-second analysis shows the exact stop fill timing.'},
         'immediate_reversal': {'name': 'Entry + Immediate Reversal', 'category': 'ambiguous', 'description': 'Entry filled at next bar open, but price immediately moved against the position and hit the stop within 2-3 bars. A short-lived trade showing rapid adverse movement.'},
+        # L-Type
+        'ltype_entry': {'name': 'L-Type Entry (Level Cross)', 'category': 'ltype', 'description': 'Entry triggers MID-BAR when price crosses the EMA level. Fill is immediate at the cross price — no waiting for bar close.'},
+        'ltype_stop': {'name': 'L-Type Stop Loss', 'category': 'ltype', 'description': 'Stop loss fires MID-BAR at the exact stop price. Unlike C-type stops that wait for bar close, L-type executes immediately when the level is crossed.'},
+        # Confirmation (LC/CC)
+        'lc_confirmed': {'name': 'LC Entry — Confirmed', 'category': 'confirmation', 'description': 'Level cross triggers entry mid-bar. Waits for bar close to confirm. Bar closes in trade direction — confirmed, position continues.'},
+        'lc_bailed': {'name': 'LC Entry — Bailed', 'category': 'confirmation', 'description': 'Level cross triggers entry mid-bar. Bar closes AGAINST the position — confirmation fails. Bail exit fires immediately.'},
+        'cc_confirmed': {'name': 'CC Entry — Confirmed', 'category': 'confirmation', 'description': 'Bar-close triggers entry (fills at next bar open). Waits for next bar close to confirm. Confirmed — position continues.'},
+        'cc_bailed': {'name': 'CC Entry — Bailed', 'category': 'confirmation', 'description': 'Bar-close triggers entry, fills at next bar open. Next bar closes against — confirmation fails, bail exit fires.'},
+        # Edge Cases
+        'gap_through_stop': {'name': 'Gap Open Through Stop', 'category': 'edge', 'description': 'Position held overnight. Market opens with a gap past the stop level — fill at open price, not stop price. Demonstrates session gap slippage.'},
+        'gap_through_target': {'name': 'Gap Open Through Target', 'category': 'edge', 'description': 'Position held overnight. Market opens with a gap past the target — limit fill at target price. Favorable gap execution.'},
     }
 
     scenarios = []
