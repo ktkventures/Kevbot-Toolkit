@@ -9,7 +9,7 @@ import TabBar from '@/components/TabBar';
 const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 const ScenarioReplayCard = dynamic(() => import('@/components/ScenarioReplayCard'), { ssr: false });
 import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, useGenerateScenarios, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
-import { useConfluenceTriggers } from '@/hooks/queries/usePacks';
+import { useConfluenceTriggers, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
 
 /* ========================================================================= */
 /* STYLES                                                                      */
@@ -102,27 +102,87 @@ const SCENARIO_CATEGORIES = [
 
 const GEN_TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '1Day'] as const;
 
+/* ---- Static reference scenarios (Scenarios tab) ---- */
 function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
-  // Static fixture scenarios
   const [scenarios, setScenarios] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [activeCategory, setActiveCategory] = useState('common');
 
-  // Custom scenario generator state
+  if (scenarios === null && !loading) {
+    setLoading(true);
+    import('@/lib/api/client').then(({ apiFetch }) => {
+      apiFetch<any>(`/api/execution-types/${slug}/scenarios`)
+        .then((data) => { setScenarios(data); setLoading(false); })
+        .catch(() => { setScenarios({ scenarios: [] }); setLoading(false); });
+    });
+  }
+
+  if (loading || !scenarios) {
+    return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios from real market data...</p></Card>;
+  }
+
+  const allScenarios = scenarios.scenarios || [];
+  const filtered = allScenarios.filter((s: any) => (s.category || 'common') === activeCategory);
+  const availableCategories = SCENARIO_CATEGORIES.filter(
+    cat => allScenarios.some((s: any) => (s.category || 'common') === cat.key)
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h4 className="text-sm font-medium mb-2">Reference Scenarios</h4>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Pre-curated trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Use replay controls to step through each trade second by second.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          {availableCategories.map(cat => (
+            <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
+              className="text-[10px] font-medium px-3 py-1 rounded-full transition-colors"
+              style={{
+                background: activeCategory === cat.key ? 'var(--accent)' : 'var(--bg-input)',
+                color: activeCategory === cat.key ? 'white' : 'var(--text-muted)',
+                border: `1px solid ${activeCategory === cat.key ? 'var(--accent)' : 'var(--border)'}`,
+                cursor: 'pointer',
+              }}>
+              {cat.label}
+            </button>
+          ))}
+          {SCENARIO_CATEGORIES.filter(cat => !availableCategories.some(a => a.key === cat.key)).map(cat => (
+            <span key={cat.key} className="text-[10px] font-medium px-3 py-1 rounded-full"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-muted)', border: '1px solid var(--border)', opacity: 0.4 }}>
+              {cat.label}
+            </span>
+          ))}
+        </div>
+      </Card>
+      {filtered.map((scenario: any) => (
+        <ScenarioReplayCard key={scenario.id} scenario={scenario} displayCode={displayCode} />
+      ))}
+      {filtered.length === 0 && (
+        <Card><p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No scenarios in this category yet.</p></Card>
+      )}
+    </div>
+  );
+}
+
+/* ---- Custom scenario generator (Custom Scenarios tab) ---- */
+function CustomScenariosTab({ slug, displayCode }: { slug: string; displayCode: string }) {
   const [genSymbol, setGenSymbol] = useState('NVDA');
   const [genTimeframe, setGenTimeframe] = useState('5Min');
   const [genDirection, setGenDirection] = useState<'LONG' | 'SHORT'>('LONG');
   const [genDays, setGenDays] = useState(30);
   const [genEntryTrigger, setGenEntryTrigger] = useState('');
   const [genExitTrigger, setGenExitTrigger] = useState('');
-  const [genStopAtr, setGenStopAtr] = useState(1.5);
-  const [genTargetR, setGenTargetR] = useState(2.0);
+  const [genStopPack, setGenStopPack] = useState('');
+  const [genTargetPack, setGenTargetPack] = useState('');
   const [genBarCount, setGenBarCount] = useState(8);
   const [customScenarios, setCustomScenarios] = useState<any>(null);
 
   const generateMut = useGenerateScenarios(slug);
   const { data: entryTriggers } = useConfluenceTriggers(genDirection);
   const { data: exitTriggers } = useConfluenceTriggers('EXIT');
+  const { data: stopPacks } = useStopLossPacks();
+  const { data: targetPacks } = useTakeProfitPacks();
 
   const entryOptions = useMemo(() => {
     if (!entryTriggers) return [];
@@ -134,15 +194,15 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
     return Object.entries(exitTriggers).map(([id, name]) => ({ id, name: String(name) }));
   }, [exitTriggers]);
 
-  // Load static fixtures
-  if (scenarios === null && !loading) {
-    setLoading(true);
-    import('@/lib/api/client').then(({ apiFetch }) => {
-      apiFetch<any>(`/api/execution-types/${slug}/scenarios`)
-        .then((data) => { setScenarios(data); setLoading(false); })
-        .catch(() => { setScenarios({ scenarios: [] }); setLoading(false); });
-    });
-  }
+  const stopPackList = useMemo(() => {
+    if (!stopPacks) return [];
+    return (stopPacks as any[]).map((p) => ({ id: p.id, label: `${p.base_template} (${p.version})` }));
+  }, [stopPacks]);
+
+  const targetPackList = useMemo(() => {
+    if (!targetPacks) return [];
+    return (targetPacks as any[]).map((p) => ({ id: p.id, label: `${p.base_template} (${p.version})` }));
+  }, [targetPacks]);
 
   const handleGenerate = () => {
     if (!genEntryTrigger) return;
@@ -153,35 +213,25 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
       days: genDays,
       entry_trigger_confluence_id: genEntryTrigger,
       exit_trigger_confluence_ids: genExitTrigger ? [genExitTrigger] : [],
-      stop_atr_mult: genStopAtr,
-      target_r_multiple: genTargetR,
+      stop_loss_pack_id: genStopPack || undefined,
+      take_profit_pack_id: genTargetPack || undefined,
       bar_count_exit: genBarCount || null,
-    }, {
-      onSuccess: (data) => setCustomScenarios(data),
+    } as any, {
+      onSuccess: (data: any) => setCustomScenarios(data),
     });
   };
 
-  if (loading || !scenarios) {
-    return <Card><p className="text-sm py-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading scenarios from real market data...</p></Card>;
-  }
-
-  const allScenarios = scenarios.scenarios || [];
-  const filtered = allScenarios.filter((s: any) => (s.category || 'common') === activeCategory);
-  const availableCategories = SCENARIO_CATEGORIES.filter(
-    cat => allScenarios.some((s: any) => (s.category || 'common') === cat.key)
-  );
   const customList = customScenarios?.scenarios || [];
 
   return (
     <div className="space-y-4">
-      {/* ---- Custom Scenario Generator ---- */}
       <Card>
         <h4 className="text-sm font-medium mb-2">Generate Custom Scenarios</h4>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Select triggers and configuration to generate scenario examples from real backtest data. The system finds representative trades for each exit type (stop, target, signal, bar count).
+          Select triggers and configuration to generate scenario examples from real backtest data. The system cherry-picks representative trades for each exit type (stop, target, signal, bar count).
         </p>
-        {/* Config row */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-3">
+        {/* Config row 1: Symbol, Timeframe, Direction, Days */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
           <div>
             <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
             <input value={genSymbol} onChange={e => setGenSymbol(e.target.value.toUpperCase())} style={inputStyle} />
@@ -203,29 +253,39 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
             <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
             <input type="number" value={genDays} onChange={e => setGenDays(Number(e.target.value))} min={5} max={90} style={inputStyle} />
           </div>
-          <div>
-            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Stop ATR</label>
-            <input type="number" value={genStopAtr} onChange={e => setGenStopAtr(Number(e.target.value))} step={0.5} min={0.5} style={inputStyle} />
-          </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
-          <div className="lg:col-span-1">
+        {/* Config row 2: Entry/Exit triggers */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+          <div>
             <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Entry Trigger</label>
             <select value={genEntryTrigger} onChange={e => setGenEntryTrigger(e.target.value)} style={inputStyle}>
               <option value="">Select entry trigger...</option>
               {entryOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
-          <div className="lg:col-span-1">
+          <div>
             <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Exit Trigger</label>
             <select value={genExitTrigger} onChange={e => setGenExitTrigger(e.target.value)} style={inputStyle}>
               <option value="">(none — stop/target/bar count only)</option>
               {exitOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
+        </div>
+        {/* Config row 3: Stop/Target packs + bar count */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
           <div>
-            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Target R</label>
-            <input type="number" value={genTargetR} onChange={e => setGenTargetR(Number(e.target.value))} step={0.5} min={0} style={inputStyle} />
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Stop Loss</label>
+            <select value={genStopPack} onChange={e => setGenStopPack(e.target.value)} style={inputStyle}>
+              <option value="">None</option>
+              {stopPackList.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Take Profit</label>
+            <select value={genTargetPack} onChange={e => setGenTargetPack(e.target.value)} style={inputStyle}>
+              <option value="">None</option>
+              {targetPackList.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
           </div>
           <div>
             <label className="text-[9px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bar Count Exit</label>
@@ -248,20 +308,12 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
         </button>
       </Card>
 
-      {/* Custom scenario results */}
+      {/* Results */}
       {generateMut.isPending && (
-        <Card>
-          <p className="text-sm py-6 text-center" style={{ color: 'var(--text-muted)' }}>
-            Running backtest and fetching 1-second bars... This may take 5-15 seconds.
-          </p>
-        </Card>
+        <Card><p className="text-sm py-6 text-center" style={{ color: 'var(--text-muted)' }}>Running backtest and fetching 1-second bars... This may take 5-15 seconds.</p></Card>
       )}
       {generateMut.isError && (
-        <Card>
-          <p className="text-sm py-4 text-center" style={{ color: 'var(--red)' }}>
-            Failed to generate scenarios. {(generateMut.error as any)?.message || 'Check API connection.'}
-          </p>
-        </Card>
+        <Card><p className="text-sm py-4 text-center" style={{ color: 'var(--red)' }}>Failed to generate scenarios. {(generateMut.error as any)?.message || 'Check API connection.'}</p></Card>
       )}
       {customList.length > 0 && (
         <>
@@ -275,63 +327,7 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
         </>
       )}
       {customScenarios && customList.length === 0 && !generateMut.isPending && (
-        <Card>
-          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
-            No trades found for this configuration. Try a longer lookback period or different triggers.
-          </p>
-        </Card>
-      )}
-
-      {/* ---- Reference Scenarios (static fixtures) ---- */}
-      <Card>
-        <h4 className="text-sm font-medium mb-2">Reference Scenarios (NVDA 5Min)</h4>
-        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Pre-curated trades showing how [{displayCode}] handles different exit conditions.
-        </p>
-        {/* Category pills */}
-        <div className="flex gap-2 flex-wrap">
-          {availableCategories.map(cat => (
-            <button
-              key={cat.key}
-              onClick={() => setActiveCategory(cat.key)}
-              className="text-[10px] font-medium px-3 py-1 rounded-full transition-colors"
-              style={{
-                background: activeCategory === cat.key ? 'var(--accent)' : 'var(--bg-input)',
-                color: activeCategory === cat.key ? 'white' : 'var(--text-muted)',
-                border: `1px solid ${activeCategory === cat.key ? 'var(--accent)' : 'var(--border)'}`,
-                cursor: 'pointer',
-              }}
-            >
-              {cat.label}
-            </button>
-          ))}
-          {SCENARIO_CATEGORIES.filter(cat => !availableCategories.some(a => a.key === cat.key)).map(cat => (
-            <span
-              key={cat.key}
-              className="text-[10px] font-medium px-3 py-1 rounded-full"
-              style={{
-                background: 'var(--bg-input)',
-                color: 'var(--text-muted)',
-                border: '1px solid var(--border)',
-                opacity: 0.4,
-              }}
-            >
-              {cat.label}
-            </span>
-          ))}
-        </div>
-      </Card>
-
-      {filtered.map((scenario: any) => (
-        <ScenarioReplayCard key={scenario.id} scenario={scenario} displayCode={displayCode} />
-      ))}
-
-      {filtered.length === 0 && (
-        <Card>
-          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
-            No scenarios in this category yet. More scenarios coming soon.
-          </p>
-        </Card>
+        <Card><p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No trades found for this configuration. Try a longer lookback period or different triggers.</p></Card>
       )}
     </div>
   );
@@ -413,7 +409,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Code']}>
+      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Custom Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Description' && (
@@ -621,6 +617,8 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
             {/* Old simulation removed — replaced by Backtest tab with SandboxPanel */}
 
             {tab === 'Scenarios' && <ScenariosTab slug={mod.slug} displayCode={mod.display_code} />}
+
+            {tab === 'Custom Scenarios' && <CustomScenariosTab slug={mod.slug} displayCode={mod.display_code} />}
 
             {tab === 'Code' && (
               <Card>
