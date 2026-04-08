@@ -197,33 +197,36 @@ First iteration of AI-assisted execution type creation and scenario-based valida
 **Tasks:**
 - [ ] 4.5a. [Required] **Unique badges** — Each execution type and variation gets a unique 1-5 char badge. Show badge consistently across all pages (Strategy Builder, Detail, Execution Types).
 - [ ] 4.5b. [Required] **Mini chart on simulation** — Add a small price chart to the simulation trace showing entry/exit markers on actual candles, so users can visually verify behavior.
-- [x] 4.5c. [Required] **Preset validation scenarios** — COMPLETE. Static fixture-based scenarios with real NVDA 5Min data:
-  1. Bar count exit (position held max bars)
-  2. Target hit (clean winner)
-  3. Stop loss hit (reversal)
-  Each shows: main 5-min chart with EMA overlays + entry/exit markers, execution workflow trace with timestamps, entry/exit 1-second Hi-Fi drill-down charts with price-level cross markers. C-type shift (next bar open fill) applied throughout.
-- [x] 4.5g. [Required] **Replay mode** — COMPLETE. Second-by-second replay with:
-  - ReplayableChart (prop-driven LWC, no flicker)
-  - ReplayControls (arrows, time display, 1s/5s/10s/60s interval, seek bar)
-  - WorkflowTrace (completed/active/pending states with timestamps)
-  - Forming candle interpolation on main chart
-  - Hi-Fi charts appear at fill time windows
-  - Candle colors respect user display settings (useChartPrefs)
-  - Backup branch: `dev-backup-pre-scenario-expansion`
-- [ ] 4.5c2. [Required] **Expanded scenarios** — Add scenario tabs + more categories:
-  - Common tab: add signal-based exit (EMA cross below) to existing 3
-  - Ambiguous Candles tab: stop+target same bar, stop on entry bar, entry+immediate reversal
-  - L-Type tab, LC/CC Confirmation tab, Edge Cases tab (later)
-- [ ] 4.5c3. [Required] **Execution type selectors** — Per-trigger exec type dropdowns (entry, exit, stop, target). Dynamically re-simulates scenarios with different exec type configs. Turns scenarios into a "what-if" tool.
-- [ ] 4.5d. [Required] **AI-assisted creation** — Describe execution behavior in plain English → AI generates workflow steps. Similar to Pack Builder's AI integration but for execution types. Uses the same AI provider infrastructure.
-- [ ] 4.5e. [Required] **Execution type builder page** — Step-by-step wizard or simple form: describe behavior → AI generates steps → review/edit steps → validate with scenarios → save.
-- [ ] 4.5f. [Polish] **Code tab** — Show the generated execution type code (like user packs' Code tab). Enables advanced users to understand exactly what the execution type does.
+- [x] 4.5c. [Complete] **Scenario reference system** — 13 static scenarios across 5 categories (Common, Ambiguous, L-Type, Confirmation, Edge Cases) with replay mode, workflow traces, Hi-Fi 1-second drill-downs. Educational/conceptual — explains how each execution type works. NOT a substitute for real backtest validation.
+- [x] 4.5g. [Complete] **Replay mode** — Second-by-second replay with forming candle, workflow states, Hi-Fi charts. Backup: `dev-backup-pre-scenario-expansion`
+- [x] 4.5c2. [Complete] **Expanded scenarios + category tabs** — Signal exit, L-Type, LC/CC confirmation/bail, gap edge cases. Tabs filtered by exec type relevance.
+- [x] 4.5c3. [Complete] **Custom scenario generator** — Own tab with trigger/pack selectors, runs real backtest, cherry-picks trades. Kept as experimental tool.
+- [ ] 4.5d. [Required] **AI-assisted creation** — Describe execution behavior in plain English → AI generates workflow steps.
+- [ ] 4.5e. [Required] **Execution type builder page** — Step-by-step wizard or simple form.
+- [ ] 4.5f. [Polish] **Code tab** — Show the generated execution type code.
 
-**Exit Criteria:** User can describe a new execution type in plain English, AI generates the workflow, user validates it against preset scenarios with mini charts, saves it with a unique badge, and it appears in the Strategy Builder trigger dropdowns.
+**Key Decision (2026-04-08): Validation belongs in Strategy Builder, not module pages.**
 
-**Polish items (noted for later):**
+The Sandbox/Scenario tabs in module pages (Execution Types, User Packs) are simplified recreations of the Strategy Builder pipeline. They inevitably drift from the real pipeline — different chart rendering, missing nuances, inconsistent shift logic. This creates confusion about whether something "works" or not.
+
+**Resolution:**
+- Scenarios tab is now EDUCATIONAL — explains concepts, not validation
+- Remove Sandbox tabs from Execution Types and User Packs pages (they duplicate Strategy Builder)
+- Add "Test in Strategy Builder" shortcut button on module pages — opens Strategy Builder pre-configured with the selected pack/exec type
+- Strategy Builder remains the single source of truth for validation
+- This applies to future AI-created execution types and user packs: validation = run a real backtest in Strategy Builder
+
+**Tasks to close out M4.5:**
+- [ ] 4.5h. [Required] **Remove Sandbox tabs** from Execution Types and User Packs detail views
+- [ ] 4.5i. [Required] **"Test in Strategy Builder" button** — on each exec type / user pack detail page, button opens Strategy Builder with that pack/type pre-selected in the trigger dropdown
+- [ ] 4.5j. [Required] **Reframe Scenarios as educational** — update descriptions to clarify these are conceptual illustrations, not validation tools
+
+**Exit Criteria:** Execution types and user packs have clear educational documentation (Scenarios, Description, Workflow Steps). Validation happens exclusively in Strategy Builder via the shortcut button. No duplicate pipeline code in module pages.
+
+**Polish items (deferred):**
 - Hi-Fi cross (+) marker not rendering during replay mid-step (shows at end only)
 - Add timeframe label to chart headers (e.g., "5Min", "1s")
+- Same-bar stop+target scenario (needs volatile data)
 
 ---
 
