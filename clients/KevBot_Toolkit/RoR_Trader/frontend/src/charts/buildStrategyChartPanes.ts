@@ -37,10 +37,11 @@ interface ChartBuildOptions {
   };
 }
 
-/** Check if a column's values are plottable (numeric, not boolean/string) */
+/** Check if a column's values are plottable (numeric, not boolean/string).
+ * Scans all bars (not just the first 10) because indicators with long warmup
+ * periods (e.g., Stochastic, EMA 200) have NaN values for the first N bars. */
 function isPlottableColumn(bars: any[], colName: string): boolean {
-  // Sample a few bars to determine the column type
-  for (const bar of bars.slice(0, 10)) {
+  for (const bar of bars) {
     const val = bar[colName];
     if (val === null || val === undefined) continue;
     if (typeof val === 'boolean') return false;
@@ -270,24 +271,40 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   }
   chartPanes.push({ id: 'price', height: 350, series: priceSeries });
 
-  // Pane 3: Oscillators (filtered to only plottable numeric columns)
+  // Pane 3+: Oscillators — group by indicator family so each indicator
+  // (Stochastic, MACD, RSI, etc.) gets its own pane with proper scale.
+  // Family is derived from the column prefix (stoch_*, macd_*, rsi_*, etc.).
   if (filteredOscs.length > 0) {
-    const oscSeries: SeriesConfig[] = [];
-    for (let i = 0; i < filteredOscs.length; i++) {
-      const col = filteredOscs[i];
-      const isHist = col.toLowerCase().includes('hist');
-      oscSeries.push({
-        type: isHist ? 'Histogram' : 'Line',
-        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
-          time: b.timestamp, value: b[col],
-          ...(isHist ? { color: b[col] >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(244,67,54,0.6)' } : {}),
-        })),
-        options: isHist
-          ? { priceLineVisible: false, lastValueVisible: false, title: col.replace(/_/g, ' ') }
-          : { color: INDICATOR_COLORS[(i + 4) % INDICATOR_COLORS.length], lineWidth: 1.5, priceLineVisible: false, title: col.replace(/_/g, ' ') },
-      });
+    const families = new Map<string, string[]>();
+    for (const col of filteredOscs) {
+      // Extract family prefix: split on underscore, take first segment (e.g. "stoch", "macd", "rsi")
+      const family = col.split('_')[0] || col;
+      if (!families.has(family)) families.set(family, []);
+      families.get(family)!.push(col);
     }
-    chartPanes.push({ id: 'oscillator', height: 120, series: oscSeries });
+
+    let paneIdx = 0;
+    const familyEntries: [string, string[]][] = [];
+    families.forEach((cols, family) => familyEntries.push([family, cols]));
+    for (const [family, cols] of familyEntries) {
+      const oscSeries: SeriesConfig[] = [];
+      for (let i = 0; i < cols.length; i++) {
+        const col = cols[i];
+        const isHist = col.toLowerCase().includes('hist');
+        oscSeries.push({
+          type: isHist ? 'Histogram' : 'Line',
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
+            time: b.timestamp, value: b[col],
+            ...(isHist ? { color: b[col] >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(244,67,54,0.6)' } : {}),
+          })),
+          options: isHist
+            ? { priceLineVisible: false, lastValueVisible: false, title: col.replace(/_/g, ' ') }
+            : { color: INDICATOR_COLORS[(paneIdx * 2 + i) % INDICATOR_COLORS.length], lineWidth: 1.5, priceLineVisible: false, title: col.replace(/_/g, ' ') },
+        });
+      }
+      chartPanes.push({ id: `oscillator_${family}`, height: 120, series: oscSeries });
+      paneIdx++;
+    }
   }
 
   return chartPanes;

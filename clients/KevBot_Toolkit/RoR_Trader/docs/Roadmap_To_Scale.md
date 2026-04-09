@@ -112,6 +112,7 @@ Extract the 4 execution type branches from `PositionStateMachine` into pluggable
 - [ ] 2l. [Deferred] Visual drip-campaign workflow builder (drag-and-drop steps, conditional branches)
 - [ ] 2m. [Deferred] **Split Confirmed into LC and CC as separate modules** — Currently LC and CC are grouped in one ConfirmedExecution module because they share confirmation/bail logic. Future: split into separate modules (4 cards on the page), each with its own reference_bar, order_type, confirm_bar_offset, bail_action parameters. Move these params from TF Confluence pack's _exec_config to the execution type definition itself.
 - [ ] 2n. [Deferred] **Parameters on execution type, not confluence pack** — Currently execution type params (reference_bar, order_type, etc.) are stored on the confluence group's _exec_config and inherited. Future: store on the execution type variation directly. Confluence pack just selects which execution type variations to enable.
+- [ ] 2o. [Deferred — Future Core Type] **Oscillator Cross (OC) execution type** — A new core execution type for intra-bar entries on oscillator-based triggers (Stochastic K/D crossover, MACD line/signal crossover, RSI midline cross, etc.). Currently L-type only works for triggers where one PRICE crosses another PRICE (e.g., bar high crosses VWAP). Oscillators have a single value per bar calculated from bar OHLC, so true intra-bar crosses can't be detected without recomputing the indicator at sub-bar resolution. The OC execution type would leverage Hi-Fi mode infrastructure to recompute the oscillator on 1-second bars for the entry window, detect the precise cross moment, and record the entry at that timestamp. This is a new CORE execution type (not a variant of L), since the underlying mechanism is fundamentally different (sub-bar indicator recomputation rather than cached level cross). Examples: MACD line crosses signal line, Stochastic K crosses D, RSI crosses 50, CCI crosses zero. Many traders rely on these as the primary entry trigger but currently the system can only fire them at bar close, missing the actual cross moment by up to a full bar duration. **Architecture note:** Just like C and L are core execution types, OC would be a new core type. C and L already serve as the foundation for most other execution types — OC would extend that foundation to oscillator-aware events.
 
 **Completed:** 2026-04-06. All Required tasks done. Parity verified (EMA PP V2 = 11 trades/-10.0R, RSI Zones = 13/-14.7R — identical before and after).
 
@@ -252,6 +253,81 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
+### Milestone 5.5: Stops/Targets Modularization
+**Priority:** Critical — must happen before building more strategies/packs
+**Effort:** 2-3 days
+
+**Why this is urgent:** Currently stop loss and take profit methods are hardcoded `if/elif` branches in `unified_engine.py` (lines ~1995-2070). Every strategy created today references a method by string (`"atr"`, `"swing"`, etc.) that's interpreted by hardcoded engine logic. If we build out more user packs and strategies before fixing this, we accumulate "legacy stop strategies" that may not behave identically when we later refactor — invalidating their forward test data and creating the same legacy bucket problem we just fixed for execution types.
+
+**The principle:** Stops and targets should follow the same modular architecture as entry/exit triggers. Each method is a pluggable pack with its own logic. Each pack can declare which execution types it supports (C, L, LC, CC). The engine treats them like first-class indicators.
+
+**Architecture design:**
+
+1. **`StopLossPack` base class** (`src/stop_loss_packs.py`) with methods:
+   - `compute_initial_stop(entry_price, direction, bars_lookback) -> float`
+   - `compute_trail(current_stop, entry_price, current_bar) -> float | None` (optional)
+   - `should_move_to_breakeven(entry_price, current_pnl_r) -> bool` (optional)
+   - `supports_exec_types() -> list[str]` (returns subset of C/L/LC/CC)
+
+2. **Individual stop modules** (one per method):
+   - `ATRStopPack` — uses ATR multiplier
+   - `FixedDollarStopPack` — fixed dollar offset
+   - `PercentageStopPack` — percentage from entry
+   - `SwingStopPack` — N-bar swing low/high
+   - `BreakevenStopPack` — initial stop + breakeven trigger at R milestone
+   - `ATRTrailingStopPack` — ATR stop that ratchets
+
+3. **`TakeProfitPack` base class** with similar pattern:
+   - `compute_target(entry_price, stop_price, direction) -> float | None`
+   - `supports_exec_types() -> list[str]`
+
+4. **Individual target modules:**
+   - `RiskRewardTargetPack` — N:1 R-multiple
+   - `ATRTargetPack` — ATR-based target
+   - `FixedDollarTargetPack`
+   - `SwingTargetPack`
+   - `NoTargetPack` — exits via stop, signal, or bar count only
+
+5. **Execution type integration:**
+   - Each stop/target gets an `exec_type` field (default `"L"` for backward compat)
+   - Engine respects exec_type when checking stop/target hit:
+     - **L**: hit on intra-bar touch (current behavior — `low <= stop` for LONG)
+     - **C**: hit only if `close < stop` (close-based, filters wicks)
+     - **LC**: touch intra-bar + bar close confirms past stop
+     - **CC**: bar closes past stop + next bar also confirms
+   - This adds wick filtering for traders who want it without changing existing strategies
+
+6. **Pack registry pattern:**
+   - `stop_loss_pack_registry.py` and `take_profit_pack_registry.py` register all available packs
+   - Each pack has metadata: `id`, `name`, `category`, `description`, `parameters_schema`
+   - The frontend fetches the registry to populate the Strategy Builder dropdowns dynamically
+   - New stops/targets added without engine changes — just add a new pack module and register it
+
+7. **Backtest parity verification:**
+   - Run a regression test: existing strategies with `method="atr"` and default L exec must produce IDENTICAL trade records before and after the refactor
+   - Lock down with stored fixtures comparing `entry_price`, `stop_price`, `target_price`, `r_multiple` for a sample strategy across 90 days
+
+**Tasks:**
+- [ ] 5.5a. [Required] Define `StopLossPack` and `TakeProfitPack` base classes with method signatures
+- [ ] 5.5b. [Required] Extract existing stop methods into individual pack modules
+- [ ] 5.5c. [Required] Extract existing target methods into individual pack modules
+- [ ] 5.5d. [Required] Refactor `unified_engine.py` stop/target logic to use pack instances (delete hardcoded if/elif)
+- [ ] 5.5e. [Required] Build registry pattern + API endpoints for stop/target pack listing
+- [ ] 5.5f. [Required] Add `exec_type` field to stop/target packs, default to L
+- [ ] 5.5g. [Required] Update engine stop/target hit detection to respect exec_type (C/L/LC/CC behaviors)
+- [ ] 5.5h. [Required] Backtest parity test — existing strategies must produce identical trades
+- [ ] 5.5i. [Required] Update Strategy Builder dropdowns to use registry data
+- [ ] 5.5j. [Polish] Show exec_type badge on stop/target pack cards (already partially done — they all show [L] currently)
+- [ ] 5.5k. [Polish] Allow pack authors to create custom stop/target packs (similar to indicator pack flow)
+
+**Exit Criteria:** Stop loss and take profit methods are pluggable modules with no hardcoded engine logic. Each pack can declare its supported execution types. Adding a new stop or target type requires zero engine changes. Existing strategies pass parity test (identical trades before/after refactor). Strategy Builder shows exec type badges and allows users to choose execution timing for stops and targets.
+
+**Related future work (deferred):**
+- **Task 2o (Oscillator Cross / OC execution type)** — A new core execution type for intra-bar entries on oscillator crosses (MACD line/signal, Stochastic K/D, RSI midline). Currently L-type only handles price-vs-price crosses. OC would leverage Hi-Fi infrastructure to recompute oscillators on 1-second bars and detect precise cross moments. Many traders use these as primary entries — currently they can only fire at bar close. Architecturally separate from L (different mechanism) but conceptually a peer execution type.
+- **Once OC exists**, the existing oscillator user packs (Stochastic, RSI, MACD-based) will gain a new execution type variant automatically via the registry. No need to refactor the packs themselves — they'll just have one more option in their auto-generated trigger variants.
+
+---
+
 ### Milestone 6: Strategy Builder & Strategy Detail Polish
 **Priority:** High — strategies are the core product
 **Effort:** 1-2 weeks
@@ -321,22 +397,42 @@ Polish the portfolio system to work reliably with user pack strategies. Verify a
 
 ---
 
-### Milestone 9: Scale Infrastructure
+### Milestone 9: Scale Infrastructure + Pluggable Architecture
 **Priority:** Medium — required before AI agents
-**Effort:** 1-2 weeks
+**Effort:** 2-3 weeks
 
-Ensure the system can handle thousands of strategies, portfolios, and packs.
+Ensure the system can handle thousands of strategies, portfolios, and packs. **Also: convert remaining hardcoded built-in patterns into pluggable modules** so the AI can create new pack types without engine changes.
 
-**Tasks:**
-- [ ] 8a. Batch backtest optimization: run multiple strategies in parallel
-- [ ] 8b. Strategy creation API: create strategy from config without UI (for AI agents)
-- [ ] 8c. Portfolio creation API: create portfolio from strategy list without UI
-- [ ] 8d. Bulk forward test updates: refresh all strategies in one operation
-- [ ] 8e. Performance profiling: identify bottlenecks at 100/1000/10000 strategies
-- [ ] 8f. Database indexing: ensure queries scale with strategy count
-- [ ] 8g. Worker scaling: Railway auto-scale for alert processing
+**Scale tasks:**
+- [ ] 9a. Batch backtest optimization: run multiple strategies in parallel
+- [ ] 9b. Strategy creation API: create strategy from config without UI (for AI agents)
+- [ ] 9c. Portfolio creation API: create portfolio from strategy list without UI
+- [ ] 9d. Bulk forward test updates: refresh all strategies in one operation
+- [ ] 9e. Performance profiling: identify bottlenecks at 100/1000/10000 strategies
+- [ ] 9f. Database indexing: ensure queries scale with strategy count
+- [ ] 9g. Worker scaling: Railway auto-scale for alert processing
 
-**Exit Criteria:** System handles 1000+ strategies per user without degradation. API endpoints exist for programmatic strategy/portfolio creation.
+**Pluggable architecture tasks (eliminate hardcoding):**
+- [ ] 9h. **Pluggable stop loss / take profit packs** — Currently `unified_engine.py` has hardcoded `if/elif method == 'atr' / 'fixed_dollar' / 'percentage' / 'swing' / 'risk_reward'` branches (~lines 1995-2070). Convert into a registry pattern (similar to execution types). Each stop/target method becomes a module: `StopLossPack` base class with `compute_initial_stop()`, `compute_trail()`, `should_move_to_breakeven()` methods. Risk management packs (currently in `risk_management_packs.py`) become installable like indicator packs. New stop types (e.g., "VWAP-anchored swing stop", "psychological round number stop") added without engine changes.
+- [ ] 9i. **Convert built-in indicators to user pack format** — Currently built-in indicators (EMA Stack, MACD, VWAP, RVOL, UTBOT, etc.) are inline incrementally computed in `unified_engine.py`. They have hardcoded gate maps in `_compute_ib_gates`, `_get_ib_checks`, `_update_cached_levels`. Convert each built-in into a pre-installed user pack with manifest + indicator.py + interpreter.py. The fallback paths added during M5 already handle user pack triggers correctly — once built-ins are converted, the hardcoded paths can be deleted.
+- [ ] 9j. **Remove hardcoded template sets** — Once built-ins are user packs, delete `OVERLAY_TEMPLATES` and `OSCILLATOR_TEMPLATES` sets from `classify_and_serialize_chart_data()`. Classification becomes purely `display_type`-driven.
+- [ ] 9k. **Document the plugin contract** — A clear spec for "what makes a pluggable thing": indicator packs, execution type packs, stop loss packs, take profit packs, general packs. All follow the same install → register → use pattern.
+
+**Why this matters:** Currently when we hit a built-in code path that doesn't handle user packs, we add a fallback. The fallback list has grown but is mostly complete. Going pluggable removes the hardcoded path entirely, so there's no fallback to maintain. New pack types (e.g., "Order Block Detection", "Volume Profile") become first-class without any engine changes.
+
+**Hardcoded paths inventory (for reference during 9h-9k):**
+- `unified_engine.py:73-90` — `INTRABAR_LEVEL_MAP` initial built-in entries
+- `unified_engine.py:96-104` — `_IB_L_TYPE_TRIGGERS` initial set
+- `unified_engine.py:1141-1158` — `_update_cached_levels` hardcoded built-in column names
+- `unified_engine.py:1095-1118` — `_get_ib_checks` hardcoded `IB_MAP`
+- `unified_engine.py:1166-1205` — `_compute_ib_gates` hardcoded `gate_map`
+- `unified_engine.py:1995-2070` — Stop loss / take profit method `if/elif` branches
+- `unified_engine.py:756-985` — `evaluate_bar_close` inline interpreter logic for built-in packs
+- `backtest_service.py:181-183` — `OVERLAY_TEMPLATES` / `OSCILLATOR_TEMPLATES` hardcoded sets
+- `backtest_service.py:215-247` — Main classification loop iterating `get_enabled_groups()` (works for user packs but special-cases EMA period resolution)
+- `unified_engine.py:2340-2358` — `_BUILTIN_INTERPS` set for excluding built-ins from user pack collection
+
+**Exit Criteria:** System handles 1000+ strategies per user without degradation. API endpoints exist for programmatic strategy/portfolio creation. Built-in indicators and stop/target methods are converted to pluggable packs with no hardcoded fallback paths in the engine.
 
 ---
 

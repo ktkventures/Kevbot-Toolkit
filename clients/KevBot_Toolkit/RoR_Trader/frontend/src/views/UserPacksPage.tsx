@@ -12,6 +12,8 @@ import { apiFetch } from '@/lib/api/client';
 import { useUserPackCode, usePackPreview, type PackPreviewResponse } from '@/hooks/queries/usePacks';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 const ReplayableChart = dynamic(() => import('@/charts/ReplayableChart'), { ssr: false });
+const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
+import type { PaneConfig, SeriesConfig } from '@/charts/SyncedChartPane';
 import { useRequestFix, useInstallPack } from '@/hooks/mutations/useAiBuilder';
 
 /* ========================================================================
@@ -625,6 +627,115 @@ function PreviewTab({ pack }: { pack: UserPack }) {
     }));
   }, [data, isOscillator]);
 
+  // Build SyncedChartPane configuration — combines price + oscillator into
+  // synchronized panes that share a single time scale (zoom/pan together).
+  const previewPanes: PaneConfig[] = useMemo(() => {
+    if (!data?.bars || data.bars.length === 0) return [];
+    const panes: PaneConfig[] = [];
+
+    // Build price pane series
+    const priceSeries: SeriesConfig[] = [];
+
+    // Background state histogram (renders behind candles)
+    if (data.states.length > 0) {
+      priceSeries.push({
+        type: 'Histogram',
+        data: data.bars.map((b) => ({
+          time: b.timestamp,
+          value: 1,
+          color: b.state ? (stateColorMap[b.state] || 'transparent') + '25' : 'transparent',
+        })),
+        options: {
+          priceScaleId: 'state_bg',
+          lastValueVisible: false,
+          priceLineVisible: false,
+        },
+      });
+    }
+
+    // Candlesticks with optional indicator-driven colors
+    const candleColorCol = (data as any).plot_config?.candle_color_column;
+    const candles = data.bars.map((b) => {
+      const bar: any = { time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close };
+      const indicatorColor = candleColorCol ? b[candleColorCol] : null;
+      if (indicatorColor && typeof indicatorColor === 'string' && indicatorColor.startsWith('#')) {
+        bar.color = indicatorColor;
+        bar.borderColor = indicatorColor;
+        bar.wickColor = indicatorColor;
+      }
+      return bar;
+    });
+    const triggerMarkers = (data.triggers || []).map((t) => ({
+      time: t.timestamp,
+      position: 'aboveBar',
+      shape: 'circle',
+      color: '#FFD700',
+      text: t.trigger_name,
+      size: 1,
+    }));
+    priceSeries.push({
+      type: 'Candlestick',
+      data: candles,
+      markers: triggerMarkers,
+    });
+
+    // Overlay indicator lines (only for non-oscillator packs)
+    if (!isOscillator && plottableColumns.length > 0) {
+      const lineColors = ['#2196F3', '#FF9800', '#E040FB', '#00BCD4', '#FFEB3B'];
+      plottableColumns.forEach((col, i) => {
+        priceSeries.push({
+          type: 'Line',
+          data: data.bars.filter((b) => b[col] != null && typeof b[col] === 'number').map((b) => ({
+            time: b.timestamp, value: b[col] as number,
+          })),
+          options: { color: lineColors[i % lineColors.length], lineWidth: 2, lastValueVisible: false, priceLineVisible: false },
+        });
+      });
+    }
+
+    panes.push({ id: 'price', height: 350, series: priceSeries });
+
+    // Oscillator pane (synced to price pane via SyncedChartPane)
+    if (isOscillator) {
+      const refLines = (data as any).plot_config?.reference_lines || [];
+      const lineColors = ['#2196F3', '#FF9800', '#E040FB', '#00BCD4'];
+      const oscSeries: SeriesConfig[] = data.indicator_columns
+        .filter((col) => {
+          const sample = data.bars.find((b) => b[col] != null);
+          return sample && typeof sample[col] === 'number';
+        })
+        .map((col, i) => ({
+          type: 'Line' as const,
+          data: data.bars.filter((b) => b[col] != null).map((b) => ({
+            time: b.timestamp, value: b[col] as number,
+          })),
+          options: {
+            color: lineColors[i % lineColors.length],
+            lineWidth: 2,
+            lastValueVisible: true,
+            priceLineVisible: false,
+            title: col,
+          },
+        }));
+      if (oscSeries.length > 0) {
+        // Add reference lines as price lines on the first oscillator series
+        if (refLines.length > 0 && oscSeries[0]) {
+          (oscSeries[0] as any).priceLines = refLines.map((rl: any) => ({
+            price: rl.value,
+            color: rl.color || 'var(--text-muted)',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: rl.label || '',
+          }));
+        }
+        panes.push({ id: 'oscillator', height: 150, series: oscSeries });
+      }
+    }
+
+    return panes;
+  }, [data, stateColorMap, isOscillator, plottableColumns]);
+
   const handleLoad = () => {
     previewMut.mutate({ slug: pack.id, symbol, timeframe, days, session });
   };
@@ -678,28 +789,16 @@ function PreviewTab({ pack }: { pack: UserPack }) {
         </Card>
       )}
 
-      {/* Price chart with state-colored candles + trigger markers */}
-      {data && data.bars.length > 0 && (
+      {/* Price chart with state-colored candles + trigger markers + synced oscillator pane */}
+      {data && data.bars.length > 0 && previewPanes.length > 0 && (
         <Card>
           <h4 className="text-sm font-medium mb-2">{symbol} — {pack.name} Preview</h4>
-          <ReplayableChart
-            id={`preview-${pack.id}-${symbol}-${timeframe}`}
-            height={350}
-            seriesSetup={priceSeriesSetup}
-            seriesData={priceSeriesData}
+          <SyncedChartPane
+            panes={previewPanes}
+            upColor={chartPrefs.candleUp}
+            downColor={chartPrefs.candleDown}
+            upBorderColor={chartPrefs.candleUpBorder}
           />
-
-          {/* Oscillator pane (separate chart for RSI, MACD, etc.) */}
-          {isOscillator && oscSeriesSetup.length > 0 && oscSeriesData.length > 0 && (
-            <div className="mt-2">
-              <ReplayableChart
-                id={`preview-osc-${pack.id}-${symbol}-${timeframe}`}
-                height={150}
-                seriesSetup={oscSeriesSetup}
-                seriesData={oscSeriesData}
-              />
-            </div>
-          )}
 
           {/* State legend */}
           {data.states.length > 0 && (
