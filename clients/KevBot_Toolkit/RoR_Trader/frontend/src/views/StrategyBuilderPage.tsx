@@ -1745,7 +1745,7 @@ export default function StrategyBuilderPage() {
 
   const exitDefs = useMemo(
     () => exitTriggers.map((eid) => API_TRIGGERS.find((t) => t.id === eid)).filter(Boolean) as TriggerDef[],
-    [exitTriggers]
+    [exitTriggers, API_TRIGGERS]
   );
 
   // Handlers

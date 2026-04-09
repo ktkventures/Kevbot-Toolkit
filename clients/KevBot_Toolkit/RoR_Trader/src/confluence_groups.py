@@ -1058,11 +1058,30 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
         triggers.append(trigger)
 
         # Auto-generate execution type variants for bar_close triggers
-        # that don't already have explicit variants or suffixed siblings
+        # that don't already have explicit variants or suffixed siblings.
+        # L-type (_ib) only generated for packs with indicator overlay lines
+        # (level columns to cross). Pattern-based packs (candle coloring, hidden
+        # display) only get CC variants since there's no price level to cross.
         if execution == "bar_close" and not has_exec_variants:
-            # Check if template already has explicit suffixed triggers for this base
             existing_bases = {t["base"] for t in template.get("triggers", [])}
+            display_type = template.get("display_type", "overlay")
+            has_candle_color = bool(template.get("plot_config", {}).get("candle_color_column"))
+            # L-type requires a price level to cross — only for overlay packs
+            # without candle coloring (those have actual indicator lines)
+            has_level_columns = (
+                display_type == "overlay"
+                and not has_candle_color
+                and any(not t.get("base", "").endswith(("_ib", "_hm", "_hl", "_lc", "_cc"))
+                        for t in template.get("triggers", [])
+                        if t.get("level_column"))
+            )
             for suffix, (label, exec_type) in EXEC_VARIANT_LABELS.items():
+                # Skip L-type for packs without level columns
+                if suffix == '_ib' and not has_level_columns:
+                    continue
+                # Skip LC for packs without level columns (LC = level entry + close confirm)
+                if suffix == '_lc' and not has_level_columns:
+                    continue
                 suffixed_base = base + suffix
                 if suffixed_base not in existing_bases:
                     variant = TriggerDefinition(

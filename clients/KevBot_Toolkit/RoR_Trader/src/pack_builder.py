@@ -297,6 +297,15 @@ def generate_code_prompt(
                  "WRONG: base='rsi_cross_above_midline' → would create 'rsi_rsi_cross_above_midline'.")
     parts.append("11. In detect_*_triggers(), the dict keys must be `{trigger_prefix}_{base}` matching the manifest triggers exactly")
     parts.append("12. All triggers must use direction 'BOTH' and type 'BOTH' — triggers are neutral, users decide usage in Strategy Builder")
+    parts.append("13. For overlay indicators with price-level values (EMAs, bands, thresholds), add _ib trigger variants with level_column and cross fields for intra-bar L-type execution. "
+                 "CRITICAL: Do NOT use .shift() on level columns. The engine automatically adds the 1-bar lag by caching values at bar N close and using them on bar N+1. "
+                 "Provide the CURRENT bar's value (no shift) and use the _prev suffix on the column name for L1 classification. "
+                 "Example: result['my_entry_level_prev'] = result['close']  (NOT .shift(1)). "
+                 "CRITICAL: Level columns must have a value on EVERY bar, not just trigger bars. "
+                 "Do NOT use .where(trigger_boolean, other=np.nan) — the engine needs a valid level every bar to detect intra-bar crosses. "
+                 "For pattern-based packs with candle coloring but no indicator lines, skip _ib variants — only bar_close triggers are needed.")
+    parts.append("14. Level columns (used as level_column in triggers) and candle color columns (candle_color_column in plot_config) are internal — "
+                 "include them in indicator_columns but do NOT add them to column_color_map or plot_schema")
 
     user_prompt = "\n".join(parts)
     return context, user_prompt
@@ -334,6 +343,10 @@ Rules:
 - Trigger keys must be {trigger_prefix}_{base}
 - Functions must match the names declared in the manifest
 - Do not use open(), exec(), eval(), os, sys, subprocess, or any I/O
+- All triggers must use direction "BOTH" and type "BOTH"
+- When adding _ib (intra-bar) trigger variants, add a level column with the _prev suffix BUT do NOT use .shift() — the engine adds the 1-bar lag automatically. Use result['my_level_prev'] = result['close'] (current value, _prev for L1 classification). The .shift() would cause a 2-bar lag.
+- Level columns must have a value on EVERY bar, not just trigger bars. Do NOT use .where(trigger_boolean, other=np.nan) — the engine needs a valid level every bar to detect intra-bar crosses.
+- Level columns and candle color columns are internal — include in indicator_columns but NOT in column_color_map or plot_schema
 """
 
 
@@ -345,9 +358,15 @@ def generate_fix_prompt(
     """
     Build (system_prompt, user_prompt) for the fix endpoint.
 
-    Sends current code + validation errors to the LLM for targeted correction.
+    Sends architecture context + current code + validation errors to the LLM
+    for targeted correction. The context document is the source of truth for
+    pack architecture rules and gets updated as we discover new requirements.
     """
+    context = _load_context_document()
     parts = []
+    parts.append("## Pack Architecture Context\n")
+    parts.append(context)
+    parts.append("\n---\n")
     parts.append("## Current Pack Code\n")
 
     manifest = parsed_files.get("manifest")
@@ -749,6 +768,46 @@ def validate_parsed_response(parsed: Dict) -> Tuple[bool, List[str]]:
                     f"The calculate_*() function must create a column named '{col}'"
                 )
 
+    # 6. Validate L-type level column convention
+    # Level columns should NOT use .shift() — the engine adds the 1-bar lag automatically
+    # by caching at bar N close and using on bar N+1. Using .shift() causes a 2-bar lag.
+    if manifest and indicator_code:
+        import re
+        triggers_list = manifest.get("triggers", [])
+        level_cols_in_ib = set()
+        for trig in triggers_list:
+            if trig.get("execution") == "intra_bar":
+                lc = trig.get("level_column")
+                if lc:
+                    level_cols_in_ib.add(lc)
+
+        for col in level_cols_in_ib:
+            shift_pattern = rf'result\[["\']?{re.escape(col)}["\']?\][^=]*=\s*[^\n]*\.shift\('
+            has_shift = bool(re.search(shift_pattern, indicator_code))
+            if has_shift:
+                errors.append(
+                    f"Level column '{col}' is created with .shift(). "
+                    f"DO NOT use .shift() on level columns — the engine adds the 1-bar lag automatically "
+                    f"by caching at bar N close and using on bar N+1. Using .shift() causes a 2-bar lag "
+                    f"and the trigger won't fire intra-bar correctly. "
+                    f"Use 'result[\"{col}\"] = result[\"close\"]' (or whichever current value you need) instead. "
+                    f"Keep the '_prev' suffix on the column name for L1 classification."
+                )
+
+            # Check if the level column is filtered with .where(...) — engine needs value on EVERY bar
+            where_pattern = rf'result\[["\']?{re.escape(col)}["\']?\][^=]*=\s*[^\n]*\.where\('
+            has_where = bool(re.search(where_pattern, indicator_code))
+            if has_where:
+                errors.append(
+                    f"Level column '{col}' is filtered with .where(). "
+                    f"Level columns must have a value on EVERY bar, not just trigger bars. "
+                    f"The engine needs a valid level every bar to detect intra-bar crosses. "
+                    f"Use 'result[\"{col}\"] = result[\"close\"]' (no .where filter) instead. "
+                    f"The L-type entry fires when price crosses the level — that price-level event is "
+                    f"separate from the bar-close pattern detection. If you want pattern-strict entries, "
+                    f"use C-type or CC-type instead."
+                )
+
     return len(errors) == 0, errors
 
 
@@ -775,17 +834,9 @@ def install_pack_from_parsed(parsed: Dict) -> Tuple[bool, str, List[str]]:
     packs_dir = pack_registry.get_user_packs_dir()
     pack_dir = packs_dir / slug
 
-    # Check if pack already exists
-    if pack_dir.exists():
-        errors.append(
-            f"Pack directory '{slug}' already exists. "
-            f"Delete the existing pack first or choose a different slug."
-        )
-        return False, slug, errors
-
     try:
-        # Create directory
-        pack_dir.mkdir(parents=True)
+        # Create or overwrite directory
+        pack_dir.mkdir(parents=True, exist_ok=True)
 
         # Write manifest.json
         with open(pack_dir / "manifest.json", "w") as f:

@@ -264,6 +264,50 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
 - Trigger detection should be vectorized (boolean operations on Series)
 - **Triggers are direction-agnostic and type-agnostic.** Always use `"direction": "BOTH"` and `"type": "BOTH"`. Users decide how to use a trigger (entry vs exit, long vs short) in Strategy Builder. Do NOT create separate LONG/SHORT or ENTRY/EXIT versions of the same trigger — this creates redundancy. One trigger, one boolean, usable in any context.
 - **Avoid redundant triggers.** If two triggers would fire on the exact same bars with the same boolean logic, they should be one trigger. For example, "RSI crosses above midline" is one trigger — don't create separate "entry long on midline cross up" and "exit short on midline cross up" triggers.
+- **Always provide level columns for intra-bar (L-type) execution when possible.** For every bar-close trigger, consider whether a faster intra-bar entry is possible by crossing a specific price level. Common level sources: previous bar's close, moving average values, band edges, threshold levels. Add a level column and define an `_ib` trigger variant in the manifest with `level_column` and `cross` fields. If the pack is purely pattern-based with no meaningful price level to cross, L-type triggers can be omitted — the system will only auto-generate C and CC variants.
+- **CRITICAL: Do NOT use `.shift()` on level columns. The engine adds the 1-bar lag automatically.** The engine caches level column values at bar N close and uses them on bar N+1. This means you should provide the CURRENT bar's value (no shift), and the engine handles the time alignment. Use the `_prev` suffix on the column name to signal L1 classification (previous bar's level reference), but DON'T actually shift the values:
+  ```python
+  # CORRECT — engine adds lag automatically
+  result["my_entry_level_prev"] = result["close"]  # current close, _prev for L1 naming
+
+  # WRONG — double shift, causes 2-bar lag
+  result["my_entry_level_prev"] = result["close"].shift(1)
+  ```
+  The `_prev` suffix is a NAMING convention only — it tells the engine to classify the trigger as L1. The actual time shift comes from the engine's cache-then-use-next-bar pattern.
+- **CRITICAL: Level columns must have a value on EVERY bar, not just bars where the trigger fires.** Do NOT filter the level column with `.where(trigger_boolean, ...)` or similar conditional logic that sets it to NaN on most bars. The engine needs a valid level on EVERY bar so it can detect intra-bar crosses on any subsequent bar:
+  ```python
+  # CORRECT — level exists on every bar
+  result["my_entry_level_prev"] = result["close"]
+
+  # WRONG — level only exists on trigger bars; engine can't detect crosses
+  result["my_entry_level_prev"] = result["close"].where(result["my_trigger"], other=np.nan)
+  ```
+  The L-type entry is a price-level event (price crosses a value). The pattern detection (the C-type trigger boolean) is a separate concern that fires at bar close. The L-type fires earlier, on any bar where price actually crosses the level — even if the full pattern isn't yet confirmed. If you want pattern-strict entries, use C-type or CC-type instead of L-type.
+
+### Engine internals: how user pack L-type triggers flow
+
+For user packs with L-type triggers, the system threads pack-specific data through several layers:
+
+1. **Pack indicator** writes column values to the DataFrame (e.g., `result["my_level_prev"] = result["close"]`)
+2. **Pack registry** registers the trigger in `INTRABAR_LEVEL_MAP` with the level column name and cross direction
+3. **Backtest loop** detects which user pack columns are referenced by `INTRABAR_LEVEL_MAP` for the strategy's required triggers, and reads those values from each row
+4. **process_bar** merges those values into the `current` dict (which is built from built-in incremental indicators)
+5. **`_update_cached_levels`** caches the user pack column value
+6. **`_compute_ib_gates`** opens the gate based on the close vs the level
+7. **`_get_ib_checks`** returns the trigger with cached level for crossing checks
+8. **`evaluate_bar_for_backtest`** checks reachability with the strict cross requirement: `low < level <= high`
+
+The key insight: user pack indicator values are NOT computed by the incremental engine — they come from the batch DataFrame pipeline. The engine merges them into `current` so the L-type machinery can use them like built-in indicators. This is necessary because user packs use a different computation path than built-ins.
+
+### False cross prevention for user pack L-type triggers
+
+User pack L-type triggers use a stricter reachability check than built-ins:
+- **Built-in** (VWAP, EMA, etc.): `high >= level` (or `low <= level`)
+- **User pack**: `low < level <= high` (must touch BOTH sides of the level)
+
+This prevents phantom fills on gap opens — if a bar opens above the level and never goes below, it didn't actually cross intra-bar. The strict check filters those out, ensuring the L-type fill reflects an actual price cross during the bar.
+- **Level columns are internal engine columns, not visual indicators.** Columns used as `level_column` in trigger definitions (e.g., `sw123t_bull_entry_level`) are consumed by the execution engine for fill price calculation. They should be included in `indicator_columns` so they're computed, but the system automatically excludes them from chart overlay rendering. Do NOT include them in `column_color_map` or `plot_schema`.
+- **Candle color columns are not overlay lines.** If the pack uses `candle_color_column` in `plot_config`, that column contains hex color strings for bar coloring. The system automatically uses it for candle coloring and excludes it from line overlays.
 
 ### Trigger Execution Types
 

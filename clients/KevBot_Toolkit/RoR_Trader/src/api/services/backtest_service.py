@@ -165,7 +165,19 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     resp_dict['oscillator_indicators'] = oscillator_indicators
     resp_dict['heatmap_conditions'] = heatmap_conditions
     resp_dict['candle_color_column'] = candle_color_column
-    return resp_dict
+
+    # Sanitize NaN/Inf values that break JSON serialization
+    import math
+    def _sanitize(obj):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return 0.0
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        return obj
+
+    return _sanitize(resp_dict)
 
 
 # =============================================================================
@@ -257,7 +269,12 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
                     (trigger_prefix and f"_{trigger_prefix}_" in entry_conf_id)):
                 continue
             raw_cols = pack.manifest.get("indicator_columns", [])
-            resolved = [c for c in raw_cols if c in df.columns]
+            # Exclude internal columns: level columns (used by L-type engine),
+            # candle color columns, and boolean pattern flags
+            level_cols = {t.get("level_column") for t in pack.manifest.get("triggers", []) if t.get("level_column")}
+            cc_col = pack.manifest.get("plot_config", {}).get("candle_color_column")
+            internal_cols = level_cols | ({cc_col} if cc_col else set())
+            resolved = [c for c in raw_cols if c in df.columns and c not in internal_cols]
             dt = pack.manifest.get("display_type", "overlay")
             if dt == "oscillator":
                 oscillator_cols.extend(resolved)
@@ -270,22 +287,32 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
     overlay_indicators = list(dict.fromkeys(overlay_cols))
     oscillator_indicators = list(dict.fromkeys(oscillator_cols))
 
-    # Filter out boolean columns and candle color columns — they're not plottable as lines
+    # Filter out internal columns from ALL packs:
+    # - candle color columns (hex string, not a line)
+    # - level columns (used by L-type engine, not visual)
     candle_color_column = None
+    _internal_cols = set()
     try:
         import pack_registry as _pr
         for _slug, _pack in _pr.get_registered_packs().items():
+            # Collect candle color columns
             cc_col = _pack.manifest.get("plot_config", {}).get("candle_color_column")
             if cc_col:
-                # Remove candle color column from overlays (it's a string column, not a line)
-                overlay_indicators = [c for c in overlay_indicators if c != cc_col]
-                oscillator_indicators = [c for c in oscillator_indicators if c != cc_col]
-                # Check if this pack is relevant to the current strategy
+                _internal_cols.add(cc_col)
                 _tp = _pack.manifest.get("trigger_prefix", "")
                 if entry_conf_id.startswith(_slug) or (_tp and f"_{_tp}_" in entry_conf_id):
                     candle_color_column = cc_col
+            # Collect level columns (used by L-type engine for fill prices)
+            for _t in _pack.manifest.get("triggers", []):
+                lc = _t.get("level_column")
+                if lc:
+                    _internal_cols.add(lc)
     except Exception:
         pass
+
+    if _internal_cols:
+        overlay_indicators = [c for c in overlay_indicators if c not in _internal_cols]
+        oscillator_indicators = [c for c in oscillator_indicators if c not in _internal_cols]
 
     # Filter out non-plottable columns from overlays:
     # - boolean/object columns (pattern flags, color strings)

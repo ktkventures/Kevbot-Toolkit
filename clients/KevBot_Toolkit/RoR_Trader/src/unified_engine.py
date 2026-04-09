@@ -1043,10 +1043,27 @@ class TriggerEvaluator:
                     continue
 
             # Reachability check
-            if direction == 'above' and high >= level:
-                l_fills[trigger_id] = level
-            elif direction == 'below' and low <= level:
-                l_fills[trigger_id] = level
+            # For user pack triggers, require true cross (bar touched both sides of the level).
+            # This prevents false fills when a bar gaps open above/below the level without
+            # actually crossing it intra-bar.
+            is_user_pack = base_trigger in INTRABAR_LEVEL_MAP and base_trigger not in (
+                'vwap_cross_above', 'vwap_cross_below', 'vwap_enter_upper_extreme', 'vwap_enter_lower_extreme',
+                'utbot_buy', 'utbot_sell', 'utbot_v2_buy', 'utbot_v2_sell',
+                'ema_pp_cross_short_up', 'ema_pp_cross_short_down', 'ema_pp_cross_mid_up', 'ema_pp_cross_mid_down',
+                'ema_pp_v2_cross_short_up', 'ema_pp_v2_cross_short_down', 'ema_pp_v2_cross_mid_up', 'ema_pp_v2_cross_mid_down',
+            )
+            if is_user_pack:
+                # Strict cross check: bar must have touched both sides of the level
+                if direction == 'above' and low < level <= high:
+                    l_fills[trigger_id] = level
+                elif direction == 'below' and high > level >= low:
+                    l_fills[trigger_id] = level
+            else:
+                # Existing built-in behavior
+                if direction == 'above' and high >= level:
+                    l_fills[trigger_id] = level
+                elif direction == 'below' and low <= level:
+                    l_fills[trigger_id] = level
 
         # Restore current bar's cached levels for live-mode compatibility
         self._cached_levels = current_cached
@@ -1123,6 +1140,19 @@ class TriggerEvaluator:
                     level = self._cached_levels.get(level_key)
                     if level is not None and level > 0:
                         checks.append((trigger_id, (level, direction)))
+
+        # User pack triggers from INTRABAR_LEVEL_MAP
+        for base_trigger, level_spec in INTRABAR_LEVEL_MAP.items():
+            if base_trigger in IB_MAP:
+                continue  # already handled above
+            level_col = level_spec.get('column', '')
+            direction = level_spec.get('cross', 'above')
+            for suffix in ('_ib', '_hm', '_hl', '_lc'):
+                trigger_id = f'{base_trigger}{suffix}'
+                if trigger_id in self.required_triggers:
+                    level = self._cached_levels.get(level_col)
+                    if level is not None and level > 0:
+                        checks.append((trigger_id, (level, direction)))
         return checks
 
     def _update_cached_levels(self, current: Dict[str, float]):
@@ -1142,6 +1172,13 @@ class TriggerEvaluator:
             if key in current:
                 self._cached_levels[key] = current[key]
                 self._cached_levels[f'ema_{period}_prev'] = current[key]
+        # User pack level columns: cache any columns referenced in INTRABAR_LEVEL_MAP
+        for spec in INTRABAR_LEVEL_MAP.values():
+            level_col = spec.get('column', '')
+            if level_col and level_col in current:
+                val = current[level_col]
+                if val is not None and not (isinstance(val, float) and val != val):  # not NaN
+                    self._cached_levels[level_col] = val
 
     def _compute_ib_gates(self, current: Dict[str, float]):
         """Compute L-type intra-bar gate states from the just-closed bar."""
@@ -1176,6 +1213,27 @@ class TriggerEvaluator:
                 if trigger_id not in self.required_triggers:
                     continue
                 level = current.get(level_key, 0)
+                if level <= 0:
+                    continue
+                if direction == 'above':
+                    self._ib_gate_open[trigger_id] = (close <= level)
+                else:
+                    self._ib_gate_open[trigger_id] = (close >= level)
+
+        # User pack triggers: open gates for any L-type triggers registered
+        # in INTRABAR_LEVEL_MAP that aren't already in the hardcoded gate_map
+        for base_trigger, level_spec in INTRABAR_LEVEL_MAP.items():
+            if base_trigger in gate_map:
+                continue  # already handled above
+            level_col = level_spec.get('column', '')
+            direction = level_spec.get('cross', 'above')
+            for suffix in ('_ib', '_hm', '_hl', '_lc'):
+                trigger_id = f'{base_trigger}{suffix}'
+                if trigger_id not in self.required_triggers:
+                    continue
+                level = current.get(level_col, 0)
+                if level is None or (isinstance(level, float) and (level != level)):  # NaN check
+                    continue
                 if level <= 0:
                     continue
                 if direction == 'above':
@@ -2105,6 +2163,11 @@ class UnifiedStrategy:
         current = self.indicators.update_bar(bar)
         prev = self.indicators.get_prev_values()
 
+        # 1a. Merge user pack indicator values into current so the engine can
+        # cache levels and check intra-bar crosses for user pack L-type triggers.
+        if user_pack_data and user_pack_data.get('indicators'):
+            current.update(user_pack_data['indicators'])
+
         # 1b. Feed high/low into position buffer (for swing stops/targets)
         self.position.update_high_low(bar['high'], bar['low'])
 
@@ -2270,6 +2333,20 @@ def run_unified_backtest(
     _required_trig_set = {f'trig_{t}' for t in strat.trigger_eval.required_triggers}
     _user_trig_cols = [col for col in df.columns if col in _required_trig_set and col.startswith('trig_')]
 
+    # Collect user pack indicator columns referenced by L-type triggers in INTRABAR_LEVEL_MAP.
+    # These need to be passed into `current` so the engine can cache levels and check crosses.
+    _user_indicator_cols = set()
+    for base_trigger in strat.trigger_eval.required_triggers:
+        # Strip _ib/_lc/_cc/_hm/_hl suffix to find the base in INTRABAR_LEVEL_MAP
+        for suffix in ('_ib', '_lc', '_cc', '_hm', '_hl'):
+            if base_trigger.endswith(suffix):
+                base = base_trigger[:-len(suffix)]
+                if base in INTRABAR_LEVEL_MAP:
+                    level_col = INTRABAR_LEVEL_MAP[base].get('column', '')
+                    if level_col and level_col in df.columns:
+                        _user_indicator_cols.add(level_col)
+                break
+
     trades = []
     indicator_rows = []
     interp_rows = []
@@ -2301,9 +2378,10 @@ def run_unified_backtest(
 
         # Read pre-computed user pack interpreter states and trigger booleans
         user_pack_data = None
-        if _user_interp_cols or _user_trig_cols:
+        if _user_interp_cols or _user_trig_cols or _user_indicator_cols:
             up_interps = {}
             up_triggers = {}
+            up_indicators = {}
             for col in _user_interp_cols:
                 val = row.get(col)
                 if val is not None and pd.notna(val):
@@ -2313,8 +2391,12 @@ def run_unified_backtest(
                 # Strip 'trig_' prefix to get the trigger key
                 trig_key = col[5:]  # len('trig_') == 5
                 up_triggers[trig_key] = bool(val) if pd.notna(val) else False
-            if up_interps or up_triggers:
-                user_pack_data = {'interps': up_interps, 'triggers': up_triggers}
+            for col in _user_indicator_cols:
+                val = row.get(col)
+                if val is not None and pd.notna(val):
+                    up_indicators[col] = float(val)
+            if up_interps or up_triggers or up_indicators:
+                user_pack_data = {'interps': up_interps, 'triggers': up_triggers, 'indicators': up_indicators}
 
         is_partial = last_bar_partial and (i == len(df) - 1)
         bar_trades, ind_vals, interp_states, trig_bools = strat.process_bar(

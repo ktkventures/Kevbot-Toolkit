@@ -990,6 +990,14 @@ function SignalValidationTab({ pack }: { pack: UserPack }) {
    Detail: Code Tab
    ======================================================================== */
 
+interface FixHistoryEntry {
+  timestamp: string;
+  prompt: string;
+  response: string;
+  model: string;
+  installStatus: 'success' | 'failed' | 'pending';
+}
+
 function CodeTab({ pack }: { pack: UserPack }) {
   const { data: code, isLoading, refetch } = useUserPackCode(pack.id);
   const requestFixMut = useRequestFix();
@@ -998,6 +1006,8 @@ function CodeTab({ pack }: { pack: UserPack }) {
   const [fixDescription, setFixDescription] = useState('');
   const [fixMessage, setFixMessage] = useState('');
   const [aiModel, setAiModel] = useState('claude-sonnet');
+  const [fixHistory, setFixHistory] = useState<FixHistoryEntry[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const codeBlockStyle: React.CSSProperties = {
     background: '#0d1117', color: '#c9d1d9', fontFamily: 'monospace',
@@ -1008,19 +1018,31 @@ function CodeTab({ pack }: { pack: UserPack }) {
   function handleRequestFix() {
     if (!code) return;
     setShowFixModal(false);
+    const prompt = fixDescription;
+    const ts = new Date().toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setFixMessage('Sending fix request to AI...');
+
+    // Add pending history entry
+    const entry: FixHistoryEntry = { timestamp: ts, prompt, response: 'Waiting for AI...', model: aiModel, installStatus: 'pending' };
+    setFixHistory((prev) => [entry, ...prev]);
 
     requestFixMut.mutate({
       manifest: code.manifest as Record<string, unknown>,
       indicator_code: code.indicator_code,
       interpreter_code: code.interpreter_code,
       validation_errors: [],
-      user_description: fixDescription,
+      user_description: prompt,
       ai_model: aiModel,
     }, {
       onSuccess: (data) => {
         setFixMessage(data.ai_message);
-        // Offer to re-install
+        // Update history entry with AI response
+        setFixHistory((prev) => {
+          const updated = [...prev];
+          if (updated[0]) { updated[0] = { ...updated[0], response: data.ai_message }; }
+          return updated;
+        });
+        // Re-install
         if (data.manifest && data.indicator_code && data.interpreter_code) {
           installPackMut.mutate({
             manifest: data.manifest,
@@ -1029,18 +1051,30 @@ function CodeTab({ pack }: { pack: UserPack }) {
             pine_script_code: data.pine_script_code,
           }, {
             onSuccess: (installData) => {
-              if (installData.success) {
-                setFixMessage((prev) => prev + '\nPack re-installed successfully. Refresh to see changes.');
-                refetch();
-              } else {
-                setFixMessage((prev) => prev + `\nRe-install failed: ${installData.errors.join(', ')}`);
-              }
+              const installMsg = installData.success
+                ? 'Pack re-installed successfully. Refresh to see changes.'
+                : `Re-install failed: ${installData.errors.join(', ')}`;
+              setFixMessage((prev) => prev + '\n' + installMsg);
+              setFixHistory((prev) => {
+                const updated = [...prev];
+                if (updated[0]) {
+                  updated[0] = { ...updated[0], response: updated[0].response + '\n' + installMsg, installStatus: installData.success ? 'success' : 'failed' };
+                }
+                return updated;
+              });
+              if (installData.success) refetch();
             },
           });
         }
       },
       onError: (error) => {
-        setFixMessage(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        const errMsg = `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        setFixMessage(errMsg);
+        setFixHistory((prev) => {
+          const updated = [...prev];
+          if (updated[0]) { updated[0] = { ...updated[0], response: errMsg, installStatus: 'failed' }; }
+          return updated;
+        });
       },
     });
     setFixDescription('');
@@ -1105,6 +1139,48 @@ function CodeTab({ pack }: { pack: UserPack }) {
           {requestFixMut.isPending ? 'Fixing...' : 'Request Fix'}
         </button>
       </Card>
+
+      {/* Fix History */}
+      {fixHistory.length > 0 && (
+        <Card>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Fix History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({fixHistory.length})</span>
+            </h3>
+            <button className="text-[10px] underline" style={{ color: 'var(--text-muted)' }} onClick={() => setShowHistory(!showHistory)}>
+              {showHistory ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {showHistory && (
+            <div className="space-y-3" style={{ maxHeight: 400, overflowY: 'auto' }}>
+              {fixHistory.map((entry, i) => (
+                <div key={i} className="rounded-lg px-3 py-2 text-xs" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{entry.timestamp}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)' }}>{entry.model}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{
+                        color: entry.installStatus === 'success' ? 'var(--green)' : entry.installStatus === 'failed' ? 'var(--red)' : 'var(--orange)',
+                        background: (entry.installStatus === 'success' ? 'var(--green)' : entry.installStatus === 'failed' ? 'var(--red)' : 'var(--orange)') + '20',
+                      }}>
+                        {entry.installStatus === 'success' ? 'Installed' : entry.installStatus === 'failed' ? 'Failed' : 'Pending'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mb-1.5">
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Prompt:</span>
+                    <p className="mt-0.5" style={{ color: 'var(--text-secondary)' }}>{entry.prompt}</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Response:</span>
+                    <p className="mt-0.5 whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>{entry.response}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Fix Modal */}
       {showFixModal && (
