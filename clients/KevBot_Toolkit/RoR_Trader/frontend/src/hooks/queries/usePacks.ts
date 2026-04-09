@@ -5,7 +5,7 @@
  * - Risk Management Packs
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 
 // =============================================================================
@@ -232,4 +232,45 @@ export interface RMTemplateDTO {
   }>;
   stop_method: string;
   target_method?: string;
+}
+
+// =============================================================================
+// PACK PREVIEW (Chart Preview tab for User Packs)
+// =============================================================================
+
+export interface PackPreviewBar {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  state: string | null;
+  [key: string]: any; // indicator columns
+}
+
+export interface PackPreviewTrigger {
+  timestamp: string;
+  trigger_id: string;
+  trigger_name: string;
+  direction: string;
+  type: string;
+}
+
+export interface PackPreviewResponse {
+  bars: PackPreviewBar[];
+  triggers: PackPreviewTrigger[];
+  states: string[];
+  indicator_columns: string[];
+  display_type: string;
+}
+
+export function usePackPreview() {
+  return useMutation({
+    mutationFn: ({ slug, ...params }: { slug: string; symbol: string; timeframe: string; days: number; session: string }) =>
+      apiFetch<PackPreviewResponse>(`/api/packs/builder/user-packs/${slug}/preview`, {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+  });
 }

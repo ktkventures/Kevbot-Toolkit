@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, Query
 
 from api.deps import get_current_user
-from api.schemas.backtest import BacktestRequest, BacktestTradeZoomRequest, BacktestResponse
+from api.schemas.backtest import BacktestRequest, BacktestTradeZoomRequest, BacktestTradeReplayRequest, BacktestResponse
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +110,12 @@ def backtest_trade_zoom(req: BacktestTradeZoomRequest, user=Depends(get_current_
 
         trade = trades_df.iloc[req.trade_idx].to_dict()
 
-        # Extract relevant indicator prefixes for stepped overlay
+        # Extract relevant indicator prefixes for stepped overlay.
+        # Only use entry/exit triggers — confluence conditions are shown
+        # via the CB heatmap pane, not as stepped indicator lines.
         prefixes = extract_relevant_prefixes(
             entry_id=req.entry_trigger_confluence_id,
             exit_ids=req.exit_trigger_confluence_ids,
-            confluence=req.confluence,
         )
 
         return build_trade_zoom_response(
@@ -134,6 +135,76 @@ def backtest_trade_zoom(req: BacktestTradeZoomRequest, user=Depends(get_current_
         return {"bars_1s": [], "trade": {}, "indicators": {},
                 "side": req.side, "timeframe": req.timeframe, "symbol": req.symbol,
                 "error": str(e)}
+
+
+@router.post("/trade-replay")
+def backtest_trade_replay(req: BacktestTradeReplayRequest, user=Depends(get_current_user)):
+    """Build scenario replay data for a single trade from an unsaved backtest.
+
+    Returns a ScenarioData dict (chart_data, 1s bars, workflow, markers)
+    matching the format consumed by ScenarioReplayCard.
+    """
+    from api.services.backtest_service import (
+        build_single_trade_scenario,
+        classify_and_serialize_chart_data,
+        _hifi_resolve_trades,
+        _serialize_trades,
+    )
+    import services as svc
+
+    try:
+        # Load enriched data and run unified engine (same as trade-zoom)
+        df, _trading_days = _load_analyze_data(req)
+        if len(df) == 0:
+            return {"error": "No data loaded"}
+
+        stop_config, target_config = _resolve_configs(req)
+        strategy = _build_base_strategy(req, stop_config, target_config)
+        strategy["id"] = "trade_replay_ephemeral"
+        trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+
+        # Hi-Fi pass if requested
+        if req.hifi_mode and len(trades_df) > 0:
+            if 'hifi_resolved' not in trades_df.columns:
+                trades_df['hifi_resolved'] = False
+            trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
+
+        # Validate trade index
+        if len(trades_df) == 0:
+            return {"error": "No trades generated"}
+        if req.trade_idx < 0 or req.trade_idx >= len(trades_df):
+            return {"error": f"trade_idx {req.trade_idx} out of range (0-{len(trades_df)-1})"}
+
+        # Classify indicators and build chart data
+        chart_data, overlay_indicators, oscillator_indicators, _heatmap, _candle_col = \
+            classify_and_serialize_chart_data(df, req)
+
+        # Serialize the target trade
+        trade_row = trades_df.iloc[req.trade_idx]
+        trade_dict = _serialize_trades(trades_df.iloc[[req.trade_idx]])[0]
+
+        # Determine exec code from the entry trigger
+        entry_trigger = req.entry_trigger_confluence_id or ''
+        exec_type = trade_dict.get('exec_type', 'C')
+        exec_map = {'HM': 'LC', 'HL': 'LC', 'L0': 'L', 'L1': 'L'}
+        exec_code = exec_map.get(exec_type, exec_type) or 'C'
+
+        return build_single_trade_scenario(
+            trade=trade_dict,
+            chart_data=chart_data,
+            overlay_indicators=overlay_indicators,
+            oscillator_indicators=oscillator_indicators,
+            symbol=req.symbol,
+            timeframe=req.timeframe,
+            exec_code=exec_code,
+            entry_trigger=entry_trigger,
+            direction=req.direction,
+            padding_bars=10,
+        )
+
+    except Exception as e:
+        logger.exception("Backtest trade-replay failed for %s", req.symbol)
+        return {"error": str(e)}
 
 
 @router.post("/analyze")

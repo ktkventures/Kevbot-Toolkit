@@ -402,6 +402,7 @@ def _inject_into_templates(manifest: dict) -> None:
         "indicator_columns": manifest["indicator_columns"],
         "display_type": manifest.get("display_type", "overlay"),
         "column_color_map": manifest.get("column_color_map", {}),
+        "plot_config": manifest.get("plot_config", {}),
         "_user_pack": True,
     }
 

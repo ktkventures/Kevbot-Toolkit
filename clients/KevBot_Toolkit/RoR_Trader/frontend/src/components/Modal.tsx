@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ModalProps {
   title: string;
@@ -11,6 +12,12 @@ interface ModalProps {
 }
 
 export default function Modal({ title, isOpen, onClose, width = '640px', children }: ModalProps) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
@@ -20,9 +27,9 @@ export default function Modal({ title, isOpen, onClose, width = '640px', childre
     return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(4px)' }}
@@ -61,6 +68,7 @@ export default function Modal({ title, isOpen, onClose, width = '640px', childre
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

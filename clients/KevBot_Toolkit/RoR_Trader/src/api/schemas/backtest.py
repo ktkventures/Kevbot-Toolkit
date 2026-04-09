@@ -56,6 +56,12 @@ class BacktestTradeZoomRequest(BacktestRequest):
     padding_seconds: int = 60
 
 
+class BacktestTradeReplayRequest(BacktestRequest):
+    """Extends BacktestRequest with trade-replay specific fields."""
+
+    trade_idx: int
+
+
 class TradeRecord(BaseModel):
     """Single trade from a backtest."""
     entry_time: Optional[str] = None

@@ -198,6 +198,19 @@ export default function ReplayableChart({
 
     seriesRef.current = created;
 
+    // Hide any background overlay price scales (used for state background coloring)
+    for (const setup of seriesSetup) {
+      const scaleId = setup.options?.priceScaleId;
+      if (scaleId && scaleId !== 'right' && scaleId !== 'left') {
+        try {
+          chart.priceScale(scaleId).applyOptions({
+            visible: false,
+            scaleMargins: { top: 0, bottom: 0 },
+          });
+        } catch { /* ignore if scale doesn't exist */ }
+      }
+    }
+
     // Resize
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {

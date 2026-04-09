@@ -6,7 +6,6 @@ import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
 
-const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 const ScenarioReplayCard = dynamic(() => import('@/components/ScenarioReplayCard'), { ssr: false });
 import { useExecutionTypes, useToggleExecutionType, useUpdateExecTypeParams, useCreateVariation, useDeleteVariation, useGenerateScenarios, type ExecTypeModule, type ExecTypeVariation } from '@/hooks/queries/useExecutionTypes';
 import { useConfluenceTriggers, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
@@ -130,9 +129,11 @@ function ScenariosTab({ slug, displayCode }: { slug: string; displayCode: string
   return (
     <div className="space-y-4">
       <Card>
-        <h4 className="text-sm font-medium mb-2">Reference Scenarios</h4>
+        <h4 className="text-sm font-medium mb-2">Educational Reference Scenarios</h4>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Pre-curated trades from NVDA 5Min showing how [{displayCode}] handles different exit conditions. Use replay controls to step through each trade second by second.
+          Conceptual illustrations showing how [{displayCode}] execution works across different exit conditions.
+          Use replay controls to step through each trade second by second.
+          For real validation with your own symbols and configurations, use the <a href="/strategy-builder" className="underline" style={{ color: 'var(--accent)' }}>Strategy Builder</a>.
         </p>
         <div className="flex gap-2 flex-wrap">
           {availableCategories.map(cat => (
@@ -228,7 +229,8 @@ function CustomScenariosTab({ slug, displayCode }: { slug: string; displayCode: 
       <Card>
         <h4 className="text-sm font-medium mb-2">Generate Custom Scenarios</h4>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Select triggers and configuration to generate scenario examples from real backtest data. The system cherry-picks representative trades for each exit type (stop, target, signal, bar count).
+          Generate example scenarios from real backtest data to explore how [{displayCode}] handles different exit types.
+          These are educational illustrations — for full strategy validation, use the <a href="/strategy-builder" className="underline" style={{ color: 'var(--accent)' }}>Strategy Builder</a>.
         </p>
         {/* Config row 1: Symbol, Timeframe, Direction, Days */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
@@ -387,6 +389,11 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                 Create Variation
               </button>
             )}
+            <a href="/strategy-builder" className="px-3 py-1.5 rounded-lg text-xs font-medium no-underline"
+              style={{ background: 'var(--accent)', color: 'var(--bg-primary)' }}
+              title={`Open Strategy Builder to test [${mod.display_code}] with real data`}>
+              Test in Strategy Builder
+            </a>
             <button onClick={onBack} className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>Back</button>
           </div>
         }
@@ -409,7 +416,7 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
         })}
       </div>
 
-      <TabBar tabs={['Description', 'Workflow Steps', 'Sandbox', 'Scenarios', 'Custom Scenarios', 'Code']}>
+      <TabBar tabs={['Description', 'Workflow Steps', 'Scenarios', 'Custom Scenarios', 'Code']}>
         {(tab) => (
           <div>
             {tab === 'Description' && (
@@ -603,19 +610,6 @@ function DetailView({ mod, onBack }: { mod: ExecTypeModule; onBack: () => void }
                 })()}
               </div>
             )}
-            {tab === 'Sandbox' && (
-              <div className="space-y-4">
-                <Card>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    Run a real backtest to verify [{mod.display_code}] execution behavior. Select any entry/exit trigger, stop/target, and confluence conditions — the same inputs as the Strategy Builder. The chart and trade results show exactly how this execution type handles each trade.
-                  </p>
-                </Card>
-                <SandboxPanel packSlug="" layout="horizontal" />
-              </div>
-            )}
-
-            {/* Old simulation removed — replaced by Backtest tab with SandboxPanel */}
-
             {tab === 'Scenarios' && <ScenariosTab slug={mod.slug} displayCode={mod.display_code} />}
 
             {tab === 'Custom Scenarios' && <CustomScenariosTab slug={mod.slug} displayCode={mod.display_code} />}

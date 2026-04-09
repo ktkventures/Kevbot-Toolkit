@@ -131,10 +131,10 @@ TEMPLATES: Dict[str, Dict] = {
             "LMS": "Full Bear Stack — Long > Mid > Short",
         },
         "triggers": [
-            {"base": "cross_bull", "name": "Short > Mid Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_bear", "name": "Short < Mid Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "mid_cross_bull", "name": "Mid > Long Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "mid_cross_bear", "name": "Mid < Long Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_bull", "name": "Short > Mid Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_bear", "name": "Short < Mid Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "mid_cross_bull", "name": "Mid > Long Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "mid_cross_bear", "name": "Mid < Long Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
@@ -162,10 +162,10 @@ TEMPLATES: Dict[str, Dict] = {
             "M<S+": "MACD below signal, above zero (weakening)",
         },
         "triggers": [
-            {"base": "cross_bull", "name": "Bullish Cross", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_bear", "name": "Bearish Cross", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "zero_cross_up", "name": "Zero Line Cross Up", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "zero_cross_down", "name": "Zero Line Cross Down", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_bull", "name": "Bullish Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_bear", "name": "Bearish Cross", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "zero_cross_up", "name": "Zero Line Cross Up", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "zero_cross_down", "name": "Zero Line Cross Down", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": ["macd_line", "macd_signal"],
     },
@@ -193,10 +193,10 @@ TEMPLATES: Dict[str, Dict] = {
             "H-up": "Negative but rising (decelerating bearish)",
         },
         "triggers": [
-            {"base": "flip_pos", "name": "Histogram Flip Bullish", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "flip_neg", "name": "Histogram Flip Bearish", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "momentum_shift_up", "name": "Momentum Shift Up", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "momentum_shift_down", "name": "Momentum Shift Down", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "flip_pos", "name": "Histogram Flip Bullish", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "flip_neg", "name": "Histogram Flip Bearish", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "momentum_shift_up", "name": "Momentum Shift Up", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "momentum_shift_down", "name": "Momentum Shift Down", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": ["macd_hist"],
     },
@@ -227,23 +227,23 @@ TEMPLATES: Dict[str, Dict] = {
             "<-2σ": "Price below VWAP - 2×SD (extended low)",
         },
         "triggers": [
-            {"base": "cross_above", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_above_ib", "name": "Cross Above VWAP", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_above"},
-            {"base": "cross_below", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_below_ib", "name": "Cross Below VWAP", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_below"},
-            {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "enter_upper_extreme_ib", "name": "Enter Upper Extreme (>+2σ)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "enter_upper_extreme"},
-            {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "enter_lower_extreme_ib", "name": "Enter Lower Extreme (<-2σ)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "enter_lower_extreme"},
-            {"base": "cross_above_hm", "name": "Cross Above VWAP (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_above"},
-            {"base": "cross_above_hl", "name": "Cross Above VWAP (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_above"},
-            {"base": "cross_below_hm", "name": "Cross Below VWAP (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_below"},
-            {"base": "cross_below_hl", "name": "Cross Below VWAP (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_below"},
-            {"base": "enter_upper_extreme_hm", "name": "Enter Upper Extreme (HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "enter_upper_extreme"},
-            {"base": "enter_upper_extreme_hl", "name": "Enter Upper Extreme (HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "enter_upper_extreme"},
-            {"base": "enter_lower_extreme_hm", "name": "Enter Lower Extreme (HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "enter_lower_extreme"},
-            {"base": "enter_lower_extreme_hl", "name": "Enter Lower Extreme (HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "enter_lower_extreme"},
-            {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "EXIT", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_above", "name": "Cross Above VWAP", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_above_ib", "name": "Cross Above VWAP", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_above"},
+            {"base": "cross_below", "name": "Cross Below VWAP", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_below_ib", "name": "Cross Below VWAP", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_below"},
+            {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "enter_upper_extreme_ib", "name": "Enter Upper Extreme (>+2σ)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "enter_upper_extreme"},
+            {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "enter_lower_extreme_ib", "name": "Enter Lower Extreme (<-2σ)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "enter_lower_extreme"},
+            {"base": "cross_above_hm", "name": "Cross Above VWAP (HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_above"},
+            {"base": "cross_above_hl", "name": "Cross Above VWAP (HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_above"},
+            {"base": "cross_below_hm", "name": "Cross Below VWAP (HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_below"},
+            {"base": "cross_below_hl", "name": "Cross Below VWAP (HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_below"},
+            {"base": "enter_upper_extreme_hm", "name": "Enter Upper Extreme (HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "enter_upper_extreme"},
+            {"base": "enter_upper_extreme_hl", "name": "Enter Upper Extreme (HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "enter_upper_extreme"},
+            {"base": "enter_lower_extreme_hm", "name": "Enter Lower Extreme (HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "enter_lower_extreme"},
+            {"base": "enter_lower_extreme_hl", "name": "Enter Lower Extreme (HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "enter_lower_extreme"},
+            {"base": "return_to_vwap", "name": "Return to VWAP Zone", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": ["vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower"],
     },
@@ -275,7 +275,7 @@ TEMPLATES: Dict[str, Dict] = {
         "triggers": [
             {"base": "spike", "name": "Volume Spike", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
             {"base": "extreme", "name": "Extreme Volume", "direction": "BOTH", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "fade", "name": "Volume Fade", "direction": "BOTH", "type": "EXIT", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "fade", "name": "Volume Fade", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": ["vol_sma", "rvol"],
     },
@@ -301,14 +301,14 @@ TEMPLATES: Dict[str, Dict] = {
             "BEAR": "Price below trailing stop (bearish)",
         },
         "triggers": [
-            {"base": "buy", "name": "Buy Signal (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "buy_ib", "name": "Buy Signal (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "buy"},
-            {"base": "sell", "name": "Sell Signal (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "sell_ib", "name": "Sell Signal (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "sell"},
-            {"base": "buy_hm", "name": "Buy Signal (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "buy"},
-            {"base": "buy_hl", "name": "Buy Signal (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "buy"},
-            {"base": "sell_hm", "name": "Sell Signal (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "sell"},
-            {"base": "sell_hl", "name": "Sell Signal (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "sell"},
+            {"base": "buy", "name": "Buy Signal (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "buy_ib", "name": "Buy Signal (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "buy"},
+            {"base": "sell", "name": "Sell Signal (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "sell_ib", "name": "Sell Signal (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "sell"},
+            {"base": "buy_hm", "name": "Buy Signal (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "buy"},
+            {"base": "buy_hl", "name": "Buy Signal (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "buy"},
+            {"base": "sell_hm", "name": "Sell Signal (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "sell"},
+            {"base": "sell_hl", "name": "Sell Signal (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "sell"},
         ],
         "indicator_columns": ["utbot_stop"],
     },
@@ -362,30 +362,30 @@ TEMPLATES: Dict[str, Dict] = {
             "LMSP": "Below all, bear EMAs (L > M > S > P)",
         },
         "triggers": [
-            {"base": "cross_short_up", "name": "Price > Short EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_short_up_ib", "name": "Price > Short EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_short_up"},
-            {"base": "cross_short_down", "name": "Price < Short EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_short_down_ib", "name": "Price < Short EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_short_down"},
-            {"base": "cross_mid_up", "name": "Price > Mid EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_mid_up_ib", "name": "Price > Mid EMA (Confirmed)", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down", "name": "Price < Mid EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "cross_mid_down_ib", "name": "Price < Mid EMA (Confirmed)", "direction": "SHORT", "type": "ENTRY", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_mid_down"},
-            {"base": "cross_short_up_hm", "name": "Price > Short EMA (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_up"},
-            {"base": "cross_short_up_hl", "name": "Price > Short EMA (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_up"},
-            {"base": "cross_short_down_hm", "name": "Price < Short EMA (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_short_down"},
-            {"base": "cross_short_down_hl", "name": "Price < Short EMA (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_short_down"},
-            {"base": "cross_mid_up_hm", "name": "Price > Mid EMA (Confirmed, HM)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_up_hl", "name": "Price > Mid EMA (Confirmed, HL)", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down_hm", "name": "Price < Mid EMA (Confirmed, HM)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_market", "column_base": "cross_mid_down"},
-            {"base": "cross_mid_down_hl", "name": "Price < Mid EMA (Confirmed, HL)", "direction": "SHORT", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "cross_mid_down"},
-            {"base": "cross_short_up_lc", "name": "Price > Short EMA (LC)", "direction": "LONG", "type": "ENTRY", "execution": "level_close", "column_base": "cross_short_up"},
-            {"base": "cross_short_down_lc", "name": "Price < Short EMA (LC)", "direction": "SHORT", "type": "ENTRY", "execution": "level_close", "column_base": "cross_short_down"},
-            {"base": "cross_mid_up_lc", "name": "Price > Mid EMA (LC)", "direction": "LONG", "type": "ENTRY", "execution": "level_close", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down_lc", "name": "Price < Mid EMA (LC)", "direction": "SHORT", "type": "ENTRY", "execution": "level_close", "column_base": "cross_mid_down"},
-            {"base": "cross_short_up_cc", "name": "Price > Short EMA (CC)", "direction": "LONG", "type": "ENTRY", "execution": "close_close", "column_base": "cross_short_up"},
-            {"base": "cross_short_down_cc", "name": "Price < Short EMA (CC)", "direction": "SHORT", "type": "ENTRY", "execution": "close_close", "column_base": "cross_short_down"},
-            {"base": "cross_mid_up_cc", "name": "Price > Mid EMA (CC)", "direction": "LONG", "type": "ENTRY", "execution": "close_close", "column_base": "cross_mid_up"},
-            {"base": "cross_mid_down_cc", "name": "Price < Mid EMA (CC)", "direction": "SHORT", "type": "ENTRY", "execution": "close_close", "column_base": "cross_mid_down"},
+            {"base": "cross_short_up", "name": "Price > Short EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_short_up_ib", "name": "Price > Short EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_short_up"},
+            {"base": "cross_short_down", "name": "Price < Short EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_short_down_ib", "name": "Price < Short EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_short_down"},
+            {"base": "cross_mid_up", "name": "Price > Mid EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_mid_up_ib", "name": "Price > Mid EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down", "name": "Price < Mid EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "cross_mid_down_ib", "name": "Price < Mid EMA (Confirmed)", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "exec_variants": {"C": {"enabled": False}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False}}, "column_base": "cross_mid_down"},
+            {"base": "cross_short_up_hm", "name": "Price > Short EMA (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_short_up"},
+            {"base": "cross_short_up_hl", "name": "Price > Short EMA (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_short_up"},
+            {"base": "cross_short_down_hm", "name": "Price < Short EMA (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_short_down"},
+            {"base": "cross_short_down_hl", "name": "Price < Short EMA (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_short_down"},
+            {"base": "cross_mid_up_hm", "name": "Price > Mid EMA (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_up_hl", "name": "Price > Mid EMA (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down_hm", "name": "Price < Mid EMA (Confirmed, HM)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "cross_mid_down"},
+            {"base": "cross_mid_down_hl", "name": "Price < Mid EMA (Confirmed, HL)", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "cross_mid_down"},
+            {"base": "cross_short_up_lc", "name": "Price > Short EMA (LC)", "direction": "BOTH", "type": "BOTH", "execution": "level_close", "column_base": "cross_short_up"},
+            {"base": "cross_short_down_lc", "name": "Price < Short EMA (LC)", "direction": "BOTH", "type": "BOTH", "execution": "level_close", "column_base": "cross_short_down"},
+            {"base": "cross_mid_up_lc", "name": "Price > Mid EMA (LC)", "direction": "BOTH", "type": "BOTH", "execution": "level_close", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down_lc", "name": "Price < Mid EMA (LC)", "direction": "BOTH", "type": "BOTH", "execution": "level_close", "column_base": "cross_mid_down"},
+            {"base": "cross_short_up_cc", "name": "Price > Short EMA (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "cross_short_up"},
+            {"base": "cross_short_down_cc", "name": "Price < Short EMA (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "cross_short_down"},
+            {"base": "cross_mid_up_cc", "name": "Price > Mid EMA (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "cross_mid_up"},
+            {"base": "cross_mid_down_cc", "name": "Price < Mid EMA (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "cross_mid_down"},
         ],
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
@@ -413,12 +413,12 @@ TEMPLATES: Dict[str, Dict] = {
             "NEUTRAL": "No swing pattern detected on this bar",
         },
         "triggers": [
-            {"base": "bull_c2", "name": "Bullish Candle 2", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "bull_c3", "name": "Bullish Candle 3", "direction": "LONG", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "bear_c2", "name": "Bearish Candle 2", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "bear_c3", "name": "Bearish Candle 3", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
-            {"base": "bull_c2_cc", "name": "Bullish C2 \u2192 C3 Confirmed (CC)", "direction": "LONG", "type": "ENTRY", "execution": "close_close", "column_base": "bull_c2"},
-            {"base": "bear_c2_cc", "name": "Bearish C2 \u2192 C3 Confirmed (CC)", "direction": "SHORT", "type": "ENTRY", "execution": "close_close", "column_base": "bear_c2"},
+            {"base": "bull_c2", "name": "Bullish Candle 2", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bull_c3", "name": "Bullish Candle 3", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bear_c2", "name": "Bearish Candle 2", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": False, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": True, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bear_c3", "name": "Bearish Candle 3", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": False}, "LC": {"enabled": False}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "bull_c2_cc", "name": "Bullish C2 \u2192 C3 Confirmed (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "bull_c2"},
+            {"base": "bear_c2_cc", "name": "Bearish C2 \u2192 C3 Confirmed (CC)", "direction": "BOTH", "type": "BOTH", "execution": "close_close", "column_base": "bear_c2"},
         ],
         "indicator_columns": ["sw123_pattern", "sw123_candle_color"],
         "display_type": "hidden",
@@ -435,7 +435,7 @@ TEMPLATES: Dict[str, Dict] = {
         "outputs": [],
         "output_descriptions": {},
         "triggers": [
-            {"base": "exit", "name": "Exit After N Candles", "direction": "BOTH", "type": "EXIT", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
+            {"base": "exit", "name": "Exit After N Candles", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "exec_variants": {"C": {"enabled": True, "reference_bar": 0, "order_type": "market"}, "L": {"enabled": True, "reference_bar": -1, "order_type": "market", "hold_seconds": 0}, "LC": {"enabled": True, "confirm_bar_offset": 0, "bail_action": "exit_market"}, "CC": {"enabled": False, "confirm_bar_offset": 1, "bail_action": "exit_market"}}},
         ],
         "indicator_columns": [],
     },
@@ -459,8 +459,8 @@ TEMPLATES: Dict[str, Dict] = {
         "outputs": [],
         "output_descriptions": {},
         "triggers": [
-            {"base": "buy", "name": "UT Bot Buy", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "sell", "name": "UT Bot Sell", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "buy", "name": "UT Bot Buy", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+            {"base": "sell", "name": "UT Bot Sell", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
         ],
         "indicator_columns": ["utbot_stop"],
     },
@@ -483,8 +483,8 @@ TEMPLATES: Dict[str, Dict] = {
         "outputs": [],
         "output_descriptions": {},
         "triggers": [
-            {"base": "cross_short_up", "name": "Price Crosses Above Short EMA", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-            {"base": "cross_short_down", "name": "Price Crosses Below Short EMA", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
+            {"base": "cross_short_up", "name": "Price Crosses Above Short EMA", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+            {"base": "cross_short_down", "name": "Price Crosses Below Short EMA", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
         ],
         "indicator_columns": ["ema_short", "ema_mid", "ema_long"],
     },
@@ -1022,24 +1022,59 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
     """
     Get all triggers for a confluence group.
 
+    For bar_close triggers without explicit exec_variants, auto-generates
+    execution type variants (_ib, _lc, _cc) based on globally enabled types.
+    This enables the modular execution type approach: packs define the signal,
+    the system generates the variants.
+
     Returns list of TriggerDefinition with group-specific IDs and names.
     """
     template = TEMPLATES.get(group.base_template)
     if not template:
         return []
 
+    # Execution type variant labels
+    EXEC_VARIANT_LABELS = {
+        '_ib': ('[L]', 'intra_bar'),
+        '_lc': ('[LC]', 'level_close'),
+        '_cc': ('[CC]', 'close_close'),
+    }
+
     triggers = []
     for trig_def in template.get("triggers", []):
+        base = trig_def["base"]
+        execution = trig_def.get("execution", "bar_close")
+        has_exec_variants = "exec_variants" in trig_def
+
         trigger = TriggerDefinition(
-            id=group.get_trigger_id(trig_def["base"]),
-            name=group.get_trigger_name(trig_def["base"], trig_def["name"]),
-            base_trigger=trig_def["base"],
+            id=group.get_trigger_id(base),
+            name=group.get_trigger_name(base, trig_def["name"]),
+            base_trigger=base,
             direction=trig_def["direction"],
             trigger_type=trig_def["type"],
-            execution=trig_def.get("execution", "bar_close"),
+            execution=execution,
             column_base=trig_def.get("column_base"),
         )
         triggers.append(trigger)
+
+        # Auto-generate execution type variants for bar_close triggers
+        # that don't already have explicit variants or suffixed siblings
+        if execution == "bar_close" and not has_exec_variants:
+            # Check if template already has explicit suffixed triggers for this base
+            existing_bases = {t["base"] for t in template.get("triggers", [])}
+            for suffix, (label, exec_type) in EXEC_VARIANT_LABELS.items():
+                suffixed_base = base + suffix
+                if suffixed_base not in existing_bases:
+                    variant = TriggerDefinition(
+                        id=group.get_trigger_id(suffixed_base),
+                        name=group.get_trigger_name(suffixed_base, f"{trig_def['name']} {label}"),
+                        base_trigger=suffixed_base,
+                        direction=trig_def["direction"],
+                        trigger_type=trig_def["type"],
+                        execution=exec_type,
+                        column_base=base,
+                    )
+                    triggers.append(variant)
 
     return triggers
 
@@ -1101,7 +1136,11 @@ def _get_enabled_exec_suffixes() -> set:
 
 def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] = None) -> Dict[str, str]:
     """
-    Get entry triggers for a specific direction, filtered by enabled execution types.
+    Get all available triggers, filtered by enabled execution types.
+
+    Triggers are direction-agnostic and type-agnostic — users decide how to
+    use them (entry/exit, long/short) in Strategy Builder. The `direction`
+    parameter is accepted for backward compatibility but not used for filtering.
 
     Returns dict mapping trigger_id -> display_name
     """
@@ -1110,9 +1149,6 @@ def get_entry_triggers(direction: str, groups: Optional[List[ConfluenceGroup]] =
 
     result = {}
     for trig_id, trig_def in all_triggers.items():
-        if trig_def.trigger_type != "ENTRY":
-            continue
-
         # Check if this trigger's execution type suffix is enabled
         base = trig_def.base_trigger
         suffix = ''

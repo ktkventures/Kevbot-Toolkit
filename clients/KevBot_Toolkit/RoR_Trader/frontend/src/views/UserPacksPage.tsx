@@ -9,10 +9,10 @@ import Modal from '@/components/Modal';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api/client';
-import { useUserPackCode } from '@/hooks/queries/usePacks';
+import { useUserPackCode, usePackPreview, type PackPreviewResponse } from '@/hooks/queries/usePacks';
+import { useChartPrefs } from '@/hooks/useChartPrefs';
+const ReplayableChart = dynamic(() => import('@/charts/ReplayableChart'), { ssr: false });
 import { useRequestFix, useInstallPack } from '@/hooks/mutations/useAiBuilder';
-
-const SandboxPanel = dynamic(() => import('@/components/SandboxPanel'), { ssr: false });
 
 /* ========================================================================
    Types
@@ -88,9 +88,7 @@ interface UserPack {
 // No user packs — future feature
 const emptyUserPacks: UserPack[] = [];
 
-// Preview data: not wired — empty
-const mockStateTimelines: Record<string, StateTimelineEntry[]> = {};
-const mockTriggerEvents: Record<string, TriggerEvent[]> = {};
+// Preview data now loaded from API via usePackPreview hook
 
 /* Built-in template packs for "Create from Template" — future feature */
 const builtInTemplates: { key: string; name: string; category: string; description: string }[] = [];
@@ -439,183 +437,551 @@ function OutputsTriggersTab({ pack }: { pack: UserPack }) {
    Detail: Preview Tab
    ======================================================================== */
 
-function PreviewTab({ pack }: { pack: UserPack }) {
-  const [showConditions, setShowConditions] = useState(true);
-  const [showTriggers, setShowTriggers] = useState(true);
-  const [symbol, setSymbol] = useState('NVDA');
-  const [session, setSession] = useState('RTH Only');
+// State color palette — cycles through distinguishable colors for pack states
+const STATE_COLORS = ['#4CAF50', '#F44336', '#2196F3', '#FF9800', '#9C27B0', '#00BCD4', '#795548', '#E91E63', '#607D8B', '#CDDC39'];
 
-  const stateTimeline = mockStateTimelines[pack.id] || [];
-  const triggerEvents = mockTriggerEvents[pack.id] || [];
+function PreviewTab({ pack }: { pack: UserPack }) {
+  const [symbol, setSymbol] = useState('NVDA');
+  const [timeframe, setTimeframe] = useState('5Min');
+  const [session, setSession] = useState('RTH');
+  const [days, setDays] = useState(5);
+  const previewMut = usePackPreview();
+  const chartPrefs = useChartPrefs();
+
+  const data = previewMut.data as PackPreviewResponse | undefined;
+
+  // Derive state timeline (only transitions where state changes)
+  const stateTimeline = useMemo(() => {
+    if (!data?.bars) return [];
+    const transitions: StateTimelineEntry[] = [];
+    let prevState = '';
+    for (const bar of data.bars) {
+      const state = bar.state || '';
+      if (state !== prevState && state) {
+        transitions.push({
+          time: new Date(bar.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          state,
+          prevState: prevState || '—',
+        });
+        prevState = state;
+      }
+    }
+    return transitions;
+  }, [data]);
+
+  // Derive trigger events
+  const triggerEvents = useMemo(() => {
+    if (!data?.triggers) return [];
+    return data.triggers.map((t) => ({
+      time: new Date(t.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      trigger: t.trigger_name,
+      direction: t.direction,
+      type: t.type,
+      price: '',
+      execType: 'C',
+    }));
+  }, [data]);
+
+  // Build state color map from the pack's output states
+  const stateColorMap = useMemo(() => {
+    if (!data?.states) return {};
+    const map: Record<string, string> = {};
+    data.states.forEach((s, i) => { map[s] = STATE_COLORS[i % STATE_COLORS.length]; });
+    return map;
+  }, [data]);
+
+  const isOscillator = data?.display_type === 'oscillator';
+
+  // Filter indicator columns to only plottable numeric ones (not booleans, strings, or color columns)
+  const plottableColumns = useMemo(() => {
+    if (!data?.bars || data.bars.length === 0) return [];
+    // Check a sample bar to determine column types
+    const sampleBar = data.bars.find((b) => data.indicator_columns.some((col) => b[col] != null)) || data.bars[0];
+    return data.indicator_columns.filter((col) => {
+      const val = sampleBar[col];
+      if (val === null || val === undefined) return false;
+      if (typeof val === 'boolean') return false;
+      if (typeof val === 'string') return false; // color strings, etc.
+      return typeof val === 'number' && !isNaN(val);
+    });
+  }, [data]);
+
+  // Price chart series setup — background state histogram + candlestick + overlay lines
+  const priceSeriesSetup = useMemo(() => {
+    const setup: any[] = [];
+
+    // Background state histogram (first = renders behind candles)
+    if (data?.states && data.states.length > 0) {
+      setup.push({
+        type: 'Histogram' as const,
+        options: {
+          priceScaleId: 'state_bg',
+          lastValueVisible: false,
+          priceLineVisible: false,
+        },
+      });
+    }
+
+    // Candlestick (renders on top of background)
+    setup.push({
+      type: 'Candlestick' as const,
+      options: {
+        upColor: chartPrefs.candleUp, downColor: chartPrefs.candleDown,
+        borderUpColor: chartPrefs.candleUpBorder, borderDownColor: chartPrefs.candleDown,
+        wickUpColor: chartPrefs.candleUpBorder, wickDownColor: chartPrefs.candleDown,
+      },
+    });
+
+    // Overlay indicator lines (only for overlay display type, only numeric columns)
+    if (data && !isOscillator && plottableColumns.length > 0) {
+      const lineColors = ['#2196F3', '#FF9800', '#E040FB', '#00BCD4', '#FFEB3B'];
+      plottableColumns.forEach((col, i) => {
+        setup.push({
+          type: 'Line' as const,
+          options: { color: lineColors[i % lineColors.length], lineWidth: 2, lastValueVisible: false, priceLineVisible: false },
+        });
+      });
+    }
+    return setup;
+  }, [chartPrefs, data, isOscillator, plottableColumns]);
+
+  // Price chart series data — background states + candles + trigger markers + overlay lines
+  const priceSeriesData = useMemo(() => {
+    if (!data?.bars) {
+      const empty = [{ data: [], markers: [] }];
+      return data?.states?.length ? [{ data: [] }, ...empty] : empty;
+    }
+
+    const result: any[] = [];
+
+    // Background state histogram data (if states exist)
+    if (data.states.length > 0) {
+      const bgData = data.bars.map((b) => ({
+        time: b.timestamp,
+        value: 1, // constant value — scale is hidden
+        color: b.state ? (stateColorMap[b.state] || 'transparent') + '25' : 'transparent',
+      }));
+      result.push({ data: bgData });
+    }
+
+    // Candlestick data — use indicator candle colors if pack defines candle_color_column
+    const candleColorCol = (data as any).plot_config?.candle_color_column;
+    const candles = data.bars.map((b) => {
+      const bar: any = { time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close };
+      const indicatorColor = candleColorCol ? b[candleColorCol] : null;
+      if (indicatorColor && typeof indicatorColor === 'string' && indicatorColor.startsWith('#')) {
+        bar.color = indicatorColor;
+        bar.borderColor = indicatorColor;
+        bar.wickColor = indicatorColor;
+      }
+      return bar;
+    });
+
+    const markers = (data.triggers || []).map((t) => ({
+      time: t.timestamp,
+      position: 'aboveBar' as const,
+      shape: 'circle' as const,
+      color: '#FFD700',
+      text: t.trigger_name,
+      size: 1,
+    }));
+
+    result.push({ data: candles, markers });
+
+    // Overlay indicator line data (only plottable numeric columns)
+    if (!isOscillator) {
+      for (const col of plottableColumns) {
+        const lineData = data.bars
+          .filter((b) => b[col] != null && typeof b[col] === 'number')
+          .map((b) => ({ time: b.timestamp, value: b[col] as number }));
+        result.push({ data: lineData });
+      }
+    }
+
+    return result;
+  }, [data, stateColorMap, isOscillator, plottableColumns]);
+
+  // Oscillator chart setup (separate pane for RSI, MACD, etc.)
+  const oscSeriesSetup = useMemo(() => {
+    if (!data || !isOscillator) return [];
+    const refLines = (data as any).plot_config?.reference_lines || [];
+    const lineColors = ['#2196F3', '#FF9800', '#E040FB', '#00BCD4'];
+    return data.indicator_columns.map((col, i) => ({
+      type: 'Line' as const,
+      options: { color: lineColors[i % lineColors.length], lineWidth: 2, lastValueVisible: true, priceLineVisible: false },
+      priceLines: refLines.map((rl: any) => ({
+        price: rl.value, color: rl.color || 'var(--text-muted)',
+        lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: rl.label || '',
+      })),
+    }));
+  }, [data, isOscillator]);
+
+  const oscSeriesData = useMemo(() => {
+    if (!data || !isOscillator) return [];
+    return data.indicator_columns.map((col) => ({
+      data: data.bars
+        .filter((b) => b[col] != null)
+        .map((b) => ({ time: b.timestamp, value: b[col] as number })),
+    }));
+  }, [data, isOscillator]);
+
+  const handleLoad = () => {
+    previewMut.mutate({ slug: pack.id, symbol, timeframe, days, session });
+  };
 
   return (
     <div className="space-y-4">
       {/* Controls bar */}
       <div className="flex items-center gap-3 flex-wrap">
-        <select
-          className="px-3 py-2 rounded-lg text-sm"
-          style={selectStyle}
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value)}
-        >
-          {['NVDA', 'SPY', 'AAPL', 'TSLA', 'MSFT', 'AMD'].map((s) => (
-            <option key={s}>{s}</option>
-          ))}
+        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+          {['NVDA', 'SPY', 'AAPL', 'TSLA', 'MSFT', 'AMD'].map((s) => <option key={s}>{s}</option>)}
         </select>
-        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle}>
-          {['1Min', '5Min', '15Min', '1H', '4H', '1D'].map((tf) => (
-            <option key={tf}>{tf}</option>
-          ))}
+        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+          {['1Min', '5Min', '15Min', '1H', '1Day'].map((tf) => <option key={tf}>{tf}</option>)}
         </select>
-        <select
-          className="px-3 py-2 rounded-lg text-sm"
-          style={selectStyle}
-          value={session}
-          onChange={(e) => setSession(e.target.value)}
-        >
-          <option>RTH Only</option>
-          <option>Extended Hours</option>
-          <option>24/7</option>
+        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={session} onChange={(e) => setSession(e.target.value)}>
+          <option value="RTH">RTH Only</option>
+          <option value="ETH">Extended Hours</option>
+          <option value="24/7">24/7</option>
+        </select>
+        <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          {[1, 2, 5, 10, 20].map((d) => <option key={d} value={d}>{d} days</option>)}
         </select>
 
-        <div className="border-l h-6 mx-1" style={{ borderColor: 'var(--border)' }} />
-
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showConditions}
-            onChange={(e) => setShowConditions(e.target.checked)}
-            className="w-3.5 h-3.5 rounded"
-          />
-          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Show Conditions</span>
-        </label>
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showTriggers}
-            onChange={(e) => setShowTriggers(e.target.checked)}
-            className="w-3.5 h-3.5 rounded"
-          />
-          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Show Triggers</span>
-        </label>
+        <button
+          className="px-4 py-2 rounded-lg text-sm font-medium"
+          style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer', opacity: previewMut.isPending ? 0.6 : 1 }}
+          onClick={handleLoad}
+          disabled={previewMut.isPending}
+        >
+          {previewMut.isPending ? 'Loading...' : 'Load Preview'}
+        </button>
       </div>
 
-      {/* Chart */}
-      <Card>
-        <ChartPlaceholder
-          label={`${symbol} price chart with ${pack.name} overlay${showConditions ? ' + conditions' : ''}${showTriggers ? ' + triggers' : ''}`}
-          height={380}
-        />
-      </Card>
+      {/* Error */}
+      {previewMut.error && (
+        <Card>
+          <p className="text-xs" style={{ color: 'var(--red)' }}>Failed to load preview: {String(previewMut.error)}</p>
+        </Card>
+      )}
+
+      {/* Summary stats */}
+      {data && (
+        <Card>
+          <div className="flex gap-6 text-xs">
+            <span style={{ color: 'var(--text-muted)' }}>Bars: <strong style={{ color: 'var(--text-primary)' }}>{data.bars.length}</strong></span>
+            <span style={{ color: 'var(--text-muted)' }}>States: <strong style={{ color: 'var(--text-primary)' }}>{data.states.length}</strong></span>
+            <span style={{ color: 'var(--text-muted)' }}>Triggers fired: <strong style={{ color: 'var(--text-primary)' }}>{data.triggers.length}</strong></span>
+            <span style={{ color: 'var(--text-muted)' }}>Display: <strong style={{ color: 'var(--text-primary)' }}>{data.display_type}</strong></span>
+            <span style={{ color: 'var(--text-muted)' }}>Indicators: <strong style={{ color: 'var(--text-primary)' }}>{data.indicator_columns.join(', ') || 'none'}</strong></span>
+          </div>
+        </Card>
+      )}
+
+      {/* Price chart with state-colored candles + trigger markers */}
+      {data && data.bars.length > 0 && (
+        <Card>
+          <h4 className="text-sm font-medium mb-2">{symbol} — {pack.name} Preview</h4>
+          <ReplayableChart
+            id={`preview-${pack.id}-${symbol}-${timeframe}`}
+            height={350}
+            seriesSetup={priceSeriesSetup}
+            seriesData={priceSeriesData}
+          />
+
+          {/* Oscillator pane (separate chart for RSI, MACD, etc.) */}
+          {isOscillator && oscSeriesSetup.length > 0 && oscSeriesData.length > 0 && (
+            <div className="mt-2">
+              <ReplayableChart
+                id={`preview-osc-${pack.id}-${symbol}-${timeframe}`}
+                height={150}
+                seriesSetup={oscSeriesSetup}
+                seriesData={oscSeriesData}
+              />
+            </div>
+          )}
+
+          {/* State legend */}
+          {data.states.length > 0 && (
+            <div className="flex gap-3 mt-2 flex-wrap">
+              {data.states.map((state, i) => (
+                <span key={state} className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  <span className="w-2.5 h-2.5 rounded-sm" style={{ background: STATE_COLORS[i % STATE_COLORS.length] + '80' }} />
+                  {state}
+                </span>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Data tables below chart */}
-      <div className="grid grid-cols-2 gap-4">
-        {/* State Timeline */}
-        <Card>
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-              State Timeline
-            </h4>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {stateTimeline.length} transitions
-            </span>
-          </div>
-          <div
-            className="rounded-lg overflow-hidden border"
-            style={{ borderColor: 'var(--border)' }}
-          >
-            <div
-              className="grid grid-cols-3 text-xs font-medium px-3 py-2"
-              style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-            >
-              <span>Time</span>
-              <span>State</span>
-              <span>Previous</span>
+      {data && (stateTimeline.length > 0 || triggerEvents.length > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          {/* State Timeline */}
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                State Timeline
+              </h4>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {stateTimeline.length} transitions
+              </span>
             </div>
-            {stateTimeline.map((row, i) => {
-              const changed = row.state !== row.prevState;
-              return (
-                <div
-                  key={i}
-                  className="grid grid-cols-3 text-xs px-3 py-2 border-t"
-                  style={{
-                    borderColor: 'var(--border)',
-                    background: changed ? 'var(--accent-muted)' : 'var(--bg-card)',
-                  }}
-                >
-                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {row.time}
-                  </span>
-                  <span className="font-mono font-semibold" style={{ color: changed ? 'var(--accent)' : 'var(--text-primary)' }}>
-                    {row.state}
-                  </span>
-                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {row.prevState}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-
-        {/* Trigger Events */}
-        <Card>
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-              Trigger Events
-            </h4>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {triggerEvents.length} events
-            </span>
-          </div>
-          <div
-            className="rounded-lg overflow-hidden border"
-            style={{ borderColor: 'var(--border)' }}
-          >
-            <div
-              className="grid text-xs font-medium px-3 py-2"
-              style={{
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-muted)',
-                gridTemplateColumns: '70px 1fr 55px 50px 70px 35px',
-                gap: '4px',
-              }}
-            >
-              <span>Time</span>
-              <span>Trigger</span>
-              <span>Dir</span>
-              <span>Type</span>
-              <span>Price</span>
-              <span>Exec</span>
-            </div>
-            {triggerEvents.map((row, i) => (
-              <div
-                key={i}
-                className="grid text-xs px-3 py-2 border-t items-center"
-                style={{
-                  borderColor: 'var(--border)',
-                  background: 'var(--bg-card)',
-                  gridTemplateColumns: '70px 1fr 55px 50px 70px 35px',
-                  gap: '4px',
-                }}
-              >
-                <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
-                  {row.time}
-                </span>
-                <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                  {row.trigger}
-                </span>
-                <DirectionBadge dir={row.direction} />
-                <TypeBadge type={row.type} />
-                <span className="font-mono" style={{ color: 'var(--text-primary)' }}>
-                  {row.price}
-                </span>
-                <ExecBadge exec={row.execType} />
+            <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)', maxHeight: 400, overflowY: 'auto' }}>
+              <div className="grid grid-cols-3 text-xs font-medium px-3 py-2 sticky top-0" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
+                <span>Time</span>
+                <span>State</span>
+                <span>Previous</span>
               </div>
-            ))}
+              {stateTimeline.map((row, i) => {
+                const changed = row.state !== row.prevState;
+                return (
+                  <div key={i} className="grid grid-cols-3 text-xs px-3 py-2 border-t" style={{ borderColor: 'var(--border)', background: changed ? 'var(--accent-muted)' : 'var(--bg-card)' }}>
+                    <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{row.time}</span>
+                    <span className="font-mono font-semibold" style={{ color: changed ? 'var(--accent)' : 'var(--text-primary)' }}>{row.state}</span>
+                    <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{row.prevState}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Trigger Events */}
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Trigger Events
+              </h4>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {triggerEvents.length} events
+              </span>
+            </div>
+            <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)', maxHeight: 400, overflowY: 'auto' }}>
+              <div className="grid text-xs font-medium px-3 py-2 sticky top-0" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', gridTemplateColumns: '70px 1fr 55px 50px' }}>
+                <span>Time</span>
+                <span>Trigger</span>
+                <span>Dir</span>
+                <span>Type</span>
+              </div>
+              {triggerEvents.map((row, i) => (
+                <div key={i} className="grid text-xs px-3 py-2 border-t items-center" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)', gridTemplateColumns: '70px 1fr 55px 50px' }}>
+                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>{row.time}</span>
+                  <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{row.trigger}</span>
+                  <DirectionBadge dir={row.direction} />
+                  <TypeBadge type={row.type} />
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ========================================================================
+   Detail: Signal Validation Tab
+   ======================================================================== */
+
+function SignalValidationTab({ pack }: { pack: UserPack }) {
+  const [symbol, setSymbol] = useState('NVDA');
+  const [timeframe, setTimeframe] = useState('5Min');
+  const [days, setDays] = useState(90);
+  const validationMut = usePackPreview();
+
+  const data = validationMut.data as PackPreviewResponse | undefined;
+
+  // Compute validation stats from preview data
+  const stats = useMemo(() => {
+    if (!data?.bars || data.bars.length === 0) return null;
+
+    const totalBars = data.bars.length;
+    const totalTriggers = data.triggers.length;
+
+    // State coverage
+    const observedStates = new Set(data.bars.map((b) => b.state).filter(Boolean));
+    const definedStates = data.states.length;
+    const stateCoverage = definedStates > 0 ? observedStates.size / definedStates : 0;
+    const allStatesReached = definedStates > 0 && observedStates.size === definedStates;
+    const missingStates = data.states.filter((s) => !observedStates.has(s));
+
+    // Avg bars between triggers (across all triggers combined)
+    const avgBarsBetween = totalTriggers > 1 ? Math.round(totalBars / totalTriggers) : totalBars;
+
+    // Per-trigger breakdown — match by trigger name since IDs use the manifest's
+    // trigger_prefix (e.g., "s123t") not the pack slug (e.g., "swing_123_test")
+    const triggerCountsByName: Record<string, number> = {};
+    const triggerCountsById: Record<string, number> = {};
+    for (const t of data.triggers) {
+      triggerCountsByName[t.trigger_name] = (triggerCountsByName[t.trigger_name] || 0) + 1;
+      triggerCountsById[t.trigger_id] = (triggerCountsById[t.trigger_id] || 0) + 1;
+    }
+
+    const perTrigger = pack.triggers.map((t) => {
+      // Try matching by name first, then by ID suffix
+      const fires = triggerCountsByName[t.name]
+        || Object.entries(triggerCountsById).find(([id]) => id.endsWith('_' + t.id))?.[1]
+        || 0;
+      const avgBars = fires > 0 ? Math.round(totalBars / fires) : 0;
+      return { id: t.id, name: t.name, fires, avgBars };
+    });
+
+    // State distribution
+    const stateDistribution: Record<string, number> = {};
+    for (const b of data.bars) {
+      if (b.state) stateDistribution[b.state] = (stateDistribution[b.state] || 0) + 1;
+    }
+
+    return {
+      totalBars, totalTriggers, stateCoverage, allStatesReached, missingStates,
+      avgBarsBetween, perTrigger, stateDistribution, observedStates,
+    };
+  }, [data, pack]);
+
+  const handleRun = () => {
+    validationMut.mutate({ slug: pack.id, symbol, timeframe, days, session: 'RTH' });
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h4 className="text-sm font-medium mb-2">Signal Validation</h4>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Runs {pack.name} on historical data to verify signals fire correctly, all states are reached, and trigger frequency is reasonable.
+        </p>
+
+        {/* Controls */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+            {['NVDA', 'SPY', 'AAPL', 'TSLA', 'MSFT', 'AMD'].map((s) => <option key={s}>{s}</option>)}
+          </select>
+          <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+            {['1Min', '5Min', '15Min', '1H', '1Day'].map((tf) => <option key={tf}>{tf}</option>)}
+          </select>
+          <select className="px-3 py-2 rounded-lg text-sm" style={selectStyle} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {[30, 60, 90, 180].map((d) => <option key={d} value={d}>{d} days</option>)}
+          </select>
+          <button
+            className="px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer', opacity: validationMut.isPending ? 0.6 : 1 }}
+            onClick={handleRun}
+            disabled={validationMut.isPending}
+          >
+            {validationMut.isPending ? 'Running...' : 'Run Validation'}
+          </button>
+        </div>
+      </Card>
+
+      {validationMut.error && (
+        <Card><p className="text-xs" style={{ color: 'var(--red)' }}>Validation failed: {String(validationMut.error)}</p></Card>
+      )}
+
+      {stats && (
+        <>
+          {/* Summary metrics */}
+          <div className="grid grid-cols-4 gap-4">
+            <Card>
+              <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Total Signals</p>
+              <p className="text-2xl font-bold">{stats.totalTriggers}</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>across {stats.totalBars} bars</p>
+            </Card>
+            <Card>
+              <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Avg Bars Between</p>
+              <p className="text-2xl font-bold">{stats.avgBarsBetween}</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>bars per signal</p>
+            </Card>
+            <Card>
+              <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>State Coverage</p>
+              <p className="text-2xl font-bold" style={{ color: stats.stateCoverage === 1 ? 'var(--green)' : 'var(--orange)' }}>
+                {Math.round(stats.stateCoverage * 100)}%
+              </p>
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{stats.observedStates.size}/{data!.states.length} states</p>
+            </Card>
+            <Card>
+              <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>All States Reached</p>
+              <p className="text-2xl font-bold" style={{ color: stats.allStatesReached ? 'var(--green)' : 'var(--red)' }}>
+                {stats.allStatesReached ? 'Yes' : 'No'}
+              </p>
+              {stats.missingStates.length > 0 && (
+                <p className="text-[10px]" style={{ color: 'var(--red)' }}>Missing: {stats.missingStates.join(', ')}</p>
+              )}
+            </Card>
           </div>
-        </Card>
-      </div>
+
+          {/* State distribution */}
+          <Card>
+            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>State Distribution</h5>
+            <div className="flex gap-1 rounded overflow-hidden" style={{ height: 24 }}>
+              {data!.states.map((state, i) => {
+                const count = stats.stateDistribution[state] || 0;
+                const pct = stats.totalBars > 0 ? (count / stats.totalBars) * 100 : 0;
+                if (pct === 0) return null;
+                return (
+                  <div
+                    key={state}
+                    title={`${state}: ${count} bars (${pct.toFixed(1)}%)`}
+                    style={{ flex: count, background: STATE_COLORS[i % STATE_COLORS.length] + '60', minWidth: pct > 2 ? undefined : 2 }}
+                    className="flex items-center justify-center text-[8px] font-mono font-bold truncate px-0.5"
+                  >
+                    {pct > 8 ? `${state} ${pct.toFixed(0)}%` : ''}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-3 mt-1.5 flex-wrap">
+              {data!.states.map((state, i) => {
+                const count = stats.stateDistribution[state] || 0;
+                const pct = stats.totalBars > 0 ? (count / stats.totalBars * 100).toFixed(1) : '0';
+                return (
+                  <span key={state} className="flex items-center gap-1 text-[10px]" style={{ color: count > 0 ? 'var(--text-secondary)' : 'var(--red)' }}>
+                    <span className="w-2.5 h-2.5 rounded-sm" style={{ background: STATE_COLORS[i % STATE_COLORS.length] + '80' }} />
+                    {state}: {count} ({pct}%)
+                  </span>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Per-trigger breakdown */}
+          <Card>
+            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Per-Trigger Breakdown</h5>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Trigger', 'Fires', 'Avg Bars Between', 'Frequency'].map((h) => (
+                      <th key={h} className="text-left py-2 px-3 text-[10px] font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.perTrigger.map((t) => (
+                    <tr key={t.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="py-2 px-3 font-medium">{t.name}</td>
+                      <td className="py-2 px-3 font-mono" style={{ color: t.fires > 0 ? 'var(--text-primary)' : 'var(--red)' }}>
+                        {t.fires}
+                      </td>
+                      <td className="py-2 px-3 font-mono">{t.avgBars > 0 ? t.avgBars : '—'}</td>
+                      <td className="py-2 px-3">
+                        {t.fires === 0 ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--red)', background: 'var(--red)' + '20' }}>Never fires</span>
+                        ) : t.avgBars < 5 ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange)' + '20' }}>Very frequent</span>
+                        ) : t.avgBars > 500 ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange)' + '20' }}>Very rare</span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--green)', background: 'var(--green)' + '20' }}>Normal</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -877,6 +1243,11 @@ function DetailView({
                 );
               })}
             </div>
+            <a href="/strategy-builder" className="px-3 py-1.5 rounded-lg text-xs font-medium no-underline"
+              style={{ background: 'var(--accent)', color: 'var(--bg-primary)' }}
+              title={`Open Strategy Builder to test ${pack.name} with real data`}>
+              Test in Strategy Builder
+            </a>
             <button onClick={onBack} className="px-4 py-2 rounded-lg text-sm" style={btnSecondary}>Back to Packs</button>
           </div>
         }
@@ -915,113 +1286,25 @@ function DetailView({
         {pack.version} &middot; {pack.strategiesUsing} strategies &middot; Last modified {pack.lastModified}
       </p>
 
-      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Sandbox', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
+      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && <ParametersTab pack={pack} />}
             {tab === 'Plot Settings' && <PlotSettingsTab pack={pack} />}
             {tab === 'States & Triggers' && <OutputsTriggersTab pack={pack} />}
-            {tab === 'Sandbox' && <SandboxPanel packSlug={pack.id} layout="horizontal" />}
-            {tab === 'Chart Preview' && (
-              <div>
-                <Card className="mb-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm font-medium">Confluence States & Trigger Visualization</h4>
-                    <div className="flex gap-2">
-                      <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-                        <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }} /> Show Confluence
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-                        <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }} /> Show Triggers
-                      </label>
-                    </div>
-                  </div>
-                  <ChartPlaceholder label={`Price chart with ${pack.name} applied: background shading shows state changes (${pack.outputs.map(o => o.code).join('/')}), arrow markers show trigger fires. Heatmap pane below.`} height={400} />
-                  <div className="flex gap-4 mt-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                    {pack.outputs.map((o, i) => (
-                      <span key={o.code} className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded" style={{ background: ['var(--red)', 'var(--text-muted)', 'var(--green)'][i % 3] + '30' }} />
-                        {o.code}
-                      </span>
-                    ))}
-                  </div>
-                </Card>
-                <PreviewTab pack={pack} />
-              </div>
-            )}
-            {tab === 'Signal Validation' && (
-              <Card>
-                <h4 className="text-sm font-medium mb-2">Signal Validation</h4>
-                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-                  Runs {pack.name} on 90 days of sample data to verify signals fire correctly and all states are reached.
-                </p>
-                <div className="grid grid-cols-4 gap-4 mb-4">
-                  {[
-                    { label: 'Total Signals', value: '{{total_signals}}' },
-                    { label: 'Avg Bars Between', value: '{{avg_bars}}' },
-                    { label: 'State Coverage', value: '{{state_coverage}}' },
-                    { label: 'All States Reached', value: '{{states_reached}}' },
-                  ].map((m) => (
-                    <div key={m.label}>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                      <p className="text-lg font-bold">{m.value}</p>
-                    </div>
-                  ))}
-                </div>
-                <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Per-Trigger Breakdown</h5>
-                <div style={{ overflowX: 'auto' }}>
-                  <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr>
-                        {['Trigger', 'Direction', 'Fires', 'Avg Bars', 'State Match'].map((h) => (
-                          <th key={h} className="text-left py-2 px-3 text-[10px] font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pack.triggers.map((t) => (
-                        <tr key={t.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td className="py-2 px-3">{t.name}</td>
-                          <td className="py-2 px-3">{t.direction}</td>
-                          <td className="py-2 px-3">{'{{fires}}'}</td>
-                          <td className="py-2 px-3">{'{{avg_bars}}'}</td>
-                          <td className="py-2 px-3">{'{{match}}'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <button className="mt-3" style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }}>
-                  Re-run Validation
-                </button>
-              </Card>
-            )}
+            {tab === 'Chart Preview' && <PreviewTab pack={pack} />}
+            {tab === 'Signal Validation' && <SignalValidationTab pack={pack} />}
             {tab === 'Parity Simulator' && (
               <Card>
                 <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
-                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-                  Replays historical data through both backtest and live engine paths for {pack.name}. Verifies triggers fire at the same bars.
+                <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                  Compares backtest trigger timing against live engine (Ralph) trigger timing to verify
+                  they fire on the same bars. Requires the live engine to have accumulated alert trade history.
                 </p>
-                <div className="flex items-center gap-4 mb-4">
-                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Ticker</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>NVDA</option><option>SPY</option><option>AAPL</option></select></div>
-                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>TF</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>1Min</option><option>5Min</option></select></div>
-                  <div><label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Bars</label><select style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}><option>200</option><option>500</option></select></div>
-                  <div className="flex items-end"><button style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '0.8rem', cursor: 'pointer' }}>Run Parity Test</button></div>
-                </div>
-                <ChartPlaceholder label="Bar-by-bar replay: backtest triggers (blue above) vs live triggers (green below). Matched = green. Mismatched = red." height={300} />
-                <div className="grid grid-cols-4 gap-4 mt-4 mb-4">
-                  {[
-                    { label: 'Total Triggers', value: '{{total_triggers}}' },
-                    { label: 'Matched', value: '{{matched}}' },
-                    { label: 'Mismatched', value: '{{mismatched}}' },
-                    { label: 'Parity Score', value: '{{parity_score}}' },
-                  ].map((m) => (
-                    <div key={m.label}>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                      <p className="text-lg font-bold">{m.value}</p>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}>
+                  Coming soon — depends on Ralph engine replay capability or sufficient live alert history.
+                  In the meantime, use the Strategy Detail page&apos;s &quot;Alert Trades&quot; tab to compare backtest vs alert timing for strategies using this pack.
+                </p>
               </Card>
             )}
             {tab === 'Code' && <CodeTab pack={pack} />}
@@ -1070,6 +1353,12 @@ function PackCard({
               style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}
             >
               {pack.version}
+            </span>
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{ color: 'var(--orange)', background: 'var(--orange-muted)' }}
+            >
+              Legacy
             </span>
           </div>
 

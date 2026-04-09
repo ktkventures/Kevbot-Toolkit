@@ -26,8 +26,11 @@ import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
-import { useRunBacktest, useAnalyzeTriggers, useBacktestTradeZoom, type AnalyzeResult, type BacktestRequest } from '@/hooks/queries/useBacktest';
+import { useRunBacktest, useAnalyzeTriggers, useBacktestTradeZoom, useBacktestTradeReplay, type AnalyzeResult, type BacktestRequest } from '@/hooks/queries/useBacktest';
 const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
+const TradeReplayModal = dynamic(() => import('@/components/TradeReplayModal'), { ssr: false });
+const TradeWorkflowModal = dynamic(() => import('@/components/TradeWorkflowModal'), { ssr: false });
+import EnhancedTradeTable from '@/components/EnhancedTradeTable';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
 import { useStrategyBuilderDefaults, useDisplayStore } from '@/providers/StoreProvider';
@@ -89,24 +92,24 @@ const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
 const ASSET_TYPES = ['Equity', 'Crypto'];
 const LOOKBACK_MODES = ['Days', 'Bars/Candles', 'Date Range'];
 // Stop/Target packs — selectable saved variations
-interface RiskPack { id: string; name: string; version: string; summary: string }
+interface RiskPack { id: string; name: string; version: string; summary: string; execType: string }
 const API_STOP_PACKS: RiskPack[] = [
-  { id: 'atr-default', name: 'ATR Stop', version: 'Default', summary: '1.5x ATR' },
-  { id: 'atr-tight', name: 'ATR Stop', version: 'Tight', summary: '1.0x ATR' },
-  { id: 'fixed-default', name: 'Fixed Dollar', version: 'Default', summary: '$1.00 fixed' },
-  { id: 'pct-default', name: 'Percentage', version: 'Default', summary: '0.5% from entry' },
-  { id: 'swing-default', name: 'Swing Stop', version: 'Default', summary: '5-bar swing, $0.05 pad' },
-  { id: 'swing-wide', name: 'Swing Stop', version: 'Wide', summary: '8-bar swing, $0.10 pad' },
-  { id: 'trail-default', name: 'ATR Trailing', version: 'Default', summary: '1.5x ATR \u2192 trail 1.0x @ 1.0R' },
-  { id: 'be-default', name: 'Breakeven', version: 'Default', summary: '1.5x ATR \u2192 BE @ 1.0R' },
+  { id: 'atr-default', name: 'ATR Stop', version: 'Default', summary: '1.5x ATR', execType: 'L' },
+  { id: 'atr-tight', name: 'ATR Stop', version: 'Tight', summary: '1.0x ATR', execType: 'L' },
+  { id: 'fixed-default', name: 'Fixed Dollar', version: 'Default', summary: '$1.00 fixed', execType: 'L' },
+  { id: 'pct-default', name: 'Percentage', version: 'Default', summary: '0.5% from entry', execType: 'L' },
+  { id: 'swing-default', name: 'Swing Stop', version: 'Default', summary: '5-bar swing, $0.05 pad', execType: 'L' },
+  { id: 'swing-wide', name: 'Swing Stop', version: 'Wide', summary: '8-bar swing, $0.10 pad', execType: 'L' },
+  { id: 'trail-default', name: 'ATR Trailing', version: 'Default', summary: '1.5x ATR \u2192 trail 1.0x @ 1.0R', execType: 'L' },
+  { id: 'be-default', name: 'Breakeven', version: 'Default', summary: '1.5x ATR \u2192 BE @ 1.0R', execType: 'L' },
 ];
 const API_TARGET_PACKS: RiskPack[] = [
-  { id: 'rr-default', name: 'Risk:Reward', version: 'Default', summary: '2:1 R:R' },
-  { id: 'rr-3to1', name: 'Risk:Reward', version: '3:1 Aggressive', summary: '3:1 R:R' },
-  { id: 'atr-target-default', name: 'ATR Target', version: 'Default', summary: '2.0x ATR' },
-  { id: 'fixed-target-default', name: 'Fixed Dollar', version: 'Default', summary: '$2.00 fixed' },
-  { id: 'swing-target-default', name: 'Swing Target', version: 'Default', summary: '5-bar swing, $0.05 pad' },
-  { id: 'no-target', name: 'No Target', version: 'Default', summary: 'Exit via stop, signal, or bar count' },
+  { id: 'rr-default', name: 'Risk:Reward', version: 'Default', summary: '2:1 R:R', execType: 'L' },
+  { id: 'rr-3to1', name: 'Risk:Reward', version: '3:1 Aggressive', summary: '3:1 R:R', execType: 'L' },
+  { id: 'atr-target-default', name: 'ATR Target', version: 'Default', summary: '2.0x ATR', execType: 'L' },
+  { id: 'fixed-target-default', name: 'Fixed Dollar', version: 'Default', summary: '$2.00 fixed', execType: 'L' },
+  { id: 'swing-target-default', name: 'Swing Target', version: 'Default', summary: '5-bar swing, $0.05 pad', execType: 'L' },
+  { id: 'no-target', name: 'No Target', version: 'Default', summary: 'Exit via stop, signal, or bar count', execType: 'C' },
 ];
 
 // Each trigger is a base trigger + execution type variant (4 per base trigger)
@@ -185,7 +188,7 @@ const EMPTY_KPIS: KPIs = {
 };
 
 // Empty trades — shown before a backtest is run. No fake data.
-const EMPTY_TRADES: TradeRow[] = [];
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -841,8 +844,9 @@ function OptimizableVariables({
           <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Stop Loss
           </div>
-          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
-            {formatStopDisplay()}
+          <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+            {stopPack && <ExecBadge type={stopPack.execType} />}
+            <span className="italic">{formatStopDisplay()}</span>
           </span>
         </div>
 
@@ -851,8 +855,9 @@ function OptimizableVariables({
           <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Take Profit
           </div>
-          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
-            {formatTargetDisplay()}
+          <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+            {targetPack && <ExecBadge type={targetPack.execType} />}
+            <span className="italic">{formatTargetDisplay()}</span>
           </span>
         </div>
       </div>
@@ -860,128 +865,6 @@ function OptimizableVariables({
   );
 }
 
-function TradeHistoryTable({ trades, onTradeClick }: { trades: TradeRow[]; onTradeClick?: (idx: number, side: 'entry' | 'exit', trade: TradeRow) => void }) {
-  const [sortCol, setSortCol] = useState<keyof TradeRow>('id');
-  const [sortAsc, setSortAsc] = useState(true);
-
-  const sorted = useMemo(() => {
-    const arr = [...trades];
-    arr.sort((a, b) => {
-      const av = a[sortCol];
-      const bv = b[sortCol];
-      if (typeof av === 'number' && typeof bv === 'number') {
-        return sortAsc ? av - bv : bv - av;
-      }
-      return sortAsc
-        ? String(av).localeCompare(String(bv))
-        : String(bv).localeCompare(String(av));
-    });
-    return arr;
-  }, [trades, sortCol, sortAsc]);
-
-  function handleSort(col: keyof TradeRow) {
-    if (sortCol === col) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortCol(col);
-      setSortAsc(true);
-    }
-  }
-
-  const columns: { key: keyof TradeRow; label: string; align?: 'right' | 'center' }[] = [
-    { key: 'id', label: '#', align: 'center' },
-    { key: 'entryTime', label: 'Entry Time' },
-    { key: 'exitTime', label: 'Exit Time' },
-    { key: 'direction', label: 'Dir', align: 'center' },
-    { key: 'entryPrice', label: 'Entry $', align: 'right' },
-    { key: 'exitPrice', label: 'Exit $', align: 'right' },
-    { key: 'rMultiple', label: 'P&L (R)', align: 'right' },
-    { key: 'execType', label: 'Exec', align: 'center' },
-    { key: 'exitReason', label: 'Exit Reason', align: 'center' },
-  ];
-
-  const sortIndicator = (col: keyof TradeRow) => {
-    if (sortCol !== col) return '';
-    return sortAsc ? ' \u2191' : ' \u2193';
-  };
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr style={{ borderBottom: '1px solid var(--border)' }}>
-            {columns.map((col) => (
-              <th
-                key={col.key}
-                className={`px-2 py-2 font-medium cursor-pointer hover:opacity-80 transition-opacity whitespace-nowrap ${
-                  col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
-                }`}
-                style={{ color: 'var(--text-muted)' }}
-                onClick={() => handleSort(col.key)}
-              >
-                {col.label}{sortIndicator(col.key)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((trade) => (
-            <tr
-              key={trade.id}
-              className="hover:opacity-90 transition-opacity"
-              style={{ borderBottom: '1px solid var(--border)' }}
-            >
-              <td className="px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>
-                {trade.id}
-              </td>
-              <td
-                className="px-2 py-2 whitespace-nowrap"
-                style={{ color: 'var(--text-secondary)', cursor: onTradeClick ? 'pointer' : undefined, fontFamily: 'monospace', fontSize: '0.75rem' }}
-                onClick={onTradeClick ? () => onTradeClick(trade.id - 1, 'entry', trade) : undefined}
-                title={onTradeClick ? 'Click to drill down into 1-second candles' : undefined}
-              >
-                {trade.entryTime}
-              </td>
-              <td
-                className="px-2 py-2 whitespace-nowrap"
-                style={{ color: 'var(--text-secondary)', cursor: onTradeClick ? 'pointer' : undefined, fontFamily: 'monospace', fontSize: '0.75rem' }}
-                onClick={onTradeClick ? () => onTradeClick(trade.id - 1, 'exit', trade) : undefined}
-                title={onTradeClick ? 'Click to drill down into 1-second candles' : undefined}
-              >
-                {trade.exitTime}
-              </td>
-              <td className="px-2 py-2 text-center">
-                <span
-                  className="text-[10px] font-medium"
-                  style={{ color: trade.direction === 'LONG' ? 'var(--green)' : 'var(--red)' }}
-                >
-                  {trade.direction}
-                </span>
-              </td>
-              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
-                ${trade.entryPrice.toFixed(2)}
-              </td>
-              <td className="px-2 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>
-                ${trade.exitPrice.toFixed(2)}
-              </td>
-              <td className="px-2 py-2 text-right font-mono font-medium">
-                <span style={{ color: trade.rMultiple >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                  {trade.rMultiple >= 0 ? '+' : ''}{trade.rMultiple.toFixed(2)}
-                </span>
-              </td>
-              <td className="px-2 py-2 text-center">
-                <ExecBadge type={trade.execType} />
-              </td>
-              <td className="px-2 py-2 text-center">
-                <ExitReasonBadge reason={trade.exitReason} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function AdvancedAnalysis() {
   const [expanded, setExpanded] = useState(false);
@@ -1558,8 +1441,10 @@ export default function StrategyBuilderPage() {
   const backtestMut = useRunBacktest();
   const analyzeMut = useAnalyzeTriggers();
   const createMut = useCreateStrategy();
-  const { data: apiEntryTriggers } = useConfluenceTriggers('LONG');
-  const { data: apiExitTriggers } = useConfluenceTriggers('EXIT');
+  // All triggers are direction/type neutral — single fetch returns everything
+  const { data: apiAllTriggers } = useConfluenceTriggers('LONG');
+  const apiEntryTriggers = apiAllTriggers;
+  const apiExitTriggers = apiAllTriggers;
   const { data: apiConfluenceGroups } = useConfluenceGroups();
   const { data: apiGeneralPacks } = useGeneralPacks();
   const { data: apiStopPacks } = useStopLossPacks();
@@ -1600,6 +1485,7 @@ export default function StrategyBuilderPage() {
     return apiStopPacks.map((p: any) => ({
       id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
       summary: p.stop_summary || p.version,
+      execType: p.exec_type || 'L',
     }));
   }, [apiStopPacks]);
 
@@ -1608,6 +1494,7 @@ export default function StrategyBuilderPage() {
     return apiTargetPacks.map((p: any) => ({
       id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
       summary: p.target_summary || p.version,
+      execType: p.exec_type || 'L',
     }));
   }, [apiTargetPacks]);
 
@@ -1661,6 +1548,7 @@ export default function StrategyBuilderPage() {
       oscillator_indicators: d.oscillator_indicators || [],
       heatmap_conditions: d.heatmap_conditions || [],
       rawTrades: d.trades || [],  // Raw trade data with ISO timestamps for chart rendering
+      candle_color_column: (d as any).candle_color_column || null,
     };
   }, [backtestMut.data]);
 
@@ -1747,6 +1635,11 @@ export default function StrategyBuilderPage() {
   const [zoomTrade, setZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: TradeRow } | null>(null);
   const tradeZoomMut = useBacktestTradeZoom();
   const [lastBacktestConfig, setLastBacktestConfig] = useState<BacktestRequest | null>(null);
+
+  // ---- Trade Replay & Workflow Modals ----
+  const tradeReplayMut = useBacktestTradeReplay();
+  const [replayTrade, setReplayTrade] = useState<TradeRow | null>(null);
+  const [workflowTrade, setWorkflowTrade] = useState<TradeRow | null>(null);
 
   // ---- Backtest State ----
   const [backtestRan, setBacktestRan] = useState(false);
@@ -2094,8 +1987,8 @@ export default function StrategyBuilderPage() {
                 <ExecBadge type={entryDef.execType} />{' '}
                 {entryDef.name} {'\u2192'}{' '}
                 {exitDefs.map((e) => e.name).join(' / ') || 'No exit'}{' '}
-                | Stop: {API_STOP_PACKS.find((p) => p.id === selectedStopPack)?.summary || 'None'}{' '}
-                | Target: {API_TARGET_PACKS.find((p) => p.id === selectedTargetPack)?.summary || 'None'}
+                | Stop: {(() => { const sp = API_STOP_PACKS.find((p) => p.id === selectedStopPack); return sp ? <><ExecBadge type={sp.execType} /> {sp.summary}</> : 'None'; })()}{' '}
+                | Target: {(() => { const tp = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack); return tp ? <><ExecBadge type={tp.execType} /> {tp.summary}</> : 'None'; })()}
               </span>
             )}
           </div>
@@ -2194,6 +2087,7 @@ export default function StrategyBuilderPage() {
                     }}
                     onClick={() => setSelectedStopPack(p.id)}
                   >
+                    <ExecBadge type={p.execType} />
                     <span className="flex-1 truncate">{p.name} ({p.version})</span>
                     <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
                   </button>
@@ -2219,6 +2113,7 @@ export default function StrategyBuilderPage() {
                     }}
                     onClick={() => setSelectedTargetPack(p.id)}
                   >
+                    <ExecBadge type={p.execType} />
                     <span className="flex-1 truncate">{p.name} ({p.version})</span>
                     <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
                   </button>
@@ -2421,6 +2316,7 @@ export default function StrategyBuilderPage() {
                               heatmapConds: heatmap,
                               tfMs: _tfMs,
                               chartPrefs,
+                              candleColorColumn: (backtestResult as any)?.candle_color_column,
                             });
                             return panes.length > 0 ? (
                               <SyncedChartPane
@@ -2444,23 +2340,7 @@ export default function StrategyBuilderPage() {
                 </TabBar>
               </Card>
 
-              {/* Trade History */}
-              <Card>
-                <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-                  Trade History
-                </h3>
-                <TradeHistoryTable
-                  trades={backtestResult?.trades ?? EMPTY_TRADES}
-                  onTradeClick={lastBacktestConfig ? (idx, side, trade) => {
-                    setZoomTrade({ idx, side, trade });
-                    tradeZoomMut.mutate({
-                      ...lastBacktestConfig,
-                      trade_idx: idx,
-                      side,
-                    });
-                  } : undefined}
-                />
-              </Card>
+              {/* Trade History moved to Enhanced Trade History (full-width below grid) */}
             </div>
 
             {/* =========================================== */}
@@ -2794,6 +2674,39 @@ export default function StrategyBuilderPage() {
           </div>
 
           {/* ================================================================= */}
+          {/* ENHANCED TRADE HISTORY (full-width)                                */}
+          {/* ================================================================= */}
+          {backtestResult && backtestResult.trades.length > 0 && (
+            <Card className="mt-4">
+              <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+                Enhanced Trade History
+                <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                  ({backtestResult.trades.length} trades — click # to replay, times for 1s drill-down, exec for workflow)
+                </span>
+              </h3>
+              <EnhancedTradeTable
+                trades={backtestResult.trades}
+                onTimeClick={lastBacktestConfig ? (idx, side, trade) => {
+                  setZoomTrade({ idx, side, trade });
+                  tradeZoomMut.mutate({
+                    ...lastBacktestConfig,
+                    trade_idx: idx,
+                    side,
+                  });
+                } : undefined}
+                onExecClick={(trade) => setWorkflowTrade(trade)}
+                onTradeNumberClick={lastBacktestConfig ? (trade) => {
+                  setReplayTrade(trade);
+                  tradeReplayMut.mutate({
+                    ...lastBacktestConfig,
+                    trade_idx: trade.id - 1,
+                  });
+                } : undefined}
+              />
+            </Card>
+          )}
+
+          {/* ================================================================= */}
           {/* SAVE STRATEGY                                                      */}
           {/* ================================================================= */}
           <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
@@ -2865,6 +2778,32 @@ export default function StrategyBuilderPage() {
           isLoading={tradeZoomMut.isPending}
           error={tradeZoomMut.error ? String(tradeZoomMut.error) : null}
           selectedConditions={Array.from(selectedConditions)}
+        />
+      )}
+
+      {/* Trade Replay Modal */}
+      {replayTrade && (
+        <TradeReplayModal
+          isOpen={!!replayTrade}
+          onClose={() => { setReplayTrade(null); tradeReplayMut.reset(); }}
+          tradeNum={replayTrade.id}
+          execType={replayTrade.execType}
+          direction={replayTrade.direction}
+          rMultiple={replayTrade.rMultiple}
+          entryPrice={replayTrade.entryPrice}
+          exitPrice={replayTrade.exitPrice}
+          scenarioData={tradeReplayMut.data ?? null}
+          isLoading={tradeReplayMut.isPending}
+          error={tradeReplayMut.error ? String(tradeReplayMut.error) : null}
+        />
+      )}
+
+      {/* Trade Workflow Modal */}
+      {workflowTrade && (
+        <TradeWorkflowModal
+          isOpen={!!workflowTrade}
+          onClose={() => setWorkflowTrade(null)}
+          trade={workflowTrade}
         />
       )}
     </div>

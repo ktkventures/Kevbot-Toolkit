@@ -165,7 +165,12 @@ export default function SyncedChartPane({
             if (!isFinite(time as number)) return null;
             if (seriesCfg.type === 'Candlestick') {
               if (!isFinite(d.open) || !isFinite(d.high) || !isFinite(d.low) || !isFinite(d.close)) return null;
-              return { time, open: Number(d.open), high: Number(d.high), low: Number(d.low), close: Number(d.close) };
+              const candle: any = { time, open: Number(d.open), high: Number(d.high), low: Number(d.low), close: Number(d.close) };
+              // Preserve per-bar color overrides (e.g., indicator candle coloring)
+              if (d.color) candle.color = d.color;
+              if (d.borderColor) candle.borderColor = d.borderColor;
+              if (d.wickColor) candle.wickColor = d.wickColor;
+              return candle;
             }
             if (!isFinite(d.value)) return null;
             return d.color ? { time, value: Number(d.value), color: d.color } : { time, value: Number(d.value) };

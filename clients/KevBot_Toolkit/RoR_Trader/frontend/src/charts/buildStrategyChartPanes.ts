@@ -24,6 +24,8 @@ interface ChartBuildOptions {
   showTriggers?: boolean;
   /** Timeframe duration in ms — used to shift C-type timestamps to next bar open */
   tfMs?: number;
+  /** Column name from pack's plot_config.candle_color_column — overrides candle colors */
+  candleColorColumn?: string;
   chartPrefs?: {
     entryColor: string;
     exitWinColor: string;
@@ -33,6 +35,19 @@ interface ChartBuildOptions {
     exitHybridColor?: string;
     showLabels: boolean;
   };
+}
+
+/** Check if a column's values are plottable (numeric, not boolean/string) */
+function isPlottableColumn(bars: any[], colName: string): boolean {
+  // Sample a few bars to determine the column type
+  for (const bar of bars.slice(0, 10)) {
+    const val = bar[colName];
+    if (val === null || val === undefined) continue;
+    if (typeof val === 'boolean') return false;
+    if (typeof val === 'string') return false;
+    if (typeof val === 'number' && !isNaN(val)) return true;
+  }
+  return false; // all null/undefined = skip
 }
 
 const DEFAULT_PREFS = {
@@ -51,8 +66,13 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     overlayNames = [], oscNames = [], heatmapConds = [],
     showConditions = true, showTriggers = true,
     tfMs = 60000,
+    candleColorColumn,
     chartPrefs = DEFAULT_PREFS,
   } = opts;
+
+  // Filter overlay/oscillator names to only plottable numeric columns
+  const filteredOverlays = overlayNames.filter((col) => isPlottableColumn(bars, col));
+  const filteredOscs = oscNames.filter((col) => isPlottableColumn(bars, col));
 
   // L-type exit reasons don't need timestamp shift (fire mid-bar)
   const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']);
@@ -203,7 +223,19 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const priceSeries: SeriesConfig[] = [
     {
       type: 'Candlestick',
-      data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+      data: bars.map((b: any) => {
+        const bar: any = { time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close };
+        // Apply candle color from indicator (e.g., Swing 1-2-3 pattern colors)
+        if (candleColorColumn) {
+          const indicatorColor = b[candleColorColumn];
+          if (indicatorColor && typeof indicatorColor === 'string' && indicatorColor.startsWith('#')) {
+            bar.color = indicatorColor;
+            bar.borderColor = indicatorColor;
+            bar.wickColor = indicatorColor;
+          }
+        }
+        return bar;
+      }),
       markers: tradeMarkers,
     },
   ];
@@ -227,9 +259,9 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     });
   }
 
-  // Overlay indicators
-  for (let i = 0; i < overlayNames.length; i++) {
-    const col = overlayNames[i];
+  // Overlay indicators (filtered to only plottable numeric columns)
+  for (let i = 0; i < filteredOverlays.length; i++) {
+    const col = filteredOverlays[i];
     priceSeries.push({
       type: 'Line',
       data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
@@ -238,11 +270,11 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   }
   chartPanes.push({ id: 'price', height: 350, series: priceSeries });
 
-  // Pane 3: Oscillators
-  if (oscNames.length > 0) {
+  // Pane 3: Oscillators (filtered to only plottable numeric columns)
+  if (filteredOscs.length > 0) {
     const oscSeries: SeriesConfig[] = [];
-    for (let i = 0; i < oscNames.length; i++) {
-      const col = oscNames[i];
+    for (let i = 0; i < filteredOscs.length; i++) {
+      const col = filteredOscs[i];
       const isHist = col.toLowerCase().includes('hist');
       oscSeries.push({
         type: isHist ? 'Histogram' : 'Line',

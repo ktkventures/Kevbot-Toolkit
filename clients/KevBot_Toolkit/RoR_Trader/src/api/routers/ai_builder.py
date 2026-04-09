@@ -425,3 +425,177 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
         "slug": slug,
         "errors": install_errors,
     }
+
+
+# =============================================================================
+# Chart Preview — run a pack's indicator/interpreter on sample data
+# =============================================================================
+
+class PackPreviewRequest(BaseModel):
+    symbol: str = "NVDA"
+    timeframe: str = "5Min"
+    days: int = 5
+    session: str = "RTH"
+
+
+@router.post("/user-packs/{slug}/preview")
+def pack_preview(slug: str, req: PackPreviewRequest, user=Depends(get_current_user)):
+    """Run a user pack's indicator + interpreter on sample data for chart preview.
+
+    Returns OHLCV bars with state classification and trigger events.
+    """
+    import pandas as pd
+    import numpy as np
+    import pack_registry
+    from data_loader import load_market_data, resample_to_timeframe
+    from confluence_groups import load_confluence_groups
+
+    pack = pack_registry.get_pack(slug)
+    if not pack or not pack.is_valid:
+        raise HTTPException(404, f"Pack '{slug}' not found or invalid")
+
+    if not pack.indicator_func or not pack.interpreter_func or not pack.trigger_func:
+        raise HTTPException(400, f"Pack '{slug}' is missing required functions")
+
+    # Load 1-min bars and resample (per CLAUDE.md: always resample from 1-min)
+    try:
+        df = load_market_data(req.symbol, days=req.days, timeframe='1Min',
+                              feed='sip', session=req.session)
+    except Exception as e:
+        logger.exception("Failed to load market data for preview")
+        raise HTTPException(500, f"Failed to load market data: {e}")
+
+    if df is None or len(df) == 0:
+        return {"bars": [], "triggers": [], "states": [],
+                "indicator_columns": [], "display_type": "overlay"}
+
+    # Resample to target timeframe
+    if req.timeframe != '1Min':
+        df = resample_to_timeframe(df, req.timeframe)
+
+    if len(df) == 0:
+        return {"bars": [], "triggers": [], "states": [],
+                "indicator_columns": [], "display_type": "overlay"}
+
+    # Get parameters — try confluence group first, fall back to manifest defaults
+    params = {}
+    try:
+        groups = load_confluence_groups()
+        group = next((g for g in groups if g.base_template == slug), None)
+        if group:
+            params = dict(group.parameters)
+    except Exception as e:
+        logger.debug("Could not load confluence groups for params: %s", e)
+    if not params:
+        params = {k: v.get("default") for k, v in pack.manifest.get("parameters_schema", {}).items()}
+    # Filter out internal keys
+    params = {k: v for k, v in params.items() if not k.startswith('_')}
+
+    # Run indicator
+    try:
+        df = pack.indicator_func(df, **params)
+    except Exception as e:
+        logger.exception("Pack indicator failed for %s", slug)
+        raise HTTPException(500, f"Indicator function failed: {e}")
+
+    # Run interpreter (returns Series of state strings)
+    states_series = None
+    try:
+        states_series = pack.interpreter_func(df, **params)
+    except Exception as e:
+        logger.warning("Pack interpreter failed for %s: %s", slug, e)
+
+    # Run trigger detection (returns dict of boolean Series)
+    trigger_dict = {}
+    try:
+        trigger_dict = pack.trigger_func(df, **params) or {}
+    except Exception as e:
+        logger.warning("Pack trigger detection failed for %s: %s", slug, e)
+
+    # Build response
+    manifest = pack.manifest
+    indicator_columns = manifest.get("indicator_columns", [])
+    display_type = manifest.get("display_type", "overlay")
+    output_states = manifest.get("outputs", [])
+    trigger_defs = {t["base"]: t for t in manifest.get("triggers", [])}
+    trigger_prefix = manifest.get("trigger_prefix", slug)
+
+    # Serialize bars
+    bars = []
+    reset_df = df.reset_index()
+    for i, row in reset_df.iterrows():
+        ts = row.get('timestamp', row.name)
+        if hasattr(ts, 'isoformat'):
+            ts = ts.isoformat()
+
+        bar = {
+            "timestamp": str(ts),
+            "open": float(row.get("open", 0)),
+            "high": float(row.get("high", 0)),
+            "low": float(row.get("low", 0)),
+            "close": float(row.get("close", 0)),
+            "volume": int(row.get("volume", 0)),
+        }
+
+        # Add state
+        if states_series is not None and i < len(states_series):
+            val = states_series.iloc[i] if hasattr(states_series, 'iloc') else None
+            bar["state"] = str(val) if pd.notna(val) else None
+        else:
+            bar["state"] = None
+
+        # Add indicator values
+        for col in indicator_columns:
+            if col in reset_df.columns:
+                val = row.get(col)
+                if pd.isna(val):
+                    bar[col] = None
+                elif isinstance(val, (bool, np.bool_)):
+                    bar[col] = bool(val)
+                elif isinstance(val, str):
+                    bar[col] = val
+                else:
+                    try:
+                        bar[col] = float(val)
+                    except (TypeError, ValueError):
+                        bar[col] = str(val)
+
+        bars.append(bar)
+
+    # Serialize trigger events — use original df index (DatetimeIndex)
+    trigger_events = []
+    for key, series in trigger_dict.items():
+        # Strip trigger prefix to get base name
+        base = key[len(trigger_prefix) + 1:] if key.startswith(trigger_prefix + "_") else key
+        tdef = trigger_defs.get(base, {})
+
+        try:
+            fired = series[series == True]
+            for idx in fired.index:
+                ts = idx
+                if hasattr(ts, 'isoformat'):
+                    ts = ts.isoformat()
+                trigger_events.append({
+                    "timestamp": str(ts),
+                    "trigger_id": key,
+                    "trigger_name": tdef.get("name", key),
+                    "direction": tdef.get("direction", "BOTH"),
+                    "type": tdef.get("type", "ENTRY"),
+                })
+        except Exception as e:
+            logger.warning("Failed to serialize triggers for %s: %s", key, e)
+
+    # Sort trigger events by time
+    trigger_events.sort(key=lambda e: e["timestamp"])
+
+    # Include plot config for reference lines, line styles, etc.
+    plot_config = manifest.get("plot_config", {})
+
+    return {
+        "bars": bars,
+        "triggers": trigger_events,
+        "states": output_states,
+        "indicator_columns": indicator_columns,
+        "display_type": display_type,
+        "plot_config": plot_config,
+    }

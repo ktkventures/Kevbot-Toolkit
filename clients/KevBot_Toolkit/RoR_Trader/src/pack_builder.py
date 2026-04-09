@@ -166,15 +166,15 @@ You are an expert at designing technical indicator packs for a trading platform.
 A pack has three parts:
 - **parameters**: Configurable inputs (type: int, float, str, or bool). Each needs: name, type, default, label. Optional: min, max.
 - **outputs**: Mutually exclusive state classifications. Every bar maps to exactly one state. 3-7 states typical. Use UPPER_SNAKE_CASE.
-- **triggers**: Trade entry/exit signals. Each needs: name, base (snake_case key), direction (LONG/SHORT/BOTH), type (ENTRY/EXIT), execution (bar_close).
+- **triggers**: Signal events (state transitions or condition changes). Each needs: name, base (snake_case key), direction, type, execution.
 
 Rules:
 - Output states must be mutually exclusive (no overlapping conditions)
 - Trigger base keys must be snake_case, unique, and descriptive
 - CRITICAL: Trigger base keys must NOT start with the indicator name/prefix. The system automatically prepends a trigger_prefix. For example, if the pack is "RSI Zones" with trigger_prefix "rsi", use base "cross_above_midline" NOT "rsi_cross_above_midline" — the system creates "rsi_cross_above_midline" automatically.
-- LONG triggers fire on bullish conditions, SHORT on bearish
-- Include both ENTRY and EXIT triggers. EXIT triggers use type "EXIT", not "ENTRY"
-- Each trigger should specify from_state and to_state — the output states it transitions between. For example, a trigger that fires when RSI crosses from BEARISH_NEUTRAL into BULLISH_NEUTRAL would have from_state="BEARISH_NEUTRAL", to_state="BULLISH_NEUTRAL"
+- IMPORTANT: Triggers are direction-agnostic and type-agnostic. ALWAYS use direction "BOTH" and type "BOTH". Users decide how to use each trigger (entry/exit, long/short) in the Strategy Builder. Do NOT create separate long/short or entry/exit versions of the same signal.
+- IMPORTANT: Avoid redundant triggers. If two triggers would fire on the exact same bar with the same boolean logic, they should be one trigger. For example, "RSI crosses above midline" is one trigger — don't create both "entry long on midline cross" and "exit short on midline cross".
+- Each trigger should describe a specific state transition (from_state → to_state) when applicable
 - Parameters should cover the key tunables of the indicator
 - Design for 1-minute intraday data — ensure no single state dominates 90%+ of bars
 
@@ -184,7 +184,7 @@ Required format:
 {
   "parameters": [{"name": "...", "type": "int|float|str|bool", "default": ..., "label": "...", "min": ..., "max": ...}],
   "outputs": [{"code": "STATE_NAME", "description": "When this state occurs"}],
-  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "LONG|SHORT|BOTH", "type": "ENTRY|EXIT", "execution": "bar_close", "from_state": "STATE_A", "to_state": "STATE_B"}],
+  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "from_state": "STATE_A", "to_state": "STATE_B"}],
   "summary": "Brief description of the proposed structure"
 }
 """
@@ -284,7 +284,7 @@ def generate_code_prompt(
     parts.append("### Requirements")
     parts.append("1. Generate all three files: manifest.json, indicator.py, interpreter.py")
     parts.append("2. Follow the Pack Spec schema exactly as documented above")
-    parts.append(f"3. Use slug `{slug}` and trigger_prefix `{slug.split('_')[0]}` (or a short unique prefix)")
+    parts.append(f"3. Use slug `{slug}` and a short unique trigger_prefix (typically 2-4 chars, e.g., 'rsi' for 'rsi_zones', 'mac' for 'macd_crossover')")
     parts.append("4. Use the parameters, outputs, and triggers defined above — do not invent new ones")
     parts.append("5. Use vectorized pandas/numpy operations where possible")
     parts.append("6. Only import pandas, numpy, and math — nothing else")
@@ -296,7 +296,7 @@ def generate_code_prompt(
                  "Example: trigger_prefix='rsi', base='cross_above_midline' → key is 'rsi_cross_above_midline'. "
                  "WRONG: base='rsi_cross_above_midline' → would create 'rsi_rsi_cross_above_midline'.")
     parts.append("11. In detect_*_triggers(), the dict keys must be `{trigger_prefix}_{base}` matching the manifest triggers exactly")
-    parts.append("12. Exit triggers must use type 'EXIT' in the manifest, not 'ENTRY'")
+    parts.append("12. All triggers must use direction 'BOTH' and type 'BOTH' — triggers are neutral, users decide usage in Strategy Builder")
 
     user_prompt = "\n".join(parts)
     return context, user_prompt

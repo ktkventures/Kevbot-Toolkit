@@ -181,52 +181,44 @@ Flesh out the execution type detail page with validation/testing capabilities. D
 
 ---
 
-### Milestone 4.5: Execution Type Creation & Validation
-**Priority:** Critical — prove the concept before building on top of it
-**Effort:** 3-5 days
+### Milestone 4.5: Execution Type Creation & Validation — COMPLETE
+**Completed:** 2026-04-08
 
-First iteration of AI-assisted execution type creation and scenario-based validation. This proves that new execution types can be reliably created, tested, and trusted. Everything downstream (packs, strategies, portfolios) depends on this being solid.
+Scenario-based educational reference system with replay, custom scenario generator, and validation-in-Strategy-Builder architecture.
 
-**Key Principles:**
-- Primary interface is plain English description + workflow steps, not raw parameters
-- Each execution type gets a unique 1-5 character badge (C, L, LC, CC, or custom)
-- Validation uses preset deterministic scenarios (mock data), not random market data
-- AI translates user intent into workflow steps
-- Users can see a mini chart for each scenario showing exactly what happened
-
-**Tasks:**
-- [ ] 4.5a. [Required] **Unique badges** — Each execution type and variation gets a unique 1-5 char badge. Show badge consistently across all pages (Strategy Builder, Detail, Execution Types).
-- [ ] 4.5b. [Required] **Mini chart on simulation** — Add a small price chart to the simulation trace showing entry/exit markers on actual candles, so users can visually verify behavior.
-- [x] 4.5c. [Complete] **Scenario reference system** — 13 static scenarios across 5 categories (Common, Ambiguous, L-Type, Confirmation, Edge Cases) with replay mode, workflow traces, Hi-Fi 1-second drill-downs. Educational/conceptual — explains how each execution type works. NOT a substitute for real backtest validation.
-- [x] 4.5g. [Complete] **Replay mode** — Second-by-second replay with forming candle, workflow states, Hi-Fi charts. Backup: `dev-backup-pre-scenario-expansion`
-- [x] 4.5c2. [Complete] **Expanded scenarios + category tabs** — Signal exit, L-Type, LC/CC confirmation/bail, gap edge cases. Tabs filtered by exec type relevance.
-- [x] 4.5c3. [Complete] **Custom scenario generator** — Own tab with trigger/pack selectors, runs real backtest, cherry-picks trades. Kept as experimental tool.
-- [ ] 4.5d. [Required] **AI-assisted creation** — Describe execution behavior in plain English → AI generates workflow steps.
-- [ ] 4.5e. [Required] **Execution type builder page** — Step-by-step wizard or simple form.
-- [ ] 4.5f. [Polish] **Code tab** — Show the generated execution type code.
+**What was done:**
+- [x] 4.5c. Scenario reference system — 13 static scenarios across 5 categories with replay mode, workflow traces, Hi-Fi 1-second drill-downs
+- [x] 4.5g. Replay mode — Second-by-second replay with forming candle, workflow states, Hi-Fi charts
+- [x] 4.5c2. Expanded scenarios + category tabs — Signal exit, L-Type, LC/CC confirmation/bail, gap edge cases
+- [x] 4.5c3. Custom scenario generator — Own tab with trigger/pack selectors, runs real backtest, cherry-picks trades
+- [x] 4.5h. Removed Sandbox tabs from Execution Types and User Packs detail views
+- [x] 4.5i. "Test in Strategy Builder" button on Execution Types and User Packs detail pages
+- [x] 4.5j. Reframed Scenarios as educational — descriptions clarify conceptual illustrations, link to Strategy Builder for validation
 
 **Key Decision (2026-04-08): Validation belongs in Strategy Builder, not module pages.**
+- Scenarios tab is EDUCATIONAL — explains concepts, not validation
+- Sandbox tabs removed from Execution Types and User Packs pages
+- Strategy Builder is the single source of truth for validation
+- "Test in Strategy Builder" shortcut button on module detail pages
 
-The Sandbox/Scenario tabs in module pages (Execution Types, User Packs) are simplified recreations of the Strategy Builder pipeline. They inevitably drift from the real pipeline — different chart rendering, missing nuances, inconsistent shift logic. This creates confusion about whether something "works" or not.
+**Also completed during M4.5 session:**
+- Enhanced Trade History table in Strategy Builder — clickable trade #, entry/exit times, exec badge
+- Trade Replay Modal — full scenario replay (main chart + 2 hi-fi + replay controls) from trade # click
+- Trade Workflow Modal — execution workflow steps from exec badge click
+- Modal portal fix — all modals render above sidebar via createPortal
+- Trade drill-down indicator fix — 1s charts only show entry/exit trigger indicators, not all confluence
+- Heatmap fix — empty confluence = no heatmap (removed show-all fallback)
+- Exec type badges on stop loss / take profit packs (Strategy Builder selectors + optimizable variables)
+- Backend refactors: `build_single_trade_scenario()`, `classify_and_serialize_chart_data()` helpers
 
-**Resolution:**
-- Scenarios tab is now EDUCATIONAL — explains concepts, not validation
-- Remove Sandbox tabs from Execution Types and User Packs pages (they duplicate Strategy Builder)
-- Add "Test in Strategy Builder" shortcut button on module pages — opens Strategy Builder pre-configured with the selected pack/exec type
-- Strategy Builder remains the single source of truth for validation
-- This applies to future AI-created execution types and user packs: validation = run a real backtest in Strategy Builder
-
-**Tasks to close out M4.5:**
-- [ ] 4.5h. [Required] **Remove Sandbox tabs** from Execution Types and User Packs detail views
-- [ ] 4.5i. [Required] **"Test in Strategy Builder" button** — on each exec type / user pack detail page, button opens Strategy Builder with that pack/type pre-selected in the trigger dropdown
-- [ ] 4.5j. [Required] **Reframe Scenarios as educational** — update descriptions to clarify these are conceptual illustrations, not validation tools
-
-**Exit Criteria:** Execution types and user packs have clear educational documentation (Scenarios, Description, Workflow Steps). Validation happens exclusively in Strategy Builder via the shortcut button. No duplicate pipeline code in module pages.
-
-**Polish items (deferred):**
-- Hi-Fi cross (+) marker not rendering during replay mid-step (shows at end only)
-- Add timeframe label to chart headers (e.g., "5Min", "1s")
-- Same-bar stop+target scenario (needs volatile data)
+**Deferred to future milestones:**
+- 4.5a. Unique 1-5 char badges per execution type variation
+- 4.5b. Mini chart on simulation trace
+- 4.5d. AI-assisted execution type creation
+- 4.5e. Execution type builder page
+- 4.5f. Code tab for generated execution types
+- Hi-Fi cross (+) marker not rendering during replay mid-step
+- CB timeline computation performance (loads 30 days of 1-min bars for all groups)
 
 ---
 
@@ -234,27 +226,29 @@ The Sandbox/Scenario tabs in module pages (Execution Types, User Packs) are simp
 **Priority:** Medium — reliability of pack creation
 **Effort:** 1-2 weeks
 
-Ensure packs created through the Pack Builder are consistently reliable and work seamlessly across all features. Now that execution types are solid, packs can be built and tested with confidence.
+Ensure packs created through the Pack Builder are consistently reliable and work seamlessly across all features. Now that execution types are separate pluggable modules and validation happens in Strategy Builder, packs can be built and tested with confidence.
 
-**Tasks:**
-- [ ] 5a. [Required] Fix remaining validation gaps (from testing — add checks as discovered)
-- [ ] 5b. [Required] Update `pack_builder_context.md` with golden child reference (EMA PP V2 as template)
-- [ ] 5c. [Required] Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
-- [ ] 5d. [Required] **Chart Preview tab** — Wire state-colored background + trigger markers (like Streamlit). Show conditions as background color changes, triggers as markers on candles.
-- [ ] 5e. [Required] Create several user packs through the full Pack Builder flow and verify each one end-to-end
-- [ ] 5f. [Polish] Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
-- [ ] 5g. [Polish] Pack versioning: installed pack is immutable, new versions create new packs
-- [ ] 5h. [Polish] Delete protection: warn if strategies reference the pack
-- [ ] 5i. [Polish] **Signal Validation tab** — Wire real data: run indicator on sample data, count trigger fires, verify all states reached
-- [ ] 5j. [Polish] **Sandbox: PB/CB fidelity in confluence dropdown** — When Hi-Fi enabled, show [PB] and [CB] variants
-- [ ] 5k. [Polish] **Sandbox: Confluence heatmap on trade drill-down**
-- [ ] 5l. [Polish] **Sandbox: Move Hi-Fi toggle before confluence**
-- [ ] 5m. [Polish] **Bar count exit variations** — Read N from confluence group parameters
-- [ ] 5n. [Deferred] Legacy pack cleanup: mark old TF Confluence packs as "Legacy (Default)"
-- [ ] 5o. [Deferred] **Unify User Packs into TF Confluence page** — Filter by author instead of separate page
-- [ ] 5p. [Deferred] **Parity Simulator tab**
+**Important context:** All existing TF Confluence packs (including EMA PP V2) were built under the old architecture where execution types were configured via `_exec_config` on the confluence group. These packs still work, but new packs should be built using the current execution type module system. Legacy cleanup happens first so there's a clear line between old and new.
 
-**Exit Criteria:** User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder, Sandbox, and live alerts without manual intervention.
+**Completed Tasks:**
+- [x] 5a. **Legacy pack cleanup** — Orange "Legacy" badge on all built-in TF Confluence packs + User Packs cards. Info banner on TF Confluence page. Derived from `is_default` field (not persisted as tag).
+- [x] 5c. **Updated pack_builder_context.md** — Execution types documented as separate modules. `_exec_config` marked as legacy. Verification workflow section added. Reserved names updated with RSI prefix/columns. Trigger neutrality guidance added.
+- [x] 5e. **Chart Preview tab** — Backend endpoint `POST /api/packs/builder/user-packs/{slug}/preview`. State-colored candles, overlay indicator lines, oscillator pane (separate chart), trigger markers, state legend. State/trigger tables wired to real data.
+- [x] 5j. **Signal Validation tab** — Runs pack on configurable data (symbol/timeframe/30-180 days). Summary metrics (total signals, avg bars between, state coverage, all states reached). State distribution bar. Per-trigger breakdown with frequency badges.
+- [x] 5l. **Trigger direction/type neutrality** — All triggers now direction/type agnostic (`BOTH`/`BOTH`). Backend returns all triggers regardless of type. Pack spec accepts `BOTH` as valid type. Built-in templates updated. Frontend uses single trigger fetch.
+
+**Remaining Tasks:**
+- [ ] 5b. [Required] Fix remaining validation gaps (discovered during testing)
+- [ ] 5d. [Required] Add Swing 1-2-3 as Pack Builder test case — validate CC triggers work end-to-end
+- [ ] 5f. [Required] Create several user packs through the full Pack Builder flow and verify each one end-to-end in Strategy Builder (run backtest → inspect Enhanced Trade History → replay trades)
+- [ ] 5g. [Polish] Pack status workflow: Verification → Private → Public (persist status, gate Strategy Builder visibility)
+- [ ] 5h. [Polish] Pack versioning: installed pack is immutable, new versions create new packs
+- [ ] 5i. [Polish] Delete protection: warn if strategies reference the pack
+- [ ] 5k. [Polish] **Bar count exit variations** — Read N from confluence group parameters
+- [ ] 5m. [Deferred] **Unify User Packs into TF Confluence page** — Filter by author instead of separate page
+- [ ] 5n. [Deferred] **Parity Simulator tab** — Requires Ralph engine replay capability or sufficient live alert history. The Strategy Detail "Alert Trades" tab already compares backtest vs alert timing per-strategy. Parity Simulator would extend this to per-pack diagnostics. Depends on live engine wiring being fully validated.
+
+**Exit Criteria:** Legacy packs clearly labeled. User can create 10 different packs through the Pack Builder and every one works correctly in Strategy Builder and live alerts without manual intervention. Validation flow: Pack Builder → install → Strategy Builder backtest → Enhanced Trade History → Trade Replay.
 
 ---
 
@@ -264,16 +258,25 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 Ensure the Strategy Builder and Strategy Detail pages work flawlessly with both built-in and user packs. Fix any remaining bugs, polish the UX, and verify end-to-end consistency.
 
+**Note:** Task 6a (chart display fixes) should be completed BEFORE M5 task 5f (creating 10+ packs end-to-end). The chart fixes are required to visually validate pack behavior during the creation QA process. M5 5d (Swing 1-2-3) is complete and proved the pipeline works structurally.
+
+**Additional polish items identified during M5 testing:**
+- Equity curve fidelity badge: show "Standard" or "Hi-Fi" label on every equity curve so users can tell at a glance which resolution was used
+- Validation checklist feature: guided sequence of verification steps before a pack is marked as validated (future — ties into pack status workflow 5g)
+
 **Tasks:**
-- [ ] 5a. Verify Strategy Builder works with user pack triggers (entry + exit)
-- [ ] 5b. Verify bar count exit, stop loss packs, take profit packs all work correctly with user packs
-- [ ] 5c. Verify Strategy Detail page renders correctly for strategies using user packs (chart, KPIs, equity curve, trade history)
-- [ ] 5d. Fix any chart/indicator display issues for user pack strategies
-- [ ] 5e. Verify forward testing works with user packs
-- [ ] 5f. Verify alert tracking works with user packs
-- [ ] 5g. Fix any remaining Strategy Detail bugs surfaced during testing
-- [ ] 5h. Polish Strategy Builder UX: ensure trigger dropdowns, analysis tabs, and backtest flow are smooth
-- [ ] 5i. Create several real strategies using user packs — QA the full flow end-to-end
+- [ ] 6a. [Required] **Chart display fixes for user packs** — Apply the same fixes from Chart Preview to all price charts (Strategy Builder, Strategy Detail, trade drill-downs):
+  - **Boolean/string column filtering**: Don't plot boolean indicator columns (pattern flags) or string columns (color hex codes) as overlay lines — they render as flat lines at the bottom of the chart. Only plot numeric columns in the price range.
+  - **Candle color column override**: When a pack's `plot_config.candle_color_column` is set, use those colors to override candle body/border/wick colors. Affects `buildStrategyChartPanes()`, `SyncedChartPane`, and anywhere `chart_data` is rendered with indicator overlays.
+  - Files to update: `buildStrategyChartPanes.ts`, `StrategyBuilderPage.tsx` (backtest chart), `StrategyDetailPage.tsx` (detail chart), `SyncedChartPane.tsx` (shared chart component)
+- [ ] 6b. Verify Strategy Builder works with user pack triggers (entry + exit)
+- [ ] 6c. Verify bar count exit, stop loss packs, take profit packs all work correctly with user packs
+- [ ] 6d. Verify Strategy Detail page renders correctly for strategies using user packs (chart, KPIs, equity curve, trade history)
+- [ ] 6e. Verify forward testing works with user packs
+- [ ] 6f. Verify alert tracking works with user packs
+- [ ] 6g. Fix any remaining Strategy Detail bugs surfaced during testing
+- [ ] 6h. Polish Strategy Builder UX: ensure trigger dropdowns, analysis tabs, and backtest flow are smooth
+- [ ] 6i. Create several real strategies using user packs — QA the full flow end-to-end
 
 **Exit Criteria:** User can create a strategy using any combination of built-in and user packs, run backtests, view detailed results, enable forward testing, and enable alert tracking — all working correctly.
 

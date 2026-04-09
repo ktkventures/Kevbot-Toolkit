@@ -312,7 +312,7 @@ export default function PackBuilderPage() {
       description,
       parameters: params.map((p) => ({ name: p.name, type: p.type, default: p.defaultVal, min: p.min, max: p.max, label: p.label })),
       outputs: outputs.map((o) => ({ code: o.code, description: o.description })),
-      triggers: triggers.map((t) => ({ name: t.name, base: t.base, sentiment: t.sentiment, direction: t.sentiment === 'bullish' ? 'LONG' : t.sentiment === 'bearish' ? 'SHORT' : 'BOTH', type: 'ENTRY', execution: 'bar_close' })),
+      triggers: triggers.map((t) => ({ name: t.name, base: t.base, sentiment: t.sentiment, direction: 'BOTH', type: 'BOTH', execution: 'bar_close' })),
       pine_script: pineScript,
       ai_model: aiModel,
     }, {

@@ -401,6 +401,7 @@ function mapApiGroupToTfPack(
     name: localTemplate?.name || apiTemplate?.name || templateKey,
     version: group.version || 'Default',
     tags: [
+      ...(group.is_default ? ['Legacy'] : []),
       ...(localTemplate?.tags || (apiTemplate?.category ? [apiTemplate.category] : [])),
       ...((group.parameters as any)?._tags || []),
     ],
@@ -444,7 +445,8 @@ function tfPackToDto(pack: TfPack): ConfluenceGroupDTO {
   }
 
   // Persist custom tags and fidelity type
-  const customTags = pack.tags.filter(t => ['Legacy'].includes(t));
+  // Only persist truly custom tags — Legacy is derived from is_default, category tags from templates
+  const customTags = pack.tags.filter(t => t !== 'Legacy' && !tagColors[t]);
   if (customTags.length > 0) {
     parameters._tags = customTags;
   }
@@ -1969,6 +1971,11 @@ export default function TfConfluencePage() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+      </div>
+
+      {/* Legacy info banner */}
+      <div className="px-3 py-2 rounded-lg text-xs mb-3" style={{ background: 'var(--orange-muted)', color: 'var(--orange)', border: '1px solid var(--orange)' }}>
+        Packs marked <strong>Legacy</strong> use the original built-in architecture. They work in all existing strategies. New packs are created through the <a href="/confluence-packs/pack-builder" className="underline font-medium">Pack Builder</a>.
       </div>
 
       {/* Pack list — grouped by template with expandable variations */}

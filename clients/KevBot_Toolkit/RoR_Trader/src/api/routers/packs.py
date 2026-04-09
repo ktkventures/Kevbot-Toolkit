@@ -55,22 +55,15 @@ def get_confluence_templates(user=Depends(get_current_user)):
 
 @router.get("/confluence-groups/triggers/{direction}")
 def get_confluence_triggers(direction: str, user=Depends(get_current_user)):
-    """Get entry triggers for a direction (LONG/SHORT) or all triggers.
+    """Get all available triggers, filtered by enabled execution types.
 
-    Only returns triggers from ENABLED confluence packs.
+    Triggers are direction-agnostic and type-agnostic — users decide how to
+    use them in Strategy Builder. The `direction` path parameter is kept for
+    backward compatibility but all paths return the same full trigger list.
     """
-    from confluence_groups import (
-        get_enabled_groups, get_entry_triggers, get_exit_triggers,
-    )
+    from confluence_groups import get_enabled_groups, get_entry_triggers
     groups = get_enabled_groups()
-    if direction.upper() in ("LONG", "SHORT"):
-        return get_entry_triggers(direction.upper(), groups)
-    elif direction.upper() == "EXIT":
-        return get_exit_triggers(groups)
-    else:
-        from confluence_groups import get_all_triggers
-        triggers = get_all_triggers(groups)
-        return {k: asdict(v) for k, v in triggers.items()}
+    return get_entry_triggers(direction.upper(), groups)
 
 
 # =============================================================================

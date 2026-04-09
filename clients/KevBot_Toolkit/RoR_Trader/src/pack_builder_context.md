@@ -84,8 +84,8 @@ Your response MUST contain exactly three fenced code blocks in this order:
     {
       "base": "trigger_name",
       "name": "Human Trigger Name",
-      "direction": "LONG | SHORT | BOTH",
-      "type": "ENTRY | EXIT",
+      "direction": "BOTH",
+      "type": "BOTH",
       "execution": "bar_close"
     }
   ],
@@ -141,11 +141,11 @@ Advanced charting configuration. Include this object in the manifest for indicat
 
 ### Reserved Names (DO NOT USE)
 
-These trigger prefixes are taken: `ema`, `ema_pp`, `ema_pp_v2`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `utbot_v2`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`
+These trigger prefixes are taken: `ema`, `ema_pp`, `ema_pp_v2`, `macd`, `macd_hist`, `vwap`, `rvol`, `utbot`, `utbot_v2`, `bar_count`, `bb`, `src`, `st`, `sw123`, `strat`, `rsi`
 
-These interpreter keys are taken: `EMA_STACK`, `EMA_PRICE_POSITION`, `EMA_PRICE_POSITION_V2`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `UTBOT_V2`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`
+These interpreter keys are taken: `EMA_STACK`, `EMA_PRICE_POSITION`, `EMA_PRICE_POSITION_V2`, `MACD_LINE`, `MACD_HISTOGRAM`, `VWAP`, `RVOL`, `UTBOT`, `UTBOT_V2`, `BOLLINGER_BANDS`, `SR_CHANNELS`, `SUPERTREND`, `SWING_123`, `STRAT_ASSISTANT`, `RSI_ZONES`
 
-These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_stop_prev`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`
+These indicator columns are taken: `ema_8`, `ema_21`, `ema_50`, `macd_line`, `macd_signal`, `macd_hist`, `vwap`, `vwap_sd1_upper`, `vwap_sd1_lower`, `vwap_sd2_upper`, `vwap_sd2_lower`, `atr`, `vol_sma`, `rvol`, `utbot_stop`, `utbot_stop_prev`, `utbot_direction`, `bb_upper`, `bb_basis`, `bb_lower`, `bb_bandwidth`, `src_nearest_top`, `src_nearest_bot`, `src_num_channels`, `src_in_channel`, `st_line`, `st_direction`, `st_atr`, `sw123_pattern`, `sw123_candle_color`, `strat_bar_type`, `strat_combo`, `strat_actionable`, `strat_candle_color`, `rsi_value`
 
 ---
 
@@ -262,8 +262,12 @@ def detect_your_pack_triggers(df: pd.DataFrame, **params) -> dict:
 - Trigger keys MUST be `{trigger_prefix}_{base}` matching manifest triggers
 - Use `.shift(1)` to compare current bar with previous bar for crosses
 - Trigger detection should be vectorized (boolean operations on Series)
+- **Triggers are direction-agnostic and type-agnostic.** Always use `"direction": "BOTH"` and `"type": "BOTH"`. Users decide how to use a trigger (entry vs exit, long vs short) in Strategy Builder. Do NOT create separate LONG/SHORT or ENTRY/EXIT versions of the same trigger — this creates redundancy. One trigger, one boolean, usable in any context.
+- **Avoid redundant triggers.** If two triggers would fire on the exact same bars with the same boolean logic, they should be one trigger. For example, "RSI crosses above midline" is one trigger — don't create separate "entry long on midline cross up" and "exit short on midline cross up" triggers.
 
 ### Trigger Execution Types
+
+> **Note:** These execution types are registered as independent modules in `execution_types.py`. Users enable/disable and configure them on the **Execution Types** page, not per-pack. Pack authors only need to declare the correct `execution` value in each trigger definition.
 
 Every trigger has an execution type that determines when it fires and at what price. There are four execution types available:
 
@@ -287,10 +291,10 @@ Every trigger has an execution type that determines when it fires and at what pr
 For a pack with all four variants:
 ```json
 "triggers": [
-  {"base": "buy", "name": "Buy Signal", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-  {"base": "buy_ib", "name": "Buy Signal [L]", "direction": "LONG", "type": "ENTRY", "execution": "intra_bar", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
-  {"base": "buy_hm", "name": "Buy Signal [HM]", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_market", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
-  {"base": "buy_hl", "name": "Buy Signal [HL]", "direction": "LONG", "type": "ENTRY", "execution": "hybrid_limit", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"}
+  {"base": "buy", "name": "Buy Signal", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+  {"base": "buy_ib", "name": "Buy Signal [L]", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
+  {"base": "buy_hm", "name": "Buy Signal [HM]", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
+  {"base": "buy_hl", "name": "Buy Signal [HL]", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"}
 ]
 ```
 
@@ -341,11 +345,13 @@ In addition to the four base execution types, two composite types combine L-type
 
 LC is a superset of HM — LC with `confirm_bar_offset=0` and `bail_action=exit_market` is equivalent to HM. CC is a genuinely new type that provides close-to-close confirmation.
 
-### Execution Configuration Is Pack-Level
+### Execution Types Are Separate Modules
 
-Execution type settings (which types are enabled, reference bar, order type, etc.) are configured on the **confluence pack** as a whole, not per-trigger. All triggers within a pack share the same execution configuration. This is stored as `_exec_config` in the pack's parameters.
+Execution types (C, L, LC, CC) are now **independent pluggable modules** managed on the Execution Types page, not configured per-pack. Each module (`BarCloseExecution`, `LevelExecution`, `LevelCloseExecution`, `CloseCloseExecution`) is enabled/disabled globally by the user.
 
-When a pack has C and L execution enabled, the engine automatically generates both a bar-close variant and a level variant for each trigger. Users select which variant to use when building a strategy.
+Pack triggers declare their base execution type via the `execution` field in the manifest (e.g., `"bar_close"`, `"intra_bar"`). The engine generates variants for all enabled execution types automatically from the trigger's boolean signal.
+
+**`_exec_config` is legacy.** Existing built-in packs still have `_exec_config` in their parameters for backward compatibility. New packs created through the Pack Builder should NOT include `_exec_config`. Execution type configuration is managed independently on the Execution Types page.
 
 **Pack authors should focus on writing correct bar-close (C-type) trigger logic.** The engine handles L-type, LC, and CC variants automatically by applying the execution protocol to the trigger signal.
 
@@ -356,6 +362,18 @@ PB (Previous Bar) and CB (Current Bar) fidelity control how confluence condition
 - **CB**: Conditions recompute indicators using the current forming bar's partial data (more accurate, requires Hi-Fi mode)
 
 Fidelity is NOT a pack-level setting — it's configured in the Strategy Builder when selecting TF Conditions. Both PB and CB variants are automatically available for any pack when Hi-Fi is enabled. Pack authors do not need to consider fidelity in their code.
+
+### Verification Workflow
+
+After installing a pack, validate it through the Strategy Builder:
+
+1. **Create a strategy** in the Strategy Builder using the pack's triggers as entry/exit
+2. **Run a backtest** — inspect results in the Enhanced Trade History table at the bottom of the page
+3. **Click a trade number (#)** to open the Trade Replay modal — shows main chart, two 1-second hi-fi charts, and replay controls for stepping through the trade second by second
+4. **Click entry/exit timestamps** for 1-second candle drill-downs to verify exact fill prices
+5. **Click the exec badge** to see the execution workflow steps
+
+This is the single source of truth for validation. Module-level sandbox/simulation tabs have been removed — all validation flows through Strategy Builder.
 
 ---
 
@@ -393,12 +411,12 @@ Fidelity is NOT a pack-level setting — it's configured in the Strategy Builder
     "OVERSOLD": "RSI below oversold threshold (<30 default)"
   },
   "triggers": [
-    {"base": "enter_overbought", "name": "Enter Overbought", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
-    {"base": "exit_overbought", "name": "Exit Overbought", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-    {"base": "enter_oversold", "name": "Enter Oversold", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-    {"base": "exit_oversold", "name": "Exit Oversold", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"},
-    {"base": "cross_above_50", "name": "Cross Above 50", "direction": "LONG", "type": "ENTRY", "execution": "bar_close"},
-    {"base": "cross_below_50", "name": "Cross Below 50", "direction": "SHORT", "type": "ENTRY", "execution": "bar_close"}
+    {"base": "cross_into_overbought", "name": "RSI Crosses Into Overbought", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+    {"base": "cross_out_of_overbought", "name": "RSI Leaves Overbought", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+    {"base": "cross_into_oversold", "name": "RSI Crosses Into Oversold", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+    {"base": "cross_out_of_oversold", "name": "RSI Leaves Oversold", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+    {"base": "cross_above_midline", "name": "RSI Crosses Above Midline", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
+    {"base": "cross_below_midline", "name": "RSI Crosses Below Midline", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"}
   ],
   "indicator_columns": ["rsi"],
   "column_color_map": {"rsi": "rsi_color"},

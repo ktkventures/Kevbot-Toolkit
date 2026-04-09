@@ -244,6 +244,10 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
       let colorIdx = 0;
       for (const [colName, steps] of Object.entries(zoomData.indicators as Record<string, any[]>)) {
         if (!steps || steps.length === 0) continue;
+        // Skip boolean/binary indicators (pattern flags with values 0/1)
+        const sampleVals = steps.slice(0, 5).map((s: any) => s.value);
+        const allBinary = sampleVals.every((v: any) => v === 0 || v === 1);
+        if (allBinary) continue;
         // Skip non-overlay indicators (oscillators, volumes, etc.) — only show price-level ones
         const firstVal = steps[0]?.value ?? 0;
         const priceRange = candleData.length > 0 ? Math.max(...candleData.map(c => c.high)) : 0;
@@ -312,17 +316,9 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
         }
       }
 
-      // Fallback: if no selected conditions matched, show all with PB comparison
-      if (conditionMap.length === 0) {
-        for (const ik of interpKeys) {
-          conditionMap.push({
-            interpKey: ik,
-            requiredState: pbStates[ik],
-            isCB: false,
-            label: `[PB] ${ik}: ${pbStates[ik]}`,
-          });
-        }
-      }
+      // If no selected conditions matched, skip the heatmap entirely —
+      // only show it when the user has explicitly selected conditions.
+
 
       if (conditionMap.length > 0) {
         const hmSeries = conditionMap.map((cm, idx) => {

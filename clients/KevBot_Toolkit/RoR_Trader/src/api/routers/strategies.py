@@ -1071,10 +1071,11 @@ def trade_zoom(
             symbol, days=5, timeframe=timeframe,
             data_feed='sip', session=strat.get('trading_session', 'RTH'),
         )
+        # Only use entry/exit triggers for stepped indicators —
+        # confluence conditions display via CB heatmap, not overlays.
         prefixes = extract_relevant_prefixes(
             entry_id=strat.get('entry_trigger_confluence_id', ''),
             exit_ids=strat.get('exit_trigger_confluence_ids', []),
-            confluence=strat.get('confluence', []),
         )
     except Exception as e:
         logger.warning("[TRADE-ZOOM] Error loading indicator data: %s", e)

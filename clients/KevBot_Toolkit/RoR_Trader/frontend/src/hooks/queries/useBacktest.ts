@@ -83,6 +83,22 @@ export function useBacktestTradeZoom() {
   });
 }
 
+/* ── Trade Replay (scenario data for a single trade) ── */
+
+export interface BacktestTradeReplayRequest extends BacktestRequest {
+  trade_idx: number;
+}
+
+export function useBacktestTradeReplay() {
+  return useMutation({
+    mutationFn: (req: BacktestTradeReplayRequest) =>
+      apiFetch<any>('/api/backtest/trade-replay', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  });
+}
+
 /* ── Analyze ── */
 
 export interface AnalyzeResult {

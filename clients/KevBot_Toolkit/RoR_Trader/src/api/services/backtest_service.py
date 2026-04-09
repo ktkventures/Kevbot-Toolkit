@@ -140,148 +140,14 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     trades = _serialize_trades(trades_df)
 
     # 9. Optional chart data with indicator classification
-    # Port from Strategy Detail chart-data endpoint (strategies.py lines 320-468)
     chart_data = None
     overlay_indicators = []
     oscillator_indicators = []
     heatmap_conditions = []
+    candle_color_column = None
     if req.include_chart_data:
-        from confluence_groups import get_enabled_groups, get_template, TEMPLATES
-
-        OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2", "swing_123"}
-        OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
-
-        # Determine which groups are relevant to this strategy
-        entry_conf_id = req.entry_trigger_confluence_id or ''
-        exit_conf_ids = req.exit_trigger_confluence_ids or []
-        confluence_records = list(req.confluence or [])
-
-        # Extract interpreter keys from confluence records
-        confluence_interpreters = set()
-        for record in confluence_records:
-            if record.startswith("GEN-"):
-                continue
-            parts = record.split("-")
-            if len(parts) >= 2:
-                confluence_interpreters.add(parts[1])
-
-        overlay_cols = []
-        oscillator_cols = []
-
-        # Track which templates we've already classified
-        _classified_templates = set()
-
-        for group in get_enabled_groups():
-            gid_prefix = group.id + "_"
-            is_relevant = (
-                entry_conf_id.startswith(gid_prefix)
-                or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
-            )
-            if not is_relevant:
-                template = get_template(group.base_template)
-                if template:
-                    for ik in template.get("interpreters", []):
-                        if ik in confluence_interpreters:
-                            is_relevant = True
-                            break
-            if not is_relevant:
-                continue
-
-            template = get_template(group.base_template)
-            if not template:
-                continue
-            _classified_templates.add(group.base_template)
-
-            # Resolve indicator columns (handle parameterized EMA names)
-            raw_cols = template.get("indicator_columns", [])
-            resolved = []
-            for col in raw_cols:
-                if col in ("ema_short", "ema_mid", "ema_long"):
-                    p = group.parameters
-                    resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
-                                    f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
-                                    f"ema_{p.get('long_period', 200)}"
-                    if resolved_name in df.columns:
-                        resolved.append(resolved_name)
-                elif col in df.columns:
-                    resolved.append(col)
-
-            if group.base_template in OVERLAY_TEMPLATES:
-                overlay_cols.extend(resolved)
-            elif group.base_template in OSCILLATOR_TEMPLATES:
-                oscillator_cols.extend(resolved)
-            else:
-                dt = template.get("display_type", "overlay")
-                if dt == "oscillator":
-                    oscillator_cols.extend(resolved)
-                else:
-                    overlay_cols.extend(resolved)
-
-        # Fallback: check user packs from registry if the entry trigger's pack
-        # wasn't found in enabled DB groups (e.g., newly installed pack)
-        try:
-            import pack_registry
-            for slug, pack in pack_registry.get_registered_packs().items():
-                if slug in _classified_templates:
-                    continue
-                trigger_prefix = pack.manifest.get("trigger_prefix", "")
-                if not (entry_conf_id.startswith(slug) or
-                        (trigger_prefix and f"_{trigger_prefix}_" in entry_conf_id)):
-                    continue
-                raw_cols = pack.manifest.get("indicator_columns", [])
-                resolved = [c for c in raw_cols if c in df.columns]
-                dt = pack.manifest.get("display_type", "overlay")
-                if dt == "oscillator":
-                    oscillator_cols.extend(resolved)
-                else:
-                    overlay_cols.extend(resolved)
-        except Exception:
-            pass
-
-        # Deduplicate
-        overlay_indicators = list(dict.fromkeys(overlay_cols))
-        oscillator_indicators = list(dict.fromkeys(oscillator_cols))
-        all_indicator_cols = overlay_indicators + oscillator_indicators
-
-        # Build heatmap conditions from confluence records (same as Strategy Detail)
-        from data_loader import get_tf_label
-        primary_tf = get_tf_label(req.timeframe).lower()
-
-        for record in confluence_records:
-            parts = record.split('-', 2)
-            if len(parts) < 3:
-                continue
-            rec_tf, interp_key, needed_state = parts
-            is_general = rec_tf == 'GEN'
-            is_cross_tf = not is_general and rec_tf.lower() != primary_tf
-
-            if is_general:
-                col_name = f"GP_{interp_key}"
-            elif is_cross_tf:
-                col_name = f"{interp_key}__{rec_tf.lower()}"
-            else:
-                col_name = interp_key
-
-            heatmap_conditions.append({
-                "label": record,
-                "column": col_name,
-                "needed_state": needed_state,
-                "has_data": col_name in df.columns,
-            })
-
-        # Serialize chart data: OHLCV + relevant indicators
-        chart_data = _serialize_chart_data(df, all_indicator_cols)
-
-        # Add interpreter state values for heatmap
-        state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
-        if state_cols:
-            reset_df = df.reset_index()
-            for i, row_dict in enumerate(chart_data):
-                if i < len(reset_df):
-                    r = reset_df.iloc[i]
-                    for sc in state_cols:
-                        val = r.get(sc)
-                        row_dict[f"_state_{sc}"] = str(val) if pd.notna(val) else None
+        chart_data, overlay_indicators, oscillator_indicators, heatmap_conditions, candle_color_column = \
+            classify_and_serialize_chart_data(df, req)
 
     resp = BacktestResponse(
         trades=trades,
@@ -298,12 +164,206 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     resp_dict['overlay_indicators'] = overlay_indicators
     resp_dict['oscillator_indicators'] = oscillator_indicators
     resp_dict['heatmap_conditions'] = heatmap_conditions
+    resp_dict['candle_color_column'] = candle_color_column
     return resp_dict
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+
+def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
+    """Classify indicators and serialize chart data for a backtest request.
+
+    Returns (chart_data, overlay_indicators, oscillator_indicators, heatmap_conditions, candle_color_column).
+    """
+    from confluence_groups import get_enabled_groups, get_template
+
+    OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2", "swing_123"}
+    OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
+
+    entry_conf_id = req.entry_trigger_confluence_id or ''
+    exit_conf_ids = req.exit_trigger_confluence_ids or []
+    confluence_records = list(req.confluence or [])
+
+    # Extract interpreter keys from confluence records
+    confluence_interpreters = set()
+    for record in confluence_records:
+        if record.startswith("GEN-"):
+            continue
+        parts = record.split("-")
+        if len(parts) >= 2:
+            confluence_interpreters.add(parts[1])
+
+    overlay_cols = []
+    oscillator_cols = []
+    _classified_templates = set()
+
+    for group in get_enabled_groups():
+        gid_prefix = group.id + "_"
+        is_relevant = (
+            entry_conf_id.startswith(gid_prefix)
+            or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
+        )
+        if not is_relevant:
+            template = get_template(group.base_template)
+            if template:
+                for ik in template.get("interpreters", []):
+                    if ik in confluence_interpreters:
+                        is_relevant = True
+                        break
+        if not is_relevant:
+            continue
+
+        template = get_template(group.base_template)
+        if not template:
+            continue
+        _classified_templates.add(group.base_template)
+
+        # Resolve indicator columns (handle parameterized EMA names)
+        raw_cols = template.get("indicator_columns", [])
+        resolved = []
+        for col in raw_cols:
+            if col in ("ema_short", "ema_mid", "ema_long"):
+                p = group.parameters
+                resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                                f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                                f"ema_{p.get('long_period', 200)}"
+                if resolved_name in df.columns:
+                    resolved.append(resolved_name)
+            elif col in df.columns:
+                resolved.append(col)
+
+        if group.base_template in OVERLAY_TEMPLATES:
+            overlay_cols.extend(resolved)
+        elif group.base_template in OSCILLATOR_TEMPLATES:
+            oscillator_cols.extend(resolved)
+        else:
+            dt = template.get("display_type", "overlay")
+            if dt == "oscillator":
+                oscillator_cols.extend(resolved)
+            else:
+                overlay_cols.extend(resolved)
+
+    # Fallback: check user packs from registry
+    try:
+        import pack_registry
+        for slug, pack in pack_registry.get_registered_packs().items():
+            if slug in _classified_templates:
+                continue
+            trigger_prefix = pack.manifest.get("trigger_prefix", "")
+            if not (entry_conf_id.startswith(slug) or
+                    (trigger_prefix and f"_{trigger_prefix}_" in entry_conf_id)):
+                continue
+            raw_cols = pack.manifest.get("indicator_columns", [])
+            resolved = [c for c in raw_cols if c in df.columns]
+            dt = pack.manifest.get("display_type", "overlay")
+            if dt == "oscillator":
+                oscillator_cols.extend(resolved)
+            else:
+                overlay_cols.extend(resolved)
+    except Exception:
+        pass
+
+    # Deduplicate
+    overlay_indicators = list(dict.fromkeys(overlay_cols))
+    oscillator_indicators = list(dict.fromkeys(oscillator_cols))
+
+    # Filter out boolean columns and candle color columns — they're not plottable as lines
+    candle_color_column = None
+    try:
+        import pack_registry as _pr
+        for _slug, _pack in _pr.get_registered_packs().items():
+            cc_col = _pack.manifest.get("plot_config", {}).get("candle_color_column")
+            if cc_col:
+                # Remove candle color column from overlays (it's a string column, not a line)
+                overlay_indicators = [c for c in overlay_indicators if c != cc_col]
+                oscillator_indicators = [c for c in oscillator_indicators if c != cc_col]
+                # Check if this pack is relevant to the current strategy
+                _tp = _pack.manifest.get("trigger_prefix", "")
+                if entry_conf_id.startswith(_slug) or (_tp and f"_{_tp}_" in entry_conf_id):
+                    candle_color_column = cc_col
+    except Exception:
+        pass
+
+    # Filter out non-plottable columns from overlays:
+    # - boolean/object columns (pattern flags, color strings)
+    # - integer columns with small value ranges (pattern codes like -2..2)
+    def _is_plottable_overlay(col_name):
+        if col_name not in df.columns:
+            return False
+        dtype = df[col_name].dtype
+        if dtype.kind not in ('f', 'i', 'u'):  # must be numeric
+            return False
+        # Integer columns with small range are likely pattern codes, not price overlays
+        if dtype.kind in ('i', 'u'):
+            col_vals = df[col_name].dropna()
+            if len(col_vals) > 0:
+                val_range = col_vals.max() - col_vals.min()
+                if val_range < 10:  # pattern codes (-2..2), boolean-like (0..1)
+                    return False
+        return True
+
+    def _is_plottable_oscillator(col_name):
+        if col_name not in df.columns:
+            return False
+        dtype = df[col_name].dtype
+        return dtype.kind in ('f', 'i', 'u')
+
+    overlay_indicators = [c for c in overlay_indicators if _is_plottable_overlay(c)]
+    oscillator_indicators = [c for c in oscillator_indicators if _is_plottable_oscillator(c)]
+
+    all_indicator_cols = overlay_indicators + oscillator_indicators
+    # Also include candle_color_column in serialization if present
+    if candle_color_column and candle_color_column not in all_indicator_cols:
+        all_indicator_cols.append(candle_color_column)
+
+    # Build heatmap conditions from confluence records
+    from data_loader import get_tf_label
+    primary_tf = get_tf_label(req.timeframe).lower()
+    heatmap_conditions = []
+
+    for record in confluence_records:
+        parts = record.split('-', 2)
+        if len(parts) < 3:
+            continue
+        rec_tf, interp_key, needed_state = parts
+        is_general = rec_tf == 'GEN'
+        is_cross_tf = not is_general and rec_tf.lower() != primary_tf
+
+        if is_general:
+            col_name = f"GP_{interp_key}"
+        elif is_cross_tf:
+            col_name = f"{interp_key}__{rec_tf.lower()}"
+        else:
+            col_name = interp_key
+
+        heatmap_conditions.append({
+            "label": record,
+            "column": col_name,
+            "needed_state": needed_state,
+            "has_data": col_name in df.columns,
+        })
+
+    # Serialize chart data: OHLCV + relevant indicators
+    chart_data = _serialize_chart_data(df, all_indicator_cols)
+
+    # Add interpreter state values for heatmap
+    state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
+    if state_cols:
+        reset_df = df.reset_index()
+        for i, row_dict in enumerate(chart_data):
+            if i < len(reset_df):
+                r = reset_df.iloc[i]
+                for sc in state_cols:
+                    val = r.get(sc)
+                    row_dict[f"_state_{sc}"] = str(val) if pd.notna(val) else None
+
+    # candle_color_column was already detected during indicator filtering above
+
+    return chart_data, overlay_indicators, oscillator_indicators, heatmap_conditions, candle_color_column
+
 
 def _empty_kpis() -> dict:
     return {
@@ -1088,6 +1148,176 @@ _CATEGORY_META = {
     'signal_exit': {'name': 'Signal Exit', 'description': 'The exit trigger signal fired before stop or target was reached.'},
 }
 
+# Timeframe to seconds mapping (shared by scenario builders)
+_TF_SECONDS_MAP = {'1Min': 60, '5Min': 300, '15Min': 900, '1H': 3600, '1Hour': 3600, '1Day': 86400}
+
+# L-type exit reasons (no C-type shift)
+_L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
+
+
+def _ctype_shift(iso: str, is_ltype: bool, tf_seconds: int) -> str:
+    """Shift a timestamp forward by one timeframe period for C-type fills."""
+    from datetime import datetime as _dt, timedelta as _td
+    if is_ltype or not iso:
+        return iso
+    try:
+        dt = _dt.fromisoformat(iso)
+        return (dt + _td(seconds=tf_seconds)).isoformat()
+    except Exception:
+        return iso
+
+
+def _find_chart_window(
+    chart_data: list[dict],
+    entry_time: str,
+    exit_time: str,
+    padding: int = 5,
+) -> list[dict]:
+    """Extract chart bars around a trade with padding bars on each side."""
+    from datetime import datetime as _dt
+    chart_timestamps = [bar.get('timestamp', '') for bar in chart_data]
+    entry_idx = 0
+    exit_idx = len(chart_timestamps) - 1
+    for i, ts in enumerate(chart_timestamps):
+        try:
+            if _dt.fromisoformat(ts) <= _dt.fromisoformat(entry_time):
+                entry_idx = i
+            if _dt.fromisoformat(ts) <= _dt.fromisoformat(exit_time):
+                exit_idx = i
+        except Exception:
+            continue
+    start = max(0, entry_idx - padding)
+    end = min(len(chart_data), exit_idx + padding + 1)
+    return chart_data[start:end]
+
+
+def _fetch_1s_bars_serialized(symbol: str, center_iso: str, label: str) -> list[dict]:
+    """Fetch 1-second bars around a center time and return as serialized dicts."""
+    from data_loader import fetch_1s_bars_for_window
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        dt = _dt.fromisoformat(center_iso)
+        start = dt - _td(seconds=60)
+        end = dt + _td(seconds=60)
+        bars_df = fetch_1s_bars_for_window(symbol, start, end, padding_seconds=0)
+        if bars_df is not None and len(bars_df) > 0:
+            return [{
+                'timestamp': ts.isoformat(),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+            } for ts, row in bars_df.iterrows()]
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to fetch 1s bars for {label}: {e}")
+        return []
+
+
+def build_single_trade_scenario(
+    trade: dict,
+    chart_data: list[dict],
+    overlay_indicators: list[str],
+    oscillator_indicators: list[str],
+    symbol: str,
+    timeframe: str,
+    exec_code: str,
+    entry_trigger: str,
+    direction: str,
+    padding_bars: int = 10,
+    category: str | None = None,
+) -> dict:
+    """Build a ScenarioData dict for a single trade.
+
+    Returns a dict matching the format consumed by the frontend
+    ScenarioReplayCard component (chart_data, 1s bars, workflow, markers).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    tf_seconds = _TF_SECONDS_MAP.get(timeframe, 300)
+    entry_is_ltype = exec_code in ('L', 'LC') or entry_trigger.endswith(('_ib', '_lc', '_hm', '_hl'))
+
+    et = trade.get('entry_time', '')
+    xt = trade.get('exit_time', '')
+    ep = trade.get('entry_price', 0)
+    xp = trade.get('exit_price', 0)
+    sp = trade.get('stop_price', 0)
+    tp = trade.get('target_price', 0)
+    rm = trade.get('r_multiple', 0)
+    exit_reason = trade.get('exit_reason', '')
+    exit_is_ltype = exit_reason in _L_TYPE_EXITS
+
+    shifted_et = _ctype_shift(et, entry_is_ltype, tf_seconds)
+    shifted_xt = _ctype_shift(xt, exit_is_ltype, tf_seconds)
+
+    # Determine category and meta
+    cat = category or _EXIT_CATEGORY_MAP.get(exit_reason, 'signal_exit')
+    meta = _CATEGORY_META.get(cat, {'name': cat.replace('_', ' ').title(), 'description': f'Exit: {exit_reason}'})
+
+    # Chart window
+    window = _find_chart_window(chart_data, et, xt, padding=padding_bars)
+
+    # Fetch 1-second bars in parallel
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        entry_future = pool.submit(_fetch_1s_bars_serialized, symbol, shifted_et, 'entry')
+        exit_future = pool.submit(_fetch_1s_bars_serialized, symbol, shifted_xt or xt, 'exit')
+        entry_1s = entry_future.result()
+        exit_1s = exit_future.result()
+
+    # Workflow steps
+    ws = []
+    if exec_code in ('C', 'CC'):
+        ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
+    else:
+        ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
+    ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'time': shifted_et, 'price': ep, 'color': 'var(--green)'})
+    ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{direction.lower()}_market', 'time': shifted_et, 'isWebhook': True})
+    if exec_code in ('LC', 'CC'):
+        ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation', 'time': shifted_et})
+        ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
+    ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else ''), 'time': shifted_et})
+    ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
+    ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{direction.lower()}_market', 'time': shifted_xt or xt, 'isWebhook': True})
+
+    # Markers
+    xc = '#4CAF50' if rm >= 0 else '#F44336'
+    markers = [{'time': shifted_et, 'position': 'belowBar' if direction == 'LONG' else 'aboveBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
+    if shifted_xt:
+        markers.append({'time': shifted_xt, 'position': 'aboveBar' if direction == 'LONG' else 'belowBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
+
+    # Entry/exit drill (3 bars around each event from chart window)
+    entry_drill = window[:3] if len(window) >= 3 else window
+    exit_drill = window[-3:] if len(window) >= 3 else window
+
+    return {
+        'id': cat,
+        'name': meta['name'],
+        'description': meta['description'],
+        'category': 'generated',
+        'direction': direction,
+        'entry_price': ep,
+        'exit_price': xp,
+        'stop_price': sp,
+        'target_price': tp,
+        'exit_reason': exit_reason,
+        'r_multiple': rm,
+        'passed': True,
+        'exec_type': exec_code,
+        'chart_data': window,
+        'raw_trades': [trade],
+        'overlay_indicators': overlay_indicators,
+        'oscillator_indicators': oscillator_indicators,
+        'heatmap_conditions': [],
+        'markers': markers,
+        'workflow_steps': ws,
+        'entry_drill': entry_drill,
+        'exit_drill': exit_drill,
+        'entry_1s_bars': entry_1s,
+        'exit_1s_bars': exit_1s,
+        'entry_markers': [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
+        'exit_markers': [{'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if shifted_xt else [],
+    }
+
 
 def cherry_pick_scenarios(
     backtest_result: dict,
@@ -1102,10 +1332,6 @@ def cherry_pick_scenarios(
     Returns a list of scenario dicts matching the ScenarioData format consumed
     by the frontend ScenarioReplayCard component.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from data_loader import fetch_1s_bars_for_window
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-
     trades = backtest_result.get('trades', [])
     chart_data = backtest_result.get('chart_data', [])
     overlay_indicators = backtest_result.get('overlay_indicators', [])
@@ -1113,25 +1339,6 @@ def cherry_pick_scenarios(
 
     if not trades or not chart_data:
         return []
-
-    # Parse timeframe to seconds for C-type shift
-    TF_MAP = {'1Min': 60, '5Min': 300, '15Min': 900, '1H': 3600, '1Hour': 3600, '1Day': 86400}
-    tf_seconds = TF_MAP.get(timeframe, 300)
-
-    # L-type exit reasons (no C-type shift)
-    L_TYPE_EXITS = {'stop_loss', 'stop', 'target', 'unconfirmed_hl'}
-
-    # Determine if entry is L-type
-    entry_is_ltype = exec_code in ('L', 'LC') or entry_trigger.endswith(('_ib', '_lc', '_hm', '_hl'))
-
-    def _shift(iso: str, is_ltype: bool) -> str:
-        if is_ltype or not iso:
-            return iso
-        try:
-            dt = _dt.fromisoformat(iso)
-            return (dt + _td(seconds=tf_seconds)).isoformat()
-        except Exception:
-            return iso
 
     # --- Group trades by exit category ---
     categorized: dict[str, list[dict]] = {}
@@ -1162,145 +1369,22 @@ def cherry_pick_scenarios(
     if not picked:
         return []
 
-    # --- Build chart data index for fast window extraction ---
-    chart_timestamps = [bar.get('timestamp', '') for bar in chart_data]
-
-    def _find_chart_window(entry_time: str, exit_time: str, padding: int = 5):
-        """Extract chart bars around a trade with padding."""
-        # Find entry and exit indices
-        entry_idx = 0
-        exit_idx = len(chart_timestamps) - 1
-        for i, ts in enumerate(chart_timestamps):
-            try:
-                if _dt.fromisoformat(ts) <= _dt.fromisoformat(entry_time):
-                    entry_idx = i
-                if _dt.fromisoformat(ts) <= _dt.fromisoformat(exit_time):
-                    exit_idx = i
-            except Exception:
-                continue
-        start = max(0, entry_idx - padding)
-        end = min(len(chart_data), exit_idx + padding + 1)
-        return chart_data[start:end]
-
-    # --- Fetch 1-second bars in parallel ---
-    fetch_tasks = []
-    for cat, trade in picked:
-        et = trade.get('entry_time', '')
-        xt = trade.get('exit_time', '')
-        exit_reason = trade.get('exit_reason', '')
-        exit_is_ltype = exit_reason in L_TYPE_EXITS
-
-        # Fill times (C-type shifted)
-        fill_entry = _shift(et, entry_is_ltype)
-        fill_exit = _shift(xt, exit_is_ltype)
-        fetch_tasks.append((cat, trade, fill_entry, fill_exit))
-
-    # Parallel fetch
-    one_sec_results: dict[str, dict] = {}
-
-    def _fetch_1s(center_iso: str, label: str):
-        try:
-            dt = _dt.fromisoformat(center_iso)
-            start = dt - _td(seconds=60)
-            end = dt + _td(seconds=60)
-            bars_df = fetch_1s_bars_for_window(symbol, start, end, padding_seconds=0)
-            if bars_df is not None and len(bars_df) > 0:
-                return [{
-                    'timestamp': ts.isoformat(),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                } for ts, row in bars_df.iterrows()]
-            return []
-        except Exception as e:
-            logger.warning(f"Failed to fetch 1s bars for {label}: {e}")
-            return []
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {}
-        for cat, trade, fill_entry, fill_exit in fetch_tasks:
-            futures[(cat, 'entry')] = pool.submit(_fetch_1s, fill_entry, f"{cat}_entry")
-            futures[(cat, 'exit')] = pool.submit(_fetch_1s, fill_exit, f"{cat}_exit")
-        for key, future in futures.items():
-            one_sec_results[f"{key[0]}_{key[1]}"] = future.result()
-
-    # --- Build scenario dicts ---
+    # --- Build scenario dicts using shared helper ---
     scenarios = []
     for cat, trade in picked:
-        et = trade.get('entry_time', '')
-        xt = trade.get('exit_time', '')
-        ep = trade.get('entry_price', 0)
-        xp = trade.get('exit_price', 0)
-        sp = trade.get('stop_price', 0)
-        tp = trade.get('target_price', 0)
-        rm = trade.get('r_multiple', 0)
-        exit_reason = trade.get('exit_reason', '')
-        exit_is_ltype = exit_reason in L_TYPE_EXITS
-
-        shifted_et = _shift(et, entry_is_ltype)
-        shifted_xt = _shift(xt, exit_is_ltype)
-
-        meta = _CATEGORY_META.get(cat, {'name': cat.replace('_', ' ').title(), 'description': f'Exit: {exit_reason}'})
-
-        # Chart window
-        window = _find_chart_window(et, xt)
-
-        # Workflow steps
-        ws = []
-        if exec_code in ('C', 'CC'):
-            ws.append({'action': 'check_trigger', 'label': 'Bar-close trigger detected', 'time': et, 'badge': exec_code})
-        else:
-            ws.append({'action': 'check_level_cross', 'label': 'Level cross detected within bar', 'time': et, 'badge': exec_code})
-        ws.append({'action': 'fill', 'label': f'Entry filled at ${ep:.2f}', 'time': shifted_et, 'price': ep, 'color': 'var(--green)'})
-        ws.append({'action': 'fire_webhook', 'label': f'Webhook: entry_{direction.lower()}_market', 'time': shifted_et, 'isWebhook': True})
-        if exec_code in ('LC', 'CC'):
-            ws.append({'action': 'wait_confirm', 'label': f'Wait for {"next bar" if exec_code == "CC" else "bar"} close confirmation', 'time': shifted_et})
-            ws.append({'action': 'confirmed', 'label': 'Confirmed — position continues', 'color': 'var(--green)'})
-        ws.append({'action': 'manage_position', 'label': f'Position open — stop ${sp:.2f}' + (f', target ${tp:.2f}' if tp else ''), 'time': shifted_et})
-        ws.append({'action': 'exit', 'label': f'{meta["name"]} at ${xp:.2f} ({rm:+.2f}R)', 'time': shifted_xt or xt, 'price': xp, 'color': 'var(--green)' if rm >= 0 else 'var(--red)'})
-        ws.append({'action': 'fire_webhook', 'label': f'Webhook: exit_{direction.lower()}_market', 'time': shifted_xt or xt, 'isWebhook': True})
-
-        # Markers
-        xc = '#4CAF50' if rm >= 0 else '#F44336'
-        markers = [{'time': shifted_et, 'position': 'belowBar' if direction == 'LONG' else 'aboveBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}]
-        if shifted_xt:
-            markers.append({'time': shifted_xt, 'position': 'aboveBar' if direction == 'LONG' else 'belowBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1})
-
-        entry_1s = one_sec_results.get(f"{cat}_entry", [])
-        exit_1s = one_sec_results.get(f"{cat}_exit", [])
-
-        # Entry/exit drill (3 bars around each event from chart window)
-        entry_drill = window[:3] if len(window) >= 3 else window
-        exit_drill = window[-3:] if len(window) >= 3 else window
-
-        scenarios.append({
-            'id': cat,
-            'name': meta['name'],
-            'description': meta['description'],
-            'category': 'generated',
-            'direction': direction,
-            'entry_price': ep,
-            'exit_price': xp,
-            'stop_price': sp,
-            'target_price': tp,
-            'exit_reason': exit_reason,
-            'r_multiple': rm,
-            'passed': True,
-            'exec_type': exec_code,
-            'chart_data': window,
-            'raw_trades': [trade],
-            'overlay_indicators': overlay_indicators,
-            'oscillator_indicators': oscillator_indicators,
-            'heatmap_conditions': [],
-            'markers': markers,
-            'workflow_steps': ws,
-            'entry_drill': entry_drill,
-            'exit_drill': exit_drill,
-            'entry_1s_bars': entry_1s,
-            'exit_1s_bars': exit_1s,
-            'entry_markers': [{'time': shifted_et, 'position': 'belowBar', 'shape': 'arrowUp', 'color': '#4CAF50', 'text': 'Entry', 'size': 1}],
-            'exit_markers': [{'time': shifted_xt, 'position': 'aboveBar', 'shape': 'arrowDown', 'color': xc, 'text': f'{rm:+.1f}R', 'size': 1}] if shifted_xt else [],
-        })
+        scenario = build_single_trade_scenario(
+            trade=trade,
+            chart_data=chart_data,
+            overlay_indicators=overlay_indicators,
+            oscillator_indicators=oscillator_indicators,
+            symbol=symbol,
+            timeframe=timeframe,
+            exec_code=exec_code,
+            entry_trigger=entry_trigger,
+            direction=direction,
+            padding_bars=5,
+            category=cat,
+        )
+        scenarios.append(scenario)
 
     return scenarios
