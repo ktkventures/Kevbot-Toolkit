@@ -361,10 +361,12 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
     # Build heatmap conditions from confluence records
     from data_loader import get_tf_label
     primary_tf = get_tf_label(req.timeframe).lower()
+    cb_set = set(req.cb_conditions) if req.cb_conditions else set()
     heatmap_conditions = []
 
     for record in confluence_records:
-        parts = record.split('-', 2)
+        clean_record = record.replace('[CB]', '').replace('[PB]', '')
+        parts = clean_record.split('-', 2)
         if len(parts) < 3:
             continue
         rec_tf, interp_key, needed_state = parts
@@ -378,10 +380,14 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
         else:
             col_name = interp_key
 
+        is_cb = clean_record in cb_set or '[CB]' in record
+        fidelity = 'CB' if is_cb else 'PB'
+
         heatmap_conditions.append({
-            "label": record,
+            "label": f"{clean_record} [{fidelity}]",
             "column": col_name,
             "needed_state": needed_state,
+            "fidelity": fidelity,
             "has_data": col_name in df.columns,
         })
 

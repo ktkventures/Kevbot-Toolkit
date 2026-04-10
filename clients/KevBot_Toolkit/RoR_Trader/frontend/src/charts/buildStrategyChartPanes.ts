@@ -226,8 +226,12 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     const n = heatmapConds.length;
     const hmSeries: SeriesConfig[] = heatmapConds.map((cond: any, idx: number) => ({
       type: 'Histogram' as const,
-      data: bars.map((b: any) => {
-        const stateVal = b[`_state_${cond.column}`];
+      data: bars.map((b: any, bi: number) => {
+        // PB fidelity: show previous bar's state (what the engine checked for entry gating)
+        // CB fidelity: show current bar's state
+        const isPB = cond.fidelity === 'PB';
+        const sourceBar = isPB && bi > 0 ? bars[bi - 1] : b;
+        const stateVal = sourceBar[`_state_${cond.column}`];
         const isMet = stateVal != null && stateVal === cond.needed_state;
         return { time: b.timestamp, value: n - idx, color: isMet ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.4)' };
       }),
