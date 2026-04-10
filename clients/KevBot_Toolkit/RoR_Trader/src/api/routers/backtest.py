@@ -210,7 +210,7 @@ def backtest_trade_replay(req: BacktestTradeReplayRequest, user=Depends(get_curr
 @router.post("/analyze")
 def analyze_triggers(
     req: BacktestRequest,
-    mode: str = Query("entry", description="entry|exit|condition|general|combinations|general_combinations|stop|target"),
+    mode: str = Query("entry", description="entry|exit|condition|general|combinations|general_combinations|stop|target|time_exit"),
     depth: int = Query(1, description="Max combination depth for combinations mode"),
     user=Depends(get_current_user),
 ):
@@ -239,6 +239,8 @@ def analyze_triggers(
             return _analyze_stops_impl(req)
         elif mode == "target":
             return _analyze_targets_impl(req)
+        elif mode == "time_exit":
+            return _analyze_time_exits_impl(req)
         else:
             return _analyze_triggers_impl(req)
     except Exception as e:
@@ -653,6 +655,69 @@ def _analyze_targets_impl(req):
             results.append(_kpis_to_result(kpis, pack.id, label))
         except Exception as e:
             logger.warning("Analyze target failed for %s: %s", pack.id, e)
+
+    results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
+    return {"results": results}
+
+
+def _analyze_time_exits_impl(req):
+    """Test each enabled time exit pack (+ a 'None' baseline with no time exit)."""
+    import services as svc
+    stop_config, target_config = _resolve_configs(req)
+    df, trading_days = _load_analyze_data(req)
+    if len(df) == 0:
+        return {"results": []}
+
+    from time_exit_packs import load_time_exit_packs
+    packs = load_time_exit_packs()
+    results = []
+
+    # Baseline: no time exit
+    strategy = _build_base_strategy(req, stop_config, target_config)
+    strategy["id"] = "analyze_time_exit_none"
+    strategy["time_exit_config"] = None
+    try:
+        trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+        if req.hifi_mode and len(trades_df) > 0:
+            from api.services.backtest_service import _hifi_resolve_trades
+            if 'hifi_resolved' not in trades_df.columns:
+                trades_df['hifi_resolved'] = False
+            trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
+        if len(trades_df) > 0:
+            kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
+                                      total_trading_days=trading_days)
+            results.append(_kpis_to_result(kpis, '__none__', 'No Time Exit'))
+    except Exception as e:
+        logger.warning("Analyze time exit baseline failed: %s", e)
+
+    # Each enabled time exit pack
+    for pack in packs:
+        if not pack.enabled:
+            continue
+        try:
+            ec = pack.get_exit_config()
+        except Exception:
+            continue
+
+        strategy = _build_base_strategy(req, stop_config, target_config)
+        strategy["id"] = f"analyze_time_exit_{pack.id}"
+        strategy["time_exit_config"] = ec
+
+        try:
+            trades_df = svc.unified_trades(df, strategy, include_open_position=False)
+            if req.hifi_mode and len(trades_df) > 0:
+                from api.services.backtest_service import _hifi_resolve_trades
+                if 'hifi_resolved' not in trades_df.columns:
+                    trades_df['hifi_resolved'] = False
+                trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
+            if len(trades_df) == 0:
+                continue
+            kpis = svc.calculate_kpis(trades_df, risk_per_trade=req.risk_per_trade,
+                                      total_trading_days=trading_days)
+            label = f"{pack.template_name} ({pack.version})"
+            results.append(_kpis_to_result(kpis, pack.id, label))
+        except Exception as e:
+            logger.warning("Analyze time exit failed for %s: %s", pack.id, e)
 
     results.sort(key=lambda r: r.get("daily_r", 0), reverse=True)
     return {"results": results}

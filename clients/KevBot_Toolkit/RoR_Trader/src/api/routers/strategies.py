@@ -138,6 +138,21 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
         strategy['confluence'] = list(strategy['confluence'])
 
+    # Resolve pack IDs → inline configs so the strategy is self-contained for the engine
+    from api.services.backtest_service import (
+        _resolve_stop_from_pack, _resolve_target_from_pack, _resolve_time_exit_from_pack,
+    )
+    if strategy.get('stop_loss_pack_id') and not strategy.get('stop_config'):
+        strategy['stop_config'] = _resolve_stop_from_pack(strategy['stop_loss_pack_id'])
+        if strategy['stop_config'] and 'exec_type' not in strategy['stop_config']:
+            strategy['stop_config']['exec_type'] = strategy.get('stop_exec_type', 'L')
+    if strategy.get('take_profit_pack_id') and not strategy.get('target_config'):
+        strategy['target_config'] = _resolve_target_from_pack(strategy['take_profit_pack_id'])
+        if strategy.get('target_config') and 'exec_type' not in strategy['target_config']:
+            strategy['target_config']['exec_type'] = strategy.get('target_exec_type', 'L')
+    if strategy.get('time_exit_pack_id') and not strategy.get('time_exit_config'):
+        strategy['time_exit_config'] = _resolve_time_exit_from_pack(strategy['time_exit_pack_id'])
+
     from db import USE_DB
     if USE_DB:
         from db import save_strategy_db
@@ -511,9 +526,14 @@ def get_strategy_chart_data(
         primary_tf = get_tf_label(strat.get('timeframe', '1Min')).lower()
         all_conditions = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
 
+        # Determine which conditions use CB fidelity
+        cb_set = set(strat.get('cb_conditions', []))
+
         heatmap_conditions = []
         for record in all_conditions:
-            parts = record.split('-', 2)
+            # Strip [CB] suffix if present (used in confluence array)
+            clean_record = record.replace('[CB]', '').replace('[PB]', '')
+            parts = clean_record.split('-', 2)
             if len(parts) < 3:
                 continue
             rec_tf, interp_key, needed_state = parts
@@ -527,10 +547,15 @@ def get_strategy_chart_data(
             else:
                 col_name = interp_key
 
+            # Determine fidelity: CB if in cb_conditions set or has [CB] suffix
+            is_cb = clean_record in cb_set or '[CB]' in record
+            fidelity = 'CB' if is_cb else 'PB'
+
             heatmap_conditions.append({
-                "label": record,
+                "label": f"{clean_record} [{fidelity}]",
                 "column": col_name,
                 "needed_state": needed_state,
+                "fidelity": fidelity,
                 "has_data": col_name in df.columns,
             })
 

@@ -75,12 +75,12 @@ function apiToDetailStrategy(s: any) {
     winRate: k.win_rate ?? 0,
     pf: k.profit_factor ?? 0,
     dailyR: k.daily_r ?? 0,
-    dailyROI: 0,  // {{daily_roi}}
+    dailyROI: 0,  // {{daily_roi}} — requires portfolio-level risk context to compute
     trades: k.total_trades ?? 0,
     maxDD: k.max_r_drawdown ?? 0,
     btDays: s.data_days || 30,
-    btStart: '--',  // {{bt_start}}
-    btEnd: '--',    // {{bt_end}}
+    btStart: s.stored_trades?.[0]?.entry_time?.slice(0, 10) || '--',
+    btEnd: s.stored_trades?.length ? (s.stored_trades[s.stored_trades.length - 1]?.exit_time?.slice(0, 10) || s.stored_trades[s.stored_trades.length - 1]?.entry_time?.slice(0, 10) || '--') : '--',
     fwdWinRate: (s.forward_kpis?.win_rate ?? null) as number | null,
     fwdPF: (s.forward_kpis?.profit_factor ?? null) as number | null,
     fwdDailyR: (s.forward_kpis?.daily_r ?? null) as number | null,
@@ -1527,6 +1527,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>target:</span>
             {strategy.target !== 'Signal exit only' && strategy.target !== '--' && <ExecBadge exec="[L]" />}
             <TargetBadge text={strategy.target} />
+            {strategy.timeExitSummary && (
+              <>
+                <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>time exit:</span>
+                <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange-muted)' }}>
+                  {strategy.timeExitSummary}
+                </span>
+              </>
+            )}
             <span className="text-xs" style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>confluence:</span>
             {(strategy.confluenceEnriched?.length > 0 ? strategy.confluenceEnriched : strategy.confluence.map((c: string) => ({ id: c, fidelity: null, label: c }))).map((c: any) => (
@@ -1824,7 +1833,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 </div>
 
                 {/* ---- Performance vs Plan ---- */}
-                {pvpFwdTrades.length >= 3 && (
+                {pvpFwdTrades.length < 3 ? (
+                  <Card className="mb-4">
+                    <h4 className="text-sm font-medium mb-3">Performance vs Plan</h4>
+                    <div className="flex items-center justify-center py-8">
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        Collecting forward test data — needs at least 3 forward trades to compare against backtest predictions.
+                        {pvpFwdTrades.length > 0 && ` (${pvpFwdTrades.length}/3 trades so far)`}
+                      </p>
+                    </div>
+                  </Card>
+                ) : (
                   <Card className="mb-4">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-sm font-medium">Performance vs Plan</h4>
@@ -2112,7 +2131,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       const reason = t.exitReason || '';
                       let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
                       if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                      else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                      else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
+                      else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
                       else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
                       m.push({ time: exitPlot, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
                     }
@@ -2206,7 +2226,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             const reason = t.exitReason || '';
                             let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
                             if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                            else if (reason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                            else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
+                            else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
                             algoExitData.push({ time: snapped, value: t.exitPrice });
                             algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
                           }
@@ -2260,7 +2281,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             const reason = a.exitReason || '';
                             let color: string;
                             if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
-                            else if (reason === 'bar_count_exit') color = 'rgba(38,166,154,0.8)';
+                            else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
+                            else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
                             else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
                             alertExitData.push({ time: snapped, value: a.exitPrice });
                             alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
@@ -2954,6 +2976,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           <TargetBadge text={strategy.target} />
                         </div>
                       </div>
+                      {/* Time Exit */}
+                      {strategy.timeExitSummary && (
+                        <div>
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Time Exit</span>
+                          <div className="mt-1">
+                            <span className="text-xs px-1.5 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange-muted)' }}>
+                              {strategy.timeExitSummary}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </Card>
                 </div>

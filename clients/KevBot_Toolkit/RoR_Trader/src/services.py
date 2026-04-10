@@ -925,6 +925,17 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     if strategy.get('forward_testing') and not strategy.get('alert_tracking_enabled'):
         enriched['alert_tracking_enabled'] = True
 
+    # Resolve time_exit_pack_id → time_exit_config (for strategies saved with pack ID only)
+    if strategy.get('time_exit_pack_id') and not strategy.get('time_exit_config'):
+        try:
+            from time_exit_packs import load_time_exit_packs, get_pack_by_id
+            packs = load_time_exit_packs()
+            pack = get_pack_by_id(strategy['time_exit_pack_id'], packs)
+            if pack:
+                enriched['time_exit_config'] = pack.get_exit_config()
+        except Exception:
+            pass
+
     # Fidelity-enriched confluence
     raw_conf = strategy.get('confluence', [])
     enriched['confluence_enriched'] = enrich_confluence_with_fidelity(raw_conf)

@@ -35,6 +35,7 @@ import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks, useTimeExitPacks } from '@/hooks/queries/usePacks';
 import type { TimeExitPackDTO } from '@/hooks/queries/usePacks';
 import { useStrategyBuilderDefaults, useDisplayStore } from '@/providers/StoreProvider';
+import { useSettings } from '@/hooks/queries/useSettings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,7 +88,22 @@ interface KPIs {
 // Mock Data
 // ---------------------------------------------------------------------------
 
-const TIMEFRAMES = ['1Min', '5Min', '15Min', '1H', '4H', '1D'];
+const TIMEFRAMES_FALLBACK = ['1Min', '5Min', '15Min', '1H', '4H', '1D'];
+// All possible timeframes in order — filtered by user settings at runtime
+const ALL_TIMEFRAMES = [
+  '5Sec', '10Sec', '15Sec', '30Sec',
+  '1Min', '2Min', '3Min', '5Min', '10Min', '15Min', '30Min',
+  '1Hour', '2Hour', '4Hour', '1Day',
+];
+// Map backend IDs → display labels
+const TF_LABELS: Record<string, string> = {
+  '5Sec': '5s', '10Sec': '10s', '15Sec': '15s', '30Sec': '30s',
+  '1Min': '1m', '2Min': '2m', '3Min': '3m', '5Min': '5m', '10Min': '10m',
+  '15Min': '15m', '30Min': '30m', '1Hour': '1h', '2Hour': '2h', '4Hour': '4h',
+  '1Day': '1d',
+  // Legacy aliases
+  '1H': '1h', '4H': '4h', '1D': '1d',
+};
 const DIRECTIONS = ['LONG', 'SHORT'];
 const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
 const ASSET_TYPES = ['Equity', 'Crypto'];
@@ -1483,6 +1499,7 @@ export default function StrategyBuilderPage() {
   const { data: apiStopPacks } = useStopLossPacks();
   const { data: apiTargetPacks } = useTakeProfitPacks();
   const { data: apiTimeExitPacks } = useTimeExitPacks();
+  const { data: userSettings } = useSettings();
   const builderDefaults = useStrategyBuilderDefaults();
 
   // Derive trigger/pack/condition lists from API data
@@ -1541,6 +1558,14 @@ export default function StrategyBuilderPage() {
       summary: p.exit_summary || p.version,
     }));
   }, [apiTimeExitPacks]);
+
+  // Derive available timeframes from user settings (Timeframes pack)
+  const TIMEFRAMES: string[] = useMemo(() => {
+    const enabledTfs = userSettings?.enabled_timeframes;
+    if (!enabledTfs || Object.keys(enabledTfs).length === 0) return TIMEFRAMES_FALLBACK;
+    const primary = ALL_TIMEFRAMES.filter((tf) => enabledTfs[tf]?.primaryEnabled);
+    return primary.length > 0 ? primary : TIMEFRAMES_FALLBACK;
+  }, [userSettings]);
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
     if (!apiConfluenceGroups) return [];
@@ -1748,13 +1773,19 @@ export default function StrategyBuilderPage() {
       },
     });
   }, [analyzeMut, symbol, timeframe, direction, lookbackDays, session, lookbackMode,
-      entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, isAnalyzing,
+      entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, selectedTimeExitPack, isAnalyzing,
       tfDepth, generalDepth]);
   const [analyzerSearch, setAnalyzerSearch] = useState('');
 
   // Compute derived values
   const estimatedBars = useMemo(() => {
-    const barsPerDay = timeframe === '1Min' ? 390 : timeframe === '5Min' ? 78 : timeframe === '15Min' ? 26 : timeframe === '1H' ? 7 : timeframe === '4H' ? 2 : 1;
+    const BPD: Record<string, number> = {
+      '5Sec': 4680, '10Sec': 2340, '15Sec': 1560, '30Sec': 780,
+      '1Min': 390, '2Min': 195, '3Min': 130, '5Min': 78, '10Min': 39,
+      '15Min': 26, '30Min': 13, '1Hour': 7, '2Hour': 4, '4Hour': 2, '1Day': 1,
+      '1H': 7, '4H': 2, '1D': 1,  // legacy aliases
+    };
+    const barsPerDay = BPD[timeframe] ?? 390;
     const sessionMult = session === 'RTH' ? 1 : session === 'Extended' ? 2.4 : session === '24/7' ? 3.7 : 1.5;
     if (lookbackMode === 'Bars/Candles') return lookbackBars;
     return Math.round(lookbackDays * barsPerDay * sessionMult);
@@ -2486,7 +2517,7 @@ export default function StrategyBuilderPage() {
             <div className="space-y-4">
               <Card className="flex flex-col overflow-hidden">
                 <div className="min-h-0 overflow-hidden">
-                <TabBar tabs={['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit']}>
+                <TabBar tabs={['Entry', 'Exit', 'TF Conditions', 'General', 'Stop Loss', 'Take Profit', 'Time Exit']}>
                   {(tab) => {
                     // Track active tab for pinned depth selector
                     if (tab !== activeAnalysisTab) {
@@ -2790,6 +2821,38 @@ export default function StrategyBuilderPage() {
                       );
                     }
 
+                    // ---- TIME EXIT TAB ----
+                    if (tab === 'Time Exit') {
+                      const teResults = analysisResults.time_exit || [];
+                      return (
+                        <div>
+                          <AnalysisToolbar search="" onSearch={() => {}} onAnalyze={() => handleAnalyze('time_exit')} onFilterClick={() => setFilterModalOpen(true)} placeholder="Search time exit packs..." />
+                          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                            Current: <strong>{API_TIME_EXIT_PACKS.find((p) => p.id === selectedTimeExitPack)?.summary || 'None'}</strong>
+                          </p>
+                          {isAnalyzing && analyzingMode === 'time_exit' ? (
+                            <AnalyzeProgressBar label="Analyzing time exit packs..." />
+                          ) : teResults.length > 0 ? (
+                            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 440 }}>
+                              {applyAnalysisFilters(teResults, filters).map((result) => (
+                                <AnalyzerResultCard
+                                  key={result.trigger_id}
+                                  result={{ triggerId: result.trigger_id, triggerName: result.trigger_name, execType: 'C', totalTrades: result.total_trades, profitFactor: result.profit_factor, winRate: result.win_rate, avgR: result.avg_r, dailyR: result.daily_r, rSquared: result.r_squared }}
+                                  isCurrent={result.trigger_id === selectedTimeExitPack || (result.trigger_id === '__none__' && !selectedTimeExitPack)}
+                                  actionLabel="Replace"
+                                  onAction={() => setSelectedTimeExitPack(result.trigger_id === '__none__' ? '' : result.trigger_id)}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs py-8 text-center" style={{ color: 'var(--text-muted)' }}>
+                              Click <strong>Analyze</strong> to compare time exit packs. Includes a &quot;No Time Exit&quot; baseline.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
                     return null;
                   }}
                 </TabBar>
@@ -2802,6 +2865,7 @@ export default function StrategyBuilderPage() {
                   {activeAnalysisTab === 'General' && <DepthSelector depth={generalDepth} maxDepth={4} onChange={setGeneralDepth} />}
                   {activeAnalysisTab === 'Stop Loss' && <DepthSelector depth={stopDepth} maxDepth={1} onChange={() => {}} />}
                   {activeAnalysisTab === 'Take Profit' && <DepthSelector depth={targetDepth} maxDepth={1} onChange={() => {}} />}
+                  {activeAnalysisTab === 'Time Exit' && <DepthSelector depth={1} maxDepth={1} onChange={() => {}} />}
                 </div>
               </Card>
 
@@ -2862,8 +2926,12 @@ export default function StrategyBuilderPage() {
                     time_exit_pack_id: selectedTimeExitPack || undefined,
                     stop_exec_type: stopExecType,
                     target_exec_type: targetExecType,
-                    kpis: backtestResult?.kpis ?? EMPTY_KPIS,
-                    stored_trades: backtestResult?.trades ?? [],
+                    kpis: backtestMut.data?.kpis ?? {},
+                    stored_trades: backtestResult?.rawTrades ?? [],
+                    equity_curve_data: {
+                      cumulative_r: (backtestMut.data?.equity_curve ?? []).map((p: any) => p.cumulative_r ?? 0),
+                      exit_times: (backtestMut.data?.equity_curve ?? []).map((p: any) => p.exit_time ?? ''),
+                    },
                   });
                 }
               }}>

@@ -88,7 +88,7 @@ function apiToStrategy(s: any): Strategy {
     winRate: k.win_rate ?? 0,
     pf: k.profit_factor ?? 0,
     dailyR: k.daily_r ?? 0,
-    dailyROI: 0,
+    dailyROI: 0,  // {{daily_roi}} — requires portfolio-level risk context to compute
     trades: k.total_trades ?? 0,
     maxDD: k.max_r_drawdown ?? 0,
     // Forward test KPIs (from enrich_strategy)
@@ -845,6 +845,14 @@ export default function StrategiesPage() {
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded" style={{ color: 'var(--green)', background: 'var(--green)' + '18' }}>
                     {strat.target}
                   </span>
+                  {strat.timeExit && (
+                    <>
+                      <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>time exit:</span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded" style={{ color: 'var(--orange)', background: 'var(--orange)' + '18' }}>
+                        {strat.timeExit}
+                      </span>
+                    </>
+                  )}
                 </div>
                 {/* Row 4: Confluence conditions with fidelity badges */}
                 <div className="flex flex-wrap items-center gap-1.5">
