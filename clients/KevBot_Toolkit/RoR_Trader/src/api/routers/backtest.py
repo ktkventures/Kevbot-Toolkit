@@ -309,7 +309,13 @@ def _load_analyze_data(req):
 
 
 def _resolve_configs(req):
-    """Resolve stop/target configs from pack IDs."""
+    """Resolve stop/target configs from pack IDs.
+
+    M5.5: also injects req.stop_exec_type / req.target_exec_type into the
+    resolved configs (defaults to 'L' for backward compat). Without this,
+    analyze / trade-zoom / trade-replay endpoints would silently fall back
+    to L-type stops even when the request explicitly asks for C/LC/CC.
+    """
     from api.services.backtest_service import _resolve_stop_from_pack, _resolve_target_from_pack
     stop_config = req.stop_config
     target_config = req.target_config
@@ -319,6 +325,11 @@ def _resolve_configs(req):
         target_config = _resolve_target_from_pack(req.take_profit_pack_id)
     if not stop_config:
         stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
+    # Inject exec_type from the request (defaults to 'L' if not present in pack config)
+    if stop_config and 'exec_type' not in stop_config:
+        stop_config['exec_type'] = getattr(req, 'stop_exec_type', 'L')
+    if target_config and 'exec_type' not in target_config:
+        target_config['exec_type'] = getattr(req, 'target_exec_type', 'L')
     return stop_config, target_config
 
 

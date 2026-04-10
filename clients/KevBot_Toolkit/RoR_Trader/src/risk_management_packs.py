@@ -79,6 +79,14 @@ class RiskManagementPack:
             return builder(self.parameters)
         return None
 
+    def get_supported_exec_types(self) -> list:
+        """Return the list of execution types this pack's template supports.
+        Defaults to all four (C, L, LC, CC) if the template doesn't specify."""
+        template = TEMPLATES.get(self.base_template)
+        if not template:
+            return ['L']
+        return template.get("supported_exec_types", ['C', 'L', 'LC', 'CC'])
+
 
 # =============================================================================
 # CONFIG BUILDERS

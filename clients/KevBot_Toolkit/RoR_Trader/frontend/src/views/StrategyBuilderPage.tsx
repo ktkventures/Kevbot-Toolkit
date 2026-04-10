@@ -92,7 +92,14 @@ const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
 const ASSET_TYPES = ['Equity', 'Crypto'];
 const LOOKBACK_MODES = ['Days', 'Bars/Candles', 'Date Range'];
 // Stop/Target packs — selectable saved variations
-interface RiskPack { id: string; name: string; version: string; summary: string; execType: string }
+interface RiskPack {
+  id: string;
+  name: string;
+  version: string;
+  summary: string;
+  execType: string;
+  supportedExecTypes?: Array<'C' | 'L' | 'LC' | 'CC'>;
+}
 const API_STOP_PACKS: RiskPack[] = [
   { id: 'atr-default', name: 'ATR Stop', version: 'Default', summary: '1.5x ATR', execType: 'L' },
   { id: 'atr-tight', name: 'ATR Stop', version: 'Tight', summary: '1.0x ATR', execType: 'L' },
@@ -667,6 +674,8 @@ function OptimizableVariables({
   generalConditions,
   selectedStopPack,
   selectedTargetPack,
+  stopExecType,
+  targetExecType,
   allTriggers,
   allConditions,
   allGeneralConditions,
@@ -684,6 +693,8 @@ function OptimizableVariables({
   generalConditions: Set<string>;
   selectedStopPack: string;
   selectedTargetPack: string;
+  stopExecType: 'C' | 'L' | 'LC' | 'CC';
+  targetExecType: 'C' | 'L' | 'LC' | 'CC';
   allTriggers: TriggerDef[];
   allConditions: ConfluenceCondition[];
   allGeneralConditions: ConfluenceCondition[];
@@ -845,7 +856,7 @@ function OptimizableVariables({
             Stop Loss
           </div>
           <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
-            {stopPack && <ExecBadge type={stopPack.execType} />}
+            {stopPack && <ExecBadge type={stopExecType} />}
             <span className="italic">{formatStopDisplay()}</span>
           </span>
         </div>
@@ -856,7 +867,7 @@ function OptimizableVariables({
             Take Profit
           </div>
           <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
-            {targetPack && <ExecBadge type={targetPack.execType} />}
+            {targetPack && <ExecBadge type={targetExecType} />}
             <span className="italic">{formatTargetDisplay()}</span>
           </span>
         </div>
@@ -1486,6 +1497,7 @@ export default function StrategyBuilderPage() {
       id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
       summary: p.stop_summary || p.version,
       execType: p.exec_type || 'L',
+      supportedExecTypes: p.supported_exec_types || ['L', 'C', 'LC', 'CC'],
     }));
   }, [apiStopPacks]);
 
@@ -1495,6 +1507,7 @@ export default function StrategyBuilderPage() {
       id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
       summary: p.target_summary || p.version,
       execType: p.exec_type || 'L',
+      supportedExecTypes: p.supported_exec_types || ['L', 'C', 'LC', 'CC'],
     }));
   }, [apiTargetPacks]);
 
@@ -1562,6 +1575,8 @@ export default function StrategyBuilderPage() {
       confluence: config.confluence || [],
       cb_conditions: config.cb_conditions || [],
       stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
+      stop_exec_type: config.stop_exec_type,
+      target_exec_type: config.target_exec_type,
       bar_count_exit: config.bar_count_exit,
       secondary_tfs: config.secondary_tfs || [],
       hifi_mode: config.hifi_mode || false,
@@ -1594,10 +1609,12 @@ export default function StrategyBuilderPage() {
 
   // ---- Stop Loss (pack selection) ----
   const [selectedStopPack, setSelectedStopPack] = useState('');
+  const [stopExecType, setStopExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('L');
   const [eqXAxis, setEqXAxis] = useState<'trade' | 'time'>('trade');
 
   // ---- Target (pack selection) ----
   const [selectedTargetPack, setSelectedTargetPack] = useState('');
+  const [targetExecType, setTargetExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('L');
 
   // ---- Confluence ----
   const [selectedConditions, setSelectedConditions] = useState<Set<string>>(new Set());
@@ -1667,6 +1684,8 @@ export default function StrategyBuilderPage() {
       confluence: Array.from(selectedConditions),
       stop_loss_pack_id: selectedStopPack || undefined,
       take_profit_pack_id: selectedTargetPack || undefined,
+      stop_exec_type: stopExecType,
+      target_exec_type: targetExecType,
       stop_atr_mult: 1.5,
       lookback_mode: lookbackMode,
       bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
@@ -1770,12 +1789,14 @@ export default function StrategyBuilderPage() {
         cb_conditions: cbCondIds,
         stop_loss_pack_id: selectedStopPack,
         take_profit_pack_id: selectedTargetPack,
+        stop_exec_type: stopExecType,
+        target_exec_type: targetExecType,
         bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
         secondary_tfs: secondaryTfs,
         hifi_mode: hifiMode,
       });
     }
-  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, secondaryTfs, hifiMode]);
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, stopExecType, targetExecType, secondaryTfs, hifiMode]);
 
   const handleToggleCondition = useCallback((id: string) => {
     setSelectedConditions((prev) => {
@@ -1987,8 +2008,8 @@ export default function StrategyBuilderPage() {
                 <ExecBadge type={entryDef.execType} />{' '}
                 {entryDef.name} {'\u2192'}{' '}
                 {exitDefs.map((e) => e.name).join(' / ') || 'No exit'}{' '}
-                | Stop: {(() => { const sp = API_STOP_PACKS.find((p) => p.id === selectedStopPack); return sp ? <><ExecBadge type={sp.execType} /> {sp.summary}</> : 'None'; })()}{' '}
-                | Target: {(() => { const tp = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack); return tp ? <><ExecBadge type={tp.execType} /> {tp.summary}</> : 'None'; })()}
+                | Stop: {(() => { const sp = API_STOP_PACKS.find((p) => p.id === selectedStopPack); return sp ? <><ExecBadge type={stopExecType} /> {sp.summary}</> : 'None'; })()}{' '}
+                | Target: {(() => { const tp = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack); return tp ? <><ExecBadge type={targetExecType} /> {tp.summary}</> : 'None'; })()}
               </span>
             )}
           </div>
@@ -2072,52 +2093,88 @@ export default function StrategyBuilderPage() {
               </div>
             </div>
 
-            {/* Stop Loss — pack list (limit 1) */}
+            {/* Stop Loss — pack × exec_type variant list (matches entry/exit pattern) */}
             <div>
               <SectionLabel>Stop Loss Pack</SectionLabel>
-              <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
-                {API_STOP_PACKS.map((p) => (
-                  <button
-                    key={p.id}
-                    className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
-                    style={{
-                      background: p.id === selectedStopPack ? 'var(--accent-muted)' : 'transparent',
-                      color: p.id === selectedStopPack ? 'var(--accent)' : 'var(--text-primary)',
-                      border: p.id === selectedStopPack ? '1px solid var(--accent)' : '1px solid transparent',
-                    }}
-                    onClick={() => setSelectedStopPack(p.id)}
-                  >
-                    <ExecBadge type={p.execType} />
-                    <span className="flex-1 truncate">{p.name} ({p.version})</span>
-                    <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
-                  </button>
-                ))}
+              <div className="space-y-1 overflow-y-auto pr-1 mt-1" style={{ maxHeight: 280 }}>
+                {(() => {
+                  // Expand each pack into one row per supported exec_type, matching
+                  // how entry/exit triggers list each (base trigger × exec_type) variant.
+                  const ORDER: Array<'C' | 'L' | 'LC' | 'CC'> = ['C', 'L', 'LC', 'CC'];
+                  const rows: Array<{ packId: string; et: 'C' | 'L' | 'LC' | 'CC'; name: string; version: string; summary: string }> = [];
+                  for (const p of API_STOP_PACKS) {
+                    const supported = (p.supportedExecTypes || ['L', 'C', 'LC', 'CC']) as Array<'C' | 'L' | 'LC' | 'CC'>;
+                    const visible = ORDER.filter((et) => supported.includes(et));
+                    for (const et of visible) {
+                      rows.push({ packId: p.id, et, name: p.name, version: p.version, summary: p.summary });
+                    }
+                  }
+                  return rows.map((row) => {
+                    const isSelected = row.packId === selectedStopPack && row.et === stopExecType;
+                    return (
+                      <button
+                        key={`${row.packId}-${row.et}`}
+                        className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                        style={{
+                          background: isSelected ? 'var(--accent-muted)' : 'transparent',
+                          color: isSelected ? 'var(--accent)' : 'var(--text-primary)',
+                          border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
+                        }}
+                        onClick={() => {
+                          setSelectedStopPack(row.packId);
+                          setStopExecType(row.et);
+                        }}
+                      >
+                        <ExecBadge type={row.et} />
+                        <span className="flex-1 truncate">{row.name} ({row.version})</span>
+                        <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{row.summary}</span>
+                      </button>
+                    );
+                  });
+                })()}
               </div>
               <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                 <a href="/confluence-packs/stop-loss" className="underline" style={{ color: 'var(--accent)' }}>Manage stop loss packs</a>
               </p>
             </div>
 
-            {/* Take Profit — pack list (limit 1) */}
+            {/* Take Profit — pack × exec_type variant list (matches entry/exit pattern) */}
             <div>
               <SectionLabel>Take Profit Pack</SectionLabel>
-              <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 240 }}>
-                {API_TARGET_PACKS.map((p) => (
-                  <button
-                    key={p.id}
-                    className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
-                    style={{
-                      background: p.id === selectedTargetPack ? 'var(--accent-muted)' : 'transparent',
-                      color: p.id === selectedTargetPack ? 'var(--accent)' : 'var(--text-primary)',
-                      border: p.id === selectedTargetPack ? '1px solid var(--accent)' : '1px solid transparent',
-                    }}
-                    onClick={() => setSelectedTargetPack(p.id)}
-                  >
-                    <ExecBadge type={p.execType} />
-                    <span className="flex-1 truncate">{p.name} ({p.version})</span>
-                    <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
-                  </button>
-                ))}
+              <div className="space-y-1 overflow-y-auto pr-1 mt-1" style={{ maxHeight: 280 }}>
+                {(() => {
+                  const ORDER: Array<'C' | 'L' | 'LC' | 'CC'> = ['C', 'L', 'LC', 'CC'];
+                  const rows: Array<{ packId: string; et: 'C' | 'L' | 'LC' | 'CC'; name: string; version: string; summary: string }> = [];
+                  for (const p of API_TARGET_PACKS) {
+                    const supported = (p.supportedExecTypes || ['L', 'C', 'LC', 'CC']) as Array<'C' | 'L' | 'LC' | 'CC'>;
+                    const visible = ORDER.filter((et) => supported.includes(et));
+                    for (const et of visible) {
+                      rows.push({ packId: p.id, et, name: p.name, version: p.version, summary: p.summary });
+                    }
+                  }
+                  return rows.map((row) => {
+                    const isSelected = row.packId === selectedTargetPack && row.et === targetExecType;
+                    return (
+                      <button
+                        key={`${row.packId}-${row.et}`}
+                        className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                        style={{
+                          background: isSelected ? 'var(--accent-muted)' : 'transparent',
+                          color: isSelected ? 'var(--accent)' : 'var(--text-primary)',
+                          border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
+                        }}
+                        onClick={() => {
+                          setSelectedTargetPack(row.packId);
+                          setTargetExecType(row.et);
+                        }}
+                      >
+                        <ExecBadge type={row.et} />
+                        <span className="flex-1 truncate">{row.name} ({row.version})</span>
+                        <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{row.summary}</span>
+                      </button>
+                    );
+                  });
+                })()}
               </div>
               <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                 <a href="/confluence-packs/take-profit" className="underline" style={{ color: 'var(--accent)' }}>Manage take profit packs</a>
@@ -2221,6 +2278,8 @@ export default function StrategyBuilderPage() {
               generalConditions={selectedGenerals}
               selectedStopPack={selectedStopPack}
               selectedTargetPack={selectedTargetPack}
+              stopExecType={stopExecType}
+              targetExecType={targetExecType}
               allTriggers={API_TRIGGERS}
               allConditions={API_CONFLUENCE_CONDITIONS}
               allGeneralConditions={API_GENERAL_CONDITIONS}
@@ -2722,6 +2781,8 @@ export default function StrategyBuilderPage() {
                     confluence: Array.from(selectedConditions),
                     stop_loss_pack_id: selectedStopPack,
                     take_profit_pack_id: selectedTargetPack,
+                    stop_exec_type: stopExecType,
+                    target_exec_type: targetExecType,
                     kpis: backtestResult?.kpis ?? EMPTY_KPIS,
                     stored_trades: backtestResult?.trades ?? [],
                   });

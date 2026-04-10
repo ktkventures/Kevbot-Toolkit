@@ -1367,6 +1367,9 @@ class PositionState:
     pending_confirm_bar: int = -1    # Bar count when confirmation is due (-1 = none)
     bail_action: str = 'exit_market' # exit_market | exit_limit | exit_limit_breakeven
     hold_seconds: int = 0            # Minimum hold time before exit (L/LC)
+    # CC-type stop/target confirmation tracking (M5.5)
+    pending_stop_confirm_bar: Optional[int] = None
+    pending_target_confirm_bar: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
@@ -1386,6 +1389,8 @@ class PositionState:
             'pending_confirm_bar': self.pending_confirm_bar,
             'bail_action': self.bail_action,
             'hold_seconds': self.hold_seconds,
+            'pending_stop_confirm_bar': self.pending_stop_confirm_bar,
+            'pending_target_confirm_bar': self.pending_target_confirm_bar,
         }
 
     @classmethod
@@ -1407,6 +1412,8 @@ class PositionState:
             pending_confirm_bar=d.get('pending_confirm_bar', -1),
             bail_action=d.get('bail_action', 'exit_market'),
             hold_seconds=d.get('hold_seconds', 0),
+            pending_stop_confirm_bar=d.get('pending_stop_confirm_bar'),
+            pending_target_confirm_bar=d.get('pending_target_confirm_bar'),
         )
 
 
@@ -1609,17 +1616,14 @@ class PositionStateMachine:
         # Update trailing/breakeven stop before checking
         self._update_stop(current_values)
 
-        # Priority 1: Stop loss (gap-aware)
+        # Priority 1: Stop loss (gap-aware, exec_type-dispatched)
         # Skipped on entry bar for L-type (pre-entry OHLC is unreliable)
         if self.state.stop_price and not same_bar_ltype:
-            if direction == 'LONG' and low <= self.state.stop_price:
-                fill = min(self.state.stop_price, bar_open)
+            stop_fill = self._check_stop_hit(
+                bar_open, high, low, close, bar_count)
+            if stop_fill is not None:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('stop_loss', fill, bar_time, bar_count)
-            elif direction == 'SHORT' and high >= self.state.stop_price:
-                fill = max(self.state.stop_price, bar_open)
-                self.state.last_exit_bar_count = bar_count
-                return self._exit('stop_loss', fill, bar_time, bar_count)
+                return self._exit('stop_loss', stop_fill, bar_time, bar_count)
 
         # Priority 2/2b: Execution-type-specific bail exits (HL limit, LC/CC bail)
         bail_result = _exit_module.check_bail_exit(
@@ -1630,16 +1634,13 @@ class PositionStateMachine:
             return self._exit(bail_result.reason, bail_result.fill_price,
                               bar_time, bar_count)
 
-        # Priority 3: Target (also skipped on entry bar for L-type)
+        # Priority 3: Target (also skipped on entry bar for L-type, exec_type-dispatched)
         if self.state.target_price and not same_bar_ltype:
-            if direction == 'LONG' and high >= self.state.target_price:
-                fill = max(self.state.target_price, bar_open)
+            target_fill = self._check_target_hit(
+                bar_open, high, low, close, bar_count)
+            if target_fill is not None:
                 self.state.last_exit_bar_count = bar_count
-                return self._exit('target', fill, bar_time, bar_count)
-            elif direction == 'SHORT' and low <= self.state.target_price:
-                fill = min(self.state.target_price, bar_open)
-                self.state.last_exit_bar_count = bar_count
-                return self._exit('target', fill, bar_time, bar_count)
+                return self._exit('target', target_fill, bar_time, bar_count)
 
         # Priority 3: Signal exit (C-type booleans + L-type fills)
         for et in self.exit_triggers:
@@ -1695,6 +1696,8 @@ class PositionStateMachine:
             except Exception:
                 pass
 
+        from stop_target_methods import get_exec_type
+        _stop_et = get_exec_type(self.stop_config)
         return {
             'entry_time': self.state.entry_time,
             'exit_time': exit_time,
@@ -1711,6 +1714,8 @@ class PositionStateMachine:
             'entry_trigger': self.state.entry_trigger,
             'exit_trigger': exit_trigger,
             'exec_type': self.state.exec_type or 'C',
+            'stop_exec_type': _stop_et,
+            'target_exec_type': get_exec_type(self.target_config),
             'confluence_records': self.state.confluence_records or set(),
             'bars_held': bars_held,
             'hold_time_seconds': hold_time_seconds,
@@ -1827,7 +1832,11 @@ class PositionStateMachine:
 
     def check_exit_tick(self, price: float,
                         timestamp: str) -> Optional[dict]:
-        """Check exit on each tick (O(1)). Handles HM/HL pending exits."""
+        """Check exit on each tick (O(1)). Handles HM/HL pending exits.
+
+        Stops/targets only fire on tick when their exec_type is 'L' (intra-bar).
+        For C/LC/CC, exit confirmation happens in check_exit_bar_close.
+        """
         if self.state.status != 'IN_POSITION':
             return None
 
@@ -1845,8 +1854,10 @@ class PositionStateMachine:
             elif direction == 'SHORT' and price <= ep:
                 return self._signal_exit('unconfirmed_hl', ep, timestamp)
 
-        # Priority 3: Stop loss
-        if self.state.stop_price:
+        from stop_target_methods import get_exec_type
+
+        # Priority 3: Stop loss (L-type only — C/LC/CC defer to bar close)
+        if self.state.stop_price and get_exec_type(self.stop_config) == 'L':
             if direction == 'LONG' and price <= self.state.stop_price:
                 return self._signal_exit(
                     'stop_loss', self.state.stop_price, timestamp)
@@ -1854,8 +1865,8 @@ class PositionStateMachine:
                 return self._signal_exit(
                     'stop_loss', self.state.stop_price, timestamp)
 
-        # Priority 4: Target
-        if self.state.target_price:
+        # Priority 4: Target (L-type only — C/LC/CC defer to bar close)
+        if self.state.target_price and get_exec_type(self.target_config) == 'L':
             if direction == 'LONG' and price >= self.state.target_price:
                 return self._signal_exit(
                     'target', self.state.target_price, timestamp)
@@ -1900,16 +1911,13 @@ class PositionStateMachine:
 
         self._update_stop(current_values)
 
-        # Priority 1: Stop loss (gap-aware)
+        # Priority 1: Stop loss (gap-aware, exec_type-dispatched)
         if self.state.stop_price and not same_bar_ltype:
-            if direction == 'LONG' and low <= self.state.stop_price:
-                fill = min(self.state.stop_price, bar_open)
+            stop_fill = self._check_stop_hit(
+                bar_open, high, low, close, bar_count)
+            if stop_fill is not None:
                 return self._signal_exit(
-                    'stop_loss', fill, bar_time, bar_count)
-            elif direction == 'SHORT' and high >= self.state.stop_price:
-                fill = max(self.state.stop_price, bar_open)
-                return self._signal_exit(
-                    'stop_loss', fill, bar_time, bar_count)
+                    'stop_loss', stop_fill, bar_time, bar_count)
 
         # Priority 2/2b: Execution-type-specific bail exits
         bail_result = _live_mod.check_bail_exit(
@@ -1919,16 +1927,13 @@ class PositionStateMachine:
             return self._signal_exit(
                 bail_result.reason, bail_result.fill_price, bar_time, bar_count)
 
-        # Priority 3: Target (also skipped on entry bar for L-type)
+        # Priority 3: Target (also skipped on entry bar for L-type, exec_type-dispatched)
         if self.state.target_price and not same_bar_ltype:
-            if direction == 'LONG' and high >= self.state.target_price:
-                fill = max(self.state.target_price, bar_open)
+            target_fill = self._check_target_hit(
+                bar_open, high, low, close, bar_count)
+            if target_fill is not None:
                 return self._signal_exit(
-                    'target', fill, bar_time, bar_count)
-            elif direction == 'SHORT' and low <= self.state.target_price:
-                fill = min(self.state.target_price, bar_open)
-                return self._signal_exit(
-                    'target', fill, bar_time, bar_count)
+                    'target', target_fill, bar_time, bar_count)
 
         # Priority 4: Signal exit
         for et in self.exit_triggers:
@@ -2011,80 +2016,159 @@ class PositionStateMachine:
 
         self.state.stop_price = new_stop
 
+    # ── Stop/target hit detection (exec_type aware) ──
+
+    def _check_stop_hit(self, bar_open: float, high: float, low: float,
+                        close: float, bar_count: int) -> Optional[float]:
+        """Check if the stop was hit on this bar based on the stop's exec_type.
+
+        Returns the fill price if hit, None otherwise.
+
+        - L: intra-bar touch fires (current behavior, default).
+             Fill is gap-aware: min(stop, open) for LONG, max(stop, open) for SHORT.
+        - C: only fires when bar closes past the stop (filters wicks). Fill = close.
+        - LC: touch intra-bar AND bar close confirms past. Fill = close.
+        - CC: bar close past + next bar close also past (state-tracked). Fill = close.
+        """
+        if not self.state.stop_price:
+            return None
+        from stop_target_methods import get_exec_type
+        exec_type = get_exec_type(self.stop_config)
+        direction = self.state.direction
+        stop_price = self.state.stop_price
+
+        touched = (direction == 'LONG' and low <= stop_price) or \
+                  (direction == 'SHORT' and high >= stop_price)
+        closed_past = (direction == 'LONG' and close <= stop_price) or \
+                      (direction == 'SHORT' and close >= stop_price)
+
+        if exec_type == 'L':
+            if touched:
+                # Gap-aware fill (preserves legacy behavior)
+                if direction == 'LONG':
+                    return min(stop_price, bar_open)
+                return max(stop_price, bar_open)
+            return None
+        if exec_type == 'C':
+            return close if closed_past else None
+        if exec_type == 'LC':
+            return close if (touched and closed_past) else None
+        if exec_type == 'CC':
+            # Two-bar close confirmation tracked via state attribute
+            pending_bar = getattr(self.state, 'pending_stop_confirm_bar', None)
+            if pending_bar is None:
+                # No pending — first close past arms confirmation
+                if closed_past:
+                    self.state.pending_stop_confirm_bar = bar_count
+                return None
+            if bar_count == pending_bar:
+                # Same bar (re-check) — already armed, do nothing
+                return None
+            if bar_count == pending_bar + 1:
+                if closed_past:
+                    # Two consecutive bars closed past — confirm
+                    self.state.pending_stop_confirm_bar = None
+                    return close
+                # Confirmation failed — reset
+                self.state.pending_stop_confirm_bar = None
+                return None
+            # Stale pending state — reset, optionally re-arm
+            self.state.pending_stop_confirm_bar = bar_count if closed_past else None
+            return None
+        # Unknown exec_type → fall back to L-type
+        if touched:
+            if direction == 'LONG':
+                return min(stop_price, bar_open)
+            return max(stop_price, bar_open)
+        return None
+
+    def _check_target_hit(self, bar_open: float, high: float, low: float,
+                          close: float, bar_count: int) -> Optional[float]:
+        """Check if the target was hit on this bar based on the target's exec_type.
+        Mirror of _check_stop_hit but for take profit (direction inverted)."""
+        if not self.state.target_price:
+            return None
+        from stop_target_methods import get_exec_type
+        exec_type = get_exec_type(self.target_config)
+        direction = self.state.direction
+        target_price = self.state.target_price
+
+        touched = (direction == 'LONG' and high >= target_price) or \
+                  (direction == 'SHORT' and low <= target_price)
+        closed_past = (direction == 'LONG' and close >= target_price) or \
+                      (direction == 'SHORT' and close <= target_price)
+
+        if exec_type == 'L':
+            if touched:
+                # Gap-aware fill (preserves legacy behavior)
+                if direction == 'LONG':
+                    return max(target_price, bar_open)
+                return min(target_price, bar_open)
+            return None
+        if exec_type == 'C':
+            return close if closed_past else None
+        if exec_type == 'LC':
+            return close if (touched and closed_past) else None
+        if exec_type == 'CC':
+            pending_bar = getattr(self.state, 'pending_target_confirm_bar', None)
+            if pending_bar is None:
+                if closed_past:
+                    self.state.pending_target_confirm_bar = bar_count
+                return None
+            if bar_count == pending_bar:
+                return None
+            if bar_count == pending_bar + 1:
+                if closed_past:
+                    self.state.pending_target_confirm_bar = None
+                    return close
+                self.state.pending_target_confirm_bar = None
+                return None
+            self.state.pending_target_confirm_bar = bar_count if closed_past else None
+            return None
+        # Unknown exec_type → fall back to L-type
+        if touched:
+            if direction == 'LONG':
+                return max(target_price, bar_open)
+            return min(target_price, bar_open)
+        return None
+
     def _compute_stop(self, entry_price: float, atr: float,
                       vals: Dict[str, float]) -> float:
-        method = self.stop_config.get('method', 'atr')
-        direction = self.state.direction
+        """Compute the initial stop price via the pluggable method registry.
 
-        if method == 'atr':
-            mult = self.stop_config.get('atr_mult', 1.5)
-            distance = atr * mult
-        elif method == 'fixed_dollar':
-            distance = self.stop_config.get('dollar_amount', 1.0)
-        elif method == 'percentage':
-            pct = self.stop_config.get('percentage', 0.5)
-            distance = entry_price * (pct / 100.0)
-        elif method == 'swing':
-            lookback = self.stop_config.get('lookback', 5)
-            padding = self.stop_config.get('padding', 0.0)
-            # Exclude current bar (last entry in buffer)
-            buf = list(self._high_low_buffer)[:-1]
-            window = buf[-lookback:] if len(buf) >= lookback else buf
-            if not window:
-                distance = atr * 1.5  # Fallback if not enough history
-            elif direction == 'LONG':
-                return min(low for _, low in window) - padding
-            else:
-                return max(high for high, _ in window) + padding
-        else:
-            distance = atr * 1.5
-
-        if direction == 'LONG':
-            return entry_price - distance
-        else:
-            return entry_price + distance
+        Replaces hardcoded if/elif branches. Add a new stop method by
+        registering a class in stop_target_methods.STOP_METHODS — no engine
+        changes needed.
+        """
+        from stop_target_methods import StopContext, compute_stop
+        ctx = StopContext(
+            entry_price=entry_price,
+            direction=self.state.direction,
+            atr=atr,
+            high_low_buffer=self._high_low_buffer,
+            config=self.stop_config or {},
+        )
+        return compute_stop(ctx)
 
     def _compute_target(self, entry_price: float, stop_price: float,
                         atr: float, vals: Dict[str, float]) -> Optional[float]:
+        """Compute the take profit target price via the pluggable method registry.
+
+        Returns None if no target_config or method is unknown. Replaces
+        hardcoded if/elif branches.
+        """
         if self.target_config is None:
             return None
-
-        method = self.target_config.get('method')
-        if method is None:
-            return None
-
-        risk = abs(entry_price - stop_price)
-        direction = self.state.direction
-
-        if method == 'risk_reward':
-            rr = self.target_config.get('rr_ratio', 2.0)
-            distance = risk * rr
-        elif method == 'atr':
-            mult = self.target_config.get('atr_mult', 2.0)
-            distance = atr * mult
-        elif method == 'fixed_dollar':
-            distance = self.target_config.get('dollar_amount', 2.0)
-        elif method == 'percentage':
-            pct = self.target_config.get('percentage', 1.0)
-            distance = entry_price * (pct / 100.0)
-        elif method == 'swing':
-            lookback = self.target_config.get('lookback', 5)
-            padding = self.target_config.get('padding', 0.0)
-            buf = list(self._high_low_buffer)[:-1]
-            window = buf[-lookback:] if len(buf) >= lookback else buf
-            if not window:
-                return None
-            elif direction == 'LONG':
-                return max(high for high, _ in window) + padding
-            else:
-                return min(low for _, low in window) - padding
-        else:
-            return None
-
-        if direction == 'LONG':
-            return entry_price + distance
-        else:
-            return entry_price - distance
+        from stop_target_methods import TargetContext, compute_target
+        ctx = TargetContext(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            direction=self.state.direction,
+            atr=atr,
+            high_low_buffer=self._high_low_buffer,
+            config=self.target_config,
+        )
+        return compute_target(ctx)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

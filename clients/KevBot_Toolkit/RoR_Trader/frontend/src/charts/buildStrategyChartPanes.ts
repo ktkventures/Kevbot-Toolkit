@@ -75,8 +75,9 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const filteredOverlays = overlayNames.filter((col) => isPlottableColumn(bars, col));
   const filteredOscs = oscNames.filter((col) => isPlottableColumn(bars, col));
 
-  // L-type exit reasons don't need timestamp shift (fire mid-bar)
-  const L_TYPE_EXITS = new Set(['stop_loss', 'stop', 'target', 'unconfirmed_hl']);
+  // L-type exit reasons fire mid-bar (intra-bar touch). Other exec types
+  // (C, CC) fire at bar close — shift to next bar open for realistic plotting.
+  const ALWAYS_L_TYPE_EXITS = new Set(['unconfirmed_hl']);
 
   // Determine exec type from trigger suffix for C-type shift
   const getExecType = (id: string) => {
@@ -84,6 +85,21 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     if (id.endsWith('_lc') || id.endsWith('_hm') || id.endsWith('_hl')) return 'L';
     if (id.endsWith('_ib')) return 'L';
     if (id.endsWith('_cc')) return 'CC';
+    return 'C';
+  };
+
+  // Resolve the effective exec type for a trade exit, taking the per-trade
+  // stop/target exec_type into account (M5.5 — stops and targets now support
+  // L/C/LC/CC dispatch). Falls back to L for unconfirmed_hl, C otherwise.
+  const getExitExecType = (trade: any): string => {
+    const reason = trade.exit_reason || trade.exitReason || '';
+    if (ALWAYS_L_TYPE_EXITS.has(reason)) return 'L';
+    if (reason === 'stop_loss' || reason === 'stop') {
+      return trade.stop_exec_type || trade.stopExecType || 'L';
+    }
+    if (reason === 'target') {
+      return trade.target_exec_type || trade.targetExecType || 'L';
+    }
     return 'C';
   };
 
@@ -117,7 +133,7 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     const rawExitTime = t.exit_time || t.exitTime;
     const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
     const exitReason = t.exit_reason || t.exitReason || '';
-    const exitExec = L_TYPE_EXITS.has(exitReason) ? 'L' : 'C';
+    const exitExec = getExitExecType(t);
     // Shift C-type to next bar open
     const entryTime = shiftIfCType(rawEntryTime, entryExec);
     const exitTime = shiftIfCType(rawExitTime, exitExec);
@@ -171,7 +187,7 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
       const rawExitTime = t.exit_time || t.exitTime;
       const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
       const exitReason = t.exit_reason || t.exitReason || '';
-      const exitExec = L_TYPE_EXITS.has(exitReason) ? 'L' : 'C';
+      const exitExec = getExitExecType(t);
       const entryTime = shiftIfCType(rawEntryTime, entryExec);
       const exitTime = shiftIfCType(rawExitTime, exitExec);
       const entryPrice = t.entry_price ?? t.entryPrice ?? 0;

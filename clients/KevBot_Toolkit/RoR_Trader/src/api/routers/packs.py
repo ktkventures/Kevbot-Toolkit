@@ -260,6 +260,7 @@ def _rm_pack_to_dict(pack, include_configs: bool = False) -> dict:
         "parameters": pack.parameters,
         "stop_summary": format_stop_summary(pack),
         "target_summary": format_target_summary(pack),
+        "supported_exec_types": pack.get_supported_exec_types(),
     }
     if include_configs:
         try:

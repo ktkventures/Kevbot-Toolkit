@@ -45,6 +45,12 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     if not stop_config:
         stop_config = {"method": "atr", "atr_mult": req.stop_atr_mult}
 
+    # Inject exec_type into stop/target configs (defaults to 'L' for backward compat)
+    if stop_config and 'exec_type' not in stop_config:
+        stop_config['exec_type'] = req.stop_exec_type
+    if target_config and 'exec_type' not in target_config:
+        target_config['exec_type'] = req.target_exec_type
+
     # 3. Build strategy dict (matches the format unified_engine expects)
     strategy = {
         "symbol": req.symbol,
@@ -547,6 +553,18 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
         if not exit_time_str:
             continue
 
+        # M5.5: Hi-Fi resolution is L-type only (intra-bar level cross detection).
+        # For C/LC/CC stops/targets, the engine already produced the correct
+        # bar-close fill — Hi-Fi would overwrite it with the L-type stop level
+        # (capping every loss at exactly -1R). Skip these trades.
+        stop_et = trade.get('stop_exec_type', 'L')
+        target_et = trade.get('target_exec_type', 'L')
+        exit_reason = trade.get('exit_reason', '')
+        if exit_reason in ('stop_loss', 'stop') and stop_et != 'L':
+            continue
+        if exit_reason == 'target' and target_et != 'L':
+            continue
+
         try:
             exit_dt = _parse_dt(exit_time_str)
             if exit_dt is None:
@@ -614,21 +632,35 @@ def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float | None, target: float |
 
     Handles cases where only stop, only target, or both are set.
     Returns dict with exit_reason, exit_price, exit_time, or None if neither hit.
+
+    M5.5: Gap-aware fill — when the 1-second bar OPENS past the stop level
+    (overnight gap, flash crash), the realistic fill is the bar's open, NOT
+    the stop level. Without this, every gap-down stop-out gets capped at -1R
+    because the walk records exit_price = stop instead of exit_price = open.
     """
     for ts, bar in bars_1s.iterrows():
+        bar_open = bar.get('open', 0)
         high = bar.get('high', 0)
         low = bar.get('low', 0)
 
         if direction == 'LONG':
             if stop is not None and low <= stop:
-                return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
+                # Gap-aware: if bar opens below stop, fill at open (worse fill)
+                fill = min(stop, bar_open) if bar_open > 0 else stop
+                return {'exit_reason': 'stop_loss', 'exit_price': fill, 'exit_time': ts}
             if target is not None and target > 0 and high >= target:
-                return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
+                # Gap-aware: if bar opens above target (gap in your favor), fill at open
+                fill = max(target, bar_open) if bar_open > 0 else target
+                return {'exit_reason': 'target', 'exit_price': fill, 'exit_time': ts}
         else:  # SHORT
             if stop is not None and high >= stop:
-                return {'exit_reason': 'stop_loss', 'exit_price': stop, 'exit_time': ts}
+                # Gap-aware: if bar opens above stop, fill at open (worse fill)
+                fill = max(stop, bar_open) if bar_open > 0 else stop
+                return {'exit_reason': 'stop_loss', 'exit_price': fill, 'exit_time': ts}
             if target is not None and target > 0 and low <= target:
-                return {'exit_reason': 'target', 'exit_price': target, 'exit_time': ts}
+                # Gap-aware: if bar opens below target (gap in your favor), fill at open
+                fill = min(target, bar_open) if bar_open > 0 else target
+                return {'exit_reason': 'target', 'exit_price': fill, 'exit_time': ts}
 
     return None
 

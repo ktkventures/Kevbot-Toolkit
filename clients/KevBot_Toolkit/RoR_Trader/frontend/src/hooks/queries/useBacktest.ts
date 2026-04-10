@@ -22,6 +22,8 @@ export interface BacktestRequest {
   take_profit_pack_id?: string;
   stop_config?: Record<string, any>;
   target_config?: Record<string, any>;
+  stop_exec_type?: 'C' | 'L' | 'LC' | 'CC';
+  target_exec_type?: 'C' | 'L' | 'LC' | 'CC';
   stop_atr_mult?: number;
   risk_per_trade?: number;
   bar_count_exit?: number;

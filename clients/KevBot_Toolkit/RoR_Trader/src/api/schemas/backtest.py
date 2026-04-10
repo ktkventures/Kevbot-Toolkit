@@ -34,6 +34,13 @@ class BacktestRequest(BaseModel):
     target_config: Optional[dict] = None
     stop_atr_mult: float = 1.5
     risk_per_trade: float = 100.0
+    # Stop/target execution types — when the hit fires
+    # 'L' = intra-bar touch (default, current behavior)
+    # 'C' = bar close past level (filters wicks)
+    # 'LC' = touch + close confirms
+    # 'CC' = bar close past + next bar confirms
+    stop_exec_type: str = 'L'
+    target_exec_type: str = 'L'
 
     # Advanced
     bar_count_exit: Optional[int] = None

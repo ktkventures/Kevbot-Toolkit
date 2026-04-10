@@ -253,9 +253,39 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
-### Milestone 5.5: Stops/Targets Modularization
+### Milestone 5.5: Stops/Targets Modularization — COMPLETED 2026-04-09
 **Priority:** Critical — must happen before building more strategies/packs
-**Effort:** 2-3 days
+**Effort:** 2 days (planning + implementation + verification)
+**Status:** Complete and verified end-to-end. Shipped on `dev` branch (backup: `dev-backup-pre-m5.5`).
+
+**Core deliverables:**
+- Pluggable registry: `src/stop_target_methods.py` (StopMethod / TargetMethod base classes + STOP_METHODS / TARGET_METHODS dicts)
+- Engine refactor: `_compute_stop` / `_compute_target` dispatch through registry; hardcoded if/elif removed
+- Exec types L/C/LC/CC implemented in `PositionStateMachine._check_stop_hit` / `_check_target_hit`
+- All four call sites in `check_exit` and `check_exit_bar_close` integrated; `check_exit_tick` only fires for L-type
+- CC state via `pending_stop_confirm_bar` / `pending_target_confirm_bar` on PositionState
+- Frontend: variant list per pack × exec_type (matches entry/exit trigger pattern); selection persists through backtest, save, and analyze paths; supported_exec_types flow from API
+- Ralph engine inherits the refactor (uses unified PositionStateMachine)
+- Trade record carries `stop_exec_type` / `target_exec_type` for chart marker shift logic
+
+**Bugs found and fixed during verification (4 total):**
+1. **`_resolve_configs` exec_type drop** (`api/routers/backtest.py`) — analyze, trade-zoom, trade-replay endpoints were silently dropping `req.stop_exec_type` / `req.target_exec_type`, falling back to L-type regardless of user selection. Fixed: now injects exec_type same as `backtest_service.run_backtest`.
+2. **`_hifi_resolve_trades` overwriting C/LC/CC fills** — Hi-Fi resolution was running `_walk_1s_for_exit` (L-type only) for every stop/target, overwriting C/LC/CC bar-close fills with L-type stop-level fills. Fixed: skip Hi-Fi resolution for trades whose stop_exec_type or target_exec_type isn't L.
+3. **`_walk_1s_for_exit` not gap-aware** — Even for L-type stops, the Hi-Fi walk recorded `exit_price = stop_price` regardless of whether the 1-second bar opened past the stop. This capped every overnight gap-down loss at exactly -1R. Fixed: now uses `min(stop, bar_open)` for LONG and `max(stop, bar_open)` for SHORT, matching the engine's gap-aware fill logic.
+4. **Static "L" badge in Optimizable Variables module** (`StrategyBuilderPage.tsx`) — `OptimizableVariables` was reading `stopPack.execType` (the pack's intrinsic value, always 'L') instead of the user-selected `stopExecType` from React state. Fixed: now reads from selected exec type, updates dynamically.
+
+**Test coverage (all passing):**
+- `test_stop_target_parity.py` — 33 cases (old hardcoded vs new registry produce identical values)
+- `test_exec_type_hits.py` — 20 cases (L/C/LC/CC dispatch for stop and target)
+- `test_unified_parity.py` — 27 cases (L-type behavior fully preserved across full unified engine)
+- `test_c_type_swing_no_lookahead.py` — 4 cases (C-type swing stop sanity, no -1R cap)
+- `test_c_type_full_path.py` — 4 cases (end-to-end check_exit with synthetic bars)
+- `test_c_type_real_backtest.py` — synthetic backtest, R range -2.73 to -1.10 (not capped)
+- `test_l_type_gap_down.py` — 4 cases (L-type gap-aware fills, R = -5 and -100 on gaps)
+- `test_overnight_gap_full_cycle.py` — drives process_bar through entry → overnight gap → exit (R = -4.24 verified)
+- **Total: 90+ test cases passing**
+
+**User-verified end-to-end:** The C-type swing stop produces correct gap losses (e.g. -209R on overnight hold). L-type wick-based stops correctly produce -1R losses on intra-bar wicks. Gap-down losses now correctly exceed -1R for both C-type and L-type Hi-Fi paths.
 
 **Why this is urgent:** Currently stop loss and take profit methods are hardcoded `if/elif` branches in `unified_engine.py` (lines ~1995-2070). Every strategy created today references a method by string (`"atr"`, `"swing"`, etc.) that's interpreted by hardcoded engine logic. If we build out more user packs and strategies before fixing this, we accumulate "legacy stop strategies" that may not behave identically when we later refactor — invalidating their forward test data and creating the same legacy bucket problem we just fixed for execution types.
 
@@ -308,23 +338,62 @@ Ensure packs created through the Pack Builder are consistently reliable and work
    - Lock down with stored fixtures comparing `entry_price`, `stop_price`, `target_price`, `r_multiple` for a sample strategy across 90 days
 
 **Tasks:**
-- [ ] 5.5a. [Required] Define `StopLossPack` and `TakeProfitPack` base classes with method signatures
-- [ ] 5.5b. [Required] Extract existing stop methods into individual pack modules
-- [ ] 5.5c. [Required] Extract existing target methods into individual pack modules
-- [ ] 5.5d. [Required] Refactor `unified_engine.py` stop/target logic to use pack instances (delete hardcoded if/elif)
-- [ ] 5.5e. [Required] Build registry pattern + API endpoints for stop/target pack listing
-- [ ] 5.5f. [Required] Add `exec_type` field to stop/target packs, default to L
-- [ ] 5.5g. [Required] Update engine stop/target hit detection to respect exec_type (C/L/LC/CC behaviors)
-- [ ] 5.5h. [Required] Backtest parity test — existing strategies must produce identical trades
-- [ ] 5.5i. [Required] Update Strategy Builder dropdowns to use registry data
-- [ ] 5.5j. [Polish] Show exec_type badge on stop/target pack cards (already partially done — they all show [L] currently)
-- [ ] 5.5k. [Polish] Allow pack authors to create custom stop/target packs (similar to indicator pack flow)
+- [x] 5.5a. [Required] Define `StopMethod` and `TargetMethod` base classes with method signatures
+- [x] 5.5b. [Required] Extract existing stop methods into individual classes
+- [x] 5.5c. [Required] Extract existing target methods into individual classes
+- [x] 5.5d. [Required] Refactor `unified_engine.py` stop/target logic to use registry dispatch (delete hardcoded if/elif)
+- [x] 5.5e. [Required] Build registry pattern + propagate `supported_exec_types` through API serialization
+- [x] 5.5f. [Required] Add `exec_type` field to stop/target configs (default `L` for backward compat)
+- [x] 5.5g. [Required] Update engine stop/target hit detection to respect exec_type (C/L/LC/CC behaviors)
+- [x] 5.5h. [Required] Backtest parity test — existing strategies must produce identical trades
+- [x] 5.5i. [Required] Update Strategy Builder UI: exec type dropdown alongside stop/target pack selectors
+- [x] 5.5j. [Polish] Show selected exec_type badge on stop/target pack cards in Strategy Builder
+- [ ] 5.5k. [Polish] Allow pack authors to create custom stop/target packs via Pack Builder (deferred to M9)
 
 **Exit Criteria:** Stop loss and take profit methods are pluggable modules with no hardcoded engine logic. Each pack can declare its supported execution types. Adding a new stop or target type requires zero engine changes. Existing strategies pass parity test (identical trades before/after refactor). Strategy Builder shows exec type badges and allows users to choose execution timing for stops and targets.
 
 **Related future work (deferred):**
 - **Task 2o (Oscillator Cross / OC execution type)** — A new core execution type for intra-bar entries on oscillator crosses (MACD line/signal, Stochastic K/D, RSI midline). Currently L-type only handles price-vs-price crosses. OC would leverage Hi-Fi infrastructure to recompute oscillators on 1-second bars and detect precise cross moments. Many traders use these as primary entries — currently they can only fire at bar close. Architecturally separate from L (different mechanism) but conceptually a peer execution type.
 - **Once OC exists**, the existing oscillator user packs (Stochastic, RSI, MACD-based) will gain a new execution type variant automatically via the registry. No need to refactor the packs themselves — they'll just have one more option in their auto-generated trigger variants.
+
+---
+
+### Milestone 5.6: Time-Based Exit Rules — PLANNED
+**Priority:** High — addresses overnight gap risk identified during M5.5 verification
+**Effort:** ~1-2 days
+**Status:** Not started. Discovered during M5.5 testing when a single overnight hold produced a -209R loss (C-type swing stop on NVDA).
+
+**Why:** Stops and targets fire on price levels. They don't fire on *time*. A position held into market close can be devastated by an overnight gap — the engine correctly produces the gap-down fill, but there's no mechanism to *prevent* the overnight hold in the first place. This is a mechanical risk control, not a signal-driven exit. Many retail trading platforms (TradeStation, NinjaTrader, etc.) treat this as a first-class strategy parameter.
+
+**Design discussion:**
+- These exits are mechanical/risk-based, NOT signal-driven — they shouldn't pollute the trigger list
+- Should sit alongside `bar_count_exit` as another "Position Management" rule
+- Strategy-specific (some strategies *want* to hold overnight) — not a portfolio-level rule
+- Should respect the strategy's session setting (RTH vs Extended vs 24/7)
+
+**Proposed rules to support:**
+1. **End-of-day exit** — Force-close all positions N minutes before market close (configurable: 5, 10, 15, 30 min before close)
+2. **Time-of-day exit** — Force-close after a specific clock time (e.g., "exit by 15:30 ET")
+3. **Max hold time (existing — bar_count_exit)** — Already supported, treat as part of this category for UI grouping
+4. **Optionally: pre-news blackout windows** — Skip entries (or force exits) before scheduled news events. Probably out of scope for first version, requires news calendar data.
+
+**Architecture:**
+- New `position_management` config block on strategies (alongside `stop_config` and `target_config`)
+- Engine reads it in `check_exit` after stop/target check, before signal exit
+- Fires its own exit_reason values: `eod_exit`, `time_of_day_exit`, etc.
+- For RTH session, "5 minutes before close" = 15:55 ET; for Extended, configurable per asset class
+- Should work for both equities (4pm close) and crypto (24/7 — these rules just don't apply)
+
+**Tasks:**
+- [ ] 5.6a. Add `position_management` config dict to strategy schema
+- [ ] 5.6b. Engine: check time-based exits in `check_exit` after stop/target priority
+- [ ] 5.6c. Engine: respect session timezone for end-of-day calculation (RTH = 16:00 ET)
+- [ ] 5.6d. Frontend: add "Position Management" section in Strategy Builder (alongside stop/target packs)
+- [ ] 5.6e. Frontend: persist through save/analyze paths
+- [ ] 5.6f. Tests: synthetic overnight scenario shows position closes at end of day (no overnight hold)
+- [ ] 5.6g. Backtest service: serialize new exit_reason values, frontend displays them with proper labels/colors
+
+**Exit Criteria:** Strategies can declare a "no overnight holds" rule that force-closes positions before market close. The -209R overnight gap scenario from M5.5 verification is no longer possible (or is a deliberate user choice if they disable the rule).
 
 ---
 

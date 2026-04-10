@@ -214,11 +214,17 @@ export interface GeneralTemplateDTO {
 export interface RiskManagementPackDTO {
   id: string;
   base_template: string;
+  template_name?: string;
   version: string;
   description: string;
   enabled: boolean;
   is_default: boolean;
   parameters: Record<string, unknown>;
+  stop_summary?: string;
+  target_summary?: string;
+  supported_exec_types?: Array<'C' | 'L' | 'LC' | 'CC'>;
+  stop_config?: Record<string, any>;
+  target_config?: Record<string, any>;
 }
 
 export interface RMTemplateDTO {
