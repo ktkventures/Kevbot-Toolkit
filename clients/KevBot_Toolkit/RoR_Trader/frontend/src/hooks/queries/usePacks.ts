@@ -111,6 +111,25 @@ export function useTakeProfitTemplates() {
 }
 
 // =============================================================================
+// TIME EXIT PACKS
+// =============================================================================
+
+export function useTimeExitPacks() {
+  return useQuery({
+    queryKey: ['time-exit-packs'],
+    queryFn: () => apiFetch<TimeExitPackDTO[]>('/api/packs/time-exit'),
+  });
+}
+
+export function useTimeExitTemplates() {
+  return useQuery({
+    queryKey: ['time-exit-templates'],
+    queryFn: () => apiFetch<Record<string, TimeExitTemplateDTO>>('/api/packs/time-exit/templates'),
+    staleTime: Infinity,
+  });
+}
+
+// =============================================================================
 // USER PACKS
 // =============================================================================
 
@@ -238,6 +257,35 @@ export interface RMTemplateDTO {
   }>;
   stop_method: string;
   target_method?: string;
+}
+
+export interface TimeExitPackDTO {
+  id: string;
+  base_template: string;
+  template_name?: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  is_default: boolean;
+  parameters: Record<string, unknown>;
+  exit_summary?: string;
+  exit_config?: Record<string, any>;
+}
+
+export interface TimeExitTemplateDTO {
+  name: string;
+  category: string;
+  description: string;
+  applies_to_24_7: boolean;
+  parameters_schema: Record<string, {
+    type: string;
+    default: unknown;
+    min?: number;
+    max?: number;
+    label: string;
+  }>;
+  exit_reason: string;
+  exit_summary: string;
 }
 
 // =============================================================================

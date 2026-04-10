@@ -7,7 +7,7 @@ import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Modal from '@/components/Modal';
 import { useRunMassSearch } from '@/hooks/queries/useMassBuilder';
-import { useConfluenceGroups, useConfluenceTriggers, useRiskManagementPacks, useGeneralPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceGroups, useConfluenceTriggers, useRiskManagementPacks, useGeneralPacks, useTimeExitPacks } from '@/hooks/queries/usePacks';
 
 /* ========================================================================
    Types
@@ -184,6 +184,7 @@ export default function MassBuilderPage() {
   const { data: apiConfluenceGroups } = useConfluenceGroups();
   const { data: apiRmPacks } = useRiskManagementPacks();
   const { data: apiGeneralPacks } = useGeneralPacks();
+  const { data: apiTimeExitPacks } = useTimeExitPacks();
 
   // ---- Derive trigger/pack data from API ----
   const ENTRY_TRIGGER_DEFS: TriggerDef[] = useMemo(() => {
@@ -273,6 +274,17 @@ export default function MassBuilderPage() {
       }));
   }, [apiRmPacks]);
 
+  /** Time exit packs derived from API */
+  const TIME_EXIT_PACKS = useMemo(() => {
+    if (!apiTimeExitPacks) return [];
+    return apiTimeExitPacks.map((p: any) => ({
+      id: p.id,
+      name: p.exit_summary || p.version || 'Default',
+      pack: p.base_template,
+      variation: p.version || 'Default',
+    }));
+  }, [apiTimeExitPacks]);
+
   // Config state
   const [searchName, setSearchName] = useState(`Search ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
@@ -319,7 +331,7 @@ export default function MassBuilderPage() {
   const [filterSort, setFilterSort] = useState('Daily R');
   const [showPassed, setShowPassed] = useState(false);
 
-  const CONFIG_TABS = ['Tickers', 'Timeframes', 'Direction', 'Entry', 'Exit', 'TF Confluence', 'General', 'Stop Loss', 'Take Profit'];
+  const CONFIG_TABS = ['Tickers', 'Timeframes', 'Direction', 'Entry', 'Exit', 'TF Confluence', 'General', 'Stop Loss', 'Take Profit', 'Time Exit'];
 
   // Combination estimates
   const estimate = useMemo(() => {
@@ -992,6 +1004,25 @@ export default function MassBuilderPage() {
               </div>
             );
           })()}
+
+          {activeConfigTab === 'Time Exit' && (
+            <div>
+              <p className="text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                Time Exit Packs <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({TIME_EXIT_PACKS.length} available)</span>
+              </p>
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3" style={{ maxHeight: 400, overflowY: 'auto' }}>
+                {TIME_EXIT_PACKS.map((p) => (
+                  <label key={p.id} className="flex items-center gap-2 cursor-pointer py-1 px-3 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                    <input type="checkbox" className="rounded" style={{ accentColor: 'var(--green)' }} />
+                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
+                  </label>
+                ))}
+                {TIME_EXIT_PACKS.length === 0 && (
+                  <p className="text-xs italic col-span-3" style={{ color: 'var(--text-muted)' }}>No time exit packs configured. <a href="/confluence-packs/time-exit" className="underline" style={{ color: 'var(--accent)' }}>Create one</a></p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 

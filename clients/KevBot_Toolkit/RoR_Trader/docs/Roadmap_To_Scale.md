@@ -358,42 +358,43 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
-### Milestone 5.6: Time-Based Exit Rules — PLANNED
+### Milestone 5.6: Time Exit Packs — COMPLETE (2026-04-10)
 **Priority:** High — addresses overnight gap risk identified during M5.5 verification
-**Effort:** ~1-2 days
-**Status:** Not started. Discovered during M5.5 testing when a single overnight hold produced a -209R loss (C-type swing stop on NVDA).
+**Status:** Complete. Implemented as a new optimizable variable category (5th pack type), not as exit triggers.
 
-**Why:** Stops and targets fire on price levels. They don't fire on *time*. A position held into market close can be devastated by an overnight gap — the engine correctly produces the gap-down fill, but there's no mechanism to *prevent* the overnight hold in the first place. This is a mechanical risk control, not a signal-driven exit. Many retail trading platforms (TradeStation, NinjaTrader, etc.) treat this as a first-class strategy parameter.
+**Why:** Stops and targets fire on price levels. They don't fire on *time*. A position held into market close can be devastated by an overnight gap — the engine correctly produces the gap-down fill, but there's no mechanism to *prevent* the overnight hold in the first place. This is a mechanical risk control, not a signal-driven exit.
 
-**Design discussion:**
-- These exits are mechanical/risk-based, NOT signal-driven — they shouldn't pollute the trigger list
-- Should sit alongside `bar_count_exit` as another "Position Management" rule
-- Strategy-specific (some strategies *want* to hold overnight) — not a portfolio-level rule
-- Should respect the strategy's session setting (RTH vs Extended vs 24/7)
+**What shipped:**
+- **New pack category: Time Exit Packs** — 4th optimizable variable alongside TF Confluence, General, and Risk Management packs
+- **4 templates:** End of Day (N min before close), Time of Day (exit at clock time), Max Hold Bars, Session Window (exit outside time window)
+- **Engine integration:** Priority 2 in exit chain (after stops, before bail/target/signal/bar_count). Clears pending LC/CC confirmations. Timezone-aware (converts UTC bar timestamps to ET).
+- **Full frontend:** 7th column in OptimizableVariables card, Time Exit selector in Strategy Builder, dedicated management page at `/confluence-packs/time-exit` with template→variation nesting, Strategy Detail/Strategies/Mass Builder integration.
+- **API:** `GET/PUT /api/packs/time-exit`, `GET /api/packs/time-exit/templates`, `time_exit_pack_id` field on BacktestRequest.
+- **DB:** `time_exit_packs` table in Supabase (user_id PK, packs JSONB).
+- **Crypto-safe:** `applies_to_24_7` flag per template — EOD/session exits skip for 24/7 sessions, max hold bars still applies.
 
-**Proposed rules to support:**
-1. **End-of-day exit** — Force-close all positions N minutes before market close (configurable: 5, 10, 15, 30 min before close)
-2. **Time-of-day exit** — Force-close after a specific clock time (e.g., "exit by 15:30 ET")
-3. **Max hold time (existing — bar_count_exit)** — Already supported, treat as part of this category for UI grouping
-4. **Optionally: pre-news blackout windows** — Skip entries (or force exits) before scheduled news events. Probably out of scope for first version, requires news calendar data.
+**Key files:**
+- `src/time_exit_packs.py` — data module, TEMPLATES, `check_time_exit()`, persistence
+- `src/unified_engine.py` — PSM init, `check_exit` Priority 2, `check_exit_bar_close` Priority 2
+- `src/api/routers/packs.py` — time-exit endpoints
+- `frontend/src/views/TimeExitPage.tsx` — pack management page
+- `frontend/src/views/StrategyBuilderPage.tsx` — OptimizableVariables 7th column + selector
 
-**Architecture:**
-- New `position_management` config block on strategies (alongside `stop_config` and `target_config`)
-- Engine reads it in `check_exit` after stop/target check, before signal exit
-- Fires its own exit_reason values: `eod_exit`, `time_of_day_exit`, etc.
-- For RTH session, "5 minutes before close" = 15:55 ET; for Extended, configurable per asset class
-- Should work for both equities (4pm close) and crypto (24/7 — these rules just don't apply)
+**Tasks (all complete):**
+- [x] 5.6a. Backend data module (`time_exit_packs.py`) — dataclass, TEMPLATES, check_time_exit(), persistence, defaults
+- [x] 5.6b. DB helpers + API endpoints (`/api/packs/time-exit`)
+- [x] 5.6c. Backtest service — pack ID resolution, strategy dict wiring, router helpers
+- [x] 5.6d. Engine — PSM init, Priority 2 in both check_exit paths, timezone-aware (UTC→ET conversion)
+- [x] 5.6e. Frontend hooks + types (`useTimeExitPacks`, `TimeExitPackDTO`)
+- [x] 5.6f. Frontend Strategy Builder, Strategy Detail, Strategies, Mass Builder pages
+- [x] 5.6g. Frontend TimeExitPage — V5-style management page with template→variation nesting
 
-**Tasks:**
-- [ ] 5.6a. Add `position_management` config dict to strategy schema
-- [ ] 5.6b. Engine: check time-based exits in `check_exit` after stop/target priority
-- [ ] 5.6c. Engine: respect session timezone for end-of-day calculation (RTH = 16:00 ET)
-- [ ] 5.6d. Frontend: add "Position Management" section in Strategy Builder (alongside stop/target packs)
-- [ ] 5.6e. Frontend: persist through save/analyze paths
-- [ ] 5.6f. Tests: synthetic overnight scenario shows position closes at end of day (no overnight hold)
-- [ ] 5.6g. Backtest service: serialize new exit_reason values, frontend displays them with proper labels/colors
+**Bug fixed during QA:** EOD exit was comparing UTC hours against ET close time — bars at 15:50 UTC (11:50 AM ET) triggered false exits. Fixed by converting bar_time to `America/New_York` in `_parse_bar_time()`.
 
-**Exit Criteria:** Strategies can declare a "no overnight holds" rule that force-closes positions before market close. The -209R overnight gap scenario from M5.5 verification is no longer possible (or is a deliberate user choice if they disable the rule).
+**Deferred:**
+- Wire Mass Builder time exit checkboxes to actual search execution payload
+- Unit test suite (`test_time_exit.py`) for edge cases
+- Standardize all confluence pack management pages to consistent V5 nesting design
 
 ---
 

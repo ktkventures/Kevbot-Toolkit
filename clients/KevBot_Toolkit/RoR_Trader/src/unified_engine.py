@@ -1447,6 +1447,7 @@ class PositionStateMachine:
                 self.exit_triggers = {et}
 
         self.bar_count_exit = strategy.get('bar_count_exit')
+        self.time_exit_config = strategy.get('time_exit_config')
         self.stop_config = strategy.get('stop_config') or {
             'method': 'atr', 'atr_mult': strategy.get('stop_atr_mult', 1.5)}
         self.target_config = strategy.get('target_config')
@@ -1625,7 +1626,22 @@ class PositionStateMachine:
                 self.state.last_exit_bar_count = bar_count
                 return self._exit('stop_loss', stop_fill, bar_time, bar_count)
 
-        # Priority 2/2b: Execution-type-specific bail exits (HL limit, LC/CC bail)
+        # Priority 2: Time exit (mechanical time-based risk control)
+        # Fires before bail/target/signal — "be flat by X" overrides chart signals
+        if self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            bars_held = bar_count - self.state.entry_bar_count
+            time_reason = check_time_exit(
+                self.time_exit_config, bar_time, bars_held,
+                self.strategy.get('trading_session', 'RTH'))
+            if time_reason:
+                self.state.last_exit_bar_count = bar_count
+                # Clear pending LC/CC confirmations — time exit overrides
+                self.state.pending_stop_confirm_bar = None
+                self.state.pending_target_confirm_bar = None
+                return self._exit(time_reason, close, bar_time, bar_count)
+
+        # Priority 3/3b: Execution-type-specific bail exits (HL limit, LC/CC bail)
         bail_result = _exit_module.check_bail_exit(
             self.state.exec_type, self.state, bar_count,
             direction, high, low)
@@ -1634,7 +1650,7 @@ class PositionStateMachine:
             return self._exit(bail_result.reason, bail_result.fill_price,
                               bar_time, bar_count)
 
-        # Priority 3: Target (also skipped on entry bar for L-type, exec_type-dispatched)
+        # Priority 4: Target (also skipped on entry bar for L-type, exec_type-dispatched)
         if self.state.target_price and not same_bar_ltype:
             target_fill = self._check_target_hit(
                 bar_open, high, low, close, bar_count)
@@ -1642,7 +1658,7 @@ class PositionStateMachine:
                 self.state.last_exit_bar_count = bar_count
                 return self._exit('target', target_fill, bar_time, bar_count)
 
-        # Priority 3: Signal exit (C-type booleans + L-type fills)
+        # Priority 5: Signal exit (C-type booleans + L-type fills)
         for et in self.exit_triggers:
             base_et = _strip_exec_suffix(et)
             # L-type exit
@@ -1655,7 +1671,7 @@ class PositionStateMachine:
                 self.state.last_exit_bar_count = bar_count
                 return self._exit(et, close, bar_time, bar_count)
 
-        # Priority 4: Bar count exit (suppressed on partial bars)
+        # Priority 6: Bar count exit (legacy — suppressed on partial bars)
         if self.bar_count_exit is not None and not suppress_bar_count:
             bars_held = bar_count - self.state.entry_bar_count
             if bars_held >= self.bar_count_exit:
@@ -1919,7 +1935,21 @@ class PositionStateMachine:
                 return self._signal_exit(
                     'stop_loss', stop_fill, bar_time, bar_count)
 
-        # Priority 2/2b: Execution-type-specific bail exits
+        # Priority 2: Time exit (mechanical time-based risk control)
+        if self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            bars_held = bar_count - self.state.entry_bar_count
+            time_reason = check_time_exit(
+                self.time_exit_config, bar_time, bars_held,
+                self.strategy.get('trading_session', 'RTH'))
+            if time_reason:
+                # Clear pending LC/CC confirmations — time exit overrides
+                self.state.pending_stop_confirm_bar = None
+                self.state.pending_target_confirm_bar = None
+                return self._signal_exit(
+                    time_reason, close, bar_time, bar_count)
+
+        # Priority 3/3b: Execution-type-specific bail exits
         bail_result = _live_mod.check_bail_exit(
             self.state.exec_type, self.state, bar_count,
             direction, high, low)
@@ -1927,7 +1957,7 @@ class PositionStateMachine:
             return self._signal_exit(
                 bail_result.reason, bail_result.fill_price, bar_time, bar_count)
 
-        # Priority 3: Target (also skipped on entry bar for L-type, exec_type-dispatched)
+        # Priority 4: Target (also skipped on entry bar for L-type, exec_type-dispatched)
         if self.state.target_price and not same_bar_ltype:
             target_fill = self._check_target_hit(
                 bar_open, high, low, close, bar_count)
@@ -1935,14 +1965,14 @@ class PositionStateMachine:
                 return self._signal_exit(
                     'target', target_fill, bar_time, bar_count)
 
-        # Priority 4: Signal exit
+        # Priority 5: Signal exit
         for et in self.exit_triggers:
             base_et = _strip_exec_suffix(et)
             if trigger_booleans.get(et, False) or \
                trigger_booleans.get(base_et, False):
                 return self._signal_exit(et, close, bar_time, bar_count)
 
-        # Priority 5: Bar count exit
+        # Priority 6: Bar count exit (legacy)
         if self.bar_count_exit is not None:
             bars_held = bar_count - self.state.entry_bar_count
             if bars_held >= self.bar_count_exit:

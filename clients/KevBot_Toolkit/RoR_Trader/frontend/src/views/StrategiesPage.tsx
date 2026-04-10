@@ -64,6 +64,16 @@ interface Strategy {
 /* API → V5 Strategy Mapping                                                   */
 /* ========================================================================= */
 
+function formatTimeExit(config: any): string {
+  if (!config?.method) return '';
+  const m = config.method;
+  if (m === 'eod_exit') return `EOD ${config.minutes_before_close ?? 15}m`;
+  if (m === 'time_of_day_exit') return `@${config.exit_hour ?? 15}:${String(config.exit_minute ?? 50).padStart(2, '0')}`;
+  if (m === 'max_hold_bars') return `Max ${config.max_bars ?? 4} bars`;
+  if (m === 'session_exit') return 'Session window';
+  return m;
+}
+
 function apiToStrategy(s: any): Strategy {
   const k = s.kpis || {};
   return {
@@ -98,6 +108,7 @@ function apiToStrategy(s: any): Strategy {
     exit: s.exit_trigger_confluence_ids || [],
     stop: s.stop_config?.method ? `${s.stop_config.method}${s.stop_config.atr_mult ? ` ${s.stop_config.atr_mult}x` : ''}` : '--',
     target: s.target_config?.method || 'Signal exit only',
+    timeExit: s.time_exit_config?.method ? formatTimeExit(s.time_exit_config) : null,
     confluence: s.confluence || [],
     alertTracking: s.alert_tracking_enabled || false,
     monitored: s.alert_tracking_enabled || false,

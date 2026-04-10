@@ -44,6 +44,7 @@ class BacktestRequest(BaseModel):
 
     # Advanced
     bar_count_exit: Optional[int] = None
+    time_exit_pack_id: Optional[str] = None
     secondary_tfs: list[str] = []
     hifi_mode: bool = False  # Enable 1-second resolution for every entry/exit
 

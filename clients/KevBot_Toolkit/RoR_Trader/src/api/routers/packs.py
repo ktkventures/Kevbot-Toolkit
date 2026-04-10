@@ -215,6 +215,42 @@ def save_take_profit_packs(packs: list = Body(...), user=Depends(get_current_use
 
 
 # =============================================================================
+# TIME EXIT PACKS
+# =============================================================================
+
+@router.get("/time-exit")
+def get_time_exit_packs(user=Depends(get_current_user)):
+    """Load user's time exit packs (full list)."""
+    from time_exit_packs import load_time_exit_packs
+    packs = load_time_exit_packs()
+    return [_time_exit_pack_to_dict(p) for p in packs]
+
+
+@router.put("/time-exit")
+def save_time_exit_packs_endpoint(
+    packs: list = Body(...),
+    user=Depends(get_current_user),
+):
+    """Save full list of time exit packs (replaces existing)."""
+    from time_exit_packs import save_time_exit_packs
+    parsed = [_dict_to_time_exit_pack(p) for p in packs]
+    save_time_exit_packs(parsed)
+    return {"status": "saved", "count": len(parsed)}
+
+
+@router.get("/time-exit/templates")
+def get_time_exit_templates(user=Depends(get_current_user)):
+    """Get the static TEMPLATES registry for time exit packs."""
+    from time_exit_packs import TEMPLATES
+    # Filter out non-serializable callables
+    result = {}
+    for k, v in TEMPLATES.items():
+        entry = {key: val for key, val in v.items() if not callable(val)}
+        result[k] = entry
+    return result
+
+
+# =============================================================================
 # SERIALIZATION HELPERS
 # =============================================================================
 
@@ -278,6 +314,37 @@ def _dict_to_rm_pack(d: dict):
     """Deserialize a dict to RiskManagementPack dataclass."""
     from risk_management_packs import RiskManagementPack
     return RiskManagementPack(
+        id=d["id"],
+        base_template=d["base_template"],
+        version=d.get("version", "Default"),
+        description=d.get("description", ""),
+        enabled=d.get("enabled", True),
+        is_default=d.get("is_default", False),
+        parameters=d.get("parameters", {}),
+    )
+
+
+def _time_exit_pack_to_dict(pack) -> dict:
+    """Serialize a TimeExitPack dataclass to dict."""
+    from time_exit_packs import format_exit_summary
+    return {
+        "id": pack.id,
+        "base_template": pack.base_template,
+        "template_name": pack.template_name,
+        "version": pack.version,
+        "description": pack.description,
+        "enabled": pack.enabled,
+        "is_default": pack.is_default,
+        "parameters": pack.parameters,
+        "exit_summary": format_exit_summary(pack),
+        "exit_config": pack.get_exit_config(),
+    }
+
+
+def _dict_to_time_exit_pack(d: dict):
+    """Deserialize a dict to TimeExitPack dataclass."""
+    from time_exit_packs import TimeExitPack
+    return TimeExitPack(
         id=d["id"],
         base_template=d["base_template"],
         version=d.get("version", "Default"),

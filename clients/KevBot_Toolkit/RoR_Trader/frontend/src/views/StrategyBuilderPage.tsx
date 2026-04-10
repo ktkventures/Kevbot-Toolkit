@@ -32,7 +32,8 @@ const TradeReplayModal = dynamic(() => import('@/components/TradeReplayModal'), 
 const TradeWorkflowModal = dynamic(() => import('@/components/TradeWorkflowModal'), { ssr: false });
 import EnhancedTradeTable from '@/components/EnhancedTradeTable';
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
-import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks } from '@/hooks/queries/usePacks';
+import { useConfluenceGroups, useConfluenceTriggers, useGeneralPacks, useStopLossPacks, useTakeProfitPacks, useTimeExitPacks } from '@/hooks/queries/usePacks';
+import type { TimeExitPackDTO } from '@/hooks/queries/usePacks';
 import { useStrategyBuilderDefaults, useDisplayStore } from '@/providers/StoreProvider';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +100,12 @@ interface RiskPack {
   summary: string;
   execType: string;
   supportedExecTypes?: Array<'C' | 'L' | 'LC' | 'CC'>;
+}
+interface TimeExitPackItem {
+  id: string;
+  name: string;
+  version: string;
+  summary: string;
 }
 const API_STOP_PACKS: RiskPack[] = [
   { id: 'atr-default', name: 'ATR Stop', version: 'Default', summary: '1.5x ATR', execType: 'L' },
@@ -674,6 +681,7 @@ function OptimizableVariables({
   generalConditions,
   selectedStopPack,
   selectedTargetPack,
+  selectedTimeExitPack,
   stopExecType,
   targetExecType,
   allTriggers,
@@ -681,6 +689,7 @@ function OptimizableVariables({
   allGeneralConditions,
   stopPacks,
   targetPacks,
+  timeExitPacks,
   onRemoveCondition,
   onRemoveGeneral,
   onRemoveExit,
@@ -693,6 +702,7 @@ function OptimizableVariables({
   generalConditions: Set<string>;
   selectedStopPack: string;
   selectedTargetPack: string;
+  selectedTimeExitPack: string;
   stopExecType: 'C' | 'L' | 'LC' | 'CC';
   targetExecType: 'C' | 'L' | 'LC' | 'CC';
   allTriggers: TriggerDef[];
@@ -700,6 +710,7 @@ function OptimizableVariables({
   allGeneralConditions: ConfluenceCondition[];
   stopPacks: RiskPack[];
   targetPacks: RiskPack[];
+  timeExitPacks: TimeExitPackItem[];
   onRemoveCondition: (id: string) => void;
   onRemoveGeneral: (id: string) => void;
   onRemoveExit: (idx: number) => void;
@@ -709,6 +720,7 @@ function OptimizableVariables({
   const entryDef = allTriggers.find((t) => t.id === entryTrigger);
   const stopPack = stopPacks.find((p) => p.id === selectedStopPack);
   const targetPack = targetPacks.find((p) => p.id === selectedTargetPack);
+  const timeExitPack = timeExitPacks.find((p) => p.id === selectedTimeExitPack);
 
   function formatStopDisplay() {
     return stopPack ? `${stopPack.name} (${stopPack.version})` : 'None';
@@ -741,7 +753,7 @@ function OptimizableVariables({
           </button>
         )}
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         {/* Entry */}
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
@@ -869,6 +881,16 @@ function OptimizableVariables({
           <span className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
             {targetPack && <ExecBadge type={targetExecType} />}
             <span className="italic">{formatTargetDisplay()}</span>
+          </span>
+        </div>
+
+        {/* Time Exit */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            Time Exit
+          </div>
+          <span className="text-xs italic" style={{ color: 'var(--text-secondary)' }}>
+            {timeExitPack ? `${timeExitPack.name} (${timeExitPack.version})` : 'None'}
           </span>
         </div>
       </div>
@@ -1460,6 +1482,7 @@ export default function StrategyBuilderPage() {
   const { data: apiGeneralPacks } = useGeneralPacks();
   const { data: apiStopPacks } = useStopLossPacks();
   const { data: apiTargetPacks } = useTakeProfitPacks();
+  const { data: apiTimeExitPacks } = useTimeExitPacks();
   const builderDefaults = useStrategyBuilderDefaults();
 
   // Derive trigger/pack/condition lists from API data
@@ -1511,6 +1534,13 @@ export default function StrategyBuilderPage() {
     }));
   }, [apiTargetPacks]);
 
+  const API_TIME_EXIT_PACKS: TimeExitPackItem[] = useMemo(() => {
+    if (!apiTimeExitPacks) return [];
+    return apiTimeExitPacks.map((p: any) => ({
+      id: p.id, name: p.template_name || p.base_template, version: p.version || 'Default',
+      summary: p.exit_summary || p.version,
+    }));
+  }, [apiTimeExitPacks]);
 
   const API_CONFLUENCE_CONDITIONS: ConfluenceCondition[] = useMemo(() => {
     if (!apiConfluenceGroups) return [];
@@ -1574,7 +1604,7 @@ export default function StrategyBuilderPage() {
       exit_trigger_confluence_ids: config.exit_trigger_confluence_ids || [],
       confluence: config.confluence || [],
       cb_conditions: config.cb_conditions || [],
-      stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id,
+      stop_loss_pack_id: config.stop_loss_pack_id, take_profit_pack_id: config.take_profit_pack_id, time_exit_pack_id: config.time_exit_pack_id,
       stop_exec_type: config.stop_exec_type,
       target_exec_type: config.target_exec_type,
       bar_count_exit: config.bar_count_exit,
@@ -1615,6 +1645,9 @@ export default function StrategyBuilderPage() {
   // ---- Target (pack selection) ----
   const [selectedTargetPack, setSelectedTargetPack] = useState('');
   const [targetExecType, setTargetExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('L');
+
+  // ---- Time Exit (pack selection) ----
+  const [selectedTimeExitPack, setSelectedTimeExitPack] = useState('');
 
   // ---- Confluence ----
   const [selectedConditions, setSelectedConditions] = useState<Set<string>>(new Set());
@@ -1684,6 +1717,7 @@ export default function StrategyBuilderPage() {
       confluence: Array.from(selectedConditions),
       stop_loss_pack_id: selectedStopPack || undefined,
       take_profit_pack_id: selectedTargetPack || undefined,
+      time_exit_pack_id: selectedTimeExitPack || undefined,
       stop_exec_type: stopExecType,
       target_exec_type: targetExecType,
       stop_atr_mult: 1.5,
@@ -1789,6 +1823,7 @@ export default function StrategyBuilderPage() {
         cb_conditions: cbCondIds,
         stop_loss_pack_id: selectedStopPack,
         take_profit_pack_id: selectedTargetPack,
+        time_exit_pack_id: selectedTimeExitPack || undefined,
         stop_exec_type: stopExecType,
         target_exec_type: targetExecType,
         bar_count_exit: exitTriggers.some(t => t.includes('bar_count')) ? 4 : undefined,
@@ -1796,7 +1831,7 @@ export default function StrategyBuilderPage() {
         hifi_mode: hifiMode,
       });
     }
-  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, stopExecType, targetExecType, secondaryTfs, hifiMode]);
+  }, [onRunBacktest, symbol, timeframe, direction, session, lookbackDays, lookbackMode, entryTrigger, exitTriggers, selectedConditions, selectedStopPack, selectedTargetPack, selectedTimeExitPack, stopExecType, targetExecType, secondaryTfs, hifiMode]);
 
   const handleToggleCondition = useCallback((id: string) => {
     setSelectedConditions((prev) => {
@@ -2010,6 +2045,7 @@ export default function StrategyBuilderPage() {
                 {exitDefs.map((e) => e.name).join(' / ') || 'No exit'}{' '}
                 | Stop: {(() => { const sp = API_STOP_PACKS.find((p) => p.id === selectedStopPack); return sp ? <><ExecBadge type={stopExecType} /> {sp.summary}</> : 'None'; })()}{' '}
                 | Target: {(() => { const tp = API_TARGET_PACKS.find((p) => p.id === selectedTargetPack); return tp ? <><ExecBadge type={targetExecType} /> {tp.summary}</> : 'None'; })()}
+                {selectedTimeExitPack && (() => { const tep = API_TIME_EXIT_PACKS.find((p) => p.id === selectedTimeExitPack); return tep ? <> | Time Exit: {tep.summary}</> : null; })()}
               </span>
             )}
           </div>
@@ -2180,6 +2216,46 @@ export default function StrategyBuilderPage() {
                 <a href="/confluence-packs/take-profit" className="underline" style={{ color: 'var(--accent)' }}>Manage take profit packs</a>
               </p>
             </div>
+
+            {/* Time Exit — simple pack list (no exec_type variants) */}
+            <div>
+              <SectionLabel>Time Exit Pack</SectionLabel>
+              <div className="space-y-1 overflow-y-auto pr-1 mt-1" style={{ maxHeight: 280 }}>
+                {/* "None" option */}
+                <button
+                  className="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
+                  style={{
+                    background: !selectedTimeExitPack ? 'var(--accent-muted)' : 'transparent',
+                    color: !selectedTimeExitPack ? 'var(--accent)' : 'var(--text-primary)',
+                    border: !selectedTimeExitPack ? '1px solid var(--accent)' : '1px solid transparent',
+                  }}
+                  onClick={() => setSelectedTimeExitPack('')}
+                >
+                  <span className="italic">None (no time exit)</span>
+                </button>
+                {API_TIME_EXIT_PACKS.map((p) => {
+                  const isSelected = p.id === selectedTimeExitPack;
+                  return (
+                    <button
+                      key={p.id}
+                      className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                      style={{
+                        background: isSelected ? 'var(--accent-muted)' : 'transparent',
+                        color: isSelected ? 'var(--accent)' : 'var(--text-primary)',
+                        border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
+                      }}
+                      onClick={() => setSelectedTimeExitPack(p.id)}
+                    >
+                      <span className="flex-1 truncate">{p.name} ({p.version})</span>
+                      <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{p.summary}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                <a href="/confluence-packs/time-exit" className="underline" style={{ color: 'var(--accent)' }}>Manage time exit packs</a>
+              </p>
+            </div>
           </div>
 
           {/* Save / Clear defaults */}
@@ -2278,6 +2354,7 @@ export default function StrategyBuilderPage() {
               generalConditions={selectedGenerals}
               selectedStopPack={selectedStopPack}
               selectedTargetPack={selectedTargetPack}
+              selectedTimeExitPack={selectedTimeExitPack}
               stopExecType={stopExecType}
               targetExecType={targetExecType}
               allTriggers={API_TRIGGERS}
@@ -2285,6 +2362,7 @@ export default function StrategyBuilderPage() {
               allGeneralConditions={API_GENERAL_CONDITIONS}
               stopPacks={API_STOP_PACKS}
               targetPacks={API_TARGET_PACKS}
+              timeExitPacks={API_TIME_EXIT_PACKS}
               onRemoveCondition={(id) => handleToggleCondition(id)}
               onRemoveGeneral={(id) => handleToggleGeneral(id)}
               onRemoveExit={handleRemoveExit}
@@ -2781,6 +2859,7 @@ export default function StrategyBuilderPage() {
                     confluence: Array.from(selectedConditions),
                     stop_loss_pack_id: selectedStopPack,
                     take_profit_pack_id: selectedTargetPack,
+                    time_exit_pack_id: selectedTimeExitPack || undefined,
                     stop_exec_type: stopExecType,
                     target_exec_type: targetExecType,
                     kpis: backtestResult?.kpis ?? EMPTY_KPIS,

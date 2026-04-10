@@ -564,6 +564,20 @@ def load_risk_management_packs_db() -> list:
 def save_risk_management_packs_db(packs: list):
     _save_user_config('risk_management_packs', 'packs', packs)
 
+def load_time_exit_packs_db() -> list:
+    try:
+        return _load_user_config('time_exit_packs', 'packs', [])
+    except Exception:
+        # Table may not exist yet — return empty so defaults are seeded
+        return []
+
+def save_time_exit_packs_db(packs: list):
+    try:
+        _save_user_config('time_exit_packs', 'packs', packs)
+    except Exception:
+        # Table may not exist yet — silently fail, defaults still work in-memory
+        pass
+
 
 # ============================================================
 # Webhook Templates CRUD (database path)

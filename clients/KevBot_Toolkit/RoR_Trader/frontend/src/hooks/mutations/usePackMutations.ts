@@ -12,6 +12,7 @@ import { apiFetch } from '@/lib/api/client';
 interface ConfluenceGroupDTO { id: string; base_template: string; version: string; description: string; enabled: boolean; is_default: boolean; parameters: Record<string, unknown>; plot_settings: any; }
 interface GeneralPackDTO { id: string; base_template: string; version: string; description: string; enabled: boolean; is_default: boolean; parameters: Record<string, unknown>; }
 interface RiskManagementPackDTO { id: string; base_template: string; version: string; description: string; enabled: boolean; is_default: boolean; parameters: Record<string, unknown>; }
+interface TimeExitPackDTO { id: string; base_template: string; version: string; description: string; enabled: boolean; is_default: boolean; parameters: Record<string, unknown>; }
 
 export function useSaveConfluenceGroups() {
   const queryClient = useQueryClient();
@@ -52,6 +53,20 @@ export function useSaveRiskManagementPacks() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['risk-management-packs'] });
+    },
+  });
+}
+
+export function useSaveTimeExitPacks() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (packs: TimeExitPackDTO[]) =>
+      apiFetch('/api/packs/time-exit', {
+        method: 'PUT',
+        body: JSON.stringify(packs),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['time-exit-packs'] });
     },
   });
 }

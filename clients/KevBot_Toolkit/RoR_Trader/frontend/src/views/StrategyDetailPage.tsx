@@ -68,6 +68,8 @@ function apiToDetailStrategy(s: any) {
     stopConfig: s.stop_config || null,
     target: formatTargetDisplay(s.target_config),
     targetConfig: s.target_config || null,
+    timeExitConfig: s.time_exit_config || null,
+    timeExitSummary: s.time_exit_config ? formatTimeExitDisplay(s.time_exit_config) : null,
     confluence: s.confluence || [],
     confluenceEnriched: s.confluence_enriched || [],
     winRate: k.win_rate ?? 0,
@@ -331,6 +333,16 @@ function formatTargetDisplay(targetConfig: any): string {
   if (m === 'fixed_dollar') return `$${targetConfig.dollar_amount ?? 2}`;
   if (m === 'percentage') return `${targetConfig.percentage ?? 1}%`;
   if (m === 'risk_reward') return `${targetConfig.rr_ratio ?? 2}R`;
+  return m;
+}
+
+function formatTimeExitDisplay(config: any): string {
+  if (!config?.method) return 'None';
+  const m = config.method;
+  if (m === 'eod_exit') return `EOD ${config.minutes_before_close ?? 15}min`;
+  if (m === 'time_of_day_exit') return `Exit at ${config.exit_hour ?? 15}:${String(config.exit_minute ?? 50).padStart(2, '0')}`;
+  if (m === 'max_hold_bars') return `Max ${config.max_bars ?? 4} bars`;
+  if (m === 'session_exit') return `Window ${config.start_hour ?? 9}:${String(config.start_minute ?? 30).padStart(2, '0')}-${config.end_hour ?? 16}:${String(config.end_minute ?? 0).padStart(2, '0')}`;
   return m;
 }
 

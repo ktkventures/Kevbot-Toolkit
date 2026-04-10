@@ -48,6 +48,7 @@ const navItems: NavItem[] = [
       { href: '/confluence-packs/general', label: 'General' },
       { href: '/confluence-packs/stop-loss', label: 'Stop Loss' },
       { href: '/confluence-packs/take-profit', label: 'Take Profit' },
+      { href: '/confluence-packs/time-exit', label: 'Time Exit' },
       { href: '/confluence-packs/execution-types', label: 'Execution Types' },
       { href: '/confluence-packs/user-packs', label: 'User Packs' },
       { href: '/confluence-packs/pack-builder', label: 'Pack Builder' },

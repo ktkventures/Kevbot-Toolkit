@@ -51,6 +51,11 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     if target_config and 'exec_type' not in target_config:
         target_config['exec_type'] = req.target_exec_type
 
+    # 2b. Resolve time exit config from pack if needed
+    time_exit_config = None
+    if req.time_exit_pack_id:
+        time_exit_config = _resolve_time_exit_from_pack(req.time_exit_pack_id)
+
     # 3. Build strategy dict (matches the format unified_engine expects)
     strategy = {
         "symbol": req.symbol,
@@ -65,6 +70,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
         "stop_atr_mult": req.stop_atr_mult,
         "risk_per_trade": req.risk_per_trade,
         "bar_count_exit": req.bar_count_exit,
+        "time_exit_config": time_exit_config,
     }
 
     # 4. Load + enrich data
@@ -516,6 +522,16 @@ def _resolve_target_from_pack(pack_id: str) -> dict | None:
     for pack in packs:
         if pack.id == pack_id:
             return pack.get_target_config()
+    return None
+
+
+def _resolve_time_exit_from_pack(pack_id: str) -> dict | None:
+    """Load a time exit pack and extract its exit config."""
+    from time_exit_packs import load_time_exit_packs
+    packs = load_time_exit_packs()
+    for pack in packs:
+        if pack.id == pack_id:
+            return pack.get_exit_config()
     return None
 
 

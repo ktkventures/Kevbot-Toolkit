@@ -333,6 +333,14 @@ def _resolve_configs(req):
     return stop_config, target_config
 
 
+def _resolve_time_exit_config(req):
+    """Resolve time exit config from pack ID on the request."""
+    if not getattr(req, 'time_exit_pack_id', None):
+        return None
+    from api.services.backtest_service import _resolve_time_exit_from_pack
+    return _resolve_time_exit_from_pack(req.time_exit_pack_id)
+
+
 def _build_base_strategy(req, stop_config, target_config):
     """Build the base strategy dict from a request."""
     return {
@@ -345,6 +353,7 @@ def _build_base_strategy(req, stop_config, target_config):
         "stop_atr_mult": req.stop_atr_mult,
         "risk_per_trade": req.risk_per_trade,
         "bar_count_exit": req.bar_count_exit,
+        "time_exit_config": _resolve_time_exit_config(req),
     }
 
 
