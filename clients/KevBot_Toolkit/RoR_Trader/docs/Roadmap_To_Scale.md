@@ -398,33 +398,28 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
-### Milestone 6: Strategy Builder & Strategy Detail Polish
+### Milestone 6: Strategy Builder & Strategy Detail Polish — COMPLETE (2026-04-10)
 **Priority:** High — strategies are the core product
-**Effort:** 1-2 weeks
+**Status:** Complete. All core polish items verified and shipped.
 
-Ensure the Strategy Builder and Strategy Detail pages work flawlessly with both built-in and user packs. Fix any remaining bugs, polish the UX, and verify end-to-end consistency.
+**What shipped:**
+- **6a: Chart display** — boolean/string column filtering and candle color overrides verified working in `buildStrategyChartPanes.ts`
+- **6b-6c: Strategy Builder flow** — all 5 pack types (TF Confluence, General, Risk Management, Time Exit, User Packs) work end-to-end
+- **6d: Strategy Detail** — wired btStart/btEnd, extended KPIs from `useStrategyKPIs`, time exit display (orange badge), exit reason colors for time exit reasons, Performance vs Plan placeholder when < 3 forward trades
+- **6e-6f: Forward testing / alerts** — backend verified working; frontend displays basic KPIs. Full alert QA deferred to M8.5 (requires live data).
+- **Strategy save format fix** — stored_trades now uses raw API trades (ISO timestamps, snake_case), raw kpis, and equity_curve_data. Pack IDs resolved to inline configs at save time.
+- **Time Exit analysis tab** — 7th tab in analyzer card, compares all enabled time exit packs + "No Time Exit" baseline
+- **Timeframe selector** — driven by user settings (Timeframes pack `primaryEnabled`), supports sub-minute bars
+- **Confluence heatmap PB shift** — PB conditions show previous bar's state (what the engine checked), CB shows current bar's state. Labels include [PB]/[CB] fidelity suffix.
+- **Heatmap fidelity documentation** — CB backtest↔live divergence risk documented in `project_hifi_confluence_conundrum.md`
 
-**Note:** Task 6a (chart display fixes) should be completed BEFORE M5 task 5f (creating 10+ packs end-to-end). The chart fixes are required to visually validate pack behavior during the creation QA process. M5 5d (Swing 1-2-3) is complete and proved the pipeline works structurally.
-
-**Additional polish items identified during M5 testing:**
-- Equity curve fidelity badge: show "Standard" or "Hi-Fi" label on every equity curve so users can tell at a glance which resolution was used
-- Validation checklist feature: guided sequence of verification steps before a pack is marked as validated (future — ties into pack status workflow 5g)
-
-**Tasks:**
-- [ ] 6a. [Required] **Chart display fixes for user packs** — Apply the same fixes from Chart Preview to all price charts (Strategy Builder, Strategy Detail, trade drill-downs):
-  - **Boolean/string column filtering**: Don't plot boolean indicator columns (pattern flags) or string columns (color hex codes) as overlay lines — they render as flat lines at the bottom of the chart. Only plot numeric columns in the price range.
-  - **Candle color column override**: When a pack's `plot_config.candle_color_column` is set, use those colors to override candle body/border/wick colors. Affects `buildStrategyChartPanes()`, `SyncedChartPane`, and anywhere `chart_data` is rendered with indicator overlays.
-  - Files to update: `buildStrategyChartPanes.ts`, `StrategyBuilderPage.tsx` (backtest chart), `StrategyDetailPage.tsx` (detail chart), `SyncedChartPane.tsx` (shared chart component)
-- [ ] 6b. Verify Strategy Builder works with user pack triggers (entry + exit)
-- [ ] 6c. Verify bar count exit, stop loss packs, take profit packs all work correctly with user packs
-- [ ] 6d. Verify Strategy Detail page renders correctly for strategies using user packs (chart, KPIs, equity curve, trade history)
-- [ ] 6e. Verify forward testing works with user packs
-- [ ] 6f. Verify alert tracking works with user packs
-- [ ] 6g. Fix any remaining Strategy Detail bugs surfaced during testing
-- [ ] 6h. Polish Strategy Builder UX: ensure trigger dropdowns, analysis tabs, and backtest flow are smooth
-- [ ] 6i. Create several real strategies using user packs — QA the full flow end-to-end
-
-**Exit Criteria:** User can create a strategy using any combination of built-in and user packs, run backtests, view detailed results, enable forward testing, and enable alert tracking — all working correctly.
+**Deferred items:**
+- Daily ROI calculation — needs portfolio-level risk context (not a strategy-level metric)
+- Chart scroll/zoom bounds — cosmetic, can wait
+- Live chart on Strategy Detail — deferred to M8.5
+- Hi-Fi confluence / 4-color heatmap — future phase, documented
+- Equity curve fidelity badge (Standard vs Hi-Fi label)
+- Confluence pack management page standardization (V5 nesting design across all pack pages)
 
 ---
 
@@ -464,6 +459,33 @@ Polish the portfolio system to work reliably with user pack strategies. Verify a
 - [ ] 7h. Portfolio creation from strategy selection (select strategies → create portfolio)
 
 **Exit Criteria:** User can build portfolios from strategies (including user pack strategies), view aggregated performance, run Monte Carlo simulations, and track portfolio health — all working correctly.
+
+---
+
+### Milestone 8.5: Live Data & Real-Time Charts
+**Priority:** High — required for alert verification and live trading confidence
+**Effort:** 1-2 weeks
+**Status:** Not started. Deferred from M6 — requires live market data (after hours blocks testing).
+
+**Why:** The Strategy Detail Chart & Trades tab needs a live-updating price chart as the default view. Currently it loads static historical data. The live chart is critical for:
+- Verifying alerts fire correctly in real-time
+- Monitoring position status with live price action
+- Building trader confidence before going live
+
+**Tasks:**
+- [ ] 8.5a. **Live price chart on Strategy Detail** — default view on Chart & Trades tab. Live-updating candlestick chart via Polygon REST polling or WebSocket. Static historical view available via date picker toggle.
+- [ ] 8.5b. **Alert verification with live data** — verify Ralph engine fires alerts correctly, alerts appear on Strategy Detail Alerts tab, forward test KPIs accumulate
+- [ ] 8.5c. **Forward testing live QA** — verify forward test trades match live alert trades
+- [ ] 8.5d. **Confluence pack pages requiring live data** — wire any remaining pack management pages that need live market data for previews
+- [ ] 8.5e. **Position Monitor live integration** — position status widget updates with live price
+
+**Architecture notes:**
+- Polygon REST polling (completed bars every N seconds) vs WebSocket (tick-level, 1 connection limit)
+- REST polling is simpler and doesn't conflict with Ralph's WS connection
+- Consider caching bar data to reduce API calls across multiple strategy detail pages
+- Chart should NOT flicker on update (the key reason for migrating from Streamlit)
+
+**Exit Criteria:** Strategy Detail shows a live-updating price chart with trade markers, alerts fire and display in real-time, forward test data accumulates correctly.
 
 ---
 
