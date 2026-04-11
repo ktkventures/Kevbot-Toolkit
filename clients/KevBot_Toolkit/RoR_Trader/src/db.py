@@ -945,7 +945,7 @@ def load_mass_searches() -> list:
     return _load_mass_searches_file()
 
 
-def get_mass_search(search_id: str) -> dict | None:
+def get_mass_search(search_id) -> dict | None:
     """Get a single mass search by ID."""
     if USE_DB:
         try:
@@ -956,7 +956,11 @@ def get_mass_search(search_id: str) -> dict | None:
                 .maybe_single() \
                 .execute()
             if result.data:
-                return result.data.get('config_data', result.data)
+                # Merge row-level fields with config_data for a unified view
+                row = dict(result.data)
+                cfg = row.pop('config_data', {}) or {}
+                merged = {**cfg, **row}
+                return merged
         except Exception as e:
             logger.warning("get_mass_search DB error: %s", e)
     for s in _load_mass_searches_file():
@@ -967,7 +971,7 @@ def get_mass_search(search_id: str) -> dict | None:
 
 def save_mass_search(search: dict) -> str:
     """Save (upsert) a mass search. Returns the search ID."""
-    search_id = search.get('id', '')
+    search_id = search.get('id') or None
     now = datetime.now(timezone.utc).isoformat()
     search['updated_at'] = now
     if not search.get('created_at'):
@@ -978,7 +982,6 @@ def save_mass_search(search: dict) -> str:
             client = get_client()
             user_id = getattr(_local, 'user_id', None)
             row = {
-                'id': search_id,
                 'user_id': user_id,
                 'name': search.get('name', 'Untitled'),
                 'status': search.get('status', 'pending'),
@@ -986,8 +989,18 @@ def save_mass_search(search: dict) -> str:
                 'created_at': search['created_at'],
                 'updated_at': now,
             }
-            client.table('mass_searches').upsert(row).execute()
-            return search_id
+            if search_id:
+                row['id'] = search_id
+                client.table('mass_searches').upsert(row).execute()
+                return search_id
+            else:
+                # Generate a unique integer ID (timestamp-based)
+                import time as _time
+                row['id'] = int(_time.time() * 1000) % (2**31)
+                result = client.table('mass_searches').insert(row).execute()
+                if result.data and len(result.data) > 0:
+                    return result.data[0].get('id')
+                return row['id']
         except Exception as e:
             logger.warning("save_mass_search DB error (falling back to file): %s", e)
 
@@ -1002,8 +1015,43 @@ def save_mass_search(search: dict) -> str:
     return search_id
 
 
-def update_mass_search(search_id: str, updates: dict):
-    """Partial update of a mass search (merges updates into existing record)."""
+def update_mass_search(search_id, updates: dict):
+    """Partial update of a mass search row in the DB."""
+    if USE_DB:
+        try:
+            client = get_client()
+            row = {'updated_at': datetime.now(timezone.utc).isoformat()}
+            if 'status' in updates:
+                row['status'] = updates['status']
+            # Store results, progress, summary in config_data
+            if 'results' in updates or 'progress' in updates or 'summary' in updates:
+                # Read existing config_data, merge updates into it
+                result = client.table('mass_searches').select('config_data').eq('id', search_id).maybe_single().execute()
+                cfg = (result.data or {}).get('config_data', {}) if result and result.data else {}
+                for key in ('results', 'progress', 'summary'):
+                    if key in updates:
+                        cfg[key] = updates[key]
+                # Sanitize for JSON: convert numpy/pandas types
+                import numpy as np
+                def _sanitize(obj):
+                    if isinstance(obj, (np.integer,)):
+                        return int(obj)
+                    if isinstance(obj, (np.floating,)):
+                        return float(obj) if not np.isnan(obj) and not np.isinf(obj) else 0
+                    if isinstance(obj, (np.bool_,)):
+                        return bool(obj)
+                    if isinstance(obj, np.ndarray):
+                        return obj.tolist()
+                    if isinstance(obj, set):
+                        return list(obj)
+                    return str(obj)
+                row['config_data'] = json.loads(json.dumps(cfg, default=_sanitize))
+            client.table('mass_searches').update(row).eq('id', search_id).execute()
+            return
+        except Exception as e:
+            logger.warning("update_mass_search DB error: %s", e)
+
+    # File fallback
     existing = get_mass_search(search_id)
     if existing:
         existing.update(updates)

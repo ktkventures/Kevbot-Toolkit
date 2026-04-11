@@ -312,7 +312,7 @@ export default function MassBuilderPage() {
   const [minPF, setMinPF] = useState(0);
   const [minDailyR, setMinDailyR] = useState(0);
   const [maxResults, setMaxResults] = useState(500);
-  const [activeSearchId, setActiveSearchId] = useState<number | null>(null);
+  const [activeSearchId, setActiveSearchId] = useState<string | number | null>(null);
 
   // Layout & display state
   const [resultColumns, setResultColumns] = useState(2);

@@ -12,7 +12,7 @@ export function useMassResults() {
   });
 }
 
-export function useMassResult(id: number | null) {
+export function useMassResult(id: string | number | null) {
   return useQuery({
     queryKey: ['mass-result', id],
     queryFn: () => apiFetch<any>(`/api/mass-builder/results/${id}`),
@@ -20,11 +20,11 @@ export function useMassResult(id: number | null) {
   });
 }
 
-export function useMassProgress(searchId: number | null) {
+export function useMassProgress(searchId: string | number | null) {
   return useQuery({
     queryKey: ['mass-progress', searchId],
     queryFn: () => apiFetch<{
-      search_id: number;
+      search_id: string | number;
       status: string;
       progress: number;
       total: number;

@@ -23,14 +23,14 @@ def start_mass_search(config: dict = Body(...), user=Depends(get_current_user)):
 
     from db import save_mass_search
     search = {
+        "name": config.get("name", "Untitled Search"),
         "config": config,
         "status": "queued",
         "progress": 0,
         "total": 0,
         "results": [],
     }
-    saved = save_mass_search(search)
-    search_id = saved.get("id") if isinstance(saved, dict) else None
+    search_id = save_mass_search(search)
 
     # Launch background execution
     if search_id:
@@ -41,7 +41,7 @@ def start_mass_search(config: dict = Body(...), user=Depends(get_current_user)):
 
 
 @router.get("/progress/{search_id}")
-def get_progress(search_id: int, user=Depends(get_current_user)):
+def get_progress(search_id: str, user=Depends(get_current_user)):
     """Poll progress of a running mass search."""
     from db import USE_DB
     if not USE_DB:
@@ -49,7 +49,8 @@ def get_progress(search_id: int, user=Depends(get_current_user)):
 
     # Check in-memory state first (faster, updated in real-time by worker thread)
     from mass_builder import get_search_progress
-    mem_progress = get_search_progress(search_id)
+    # Try both int and string keys (DB returns int, in-memory may store either)
+    mem_progress = get_search_progress(search_id) or get_search_progress(str(search_id))
     if mem_progress:
         return {
             "search_id": search_id,
@@ -76,7 +77,7 @@ def get_progress(search_id: int, user=Depends(get_current_user)):
 
 
 @router.post("/cancel/{search_id}")
-def cancel_search(search_id: int, user=Depends(get_current_user)):
+def cancel_search(search_id: str, user=Depends(get_current_user)):
     """Cancel a running mass search."""
     from db import USE_DB
     if not USE_DB:
@@ -104,7 +105,7 @@ def list_results(user=Depends(get_current_user)):
 
 
 @router.get("/results/{search_id}")
-def get_result(search_id: int, user=Depends(get_current_user)):
+def get_result(search_id: str, user=Depends(get_current_user)):
     """Get a specific mass search result."""
     from db import USE_DB
     if not USE_DB:
@@ -118,7 +119,7 @@ def get_result(search_id: int, user=Depends(get_current_user)):
 
 
 @router.delete("/results/{search_id}")
-def delete_result(search_id: int, user=Depends(get_current_user)):
+def delete_result(search_id: str, user=Depends(get_current_user)):
     """Delete a mass search result."""
     from db import USE_DB
     if not USE_DB:

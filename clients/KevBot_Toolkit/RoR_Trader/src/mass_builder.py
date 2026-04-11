@@ -368,6 +368,22 @@ def run_mass_search(
         exit_combos = [[]]
 
     # Pre-resolve ALL trigger base IDs for the mega-config
+    print(f"[MASS] entry_cids={entry_cids}, exit_cids_raw={exit_cids_raw}")
+    # Debug: write to file since stdout is buffered in daemon threads
+    import sys as _sys
+    _ema_keys = [k for k in all_trigger_defs.keys() if 'ema' in k.lower()]
+    with open('/tmp/mass_debug.log', 'w') as _dbg:
+        _dbg.write(f"entry_cids={entry_cids}\n")
+        _dbg.write(f"exit_cids_raw={exit_cids_raw}\n")
+        _dbg.write(f"trigger_count={len(all_trigger_defs)}\n")
+        _dbg.write(f"ema_keys={_ema_keys}\n")
+        _dbg.write(f"enabled_groups={len(enabled_groups)}\n")
+        for cid in entry_cids:
+            found = cid in all_trigger_defs
+            _dbg.write(f"entry '{cid}' found={found}\n")
+        for cid in exit_cids_raw:
+            found = cid in all_trigger_defs
+            _dbg.write(f"exit '{cid}' found={found}\n")
     all_entry_bases = {}
     all_entry_names = {}
     for cid in entry_cids:
@@ -399,6 +415,10 @@ def run_mass_search(
     step = 0
     results = []
     min_trades = required_perf.get('min_trades', 10)
+    print(f"[MASS] total_steps={total_steps}, tickers={len(tickers)}, tfs={len(timeframes)}, dirs={len(directions)}, entries={len(entry_cids)}, exits={len(exit_combos)}, packs={len(pack_combos)}")
+    print(f"[MASS] all_entry_bases={all_entry_bases}")
+    print(f"[MASS] all_exit_bases={all_exit_bases}")
+    print(f"[MASS] data_days={data_days}, session={session}")
     # Diagnostics counters
     _diag = {
         'data_loads': 0, 'data_failures': 0,
@@ -792,7 +812,8 @@ def start_mass_search_async(search_id: str, search_config: dict):
                 'summary': {
                     'results_stored': len(results),
                     'best_daily_r': max(
-                        (r['kpis'].get('daily_r', 0) for r in results),
+                        (r.get('kpis', {}).get('daily_r', 0) for r in results
+                         if isinstance(r, dict)),
                         default=0),
                 },
             })
