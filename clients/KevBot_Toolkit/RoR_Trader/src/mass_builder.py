@@ -146,6 +146,7 @@ def build_strategy_config(
     starting_balance: float = 10000.0,
     backtest_start_date: Optional[str] = None,
     backtest_end_date: Optional[str] = None,
+    time_exit_config: Optional[dict] = None,
 ) -> dict:
     """Build a strategy config dict compatible with _unified_trades() and save flow."""
     lookback_mode = date_range.get('mode', 'days')
@@ -179,8 +180,36 @@ def build_strategy_config(
         'lookback_end_date': end_date,
         'backtest_start_date': backtest_start_date,
         'backtest_end_date': backtest_end_date,
+        'time_exit_config': time_exit_config,
         'strategy_origin': 'standard',
     }
+
+
+def _serialize_trades(trades_df) -> list:
+    """Serialize trades DataFrame to list of dicts for storage (same format as backtest API)."""
+    import pandas as pd
+    if trades_df is None or not isinstance(trades_df, pd.DataFrame) or len(trades_df) == 0:
+        return []
+    cols = ['entry_time', 'exit_time', 'direction', 'entry_price', 'exit_price',
+            'stop_price', 'target_price', 'r_multiple', 'win', 'exit_reason',
+            'exec_type', 'bars_held', 'hold_time_seconds', 'entry_trigger']
+    records = []
+    for _, row in trades_df.iterrows():
+        d = {}
+        for c in cols:
+            val = row.get(c)
+            if val is not None and pd.notna(val):
+                if hasattr(val, 'isoformat'):
+                    d[c] = val.isoformat()
+                elif isinstance(val, (bool,)):
+                    d[c] = bool(val)
+                else:
+                    try:
+                        d[c] = float(val) if isinstance(val, (int, float)) else str(val)
+                    except (TypeError, ValueError):
+                        d[c] = str(val)
+        records.append(d)
+    return records
 
 
 def build_equity_curve(trades_df) -> list:
@@ -274,9 +303,53 @@ def run_mass_search(
     tf_conf_depth = search_config.get('tf_confluence_depth', 2)
     gen_conf_depth = search_config.get('general_confluence_depth', 1)
 
-    # Single stop/target config (same for all combos in this search)
-    stop_config = search_config.get('stop_config') or {"method": "atr", "atr_mult": 1.5}
-    target_config = search_config.get('target_config')
+    # Resolve stop/target/time_exit packs into config lists
+    # If pack IDs are provided, resolve each to its config. Otherwise use default.
+    stop_configs = [{"method": "atr", "atr_mult": 1.5}]  # default
+    target_configs = [None]  # default (signal exit only)
+    time_exit_configs = [None]  # default (no time exit)
+
+    stop_pack_ids = search_config.get('stop_packs', [])
+    target_pack_ids = search_config.get('target_packs', [])
+    time_exit_pack_ids = search_config.get('time_exit_packs', [])
+
+    if stop_pack_ids:
+        stop_configs = []
+        for pid in stop_pack_ids:
+            p = rm_pack_map.get(pid)
+            if p:
+                stop_configs.append(p.get_stop_config())
+        if not stop_configs:
+            stop_configs = [{"method": "atr", "atr_mult": 1.5}]
+
+    if target_pack_ids:
+        target_configs = []
+        for pid in target_pack_ids:
+            p = rm_pack_map.get(pid)
+            if p:
+                tc = p.get_target_config()
+                if tc:
+                    target_configs.append(tc)
+        if not target_configs:
+            target_configs = [None]
+
+    if time_exit_pack_ids:
+        from time_exit_packs import load_time_exit_packs
+        te_packs = load_time_exit_packs()
+        te_map = {p.id: p for p in te_packs}
+        time_exit_configs = []
+        for pid in time_exit_pack_ids:
+            p = te_map.get(pid)
+            if p:
+                time_exit_configs.append(p.get_exit_config())
+        if not time_exit_configs:
+            time_exit_configs = [None]
+
+    # For backward compat, also accept single stop/target config
+    if not stop_pack_ids and search_config.get('stop_config'):
+        stop_configs = [search_config['stop_config']]
+    if not target_pack_ids and search_config.get('target_config'):
+        target_configs = [search_config['target_config']]
 
     # Resolve date range
     data_days = date_range.get('days', 90)
@@ -314,9 +387,15 @@ def run_mass_search(
     # Collect ALL unique base trigger IDs for the mega bar_cache
     _all_base_triggers = set(all_entry_bases.values()) | set(all_exit_bases.values())
 
+    # Build pack combos (stop × target × time_exit)
+    pack_combos = [(sc, tc, tec)
+                   for sc in stop_configs
+                   for tc in target_configs
+                   for tec in time_exit_configs]
+
     # Count total base configs for progress
     total_steps = (len(tickers) * len(timeframes) * len(directions)
-                   * len(entry_cids) * len(exit_combos))
+                   * len(entry_cids) * len(exit_combos) * len(pack_combos))
     step = 0
     results = []
     min_trades = required_perf.get('min_trades', 10)
@@ -379,7 +458,7 @@ def run_mass_search(
                 for entry_cid in entry_cids:
                     entry_tdef = all_trigger_defs.get(entry_cid)
                     if not entry_tdef:
-                        step += len(exit_combos)
+                        step += len(exit_combos) * len(pack_combos)
                         continue
                     entry_base = all_entry_bases.get(entry_cid, '')
                     entry_name = all_entry_names.get(entry_cid, '?')
@@ -387,8 +466,8 @@ def run_mass_search(
                     # Direction compatibility
                     if (entry_tdef.direction != 'BOTH'
                             and entry_tdef.direction != direction):
-                        _diag['direction_skips'] += len(exit_combos)
-                        step += len(exit_combos)
+                        _diag['direction_skips'] += len(exit_combos) * len(pack_combos)
+                        step += len(exit_combos) * len(pack_combos)
                         continue
 
                     for exit_combo in exit_combos:
@@ -421,167 +500,172 @@ def run_mass_search(
 
                         # Need at least signal exits OR bar_count exit
                         if not valid_exits:
-                            step += 1
+                            step += len(pack_combos)
                             continue
                         if not exit_bases and bar_count_exit_value is None:
+                            step += len(pack_combos)
+                            continue
+
+                        for pack_sc, pack_tc, pack_tec in pack_combos:
                             step += 1
-                            continue
+                            label = f"{symbol} {tf} {direction}"
 
-                        step += 1
-                        label = f"{symbol} {tf} {direction}"
+                            config = build_strategy_config(
+                                symbol=symbol, timeframe=tf,
+                                direction=direction, session=sym_session,
+                                entry_cid=entry_cid, entry_base=entry_base,
+                                entry_name=entry_name,
+                                exit_cids=exit_cid_list,
+                                exit_bases=exit_bases,
+                                exit_names=exit_names,
+                                bar_count_exit=bar_count_exit_value,
+                                stop_config=pack_sc,
+                                target_config=pack_tc,
+                                date_range=date_range,
+                                asset_type=asset_type,
+                                backtest_start_date=_bt_start_iso,
+                                backtest_end_date=_bt_end_iso,
+                                time_exit_config=pack_tec,
+                            )
 
-                        config = build_strategy_config(
-                            symbol=symbol, timeframe=tf,
-                            direction=direction, session=sym_session,
-                            entry_cid=entry_cid, entry_base=entry_base,
-                            entry_name=entry_name,
-                            exit_cids=exit_cid_list,
-                            exit_bases=exit_bases,
-                            exit_names=exit_names,
-                            bar_count_exit=bar_count_exit_value,
-                            stop_config=stop_config,
-                            target_config=target_config,
-                            date_range=date_range,
-                            asset_type=asset_type,
-                            backtest_start_date=_bt_start_iso,
-                            backtest_end_date=_bt_end_iso,
-                        )
-
-                        # ── Level 2: Run full backtest ──
-                        _diag['backtests_run'] += 1
-                        try:
-                            trades_df, _ = run_unified_backtest(
-                                df, config,
-                                general_packs=enabled_gen,
-                                secondary_tf_map=sec_tf_map if sec_tf_map else None)
-                        except Exception as exc:
-                            _diag['backtests_failed'] += 1
-                            logger.warning("Mass search: backtest failed "
-                                           "%s %s %s entry=%s exit=%s: %s",
-                                           symbol, tf, direction,
-                                           entry_base, exit_bases, exc)
-                            if progress_callback:
-                                progress_callback(step, total_steps, label)
-                            continue
-
-                        if not isinstance(trades_df, pd.DataFrame):
-                            trades_df = pd.DataFrame()
-
-                        n_trades = len(trades_df)
-
-                        if step <= 3:
-                            # Detailed debug for first few combos
-                            logger.info(
-                                "Mass search: step %d CONFIG: entry=%s "
-                                "entry_cid=%s exit=%s exit_cids=%s "
-                                "stop=%s target=%s direction=%s",
-                                step, config.get('entry_trigger'),
-                                config.get('entry_trigger_confluence_id'),
-                                config.get('exit_triggers'),
-                                config.get('exit_trigger_confluence_ids'),
-                                config.get('stop_config'),
-                                config.get('target_config'),
-                                config.get('direction'))
-                            if n_trades > 0:
-                                _sample = trades_df.head(3)
-                                for _, t in _sample.iterrows():
-                                    logger.info(
-                                        "  Trade: entry=%s r=%.2f win=%s "
-                                        "exit_reason=%s",
-                                        t.get('entry_trigger', '?'),
-                                        t.get('r_multiple', 0),
-                                        t.get('win', '?'),
-                                        t.get('exit_reason', '?'))
-                        if step <= 5 or (step % 50 == 0):
-                            logger.info(
-                                "Mass search: step %d/%d %s %s %s "
-                                "entry=%s exit=%s → %d trades",
-                                step, total_steps, symbol, tf, direction,
-                                entry_base, exit_bases, n_trades)
-
-                        if n_trades == 0:
-                            _diag['combos_zero_trades'] += 1
-                        elif n_trades < min_trades:
-                            _diag['combos_below_min'] += 1
-                        else:
-                            _diag['combos_with_trades'] += 1
-
-                        if n_trades < min_trades:
-                            if progress_callback:
-                                progress_callback(step, total_steps, label)
-                            continue
-
-                        # KPIs on base trades (no confluence filter)
-                        base_kpis = calculate_kpis(
-                            trades_df,
-                            starting_balance=config.get('starting_balance', 10000),
-                            risk_per_trade=config.get('risk_per_trade', 100),
-                            total_trading_days=period_trading_days)
-
-                        _diag['combos_passed_perf'] += 1
-                        if meets_required_performance(base_kpis, required_perf):
-                            results.append({
-                                'config': dict(config),
-                                'kpis': base_kpis,
-                                'equity_curve': build_equity_curve(trades_df),
-                                'status': 'active',
-                                'confluence_str': 'None',
-                            })
-
-                        # ── Level 3: Auto-search confluences ──
-                        if ('confluence_records' in trades_df.columns
-                                and n_trades >= min_trades):
+                            # ── Level 2: Run full backtest ──
+                            _diag['backtests_run'] += 1
                             try:
-                                # top_n per base config scales with max_results
-                                _top_n_per_base = min(50, max(20, max_results // max(total_steps, 1)))
-                                best = find_best_combinations(
-                                    trades_df,
-                                    max_depth=tf_conf_depth,
-                                    min_trades=min_trades,
-                                    top_n=_top_n_per_base,
-                                    starting_balance=config.get(
-                                        'starting_balance', 10000),
-                                    risk_per_trade=config.get(
-                                        'risk_per_trade', 100),
-                                    total_trading_days=period_trading_days,
-                                )
-                                if len(best) > 0:
-                                    for _, row in best.iterrows():
-                                        combo_kpis = {
-                                            k: row[k] for k in base_kpis
-                                            if k in row.index
-                                        }
-                                        if not meets_required_performance(
-                                                combo_kpis, required_perf):
-                                            continue
-                                        combo_set = row['combination']
-                                        conf_config = dict(config)
-                                        tf_confs = [c for c in combo_set
-                                                    if not c.startswith('GEN-')]
-                                        gen_confs = [c for c in combo_set
-                                                     if c.startswith('GEN-')]
-                                        conf_config['confluence'] = tf_confs
-                                        conf_config['general_confluences'] = gen_confs
-                                        mask = trades_df['confluence_records'].apply(
-                                            lambda r: isinstance(r, set)
-                                            and combo_set.issubset(r))
-                                        filtered = trades_df[mask]
-                                        results.append({
-                                            'config': conf_config,
-                                            'kpis': combo_kpis,
-                                            'equity_curve': build_equity_curve(
-                                                filtered),
-                                            'status': 'active',
-                                            'confluence_str': row.get(
-                                                'combo_str', ''),
-                                        })
+                                trades_df, _ = run_unified_backtest(
+                                    df, config,
+                                    general_packs=enabled_gen,
+                                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
                             except Exception as exc:
-                                logger.warning(
-                                    "Mass search: confluence search "
-                                    "failed %s: %s", label, exc)
+                                _diag['backtests_failed'] += 1
+                                logger.warning("Mass search: backtest failed "
+                                               "%s %s %s entry=%s exit=%s: %s",
+                                               symbol, tf, direction,
+                                               entry_base, exit_bases, exc)
+                                if progress_callback:
+                                    progress_callback(step, total_steps, label)
+                                continue
 
-                        if progress_callback:
-                            progress_callback(step, total_steps, label)
+                            if not isinstance(trades_df, pd.DataFrame):
+                                trades_df = pd.DataFrame()
+
+                            n_trades = len(trades_df)
+
+                            if step <= 3:
+                                # Detailed debug for first few combos
+                                logger.info(
+                                    "Mass search: step %d CONFIG: entry=%s "
+                                    "entry_cid=%s exit=%s exit_cids=%s "
+                                    "stop=%s target=%s direction=%s",
+                                    step, config.get('entry_trigger'),
+                                    config.get('entry_trigger_confluence_id'),
+                                    config.get('exit_triggers'),
+                                    config.get('exit_trigger_confluence_ids'),
+                                    config.get('stop_config'),
+                                    config.get('target_config'),
+                                    config.get('direction'))
+                                if n_trades > 0:
+                                    _sample = trades_df.head(3)
+                                    for _, t in _sample.iterrows():
+                                        logger.info(
+                                            "  Trade: entry=%s r=%.2f win=%s "
+                                            "exit_reason=%s",
+                                            t.get('entry_trigger', '?'),
+                                            t.get('r_multiple', 0),
+                                            t.get('win', '?'),
+                                            t.get('exit_reason', '?'))
+                            if step <= 5 or (step % 50 == 0):
+                                logger.info(
+                                    "Mass search: step %d/%d %s %s %s "
+                                    "entry=%s exit=%s → %d trades",
+                                    step, total_steps, symbol, tf, direction,
+                                    entry_base, exit_bases, n_trades)
+
+                            if n_trades == 0:
+                                _diag['combos_zero_trades'] += 1
+                            elif n_trades < min_trades:
+                                _diag['combos_below_min'] += 1
+                            else:
+                                _diag['combos_with_trades'] += 1
+
+                            if n_trades < min_trades:
+                                if progress_callback:
+                                    progress_callback(step, total_steps, label)
+                                continue
+
+                            # KPIs on base trades (no confluence filter)
+                            base_kpis = calculate_kpis(
+                                trades_df,
+                                starting_balance=config.get('starting_balance', 10000),
+                                risk_per_trade=config.get('risk_per_trade', 100),
+                                total_trading_days=period_trading_days)
+
+                            _diag['combos_passed_perf'] += 1
+                            if meets_required_performance(base_kpis, required_perf):
+                                results.append({
+                                    'config': dict(config),
+                                    'kpis': base_kpis,
+                                    'equity_curve': build_equity_curve(trades_df),
+                                    'stored_trades': _serialize_trades(trades_df),
+                                    'status': 'active',
+                                    'confluence_str': 'None',
+                                })
+
+                            # ── Level 3: Auto-search confluences ──
+                            if ('confluence_records' in trades_df.columns
+                                    and n_trades >= min_trades):
+                                try:
+                                    # top_n per base config scales with max_results
+                                    _top_n_per_base = min(50, max(20, max_results // max(total_steps, 1)))
+                                    best = find_best_combinations(
+                                        trades_df,
+                                        max_depth=tf_conf_depth,
+                                        min_trades=min_trades,
+                                        top_n=_top_n_per_base,
+                                        starting_balance=config.get(
+                                            'starting_balance', 10000),
+                                        risk_per_trade=config.get(
+                                            'risk_per_trade', 100),
+                                        total_trading_days=period_trading_days,
+                                    )
+                                    if len(best) > 0:
+                                        for _, row in best.iterrows():
+                                            combo_kpis = {
+                                                k: row[k] for k in base_kpis
+                                                if k in row.index
+                                            }
+                                            if not meets_required_performance(
+                                                    combo_kpis, required_perf):
+                                                continue
+                                            combo_set = row['combination']
+                                            conf_config = dict(config)
+                                            tf_confs = [c for c in combo_set
+                                                        if not c.startswith('GEN-')]
+                                            gen_confs = [c for c in combo_set
+                                                         if c.startswith('GEN-')]
+                                            conf_config['confluence'] = tf_confs
+                                            conf_config['general_confluences'] = gen_confs
+                                            mask = trades_df['confluence_records'].apply(
+                                                lambda r: isinstance(r, set)
+                                                and combo_set.issubset(r))
+                                            filtered = trades_df[mask]
+                                            results.append({
+                                                'config': conf_config,
+                                                'kpis': combo_kpis,
+                                                'equity_curve': build_equity_curve(
+                                                    filtered),
+                                                'stored_trades': _serialize_trades(
+                                                    filtered),
+                                                'status': 'active',
+                                                'confluence_str': row.get(
+                                                    'combo_str', ''),
+                                            })
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Mass search: confluence search "
+                                        "failed %s: %s", label, exc)
+
+                            if progress_callback:
+                                progress_callback(step, total_steps, label)
 
             logger.info("Mass search: %s/%s group complete, %d results so far",
                         symbol, tf, len(results))

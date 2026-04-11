@@ -31,7 +31,13 @@ def start_mass_search(config: dict = Body(...), user=Depends(get_current_user)):
     }
     saved = save_mass_search(search)
     search_id = saved.get("id") if isinstance(saved, dict) else None
-    return {"search_id": search_id, "status": "queued"}
+
+    # Launch background execution
+    if search_id:
+        from mass_builder import start_mass_search_async
+        start_mass_search_async(search_id, config)
+
+    return {"search_id": search_id, "status": "running"}
 
 
 @router.get("/progress/{search_id}")
@@ -41,17 +47,31 @@ def get_progress(search_id: int, user=Depends(get_current_user)):
     if not USE_DB:
         raise HTTPException(status_code=501, detail="Mass builder requires DB mode")
 
+    # Check in-memory state first (faster, updated in real-time by worker thread)
+    from mass_builder import get_search_progress
+    mem_progress = get_search_progress(search_id)
+    if mem_progress:
+        return {
+            "search_id": search_id,
+            "status": mem_progress.get("status", "running"),
+            "progress": mem_progress.get("current_step", 0),
+            "total": mem_progress.get("total_steps", 0),
+            "current_label": mem_progress.get("current_label", ""),
+        }
+
+    # Fall back to DB
     from db import get_mass_search
     search = get_mass_search(search_id)
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
 
+    progress = search.get("progress", {})
     return {
         "search_id": search_id,
         "status": search.get("status", "unknown"),
-        "progress": search.get("progress", 0),
-        "total": search.get("total", 0),
-        "current_label": search.get("current_label", ""),
+        "progress": progress.get("current_step", 0) if isinstance(progress, dict) else 0,
+        "total": progress.get("total_steps", 0) if isinstance(progress, dict) else 0,
+        "current_label": progress.get("current_label", "") if isinstance(progress, dict) else "",
     }
 
 

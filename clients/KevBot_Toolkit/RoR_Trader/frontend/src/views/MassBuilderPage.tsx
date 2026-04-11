@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Modal from '@/components/Modal';
-import { useRunMassSearch } from '@/hooks/queries/useMassBuilder';
+import { useRunMassSearch, useMassProgress, useMassResult } from '@/hooks/queries/useMassBuilder';
+import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTriggers, useRiskManagementPacks, useGeneralPacks, useTimeExitPacks } from '@/hooks/queries/usePacks';
 
 /* ========================================================================
@@ -60,6 +61,7 @@ interface MassResult {
   targetDesc: string;
   dateRange: string;
   status: 'active' | 'saved' | 'passed';
+  _raw?: any;  // Raw result from backend for save flow
 }
 
 /* ========================================================================
@@ -179,6 +181,7 @@ function ToggleChip({ label, active, onClick }: { label: string; active: boolean
 export default function MassBuilderPage() {
   // ---- API hooks (MUST come before any early returns) ----
   const runMassSearch = useRunMassSearch();
+  const createStrategy = useCreateStrategy();
   const { data: apiEntryTriggers } = useConfluenceTriggers('LONG');
   const { data: apiExitTriggers } = useConfluenceTriggers('EXIT');
   const { data: apiConfluenceGroups } = useConfluenceGroups();
@@ -300,15 +303,16 @@ export default function MassBuilderPage() {
   const [genConfDepth, setGenConfDepth] = useState(1);
   const [session, setSession] = useState('RTH');
   const [lookbackDays, setLookbackDays] = useState(90);
-  const [stopMethod, setStopMethod] = useState('ATR');
-  const [stopAtrMult, setStopAtrMult] = useState(1.5);
-  const [targetMethod, setTargetMethod] = useState('R:R');
-  const [targetRR, setTargetRR] = useState(2.0);
+  const [selectedStopPacks, setSelectedStopPacks] = useState<string[]>([]);
+  const [selectedTargetPacks, setSelectedTargetPacks] = useState<string[]>([]);
+  const [selectedTimeExitPacks, setSelectedTimeExitPacks] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState('Daily R');
   const [minTrades, setMinTrades] = useState(10);
   const [minWR, setMinWR] = useState(0);
   const [minPF, setMinPF] = useState(0);
+  const [minDailyR, setMinDailyR] = useState(0);
   const [maxResults, setMaxResults] = useState(500);
+  const [activeSearchId, setActiveSearchId] = useState<number | null>(null);
 
   // Layout & display state
   const [resultColumns, setResultColumns] = useState(2);
@@ -323,6 +327,70 @@ export default function MassBuilderPage() {
   const [progressLabel, setProgressLabel] = useState('');
   const [results, setResults] = useState<MassResult[]>([]);
   const [expandedResult, setExpandedResult] = useState<number | null>(null);
+
+  // ---- Progress polling & result fetching ----
+  const { data: progressData } = useMassProgress(activeSearchId);
+  const { data: searchResult } = useMassResult(
+    progressData?.status === 'completed' ? activeSearchId : null
+  );
+
+  // React to progress changes
+  useEffect(() => {
+    if (!progressData) return;
+    const { status, progress: p, total, current_label } = progressData;
+    if (status === 'running') {
+      setProgress(total > 0 ? p / total : 0);
+      setProgressLabel(current_label || `Processing ${p}/${total}...`);
+    } else if (status === 'completed') {
+      setIsAnalyzing(false);
+      setProgress(1);
+      setProgressLabel('Search complete');
+    } else if (status === 'failed' || status === 'cancelled') {
+      setIsAnalyzing(false);
+      setProgress(0);
+      setProgressLabel(`Search ${status}`);
+    }
+  }, [progressData]);
+
+  // Populate results when search completes
+  useEffect(() => {
+    if (!searchResult?.results) return;
+    const stopMethod = (c: any) => {
+      const m = c?.stop_config?.method;
+      if (m === 'atr') return `ATR ${c.stop_config.atr_mult ?? 1.5}x`;
+      return m || 'ATR 1.5x';
+    };
+    const targetMethod = (c: any) => {
+      const m = c?.target_config?.method;
+      if (m === 'risk_reward') return `${c.target_config.rr_ratio ?? 2}R`;
+      return m || 'Signal exit';
+    };
+    const mapped: MassResult[] = searchResult.results.map((r: any, i: number) => ({
+      rank: i + 1,
+      ticker: r.config?.symbol || '--',
+      direction: (r.config?.direction || 'LONG') as 'LONG' | 'SHORT',
+      tf: r.config?.timeframe || '1Min',
+      trigger: r.config?.entry_trigger_name || r.config?.entry_trigger_confluence_id || '--',
+      exitTrigger: (r.config?.exit_trigger_names || []).join(', ') || 'Signal',
+      confluence: r.confluence_str ? r.confluence_str.split(' + ') : [],
+      stopDesc: stopMethod(r.config),
+      targetDesc: targetMethod(r.config),
+      dateRange: `${r.config?.data_days || 90}d`,
+      winRate: r.kpis?.win_rate ?? 0,
+      pf: r.kpis?.profit_factor ?? 0,
+      dailyR: r.kpis?.daily_r ?? 0,
+      avgR: r.kpis?.avg_r ?? 0,
+      totalR: r.kpis?.total_r ?? 0,
+      trades: r.kpis?.total_trades ?? 0,
+      maxDD: r.kpis?.max_r_drawdown ?? 0,
+      rSquared: r.kpis?.r_squared ?? 0,
+      equityCurve: r.equity_curve || [],
+      status: (r.status || 'active') as 'active' | 'saved' | 'passed',
+      _raw: r,
+    }));
+    setResults(mapped);
+    setActiveSearchId(null);
+  }, [searchResult]);
 
   // Post-analysis filter state
   const [filterWR, setFilterWR] = useState(0);
@@ -383,20 +451,25 @@ export default function MassBuilderPage() {
       tf_confluence_depth: tfConfDepth,
       general_confluences: selectedGenConf,
       general_confluence_depth: genConfDepth,
+      stop_packs: selectedStopPacks.length > 0 ? selectedStopPacks : undefined,
+      target_packs: selectedTargetPacks.length > 0 ? selectedTargetPacks : undefined,
+      time_exit_packs: selectedTimeExitPacks.length > 0 ? selectedTimeExitPacks : undefined,
       session,
-      lookback_days: lookbackDays,
+      date_range: { mode: 'days', days: lookbackDays },
       sort_by: sortBy,
-      min_trades: minTrades,
-      min_win_rate: minWR > 0 ? minWR : null,
-      min_profit_factor: minPF > 0 ? minPF : null,
+      required_performance: {
+        min_trades: minTrades,
+        min_win_rate: minWR > 0 ? minWR : undefined,
+        min_profit_factor: minPF > 0 ? minPF : undefined,
+        min_daily_r: minDailyR > 0 ? minDailyR : undefined,
+      },
       max_results: maxResults,
     };
 
     runMassSearch.mutate(config, {
       onSuccess: (data) => {
-        setIsAnalyzing(false);
-        setProgress(1);
-        setProgressLabel(`Search submitted — ID: ${data.search_id}`);
+        setActiveSearchId(data.search_id);
+        setProgressLabel('Search started — polling for progress...');
       },
       onError: (err: any) => {
         setIsAnalyzing(false);
@@ -434,7 +507,34 @@ export default function MassBuilderPage() {
   }
 
   function saveResult(idx: number) {
-    setResults((prev) => prev.map((r, i) => (i === idx ? { ...r, status: 'saved' as const } : r)));
+    const r = results[idx];
+    if (!r?._raw) {
+      setResults((prev) => prev.map((x, i) => (i === idx ? { ...x, status: 'saved' as const } : x)));
+      return;
+    }
+    const raw = r._raw;
+    const cfg = raw.config || {};
+    createStrategy.mutate({
+      name: `${r.ticker} ${r.direction} ${r.tf} Mass #${r.rank}`,
+      symbol: cfg.symbol,
+      direction: cfg.direction,
+      timeframe: cfg.timeframe,
+      trading_session: cfg.trading_session || 'RTH',
+      data_days: cfg.data_days || 90,
+      entry_trigger_confluence_id: cfg.entry_trigger_confluence_id,
+      exit_trigger_confluence_ids: cfg.exit_trigger_confluence_ids || [],
+      confluence: cfg.confluence || [],
+      general_confluences: cfg.general_confluences || [],
+      stop_config: cfg.stop_config,
+      target_config: cfg.target_config,
+      time_exit_config: cfg.time_exit_config,
+      kpis: raw.kpis || {},
+      stored_trades: raw.stored_trades || [],
+      equity_curve_data: {
+        cumulative_r: raw.equity_curve || [],
+      },
+    });
+    setResults((prev) => prev.map((x, i) => (i === idx ? { ...x, status: 'saved' as const } : x)));
   }
 
   function passResult(idx: number) {
@@ -947,7 +1047,10 @@ export default function MassBuilderPage() {
                           <div className="space-y-1">
                             {packs.map((p) => (
                               <label key={p.id} className="flex items-center gap-2 cursor-pointer py-0.5">
-                                <input type="checkbox" className="rounded" style={{ accentColor: 'var(--red)' }} />
+                                <input type="checkbox" className="rounded" style={{ accentColor: 'var(--red)' }}
+                                  checked={selectedStopPacks.includes(p.id)}
+                                  onChange={() => setSelectedStopPacks((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id])}
+                                />
                                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
                               </label>
                             ))}
@@ -991,7 +1094,10 @@ export default function MassBuilderPage() {
                           <div className="space-y-1">
                             {packs.map((p) => (
                               <label key={p.id} className="flex items-center gap-2 cursor-pointer py-0.5">
-                                <input type="checkbox" className="rounded" style={{ accentColor: 'var(--green)' }} />
+                                <input type="checkbox" className="rounded" style={{ accentColor: 'var(--green)' }}
+                                  checked={selectedTargetPacks.includes(p.id)}
+                                  onChange={() => setSelectedTargetPacks((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id])}
+                                />
                                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
                               </label>
                             ))}
@@ -1013,7 +1119,10 @@ export default function MassBuilderPage() {
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3" style={{ maxHeight: 400, overflowY: 'auto' }}>
                 {TIME_EXIT_PACKS.map((p) => (
                   <label key={p.id} className="flex items-center gap-2 cursor-pointer py-1 px-3 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                    <input type="checkbox" className="rounded" style={{ accentColor: 'var(--green)' }} />
+                    <input type="checkbox" className="rounded" style={{ accentColor: 'var(--orange)' }}
+                      checked={selectedTimeExitPacks.includes(p.id)}
+                      onChange={() => setSelectedTimeExitPacks((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id])}
+                    />
                     <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
                   </label>
                 ))}
