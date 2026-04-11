@@ -489,6 +489,47 @@ Polish the portfolio system to work reliably with user pack strategies. Verify a
 
 ---
 
+### Milestone 8.6: Hi-Fi Confluence — Trustworthy CB Fidelity
+**Priority:** High — required for backtest↔live parity on Current Bar strategies
+**Effort:** 1-2 weeks
+**Status:** Not started. Depends on M8.5 (live data needed to verify parity).
+**Design documented:** `project_hifi_confluence_conundrum.md`
+
+**The problem:** Current Bar (CB) fidelity confluence creates backtest↔live divergence. In live trading, Ralph evaluates confluence at the trigger moment (mid-bar). In backtests, confluence is only evaluated at bar close. If the state changes mid-bar, the backtest and live engine disagree — creating phantom or missed trades.
+
+Previous Bar (PB) fidelity is safe because the prior bar is fully closed.
+
+**The approach (Kevin's targeted Hi-Fi confluence):**
+Rather than recomputing indicators on every 1-second bar, piggyback on the existing Hi-Fi infrastructure:
+1. Hi-Fi already loads 1-second bars around each entry to resolve fill prices
+2. At the trigger cross moment, also recompute ALL confluence timeframes from 1-second data — not just the primary TF
+3. Each TF is resampled from 1-second data up to the trigger timestamp (incomplete forming bars, matching live behavior — no forward-fill bias)
+4. If all confluence conditions are met at trigger moment → entry is valid
+5. If any condition fails → trade is filtered out
+
+**Why all TFs must be recomputed:**
+- Lower TFs (e.g., 1-min confluence on 15-min primary): changes multiple times per primary bar
+- Higher TFs (e.g., 1-hour confluence on 1-min primary): has an incomplete forming bar at trigger moment
+- Forward-filled states reflect the *previous closed* bar, not the forming bar — wrong for CB fidelity
+
+**Heatmap visualization — "Snap to Entry":**
+- Bars WITH entries: color reflects state at trigger moment (what the trader cares about)
+- Bars WITHOUT entries: color reflects bar-close state (standard)
+- 3-color scheme: Green (met), Red (not met), Yellow (not met at close, BUT met at trigger moment — Hi-Fi confirmed valid entry)
+
+**Tasks:**
+- [ ] 8.6a. Extend `_hifi_resolve_trades` to load wider 1-second window for confluence recomputation
+- [ ] 8.6b. Resample 1-second data to each confluence TF up to trigger timestamp
+- [ ] 8.6c. Run indicator + interpreter pipeline on resampled data at trigger moment
+- [ ] 8.6d. Gate entries: filter trades where confluence wasn't met at trigger moment
+- [ ] 8.6e. Mark trades with `hifi_confluence_met` field for frontend consumption
+- [ ] 8.6f. Frontend heatmap: yellow color for entry bars where bar-close state was red but trigger-moment state was green
+- [ ] 8.6g. Verify parity: compare Hi-Fi CB backtest results against live Ralph alert trades
+
+**Exit Criteria:** CB fidelity backtests match live behavior — no phantom or missed trades due to mid-bar confluence changes. Heatmap clearly communicates the distinction via yellow markers.
+
+---
+
 ### Milestone 9: Scale Infrastructure + Pluggable Architecture
 **Priority:** Medium — required before AI agents
 **Effort:** 2-3 weeks
