@@ -369,21 +369,16 @@ def run_mass_search(
 
     # Pre-resolve ALL trigger base IDs for the mega-config
     print(f"[MASS] entry_cids={entry_cids}, exit_cids_raw={exit_cids_raw}")
-    # Debug: write to file since stdout is buffered in daemon threads
-    import sys as _sys
-    _ema_keys = [k for k in all_trigger_defs.keys() if 'ema' in k.lower()]
+    # Debug logging to file (daemon threads don't reliably flush stdout)
     with open('/tmp/mass_debug.log', 'w') as _dbg:
         _dbg.write(f"entry_cids={entry_cids}\n")
         _dbg.write(f"exit_cids_raw={exit_cids_raw}\n")
         _dbg.write(f"trigger_count={len(all_trigger_defs)}\n")
-        _dbg.write(f"ema_keys={_ema_keys}\n")
-        _dbg.write(f"enabled_groups={len(enabled_groups)}\n")
+        _dbg.write(f"enabled_groups={[g.id for g in enabled_groups]}\n")
         for cid in entry_cids:
-            found = cid in all_trigger_defs
-            _dbg.write(f"entry '{cid}' found={found}\n")
+            _dbg.write(f"entry '{cid}' in triggers: {cid in all_trigger_defs}\n")
         for cid in exit_cids_raw:
-            found = cid in all_trigger_defs
-            _dbg.write(f"exit '{cid}' found={found}\n")
+            _dbg.write(f"exit '{cid}' in triggers: {cid in all_trigger_defs}\n")
     all_entry_bases = {}
     all_entry_names = {}
     for cid in entry_cids:
@@ -805,18 +800,28 @@ def start_mass_search_async(search_id: str, search_config: dict):
                     _active_searches[search_id]['status'] = 'completed'
                     _active_searches[search_id]['results_so_far'] = len(results)
 
-            update_mass_search(search_id, {
-                'status': 'completed',
-                'results': results,
-                'progress': {},
-                'summary': {
-                    'results_stored': len(results),
-                    'best_daily_r': max(
-                        (r.get('kpis', {}).get('daily_r', 0) for r in results
-                         if isinstance(r, dict)),
-                        default=0),
-                },
-            })
+            with open('/tmp/mass_debug.log', 'a') as _dbg:
+                _dbg.write(f"\nCompleted: {len(results)} results\n")
+                for i, r in enumerate(results[:3]):
+                    if isinstance(r, dict):
+                        _dbg.write(f"  result[{i}] keys={list(r.keys())}\n")
+
+            try:
+                update_mass_search(search_id, {
+                    'status': 'completed',
+                    'results': results,
+                    'progress': {},
+                    'summary': {
+                        'results_stored': len(results),
+                        'best_daily_r': max(
+                            (r.get('kpis', {}).get('daily_r', 0) for r in results
+                             if isinstance(r, dict)),
+                            default=0),
+                    },
+                })
+            except Exception as _save_err:
+                with open('/tmp/mass_debug.log', 'a') as _dbg:
+                    _dbg.write(f"\nDB save error: {_save_err}\n")
             logger.info("Mass search %s completed: %d results", search_id, len(results))
 
         except _CancelledError:
