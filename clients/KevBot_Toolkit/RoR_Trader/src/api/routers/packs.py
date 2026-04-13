@@ -47,10 +47,24 @@ def save_confluence_groups_endpoint(
 
 @router.get("/confluence-groups/templates")
 def get_confluence_templates(user=Depends(get_current_user)):
-    """Get the static TEMPLATES registry for confluence groups."""
-    from confluence_groups import TEMPLATES
-    # TEMPLATES is a dict of dicts — JSON-serializable as-is
-    return TEMPLATES
+    """Get the static TEMPLATES registry for confluence groups.
+
+    Enriched with `output_directions`: map of {output_state → "BULL"|"BEAR"|"NEUTRAL"}
+    derived from INTERPRETER_DIRECTION_MAP so the frontend can group states
+    by direction for the Mass Builder confluence selector.
+    """
+    from confluence_groups import TEMPLATES, INTERPRETER_DIRECTION_MAP
+    enriched = {}
+    for key, tmpl in TEMPLATES.items():
+        out = dict(tmpl)
+        state_direction: dict[str, str] = {}
+        for interp in tmpl.get('interpreters', []):
+            for direction, states in INTERPRETER_DIRECTION_MAP.get(interp, {}).items():
+                for state in states:
+                    state_direction[state] = direction
+        out['output_directions'] = state_direction
+        enriched[key] = out
+    return enriched
 
 
 @router.get("/confluence-groups/triggers/{direction}")

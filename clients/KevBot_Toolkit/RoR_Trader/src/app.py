@@ -1547,11 +1547,17 @@ def analyze_confluences(trades_df: pd.DataFrame, required: set = None, min_trade
 def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trades: int = 5, top_n: int = 10,
                            starting_balance: float = 10000, risk_per_trade: float = 100,
                            total_trading_days: int = None, exclude_prefix: str = None,
+                           allowed_labels: set = None,
                            progress_callback=None) -> pd.DataFrame:
     """Find the best confluence combinations automatically.
 
     Uses pre-computed numpy boolean masks for fast subset filtering
     instead of per-combination pandas .apply() calls.
+
+    allowed_labels: if provided, restrict search to records in this set.
+        Matching is both by exact membership and by suffix (TF-agnostic for
+        records like "{tf}-{INTERP}-{STATE}" — any TF prefix is accepted if
+        "{INTERP}-{STATE}" is in the set).
     """
     import numpy as np
 
@@ -1565,6 +1571,15 @@ def find_best_combinations(trades_df: pd.DataFrame, max_depth: int = 3, min_trad
             all_records.update(records)
     if exclude_prefix:
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
+    if allowed_labels:
+        def _matches(rec: str) -> bool:
+            if rec in allowed_labels:
+                return True
+            parts = rec.split("-", 2)
+            if len(parts) == 3 and f"{parts[1]}-{parts[2]}" in allowed_labels:
+                return True
+            return False
+        all_records = {r for r in all_records if _matches(r)}
 
     # Pre-compute boolean mask per record (vectorized)
     n_trades = len(trades_df)

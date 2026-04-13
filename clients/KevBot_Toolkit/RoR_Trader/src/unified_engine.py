@@ -2397,6 +2397,7 @@ def run_unified_backtest(
     secondary_tf_map: dict = None,
     include_open_position: bool = False,
     last_bar_partial: bool = False,
+    progress_cb=None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run unified backtest on historical OHLCV data.
 
@@ -2466,7 +2467,27 @@ def run_unified_backtest(
     interp_rows = []
     trigger_rows = []
 
+    # Progress reporting: emit every 1000 bars OR every 250ms, whichever first.
+    # No-op when progress_cb is None (typical chart/detail view callers).
+    # Exceptions from progress_cb propagate — Mass Builder uses this path to
+    # signal cancellation via a custom exception, which must bubble up and
+    # stop the bar loop.
+    _total_bars = len(df)
+    _last_cb_time = 0.0
+    _last_cb_bar = 0
+    if progress_cb is not None:
+        import time as _time
+        _last_cb_time = _time.monotonic()
+        progress_cb(0, _total_bars)
+
     for i in range(len(df)):
+        if progress_cb is not None and i > 0:
+            _dbar = i - _last_cb_bar
+            _dt = _time.monotonic() - _last_cb_time
+            if _dbar >= 1000 or _dt >= 0.25:
+                progress_cb(i, _total_bars)
+                _last_cb_time = _time.monotonic()
+                _last_cb_bar = i
         row = df.iloc[i]
         bar = {
             'open': float(row['open']),

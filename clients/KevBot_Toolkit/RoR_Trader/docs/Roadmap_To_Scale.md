@@ -423,22 +423,39 @@ Ensure packs created through the Pack Builder are consistently reliable and work
 
 ---
 
-### Milestone 7: Mass Strategy Builder
+### Milestone 7: Mass Strategy Builder — ✅ COMPLETE 2026-04-12
+
 **Priority:** High — required for scale testing
-**Effort:** 1-2 weeks
+**Effort:** 1-2 weeks (actual)
 
 Wire the Mass Strategy Builder to work with the unified engine and user packs. This is the tool that enables testing hundreds of strategy variations in one batch.
 
 **Tasks:**
-- [ ] 6a. Verify Mass Builder works with unified engine (not legacy `generate_trades()`)
-- [ ] 6b. Wire user pack triggers into Mass Builder trigger selection
-- [ ] 6c. Verify Mass Builder results are consistent with individual Strategy Builder backtests
-- [ ] 6d. Wire Hi-Fi mode into Mass Builder
-- [ ] 6e. Bulk save: save top N strategies from Mass Builder results
-- [ ] 6f. Progress tracking: show real-time progress during mass backtest runs
-- [ ] 6g. Performance optimization: parallelize mass backtests where possible
+- [x] 6a. Verify Mass Builder works with unified engine (not legacy `generate_trades()`)
+- [x] 6b. Wire user pack triggers into Mass Builder trigger selection
+- [x] 6c. Verify Mass Builder results are consistent with individual Strategy Builder backtests
+- [ ] 6d. Wire Hi-Fi mode into Mass Builder — **deferred to M8.6 (Hi-Fi Confluence milestone)**
+- [x] 6e. Bulk save: save top N strategies from Mass Builder results
+- [x] 6f. Progress tracking: show real-time progress during mass backtest runs
+- [ ] 6g. Performance optimization: parallelize mass backtests — **deferred to M9 (tasks 9l-9r)**
+- [x] 6h. Wire TF Confluence and General Confluence selections to search scope (allowed_labels filter)
+- [x] 6i. Per-state TF Confluence UI (individual state checkboxes grouped by Bull/Bear/Neutral)
+- [x] 6j. Preview metric split: Trigger Backtests + Confluence Backtests, with calibrated time estimate
+- [x] 6k. Save-by-reference (fixed wrong-strategy-saved after sort change)
+- [x] 6l. Mass Results page: preserve row-level status, wire Edit/Delete/Cancel buttons
+- [x] 6m. Mass Builder `?edit={id}` handler — loads saved config + results, auto-suffixes name on re-run
+- [x] 6n. Live progress on Mass Results page (per-row via useMassProgress)
+- [x] 6o. Two-tier progress bar — phase pill (Loading/Preparing/Backtesting/Searching confluences) + sub-second bar/combo counter
+- [x] 6p. Cancel/Delete while running: signal cancellation through to worker thread; propagate `_CancelledError` past all catch-alls
 
-**Exit Criteria:** User can run 100+ strategy variations through Mass Builder, results match individual backtests, top strategies can be saved in bulk.
+**Exit Criteria met:** User can run 100+ strategy variations through Mass Builder, results match individual backtests, top strategies can be saved in bulk (correctly, regardless of sort order), TF/General confluence selections constrain the search space, cancel/delete cleanly stops in-flight work.
+
+**Calibrated constants (from two real runs):**
+- Trigger BT: ~7043ms + 343µs × bars
+- Confluence BT: ~0.9ms per combo
+- Overhead: ~9s per (ticker, TF) group + 397µs × total bars loaded
+
+**Design doc for reference:** `docs/Mass_Builder_Progress_Design.md`
 
 ---
 
@@ -545,6 +562,19 @@ Ensure the system can handle thousands of strategies, portfolios, and packs. **A
 - [ ] 9f. Database indexing: ensure queries scale with strategy count
 - [ ] 9g. Worker scaling: Railway auto-scale for alert processing
 
+**Mass Builder scaling tasks (critical — blocks AI agents at scale):**
+AI agents will fire off thousands of mass searches. Current `run_mass_search()` is fully
+sequential and results persist via JSONB. Infrastructure must handle high concurrent
+load and long-running searches before agent rollout.
+
+- [ ] 9l. **Parallelize trigger backtests** — `run_mass_search()` currently runs one backtest at a time. Wrap the inner loop with `ThreadPoolExecutor` (pandas/numpy release the GIL, so threads give near-linear speedup up to 4-8 cores). Target: 4-8x speedup on a Railway dyno. Expect implementation ~1 day.
+- [ ] 9m. **Job queue + dedicated worker service** — Redis + RQ or Celery. User submits a search via API → queue picks it up → worker runs asynchronously → result lands in DB → user notified when done. Lets users close the browser / walk away. Also enables AI agents to fire off many searches without blocking each other. Railway supports worker services natively.
+- [ ] 9n. **Dedicated results table** — Currently mass search results persist to `mass_search.config_data` JSONB. For scale, create `mass_search_results` table (one row per result) with indexes on user_id, search_id, kpis.daily_r. Enables fast per-result queries (save, filter, sort) and removes JSONB payload size limit.
+- [ ] 9o. **Cost accounting per search** — Track CPU seconds, bars processed, backtests run per search. Feeds into usage-based pricing (see Mass Builder pricing tiers in `Monetization_Model.md`). Important for AI agents — without per-search accounting, an agent could burn thousands of dollars of compute uncontrolled.
+- [ ] 9p. **Search quotas and rate limits** — Per-user concurrency caps, per-tier backtest count limits, graceful backpressure when queue is full. Without this, one user (or one runaway agent) can monopolize the worker pool.
+- [ ] 9q. **Incremental result streaming** — Currently results only appear after the full search completes. For long searches, stream partial results as each (ticker, TF) group finishes. Users can see early results and cancel if trajectory looks bad.
+- [ ] 9r. **Calibrate preview estimator from production telemetry** — `[MASS-CALIBRATION]` logs already emit per-run timing. Aggregate into a `search_telemetry` table, fit regression (bars processed → wall time) per TF/ticker type, feed coefficients back into the frontend estimator. Replaces the hardcoded 350ms / 0.05ms constants with data-driven estimates.
+
 **Pluggable architecture tasks (eliminate hardcoding):**
 - [ ] 9h. **Pluggable stop loss / take profit packs** — Currently `unified_engine.py` has hardcoded `if/elif method == 'atr' / 'fixed_dollar' / 'percentage' / 'swing' / 'risk_reward'` branches (~lines 1995-2070). Convert into a registry pattern (similar to execution types). Each stop/target method becomes a module: `StopLossPack` base class with `compute_initial_stop()`, `compute_trail()`, `should_move_to_breakeven()` methods. Risk management packs (currently in `risk_management_packs.py`) become installable like indicator packs. New stop types (e.g., "VWAP-anchored swing stop", "psychological round number stop") added without engine changes.
 - [ ] 9i. **Convert built-in indicators to user pack format** — Currently built-in indicators (EMA Stack, MACD, VWAP, RVOL, UTBOT, etc.) are inline incrementally computed in `unified_engine.py`. They have hardcoded gate maps in `_compute_ib_gates`, `_get_ib_checks`, `_update_cached_levels`. Convert each built-in into a pre-installed user pack with manifest + indicator.py + interpreter.py. The fallback paths added during M5 already handle user pack triggers correctly — once built-ins are converted, the hardcoded paths can be deleted.
@@ -584,6 +614,31 @@ Enable AI agents to autonomously create packs, test strategies, and surface the 
 - [ ] 9f. Human review workflow: agent proposes → human approves → strategy goes live
 
 **Exit Criteria:** AI agent can autonomously create 100 packs, generate 1000 strategy variations, and surface the top 10 by risk-adjusted return — all without human intervention.
+
+---
+
+### Milestone 10.5: Pack Polish — Directional Classification
+**Priority:** Low — quality-of-life, defer until before marketplace work
+**Effort:** ~2-4 hours
+
+Add optional BULL/BEAR/NEUTRAL classification to user pack output states so newer
+packs (rsi_zones, supertrend, swing_123, etc.) display consistent directional
+grouping in the Mass Builder TF Confluence selector. Built-in templates already
+classify via `INTERPRETER_DIRECTION_MAP` (added in M7); user packs do not.
+
+**Critical design constraint:** classification is **display-only**. It must
+never gate trigger selection in the Strategy Builder or any other context. If
+a state is labeled BEAR, the user can still use it in LONG strategies.
+
+**Tasks:**
+- [ ] 10.5a. Extend manifest spec: optional `output_directions: Dict[state, "BULL"|"BEAR"|"NEUTRAL"]`
+- [ ] 10.5b. Merge user pack `output_directions` into `INTERPRETER_DIRECTION_MAP` at load time
+- [ ] 10.5c. Pack Builder UI: add dropdown per output state on the Outputs config step
+- [ ] 10.5d. Update AI pack generator prompt to suggest directional classification
+- [ ] 10.5e. Backfill existing user pack manifests (rsi_zones, supertrend, swing_123, sr_channels, bollinger_bands, stochastic_oscillator)
+- [ ] 10.5f. Add docs note clarifying display-only semantics
+
+**Exit Criteria:** All user packs show BULL/BEAR/NEUTRAL groupings in the Mass Builder. Strategy Builder trigger lists remain unfiltered by direction.
 
 ---
 

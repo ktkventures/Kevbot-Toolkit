@@ -99,6 +99,71 @@ class ConfluenceGroup:
 
 
 # =============================================================================
+# BULL/BEAR/NEUTRAL STATE CLASSIFICATION
+# =============================================================================
+# Used by Mass Builder to expand synthetic BULL/BEAR selections to real states.
+# Keyed by interpreter name (matches `interpreters` list in templates).
+# States not listed are treated as NEUTRAL (no direction).
+
+INTERPRETER_DIRECTION_MAP: Dict[str, Dict[str, List[str]]] = {
+    "EMA_STACK": {
+        "BULL": ["SML", "SLM", "MSL"],
+        "BEAR": ["MLS", "LSM", "LMS"],
+    },
+    "MACD_LINE": {
+        "BULL": ["M>S+", "M>S-"],
+        "BEAR": ["M<S-", "M<S+"],
+    },
+    "MACD_HISTOGRAM": {
+        "BULL": ["H+up", "H+dn"],
+        "BEAR": ["H-dn", "H-up"],
+    },
+    "VWAP": {
+        "BULL": [">+2σ", ">+1σ", ">V"],
+        "BEAR": ["<V", "<-1σ", "<-2σ"],
+        "NEUTRAL": ["@V"],
+    },
+    "RVOL": {
+        "BULL": ["EXTREME", "HIGH"],
+        "BEAR": ["LOW", "MINIMAL"],
+        "NEUTRAL": ["NORMAL"],
+    },
+    "UTBOT_V2": {
+        "BULL": ["BULL"],
+        "BEAR": ["BEAR"],
+    },
+    "UTBOT": {
+        "BULL": ["BULL"],
+        "BEAR": ["BEAR"],
+    },
+    "EMA_PRICE_POSITION_V2": {
+        "BULL": ["PSML", "PSLM", "PMSL", "SPML", "SPLM", "SMPL"],
+        "BEAR": ["MLSP", "LMSP", "LSMP", "MSLP", "SLMP", "SMLP",
+                 "LMPS", "MLPS", "LSPM", "SLPM", "LPMS", "LPSM",
+                 "MPLS", "MPSL", "PLMS", "PLSM", "PMLS"],
+    },
+    "EMA_PRICE_POSITION": {
+        "BULL": ["PSML", "PSLM", "PMSL", "SPML", "SPLM", "SMPL"],
+        "BEAR": ["MLSP", "LMSP", "LSMP", "MSLP", "SLMP", "SMLP",
+                 "LMPS", "MLPS", "LSPM", "SLPM", "LPMS", "LPSM",
+                 "MPLS", "MPSL", "PLMS", "PLSM", "PMLS"],
+    },
+    "SWING_123": {
+        "BULL": ["BULL_C3", "BULL_C2"],
+        "BEAR": ["BEAR_C3", "BEAR_C2"],
+        "NEUTRAL": ["NEUTRAL"],
+    },
+}
+
+
+def expand_direction_to_states(interpreter: str, direction: str) -> List[str]:
+    """Given an interpreter and a BULL/BEAR/NEUTRAL direction, return the list of
+    actual state labels. Unknown interpreter/direction → empty list.
+    """
+    return INTERPRETER_DIRECTION_MAP.get(interpreter, {}).get(direction, [])
+
+
+# =============================================================================
 # TEMPLATE DEFINITIONS
 # =============================================================================
 

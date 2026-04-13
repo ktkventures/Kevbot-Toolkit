@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
-import { useMassResults, useDeleteMassResult, useCancelMassSearch } from '@/hooks/queries/useMassBuilder';
+import { useMassResults, useDeleteMassResult, useCancelMassSearch, useMassProgress } from '@/hooks/queries/useMassBuilder';
 
 /* ========================================================================= */
 /* TYPES                                                                      */
@@ -16,6 +16,9 @@ interface SavedSearch {
   date: string;
   status: 'completed' | 'running' | 'queued';
   // Config summary
+  tickers: string[];
+  timeframes: string[];
+  directions: string[];
   tickerCount: number;
   tfCount: number;
   dirCount: number;
@@ -24,6 +27,7 @@ interface SavedSearch {
   confluenceCount: number;
   stopCount: number;
   targetCount: number;
+  timeExitCount: number;
   totalEvaluations: number;
   // Results (if completed)
   resultCount: number;
@@ -44,28 +48,54 @@ interface SavedSearch {
 
 /** Map a snake_case API record to the component's SavedSearch shape */
 function mapApiSearch(raw: any): SavedSearch {
+  const cfg = raw.config || raw.config_data || {};
+  const summary = raw.summary || {};
+  const resultsArr: any[] = Array.isArray(raw.results) ? raw.results : [];
+  // Result count: prefer summary.results_stored, then actual array length.
+  const resultCount = raw.result_count ?? summary.results_stored ?? resultsArr.length ?? 0;
+  // Best KPIs: derived from results array if not pre-summarized.
+  const bestOf = (key: string) =>
+    resultsArr.length > 0
+      ? Math.max(...resultsArr.map((r) => r?.kpis?.[key] ?? -Infinity))
+      : null;
+  const bestDailyR = raw.best_daily_r ?? summary.best_daily_r ?? bestOf('daily_r');
   return {
     id: String(raw.id ?? raw.search_id ?? ''),
-    name: raw.name ?? '--',
+    name: raw.name ?? cfg.name ?? '--',
     date: raw.created_at ?? raw.date ?? '--',
     status: raw.status === 'completed' ? 'completed'
       : raw.status === 'running' ? 'running'
       : raw.status === 'queued' ? 'queued'
+      : raw.status === 'cancelled' ? 'completed'  // collapse cancelled into a terminal bucket
       : 'completed',
-    tickerCount: raw.ticker_count ?? raw.config?.tickers?.length ?? 0,
-    tfCount: raw.tf_count ?? raw.config?.timeframes?.length ?? 0,
-    dirCount: raw.dir_count ?? raw.config?.directions?.length ?? 0,
-    entryCount: raw.entry_count ?? raw.config?.entry_triggers?.length ?? 0,
-    exitCount: raw.exit_count ?? raw.config?.exit_triggers?.length ?? 0,
-    confluenceCount: raw.confluence_count ?? 0,
-    stopCount: raw.stop_count ?? 0,
-    targetCount: raw.target_count ?? 0,
-    totalEvaluations: raw.total_evaluations ?? 0,
-    resultCount: raw.result_count ?? 0,
-    bestDailyR: raw.best_daily_r ?? null,
-    bestWR: raw.best_win_rate ?? raw.best_wr ?? null,
-    bestPF: raw.best_profit_factor ?? raw.best_pf ?? null,
-    bestR2: raw.best_r_squared ?? raw.best_r2 ?? null,
+    tickers: Array.isArray(cfg.tickers) ? cfg.tickers : [],
+    timeframes: Array.isArray(cfg.timeframes) ? cfg.timeframes : [],
+    directions: Array.isArray(cfg.directions) ? cfg.directions : [],
+    tickerCount: raw.ticker_count ?? cfg.tickers?.length ?? 0,
+    tfCount: raw.tf_count ?? cfg.timeframes?.length ?? 0,
+    dirCount: raw.dir_count ?? cfg.directions?.length ?? 0,
+    entryCount: raw.entry_count ?? cfg.entry_triggers?.length ?? 0,
+    exitCount: raw.exit_count ?? cfg.exit_triggers?.length ?? 0,
+    confluenceCount: raw.confluence_count ?? (cfg.tf_confluences?.length ?? 0) + (cfg.general_confluences?.length ?? 0),
+    stopCount: raw.stop_count ?? cfg.stop_packs?.length ?? 0,
+    targetCount: raw.target_count ?? cfg.target_packs?.length ?? 0,
+    timeExitCount: cfg.time_exit_packs?.length ?? 0,
+    // Approximate total evaluations: trigger backtests × confluence combos.
+    // Mirrors the Mass Builder preview formula (simplified — doesn't account
+    // for TF expansion multiplier). Good enough for an at-a-glance chip.
+    totalEvaluations: raw.total_evaluations
+      ?? ((cfg.tickers?.length ?? 1)
+          * (cfg.timeframes?.length ?? 1)
+          * (cfg.directions?.length ?? 1)
+          * (cfg.entry_triggers?.length ?? 1)
+          * (cfg.exit_triggers?.length ?? 1)
+          * Math.max(cfg.stop_packs?.length ?? 1, 1)
+          * Math.max(cfg.target_packs?.length ?? 1, 1)),
+    resultCount,
+    bestDailyR: bestDailyR !== -Infinity ? bestDailyR : null,
+    bestWR: raw.best_win_rate ?? raw.best_wr ?? (resultsArr.length ? bestOf('win_rate') : null),
+    bestPF: raw.best_profit_factor ?? raw.best_pf ?? (resultsArr.length ? bestOf('profit_factor') : null),
+    bestR2: raw.best_r_squared ?? raw.best_r2 ?? (resultsArr.length ? bestOf('r_squared') : null),
     progress: raw.progress ?? null,
     elapsed: raw.elapsed ?? null,
     eta: raw.eta ?? null,
@@ -88,6 +118,7 @@ const btnSecondary: React.CSSProperties = {
 
 export default function MassResultsPage() {
   // ---- API hooks (MUST come before any early returns) ----
+  const router = useRouter();
   const { data: apiResults, isLoading, error } = useMassResults();
   const deleteMut = useDeleteMassResult();
   const cancelMut = useCancelMassSearch();
@@ -155,6 +186,15 @@ export default function MassResultsPage() {
     cancelMut.mutate(Number(searchId));
   }
 
+  function handleEdit(searchId: string) {
+    // Navigate to Mass Builder with ?edit={id}. Builder loads the saved
+    // config AND populates the results panel, so the user can inspect,
+    // sort, save strategies, and tweak the search without leaving the
+    // single Mass Builder page. Re-running creates a new search; the
+    // original saved record is never overwritten.
+    router.push(`/mass-builder?edit=${searchId}`);
+  }
+
   return (
     <div>
       <PageHeader
@@ -219,33 +259,22 @@ export default function MassResultsPage() {
                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{search.date}</span>
                   </div>
 
-                  {/* Row 2: Config summary */}
+                  {/* Row 2: Config summary — counts matching the Mass Builder tab badges */}
                   <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
                     {search.tickerCount} ticker{search.tickerCount !== 1 ? 's' : ''}
                     {' '}&middot; {search.tfCount} TF{search.tfCount !== 1 ? 's' : ''}
                     {' '}&middot; {search.dirCount} dir
-                    {' '}&middot; {search.entryCount} entries
-                    {' '}&middot; {search.exitCount} exits
+                    {' '}&middot; {search.entryCount} {search.entryCount === 1 ? 'entry' : 'entries'}
+                    {' '}&middot; {search.exitCount} {search.exitCount === 1 ? 'exit' : 'exits'}
                     {' '}&middot; {search.confluenceCount} confluences
                     {' '}&middot; {search.stopCount} stops
                     {' '}&middot; {search.targetCount} targets
-                    {' '}&middot; {search.totalEvaluations.toLocaleString()} evaluations
+                    {' '}&middot; {search.timeExitCount} time exits
+                    {' '}&middot; {search.totalEvaluations.toLocaleString()} trigger bts
                   </p>
 
-                  {/* Running: progress bar */}
-                  {isRunning && search.progress !== null && (
-                    <div className="mb-2">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs" style={{ color: 'var(--accent)' }}>{search.currentStep}</span>
-                        <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
-                          {Math.round(search.progress * 100)}% &middot; Elapsed: {search.elapsed ?? '--'} &middot; ETA: {search.eta ?? '--'}
-                        </span>
-                      </div>
-                      <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-input)' }}>
-                        <div className="h-full rounded-full transition-all" style={{ width: `${search.progress * 100}%`, background: 'var(--accent)' }} />
-                      </div>
-                    </div>
-                  )}
+                  {/* Running: live progress via useMassProgress (polls /progress/{id}) */}
+                  {isRunning && <LiveProgress searchId={search.id} />}
 
                   {/* Queued: status message */}
                   {isQueued && (
@@ -275,14 +304,13 @@ export default function MassResultsPage() {
                 {/* Right: actions */}
                 <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                   {isComplete && (
-                    <Link href={`/mass-builder?load=${search.id}`} style={{ ...btnSecondary, textDecoration: 'none' }}>
-                      View
-                    </Link>
+                    <button
+                      style={{ ...btnSecondary, background: 'var(--accent)', color: 'white', border: 'none' }}
+                      onClick={() => handleEdit(search.id)}
+                    >
+                      Edit
+                    </button>
                   )}
-                  {isComplete && (
-                    <button style={btnSecondary}>Load</button>
-                  )}
-                  <button style={btnSecondary}>Copy</button>
                   {isRunning && (
                     <button
                       style={{ ...btnSecondary, color: 'var(--orange)', borderColor: 'var(--orange)' }}
@@ -306,6 +334,79 @@ export default function MassResultsPage() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  load: 'Loading',
+  prep: 'Preparing',
+  backtest: 'Backtesting',
+  confluence: 'Searching confluences',
+  save: 'Saving',
+};
+
+function formatLiveInner(phase: string | undefined | null, step: number, total: number): string {
+  const pct = Math.round((step / total) * 100);
+  const s = step.toLocaleString();
+  const t = total.toLocaleString();
+  switch (phase) {
+    case 'load': return `${s}/${t} bars loaded (${pct}%)`;
+    case 'backtest': return `Bar ${s}/${t} (${pct}%)`;
+    case 'confluence': return `Combo ${s}/${t} (${pct}%)`;
+    default: return `${s}/${t}`;
+  }
+}
+
+/** Live progress row for a running search. Uses useMassProgress (250ms polling
+ *  when running). Mirrors the two-tier design used on the Mass Builder page. */
+function LiveProgress({ searchId }: { searchId: string }) {
+  const { data } = useMassProgress(searchId);
+  if (!data) {
+    return (
+      <div className="mb-2">
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Connecting to search…</p>
+      </div>
+    );
+  }
+  const d = data as any;
+  const pct = d.total > 0 ? (d.progress / d.total) : 0;
+  const phase = d.phase as string | undefined;
+  const phaseDetail = d.phase_detail || d.current_label || 'Running...';
+  const innerStep = d.inner_step;
+  const innerTotal = d.inner_total;
+  const hasInner = innerStep != null && innerTotal > 0;
+  return (
+    <div className="mb-2">
+      <div className="flex items-center justify-between mb-1 gap-2">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          {phase && (
+            <span className="text-[9px] font-semibold px-1 py-0.5 rounded flex-shrink-0"
+                  style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+              {PHASE_LABELS[phase] || phase}
+            </span>
+          )}
+          <span className="text-xs truncate" style={{ color: 'var(--accent)' }}>{phaseDetail}</span>
+        </div>
+        <span className="text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+          {d.progress}/{d.total} &middot; {Math.round(pct * 100)}%
+        </span>
+      </div>
+      <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-input)' }}>
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct * 100}%`, background: 'var(--accent)' }} />
+      </div>
+      {hasInner && (
+        <div className="mt-1">
+          <div className="flex items-center justify-between mb-0.5">
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              {formatLiveInner(phase, innerStep, innerTotal)}
+            </span>
+          </div>
+          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-input)' }}>
+            <div className="h-full rounded-full transition-all duration-150" style={{ width: `${(innerStep / innerTotal) * 100}%`, background: 'var(--text-muted)' }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

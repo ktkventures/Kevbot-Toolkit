@@ -9,6 +9,15 @@ export function useMassResults() {
   return useQuery({
     queryKey: ['mass-results'],
     queryFn: () => apiFetch<any[]>('/api/mass-builder/results'),
+    // Refetch the list every 3s when any search is running, so status
+    // transitions (running → completed) show up without a manual refresh.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (Array.isArray(data) && data.some((s) => s?.status === 'running')) {
+        return 3000;
+      }
+      return false;
+    },
   });
 }
 
@@ -29,10 +38,17 @@ export function useMassProgress(searchId: string | number | null) {
       progress: number;
       total: number;
       current_label: string;
+      phase?: 'load' | 'prep' | 'backtest' | 'confluence' | 'save' | null;
+      phase_detail?: string | null;
+      inner_step?: number | null;
+      inner_total?: number | null;
+      conf_step?: number;
+      conf_total?: number;
     }>(`/api/mass-builder/progress/${searchId}`),
     enabled: searchId !== null,
+    // Poll 250ms while running for sub-second phase/bar updates; stop when done.
     refetchInterval: (query) =>
-      query.state.data?.status === 'running' ? 2000 : false,
+      query.state.data?.status === 'running' ? 250 : false,
   });
 }
 

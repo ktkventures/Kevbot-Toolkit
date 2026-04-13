@@ -931,7 +931,12 @@ def _save_mass_searches_file(searches: list):
 
 
 def load_mass_searches() -> list:
-    """Load all mass searches for the current user."""
+    """Load all mass searches for the current user.
+
+    Merges row-level fields (id, status, created_at, updated_at) with the
+    config_data JSONB payload so callers see a unified dict. Row-level status
+    is authoritative — config_data's status may lag behind.
+    """
     if USE_DB:
         try:
             client = get_client()
@@ -939,7 +944,12 @@ def load_mass_searches() -> list:
                 .select('*') \
                 .order('created_at', desc=True) \
                 .execute()
-            return [r.get('config_data', r) for r in (result.data or [])]
+            merged = []
+            for r in (result.data or []):
+                row = dict(r)
+                cfg = row.pop('config_data', {}) or {}
+                merged.append({**cfg, **row})
+            return merged
         except Exception as e:
             logger.warning("load_mass_searches DB error (falling back to file): %s", e)
     return _load_mass_searches_file()

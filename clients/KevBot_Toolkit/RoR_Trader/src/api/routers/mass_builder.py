@@ -52,13 +52,25 @@ def get_progress(search_id: str, user=Depends(get_current_user)):
     # Try both int and string keys (DB returns int, in-memory may store either)
     mem_progress = get_search_progress(search_id) or get_search_progress(str(search_id))
     if mem_progress:
-        return {
+        resp = {
             "search_id": search_id,
             "status": mem_progress.get("status", "running"),
             "progress": mem_progress.get("current_step", 0),
             "total": mem_progress.get("total_steps", 0),
             "current_label": mem_progress.get("current_label", ""),
+            "phase": mem_progress.get("phase"),
+            "phase_detail": mem_progress.get("phase_detail"),
+            "inner_step": mem_progress.get("inner_step"),
+            "inner_total": mem_progress.get("inner_total"),
         }
+        # Confluence sub-progress (legacy field; mirrors inner_step during confluence phase)
+        if "conf_step" in mem_progress:
+            resp["conf_step"] = mem_progress["conf_step"]
+            resp["conf_total"] = mem_progress.get("conf_total", 0)
+        # Include results when completed (in-memory has full data incl. stored_trades)
+        if mem_progress.get("status") == "completed" and "results" in mem_progress:
+            resp["results"] = mem_progress["results"]
+        return resp
 
     # Fall back to DB
     from db import get_mass_search
@@ -78,18 +90,28 @@ def get_progress(search_id: str, user=Depends(get_current_user)):
 
 @router.post("/cancel/{search_id}")
 def cancel_search(search_id: str, user=Depends(get_current_user)):
-    """Cancel a running mass search."""
+    """Cancel a running mass search.
+
+    Sets the in-memory `cancelled` flag so the worker thread exits on its
+    next progress check (typically within a few hundred ms). Also updates
+    DB status to cancelled so the UI reflects the change immediately.
+    """
     from db import USE_DB
     if not USE_DB:
         raise HTTPException(status_code=501, detail="Mass builder requires DB mode")
 
     from db import get_mass_search, update_mass_search
+    from mass_builder import cancel_search as _cancel_in_memory
+
     search = get_mass_search(search_id)
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
 
-    search["status"] = "cancelled"
-    update_mass_search(search_id, search)
+    # Signal the running thread (if any) to stop
+    _cancel_in_memory(str(search_id))
+    _cancel_in_memory(search_id if isinstance(search_id, str) else str(search_id))
+    # Mark DB state
+    update_mass_search(search_id, {'status': 'cancelled'})
     return {"status": "cancelled"}
 
 
@@ -120,12 +142,20 @@ def get_result(search_id: str, user=Depends(get_current_user)):
 
 @router.delete("/results/{search_id}")
 def delete_result(search_id: str, user=Depends(get_current_user)):
-    """Delete a mass search result."""
+    """Delete a mass search result.
+
+    If the search is still running, signal cancellation first so the worker
+    thread exits cleanly instead of writing results back to a deleted row.
+    """
     from db import USE_DB
     if not USE_DB:
         raise HTTPException(status_code=501, detail="Mass builder requires DB mode")
 
     from db import delete_mass_search
+    from mass_builder import cancel_search as _cancel_in_memory, is_search_running
+
+    # Signal cancellation regardless — harmless if not running.
+    _cancel_in_memory(str(search_id))
     deleted = delete_mass_search(search_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Search not found")

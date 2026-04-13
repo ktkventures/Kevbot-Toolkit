@@ -12,11 +12,38 @@ import itertools
 import json
 import logging
 import math
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA CACHE — avoids re-running prepare_data_with_indicators for the same
+# (symbol, TF, days, session) across mass search runs.  Equivalent of
+# Streamlit's @st.cache_data for the API context.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_data_cache: Dict[tuple, tuple] = {}   # key → (df, sec_tf_map, trading_days)
+_DATA_CACHE_MAX = 20                    # max entries (LRU eviction)
+
+
+def _cache_key(symbol, tf, days, session, start_date, end_date) -> tuple:
+    return (symbol, tf, days, session, str(start_date), str(end_date))
+
+
+def _cache_put(key: tuple, df, sec_tf_map, trading_days):
+    if len(_data_cache) >= _DATA_CACHE_MAX:
+        # evict oldest entry
+        _data_cache.pop(next(iter(_data_cache)))
+    _data_cache[key] = (df, sec_tf_map, trading_days)
+
+
+def clear_data_cache():
+    """Clear the prepared-data cache (called from tests or admin endpoints)."""
+    _data_cache.clear()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -279,6 +306,7 @@ def run_mass_search(
     )
     from confluence_groups import (
         get_enabled_groups, get_all_triggers, load_confluence_groups,
+        TEMPLATES as _CONF_TEMPLATES, expand_direction_to_states,
     )
     from risk_management_packs import load_risk_management_packs
     from unified_engine import run_unified_backtest
@@ -302,6 +330,64 @@ def run_mass_search(
     max_results = search_config.get('max_results', 500)
     tf_conf_depth = search_config.get('tf_confluence_depth', 2)
     gen_conf_depth = search_config.get('general_confluence_depth', 1)
+    tf_conf_ids = search_config.get('tf_confluences', []) or []
+    gen_conf_ids = search_config.get('general_confluences', []) or []
+
+    # Resolve synthetic confluence IDs into allowed label suffixes for Layer 2
+    # filtering. TF IDs have format "_TF_-{GROUP_ID}-{BULL|BEAR}-{fidelity}";
+    # expand each to the real interpreter states via template outputs.
+    # General IDs have format "GEN-{PACK_ID}-{STATE}" and match records directly.
+    # Empty selections → skip confluence search entirely (no Layer 2).
+    allowed_labels: Optional[set] = None
+    skip_confluence_search = not (tf_conf_ids or gen_conf_ids)
+    if not skip_confluence_search:
+        allowed_labels = set()
+        group_by_upper_id = {g.id.upper(): g for g in enabled_groups}
+        for syn in tf_conf_ids:
+            if not isinstance(syn, str) or not syn.startswith('_TF_-'):
+                continue
+            # Strip prefix and optional trailing fidelity (e.g. "-PB", "-CB")
+            body = syn[len('_TF_-'):]
+            parts = body.rsplit('-', 2) if body.count('-') >= 2 else body.rsplit('-', 1)
+            # body forms: "GROUP_ID-DIR" or "GROUP_ID-DIR-FIDELITY"
+            if len(parts) == 3:
+                group_id_up, direction, _fidelity = parts
+            elif len(parts) == 2:
+                group_id_up, direction = parts
+            else:
+                continue
+            group = group_by_upper_id.get(group_id_up)
+            if not group:
+                continue
+            tmpl = _CONF_TEMPLATES.get(group.base_template)
+            if not tmpl:
+                continue
+            outputs = tmpl.get('outputs', [])
+            for interp in tmpl.get('interpreters', []):
+                # `direction` is either a direction keyword (BULL/BEAR/NEUTRAL)
+                # or a real state code (e.g. "SML", "H+up"). Treat as a state
+                # when it's one of the template's outputs, else expand via the
+                # direction map.
+                if direction in outputs:
+                    allowed_labels.add(f"{interp}-{direction}")
+                else:
+                    for state in expand_direction_to_states(interp, direction):
+                        allowed_labels.add(f"{interp}-{state}")
+        for syn in gen_conf_ids:
+            if isinstance(syn, str) and syn.startswith('GEN-'):
+                allowed_labels.add(syn)
+        # Safety: user selected items but nothing resolved (e.g., stale group IDs).
+        # Treat as empty selection → skip confluence search rather than falling
+        # back to explore-all (which would surprise the user with a huge run).
+        if not allowed_labels:
+            skip_confluence_search = True
+            allowed_labels = None
+            print("[MASS] confluence selections did not resolve to any labels; "
+                  "skipping confluence search", flush=True)
+        else:
+            print(f"[MASS] confluence filter active with {len(allowed_labels)} "
+                  f"allowed labels (tf_selections={len(tf_conf_ids)}, "
+                  f"gen_selections={len(gen_conf_ids)})", flush=True)
 
     # Resolve stop/target/time_exit packs into config lists
     # If pack IDs are provided, resolve each to its config. Otherwise use default.
@@ -404,9 +490,12 @@ def run_mass_search(
                    for tc in target_configs
                    for tec in time_exit_configs]
 
-    # Count total base configs for progress
-    total_steps = (len(tickers) * len(timeframes) * len(directions)
-                   * len(entry_cids) * len(exit_combos) * len(pack_combos))
+    # Count total steps for progress: data load groups + backtest combos
+    n_data_groups = len(tickers) * len(timeframes)
+    n_backtest_combos = (len(tickers) * len(timeframes) * len(directions)
+                         * len(entry_cids) * len(exit_combos) * len(pack_combos))
+    _n_total_bts = n_backtest_combos  # used in phase labels
+    total_steps = n_data_groups + n_backtest_combos
     step = 0
     results = []
     min_trades = required_perf.get('min_trades', 10)
@@ -414,10 +503,14 @@ def run_mass_search(
     print(f"[MASS] all_entry_bases={all_entry_bases}")
     print(f"[MASS] all_exit_bases={all_exit_bases}")
     print(f"[MASS] data_days={data_days}, session={session}")
-    # Diagnostics counters
+    # Diagnostics counters — includes per-phase timing for estimate calibration
     _diag = {
         'data_loads': 0, 'data_failures': 0,
         'backtests_run': 0, 'backtests_failed': 0,
+        'trigger_bt_total_sec': 0.0,   # cumulative wall time in run_unified_backtest
+        'conf_search_total_sec': 0.0,  # cumulative wall time in find_best_combinations
+        'conf_combos_total': 0,        # total confluence combinations evaluated
+        'overall_start': _time.monotonic(),
         'combos_with_trades': 0, 'combos_zero_trades': 0,
         'combos_below_min': 0, 'combos_passed_perf': 0,
         'confluence_results': 0, 'direction_skips': 0,
@@ -434,40 +527,79 @@ def run_mass_search(
 
         for tf in timeframes:
             # ── Level 1: Load data (one per symbol+TF, cached) ──
-            try:
-                from app import _get_secondary_tfs
-                sec_tfs = _get_secondary_tfs(tf)
-                df = prepare_data_with_indicators(
-                    symbol, data_days, data_seed,
-                    start_date=start_date, end_date=end_date,
-                    timeframe=tf, data_feed=data_feed,
-                    session=sym_session, secondary_tfs=sec_tfs)
-            except Exception as exc:
-                _diag['data_failures'] += 1
-                logger.warning("Mass search: data load failed %s/%s: %s",
-                               symbol, tf, exc)
-                step += (len(directions) * len(entry_cids)
-                         * len(exit_combos))
+            ck = _cache_key(symbol, tf, data_days, sym_session,
+                            start_date, end_date)
+            cached = _data_cache.get(ck)
+            if cached:
+                df, sec_tf_map, period_trading_days = cached
+                logger.info("Mass search: %s/%s — cache hit (%d bars)",
+                            symbol, tf, len(df))
                 if progress_callback:
-                    progress_callback(step, total_steps, f"{symbol} {tf} — skipped")
-                continue
-
-            if len(df) == 0:
-                logger.info("Mass search: %s/%s — 0 bars, skipping", symbol, tf)
-                step += (len(directions) * len(entry_cids)
-                         * len(exit_combos))
+                    progress_callback(step, total_steps,
+                                      f"{symbol} {tf} (cached)",
+                                      phase='load',
+                                      phase_detail=f"{symbol} {tf} (cached)",
+                                      inner_step=1, inner_total=1)
+            else:
                 if progress_callback:
-                    progress_callback(step, total_steps, f"{symbol} {tf} — no data")
-                continue
+                    progress_callback(step, total_steps,
+                                      f"Loading {symbol} {tf} data...",
+                                      phase='load',
+                                      phase_detail=f"Loading {symbol} {tf}",
+                                      inner_step=0, inner_total=1)
+                try:
+                    from app import _get_secondary_tfs
+                    sec_tfs = _get_secondary_tfs(tf)
+                    df = prepare_data_with_indicators(
+                        symbol, data_days, data_seed,
+                        start_date=start_date, end_date=end_date,
+                        timeframe=tf, data_feed=data_feed,
+                        session=sym_session, secondary_tfs=sec_tfs)
+                except Exception as exc:
+                    _diag['data_failures'] += 1
+                    logger.warning("Mass search: data load failed %s/%s: %s",
+                                   symbol, tf, exc)
+                    # Skip data load step + all backtest combos for this group
+                    step += 1 + (len(directions) * len(entry_cids)
+                                 * len(exit_combos) * len(pack_combos))
+                    if progress_callback:
+                        progress_callback(step, total_steps,
+                                          f"{symbol} {tf} — skipped",
+                                          phase='load',
+                                          phase_detail=f"{symbol} {tf} skipped")
+                    continue
 
+                if len(df) == 0:
+                    logger.info("Mass search: %s/%s — 0 bars, skipping",
+                                symbol, tf)
+                    step += 1 + (len(directions) * len(entry_cids)
+                                 * len(exit_combos) * len(pack_combos))
+                    if progress_callback:
+                        progress_callback(step, total_steps,
+                                          f"{symbol} {tf} — no data",
+                                          phase='load',
+                                          phase_detail=f"{symbol} {tf} no data")
+                    continue
+
+                sec_tf_map = get_secondary_tf_map(df)
+                period_trading_days = count_trading_days(df)
+                _cache_put(ck, df, sec_tf_map, period_trading_days)
+
+            # Count data load as a progress step
+            step += 1
+            if progress_callback:
+                progress_callback(step, total_steps,
+                                  f"{symbol} {tf} data ready",
+                                  phase='prep',
+                                  phase_detail=f"Preparing indicators — {symbol} {tf}",
+                                  inner_step=1, inner_total=1)
             _diag['data_loads'] += 1
-            sec_tf_map = get_secondary_tf_map(df)
-            period_trading_days = count_trading_days(df)
             # Pin backtest dates from actual DataFrame
             _bt_start_iso = df.index[0].isoformat()
             _bt_end_iso = df.index[-1].isoformat()
             logger.info("Mass search: %s/%s — %d bars loaded (%s to %s)",
-                        symbol, tf, len(df), _bt_start_iso[:10], _bt_end_iso[:10])
+                        symbol, tf, len(df), _bt_start_iso[:10],
+                        _bt_end_iso[:10])
 
             for direction in directions:
                 for entry_cid in entry_cids:
@@ -524,6 +656,11 @@ def run_mass_search(
                         for pack_sc, pack_tc, pack_tec in pack_combos:
                             step += 1
                             label = f"{symbol} {tf} {direction}"
+                            _bt_idx = _diag['backtests_run'] + 1
+                            _bt_detail = (f"BT {_bt_idx}/{_n_total_bts} · "
+                                          f"{symbol} {tf} {direction} · "
+                                          f"{entry_base} → "
+                                          f"{'+'.join(exit_bases) if exit_bases else f'bar_count_{bar_count_exit_value}'}")
 
                             config = build_strategy_config(
                                 symbol=symbol, timeframe=tf,
@@ -545,12 +682,33 @@ def run_mass_search(
 
                             # ── Level 2: Run full backtest ──
                             _diag['backtests_run'] += 1
+                            _bt_t0 = _time.monotonic()
+                            # Bar-progress callback — fires every 1000 bars or
+                            # 250ms. Feeds bottom bar fine-grain updates.
+                            def _bar_progress(bar_n, total_bars,
+                                              _s=step, _t=total_steps,
+                                              _l=label, _d=_bt_detail):
+                                if progress_callback:
+                                    progress_callback(_s, _t, _l,
+                                                      phase='backtest',
+                                                      phase_detail=_d,
+                                                      inner_step=bar_n,
+                                                      inner_total=total_bars)
                             try:
                                 trades_df, _ = run_unified_backtest(
                                     df, config,
                                     general_packs=enabled_gen,
-                                    secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                                    secondary_tf_map=sec_tf_map if sec_tf_map else None,
+                                    progress_cb=_bar_progress)
+                                _diag['trigger_bt_total_sec'] += _time.monotonic() - _bt_t0
+                            except _CancelledError:
+                                # Cancellation must propagate — the outer handler
+                                # in start_mass_search_async sets status=cancelled
+                                # and exits the thread cleanly.
+                                _diag['trigger_bt_total_sec'] += _time.monotonic() - _bt_t0
+                                raise
                             except Exception as exc:
+                                _diag['trigger_bt_total_sec'] += _time.monotonic() - _bt_t0
                                 _diag['backtests_failed'] += 1
                                 logger.warning("Mass search: backtest failed "
                                                "%s %s %s entry=%s exit=%s: %s",
@@ -626,11 +784,28 @@ def run_mass_search(
                                 })
 
                             # ── Level 3: Auto-search confluences ──
-                            if ('confluence_records' in trades_df.columns
+                            # Skip entirely when user selected no TF/General labels.
+                            if (not skip_confluence_search and
+                                    'confluence_records' in trades_df.columns
                                     and n_trades >= min_trades):
                                 try:
                                     # top_n per base config scales with max_results
                                     _top_n_per_base = min(50, max(20, max_results // max(total_steps, 1)))
+
+                                    # Sub-progress: confluence combo count as separate bar
+                                    _combos_seen = {'n': 0}
+                                    _conf_detail = f"Confluences — {_bt_detail}"
+                                    def _conf_progress(idx, total_combos):
+                                        _combos_seen['n'] = total_combos
+                                        if progress_callback:
+                                            progress_callback(
+                                                step, total_steps, label,
+                                                phase='confluence',
+                                                phase_detail=_conf_detail,
+                                                inner_step=idx,
+                                                inner_total=total_combos)
+
+                                    _conf_t0 = _time.monotonic()
                                     best = find_best_combinations(
                                         trades_df,
                                         max_depth=tf_conf_depth,
@@ -641,7 +816,11 @@ def run_mass_search(
                                         risk_per_trade=config.get(
                                             'risk_per_trade', 100),
                                         total_trading_days=period_trading_days,
+                                        allowed_labels=allowed_labels,
+                                        progress_callback=_conf_progress,
                                     )
+                                    _diag['conf_search_total_sec'] += _time.monotonic() - _conf_t0
+                                    _diag['conf_combos_total'] += _combos_seen['n']
                                     if len(best) > 0:
                                         for _, row in best.iterrows():
                                             combo_kpis = {
@@ -674,6 +853,8 @@ def run_mass_search(
                                                 'confluence_str': row.get(
                                                     'combo_str', ''),
                                             })
+                                except _CancelledError:
+                                    raise
                                 except Exception as exc:
                                     logger.warning(
                                         "Mass search: confluence search "
@@ -691,6 +872,25 @@ def run_mass_search(
                  reverse=True)
 
     _diag['total_results_before_trim'] = len(results)
+    # Compute per-unit timings for preview calibration.
+    _wall_total = _time.monotonic() - _diag['overall_start']
+    _diag['wall_total_sec'] = round(_wall_total, 3)
+    _n_bt = max(_diag['backtests_run'], 1)
+    _n_combos = max(_diag['conf_combos_total'], 1)
+    _diag['trigger_bt_avg_ms'] = round(_diag['trigger_bt_total_sec'] / _n_bt * 1000, 2)
+    _diag['conf_bt_avg_ms'] = round(_diag['conf_search_total_sec'] / _n_combos * 1000, 4)
+    _overhead = _wall_total - _diag['trigger_bt_total_sec'] - _diag['conf_search_total_sec']
+    print(
+        f"[MASS-CALIBRATION] wall={_wall_total:.1f}s | "
+        f"trigger_bts={_diag['backtests_run']} @ avg {_diag['trigger_bt_avg_ms']:.1f}ms "
+        f"(sum {_diag['trigger_bt_total_sec']:.1f}s) | "
+        f"confluence_bts={_diag['conf_combos_total']} @ avg {_diag['conf_bt_avg_ms']:.3f}ms "
+        f"(sum {_diag['conf_search_total_sec']:.1f}s) | overhead={_overhead:.1f}s",
+        flush=True)
+    print(f"[MASS-CALIBRATION] params: data_days={data_days} session={session} "
+          f"tickers={len(tickers)} tfs={timeframes} dirs={directions} "
+          f"entries={len(entry_cids)} exits={len(exit_combos)} packs={len(pack_combos)}",
+          flush=True)
     logger.info("Mass search complete: %s", _diag)
 
     trimmed = results[:max_results]
@@ -766,7 +966,20 @@ def start_mass_search_async(search_id: str, search_config: dict):
 
             last_db_flush = _time.monotonic()
 
-            def _progress(step, total, label):
+            def _progress(step, total, label, conf_step=None, conf_total=None,
+                          phase=None, phase_detail=None,
+                          inner_step=None, inner_total=None):
+                """Progress callback with two-tier info.
+
+                step/total/label: overall search progress (top-bar fill + coarse label).
+                phase: one of 'load', 'prep', 'backtest', 'confluence', 'save' — the
+                    kind of activity happening RIGHT NOW.
+                phase_detail: descriptive sub-info (e.g. "TSLA 1Min LONG · BT 3/8").
+                inner_step/inner_total: fine-grain progress inside the current phase
+                    (bars loaded, bar N of total, combo N of total).
+                conf_step/conf_total: legacy fields kept for backward-compat; mirror
+                    inner_step/inner_total when phase is 'confluence'.
+                """
                 with _search_lock:
                     info = _active_searches.get(search_id, {})
                     if info.get('cancelled'):
@@ -774,6 +987,24 @@ def start_mass_search_async(search_id: str, search_config: dict):
                     info['current_step'] = step
                     info['total_steps'] = total
                     info['current_label'] = label
+                    if phase is not None:
+                        info['phase'] = phase
+                    if phase_detail is not None:
+                        info['phase_detail'] = phase_detail
+                    if inner_step is not None:
+                        info['inner_step'] = inner_step
+                        info['inner_total'] = inner_total or 0
+                    # Maintain legacy conf_step/conf_total for consumers that
+                    # still read them. Only populated during confluence phase.
+                    if conf_step is not None:
+                        info['conf_step'] = conf_step
+                        info['conf_total'] = conf_total or 0
+                    elif phase == 'confluence' and inner_step is not None:
+                        info['conf_step'] = inner_step
+                        info['conf_total'] = inner_total or 0
+                    else:
+                        info.pop('conf_step', None)
+                        info.pop('conf_total', None)
 
                 # Flush to DB every 10 seconds
                 nonlocal last_db_flush
@@ -787,41 +1018,69 @@ def start_mass_search_async(search_id: str, search_config: dict):
                                 'current_step': step,
                                 'total_steps': total,
                                 'current_label': label,
+                                'phase': phase,
+                                'phase_detail': phase_detail,
                             },
                         })
                     except Exception:
                         pass
 
-            results = run_mass_search(search_config, progress_callback=_progress)
+            raw = run_mass_search(search_config, progress_callback=_progress)
 
-            # Save final results
+            # run_mass_search returns (results_list, diagnostics_dict)
+            results, diagnostics = raw if isinstance(raw, tuple) else (raw, {})
+
+            # Sanitize inf/nan in KPIs — JSON can't serialize them
+            import math
+            def _sanitize_floats(obj):
+                if isinstance(obj, float):
+                    if math.isnan(obj):
+                        return 0
+                    if math.isinf(obj):
+                        return 9999.0 if obj > 0 else -9999.0
+                    return obj
+                if isinstance(obj, dict):
+                    return {k: _sanitize_floats(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_sanitize_floats(v) for v in obj]
+                return obj
+            results = [_sanitize_floats(r) if isinstance(r, dict) else r
+                       for r in results]
+
+            # Save final results — keep full results (with stored_trades)
+            # in memory so the frontend can read them immediately.
             with _search_lock:
                 if search_id in _active_searches:
                     _active_searches[search_id]['status'] = 'completed'
                     _active_searches[search_id]['results_so_far'] = len(results)
+                    _active_searches[search_id]['results'] = results
 
-            with open('/tmp/mass_debug.log', 'a') as _dbg:
-                _dbg.write(f"\nCompleted: {len(results)} results\n")
-                for i, r in enumerate(results[:3]):
-                    if isinstance(r, dict):
-                        _dbg.write(f"  result[{i}] keys={list(r.keys())}\n")
+            # Strip stored_trades from DB payload — too large for JSONB.
+            # The frontend re-runs a single backtest when user saves.
+            db_results = []
+            for r in results:
+                if isinstance(r, dict):
+                    slim = {k: v for k, v in r.items() if k != 'stored_trades'}
+                    db_results.append(slim)
+                else:
+                    db_results.append(r)
 
             try:
                 update_mass_search(search_id, {
                     'status': 'completed',
-                    'results': results,
+                    'results': db_results,
                     'progress': {},
                     'summary': {
-                        'results_stored': len(results),
+                        'results_stored': len(db_results),
                         'best_daily_r': max(
-                            (r.get('kpis', {}).get('daily_r', 0) for r in results
+                            (r.get('kpis', {}).get('daily_r', 0) for r in db_results
                              if isinstance(r, dict)),
                             default=0),
+                        'diagnostics': diagnostics,
                     },
                 })
             except Exception as _save_err:
-                with open('/tmp/mass_debug.log', 'a') as _dbg:
-                    _dbg.write(f"\nDB save error: {_save_err}\n")
+                logger.error("Mass search %s DB save error: %s", search_id, _save_err)
             logger.info("Mass search %s completed: %d results", search_id, len(results))
 
         except _CancelledError:
