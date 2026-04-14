@@ -566,6 +566,7 @@ Frontend:
 **Verified end-to-end (2026-04-14):** Ralph running locally, Railway worker paused via `WORKER_DISABLED=true`. Strategy 47 (NVDA 1Min RTH) shows green "Live" pill on Chart & Trades tab; broadcasts arrive every minute on bar close. Logs confirm `POST /realtime/v1/api/broadcast 202 Accepted` per (symbol, tf) bar.
 
 **Deferred follow-ups (out of MVP scope):**
+- **Ralph live sub-minute bar aggregation** — Pre-existing limitation surfaced by the monitor-everything change. Polygon `AM.SYMBOL` channel only delivers 1-min bars; per-second `A.SYMBOL` channel is currently used only for L-type intrabar trigger checks (`on_second_bar`), not for building sub-minute bars. Consequence: 10Sec / 30Sec strategies are monitorable but receive no live bars from Ralph. Backtest still works (uses `load_1s_bars_from_polygon` on the data_loader path). To fix: extend `on_second_bar` to call `builder.process_tick(close, volume, ts)` on every sub-minute BarBuilder, OR add an explicit `accept_second_bar` aggregation path. Affects forward testing and live chart for sub-minute strategies. Worth tackling alongside the next live-data pass.
 - Forming-bar streaming via `on_second_bar` aggregation (1-sec cadence updates within a primary-TF window — would feel TradingView-smooth)
 - Live trade markers on chart (subscribe to alert events via separate broadcast channel)
 - Live indicators / oscillator pane updates (publish interpreter state alongside OHLCV)
