@@ -20,15 +20,28 @@ import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
+import CombinedEquityCurve from '@/charts/CombinedEquityCurve';
+import DrawdownChart from '@/charts/DrawdownChart';
+import DailyBarChart from '@/charts/DailyBarChart';
+import SparkLine from '@/charts/SparkLine';
+import BalanceHistoryChart from '@/charts/BalanceHistoryChart';
 import {
   usePortfolio,
   usePortfolioCompute,
   usePortfolioTrades,
   usePortfolioAnomalies,
   usePortfolioAccount,
+  usePortfolioWorstCase,
+  usePortfolioCapitalUtilization,
+  usePortfolioRequirementsCheck,
 } from '@/hooks/queries/usePortfolios';
 import { useStrategies } from '@/hooks/queries/useStrategies';
-import { useDeletePortfolio, useDuplicatePortfolio, useReanalyzePortfolio } from '@/hooks/mutations/usePortfolioMutations';
+import {
+  useDeletePortfolio, useDuplicatePortfolio, useReanalyzePortfolio,
+  useAddLedgerEntry, useRemoveLedgerEntry, useUpdatePortfolio,
+} from '@/hooks/mutations/usePortfolioMutations';
+import { useWebhookGroups } from '@/hooks/queries/useWebhookGroups';
+import PortfolioDetailV5 from '@/app/portfolios/[id]/versions/V5';
 
 const statusColors: Record<string, string> = {
   'On Track': 'var(--green)',
@@ -199,7 +212,7 @@ function ConfidenceStars({ rating }: { rating: number }) {
 
 const TABS = [
   'Live Dashboard', 'Performance', 'Strategies', 'Prop Firm Check',
-  'Account', 'Webhooks',
+  'Account', 'Webhooks', 'Design Ref',
 ];
 
 // ---- 1. Live Dashboard ----
@@ -423,75 +436,232 @@ function LiveDashboardTab() {
 
 // ---- 2. Performance ----
 function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
-  const { data: perfData } = usePortfolioCompute(portfolioId ?? null, ['kpis', 'equity_curve', 'daily_pnl', 'correlation']);
+  const [mcShuffle, setMcShuffle] = useState<'daily' | 'weekly' | 'individual'>('daily');
+  const [mcSims, setMcSims] = useState(1000);
+  const [mcTriggered, setMcTriggered] = useState(false);
+
+  const { data: perfData } = usePortfolioCompute(
+    portfolioId ?? null,
+    ['kpis', 'equity_curve_with_strategies', 'daily_pnl', 'correlation', 'drawdown'],
+  );
+  const { data: mcData, refetch: refetchMc, isFetching: mcFetching } = usePortfolioCompute(
+    mcTriggered ? (portfolioId ?? null) : null,
+    ['monte_carlo'],
+  );
+  const { data: worstCase } = usePortfolioWorstCase(portfolioId ?? null);
+  const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'backtest');
+  const { data: reqCheck } = usePortfolioRequirementsCheck(portfolioId ?? null);
+
+  const k = perfData?.kpis || {};
+  const ecData = perfData?.equity_curve_with_strategies;
+  const dpnlRaw: any[] = Array.isArray(perfData?.daily_pnl) ? perfData!.daily_pnl : [];
+  const drawdownSeries: any[] = Array.isArray(perfData?.drawdown) ? perfData!.drawdown : [];
+  const corr = perfData?.correlation;
+  const mc = mcData?.monte_carlo;
+
+  // Extract threshold rules for reference lines
+  const rules = reqCheck?.rules || [];
+  const maxDDRule = rules.find((r: any) => r.type === 'max_total_drawdown_pct');
+  const maxDailyLossRule = rules.find((r: any) => r.type === 'max_daily_loss_pct');
+  const dailyPauseRule = rules.find((r: any) => r.type === 'daily_pause_pct');
+  const startingBalance = (k.final_balance != null && k.total_pnl != null)
+    ? k.final_balance - k.total_pnl
+    : 10000;
+
+  // Formatters
+  const fmtDollar = (v: number | null | undefined, dp = 0) =>
+    v == null ? '--' : `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: dp })}`;
+  const fmtPct = (v: number | null | undefined, dp = 2) =>
+    v == null ? '--' : `${v.toFixed(dp)}%`;
+  const fmtPf = (v: number | null | undefined) => {
+    if (v == null) return '--';
+    if (!isFinite(v)) return '∞';
+    return v.toFixed(2);
+  };
+
+  // Combined equity curve data
+  const combinedSeries: number[] = ecData?.combined?.cumulative_pnl || [];
+  const combinedTimestamps: (string | null)[] = ecData?.combined?.exit_time || [];
+  const strategiesMap = useStrategies().data;
+
+  const strategyOverlays = useMemo(() => {
+    const overlays = ecData?.strategies || {};
+    const strategyEntries = Object.entries(overlays).slice(0, 8); // cap to 8 overlays
+    const palette = ['var(--accent)', 'var(--green)', 'var(--orange)', '#8B5CF6', '#06B6D4', '#EC4899', '#14B8A6', '#F59E0B'];
+    return strategyEntries.map(([sid, series]: [string, any], i) => {
+      const strat = strategiesMap?.find((s: any) => String(s.id) === sid);
+      return {
+        name: strat?.name || `Strategy ${sid}`,
+        color: palette[i % palette.length],
+        points: (series?.cumulative_pnl || []) as number[],
+      };
+    });
+  }, [ecData, strategiesMap]);
+
+  // Daily P&L distribution values
+  const dpnlValues = dpnlRaw.map((d) => d.daily_pnl ?? d.pnl ?? d.value ?? 0);
+  const bestDay = dpnlValues.length ? Math.max(...dpnlValues) : null;
+  const worstDay = dpnlValues.length ? Math.min(...dpnlValues) : null;
+
+  // Daily Peak Capital bars from capital-utilization timeline
+  const peakCapitalByDay = useMemo(() => {
+    const timeline: any[] = capUtil?.timeline || [];
+    if (!Array.isArray(timeline) || timeline.length === 0) return [];
+    const byDate: Record<string, number> = {};
+    for (const e of timeline) {
+      const ts = e.timestamp || e.date || e.time;
+      if (!ts) continue;
+      const d = typeof ts === 'string' ? ts.split('T')[0] : String(ts);
+      const cap = e.capital_deployed ?? 0;
+      if (!(d in byDate) || cap > byDate[d]) byDate[d] = cap;
+    }
+    return Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, value]) => ({ date, value }));
+  }, [capUtil]);
+
+  // Daily P&L vs Limits data — color-coded by breach
+  const dailyPnlBars = useMemo(() => {
+    const maxLossPL = maxDailyLossRule?.threshold != null ? -(startingBalance * maxDailyLossRule.threshold / 100) : null;
+    const pausePL = dailyPauseRule?.threshold != null ? -(startingBalance * dailyPauseRule.threshold / 100) : null;
+    return dpnlRaw.map((d: any) => {
+      const dateRaw = d.date || d.day || '';
+      const date = typeof dateRaw === 'string' && dateRaw.length > 10 ? dateRaw.slice(0, 10) : String(dateRaw);
+      const value = d.daily_pnl ?? d.pnl ?? d.value ?? 0;
+      let fill: string | undefined;
+      if (maxLossPL != null && value <= maxLossPL) fill = 'var(--red)';
+      else if (pausePL != null && value <= pausePL) fill = 'var(--orange)';
+      else fill = value >= 0 ? 'var(--green)' : 'var(--red)';
+      return { date, value, fill };
+    });
+  }, [dpnlRaw, maxDailyLossRule, dailyPauseRule, startingBalance]);
+
+  const dailyPnlRefLines = useMemo(() => {
+    const lines: { value: number; color: string; label: string; dashed?: boolean }[] = [];
+    if (maxDailyLossRule?.threshold != null) {
+      lines.push({
+        value: -(startingBalance * maxDailyLossRule.threshold / 100),
+        color: 'var(--red)',
+        label: `Max Loss -${maxDailyLossRule.threshold}%`,
+      });
+    }
+    if (dailyPauseRule?.threshold != null) {
+      lines.push({
+        value: -(startingBalance * dailyPauseRule.threshold / 100),
+        color: 'var(--orange)',
+        label: `Pause -${dailyPauseRule.threshold}%`,
+      });
+    }
+    return lines;
+  }, [maxDailyLossRule, dailyPauseRule, startingBalance]);
+
+  const handleRunMC = () => {
+    setMcTriggered(true);
+    refetchMc();
+  };
+
   return (
     <div>
-      {/* KPI Row — needs compute endpoint */}
+      {/* KPI Row */}
       <div className="grid grid-cols-6 gap-3 mb-6">
-        <MetricCard label="Trades" value="--" />
-        <MetricCard label="Win Rate" value="--" />
-        <MetricCard label="PF" value="--" />
-        <MetricCard label="Total P&L" value="--" />
-        <MetricCard label="Balance" value="--" />
-        <MetricCard label="Max DD" value="--" />
+        <MetricCard label="Trades" value={(k.total_trades ?? 0).toString()} />
+        <MetricCard label="Win Rate" value={fmtPct(k.win_rate, 1)} />
+        <MetricCard label="PF" value={fmtPf(k.profit_factor)} />
+        <MetricCard label="Total P&L" value={fmtDollar(k.total_pnl)} />
+        <MetricCard label="Balance" value={fmtDollar(k.final_balance)} />
+        <MetricCard label="Max DD" value={fmtPct(k.max_drawdown_pct, 2)} />
       </div>
 
       {/* Combined Equity Curve */}
       <Card className="mb-6">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Combined Equity Curve</h3>
-          <div className="flex items-center gap-4">
-            {/* Strategy lines — needs compute endpoint */}
+          <div className="flex items-center gap-3 flex-wrap">
+            {strategyOverlays.map((o) => (
+              <span key={o.name} className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span
+                  className="w-3 h-0.5 inline-block"
+                  style={{
+                    background: `repeating-linear-gradient(to right, ${o.color} 0 4px, transparent 4px 7px)`,
+                    opacity: 0.7,
+                  }}
+                />
+                {o.name}
+              </span>
+            ))}
             <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
               <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--text-primary)' }} />
               <strong>Combined</strong>
             </span>
           </div>
         </div>
-        {(() => {
-          const ec = perfData?.equity_curve;
-          if (!ec || !Array.isArray(ec) || ec.length === 0) {
-            return <div className="flex items-center justify-center py-8" style={{ color: 'var(--text-muted)', height: 320 }}><span className="text-xs">No equity data — click Re-Analyze to compute</span></div>;
-          }
-          const points = ec.map((pt: any, i: number) => ({
-            trade_number: i + 1,
-            cumulative_r: pt.cumulative_r ?? pt.value ?? pt,
-            timestamp: pt.timestamp ?? pt.time ?? undefined,
-          }));
-          return <EquityCurve data={points} height={320} showZeroLine xAxis="trade" />;
-        })()}
+        {combinedSeries.length === 0 ? (
+          <div className="flex items-center justify-center py-8" style={{ color: 'var(--text-muted)', height: 320 }}>
+            <span className="text-xs">No equity data — click Re-Analyze to compute.</span>
+          </div>
+        ) : (
+          <CombinedEquityCurve
+            combined={combinedSeries}
+            strategyOverlays={strategyOverlays}
+            timestamps={combinedTimestamps}
+            xAxis="time"
+            height={320}
+          />
+        )}
       </Card>
 
       {/* Drawdown Analysis */}
       <Card className="mb-6">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Drawdown Analysis</h3>
           <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
             <span className="flex items-center gap-1">
               <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--red)' }} /> Drawdown
             </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--orange)', borderTop: '1px dashed var(--orange)' }} /> Max DD Limit (FTMO)
-            </span>
+            {maxDDRule && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--orange)' }} /> Max DD Limit (-{maxDDRule.threshold}%)
+              </span>
+            )}
           </div>
         </div>
-        <ChartPlaceholder label="Drawdown chart: red line with area fill to zero. Dashed orange line at -10% (FTMO max DD limit). Zero reference line. Shows how close drawdown came to the requirement set threshold." height={220} />
+        {drawdownSeries.length === 0 ? (
+          <div className="flex items-center justify-center" style={{ height: 220, color: 'var(--text-muted)' }}>
+            <span className="text-xs">No drawdown data — click Re-Analyze.</span>
+          </div>
+        ) : (
+          <DrawdownChart
+            data={drawdownSeries}
+            maxDDLimit={maxDDRule?.threshold ?? null}
+            height={220}
+          />
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max Drawdown</p>
-            <p className="text-sm font-semibold" style={{ color: 'var(--text-muted)' }}>--</p>
+            <p className="text-sm font-semibold" style={{ color: 'var(--red)' }}>
+              {fmtPct(k.max_drawdown_pct, 2)} ({fmtDollar(k.max_drawdown_dollars)})
+            </p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Profitable Days</p>
-            <p className="text-sm font-semibold">--</p>
+            <p className="text-sm font-semibold">
+              {k.profitable_days_count != null && k.total_trading_days != null
+                ? `${fmtPct(k.profitable_days_pct, 0)} (${k.profitable_days_count}/${k.total_trading_days})`
+                : '--'}
+            </p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Avg Daily P&L</p>
-            <p className="text-sm font-semibold">--</p>
+            <p className="text-sm font-semibold" style={{ color: (k.avg_daily_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {fmtDollar(k.avg_daily_pnl)} (std: {fmtDollar(k.daily_pnl_std)})
+            </p>
           </div>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current DD</p>
-            <p className="text-sm font-semibold">--</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Trades / Day</p>
+            <p className="text-sm font-semibold">
+              {k.trades_per_day != null ? k.trades_per_day.toFixed(2) : '--'}
+            </p>
           </div>
         </div>
       </Card>
@@ -509,19 +679,21 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
           <div className="flex items-center gap-6 mt-3">
             <div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Avg Daily</p>
-              <p className="text-sm font-semibold">--</p>
+              <p className="text-sm font-semibold" style={{ color: (k.avg_daily_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {fmtDollar(k.avg_daily_pnl)}
+              </p>
             </div>
             <div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Std Dev</p>
-              <p className="text-sm font-semibold">--</p>
+              <p className="text-sm font-semibold">{fmtDollar(k.daily_pnl_std)}</p>
             </div>
             <div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Best Day</p>
-              <p className="text-sm font-semibold">--</p>
+              <p className="text-sm font-semibold" style={{ color: 'var(--green)' }}>{fmtDollar(bestDay)}</p>
             </div>
             <div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Day</p>
-              <p className="text-sm font-semibold">--</p>
+              <p className="text-sm font-semibold" style={{ color: 'var(--red)' }}>{fmtDollar(worstDay)}</p>
             </div>
           </div>
         </Card>
@@ -573,23 +745,48 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
           Shows the maximum buying power used on each day across the date range. The red dashed line marks your account balance — days that approach or exceed it indicate buying power constraints that may have affected executed quantities.
         </p>
-        <ChartPlaceholder label="Bar chart by day: peak capital deployed per day (blue bars). Red dashed line at $80,000 (account balance / max buying power). Days exceeding threshold highlighted in red. X-axis: dates, Y-axis: peak capital ($)" height={220} />
+        {peakCapitalByDay.length === 0 ? (
+          <div className="flex items-center justify-center" style={{ height: 220, color: 'var(--text-muted)' }}>
+            <span className="text-xs">
+              {capUtil?.unavailable_reason
+                ? capUtil.unavailable_reason
+                : 'Capital utilization data not available for this portfolio.'}
+            </span>
+          </div>
+        ) : (() => {
+          const accountBalance = startingBalance;
+          const coloredBars = peakCapitalByDay.map((d) => ({
+            ...d,
+            fill: d.value > accountBalance ? 'var(--red)' : 'var(--accent)',
+          }));
+          return (
+            <DailyBarChart
+              data={coloredBars}
+              referenceLines={[{ value: accountBalance, color: 'var(--red)', label: `Balance $${accountBalance.toFixed(0)}` }]}
+              height={220}
+            />
+          );
+        })()}
         <div className="grid grid-cols-4 gap-4 mt-3">
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Highest Peak Day</p>
-            <p className="text-sm font-bold">--</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Peak Capital Deployed</p>
+            <p className="text-sm font-bold">{fmtDollar(capUtil?.peak_capital_deployed)}</p>
           </div>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Avg Peak / Day</p>
-            <p className="text-sm font-bold">--</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Peak as % of Final</p>
+            <p className="text-sm font-bold">{fmtPct(capUtil?.peak_capital_pct, 1)}</p>
           </div>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Days Near Limit</p>
-            <p className="text-sm font-bold" style={{ color: 'var(--green)' }}>0</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Insufficient-Capital Events</p>
+            <p className="text-sm font-bold" style={{
+              color: (capUtil?.insufficient_capital_events?.length ?? 0) > 0 ? 'var(--red)' : 'var(--green)',
+            }}>
+              {capUtil?.insufficient_capital_events?.length ?? 0}
+            </p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max Concurrent Positions</p>
-            <p className="text-sm font-bold">4</p>
+            <p className="text-sm font-bold">{capUtil?.max_concurrent_positions ?? '--'}</p>
           </div>
         </div>
       </Card>
@@ -597,71 +794,118 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
       {/* Daily P&L vs Limits */}
       <Card className="mb-4">
         <h4 className="text-sm font-medium mb-3">Daily P&L vs Limits</h4>
-        <ChartPlaceholder label="Bar chart: daily P&L colored by compliance (blue normal, orange pause breach, red max loss breach) + reference lines for Max Daily Loss (red) and Daily Pause (orange)" height={220} />
+        {dailyPnlBars.length === 0 ? (
+          <div className="flex items-center justify-center" style={{ height: 220, color: 'var(--text-muted)' }}>
+            <span className="text-xs">No daily P&L data — click Re-Analyze.</span>
+          </div>
+        ) : (
+          <DailyBarChart
+            data={dailyPnlBars}
+            referenceLines={dailyPnlRefLines}
+            height={220}
+          />
+        )}
         <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
-          0 days breaching daily pause limit &middot; 0 days breaching max daily loss limit
+          {worstCase?.days_breach_daily_pause ?? 0} days breaching daily pause limit
+          &middot; {worstCase?.days_breach_max_daily_loss ?? 0} days breaching max daily loss limit
         </p>
       </Card>
 
       {/* Worst-Case Analysis */}
       <Card className="mb-4">
         <h4 className="text-sm font-medium mb-3">Worst-Case Analysis</h4>
-        {(() => {
-          const dpnl = perfData?.daily_pnl;
-          const days: { date: string; pnl: number }[] = Array.isArray(dpnl)
-            ? dpnl.map((d: any) => ({ date: d.date || d.day || '--', pnl: d.daily_pnl ?? d.pnl ?? d.value ?? 0 }))
-            : [];
-          const sorted = [...days].sort((a, b) => a.pnl - b.pnl);
-          const worst5 = sorted.slice(0, 5);
-          const worstDay = sorted.length > 0 ? sorted[0].pnl : 0;
-          // Compute worst 5-day rolling sum
-          let worstRolling = 0;
-          for (let i = 0; i <= days.length - 5; i++) {
-            const sum = days.slice(i, i + 5).reduce((a, d) => a + d.pnl, 0);
-            if (sum < worstRolling) worstRolling = sum;
-          }
-          return (
-            <>
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
-                {[
-                  { label: 'Worst Single Day', value: days.length > 0 ? `$${worstDay.toFixed(0)}` : '--' },
-                  { label: 'Losing Days', value: String(days.filter(d => d.pnl < 0).length) },
-                  { label: 'Worst 5-Day Rolling', value: days.length >= 5 ? `$${worstRolling.toFixed(0)}` : '--' },
-                  { label: 'Winning Days', value: String(days.filter(d => d.pnl >= 0).length) },
-                  { label: 'Total Days', value: String(days.length) },
-                ].map((m) => (
-                  <div key={m.label}>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                    <p className="text-sm font-bold" style={m.value.startsWith('-') || m.value.startsWith('$-') ? { color: 'var(--red)' } : undefined}>{m.value}</p>
-                  </div>
-                ))}
+        {!worstCase ? (
+          <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+            Loading worst-case analysis…
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Single Day</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>
+                  {fmtDollar(worstCase.worst_day_dollars)}
+                </p>
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {worstCase.worst_day_date || '--'}
+                </p>
               </div>
-              <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Top 5 Worst Days</h5>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr>
-                      {['Date', 'P&L ($)', 'Rank'].map((h) => (
-                        <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {worst5.length === 0 ? (
-                      <tr><td colSpan={3} className="py-4 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No daily P&L data — click Re-Analyze.</td></tr>
-                    ) : worst5.map((d, i) => (
-                      <tr key={d.date}>
-                        <td className="py-2 px-3 text-xs font-mono">{d.date}</td>
-                        <td className="py-2 px-3 text-xs font-mono" style={{ color: d.pnl < 0 ? 'var(--red)' : 'var(--green)' }}>${d.pnl.toFixed(2)}</td>
-                        <td className="py-2 px-3 text-xs">#{i + 1}</td>
-                      </tr>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Losing Streak</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>
+                  {worstCase.worst_streak_days ?? 0} days
+                </p>
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {fmtDollar(worstCase.worst_streak_dollars)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst 5-Day Rolling</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>
+                  {fmtDollar(worstCase.worst_5day_rolling_dd)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Days Breaching Pause</p>
+                <p className="text-sm font-bold" style={{
+                  color: (worstCase.days_breach_daily_pause ?? 0) > 0 ? 'var(--orange)' : 'var(--green)',
+                }}>
+                  {worstCase.days_breach_daily_pause ?? 0}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Days Breaching Max Loss</p>
+                <p className="text-sm font-bold" style={{
+                  color: (worstCase.days_breach_max_daily_loss ?? 0) > 0 ? 'var(--red)' : 'var(--green)',
+                }}>
+                  {worstCase.days_breach_max_daily_loss ?? 0}
+                </p>
+              </div>
+            </div>
+            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Top 5 Worst Days</h5>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Date', 'P&L ($)', 'P&L (%)', 'Cumulative DD %', 'Status'].map((h) => (
+                      <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          );
-        })()}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(worstCase.top_5_worst_days || []).length === 0 ? (
+                    <tr><td colSpan={5} className="py-4 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No daily P&L data.</td></tr>
+                  ) : (worstCase.top_5_worst_days || []).map((d: any) => (
+                    <tr key={d.date} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="py-2 px-3 text-xs font-mono">{d.date}</td>
+                      <td className="py-2 px-3 text-xs font-mono" style={{ color: 'var(--red)' }}>
+                        {fmtDollar(d.pnl_dollars)}
+                      </td>
+                      <td className="py-2 px-3 text-xs font-mono" style={{ color: 'var(--red)' }}>
+                        {fmtPct(d.pnl_pct, 2)}
+                      </td>
+                      <td className="py-2 px-3 text-xs">{fmtPct(d.cumulative_dd_pct, 2)}</td>
+                      <td className="py-2 px-3">
+                        {d.breach_status && d.breach_status !== 'None' ? (
+                          <span className="text-xs px-1.5 py-0.5 rounded" style={{
+                            background: d.breach_status === 'MAX_LOSS' ? 'rgba(239,68,68,0.2)' : 'rgba(251,146,60,0.2)',
+                            color: d.breach_status === 'MAX_LOSS' ? 'var(--red)' : 'var(--orange)',
+                          }}>
+                            {d.breach_status}
+                          </span>
+                        ) : (
+                          <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--green)' }}>
+                            Normal
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </Card>
 
       {/* Monte Carlo Simulation */}
@@ -670,111 +914,196 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
         <div className="flex items-center gap-4 mb-4 flex-wrap">
           <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Shuffle Mode:
-            <select className="ml-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}>
-              <option>Daily</option>
-              <option>Weekly</option>
-              <option>Individual</option>
+            <select
+              className="ml-2"
+              value={mcShuffle}
+              onChange={(e) => setMcShuffle(e.target.value as 'daily' | 'weekly' | 'individual')}
+              style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}
+            >
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="individual">Individual</option>
             </select>
           </label>
           <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Simulations:
-            <input type="range" min={500} max={5000} step={500} defaultValue={1000} style={{ marginLeft: 8, verticalAlign: 'middle' }} />
-            <span className="font-mono ml-1">1000</span>
+            <input
+              type="range" min={500} max={5000} step={500}
+              value={mcSims}
+              onChange={(e) => setMcSims(Number(e.target.value))}
+              style={{ marginLeft: 8, verticalAlign: 'middle' }}
+            />
+            <span className="font-mono ml-1">{mcSims}</span>
           </label>
-          <button className="px-3 py-1.5 rounded text-xs font-medium" style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer' }}>
-            Run Simulation
+          <button
+            onClick={handleRunMC}
+            disabled={!portfolioId || mcFetching}
+            className="px-3 py-1.5 rounded text-xs font-medium"
+            style={{
+              background: 'var(--accent)', color: 'white', border: 'none',
+              cursor: mcFetching ? 'not-allowed' : 'pointer',
+              opacity: mcFetching ? 0.6 : 1,
+            }}
+          >
+            {mcFetching ? 'Running…' : 'Run Simulation'}
           </button>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-4">
-          {[
-            { label: 'Bust Probability', value: '2.4%' },
-            { label: 'Daily Pause Prob', value: '8.1%' },
-            { label: 'Max Loss Prob', value: '1.2%' },
-            { label: 'Median Max DD', value: '-3.8%' },
-            { label: '95th Pctl DD', value: '-6.2%' },
-            { label: 'Expected Worst Day', value: '-$285' },
-          ].map((m) => (
-            <div key={m.label}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-              <p className="text-sm font-bold">{m.value}</p>
+        {!mc ? (
+          <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+            {mcTriggered ? 'Running simulation…' : 'Click Run Simulation to generate Monte Carlo metrics.'}
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-4">
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Bust Probability</p>
+                <p className="text-sm font-bold" style={{
+                  color: (mc.bust_probability ?? 0) > 5 ? 'var(--red)' : 'var(--green)',
+                }}>
+                  {fmtPct(mc.bust_probability, 1)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Daily Pause Prob</p>
+                <p className="text-sm font-bold">{fmtPct(mc.daily_pause_probability, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max Loss Prob</p>
+                <p className="text-sm font-bold">{fmtPct(mc.max_daily_loss_probability, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Median Max DD</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>{fmtPct(mc.median_max_dd, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>95th Pctl DD</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>{fmtPct(mc.p95_max_dd, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Expected Worst Day</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>{fmtPct(mc.expected_worst_day, 1)}</p>
+              </div>
             </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <ChartPlaceholder label="Max Drawdown Distribution histogram (50 bins)" height={200} />
-          <ChartPlaceholder label="Equity Curve Confidence Bands (5th, 25th, 50th, 75th, 95th percentiles)" height={200} />
-        </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {Array.isArray(mc.max_dd_values) && mc.max_dd_values.length > 0 ? (
+                <div>
+                  <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>Max Drawdown Distribution</p>
+                  <DistributionChart values={mc.max_dd_values} bins={40} height={200} />
+                </div>
+              ) : null}
+              {Array.isArray(mc.worst_day_values) && mc.worst_day_values.length > 0 ? (
+                <div>
+                  <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>Worst Day Distribution</p>
+                  <DistributionChart values={mc.worst_day_values} bins={40} height={200} />
+                </div>
+              ) : null}
+            </div>
+            <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+              {mc.n_simulations?.toLocaleString?.() ?? mc.n_simulations} simulations · {mc.shuffle_mode ?? mcShuffle} shuffle
+            </p>
+          </>
+        )}
       </Card>
     </div>
   );
 }
 
 // ---- 3. Strategies ----
-function StrategiesTab() {
+function StrategiesTab({ portfolioId }: { portfolioId?: number }) {
   const [visibility, setVisibility] = useState<Record<string, boolean>>({});
   const [activeState, setActiveState] = useState<Record<string, boolean>>({});
-  const [eqXAxis, setEqXAxis] = useState<'time' | 'trade'>('time');
-  const [dataView, setDataView] = useState('All Data');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+
+  const { data: portfolio } = usePortfolio(portfolioId ?? null);
+  const { data: allStrategies } = useStrategies();
+  const { data: perfData } = usePortfolioCompute(
+    portfolioId ?? null,
+    ['kpis', 'equity_curve_with_strategies'],
+  );
 
   const toggleVisibility = (id: string) => setVisibility((prev) => ({ ...prev, [id]: !prev[id] }));
   const toggleActive = (id: string) => setActiveState((prev) => ({ ...prev, [id]: !prev[id] }));
 
-  const visibleCount = Object.values(visibility).filter(Boolean).length;
-  const activeCount = Object.values(activeState).filter(Boolean).length;
+  // Build per-strategy row data from the portfolio's strategies allocation + strategy details
+  const portStrategies: any[] = portfolio?.strategies || [];
+  const strategiesMap = useMemo(() => {
+    const m = new Map<number, any>();
+    for (const s of allStrategies || []) m.set(s.id, s);
+    return m;
+  }, [allStrategies]);
 
-  const EQ_FWD = '#FF9800';
-  const EQ_LIVE = '#4CAF50';
-  const fmtSD = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}\u03c3`;
+  const overlays = perfData?.equity_curve_with_strategies?.strategies || {};
+  const portfolioTotalPnl = perfData?.kpis?.total_pnl ?? 0;
 
-  const selectStyle: React.CSSProperties = {
-    background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)',
-    padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem',
+  const rows = useMemo(() => {
+    return portStrategies.map((alloc) => {
+      const sid = alloc.strategy_id;
+      const strat = strategiesMap.get(sid) || {};
+      const kpis = strat.kpis || {};
+      const eq = overlays[String(sid)];
+      const equityCurve: number[] = eq?.cumulative_pnl || [];
+      // P&L contribution: the strategy's portion of total portfolio P&L (last cumulative value)
+      const contribution = equityCurve.length > 0
+        ? equityCurve[equityCurve.length - 1]
+        : null;
+      const contributionPct = portfolioTotalPnl !== 0 && contribution != null
+        ? (contribution / portfolioTotalPnl) * 100
+        : null;
+      return {
+        id: String(sid),
+        name: strat.name || `Strategy ${sid}`,
+        symbol: strat.symbol || '--',
+        direction: strat.direction || 'LONG',
+        timeframe: strat.timeframe,
+        riskPerTrade: alloc.risk_per_trade ?? 0,
+        winRate: kpis.win_rate,
+        pf: kpis.profit_factor,
+        trades: kpis.total_trades,
+        avgR: kpis.avg_r ?? kpis.average_r,
+        // Strategy-level KPIs use R-based drawdown (max_r_drawdown), not %
+        maxDrawdownR: kpis.max_r_drawdown,
+        status: strat.status || 'Healthy',
+        pnlContribution: contribution,
+        pnlContributionPct: contributionPct,
+        equityCurve,
+      };
+    });
+  }, [portStrategies, strategiesMap, overlays, portfolioTotalPnl]);
+
+  const visibleCount = rows.filter((r) => visibility[r.id] !== false).length;
+  const activeCount = rows.filter((r) => activeState[r.id] !== false).length;
+
+  const fmtPct = (v: number | null | undefined, dp = 1) =>
+    v == null ? '--' : `${v.toFixed(dp)}%`;
+  const fmtPf = (v: number | null | undefined) => {
+    if (v == null) return '--';
+    if (!isFinite(v)) return '∞';
+    return v.toFixed(2);
   };
+  const fmtDollar = (v: number | null | undefined) =>
+    v == null ? '--' : `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
   return (
     <div>
       {/* Controls row */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {visibleCount} visible on dashboard &middot; {activeCount} active (webhooks firing)
+          {rows.length} strategies &middot; {visibleCount} visible on dashboard &middot; {activeCount} active
         </p>
-        <div className="flex items-center gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          <div className="flex items-center gap-1.5">
-            <span>Data:</span>
-            <select style={selectStyle} value={dataView} onChange={(e) => setDataView(e.target.value)}>
-              {['All Data', 'Last 7 Days', 'Last 30 Days', 'Last 90 Days', 'Backtest Only', 'Forward Only', 'Custom'].map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-            </select>
-            {dataView === 'Custom' && (
-              <>
-                <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} style={selectStyle} />
-                <span>to</span>
-                <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} style={selectStyle} />
-              </>
-            )}
-          </div>
-          <div className="w-px h-4" style={{ background: 'var(--border)' }} />
-          <div className="flex items-center gap-1.5">
-            <span>X-axis:</span>
-            {(['time', 'trade'] as const).map((mode) => (
-              <button key={mode} onClick={() => setEqXAxis(mode)} className="px-2 py-1 rounded font-medium"
-                style={{ background: eqXAxis === mode ? 'var(--accent-muted)' : 'var(--bg-input)', color: eqXAxis === mode ? 'var(--accent)' : 'var(--text-muted)', border: eqXAxis === mode ? '1px solid var(--accent)' : '1px solid var(--border)', cursor: 'pointer' }}>
-                {mode === 'time' ? 'Time' : 'Trade #'}
-              </button>
-            ))}
-          </div>
-        </div>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Live/forward-test sigma badges arrive with live alert data (M8.5)
+        </p>
       </div>
 
       <div className="space-y-4">
-        {/* Empty state when no strategies are loaded */}
-        <Card><p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>Strategy health data requires worker compute. Add strategies to portfolio and enable monitoring.</p></Card>
-        {([] as any[]).map((strat) => {
-          const isVisible = visibility[strat.id] ?? true;
-          const isActive = activeState[strat.id] ?? strat.active;
+        {rows.length === 0 ? (
+          <Card>
+            <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
+              No strategies assigned to this portfolio yet. Edit the portfolio to add strategies.
+            </p>
+          </Card>
+        ) : rows.map((strat) => {
+          const isVisible = visibility[strat.id] !== false;
+          const isActive = activeState[strat.id] !== false;
           return (
             <div key={strat.id} style={!isVisible ? { opacity: 0.6 } : undefined}><Card>
               {/* Header row */}
@@ -789,21 +1118,11 @@ function StrategiesTab() {
                     {!isVisible && (
                       <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>Hidden</span>
                     )}
-                    <span className="flex-1" />
                   </div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {strat.symbol} | {strat.direction} | ${strat.riskPerTrade}/trade
+                    {strat.symbol} &middot; {strat.direction}
+                    {strat.timeframe ? ` · ${strat.timeframe}` : ''} &middot; ${strat.riskPerTrade}/trade
                   </p>
-                </div>
-                {/* Sigma badges */}
-                <div className="flex items-center gap-1 flex-shrink-0 ml-4">
-                  <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_FWD, background: EQ_FWD + '18' }}>
-                    {fmtSD(strat.fwdSD)}
-                  </span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>|</span>
-                  <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: EQ_LIVE, background: EQ_LIVE + '18' }}>
-                    {fmtSD(strat.alertSD)}
-                  </span>
                 </div>
               </div>
 
@@ -811,41 +1130,59 @@ function StrategiesTab() {
               <div className="grid grid-cols-5 gap-4 mb-3">
                 <div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Win Rate</p>
-                  <p className="text-sm font-semibold">{strat.winRate}%</p>
+                  <p className="text-sm font-semibold">{fmtPct(strat.winRate)}</p>
                 </div>
                 <div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Profit Factor</p>
-                  <p className="text-sm font-semibold">{strat.pf.toFixed(2)}</p>
-                </div>
-                <div>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Daily R</p>
-                  <p className="text-sm font-semibold">+{(strat.pnlContribution / strat.trades * 0.8).toFixed(2)}</p>
+                  <p className="text-sm font-semibold">{fmtPf(strat.pf)}</p>
                 </div>
                 <div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Trades</p>
-                  <p className="text-sm font-semibold">{strat.trades}</p>
+                  <p className="text-sm font-semibold">{strat.trades ?? '--'}</p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max DD (R)</p>
+                  <p className="text-sm font-semibold" style={{ color: 'var(--red)' }}>
+                    {strat.maxDrawdownR != null ? `${strat.maxDrawdownR.toFixed(2)}R` : '--'}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>P&L Contribution</p>
-                  <p className="text-sm font-semibold" style={{ color: strat.pnlContribution >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {strat.pnlContribution >= 0 ? '+' : ''}${strat.pnlContribution.toLocaleString()}
+                  <p className="text-sm font-semibold" style={{ color: (strat.pnlContribution ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {strat.pnlContribution == null
+                      ? '--'
+                      : <>
+                          {strat.pnlContribution >= 0 ? '+' : ''}{fmtDollar(strat.pnlContribution)}
+                          {strat.pnlContributionPct != null && (
+                            <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>
+                              ({strat.pnlContributionPct.toFixed(0)}%)
+                            </span>
+                          )}
+                        </>}
                   </p>
                 </div>
               </div>
 
-              {/* Equity curve */}
+              {/* Equity curve (strategy's contribution to portfolio) */}
               <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-input)' }}>
-                <ChartPlaceholder label={`3-segment equity curve (BT blue, FWD orange, Alerts green) — x-axis: ${eqXAxis === 'time' ? 'time' : 'trade #'}`} height={64} />
+                {strat.equityCurve.length > 1 ? (
+                  <SparkLine data={strat.equityCurve} height={64} />
+                ) : (
+                  <div className="flex items-center justify-center" style={{ height: 64, color: 'var(--text-muted)' }}>
+                    <span className="text-xs">No equity data for this strategy</span>
+                  </div>
+                )}
               </div>
 
               {/* Action row */}
               <div className="flex items-center gap-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                <button className="px-3 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <Link
+                  href={`/strategies/${strat.id}`}
+                  className="px-3 py-1 rounded text-xs"
+                  style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', textDecoration: 'none' }}
+                >
                   View Strategy
-                </button>
-                <button className="px-3 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                  View Chart
-                </button>
+                </Link>
                 <button
                   className="px-3 py-1 rounded text-xs"
                   style={{
@@ -857,12 +1194,6 @@ function StrategiesTab() {
                   onClick={() => toggleVisibility(strat.id)}
                 >
                   {isVisible ? 'Visible' : 'Hidden'}
-                </button>
-                <button
-                  className="px-3 py-1 rounded text-xs"
-                  style={{ background: 'var(--red-muted)', color: 'var(--red)', border: 'none', cursor: 'pointer' }}
-                >
-                  Delete
                 </button>
                 <span className="flex-1" />
                 {/* Active/Paused toggle */}
@@ -887,9 +1218,34 @@ function StrategiesTab() {
 // ---- 4. Prop Firm Check ----
 function PropFirmCheckTab({ portfolioId }: { portfolioId?: number }) {
   const { data: mcData } = usePortfolioCompute(portfolioId ?? null, ['monte_carlo']);
+  const { data: reqCheck } = usePortfolioRequirementsCheck(portfolioId ?? null);
   const mc = mcData?.monte_carlo || null;
-  const complianceRules: any[] = [];  // {{compliance_rules}} — needs compute endpoint
-  const requirementSetData = EMPTY_REQ_SET;
+
+  // Map backend rules into UI shape (V5 structure)
+  const complianceRules = (reqCheck?.rules || []).map((r: any) => {
+    const pct = r.threshold && r.actual != null
+      ? Math.min(100, Math.abs((r.actual / r.threshold) * 100))
+      : 0;
+    return {
+      name: r.name || r.type,
+      type: r.type,
+      threshold: r.limit_display ?? String(r.threshold ?? '--'),
+      currentValue: r.value_display ?? String(r.actual ?? '--'),
+      currentPct: pct,
+      passing: !!r.passed,
+      violations: [] as string[],
+      margin: r.margin,
+    };
+  });
+
+  const requirementSetData = {
+    name: reqCheck?.firm_name || '--',
+    status: reqCheck?.overall_pass === false
+      ? 'Violations'
+      : reqCheck?.overall_pass === true
+        ? 'All Passing'
+        : EMPTY_REQ_SET.status,
+  };
   const passingCount = complianceRules.filter((r: any) => r.passing).length;
   const totalRules = complianceRules.length;
 
@@ -935,7 +1291,7 @@ function PropFirmCheckTab({ portfolioId }: { portfolioId?: number }) {
                   </span>
                 </div>
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Type: {rule.type} | Threshold: {rule.threshold}
+                  Threshold: {rule.threshold} &middot; margin {rule.margin != null ? (rule.margin >= 0 ? '+' : '') + rule.margin.toFixed(2) : '--'}
                 </p>
               </div>
               <div className="text-right">
@@ -976,28 +1332,52 @@ function PropFirmCheckTab({ portfolioId }: { portfolioId?: number }) {
       {/* Daily Limit Tracker */}
       <Card className="mb-6">
         <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>Daily Loss Limit Tracker</h3>
-        <div className="grid grid-cols-4 gap-4 mb-4">
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Daily Limit</p>
-            <p className="text-lg font-semibold">--</p>
-          </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Used Today</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--orange)' }}>--</p>
-          </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Remaining</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--green)' }}>--</p>
-          </div>
-          <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Case (open)</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--red)' }}>--</p>
-          </div>
-        </div>
-        <ProgressBar pct={0} color="var(--green)" height={12} />
-        <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
-          Requires requirement set and compute endpoint.
-        </p>
+        {(() => {
+          const maxLoss = complianceRules.find((r: any) => r.type === 'max_daily_loss_pct');
+          const pause = complianceRules.find((r: any) => r.type === 'daily_pause_pct');
+          const rule = maxLoss || pause;
+          if (!rule) {
+            return (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                No daily loss rule in the active requirement set.
+              </p>
+            );
+          }
+          return (
+            <>
+              <div className="grid grid-cols-4 gap-4 mb-4">
+                <div>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Daily Limit</p>
+                  <p className="text-lg font-semibold">{rule.threshold}</p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Observed Day</p>
+                  <p className="text-lg font-semibold" style={{ color: 'var(--orange)' }}>{rule.currentValue}</p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Margin to Limit</p>
+                  <p className="text-lg font-semibold" style={{ color: (rule.margin ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {rule.margin != null ? `${rule.margin >= 0 ? '+' : ''}${rule.margin.toFixed(2)}%` : '--'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Status</p>
+                  <p className="text-lg font-semibold" style={{ color: rule.passing ? 'var(--green)' : 'var(--red)' }}>
+                    {rule.passing ? 'PASS' : 'FAIL'}
+                  </p>
+                </div>
+              </div>
+              <ProgressBar
+                pct={rule.currentPct}
+                color={rule.passing ? (rule.currentPct > 75 ? 'var(--orange)' : 'var(--green)') : 'var(--red)'}
+                height={12}
+              />
+              <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                {rule.currentPct.toFixed(1)}% of daily limit used at worst observed day.
+              </p>
+            </>
+          );
+        })()}
       </Card>
 
       {/* Worst Case Analysis */}
@@ -1046,27 +1426,86 @@ function PropFirmCheckTab({ portfolioId }: { portfolioId?: number }) {
 }
 
 // ---- 5. Account ----
-function AccountTab() {
+function AccountTab({ portfolioId }: { portfolioId?: number }) {
   const [modalDate, setModalDate] = useState<string | null>(null);
   const [activeModalTab, setActiveModalTab] = useState('Trades');
-  const ledger: any[] = [];  // {{ledger}} — needs account endpoint
-  const acctMetrics = EMPTY_ACCOUNT;
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositDate, setDepositDate] = useState(new Date().toISOString().split('T')[0]);
+  const [depositNote, setDepositNote] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawDate, setWithdrawDate] = useState(new Date().toISOString().split('T')[0]);
+  const [withdrawNote, setWithdrawNote] = useState('');
+
+  const { data: account } = usePortfolioAccount(portfolioId ?? null);
+  const addLedger = useAddLedgerEntry();
+  const removeLedger = useRemoveLedgerEntry();
+
+  const ledger: any[] = Array.isArray(account?.ledger) ? account!.ledger : [];
+
+  // Compute metrics
+  const deposits = ledger.filter((e) => e.type === 'deposit').reduce((s, e) => s + Math.abs(e.amount ?? 0), 0);
+  const withdrawals = ledger.filter((e) => e.type === 'withdrawal').reduce((s, e) => s + Math.abs(e.amount ?? 0), 0);
+  const tradingPnl = ledger.filter((e) => e.type === 'trading_pnl').reduce((s, e) => s + (e.amount ?? 0), 0);
+  const netDeposits = deposits - withdrawals;
+  const currentBalance = account?.balance ?? 0;
+  // Starting balance = first deposit entry amount, or 0
+  const startingBalance = (() => {
+    const firstDeposit = ledger.find((e) => e.type === 'deposit');
+    return firstDeposit ? Math.abs(firstDeposit.amount ?? 0) : 0;
+  })();
+
+  // Running balance history for chart
+  const sortedLedger = [...ledger].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  let running = 0;
+  const balanceHistory = sortedLedger.map((e) => {
+    running += e.amount ?? 0;
+    return { date: e.date, balance: running };
+  });
+  // Transform for DailyBarChart (reusable chart component — it's actually a line series, not a bar, so use EquityCurve-style)
+  const balanceHistoryBars = balanceHistory.map((pt) => ({ date: pt.date, value: pt.balance }));
+
   const modalEntry = ledger.find((e: any) => e.date === modalDate);
+
+  const fmtDollar = (v: number | null | undefined) =>
+    v == null ? '--' : `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+
+  const handleDeposit = () => {
+    if (!portfolioId || !depositAmount || Number(depositAmount) <= 0) return;
+    addLedger.mutate({
+      id: portfolioId,
+      entry: { entry_type: 'deposit', amount: Number(depositAmount), date: depositDate, note: depositNote },
+    }, {
+      onSuccess: () => { setDepositAmount(''); setDepositNote(''); },
+    });
+  };
+  const handleWithdraw = () => {
+    if (!portfolioId || !withdrawAmount || Number(withdrawAmount) <= 0) return;
+    addLedger.mutate({
+      id: portfolioId,
+      entry: { entry_type: 'withdrawal', amount: Number(withdrawAmount), date: withdrawDate, note: withdrawNote },
+    }, {
+      onSuccess: () => { setWithdrawAmount(''); setWithdrawNote(''); },
+    });
+  };
+  const handleDelete = (entryId: string) => {
+    if (!portfolioId) return;
+    removeLedger.mutate({ portfolioId, entryId });
+  };
 
   return (
     <div>
       {/* Balance Metrics */}
       <div className="grid grid-cols-4 gap-3 mb-6">
-        <MetricCard label="Current Balance" value={acctMetrics.currentBalance ? `$${acctMetrics.currentBalance.toLocaleString()}` : '--'} />
-        <MetricCard label="Starting Balance" value={acctMetrics.startingBalance ? `$${acctMetrics.startingBalance.toLocaleString()}` : '--'} />
-        <MetricCard label="Net Deposits" value={acctMetrics.netDeposits ? `$${acctMetrics.netDeposits.toLocaleString()}` : '--'} />
-        <MetricCard label="Trading P&L" value={acctMetrics.tradingPnL ? `$${acctMetrics.tradingPnL}` : '--'} />
+        <MetricCard label="Current Balance" value={fmtDollar(currentBalance)} />
+        <MetricCard label="Starting Balance" value={fmtDollar(startingBalance)} />
+        <MetricCard label="Net Deposits" value={fmtDollar(netDeposits)} />
+        <MetricCard label="Trading P&L" value={fmtDollar(tradingPnl)} />
       </div>
 
       {/* Balance History Chart */}
       <Card className="mb-6">
         <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Balance History</h3>
-        <ChartPlaceholder label="Balance history chart — needs account ledger data" height={200} />
+        <BalanceHistoryChart data={balanceHistory} height={200} />
       </Card>
 
       {/* Deposit / Withdrawal */}
@@ -1077,20 +1516,35 @@ function AccountTab() {
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Amount ($)</label>
               <input type="number" placeholder="0.00" min="0.01" step="0.01"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Date</label>
-              <input type="date" defaultValue={new Date().toISOString().split('T')[0]}
+              <input type="date"
+                value={depositDate}
+                onChange={(e) => setDepositDate(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Note (optional)</label>
               <input type="text" placeholder="e.g. Initial funding"
+                value={depositNote}
+                onChange={(e) => setDepositNote(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
-            <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--green)', color: 'white', border: 'none', cursor: 'pointer' }}>
-              Add Deposit
+            <button
+              onClick={handleDeposit}
+              disabled={!portfolioId || !depositAmount || Number(depositAmount) <= 0 || addLedger.isPending}
+              className="px-4 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: 'var(--green)', color: 'white', border: 'none',
+                cursor: (!depositAmount || addLedger.isPending) ? 'not-allowed' : 'pointer',
+                opacity: (!depositAmount || addLedger.isPending) ? 0.5 : 1,
+              }}
+            >
+              {addLedger.isPending ? 'Saving…' : 'Add Deposit'}
             </button>
           </div>
         </Card>
@@ -1100,20 +1554,35 @@ function AccountTab() {
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Amount ($)</label>
               <input type="number" placeholder="0.00" min="0.01" step="0.01"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Date</label>
-              <input type="date" defaultValue={new Date().toISOString().split('T')[0]}
+              <input type="date"
+                value={withdrawDate}
+                onChange={(e) => setWithdrawDate(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Note (optional)</label>
               <input type="text" placeholder="e.g. Profit withdrawal"
+                value={withdrawNote}
+                onChange={(e) => setWithdrawNote(e.target.value)}
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.875rem', width: '100%' }} />
             </div>
-            <button className="px-4 py-2 rounded-lg text-sm font-medium" style={{ background: 'var(--red)', color: 'white', border: 'none', cursor: 'pointer' }}>
-              Add Withdrawal
+            <button
+              onClick={handleWithdraw}
+              disabled={!portfolioId || !withdrawAmount || Number(withdrawAmount) <= 0 || addLedger.isPending}
+              className="px-4 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: 'var(--red)', color: 'white', border: 'none',
+                cursor: (!withdrawAmount || addLedger.isPending) ? 'not-allowed' : 'pointer',
+                opacity: (!withdrawAmount || addLedger.isPending) ? 0.5 : 1,
+              }}
+            >
+              {addLedger.isPending ? 'Saving…' : 'Add Withdrawal'}
             </button>
           </div>
         </Card>
@@ -1133,31 +1602,62 @@ function AccountTab() {
         </div>
 
         {/* Rows */}
-        {ledger.map((entry) => (
-          <div
-            key={entry.date}
-            className="grid grid-cols-12 gap-2 py-3 border-b items-center"
-            style={{ borderColor: 'var(--border)' }}
-          >
-            <p className="col-span-2 text-sm">{entry.date}</p>
-            <p className="col-span-3 text-sm" style={{ color: 'var(--text-secondary)' }}>{entry.type}</p>
-            <p className="col-span-2 text-sm font-medium" style={{ color: entry.amount >= 0 ? 'var(--green)' : 'var(--red)' }}>
-              {entry.amount >= 0 ? '+' : ''}${entry.amount.toFixed(2)}
-            </p>
-            <p className="col-span-3 text-xs" style={{ color: 'var(--text-muted)' }}>{entry.summary}</p>
-            <div className="col-span-2">
-              {entry.type.includes('Trading') && (
-                <button
-                  onClick={() => { setModalDate(entry.date); setActiveModalTab('Trades'); }}
-                  className="px-3 py-1 rounded text-xs"
-                  style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}
-                >
-                  Details
-                </button>
-              )}
+        {ledger.length === 0 ? (
+          <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
+            No ledger entries yet. Add a deposit to get started.
+          </p>
+        ) : (
+          ledger.map((entry, i) => (
+            <div
+              key={entry.id || entry.date || i}
+              className="grid grid-cols-12 gap-2 py-3 border-b items-center"
+              style={{ borderColor: 'var(--border)' }}
+            >
+              <p className="col-span-2 text-sm">{entry.date || '--'}</p>
+              <p className="col-span-3 text-sm" style={{ color: 'var(--text-secondary)', textTransform: 'capitalize' }}>
+                {String(entry.type || '').replace(/_/g, ' ')}
+              </p>
+              <p className="col-span-2 text-sm font-medium" style={{ color: (entry.amount ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {(entry.amount ?? 0) >= 0 ? '+' : ''}${Math.abs(entry.amount ?? 0).toFixed(2)}
+              </p>
+              <p className="col-span-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                {entry.note || entry.summary || '--'}
+              </p>
+              <div className="col-span-2 flex gap-2">
+                {entry.type === 'trading_pnl' && (
+                  <button
+                    onClick={() => { setModalDate(entry.date); setActiveModalTab('Trades'); }}
+                    className="px-3 py-1 rounded text-xs"
+                    style={{ background: 'var(--accent-muted)', color: 'var(--accent)', border: 'none', cursor: 'pointer' }}
+                  >
+                    Details
+                  </button>
+                )}
+                {entry.type !== 'trading_pnl' && entry.id != null && (
+                  <button
+                    onClick={() => handleDelete(String(entry.id))}
+                    disabled={removeLedger.isPending}
+                    className="px-3 py-1 rounded text-xs"
+                    style={{
+                      background: 'var(--red-muted, rgba(239,68,68,0.15))',
+                      color: 'var(--red)',
+                      border: 'none',
+                      cursor: removeLedger.isPending ? 'not-allowed' : 'pointer',
+                      opacity: removeLedger.isPending ? 0.5 : 1,
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
+        {!ledger.some((e) => e.type === 'trading_pnl') && (
+          <p className="text-[11px] mt-3 pt-3 border-t" style={{ color: 'var(--text-muted)', borderColor: 'var(--border)' }}>
+            Automatic daily Trading P&L entries arrive when live alerts are active (M8.5).
+          </p>
+        )}
       </Card>
 
       {/* Journal Section */}
@@ -1230,9 +1730,9 @@ function AccountTab() {
         {activeModalTab === 'Trades' && modalEntry && (
           <div>
             <div className="rounded-lg p-4 mb-4" style={{ background: 'var(--accent-muted)' }}>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Day Total P&L</p>
-              <p className="text-2xl font-bold" style={{ color: modalEntry.amount >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                {modalEntry.amount >= 0 ? '+' : ''}${modalEntry.amount.toFixed(2)}
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Entry Amount</p>
+              <p className="text-2xl font-bold" style={{ color: (modalEntry.amount ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {(modalEntry.amount ?? 0) >= 0 ? '+' : ''}${Math.abs(modalEntry.amount ?? 0).toFixed(2)}
               </p>
             </div>
 
@@ -1242,12 +1742,16 @@ function AccountTab() {
               <p className="col-span-8 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Trade</p>
               <p className="col-span-3 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>P&L</p>
             </div>
-            {modalEntry.trades.map((trade: any, i: number) => (
+            {(modalEntry.trades || []).length === 0 ? (
+              <p className="text-xs py-3 text-center" style={{ color: 'var(--text-muted)' }}>
+                No trade detail available for this entry.
+              </p>
+            ) : (modalEntry.trades || []).map((trade: any, i: number) => (
               <div key={i} className="grid grid-cols-12 gap-2 py-2.5 border-b" style={{ borderColor: 'var(--border)' }}>
                 <p className="col-span-1 text-sm" style={{ color: 'var(--text-muted)' }}>{i + 1}</p>
                 <p className="col-span-8 text-sm" style={{ color: 'var(--text-secondary)' }}>{trade.note}</p>
-                <p className="col-span-3 text-sm font-medium" style={{ color: trade.amount >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                  {trade.amount >= 0 ? '+' : ''}${trade.amount.toFixed(2)}
+                <p className="col-span-3 text-sm font-medium" style={{ color: (trade.amount ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {(trade.amount ?? 0) >= 0 ? '+' : ''}${Math.abs(trade.amount ?? 0).toFixed(2)}
                 </p>
               </div>
             ))}
@@ -1256,8 +1760,8 @@ function AccountTab() {
 
         {activeModalTab === 'Portfolio Changes' && modalEntry && (
           <div>
-            {modalEntry.changes.length > 0 ? (
-              modalEntry.changes.map((change: string, i: number) => (
+            {(modalEntry.changes || []).length > 0 ? (
+              (modalEntry.changes || []).map((change: string, i: number) => (
                 <div key={i} className="flex items-center gap-3 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
                   <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--orange-muted)', color: 'var(--orange)' }}>
                     Change
@@ -1334,55 +1838,101 @@ function AccountTab() {
 }
 
 // ---- 6. Webhooks ----
-function WebhooksTab() {
+function WebhooksTab({ portfolioId }: { portfolioId?: number }) {
+  const { data: portfolio } = usePortfolio(portfolioId ?? null);
+  const { data: groups } = useWebhookGroups();
+  const updatePortfolio = useUpdatePortfolio();
+  const [saving, setSaving] = useState(false);
+
+  const currentGroupId: string = portfolio?.webhook_group_id || '';
+  const currentGroup = (groups || []).find((g) => g.id === currentGroupId);
+  const configuredCount = currentGroup
+    ? (() => {
+        const isShared = (currentGroup as any).url_mode === 'shared';
+        const sharedUrlSet = ((currentGroup as any).shared_url || '').trim().length > 0;
+        return Object.values(currentGroup.events || {}).filter((c: any) => {
+          if (!c) return false;
+          const hasUrl = isShared ? sharedUrlSet : ((c.url || '').trim().length > 0);
+          const hasPayload = (c.payload || '').trim().length > 0;
+          return hasUrl && hasPayload;
+        }).length;
+      })()
+    : 0;
+
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!portfolioId || !portfolio) return;
+    const next = e.target.value;
+    setSaving(true);
+    updatePortfolio.mutate(
+      { id: portfolioId, portfolio: { ...portfolio, webhook_group_id: next || null } },
+      { onSettled: () => setSaving(false) },
+    );
+  };
+
   return (
     <div>
-      {/* Webhook Template Selector */}
+      {/* Webhook Group Selector */}
       <Card className="mb-6">
-        <h3 className="text-sm font-medium mb-3">Webhook Template</h3>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="text-sm font-medium">Webhook Group</h3>
+          <Link
+            href="/alerts/webhook-groups"
+            className="text-xs px-2 py-1 rounded"
+            style={{ color: 'var(--accent)', textDecoration: 'none' }}
+          >
+            Manage groups →
+          </Link>
+        </div>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Select an account-based template that defines how this portfolio communicates with your exchange. Each template contains payloads for all 11 webhook event types.
+          Select your webhook group. Each group contains URL + payload for all 11 execution-driven events — set up once per account, then assigned here.
         </p>
         <div className="flex items-center gap-3">
           <select
             className="flex-1"
+            value={currentGroupId}
+            onChange={handleChange}
+            disabled={saving}
             style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 14px', borderRadius: '8px', fontSize: '0.875rem' }}
-            defaultValue="tpl_1"
           >
-            <option value="">No template (webhooks disabled)</option>
-            <option value="tpl_1">SignalStack — Main Account</option>
-            <option value="tpl_2">SignalStack — Paper Account</option>
-            <option value="tpl_3">Discord — #trading-alerts</option>
+            <option value="">No group (webhooks disabled)</option>
+            {(groups || []).map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}{g.service ? ` — ${g.service}` : ''}
+              </option>
+            ))}
           </select>
-          <Link
-            href="/alerts/webhook-templates/tpl_1"
-            className="px-3 py-2 rounded-lg text-xs font-medium"
-            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--accent)', textDecoration: 'none', whiteSpace: 'nowrap' }}
-          >
-            View Template
-          </Link>
+          {currentGroupId && (
+            <Link
+              href={`/alerts/webhook-groups/${currentGroupId}`}
+              className="px-3 py-2 rounded-lg text-xs font-medium"
+              style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--accent)', textDecoration: 'none', whiteSpace: 'nowrap' }}
+            >
+              View Group
+            </Link>
+          )}
         </div>
-        <div className="flex items-center gap-4 mt-3">
-          <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-            <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }} />
-            Compliance Breach Alerts
-          </label>
-        </div>
+        {currentGroup && (
+          <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+            {configuredCount} / 11 events configured in this group.
+            {configuredCount === 0 && (
+              <span style={{ color: 'var(--orange)' }}> Group is empty — no webhooks will fire until events are configured.</span>
+            )}
+          </p>
+        )}
+        {(groups || []).length === 0 && (
+          <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+            No webhook groups yet. <Link href="/alerts/webhook-groups" style={{ color: 'var(--accent)' }}>Create one →</Link>
+          </p>
+        )}
       </Card>
 
-      {/* Delivery History */}
+      {/* Delivery History (placeholder — requires live alert data, deferred to M8.5) */}
       <Card className="mb-6">
         <h3 className="text-sm font-medium mb-3">Webhook Delivery History</h3>
-        <div className="grid grid-cols-7 gap-2 pb-2 border-b" style={{ borderColor: 'var(--border)' }}>
-          {['Time', 'Strategy', '', 'Event', 'Status', 'Response', 'Latency'].map((h, i) => (
-            <p key={i} className={`text-xs font-medium ${i === 1 ? 'col-span-2' : ''}`} style={{ color: 'var(--text-muted)' }}>{h}</p>
-          ))}
-        </div>
-        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-          <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>No delivery history yet.</p>
-        </div>
+        <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
+          Delivery history will appear here once live alerts start firing (M8.5).
+        </p>
       </Card>
-
     </div>
   );
 }
@@ -1518,10 +2068,20 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
           <div>
             {tab === 'Live Dashboard' && <LiveDashboardTab />}
             {tab === 'Performance' && <PerformanceTab portfolioId={portfolioId} />}
-            {tab === 'Strategies' && <StrategiesTab />}
+            {tab === 'Strategies' && <StrategiesTab portfolioId={portfolioId} />}
             {tab === 'Prop Firm Check' && <PropFirmCheckTab portfolioId={portfolioId} />}
-            {tab === 'Account' && <AccountTab />}
-            {tab === 'Webhooks' && <WebhooksTab />}
+            {tab === 'Account' && <AccountTab portfolioId={portfolioId} />}
+            {tab === 'Webhooks' && <WebhooksTab portfolioId={portfolioId} />}
+            {tab === 'Design Ref' && (
+              <div>
+                <div className="mb-4 p-3 rounded-lg" style={{ background: 'var(--accent-muted)', border: '1px solid var(--accent)' }}>
+                  <p className="text-xs" style={{ color: 'var(--accent)' }}>
+                    <strong>V5 Design Reference</strong> — original wireframe with mock data. Use this as the source-of-truth design while the other tabs are being wired with real data.
+                  </p>
+                </div>
+                <PortfolioDetailV5 />
+              </div>
+            )}
           </div>
         )}
       </TabBar>

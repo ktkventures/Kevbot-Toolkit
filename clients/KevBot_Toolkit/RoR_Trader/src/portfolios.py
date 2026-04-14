@@ -504,7 +504,7 @@ def calculate_portfolio_kpis(portfolio: dict, combined_trades: pd.DataFrame,
             'max_drawdown_pct': 0, 'max_drawdown_dollars': 0,
             'avg_daily_pnl': 0, 'daily_pnl_std': 0,
             'profitable_days_count': 0, 'total_trading_days': 0,
-            'profitable_days_pct': 0,
+            'profitable_days_pct': 0, 'trades_per_day': 0,
         }
 
     wins = combined_trades[combined_trades['win'] == True]
@@ -533,6 +533,8 @@ def calculate_portfolio_kpis(portfolio: dict, combined_trades: pd.DataFrame,
         avg_daily = std_daily = 0
         profitable_days = total_days = 0
 
+    trades_per_day = len(combined_trades) / total_days if total_days > 0 else 0
+
     return {
         'total_trades': len(combined_trades),
         'win_rate': len(wins) / len(combined_trades) * 100 if len(combined_trades) > 0 else 0,
@@ -546,6 +548,7 @@ def calculate_portfolio_kpis(portfolio: dict, combined_trades: pd.DataFrame,
         'profitable_days_count': int(profitable_days),
         'total_trading_days': total_days,
         'profitable_days_pct': profitable_days / total_days * 100 if total_days > 0 else 0,
+        'trades_per_day': trades_per_day,
     }
 
 
@@ -619,9 +622,11 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
     rule_type = rule['type']
     rule_value = rule['value']
     name = rule['name']
+    actual_raw = None  # raw comparable value for UI progress bars
 
     if rule_type == 'min_profit_pct':
         actual_pct = kpis['total_pnl'] / starting_balance * 100
+        actual_raw = actual_pct
         passed = actual_pct >= rule_value
         limit_display = f"+{rule_value}%"
         value_display = f"{actual_pct:+.1f}%"
@@ -633,6 +638,7 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
             worst_day_pct = abs(worst_day) / starting_balance * 100
         else:
             worst_day_pct = 0
+        actual_raw = worst_day_pct
         passed = worst_day_pct <= rule_value
         limit_display = f"-{rule_value}%"
         value_display = f"-{worst_day_pct:.1f}%"
@@ -640,6 +646,7 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
 
     elif rule_type == 'max_total_drawdown_pct':
         max_dd = abs(kpis['max_drawdown_pct'])
+        actual_raw = max_dd
         passed = max_dd <= rule_value
         limit_display = f"-{rule_value}%"
         value_display = f"-{max_dd:.1f}%"
@@ -652,6 +659,7 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
             count = (daily_pnl['daily_pnl'] >= threshold_dollars).sum()
         else:
             count = 0
+        actual_raw = int(count)
         passed = count >= rule_value
         limit_display = f"{rule_value} days"
         value_display = f"{count} days"
@@ -659,6 +667,7 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
 
     elif rule_type == 'min_trading_days':
         days = kpis.get('total_trading_days', 0)
+        actual_raw = days
         passed = days >= rule_value
         limit_display = f"{rule_value} days"
         value_display = f"{days} days"
@@ -673,17 +682,22 @@ def _evaluate_single_rule(rule: dict, starting_balance: float, kpis: dict,
             worst_day_pct = abs(worst_day) / starting_balance * 100
         else:
             worst_day_pct = 0
+        actual_raw = worst_day_pct
         passed = worst_day_pct <= rule_value
         limit_display = f"-{rule_value}%"
         value_display = f"-{worst_day_pct:.1f}%"
         margin = rule_value - worst_day_pct
 
     else:
-        return {'name': name, 'limit_display': '?', 'value_display': '?',
+        return {'name': name, 'type': rule_type, 'threshold': rule_value,
+                'actual': None, 'limit_display': '?', 'value_display': '?',
                 'passed': True, 'margin': 0}
 
     return {
         'name': name,
+        'type': rule_type,
+        'threshold': rule_value,
+        'actual': actual_raw,
         'limit_display': limit_display,
         'value_display': value_display,
         'passed': passed,

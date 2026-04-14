@@ -204,7 +204,7 @@ export default function WebhookTemplateDetailPage({ templateId }: WebhookTemplat
   /* ---- API hooks (all before any early return) ---- */
   const router = useRouter();
   const { data: rawTemplate, isLoading, error } = useWebhookTemplate(templateId);
-  const { data: rawDeliveryLog } = useWebhookDeliveryLog();
+  const { data: rawDeliveryLog } = useWebhookDeliveryLog({ templateId });
   const deleteMutation = useDeleteWebhookTemplate();
   const updateMutation = useUpdateWebhookTemplate();
   const testMutation = useTestWebhook();

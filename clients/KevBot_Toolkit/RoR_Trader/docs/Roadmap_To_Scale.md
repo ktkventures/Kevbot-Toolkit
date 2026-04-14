@@ -462,8 +462,49 @@ Wire the Mass Strategy Builder to work with the unified engine and user packs. T
 ### Milestone 8: Portfolios Polish
 **Priority:** High — portfolios combine strategies into tradeable units
 **Effort:** 1-2 weeks
+**Status:** In progress (2026-04-13). Most core wiring done on `dev`; uncommitted. Cut off mid-way through Webhook Delivery History on PortfolioDetailPage.
 
-Polish the portfolio system to work reliably with user pack strategies. Verify aggregation, risk management, and visualization.
+**What's wired (uncommitted on `dev` as of 2026-04-13):**
+
+Backend (`src/api/routers/portfolios.py` +480, `src/portfolios.py` +18, `src/alerts.py` +182):
+- `GET /api/portfolios?preview=true` — enriches each portfolio with kpis, downsampled equity curve preview (~30 points), fwd_kpis, alert_kpis, requirement set pass ratios
+- `POST /{id}/worst-case` — worst day, streaks, rolling DD, breaches
+- `POST /{id}/capital-utilization` — peak capital deployed timeline, insufficient-capital events (backtest or alerts source)
+- `GET /{id}/open-positions` — alert-derived open positions
+- `POST /preview` — real-time KPI + equity curve for unsaved portfolio payloads (Portfolio Builder)
+- `POST /recommendations` — scores candidate strategies by timeframe diversity, exec type diversity, PF, win rate
+- `/compute` extended with `equity_curve_with_strategies`, `benchmark`, `drawdown` include options; returns `starting_balance`
+- `_sanitize_for_json()` — fixes numpy/pandas NaN/inf serialization crashes
+- `trades_per_day` KPI added; requirement evaluation returns `type`/`threshold`/`actual_raw`
+- Webhook Groups scaffolded in `alerts.py` — 11 event types (entry/exit/cancel market+limit, compliance_breach), CRUD functions in place, `webhook_groups_router` registered in `main.py` **but router endpoints not implemented yet**
+
+Frontend:
+- **PortfolioDetailPage** (~1183 LOC changed) — Performance tab fully real-data: combined equity curve + per-strategy overlays (legend capped 8), Drawdown Analysis with DD limit reference line, Daily P&L Distribution histogram, Capital Utilization bar chart w/ balance threshold, Daily P&L vs Limits (color-coded), Worst Case cards, Monte Carlo tab with shuffle mode + n_simulations controls. Account tab: balance metrics, balance history chart, deposit/withdraw forms wired to ledger mutations, ledger table with delete. Prop Firm Check tab renders daily loss & pause rules with progress bars.
+- **PortfolioNewPage** — synthetic preview replaced with `usePortfolioPreview()`; recommendations engine wired; filters out already-selected
+- **PortfoliosPage** — `usePortfolios({ preview: true })` drives real `MiniEquityCurve` sparklines + real fwd/alert KPIs; status heuristic from req-set pass ratio or PF
+- **usePortfolios hooks** — added `usePortfolioWorstCase`, `usePortfolioCapitalUtilization`, `usePortfolioOpenPositions`, `usePortfolioRequirementsCheck`, `usePortfolioPreview`, `usePortfolioRecommendations`
+- **Sidebar** — added `/alerts/webhook-groups` nav entry (page not yet built)
+
+**Task status:**
+- [x] 7a. Portfolio KPI aggregation with user pack strategies — verified via `calculate_portfolio_kpis`
+- [x] 7b. Portfolio equity curve correctly combines strategies — `equity_curve_with_strategies` wired + rendered
+- [ ] 7c. Monte Carlo with user pack strategies — endpoint + UI exist, **not yet tested with user-pack strategies**
+- [ ] 7d. Buying power & compliance rules — capital utilization endpoint complete, UI mostly wired, needs full verification
+- [ ] 7e. Anomaly detection — **untouched**
+- [ ] 7f. Live dashboard real data — LiveDashboardTab still has hardcoded sample data
+- [~] 7g. Portfolio bug fixes — JSON sanitization fix done; ongoing as issues surface
+- [x] 7h. Portfolio creation from strategy selection — PortfolioNewPage fully wired w/ preview + recommendations
+
+**Cutoff point:** PortfolioDetailPage Webhooks tab has comment *"Delivery History (placeholder — requires live alert data, deferred to M8.5)"*. Template-filtered `/delivery-log?template_id=*` query param exists in backend but UI is not wired to it. Webhook Groups router endpoints are the other half-finished thread.
+
+**Open threads to resume:**
+1. Implement `webhook_groups_router` CRUD endpoints (backend function signatures already in `alerts.py`)
+2. Build `/alerts/webhook-groups` management page (sidebar entry exists)
+3. Decide: wire Webhook Delivery History on PortfolioDetailPage now, or accept deferral to M8.5
+4. Replace LiveDashboardTab sample data (7f) — or defer to M8.5 since it needs live data anyway
+5. Test Monte Carlo with a user-pack strategy (7c verification)
+6. "Design Ref" tab added to PortfolioDetailPage tabs array with no content — decide keep or remove
+7. Commit the ~1800 LOC of uncommitted work in logical chunks before continuing
 
 **Tasks:**
 - [ ] 7a. Verify portfolio KPI aggregation works with user pack strategies

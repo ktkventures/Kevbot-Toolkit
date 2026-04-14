@@ -18,10 +18,12 @@ export interface PortfolioDTO {
   [key: string]: any;
 }
 
-export function usePortfolios() {
+export function usePortfolios(opts?: { preview?: boolean }) {
+  const preview = opts?.preview ?? false;
   return useQuery({
-    queryKey: ['portfolios'],
-    queryFn: () => apiFetch<PortfolioDTO[]>('/api/portfolios'),
+    queryKey: ['portfolios', { preview }],
+    queryFn: () =>
+      apiFetch<PortfolioDTO[]>(`/api/portfolios${preview ? '?preview=true' : ''}`),
     retry: 2, // Retry on 401 if token not yet in localStorage
   });
 }
@@ -66,6 +68,77 @@ export function usePortfolioAccount(id: number | null) {
   return useQuery({
     queryKey: ['portfolio-account', id],
     queryFn: () => apiFetch<any>(`/api/portfolios/${id}/account`),
+    enabled: id !== null,
+  });
+}
+
+export function usePortfolioWorstCase(id: number | null) {
+  return useQuery({
+    queryKey: ['portfolio-worst-case', id],
+    queryFn: () =>
+      apiFetch<any>(`/api/portfolios/${id}/worst-case`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    enabled: id !== null,
+  });
+}
+
+export function usePortfolioCapitalUtilization(
+  id: number | null,
+  source: 'backtest' | 'alerts' = 'backtest',
+) {
+  return useQuery({
+    queryKey: ['portfolio-capital-utilization', id, source],
+    queryFn: () =>
+      apiFetch<any>(`/api/portfolios/${id}/capital-utilization`, {
+        method: 'POST',
+        body: JSON.stringify({ source }),
+      }),
+    enabled: id !== null,
+  });
+}
+
+export function usePortfolioOpenPositions(id: number | null) {
+  return useQuery({
+    queryKey: ['portfolio-open-positions', id],
+    queryFn: () => apiFetch<any>(`/api/portfolios/${id}/open-positions`),
+    enabled: id !== null,
+  });
+}
+
+export function usePortfolioPreview(payload: Record<string, any> | null) {
+  return useQuery({
+    queryKey: ['portfolio-preview', payload],
+    queryFn: () =>
+      apiFetch<any>('/api/portfolios/preview', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    enabled: payload !== null && Array.isArray(payload.strategies) && payload.strategies.length > 0,
+  });
+}
+
+export function usePortfolioRecommendations(selectedIds: number[], max: number = 5) {
+  return useQuery({
+    queryKey: ['portfolio-recommendations', selectedIds.slice().sort(), max],
+    queryFn: () =>
+      apiFetch<any>('/api/portfolios/recommendations', {
+        method: 'POST',
+        body: JSON.stringify({ selected_strategy_ids: selectedIds, max }),
+      }),
+    enabled: Array.isArray(selectedIds),
+  });
+}
+
+export function usePortfolioRequirementsCheck(id: number | null) {
+  return useQuery({
+    queryKey: ['portfolio-requirements-check', id],
+    queryFn: () =>
+      apiFetch<any>(`/api/portfolios/${id}/requirements/check`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
     enabled: id !== null,
   });
 }

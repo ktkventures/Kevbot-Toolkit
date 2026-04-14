@@ -287,7 +287,7 @@ def get_portfolio_by_id_db(portfolio_id: int) -> dict | None:
 
 # Fields stored in portfolio dicts but NOT as DB columns.
 # These get nested inside the 'account' JSONB column for DB persistence.
-_PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode'}
+_PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode', 'webhook_group_id'}
 
 
 def _prepare_portfolio_for_db(d: dict) -> dict:

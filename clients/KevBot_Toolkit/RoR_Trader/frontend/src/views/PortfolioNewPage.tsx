@@ -19,6 +19,7 @@ import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
+import { usePortfolioPreview, usePortfolioRecommendations } from '@/hooks/queries/usePortfolios';
 import { useCreatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 import { apiFetch } from '@/lib/api/client';
 
@@ -239,10 +240,27 @@ export default function PortfolioNewPage() {
     [strategies, allStrategyPool]
   );
 
-  const combinedCurve = useMemo(
-    () => buildCombinedCurve(strategies, startingBalance, riskScaling),
-    [strategies, startingBalance, riskScaling]
-  );
+  // Real backend-computed preview (replaces synthetic buildCombinedCurve)
+  const previewPayload = useMemo(() => {
+    if (strategies.length === 0) return null;
+    return {
+      starting_balance: startingBalance,
+      compound_rate: riskScaling / 100,
+      strategies: strategies.map((s) => ({
+        strategy_id: Number(s.id),
+        risk_per_trade: s.riskPerTrade,
+      })),
+    };
+  }, [strategies, startingBalance, riskScaling]);
+  const { data: previewData } = usePortfolioPreview(previewPayload);
+
+  // Fallback to synthetic curve while preview loads / for 0-strategy state
+  const combinedCurve: number[] = useMemo(() => {
+    if (previewData?.equity_curve && previewData.equity_curve.length > 0) {
+      return previewData.equity_curve as number[];
+    }
+    return buildCombinedCurve(strategies, startingBalance, riskScaling);
+  }, [previewData, strategies, startingBalance, riskScaling]);
 
   const drawdownCurve = useMemo(
     () => buildDrawdownCurve(combinedCurve),
@@ -258,20 +276,49 @@ export default function PortfolioNewPage() {
         avgRPerTrade: 0, payoffRatio: 0, maxConcurrent: 0,
       };
     }
+
+    // Prefer backend-computed KPIs from /preview endpoint
+    const k = previewData?.kpis;
+    if (k) {
+      const tpd = k.trades_per_day ?? 0;
+      const dailyAvg = k.avg_daily_pnl ?? 0;
+      const totalTradesRaw = k.total_trades ?? 0;
+      const avgRPerTrade = totalTradesRaw > 0
+        ? strategies.reduce((sum, s) => sum + s.avgR * s.trades, 0) / strategies.reduce((sum, s) => sum + s.trades, 0)
+        : 0;
+      const wr = k.win_rate ?? 0;
+      const pf = k.profit_factor && isFinite(k.profit_factor) ? k.profit_factor : 0;
+      const payoffRatio = wr > 0 && wr < 100 && pf > 0
+        ? pf * (1 - wr / 100) / (wr / 100)
+        : 0;
+      return {
+        trades: totalTradesRaw,
+        winRate: wr,
+        pf,
+        maxDD: k.max_drawdown_pct ?? 0,
+        dailyAvgPnl: dailyAvg,
+        thirtyDayPnl: dailyAvg * 21,
+        tradesPerDay: tpd,
+        monthlyPnl: dailyAvg * 21,
+        quarterlyPnl: dailyAvg * 63,
+        annualPnl: dailyAvg * 252,
+        annualROI: (dailyAvg * 252 / startingBalance) * 100,
+        avgRPerTrade,
+        payoffRatio,
+        maxConcurrent: strategies.length,
+      };
+    }
+
+    // Fallback: per-strategy aggregation while preview loads
     const totalTrades = strategies.reduce((sum, s) => sum + s.trades, 0);
     const weightedWR = strategies.reduce((sum, s) => sum + s.winRate * s.trades, 0) / totalTrades;
     const weightedPF = strategies.reduce((sum, s) => sum + s.pf * s.riskPerTrade, 0)
       / strategies.reduce((sum, s) => sum + s.riskPerTrade, 0);
     const maxDD = Math.min(...strategies.map(s => s.maxDD));
-
-    // Rate-based metrics (duration-independent)
-    // Each strategy contributes: avgR × riskPerTrade × tradesPerDay
-    // Assume ~3 trades/day per strategy as mock baseline, scaled by trade count
-    const tpd = strategies.reduce((sum, s) => sum + Math.max(0.5, s.trades / 60), 0); // trades per day estimate
+    const tpd = strategies.reduce((sum, s) => sum + Math.max(0.5, s.trades / 60), 0);
     const dailyAvgPnl = strategies.reduce((sum, s) => sum + s.avgR * s.riskPerTrade * Math.max(0.5, s.trades / 60), 0)
       * (1 + riskScaling / 100 * 0.5);
     const avgRPerTrade = strategies.reduce((sum, s) => sum + s.avgR * s.trades, 0) / totalTrades;
-    // Mock payoff ratio: avg win / avg loss (approximated from WR and PF)
     const payoffRatio = weightedPF * (1 - weightedWR / 100) / (weightedWR / 100);
 
     return {
@@ -290,7 +337,7 @@ export default function PortfolioNewPage() {
       payoffRatio,
       maxConcurrent: strategies.length,
     };
-  }, [strategies, startingBalance, riskScaling]);
+  }, [strategies, startingBalance, riskScaling, previewData]);
 
   const riskSummary = useMemo(() => {
     if (strategies.length === 0) {
@@ -377,8 +424,38 @@ export default function PortfolioNewPage() {
   const ddPath = buildDrawdownPath(drawdownCurve, minDD, svgW, 180, 10);
   const ddFillPath = ddPath ? `${ddPath} L${svgW},10 L0,10 Z` : '';
 
-  // --- Filtered recommendations ---
-  const filteredRecs = RECOMMENDATIONS.filter(r => !strategies.find(s => s.id === r.id));
+  // --- Filtered recommendations (from /recommendations endpoint) ---
+  const selectedStrategyIdsNum = useMemo(
+    () => strategies.map((s) => Number(s.id)).filter((n) => Number.isFinite(n)),
+    [strategies]
+  );
+  const { data: recsData } = usePortfolioRecommendations(
+    recsAnalyzed ? selectedStrategyIdsNum : [],
+    5,
+  );
+  const filteredRecs: Recommendation[] = useMemo(() => {
+    if (!recsAnalyzed || !recsData?.recommendations) return [];
+    return (recsData.recommendations as any[]).map((r) => {
+      const full = allStrategyPool.find((s) => s.id === String(r.strategy_id));
+      return {
+        id: String(r.strategy_id),
+        name: r.name || full?.name || '--',
+        symbol: r.symbol || full?.symbol || '--',
+        direction: full?.direction || 'LONG',
+        displayName: r.name || full?.displayName || '--',
+        pnlImpact: r.reasons?.[0] || '--',
+        ddImpact: r.reasons?.[1] || '--',
+        correlation: 0,
+        trades: r.kpis?.total_trades ?? 0,
+        winRate: r.kpis?.win_rate ?? 0,
+        pf: r.kpis?.profit_factor ?? 0,
+        totalR: full?.totalR ?? 0,
+        maxDD: full?.maxDD ?? 0,
+        avgR: full?.avgR ?? 0,
+        equityCurve: full?.equityCurve ?? [],
+      };
+    }).filter((r) => !strategies.find((s) => s.id === r.id));
+  }, [recsData, recsAnalyzed, strategies, allStrategyPool]);
 
   // ---- Loading state (after all hooks) ----
   if (strategiesLoading) {

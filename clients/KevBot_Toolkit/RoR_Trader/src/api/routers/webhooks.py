@@ -104,8 +104,22 @@ def test_webhook(body: dict = Body(...), user=Depends(get_current_user)):
 @router.get("/delivery-log")
 def get_delivery_log(
     limit: int = Query(100, ge=1, le=1000),
+    template_id: str | None = Query(None, description="Filter to a specific webhook template ID"),
     user=Depends(get_current_user),
 ):
-    """Get webhook delivery history across all alerts."""
+    """Get webhook delivery history across all alerts.
+
+    When ``template_id`` is provided, only deliveries routed through that
+    template are returned (matched via the delivery record's webhook_id or
+    template_id field).
+    """
     from alerts import get_webhook_delivery_log
-    return get_webhook_delivery_log(limit=limit)
+    log = get_webhook_delivery_log(limit=limit)
+    if template_id:
+        log = [
+            d for d in log
+            if d.get('template_id') == template_id
+            or d.get('webhook_id') == template_id
+            or d.get('webhook_template_id') == template_id
+        ]
+    return log

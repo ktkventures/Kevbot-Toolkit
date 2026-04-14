@@ -1051,10 +1051,18 @@ def send_webhook(url: str, alert: dict, custom_payload: str = None) -> dict:
         return {"success": False, "status_code": None, "error": "requests not installed", "payload_sent": None}
 
     if custom_payload:
-        try:
-            payload = json.loads(custom_payload)
-        except json.JSONDecodeError:
-            # If template isn't valid JSON, send as raw text
+        stripped = custom_payload.strip()
+        if stripped.startswith('{') or stripped.startswith('['):
+            try:
+                payload = json.loads(custom_payload)
+            except json.JSONDecodeError as e:
+                return {
+                    "success": False,
+                    "status_code": None,
+                    "error": f"Invalid JSON in payload template: {e.msg} at line {e.lineno} col {e.colno}",
+                    "payload_sent": custom_payload,
+                }
+        else:
             payload = {"content": custom_payload}
     else:
         payload = _format_default_webhook_payload(alert)
@@ -1070,6 +1078,8 @@ def send_webhook(url: str, alert: dict, custom_payload: str = None) -> dict:
             if resp.status_code < 300:
                 return {"success": True, "status_code": resp.status_code, "error": None, "payload_sent": payload_str}
             last_error = f"HTTP {resp.status_code}"
+            if 400 <= resp.status_code < 500:
+                break
         except Exception as e:
             last_error = str(e)
             if attempt == 0:
@@ -1306,6 +1316,188 @@ def get_webhook_template_by_id(template_id: str) -> dict | None:
         if t.get("id") == template_id:
             return t
     return None
+
+
+# =============================================================================
+# WEBHOOK GROUPS (account-based, 11 events per group)
+# =============================================================================
+
+# Each group has one entry per event type. Blank url/payload = event doesn't fire.
+WEBHOOK_EVENT_TYPES = [
+    "entry_long_market",
+    "entry_long_limit",
+    "entry_short_market",
+    "entry_short_limit",
+    "exit_long_market",
+    "exit_long_limit",
+    "exit_short_market",
+    "exit_short_limit",
+    "cancel_long",
+    "cancel_short",
+    "compliance_breach",
+]
+
+WEBHOOK_GROUPS_FILE = os.path.join(_SCRIPT_DIR, "webhook_groups.json")
+
+
+def _make_empty_events() -> dict:
+    """Return a fresh dict with all 11 event keys and blank url/payload."""
+    return {evt: {"url": "", "payload": ""} for evt in WEBHOOK_EVENT_TYPES}
+
+
+def _webhook_groups_db_available() -> bool:
+    """Check if the DB helper functions for webhook groups exist (future-proofing)."""
+    try:
+        from db import load_webhook_groups_db, save_webhook_group_db  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def load_webhook_groups() -> list:
+    """Load all webhook groups. DB-first with JSON fallback when DB helpers missing."""
+    from db import USE_DB
+    if USE_DB and _webhook_groups_db_available():
+        try:
+            from db import load_webhook_groups_db
+            return load_webhook_groups_db() or []
+        except Exception:
+            pass  # fall through to JSON
+
+    if os.path.exists(WEBHOOK_GROUPS_FILE):
+        try:
+            with open(WEBHOOK_GROUPS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_webhook_groups(groups: list):
+    """Save all webhook groups to file (JSON mode or DB fallback)."""
+    # Always write through to the JSON file so CRUD remains consistent when DB
+    # helpers haven't been implemented yet.
+    with open(WEBHOOK_GROUPS_FILE, 'w') as f:
+        json.dump(groups, f, indent=2)
+
+
+def get_webhook_group_by_id(group_id: str) -> dict | None:
+    """Get a single webhook group by ID (DB-first with JSON fallback)."""
+    from db import USE_DB
+    if USE_DB and _webhook_groups_db_available():
+        try:
+            from db import get_webhook_group_by_id_db
+            result = get_webhook_group_by_id_db(group_id)
+            if result is not None:
+                return result
+        except Exception:
+            pass  # fall through to JSON
+    for g in load_webhook_groups():
+        if g.get("id") == group_id:
+            return g
+    return None
+
+
+def add_webhook_group(group: dict) -> dict:
+    """Create a new webhook group. Auto-assigns ID and fills missing event slots."""
+    group = dict(group)
+    group["id"] = f"grp_{secrets.token_hex(3)}"
+    group.setdefault("name", "Untitled Group")
+    group.setdefault("service", "")
+    group.setdefault("url_mode", "per_event")  # or "shared"
+    group.setdefault("shared_url", "")
+    # Ensure all 11 event slots exist
+    events = group.get("events") or {}
+    filled = _make_empty_events()
+    for evt, cfg in events.items():
+        if evt in filled and isinstance(cfg, dict):
+            filled[evt] = {
+                "url": cfg.get("url", ""),
+                "payload": cfg.get("payload", ""),
+            }
+    group["events"] = filled
+    group["created_at"] = datetime.now(timezone.utc).isoformat()
+
+    from db import USE_DB
+    if USE_DB and _webhook_groups_db_available():
+        try:
+            from db import save_webhook_group_db
+            saved = save_webhook_group_db(group)
+            if saved:
+                return saved
+        except Exception:
+            pass  # fall through to JSON
+    groups = load_webhook_groups()
+    groups.append(group)
+    save_webhook_groups(groups)
+    return group
+
+
+def update_webhook_group(group_id: str, updates: dict) -> bool:
+    """Update an existing webhook group."""
+    updates = dict(updates)
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # If events partially provided, merge against stored
+    if "events" in updates and isinstance(updates["events"], dict):
+        existing = get_webhook_group_by_id(group_id)
+        if existing:
+            merged = existing.get("events") or _make_empty_events()
+            for evt, cfg in updates["events"].items():
+                if evt in WEBHOOK_EVENT_TYPES and isinstance(cfg, dict):
+                    merged[evt] = {
+                        "url": cfg.get("url", merged.get(evt, {}).get("url", "")),
+                        "payload": cfg.get("payload", merged.get(evt, {}).get("payload", "")),
+                    }
+            updates["events"] = merged
+
+    from db import USE_DB
+    if USE_DB and _webhook_groups_db_available():
+        try:
+            from db import update_webhook_group_db
+            if update_webhook_group_db(group_id, updates) is not None:
+                return True
+        except Exception:
+            pass  # fall through to JSON
+    groups = load_webhook_groups()
+    for i, g in enumerate(groups):
+        if g.get("id") == group_id:
+            groups[i].update(updates)
+            save_webhook_groups(groups)
+            return True
+    return False
+
+
+def delete_webhook_group(group_id: str) -> bool:
+    """Delete a webhook group."""
+    from db import USE_DB
+    if USE_DB and _webhook_groups_db_available():
+        try:
+            from db import delete_webhook_group_db
+            if delete_webhook_group_db(group_id):
+                return True
+        except Exception:
+            pass  # fall through to JSON
+    groups = load_webhook_groups()
+    original = len(groups)
+    groups = [g for g in groups if g.get("id") != group_id]
+    if len(groups) < original:
+        save_webhook_groups(groups)
+        return True
+    return False
+
+
+def duplicate_webhook_group(group_id: str) -> dict | None:
+    """Duplicate a webhook group (deep-copies events)."""
+    src = get_webhook_group_by_id(group_id)
+    if not src:
+        return None
+    import copy as _copy
+    new_group = _copy.deepcopy(src)
+    new_group.pop("id", None)
+    new_group.pop("created_at", None)
+    new_group.pop("updated_at", None)
+    new_group["name"] = f"{src.get('name', 'Group')} (Copy)"
+    return add_webhook_group(new_group)
 
 
 # =============================================================================

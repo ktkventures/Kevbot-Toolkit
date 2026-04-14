@@ -46,6 +46,8 @@ interface Portfolio {
   avgDailyPnl: number;
   trades: number;
   tradesPerDay: number;
+  // Equity curve preview (downsampled cumulative P&L, ~30 points)
+  equityCurvePreview: number[];
   // Forward test
   fwdDays: number;
   fwdTotalPnl: number | null;
@@ -82,11 +84,18 @@ function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
     };
   });
 
-  // Aggregate KPIs from constituent strategies if portfolio kpis empty
-  let totalR = k.total_r ?? 0;
+  // Prefer backend-enriched kpis (from preview=true) over per-strategy aggregation fallback
+  const fwd = p.fwd_kpis || null;
+  const alert = p.alert_kpis || null;
+
+  let totalR = k.total_pnl ?? k.total_r ?? 0;
   let totalTrades = k.total_trades ?? 0;
-  let winCount = 0;
-  if (!k.total_trades && (p.strategies || []).length > 0) {
+  let aggWinRate = k.win_rate ?? 0;
+  let aggPF = k.profit_factor ?? 0;
+
+  // Fallback: aggregate from strategies if backend kpis are empty
+  if (!totalTrades && (p.strategies || []).length > 0) {
+    let winCount = 0;
     for (const ps of (p.strategies || [])) {
       const strat = strategyMap.get(ps.strategy_id);
       if (strat?.kpis) {
@@ -98,14 +107,28 @@ function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
         }
       }
     }
+    aggWinRate = totalTrades > 0 ? (winCount / totalTrades * 100) : 0;
   }
-  const aggWinRate = totalTrades > 0 ? (winCount / totalTrades * 100) : (k.win_rate ?? 0);
-  const aggPF = k.profit_factor ?? 0;
+
+  // Derive status from req-set pass ratio + trade count (health classification heuristic)
+  let status: string = 'Insufficient Data';
+  if (totalTrades >= 20) {
+    if (p.req_total != null && p.req_total > 0) {
+      const passRatio = (p.req_passing ?? 0) / p.req_total;
+      status = passRatio >= 1 ? 'On Track' : passRatio >= 0.5 ? 'Underperforming' : 'Underperforming';
+    } else {
+      status = aggPF >= 1.5 ? 'On Track' : aggPF >= 1 ? 'On Track' : 'Underperforming';
+    }
+  }
+
+  // Forward test days (count unique exit dates in fwd_kpis)
+  const fwdDays = fwd?.total_trading_days ?? 0;
+  const btDays = k.total_trading_days ? Math.max(k.total_trading_days - fwdDays, 0) : (p.data_days ?? 30);
 
   return {
     id: String(p.id),
     name: p.name || '--',
-    status: 'Insufficient Data',
+    status,
     enabled: p.enabled ?? false,
     strategies: strats,
     startingBalance: p.starting_balance ?? p.account?.starting_balance ?? 0,
@@ -113,32 +136,33 @@ function apiToPortfolio(p: any, strategyMap: Map<number, any>): Portfolio {
     avgRiskPerTrade: k.avg_risk_per_trade ?? 0,
     webhookTemplate: p.webhook_template_name || null,
     requirementSet: p.requirement_set_name || null,
-    reqPassing: null,
-    reqTotal: null,
+    reqPassing: p.req_passing ?? null,
+    reqTotal: p.req_total ?? null,
     totalPnl: totalR,
     finalBalance: k.final_balance ?? 0,
     winRate: aggWinRate,
     pf: aggPF,
-    maxDDPct: k.max_dd_pct ?? 0,
+    maxDDPct: k.max_drawdown_pct ?? k.max_dd_pct ?? 0,
     avgDailyPnl: k.avg_daily_pnl ?? 0,
     trades: totalTrades,
     tradesPerDay: k.trades_per_day ?? 0,
-    fwdDays: 0,                              // {{fwd_days}} — needs forward test compute
-    fwdTotalPnl: null,                       // {{fwd_total_pnl}}
-    fwdWinRate: null,                        // {{fwd_win_rate}}
-    fwdPF: null,                             // {{fwd_pf}}
-    fwdMaxDDPct: null,                       // {{fwd_max_dd_pct}}
-    fwdAvgDailyPnl: null,                   // {{fwd_avg_daily_pnl}}
-    alertTotalPnl: null,                     // {{alert_total_pnl}}
-    alertWinRate: null,                      // {{alert_win_rate}}
-    alertPF: null,                           // {{alert_pf}}
-    alertMaxDDPct: null,                     // {{alert_max_dd_pct}}
-    alertAvgDailyPnl: null,                 // {{alert_avg_daily_pnl}}
-    fwdSD: 0,                                // {{fwd_sd}}
-    alertSD: 0,                              // {{alert_sd}}
+    equityCurvePreview: p.equity_curve_preview || [],
+    fwdDays,
+    fwdTotalPnl: fwd?.total_pnl ?? null,
+    fwdWinRate: fwd?.win_rate ?? null,
+    fwdPF: fwd?.profit_factor ?? null,
+    fwdMaxDDPct: fwd?.max_drawdown_pct ?? null,
+    fwdAvgDailyPnl: fwd?.avg_daily_pnl ?? null,
+    alertTotalPnl: alert?.total_pnl ?? null,
+    alertWinRate: alert?.win_rate ?? null,
+    alertPF: alert?.profit_factor ?? null,
+    alertMaxDDPct: alert?.max_drawdown_pct ?? null,
+    alertAvgDailyPnl: alert?.avg_daily_pnl ?? null,
+    fwdSD: fwd?.daily_pnl_std ?? 0,
+    alertSD: alert?.daily_pnl_std ?? 0,
     tags: p.tags || [],
     createdAt: p.created_at || '',
-    btDays: p.data_days ?? k.bt_days ?? 30,
+    btDays,
   };
 }
 
@@ -159,26 +183,29 @@ const EQ_LIVE_COLOR = '#4CAF50';
 
 const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.5; } 50% { transform: scale(2.2); opacity: 0; } }`;
 
-function MiniEquityCurve({ portfolioId, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: {
-  portfolioId: string; fwdStartPct: number; hasAlerts: boolean;
+function MiniEquityCurve({ portfolioId, points, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: {
+  portfolioId: string;
+  points?: number[]; // real cumulative P&L values from backend
+  fwdStartPct: number; hasAlerts: boolean;
   showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number;
 }) {
   const seed = parseInt(portfolioId, 10) || 1;
-  const totalPoints = 50;
+  const hasReal = Array.isArray(points) && points.length > 1;
+  const totalPoints = hasReal ? points!.length - 1 : 50;
   const fwdIdx = Math.max(1, Math.floor(totalPoints * fwdStartPct));
   const w = 320;
   const h = height;
   const pad = 3;
 
-  const btPoints: number[] = [0];
-  let val = 0;
-  for (let i = 1; i <= totalPoints; i++) {
-    val += Math.sin(seed * 137.5 * i) * 0.5 + 0.2;
-    btPoints.push(val);
+  // Real backend data or empty-state placeholder
+  const btPoints: number[] = hasReal ? (points as number[]) : [];
+  if (!hasReal) {
+    // Empty-state: flat line at zero so the card layout stays stable
+    for (let i = 0; i <= totalPoints; i++) btPoints.push(0);
   }
 
-  const fwdPoints = btPoints.slice(fwdIdx).map((p, i) => p + Math.sin(seed * 42 * (fwdIdx + i)) * 0.3);
-  const livePoints = hasAlerts ? fwdPoints.map((p, i) => p + Math.sin(seed * 99 * i) * 0.4 - 0.3) : [];
+  const fwdPoints = btPoints.slice(fwdIdx);
+  const livePoints = hasAlerts && hasReal ? fwdPoints.slice() : [];
 
   const allVals = [...btPoints, ...fwdPoints, ...livePoints];
   const min = Math.min(...allVals);
@@ -241,7 +268,7 @@ export default function PortfoliosPage() {
   const router = useRouter();
 
   // ---- API Hooks (ALL before early returns) ----
-  const { data: apiPortfoliosRaw, isLoading, error } = usePortfolios();
+  const { data: apiPortfoliosRaw, isLoading, error } = usePortfolios({ preview: true });
   const { data: apiStrategiesRaw } = useStrategies();
   const deleteMut = useDeletePortfolio();
   const dupMut = useDuplicatePortfolio();
@@ -622,6 +649,7 @@ export default function PortfoliosPage() {
               <div className="rounded-lg mb-2 overflow-hidden" style={{ background: 'var(--bg-input)' }}>
                 <MiniEquityCurve
                   portfolioId={port.id}
+                  points={port.equityCurvePreview}
                   fwdStartPct={port.btDays / (port.btDays + port.fwdDays)}
                   hasAlerts={hasAlerts}
                   showHWM={eqShowHWM}

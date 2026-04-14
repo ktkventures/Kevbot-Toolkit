@@ -1,0 +1,57 @@
+[
+  {
+    "name": "TTP test",
+    "service": "tradethepool",
+    "id": "grp_1e36f4",
+    "url_mode": "shared",
+    "shared_url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+    "events": {
+      "entry_long_market": {
+        "url": "https://app.signalstack.com/hook/TESTfykgSVuGRBzELjSw5Jb3Mw",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}"
+      },
+      "entry_long_limit": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+      },
+      "entry_short_market": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}"
+      },
+      "entry_short_limit": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+      },
+      "exit_long_market": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}}\n}"
+      },
+      "exit_long_limit": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"sell\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+      },
+      "exit_short_market": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}}\n}"
+      },
+      "exit_short_limit": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"buy\",\n  \"quantity\": {{quantity}},\n  \"limit_price\": {{order_price}}\n}"
+      },
+      "cancel_long": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"cancel\"\n}"
+      },
+      "cancel_short": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"{{symbol}}\",\n  \"action\": \"cancel\"\n}"
+      },
+      "compliance_breach": {
+        "url": "",
+        "payload": "{\n  \"symbol\": \"AAPL\",\n  \"action\": \"close\"\n}"
+      }
+    },
+    "created_at": "2026-04-13T23:03:34.101696+00:00",
+    "updated_at": "2026-04-14T17:11:27.255285+00:00"
+  }
+]

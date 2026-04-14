@@ -75,6 +75,7 @@ const navItems: NavItem[] = [
     href: '/alerts', label: 'Alerts', icon: '◉',
     children: [
       { href: '/alerts', label: 'Alerts & Signals' },
+      { href: '/alerts/webhook-groups', label: 'Webhook Groups' },
       { href: '/alerts/webhook-templates', label: 'Webhook Templates' },
     ],
   },

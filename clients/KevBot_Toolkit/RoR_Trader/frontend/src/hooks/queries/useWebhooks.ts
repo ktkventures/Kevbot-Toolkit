@@ -20,9 +20,14 @@ export function useWebhookTemplate(id: string | null) {
   });
 }
 
-export function useWebhookDeliveryLog() {
+export function useWebhookDeliveryLog(opts?: { templateId?: string | null; limit?: number }) {
+  const templateId = opts?.templateId ?? null;
+  const limit = opts?.limit ?? 100;
+  const qs = new URLSearchParams();
+  qs.set('limit', String(limit));
+  if (templateId) qs.set('template_id', templateId);
   return useQuery({
-    queryKey: ['webhook-delivery-log'],
-    queryFn: () => apiFetch<any[]>('/api/webhooks/delivery-log'),
+    queryKey: ['webhook-delivery-log', { templateId, limit }],
+    queryFn: () => apiFetch<any[]>(`/api/webhooks/delivery-log?${qs.toString()}`),
   });
 }

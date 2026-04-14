@@ -86,25 +86,226 @@ def _serialize_series(series) -> list:
     ]
 
 
+def _sanitize_for_json(value):
+    """Recursively replace inf/-inf/nan with None, convert numpy/pandas types to Python natives.
+
+    FastAPI's jsonable_encoder chokes on numpy.bool_, numpy.int64, numpy.float64,
+    numpy.datetime64, pandas.Timestamp, pandas.NaT, etc. Walk the structure and
+    coerce scalar values to their JSON-safe equivalents.
+    """
+    import math
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+
+    if value is None:
+        return None
+    # pandas NaT / NaN
+    if pd is not None:
+        try:
+            if isinstance(value, (pd.Timestamp, )):
+                return value.isoformat() if not pd.isna(value) else None
+            if value is pd.NaT:
+                return None
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_json(v) for v in value]
+    if np is not None:
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            f = float(value)
+            if math.isinf(f) or math.isnan(f):
+                return None
+            return f
+        if isinstance(value, np.ndarray):
+            return _sanitize_for_json(value.tolist())
+        if isinstance(value, np.datetime64):
+            try:
+                ts = pd.Timestamp(value) if pd is not None else None
+                if ts is not None and not pd.isna(ts):
+                    return ts.isoformat()
+            except Exception:
+                pass
+            return str(value)
+    # Python datetime / date
+    import datetime as _dt
+    if isinstance(value, (_dt.datetime, _dt.date)):
+        return value.isoformat()
+    if isinstance(value, float):
+        if math.isinf(value) or math.isnan(value):
+            return None
+    return value
+
+
+def _downsample_series(series, max_points: int = 30) -> list:
+    """Downsample a pandas Series to at most max_points for preview rendering."""
+    import pandas as pd
+    if series is None or (isinstance(series, pd.Series) and len(series) == 0):
+        return []
+    if len(series) <= max_points:
+        return _serialize_series(series)
+    step = max(1, len(series) // max_points)
+    return _serialize_series(series.iloc[::step])
+
+
 # =============================================================================
 # CRUD
 # =============================================================================
 
 @router.get("")
-def list_portfolios(user=Depends(get_current_user)):
-    """Load all portfolios for the current user."""
+def list_portfolios(
+    preview: bool = Query(False, description="Include per-portfolio KPIs, equity curve preview, and requirement-set counts"),
+    user=Depends(get_current_user),
+):
+    """Load all portfolios for the current user.
+
+    When ``preview=true``, each portfolio is enriched with:
+    - ``kpis`` (from calculate_portfolio_kpis)
+    - ``equity_curve_preview`` (downsampled to ~30 points)
+    - ``fwd_kpis`` / ``alert_kpis`` (forward test + alert subsets)
+    - ``req_passing`` / ``req_total`` (requirement set pass ratio)
+    """
     from db import USE_DB
     if USE_DB:
         from db import load_portfolios_db
-        return load_portfolios_db()
+        portfolios = load_portfolios_db() or []
+    else:
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), '..', '..', 'portfolios.json')
+        portfolios = []
+        if os.path.exists(path):
+            with open(path) as f:
+                portfolios = json.load(f)
 
-    # JSON fallback
-    import json, os
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'portfolios.json')
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
+    if not preview:
+        return portfolios
+
+    return [_enrich_portfolio_preview(p) for p in portfolios]
+
+
+def _enrich_portfolio_preview(portfolio: dict) -> dict:
+    """Attach kpis, equity_curve_preview, fwd_kpis, alert_kpis, req_passing/total."""
+    import pandas as pd
+    from portfolios import (
+        get_portfolio_trades, calculate_portfolio_kpis,
+        evaluate_requirement_set, get_requirement_set_by_id,
+    )
+
+    enriched = dict(portfolio)
+    try:
+        trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
+        combined = trade_data.get('combined_trades', pd.DataFrame())
+        daily_pnl = trade_data.get('daily_pnl', pd.DataFrame())
+    except Exception as e:
+        logger.warning("preview: get_portfolio_trades failed for portfolio %s: %s",
+                       portfolio.get('id'), e)
+        enriched['kpis'] = calculate_portfolio_kpis(portfolio, pd.DataFrame(), pd.DataFrame())
+        enriched['equity_curve_preview'] = []
+        enriched['fwd_kpis'] = None
+        enriched['alert_kpis'] = None
+        enriched['req_passing'] = None
+        enriched['req_total'] = None
+        return _sanitize_for_json(enriched)
+
+    enriched['kpis'] = calculate_portfolio_kpis(portfolio, combined, daily_pnl)
+    enriched['equity_curve_preview'] = _downsample_series(trade_data.get('equity_curve'), 30)
+
+    # Forward test subset: trades after any strategy's forward_test_start
+    fwd_trades, fwd_daily = _filter_forward_test(portfolio, combined, daily_pnl)
+    enriched['fwd_kpis'] = calculate_portfolio_kpis(portfolio, fwd_trades, fwd_daily) if len(fwd_trades) > 0 else None
+
+    # Alert-derived KPIs
+    try:
+        from portfolios import get_portfolio_alert_trades
+        alert_data = get_portfolio_alert_trades(portfolio, _get_strategy_fn)
+        alert_trades_list = alert_data.get('alert_trades', [])
+        if alert_trades_list:
+            alert_df = pd.DataFrame(alert_trades_list)
+            if 'dollar_pnl' in alert_df.columns:
+                alert_df['cumulative_pnl'] = alert_df['dollar_pnl'].cumsum()
+                alert_df['win'] = alert_df['dollar_pnl'] > 0
+                if 'exit_time' in alert_df.columns:
+                    alert_df['exit_time'] = pd.to_datetime(alert_df['exit_time'], errors='coerce')
+                    alert_daily = alert_df.groupby(alert_df['exit_time'].dt.date)['dollar_pnl'].sum().reset_index()
+                    alert_daily.columns = ['date', 'daily_pnl']
+                else:
+                    alert_daily = pd.DataFrame()
+                enriched['alert_kpis'] = calculate_portfolio_kpis(portfolio, alert_df, alert_daily)
+            else:
+                enriched['alert_kpis'] = None
+        else:
+            enriched['alert_kpis'] = None
+    except Exception as e:
+        logger.warning("preview: alert KPI compute failed for portfolio %s: %s",
+                       portfolio.get('id'), e)
+        enriched['alert_kpis'] = None
+
+    # Requirement set pass ratio
+    req_set_id = portfolio.get('requirement_set_id')
+    if req_set_id:
+        try:
+            req_set = get_requirement_set_by_id(int(req_set_id))
+            if req_set:
+                eval_result = evaluate_requirement_set(req_set, portfolio, enriched['kpis'], daily_pnl)
+                rules = eval_result.get('rules', [])
+                enriched['req_total'] = len(rules)
+                enriched['req_passing'] = sum(1 for r in rules if r.get('passed'))
+            else:
+                enriched['req_passing'] = None
+                enriched['req_total'] = None
+        except Exception as e:
+            logger.warning("preview: requirement eval failed for portfolio %s: %s",
+                           portfolio.get('id'), e)
+            enriched['req_passing'] = None
+            enriched['req_total'] = None
+    else:
+        enriched['req_passing'] = None
+        enriched['req_total'] = None
+
+    return _sanitize_for_json(enriched)
+
+
+def _filter_forward_test(portfolio: dict, combined, daily_pnl):
+    """Return trades + daily_pnl restricted to the forward test window.
+
+    The forward test window starts at the max forward_test_start across all
+    strategies in the portfolio (any trade before that is backtest-only).
+    """
+    import pandas as pd
+    if len(combined) == 0 or 'entry_time' not in combined.columns:
+        return combined.iloc[0:0], daily_pnl.iloc[0:0] if len(daily_pnl) > 0 else daily_pnl
+
+    # Find the earliest forward_test_start across strategies (broadest window)
+    starts = []
+    for alloc in portfolio.get('strategies', []):
+        strat = _get_strategy_fn(alloc.get('strategy_id'))
+        if strat and strat.get('forward_test_start'):
+            starts.append(strat['forward_test_start'])
+    if not starts:
+        return combined.iloc[0:0], daily_pnl.iloc[0:0] if len(daily_pnl) > 0 else daily_pnl
+
+    fwd_start = pd.to_datetime(min(starts), utc=True, errors='coerce')
+    entry_times = pd.to_datetime(combined['entry_time'], utc=True, errors='coerce')
+    mask = entry_times >= fwd_start
+    fwd_trades = combined[mask].copy()
+
+    if len(daily_pnl) > 0 and 'date' in daily_pnl.columns:
+        fwd_daily = daily_pnl[pd.to_datetime(daily_pnl['date'], utc=True, errors='coerce') >= fwd_start]
+    else:
+        fwd_daily = daily_pnl.iloc[0:0] if len(daily_pnl) > 0 else daily_pnl
+
+    return fwd_trades, fwd_daily
 
 
 @router.post("")
@@ -225,7 +426,8 @@ def compute_portfolio(
 
     Accepts JSON body with ``include: list[str]`` specifying which computations
     to run. Supported keys: ``kpis``, ``equity_curve``, ``correlation``,
-    ``monte_carlo``, ``daily_pnl``.
+    ``monte_carlo``, ``daily_pnl``, ``benchmark``, ``drawdown``,
+    ``equity_curve_with_strategies``.
 
     Returns only the requested data.
     """
@@ -241,6 +443,7 @@ def compute_portfolio(
     trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
     combined_trades = trade_data.get('combined_trades', pd.DataFrame())
     daily_pnl = trade_data.get('daily_pnl', pd.DataFrame())
+    starting_balance = portfolio.get('starting_balance', 10000.0)
 
     result = {}
 
@@ -249,6 +452,40 @@ def compute_portfolio(
 
     if 'equity_curve' in include:
         result['equity_curve'] = _serialize_series(trade_data.get('equity_curve'))
+
+    if 'equity_curve_with_strategies' in include:
+        # Curve plus per-strategy overlays for the Performance tab.
+        # Each strategy's cumulative_pnl is aligned to the combined trade
+        # sequence (same length as combined_trades). When a strategy doesn't
+        # have a trade at that index, its running sum stays flat (forward-fill).
+        # This way overlays span the full portfolio timeline and sum to the combined curve.
+        overlays: dict = {}
+        if (
+            'strategy_id' in combined_trades.columns
+            and 'dollar_pnl' in combined_trades.columns
+        ):
+            n = len(combined_trades)
+            strategy_ids = combined_trades['strategy_id'].unique()
+            for sid in strategy_ids:
+                mask = (combined_trades['strategy_id'] == sid).values
+                pnls = combined_trades['dollar_pnl'].where(
+                    combined_trades['strategy_id'] == sid, 0
+                ).values
+                running = pnls.cumsum().tolist()
+                overlays[str(sid)] = {
+                    'exit_time': _serialize_series(combined_trades.get('exit_time'))
+                    if 'exit_time' in combined_trades.columns else [],
+                    'cumulative_pnl': running,
+                }
+        result['equity_curve_with_strategies'] = {
+            'combined': {
+                'exit_time': _serialize_series(combined_trades.get('exit_time'))
+                if 'exit_time' in combined_trades.columns else [],
+                'cumulative_pnl': _serialize_series(combined_trades.get('cumulative_pnl'))
+                if 'cumulative_pnl' in combined_trades.columns else [],
+            },
+            'strategies': overlays,
+        }
 
     if 'daily_pnl' in include:
         result['daily_pnl'] = _serialize_df(daily_pnl)
@@ -261,10 +498,22 @@ def compute_portfolio(
         else:
             result['correlation'] = {}
 
+    if 'benchmark' in include:
+        from portfolios import compute_portfolio_benchmark
+        max_trades = body.get('benchmark_max_trades', 200)
+        result['benchmark'] = compute_portfolio_benchmark(
+            portfolio, _get_strategy_fn, _get_trades_fn,
+            max_trades=max_trades,
+        )
+
+    if 'drawdown' in include:
+        from portfolios import compute_drawdown_series
+        dd_df = compute_drawdown_series(combined_trades, starting_balance)
+        result['drawdown'] = _serialize_df(dd_df)
+
     if 'monte_carlo' in include:
         from portfolios import get_daily_limit_thresholds
         thresholds = get_daily_limit_thresholds(portfolio)
-        starting_balance = portfolio.get('starting_balance', 10000.0)
         shuffle_mode = body.get('shuffle_mode', 'daily')
         n_simulations = body.get('n_simulations', 1000)
         mc = run_monte_carlo(
@@ -274,7 +523,7 @@ def compute_portfolio(
         )
         result['monte_carlo'] = mc
 
-    return result
+    return _sanitize_for_json(result)
 
 
 @router.get("/{portfolio_id}/trades")
@@ -331,7 +580,7 @@ def check_requirements(
     daily_pnl = trade_data.get('daily_pnl', pd.DataFrame())
     kpis = calculate_portfolio_kpis(portfolio, combined_trades, daily_pnl)
 
-    return evaluate_requirement_set(req_set, portfolio, kpis, daily_pnl)
+    return _sanitize_for_json(evaluate_requirement_set(req_set, portfolio, kpis, daily_pnl))
 
 
 # =============================================================================
@@ -491,3 +740,206 @@ def delete_ledger_entry(
         update_portfolio_db(portfolio_id, portfolio)
 
     return {"status": "deleted"}
+
+
+# =============================================================================
+# ANALYSIS ENDPOINTS (M8)
+# =============================================================================
+
+@router.post("/{portfolio_id}/worst-case")
+def worst_case_analysis(
+    portfolio_id: int,
+    body: dict = Body(default={}),
+    user=Depends(get_current_user),
+):
+    """Compute historical worst-case metrics: worst day, streak, rolling DD, breaches."""
+    portfolio = _get_or_404(portfolio_id, user)
+
+    from portfolios import (
+        get_portfolio_trades, compute_worst_case_analysis,
+        get_daily_limit_thresholds,
+    )
+    import pandas as pd
+
+    trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
+    daily_pnl = trade_data.get('daily_pnl', pd.DataFrame())
+    starting_balance = portfolio.get('starting_balance', 10000.0)
+    thresholds = body.get('thresholds') or get_daily_limit_thresholds(portfolio)
+
+    result = compute_worst_case_analysis(daily_pnl, starting_balance, thresholds)
+    return _sanitize_for_json(result)
+
+
+@router.post("/{portfolio_id}/capital-utilization")
+def capital_utilization(
+    portfolio_id: int,
+    body: dict = Body(default={}),
+    user=Depends(get_current_user),
+):
+    """Compute capital utilization timeline from backtest or alert trades.
+
+    Accepts ``source: 'backtest' | 'alerts'`` (default 'backtest').
+    """
+    portfolio = _get_or_404(portfolio_id, user)
+    source = body.get('source', 'backtest')
+
+    from portfolios import get_portfolio_trades, compute_capital_utilization
+    import pandas as pd
+
+    if source == 'alerts':
+        from portfolios import (
+            get_portfolio_alert_trades, compute_alert_buying_power, get_account,
+        )
+        alert_data = get_portfolio_alert_trades(portfolio, _get_strategy_fn)
+        account = get_account(portfolio)
+        account_balance = account.get('balance', portfolio.get('starting_balance', 10000.0))
+        result = compute_alert_buying_power(
+            alert_data.get('alert_trades', []),
+            alert_data.get('open_positions', []),
+            account_balance,
+        )
+    else:
+        trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
+        combined_trades = trade_data.get('combined_trades', pd.DataFrame())
+        starting_balance = portfolio.get('starting_balance', 10000.0)
+        result = compute_capital_utilization(combined_trades, starting_balance)
+        if result is None:
+            return {
+                'timeline': [],
+                'current_buying_power': starting_balance,
+                'peak_capital_deployed': 0,
+                'max_concurrent_positions': 0,
+                'insufficient_events': [],
+                'unavailable_reason': 'Trades missing required columns (entry_price, risk)',
+            }
+
+    # Serialize timeline DataFrame if present
+    timeline = result.get('timeline')
+    if timeline is not None and hasattr(timeline, 'to_dict'):
+        result['timeline'] = _serialize_df(timeline)
+
+    return _sanitize_for_json(result)
+
+
+@router.get("/{portfolio_id}/open-positions")
+def open_positions(portfolio_id: int, user=Depends(get_current_user)):
+    """Get currently open positions (alert-derived) for a portfolio."""
+    portfolio = _get_or_404(portfolio_id, user)
+
+    from portfolios import get_portfolio_alert_trades
+    alert_data = get_portfolio_alert_trades(portfolio, _get_strategy_fn)
+    return _sanitize_for_json({
+        'open_positions': alert_data.get('open_positions', []),
+        'strategies_with_data': list(alert_data.get('strategies_with_data', [])),
+    })
+
+
+@router.post("/preview")
+def preview_portfolio(
+    portfolio: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Compute KPIs + equity curve for an unsaved portfolio payload.
+
+    Used by the Portfolio Builder to render real preview data before save.
+    """
+    from portfolios import get_portfolio_trades, calculate_portfolio_kpis
+    import pandas as pd
+
+    if not portfolio.get('strategies'):
+        return {
+            'kpis': calculate_portfolio_kpis(portfolio, pd.DataFrame(), pd.DataFrame()),
+            'equity_curve': [],
+            'exit_time': [],
+        }
+
+    trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
+    combined = trade_data.get('combined_trades', pd.DataFrame())
+    daily_pnl = trade_data.get('daily_pnl', pd.DataFrame())
+
+    result = {
+        'kpis': calculate_portfolio_kpis(portfolio, combined, daily_pnl),
+        'equity_curve': _serialize_series(trade_data.get('equity_curve')),
+        'exit_time': _serialize_series(combined.get('exit_time'))
+        if 'exit_time' in combined.columns else [],
+    }
+    return _sanitize_for_json(result)
+
+
+@router.post("/recommendations")
+def recommend_strategies(
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Suggest complementary strategies for a portfolio-in-progress.
+
+    Heuristic: rank candidates by timeframe diversity, exec type diversity, and
+    healthy KPIs (PF and win rate). Returns top N scored candidates.
+    Body: ``{selected_strategy_ids: list[int], max?: int}``.
+    """
+    selected_ids = set(body.get('selected_strategy_ids') or [])
+    max_results = int(body.get('max', 5))
+
+    from db import USE_DB
+    if USE_DB:
+        from db import load_strategies_db
+        strategies = load_strategies_db() or []
+    else:
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), '..', '..', 'strategies.json')
+        strategies = []
+        if os.path.exists(path):
+            with open(path) as f:
+                strategies = json.load(f)
+
+    candidates = [
+        s for s in strategies
+        if s.get('id') not in selected_ids and s.get('stored_trades')
+    ]
+    selected_strats = [s for s in strategies if s.get('id') in selected_ids]
+    selected_tfs = {s.get('timeframe') for s in selected_strats if s.get('timeframe')}
+    selected_exec = {s.get('exec_type') for s in selected_strats if s.get('exec_type')}
+
+    scored = []
+    for cand in candidates:
+        score = 0
+        reasons = []
+
+        cand_tf = cand.get('timeframe')
+        if cand_tf and cand_tf not in selected_tfs:
+            score += 2
+            reasons.append(f"Different timeframe ({cand_tf})")
+
+        cand_exec = cand.get('exec_type')
+        if cand_exec and cand_exec not in selected_exec:
+            score += 1
+            reasons.append(f"Different exec type ({cand_exec})")
+
+        kpis = cand.get('kpis') or {}
+        pf = kpis.get('profit_factor')
+        if pf and pf != float('inf') and pf > 1.5:
+            score += 2
+            reasons.append(f"Healthy PF {pf:.2f}")
+
+        wr = kpis.get('win_rate')
+        if wr and wr > 50:
+            score += 1
+            reasons.append(f"Win rate {wr:.0f}%")
+
+        scored.append({
+            'strategy_id': cand.get('id'),
+            'name': cand.get('name'),
+            'symbol': cand.get('symbol'),
+            'timeframe': cand_tf,
+            'exec_type': cand_exec,
+            'score': score,
+            'reasons': reasons,
+            'kpis': {
+                'profit_factor': pf if pf != float('inf') else None,
+                'win_rate': wr,
+                'total_trades': kpis.get('total_trades'),
+            },
+        })
+
+    scored.sort(key=lambda x: x['score'], reverse=True)
+    return _sanitize_for_json({'recommendations': scored[:max_results]})

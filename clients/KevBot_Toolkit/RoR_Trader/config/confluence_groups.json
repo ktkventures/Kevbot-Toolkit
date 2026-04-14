@@ -253,6 +253,30 @@
       }
     },
     {
+      "id": "stochastic_oscillator_default",
+      "base_template": "stochastic_oscillator",
+      "version": "Default",
+      "description": "Default Stochastic Oscillator configuration",
+      "enabled": true,
+      "is_default": false,
+      "parameters": {
+        "k_period": 14,
+        "k_smooth": 3,
+        "d_period": 3,
+        "overbought": 80,
+        "oversold": 20,
+        "midline": 50
+      },
+      "plot_settings": {
+        "colors": {
+          "k_color": "#3b82f6",
+          "d_color": "#f97316"
+        },
+        "line_width": 1,
+        "visible": true
+      }
+    },
+    {
       "id": "swing_123_test_default",
       "base_template": "swing_123_test",
       "version": "Default",
