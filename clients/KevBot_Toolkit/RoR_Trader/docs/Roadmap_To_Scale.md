@@ -541,7 +541,17 @@ Frontend:
 
 ### Milestone 8.5: Live Data & Real-Time Charts
 **Priority:** High — required for alert verification and live trading confidence
-**Status:** Phase B (Ralph-sourced) **shipped 2026-04-14**. Architecture proven end-to-end. Plan: `~/.claude/plans/reflective-riding-sifakis.md`. Backup branch: `dev-backup-pre-m8.5`.
+**Status:** Phases B AND B+ **shipped 2026-04-14**. Sub-minute live data working. Architecture proven end-to-end. Plan: `~/.claude/plans/reflective-riding-sifakis.md`. Backup branch: `dev-backup-pre-m8.5`.
+
+**Phase B+ shipped (commits d623db7, af75b28, feaef8f, 0352eb7, df345ef):**
+- `BarBuilder.accept_second_bar()` aggregates per-second bars into N-sec primary bars with bar-for-bar parity to `data_loader.resample_to_timeframe()` — locked by `test_ralph_subminute_parity.py` (6 cases)
+- Sub-minute strategies (10Sec, etc.) now receive live bars + alerts for the first time
+- Per-second forming-bar broadcasts every ~250ms for all primary TFs (1Min+ uses partial for chart visual; AM remains canonical for indicators/triggers)
+- `A.{ticker}` Polygon channel subscribed for all stocks (was gated behind never-populated `_intrabar_triggers`); subscription went 13 → 26 channels
+- `_intrabar_triggers` populated from resolved entry/exit triggers — restores L-type live trigger detection (silently broken before)
+- Monitor pipeline factored into shared helper `_run_monitor_pipeline_for_completed_bar` so AM + sub-minute paths produce identical post-bar handling
+- `chartPanes` memoized in StrategyDetailPage (also fixes a CLAUDE.md IIFE rule violation)
+- `SyncedChartPane` refactored to persistent-instance pattern: `paneStructureKey` JSON hash distinguishes structure changes from data changes; data updates use `series.setData()` (preserves visible range); structure rebuilds save/restore visible range. User's pan/zoom now survives indefinitely until they explicitly change pane structure.
 
 **Architecture decision (2026-04-14):** Skipped REST-polling fallback. Single source of truth = Ralph. Forming/completed bars broadcast via Supabase Realtime channel `live_bars:{user_id}`; frontend subscribes via `useLiveBar` hook and updates the chart imperatively via `series.update()` to avoid React re-render cascade at the publish cadence.
 
@@ -566,12 +576,15 @@ Frontend:
 **Verified end-to-end (2026-04-14):** Ralph running locally, Railway worker paused via `WORKER_DISABLED=true`. Strategy 47 (NVDA 1Min RTH) shows green "Live" pill on Chart & Trades tab; broadcasts arrive every minute on bar close. Logs confirm `POST /realtime/v1/api/broadcast 202 Accepted` per (symbol, tf) bar.
 
 **Deferred follow-ups (out of MVP scope):**
-- **Ralph live sub-minute bar aggregation** — Pre-existing limitation surfaced by the monitor-everything change. Polygon `AM.SYMBOL` channel only delivers 1-min bars; per-second `A.SYMBOL` channel is currently used only for L-type intrabar trigger checks (`on_second_bar`), not for building sub-minute bars. Consequence: 10Sec / 30Sec strategies are monitorable but receive no live bars from Ralph. Backtest still works (uses `load_1s_bars_from_polygon` on the data_loader path). To fix: extend `on_second_bar` to call `builder.process_tick(close, volume, ts)` on every sub-minute BarBuilder, OR add an explicit `accept_second_bar` aggregation path. Affects forward testing and live chart for sub-minute strategies. Worth tackling alongside the next live-data pass.
-- Forming-bar streaming via `on_second_bar` aggregation (1-sec cadence updates within a primary-TF window — would feel TradingView-smooth)
+- ~~Ralph live sub-minute bar aggregation~~ — **SHIPPED in Phase B+ (2026-04-14).**
+- ~~Forming-bar streaming via `on_second_bar` aggregation~~ — **SHIPPED in Phase B+.**
 - Live trade markers on chart (subscribe to alert events via separate broadcast channel)
 - Live indicators / oscillator pane updates (publish interpreter state alongside OHLCV)
 - Private Realtime channels with RLS (security hardening — current channel-name-by-UUID is acceptable for dev)
-- Memoize `SyncedChartPane` to fully eliminate any incidental re-render
+- TradingChart.tsx persistent-instance refactor (lower priority; SyncedChartPane is the main surface)
+- Theme color hot-update via `applyOptions()` (currently rebuilds chart on theme switch — rare action, acceptable)
+- Higher-than-1Min strategies (5Min, 15Min, etc.) — Ralph's `on_polygon_bar` always uses `tf_seconds=60` for AM bars. 5Min strategies get the 60s builder fed but their 300s builder never gets bars in live. Pre-existing limitation; would benefit from a similar `accept_second_bar`-style approach OR aggregating 1-min bars upward.
+- `webhook_deliveries` column missing in `alerts` schema cache — pre-existing; alerts fire correctly but webhook delivery logging fails. Out of M8.5 scope.
 
 **Architecture notes:**
 - Polygon REST polling (completed bars every N seconds) vs WebSocket (tick-level, 1 connection limit)
