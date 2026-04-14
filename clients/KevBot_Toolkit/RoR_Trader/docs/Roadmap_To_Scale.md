@@ -462,7 +462,7 @@ Wire the Mass Strategy Builder to work with the unified engine and user packs. T
 ### Milestone 8: Portfolios Polish
 **Priority:** High — portfolios combine strategies into tradeable units
 **Effort:** 1-2 weeks
-**Status:** In progress (2026-04-13). Most core wiring done on `dev`; uncommitted. Cut off mid-way through Webhook Delivery History on PortfolioDetailPage.
+**Status:** In progress (2026-04-14). M8 WIP committed + pushed (`00f2450`). **Revised priority:** move to M8.5 (Live Data) next after validating PortfolioNewPage end-to-end with a user-pack strategy. Verification tasks (7c/7d/7e/7f/7g) deferred until live data is available — they'll be easier to exercise with real-time signals flowing.
 
 **What's wired (uncommitted on `dev` as of 2026-04-13):**
 
@@ -497,14 +497,33 @@ Frontend:
 
 **Cutoff point:** PortfolioDetailPage Webhooks tab has comment *"Delivery History (placeholder — requires live alert data, deferred to M8.5)"*. Template-filtered `/delivery-log?template_id=*` query param exists in backend but UI is not wired to it. Webhook Groups router endpoints are the other half-finished thread.
 
-**Open threads to resume:**
-1. Implement `webhook_groups_router` CRUD endpoints (backend function signatures already in `alerts.py`)
-2. Build `/alerts/webhook-groups` management page (sidebar entry exists)
-3. Decide: wire Webhook Delivery History on PortfolioDetailPage now, or accept deferral to M8.5
-4. Replace LiveDashboardTab sample data (7f) — or defer to M8.5 since it needs live data anyway
-5. Test Monte Carlo with a user-pack strategy (7c verification)
-6. "Design Ref" tab added to PortfolioDetailPage tabs array with no content — decide keep or remove
-7. Commit the ~1800 LOC of uncommitted work in logical chunks before continuing
+**Today's additional work (2026-04-14 — committed in `00f2450`):**
+- Webhook Groups CRUD router implemented + management pages at `/alerts/webhook-groups`
+- Test delivery now renders `{{placeholders}}` via `render_payload()` before send
+- `send_webhook()` no longer retries on HTTP 4xx (fixes duplicate payload dispatches)
+- Invalid JSON templates return a clear error instead of wrapping as `{content: ...}`
+- `webhook_group_id` persisted on portfolios (added to `_PORTFOLIO_NON_DB_FIELDS`)
+- Shared-URL-mode-aware status dots; configured-count consistency across 3 surfaces
+- Webhook test data JSON (missing-comma typos fixed)
+- Kevin verified all 11 event types dispatch correctly in test mode
+
+**Open threads — revised priority (2026-04-14):**
+
+*Next up:*
+1. **PortfolioNewPage end-to-end verification with user-pack strategies** — Kevin hasn't yet created a portfolio using new-system strategies. Verify the full Create → Preview → Recommendations → Save → Appears-in-List → Opens-Detail flow with at least one user-pack strategy before moving on.
+2. **M8.5 (Live Data & Real-Time Charts)** — start next after #1. Live data will make M8 verification dramatically easier.
+
+*Deferred until after M8.5:*
+- 7c Monte Carlo verification with user-pack strategies
+- 7d Buying power / compliance-rule verification walk-through
+- 7e Anomaly detection wiring (untouched)
+- 7f LiveDashboardTab real data (depends on M8.5 infrastructure anyway)
+- 7g General portfolio bug sweep
+- Webhook Delivery History UI on PortfolioDetailPage (depends on live alert data)
+- "Design Ref" tab cleanup on PortfolioDetailPage
+
+*Deferred beyond milestones (Kevin's call):*
+- Compliance-breach multi-symbol close flow — decide between (A) compliance_breach event loops through open positions per symbol, or (B) use existing exit_*_market/limit events for actual close orders and keep compliance_breach as notification-only. Recommendation: B.
 
 **Tasks:**
 - [ ] 7a. Verify portfolio KPI aggregation works with user pack strategies
@@ -522,20 +541,36 @@ Frontend:
 
 ### Milestone 8.5: Live Data & Real-Time Charts
 **Priority:** High — required for alert verification and live trading confidence
-**Effort:** 1-2 weeks
-**Status:** Not started. Deferred from M6 — requires live market data (after hours blocks testing).
+**Status:** Phase B (Ralph-sourced) **shipped 2026-04-14**. Architecture proven end-to-end. Plan: `~/.claude/plans/reflective-riding-sifakis.md`. Backup branch: `dev-backup-pre-m8.5`.
 
-**Why:** The Strategy Detail Chart & Trades tab needs a live-updating price chart as the default view. Currently it loads static historical data. The live chart is critical for:
-- Verifying alerts fire correctly in real-time
-- Monitoring position status with live price action
-- Building trader confidence before going live
+**Architecture decision (2026-04-14):** Skipped REST-polling fallback. Single source of truth = Ralph. Forming/completed bars broadcast via Supabase Realtime channel `live_bars:{user_id}`; frontend subscribes via `useLiveBar` hook and updates the chart imperatively via `series.update()` to avoid React re-render cascade at the publish cadence.
+
+**What shipped (commits dfbc7b9, 05de900, 561416e, b7f44e7, 0403d2b, d561226):**
+- `src/live_bar_publisher.py` — HTTP-based broadcast publisher with per-(symbol, tf) throttle (250ms forming, immediate completed), try/except isolation, fire-and-forget via `asyncio.create_task`. Verified Supabase returns 202 Accepted on every publish.
+- `ralph_engine.py` — `SymbolHub` accepts a publisher; `_publish_completed_bar()` injected after the existing alert dispatch in `on_tick` (~line 941), `flush_stale_bars`, and `on_polygon_bar`. Hot path unchanged for alerts; broadcast is an additive side effect.
+- `worker.py` — instantiates publisher from env, threads `user_id` through every monitor.
+- `useLiveBar.ts` (frontend) — subscribes to `live_bars:{user_id}` broadcast, filters by (symbol, tfSeconds), returns latest bar + receivedAt timestamp.
+- `TradingChart.tsx` + `SyncedChartPane.tsx` — accept optional `formingBar` prop; dedicated `useEffect` calls `candleSeries.update()` imperatively. Zero React re-render cascade.
+- `StrategyDetailPage.tsx` Chart & Trades tab — wired with status pill ("● Live" green / "○ Not live" gray, recomputed at 1Hz against a 5×TF window).
+
+**Monitor-everything change (committed alongside):**
+- `db.py:get_monitored_strategies_db()` — was filtering to "in a portfolio with active webhook." Now: every strategy with `entry_trigger_confluence_id` is monitored. Webhook routing still respects portfolio + group config at alert time. Aligns with Kevin's stated long-term direction: every saved strategy accumulates forward-test data and broadcasts live bars.
 
 **Tasks:**
-- [ ] 8.5a. **Live price chart on Strategy Detail** — default view on Chart & Trades tab. Live-updating candlestick chart via Polygon REST polling or WebSocket. Static historical view available via date picker toggle.
-- [ ] 8.5b. **Alert verification with live data** — verify Ralph engine fires alerts correctly, alerts appear on Strategy Detail Alerts tab, forward test KPIs accumulate
-- [ ] 8.5c. **Forward testing live QA** — verify forward test trades match live alert trades
-- [ ] 8.5d. **Confluence pack pages requiring live data** — wire any remaining pack management pages that need live market data for previews
-- [ ] 8.5e. **Position Monitor live integration** — position status widget updates with live price
+- [x] 8.5a. **Live price chart on Strategy Detail** — Ralph-sourced via Realtime broadcast, imperative chart update
+- [~] 8.5b. **Alert verification with live data** — pipeline proven (broadcasts firing, pill turning green); full alert-trade verification with accumulated forward-test data is ongoing
+- [ ] 8.5c. **Forward testing live QA** — alert/forward parity checks pending data accumulation
+- [ ] 8.5d. **Confluence pack pages requiring live data** — deferred
+- [ ] 8.5e. **Position Monitor live integration** — same Realtime channel can carry position-state events; layer on next session
+
+**Verified end-to-end (2026-04-14):** Ralph running locally, Railway worker paused via `WORKER_DISABLED=true`. Strategy 47 (NVDA 1Min RTH) shows green "Live" pill on Chart & Trades tab; broadcasts arrive every minute on bar close. Logs confirm `POST /realtime/v1/api/broadcast 202 Accepted` per (symbol, tf) bar.
+
+**Deferred follow-ups (out of MVP scope):**
+- Forming-bar streaming via `on_second_bar` aggregation (1-sec cadence updates within a primary-TF window — would feel TradingView-smooth)
+- Live trade markers on chart (subscribe to alert events via separate broadcast channel)
+- Live indicators / oscillator pane updates (publish interpreter state alongside OHLCV)
+- Private Realtime channels with RLS (security hardening — current channel-name-by-UUID is acceptable for dev)
+- Memoize `SyncedChartPane` to fully eliminate any incidental re-render
 
 **Architecture notes:**
 - Polygon REST polling (completed bars every N seconds) vs WebSocket (tick-level, 1 connection limit)

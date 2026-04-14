@@ -858,50 +858,33 @@ def load_confluence_groups_admin(user_id: str) -> list:
 def get_monitored_strategies_db(user_id: str) -> list:
     """Resolve which strategies to monitor for a user (admin client).
 
-    A strategy is monitored if it belongs to any portfolio that has at
-    least one enabled webhook in alert_config.
+    M8.5 change: every strategy with the structural prerequisites (i.e. an
+    ``entry_trigger_confluence_id``) is monitored by default, regardless of
+    portfolio membership or webhook wiring. This lets alerts + forward-test
+    data accumulate for every saved strategy, and lets the live chart fire
+    broadcasts for any strategy the user opens on Strategy Detail.
+
+    Webhook dispatch still respects portfolio + webhook-group config at alert
+    time — monitoring here is strictly about "does the engine watch this?"
     """
     import logging
     _log = logging.getLogger("worker")
 
-    config = load_alert_config_admin(user_id)
     strategies = load_strategies_admin(user_id)
-    portfolios = load_portfolios_admin(user_id)
-
-    _log.info("[%s] get_monitored: %d strategies, %d portfolios, "
-              "config portfolio keys: %s",
-              user_id[:8], len(strategies), len(portfolios),
-              list(config.get('portfolios', {}).keys()))
-
-    # Build set of strategy IDs in portfolios with active webhooks
-    webhook_strategy_ids = set()
-    for port in portfolios:
-        pid = str(port['id'])
-        pcfg = config.get('portfolios', {}).get(pid, {})
-        webhooks = pcfg.get('webhooks', [])
-        has_active_webhook = any(wh.get('enabled', True) for wh in webhooks)
-        strat_ids_in_port = [a.get('strategy_id') for a in port.get('strategies', [])]
-        _log.info("[%s]   Portfolio '%s' (id=%s): webhooks=%d, active=%s, strategies=%s",
-                  user_id[:8], port.get('name', '?'), pid,
-                  len(webhooks), has_active_webhook, strat_ids_in_port)
-        if has_active_webhook:
-            for alloc in port.get('strategies', []):
-                webhook_strategy_ids.add(alloc.get('strategy_id'))
+    _log.info("[%s] get_monitored: scanning %d strategies",
+              user_id[:8], len(strategies))
 
     monitored = []
+    skipped_no_confluence = 0
     for strat in strategies:
-        in_webhook_port = strat['id'] in webhook_strategy_ids
-        has_confluence = 'entry_trigger_confluence_id' in strat
-        if not in_webhook_port:
-            _log.info("[%s]   SKIP '%s' (id=%s): not in webhook portfolio",
-                      user_id[:8], strat.get('name', '?'), strat['id'])
-            continue
-        if not has_confluence:
-            _log.info("[%s]   SKIP '%s' (id=%s): no entry_trigger_confluence_id",
-                      user_id[:8], strat.get('name', '?'), strat['id'])
+        if 'entry_trigger_confluence_id' not in strat:
+            skipped_no_confluence += 1
             continue
         monitored.append(strat)
 
+    if skipped_no_confluence:
+        _log.info("[%s]   %d strategies skipped (no entry_trigger_confluence_id — "
+                  "legacy/unmigrated)", user_id[:8], skipped_no_confluence)
     _log.info("[%s] get_monitored result: %d strategies", user_id[:8], len(monitored))
     return monitored
 
