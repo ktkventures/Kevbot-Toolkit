@@ -45,6 +45,8 @@ from db import (
     append_audit_log_db,
     load_general_packs_admin,
     get_monitored_strategies_db,
+    get_strategy_by_id_admin,
+    update_strategy_admin,
 )
 
 logger = logging.getLogger("worker")
@@ -146,6 +148,20 @@ class DBAlertDispatcher:
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
 
+        # M8.5 B+: persist algo trade record into stored_trades on exit.
+        # The exit signal from the unified engine carries a fully-formed
+        # trade_record dict (identical to what backtest produces). We just
+        # append it so the Chart & Trades tab, forward-test KPIs, and
+        # portfolio aggregates can reflect live-session trades without
+        # manual "Update All Data" clicks. Streamlit-era parity restored.
+        if sig_type == 'exit_signal':
+            try:
+                self._persist_algo_trade(strategy, signal_data)
+            except Exception as e:
+                logger.error("ALGO TRADE PERSIST FAILED [%s]: %s — %s",
+                             self.user_id[:8], strategy.get('name'), e)
+                # Don't fail the whole dispatch — the alert is already saved.
+
         # Webhook delivery
         if self._deliver_alert_fn:
             try:
@@ -154,6 +170,58 @@ class DBAlertDispatcher:
                 logger.error("Webhook delivery failed: %s", e)
 
         return alert
+
+    def _persist_algo_trade(self, strategy: dict, signal_data: dict) -> None:
+        """Append the unified-engine-produced trade record to the strategy's
+        stored_trades. Called only on exit signals (which carry a full trade
+        record built by PositionStateMachine.get_trade_record).
+
+        Safe to call repeatedly — duplicate detection uses (entry_time,
+        exit_time) tuple so replayed exit signals don't double-append.
+        """
+        trade_record = signal_data.get('trade_record')
+        if not trade_record:
+            return  # older/other signal shapes that don't carry a record
+        entry_time = trade_record.get('entry_time')
+        exit_time = trade_record.get('exit_time')
+        if not entry_time or not exit_time:
+            logger.debug("Skipping algo-trade persist: missing entry/exit time")
+            return
+
+        # Re-fetch the strategy fresh (hot-reload may have mutated it)
+        strat_db = get_strategy_by_id_admin(strategy['id'], self.user_id)
+        if strat_db is None:
+            logger.warning("Strategy %s not found for algo-trade persist",
+                           strategy['id'])
+            return
+
+        stored_trades = list(strat_db.get('stored_trades') or [])
+        # Dedup on (entry_time, exit_time) — cheap, O(n) worst case
+        dup_key = (entry_time, exit_time)
+        for t in stored_trades:
+            if (t.get('entry_time') == entry_time
+                    and t.get('exit_time') == exit_time):
+                logger.debug("Algo trade already persisted: %s", dup_key)
+                return
+
+        # Serialize sets (confluence_records) — JSONB doesn't like Python set
+        tr_clean = dict(trade_record)
+        cr = tr_clean.get('confluence_records')
+        if isinstance(cr, set):
+            tr_clean['confluence_records'] = list(cr)
+
+        stored_trades.append(tr_clean)
+
+        # Persist back. Also bump cached_kpis is None so the frontend knows
+        # to recompute on next fetch (avoid serving stale KPIs that
+        # predated this trade).
+        updates = {
+            'stored_trades': stored_trades,
+        }
+        update_strategy_admin(strategy['id'], self.user_id, updates)
+        logger.info("ALGO TRADE APPENDED [%s]: strat=%s total=%d r=%.2f",
+                    self.user_id[:8], strategy['id'],
+                    len(stored_trades), tr_clean.get('r_multiple', 0))
 
 
 # ============================================================

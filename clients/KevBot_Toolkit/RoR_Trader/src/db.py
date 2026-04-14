@@ -774,6 +774,41 @@ def load_strategies_admin(user_id: str) -> list:
     return [_row_to_strategy(r) for r in result.data]
 
 
+def get_strategy_by_id_admin(strategy_id: int, user_id: str) -> dict | None:
+    """Load a single strategy by ID for a specific user (admin client)."""
+    client = get_admin_client()
+    result = client.table('strategies') \
+        .select('*') \
+        .eq('id', strategy_id) \
+        .eq('user_id', user_id) \
+        .maybe_single() \
+        .execute()
+    if result and result.data:
+        return _row_to_strategy(result.data)
+    return None
+
+
+def update_strategy_admin(strategy_id: int, user_id: str, updates: dict) -> dict | None:
+    """Update specific fields on a strategy (admin client, no JWT required).
+
+    Used by the worker to persist algo trade records into stored_trades as
+    they fire live. `updates` is merged — pass only the fields you want to
+    change (typically `stored_trades`, `live_executions`, `kpis`).
+    """
+    row = _strategy_to_row(updates)
+    row.pop('user_id', None)
+    row.pop('id', None)
+    client = get_admin_client()
+    result = client.table('strategies') \
+        .update(row) \
+        .eq('id', strategy_id) \
+        .eq('user_id', user_id) \
+        .execute()
+    if result.data:
+        return _row_to_strategy(result.data[0])
+    return None
+
+
 def load_portfolios_admin(user_id: str) -> list:
     """Load all portfolios for a specific user (admin client)."""
     client = get_admin_client()

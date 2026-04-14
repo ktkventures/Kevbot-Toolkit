@@ -72,6 +72,10 @@ export function useStrategy(id: number | null, dateRange?: string) {
     queryKey: ['strategy', id, dateRange || 'Strategy Default'],
     queryFn: () => apiFetch<StrategyDTO>(`/api/strategies/${id}${params}`),
     enabled: id !== null,
+    // M8.5 B+: poll so newly-persisted algo trades (from Ralph's exit
+    // signals) surface on the Chart & Trades tab without a manual
+    // "Update All Data" click.
+    refetchInterval: 60_000,
   });
 }
 
@@ -83,6 +87,7 @@ export function useStrategyTrades(id: number | null, useStored = true) {
     enabled: id !== null,
     retry: 1,
     retryDelay: 2000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -93,6 +98,7 @@ export function useStrategyForwardTest(id: number | null) {
     enabled: id !== null,
     retry: 1,
     retryDelay: 2000,
+    refetchInterval: 60_000,
   });
 }
 

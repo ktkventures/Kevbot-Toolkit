@@ -1765,9 +1765,24 @@ class PositionStateMachine:
 
     def _signal_exit(self, reason: str, price: float,
                      timestamp: str, bar_count: int = None) -> dict:
-        """Build signal dict for live alert dispatch and reset state."""
+        """Build signal dict for live alert dispatch and reset state.
+
+        M8.5 B+: also embeds the full `trade_record` dict (identical to what
+        backtest produces via get_trade_record) so downstream alert handlers
+        can persist it to the strategy's stored_trades without re-running
+        the engine. This restores the Streamlit-era behavior where algo
+        trades accumulated automatically as live bars closed.
+        """
         if bar_count is not None:
             self.state.last_exit_bar_count = bar_count
+        # Build trade record BEFORE _reset_position() clears state.
+        trade_record = self.get_trade_record(
+            exit_price=price,
+            exit_time=timestamp,
+            exit_reason=reason,
+            exit_trigger=reason,
+            bar_count=bar_count,
+        )
         sig = {
             'type': 'exit_signal',
             'trigger': reason,
@@ -1775,7 +1790,13 @@ class PositionStateMachine:
             'bar_time': timestamp,
             'entry_price': self.state.entry_price,
             'entry_stop_price': self.state.stop_price,
+            'entry_time': self.state.entry_time,
+            'direction': self.state.direction,
+            'exec_type': self.state.exec_type or 'C',
+            'exit_reason': reason,
             'atr': 0,  # filled by caller
+            # Full trade-record dict for auto-persistence into stored_trades.
+            'trade_record': trade_record,
         }
         self._reset_position()
         return sig
