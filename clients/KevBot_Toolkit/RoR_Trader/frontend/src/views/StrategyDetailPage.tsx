@@ -601,6 +601,22 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // M8.5: subscribe to Ralph's Supabase Realtime broadcasts for this (symbol, tf).
   // Returns null until the first bar arrives; stays updated on each new broadcast.
   const liveBar = useLiveBar(stratSymbol, tfSeconds);
+  // Memoize the formingBar prop so SyncedChartPane (now React.memo'd) only
+  // re-renders when liveBar's underlying values genuinely change — NOT on
+  // every parent re-render. Reference changes would bust the memo even when
+  // the bar snapshot is identical.
+  const formingBarProp = useMemo(() => (
+    liveBar?.bar ? {
+      time: liveBar.bar.timestamp,
+      open: liveBar.bar.open,
+      high: liveBar.bar.high,
+      low: liveBar.bar.low,
+      close: liveBar.bar.close,
+    } : null
+  ), [
+    liveBar?.bar?.timestamp, liveBar?.bar?.open, liveBar?.bar?.high,
+    liveBar?.bar?.low, liveBar?.bar?.close,
+  ]);
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
@@ -2442,13 +2458,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         upBorderColor={chartPrefs.candleUpBorder}
                         gridLines={chartPrefs.gridLines}
                         rightOffset={chartPrefs.rightOffset}
-                        formingBar={liveBar?.bar ? {
-                          time: liveBar.bar.timestamp,
-                          open: liveBar.bar.open,
-                          high: liveBar.bar.high,
-                          low: liveBar.bar.low,
-                          close: liveBar.bar.close,
-                        } : null}
+                        formingBar={formingBarProp}
                       />
                       {/* Legend */}
                       <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>

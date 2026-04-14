@@ -15,7 +15,7 @@
  * The forming-bar imperative update (M8.5 Phase B) is unchanged.
  */
 
-import { useEffect, useMemo, useRef, useCallback } from 'react';
+import { memo, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   createChart,
   type IChartApi, type ISeriesApi, type SeriesType, type Time,
@@ -121,7 +121,7 @@ function transformMarkers(markers: Record<string, any>[]): any[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function SyncedChartPane({
+function SyncedChartPaneInner({
   panes,
   upColor,
   downColor,
@@ -460,3 +460,13 @@ export default function SyncedChartPane({
 
   return <div ref={containerRef} style={{ width: '100%' }} />;
 }
+
+// React.memo keeps SyncedChartPane from re-rendering on every parent render.
+// Parent (StrategyDetailPage) re-renders ~1Hz from useLiveBar broadcasts —
+// without memo, each one would invoke SyncedChartPane's render function,
+// diff the virtual DOM, and re-fire any effects whose deps appear changed.
+// With memo, we only re-render when an actual prop changes (panes,
+// formingBar, theme colors, etc. — all of which are memoized upstream).
+const SyncedChartPane = memo(SyncedChartPaneInner);
+export default SyncedChartPane;
+
