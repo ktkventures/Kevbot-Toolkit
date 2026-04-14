@@ -234,6 +234,62 @@ class BarBuilder:
         self._partial.update(price, volume)
         return None
 
+    def accept_second_bar(self, bar_dict: dict) -> Optional[dict]:
+        """Aggregate a per-second OHLCV bar into the current period's partial.
+
+        M8.5 Phase B+: enables sub-minute primary-TF aggregation AND forming-bar
+        snapshots for any TF, all from Polygon's A.{ticker} per-second channel.
+
+        Aggregation rules MIRROR data_loader.resample_to_timeframe() exactly so
+        live and backtest produce bar-for-bar identical primary-TF bars:
+            open   = first per-second bar's open
+            high   = max across the period
+            low    = min across the period
+            close  = most recent per-second bar's close
+            volume = sum across the period
+
+        No gap-fill: empty periods produce no bar (matches backtest's
+        dropna(subset=['open']) behavior).
+
+        Returns the completed bar dict on period close, None if still forming.
+        Locked by `test_ralph_subminute_parity.py`.
+        """
+        ts_raw = bar_dict.get('timestamp')
+        if isinstance(ts_raw, str):
+            ts = pd.Timestamp(ts_raw).to_pydatetime()
+        elif isinstance(ts_raw, pd.Timestamp):
+            ts = ts_raw.to_pydatetime()
+        else:
+            ts = ts_raw
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        period_start = self._align_to_period(ts)
+
+        sec_open = float(bar_dict['open'])
+        sec_high = float(bar_dict['high'])
+        sec_low = float(bar_dict['low'])
+        sec_close = float(bar_dict['close'])
+        sec_volume = float(bar_dict.get('volume', 0))
+
+        if self._partial is None or period_start > self._partial.bar_start:
+            completed = self._close_bar() if self._partial is not None else None
+            self._partial = PartialBar(
+                sec_open, period_start, self.tf_seconds)
+            self._partial.high = sec_high
+            self._partial.low = sec_low
+            self._partial.close = sec_close
+            self._partial.volume = sec_volume
+            self._partial.tick_count = 1
+            return completed
+
+        # Same period — aggregate into existing partial
+        self._partial.high = max(self._partial.high, sec_high)
+        self._partial.low = min(self._partial.low, sec_low)
+        self._partial.close = sec_close
+        self._partial.volume += sec_volume
+        self._partial.tick_count += 1
+        return None
+
     @property
     def partial_bar(self) -> Optional[PartialBar]:
         return self._partial
