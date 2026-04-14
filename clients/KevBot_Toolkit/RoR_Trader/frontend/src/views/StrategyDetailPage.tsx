@@ -1421,6 +1421,290 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     );
   }
 
+  // M8.5 B+ — Memoize chart pane configs so SyncedChartPane's `panes` prop
+  // identity is stable across re-renders triggered by useLiveBar (every
+  // ~250ms forming-bar broadcast). Without this, the inline IIFE used to
+  // produce a new `chartPanes` object on every render → SyncedChartPane's
+  // setup useEffect re-fired → chart torn down + rebuilt + fitContent →
+  // user's zoom/scroll snapped back to the right edge. Also fixes a CLAUDE.md
+  // rule violation ("Never use IIFEs for variable initialization — use
+  // useMemo instead").
+  const INDICATOR_COLORS = useMemo(() => [
+    '#2196F3', '#FF9800', '#4CAF50', '#E91E63',
+    '#00BCD4', '#9C27B0', '#FFC107', '#795548',
+  ], []);
+
+  const chartTabData = useMemo(() => {
+    const chartSrc = chartDataResp?.chart_data;
+    const rawBars = chartSrc && chartSrc.length > 0
+      ? chartSrc
+      : barsData
+        ? barsData.map(b => ({ timestamp: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
+        : [];
+    const bars = candleCount > 0 && rawBars.length > candleCount
+      ? rawBars.slice(-candleCount)
+      : rawBars;
+
+    if (bars.length === 0) {
+      return { chartPanes: [] as PaneConfig[], overlayNames: [] as string[], hasBars: false };
+    }
+
+    const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
+    const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
+    const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+    const firstBarTime = bars.length > 0 ? safeDateMs(bars[0].timestamp) : 0;
+    const lastBarTime = bars.length > 0 ? safeDateMs(bars[bars.length - 1].timestamp) : Infinity;
+
+    // Build trade markers from stored_trades (always available) or btTrades+fwdTrades
+    const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
+      ? [...btTrades, ...fwdTrades]
+      : (apiStrategy?.stored_trades || []).map((t: any, i: number) => ({
+          id: i + 1,
+          entryTime: t.entry_time || '--',
+          exitTime: t.exit_time || '--',
+          entryTimeDisplay: shiftCType(t.entry_time || '--', t.exec_type || 'C'),
+          exitTimeDisplay: shiftCType(t.exit_time || '--', ['stop_loss', 'stop', 'target'].includes(t.exit_reason || '') ? 'L' : 'C'),
+          entryPrice: t.entry_price ?? 0,
+          exitPrice: t.exit_price ?? 0,
+          pnlR: t.r_multiple ?? 0,
+          execType: t.exec_type || 'C',
+          exitReason: t.exit_reason || '--',
+          isFwd: false,
+        }));
+    const tradeMarkers = !showTriggers ? [] : markerTrades.flatMap((t: any) => {
+      const m: any[] = [];
+      const dir = strategy?.direction;
+      const entryPlot = t.entryTimeDisplay || t.entryTime;
+      const exitPlot = t.exitTimeDisplay || t.exitTime;
+      const entryMs = entryPlot && entryPlot !== '--' ? safeDateMs(entryPlot) : 0;
+      const exitMs = exitPlot && exitPlot !== '--' ? safeDateMs(exitPlot) : 0;
+      if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
+        m.push({ time: entryPlot, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
+      }
+      if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
+        const reason = t.exitReason || '';
+        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+        else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
+        else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
+        else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
+        m.push({ time: exitPlot, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
+      }
+      return m;
+    });
+
+    const chartPanes: PaneConfig[] = [];
+
+    // Pane 1: Confluence heatmap
+    if (showConditions && heatmapConds.length > 0) {
+      const n = heatmapConds.length;
+      const hmSeries: SeriesConfig[] = heatmapConds.map((cond: any, idx: number) => ({
+        type: 'Histogram' as const,
+        data: bars.map((b: any, bi: number) => {
+          const isPB = cond.fidelity === 'PB';
+          const sourceBar = isPB && bi > 0 ? bars[bi - 1] : b;
+          const stateVal = sourceBar[`_state_${cond.column}`];
+          const isMet = stateVal != null && stateVal === cond.needed_state;
+          return { time: b.timestamp, value: n - idx, color: isMet ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.4)' };
+        }),
+        options: { priceLineVisible: false, lastValueVisible: false, title: cond.label },
+      }));
+      chartPanes.push({ id: 'heatmap', height: Math.max(50, n * 20 + 10), series: hmSeries, hideTimeAxis: true });
+    }
+
+    // Pane 2: Price chart
+    const priceSeries: SeriesConfig[] = [
+      {
+        type: 'Candlestick',
+        data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+        markers: tradeMarkers,
+      },
+    ];
+
+    const visibleTrades = !showTriggers ? [] : markerTrades.filter((t: any) => {
+      const ep = t.entryTimeDisplay || t.entryTime;
+      const xp = t.exitTimeDisplay || t.exitTime;
+      const entryMs = ep && ep !== '--' ? safeDateMs(ep) : 0;
+      const exitMs = xp && xp !== '--' ? safeDateMs(xp) : 0;
+      return (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) ||
+             (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
+    });
+
+    if (visibleTrades.length > 0 || recentAlerts.length > 0) {
+      const barTimestamps = bars.map((b: any) => b.timestamp);
+      const snapToBar = (tradeTime: string): string | null => {
+        const tradeMs = safeDateMs(tradeTime);
+        let bestTs = barTimestamps[0];
+        let bestDist = Infinity;
+        for (const ts of barTimestamps) {
+          const dist = Math.abs(safeDateMs(ts) - tradeMs);
+          if (dist < bestDist) { bestDist = dist; bestTs = ts; }
+        }
+        return bestDist < 120000 ? bestTs : null;
+      };
+
+      const algoEntryData: any[] = [];
+      const algoEntryMarkers: any[] = [];
+      const seenAlgoEntry = new Set<string>();
+      const algoExitData: any[] = [];
+      const algoExitMarkers: any[] = [];
+      const seenAlgoExit = new Set<string>();
+
+      for (const t of visibleTrades) {
+        const entryPlot = t.entryTimeDisplay || t.entryTime;
+        const exitPlot = t.exitTimeDisplay || t.exitTime;
+        if (entryPlot && entryPlot !== '--' && t.entryPrice > 0) {
+          const entryMs = safeDateMs(entryPlot);
+          if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
+            const snapped = snapToBar(entryPlot);
+            if (snapped && !seenAlgoEntry.has(snapped)) {
+              seenAlgoEntry.add(snapped);
+              algoEntryData.push({ time: snapped, value: t.entryPrice });
+              algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
+            }
+          }
+        }
+        if (exitPlot && exitPlot !== '--' && t.exitPrice > 0) {
+          const exitMs = safeDateMs(exitPlot);
+          if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
+            const snapped = snapToBar(exitPlot);
+            if (snapped && !seenAlgoExit.has(snapped)) {
+              seenAlgoExit.add(snapped);
+              const reason = t.exitReason || '';
+              let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+              if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
+              else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
+              else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
+              algoExitData.push({ time: snapped, value: t.exitPrice });
+              algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
+            }
+          }
+        }
+      }
+
+      if (algoEntryData.length > 0) {
+        priceSeries.push({
+          type: 'Line', data: algoEntryData,
+          options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: algoEntryMarkers,
+        });
+      }
+      if (algoExitData.length > 0) {
+        priceSeries.push({
+          type: 'Line', data: algoExitData,
+          options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: algoExitMarkers,
+        });
+      }
+
+      const alertEntryData: any[] = [];
+      const alertEntryMarkers: any[] = [];
+      const seenAlertEntry = new Set<string>();
+      const alertExitData: any[] = [];
+      const alertExitMarkers: any[] = [];
+      const seenAlertExit = new Set<string>();
+
+      for (const a of recentAlerts) {
+        if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
+          const entryMs = safeDateMs(a.entryTime);
+          if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
+            const snapped = snapToBar(a.entryTime);
+            if (snapped && !seenAlertEntry.has(snapped)) {
+              seenAlertEntry.add(snapped);
+              alertEntryData.push({ time: snapped, value: a.entryPrice });
+              alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
+            }
+          }
+        }
+        if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
+          const exitMs = safeDateMs(a.exitTime);
+          if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+            const snapped = snapToBar(a.exitTime);
+            if (snapped && !seenAlertExit.has(snapped)) {
+              seenAlertExit.add(snapped);
+              const reason = a.exitReason || '';
+              let color: string;
+              if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
+              else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
+              else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
+              else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
+              alertExitData.push({ time: snapped, value: a.exitPrice });
+              alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
+            }
+          }
+        }
+      }
+
+      if (alertEntryData.length > 0) {
+        priceSeries.push({
+          type: 'Line', data: alertEntryData,
+          options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: alertEntryMarkers,
+        });
+      }
+      if (alertExitData.length > 0) {
+        priceSeries.push({
+          type: 'Line', data: alertExitData,
+          options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+          markers: alertExitMarkers,
+        });
+      }
+    }
+
+    for (let i = 0; i < overlayNames.length; i++) {
+      const col = overlayNames[i];
+      priceSeries.push({
+        type: 'Line',
+        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+        options: { color: INDICATOR_COLORS[i % INDICATOR_COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
+      });
+    }
+    chartPanes.push({ id: 'price', height: 350, series: priceSeries });
+
+    // Pane 3: Oscillator
+    if (oscNames.length > 0) {
+      const oscSeries: SeriesConfig[] = [];
+      for (const col of oscNames.filter(c => c.includes('hist'))) {
+        oscSeries.push({
+          type: 'Histogram',
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
+            time: b.timestamp, value: b[col],
+            color: b[col] >= 0 ? '#4CAF50' : '#f44336',
+          })),
+          options: { priceLineVisible: false, title: 'Hist' },
+        });
+      }
+      for (const col of oscNames.filter(c => !c.includes('hist'))) {
+        oscSeries.push({
+          type: 'Line',
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+          options: {
+            color: col.includes('signal') ? '#FF9800' : '#2196F3',
+            lineWidth: 1, priceLineVisible: false,
+            title: col.replace(/_/g, ' '),
+          },
+        });
+      }
+      if (bars.length > 0) {
+        oscSeries.push({
+          type: 'Line',
+          data: [
+            { time: bars[0].timestamp, value: 0 },
+            { time: bars[bars.length - 1].timestamp, value: 0 },
+          ],
+          options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
+        });
+      }
+      chartPanes.push({ id: 'oscillator', height: 180, series: oscSeries });
+    }
+
+    return { chartPanes, overlayNames, hasBars: true };
+  }, [
+    chartDataResp, barsData, candleCount, showConditions, showTriggers,
+    chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
+    strategy?.direction, INDICATOR_COLORS,
+  ]);
+
   /* ======================================================================= */
   /* RENDER                                                                    */
   /* ======================================================================= */
@@ -2130,336 +2414,61 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   <LiveBarStatusPill liveBar={liveBar} tfSeconds={tfSeconds} />
                 </div>
 
-                {/* ---- Synchronized Multi-Pane Chart ---- */}
-                {(() => {
-                  const chartSrc = chartDataResp?.chart_data;
-                  const rawBars = chartSrc && chartSrc.length > 0
-                    ? chartSrc
-                    : barsData
-                      ? barsData.map(b => ({ timestamp: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))
-                      : [];
-
-                  // Apply candle count slicing (last N bars)
-                  const bars = candleCount > 0 && rawBars.length > candleCount
-                    ? rawBars.slice(-candleCount)
-                    : rawBars;
-
-                  if (bars.length === 0) {
-                    return <Card className="mb-4"><ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'} height={400} /></Card>;
-                  }
-
-                  const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4', '#9C27B0', '#FFC107', '#795548'];
-                  const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
-                  const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
-                  const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
-
-                  // Determine visible time range from sliced bars
-                  const firstBarTime = bars.length > 0 ? safeDateMs(bars[0].timestamp) : 0;
-                  const lastBarTime = bars.length > 0 ? safeDateMs(bars[bars.length - 1].timestamp) : Infinity;
-
-                  // Build trade markers from stored_trades (always available) or btTrades+fwdTrades
-                  const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
-                    ? [...btTrades, ...fwdTrades]
-                    : (apiStrategy?.stored_trades || []).map((t: any, i: number) => ({
-                        id: i + 1,
-                        entryTime: t.entry_time || '--',
-                        exitTime: t.exit_time || '--',
-                        entryTimeDisplay: shiftCType(t.entry_time || '--', t.exec_type || 'C'),
-                        exitTimeDisplay: shiftCType(t.exit_time || '--', ['stop_loss', 'stop', 'target'].includes(t.exit_reason || '') ? 'L' : 'C'),
-                        entryPrice: t.entry_price ?? 0,
-                        exitPrice: t.exit_price ?? 0,
-                        pnlR: t.r_multiple ?? 0,
-                        execType: t.exec_type || 'C',
-                        exitReason: t.exit_reason || '--',
-                        isFwd: false,
-                      }));
-                  const tradeMarkers = !showTriggers ? [] : markerTrades.flatMap((t: any) => {
-                    const m: any[] = [];
-                    const dir = strategy.direction;
-                    const entryPlot = t.entryTimeDisplay || t.entryTime;
-                    const exitPlot = t.exitTimeDisplay || t.exitTime;
-                    const entryMs = entryPlot && entryPlot !== '--' ? safeDateMs(entryPlot) : 0;
-                    const exitMs = exitPlot && exitPlot !== '--' ? safeDateMs(exitPlot) : 0;
-                    if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
-                      m.push({ time: entryPlot, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
-                    }
-                    if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
-                      const reason = t.exitReason || '';
-                      let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                      if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                      else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
-                      else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
-                      else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
-                      m.push({ time: exitPlot, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
-                    }
-                    return m;
-                  });
-
-                  // ---- Build pane configs for SyncedChartPane ----
-                  const chartPanes: PaneConfig[] = [];
-
-                  // Pane 1: Confluence heatmap (histogram-based, like Streamlit)
-                  if (showConditions && heatmapConds.length > 0) {
-                    const n = heatmapConds.length;
-                    const hmSeries: SeriesConfig[] = heatmapConds.map((cond: any, idx: number) => ({
-                      type: 'Histogram' as const,
-                      data: bars.map((b: any, bi: number) => {
-                        // PB fidelity: show previous bar's state (what the engine checked for entry gating)
-                        // CB fidelity: show current bar's state
-                        const isPB = cond.fidelity === 'PB';
-                        const sourceBar = isPB && bi > 0 ? bars[bi - 1] : b;
-                        const stateVal = sourceBar[`_state_${cond.column}`];
-                        const isMet = stateVal != null && stateVal === cond.needed_state;
-                        return { time: b.timestamp, value: n - idx, color: isMet ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.4)' };
-                      }),
-                      options: { priceLineVisible: false, lastValueVisible: false, title: cond.label },
-                    }));
-                    chartPanes.push({ id: 'heatmap', height: Math.max(50, n * 20 + 10), series: hmSeries, hideTimeAxis: true });
-                  }
-
-                  // Pane 2: Price chart + overlay indicators + trade markers
-                  const priceSeries: SeriesConfig[] = [
-                    {
-                      type: 'Candlestick',
-                      data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
-                      markers: tradeMarkers,
-                    },
-                  ];
-
-                  // Add price-level cross markers (+ for algo, x for alert trades)
-                  // Only when Show Triggers is on
-                  const visibleTrades = !showTriggers ? [] : markerTrades.filter((t: any) => {
-                    const ep = t.entryTimeDisplay || t.entryTime;
-                    const xp = t.exitTimeDisplay || t.exitTime;
-                    const entryMs = ep && ep !== '--' ? safeDateMs(ep) : 0;
-                    const exitMs = xp && xp !== '--' ? safeDateMs(xp) : 0;
-                    return (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) ||
-                           (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
-                  });
-
-                  if (visibleTrades.length > 0 || recentAlerts.length > 0) {
-                    // Helper: snap a trade timestamp to nearest bar timestamp
-                    // LWC v4 requires marker timestamps to exactly match a data point
-                    const barTimestamps = bars.map((b: any) => b.timestamp);
-                    const snapToBar = (tradeTime: string): string | null => {
-                      const tradeMs = safeDateMs(tradeTime);
-                      let bestTs = barTimestamps[0];
-                      let bestDist = Infinity;
-                      for (const ts of barTimestamps) {
-                        const dist = Math.abs(safeDateMs(ts) - tradeMs);
-                        if (dist < bestDist) { bestDist = dist; bestTs = ts; }
-                      }
-                      return bestDist < 120000 ? bestTs : null; // Within 2 minutes
-                    };
-
-                    // --- Algo price markers (+) — BT + FWD trades (what the algo says should happen) ---
-                    const algoEntryData: any[] = [];
-                    const algoEntryMarkers: any[] = [];
-                    const seenAlgoEntry = new Set<string>();
-                    const algoExitData: any[] = [];
-                    const algoExitMarkers: any[] = [];
-                    const seenAlgoExit = new Set<string>();
-
-                    for (const t of visibleTrades) {
-                      // Use shifted display time for C-type trades (plots on next bar)
-                      const entryPlot = t.entryTimeDisplay || t.entryTime;
-                      const exitPlot = t.exitTimeDisplay || t.exitTime;
-                      // Entry
-                      if (entryPlot && entryPlot !== '--' && t.entryPrice > 0) {
-                        const entryMs = safeDateMs(entryPlot);
-                        if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
-                          const snapped = snapToBar(entryPlot);
-                          if (snapped && !seenAlgoEntry.has(snapped)) {
-                            seenAlgoEntry.add(snapped);
-                            algoEntryData.push({ time: snapped, value: t.entryPrice });
-                            algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
-                          }
-                        }
-                      }
-                      // Exit
-                      if (exitPlot && exitPlot !== '--' && t.exitPrice > 0) {
-                        const exitMs = safeDateMs(exitPlot);
-                        if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
-                          const snapped = snapToBar(exitPlot);
-                          if (snapped && !seenAlgoExit.has(snapped)) {
-                            seenAlgoExit.add(snapped);
-                            const reason = t.exitReason || '';
-                            let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                            if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-                            else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
-                            else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
-                            algoExitData.push({ time: snapped, value: t.exitPrice });
-                            algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
-                          }
-                        }
-                      }
-                    }
-
-                    if (algoEntryData.length > 0) {
-                      priceSeries.push({
-                        type: 'Line', data: algoEntryData,
-                        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: algoEntryMarkers,
-                      });
-                    }
-                    if (algoExitData.length > 0) {
-                      priceSeries.push({
-                        type: 'Line', data: algoExitData,
-                        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: algoExitMarkers,
-                      });
-                    }
-
-                    // --- Alert price markers (×) — actual alert executions ---
-                    const alertEntryData: any[] = [];
-                    const alertEntryMarkers: any[] = [];
-                    const seenAlertEntry = new Set<string>();
-                    const alertExitData: any[] = [];
-                    const alertExitMarkers: any[] = [];
-                    const seenAlertExit = new Set<string>();
-
-                    for (const a of recentAlerts) {
-                      // Entry
-                      if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
-                        const entryMs = safeDateMs(a.entryTime);
-                        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
-                          const snapped = snapToBar(a.entryTime);
-                          if (snapped && !seenAlertEntry.has(snapped)) {
-                            seenAlertEntry.add(snapped);
-                            alertEntryData.push({ time: snapped, value: a.entryPrice });
-                            alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
-                          }
-                        }
-                      }
-                      // Exit
-                      if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
-                        const exitMs = safeDateMs(a.exitTime);
-                        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
-                          const snapped = snapToBar(a.exitTime);
-                          if (snapped && !seenAlertExit.has(snapped)) {
-                            seenAlertExit.add(snapped);
-                            const reason = a.exitReason || '';
-                            let color: string;
-                            if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
-                            else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
-                            else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
-                            else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
-                            alertExitData.push({ time: snapped, value: a.exitPrice });
-                            alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
-                          }
-                        }
-                      }
-                    }
-
-                    if (alertEntryData.length > 0) {
-                      priceSeries.push({
-                        type: 'Line', data: alertEntryData,
-                        options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: alertEntryMarkers,
-                      });
-                    }
-                    if (alertExitData.length > 0) {
-                      priceSeries.push({
-                        type: 'Line', data: alertExitData,
-                        options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-                        markers: alertExitMarkers,
-                      });
-                    }
-                  }
-
-                  // Add overlay line series (EMA, UT Bot stop, VWAP, etc.)
-                  for (let i = 0; i < overlayNames.length; i++) {
-                    const col = overlayNames[i];
-                    priceSeries.push({
-                      type: 'Line',
-                      data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-                      options: { color: INDICATOR_COLORS[i % INDICATOR_COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
-                    });
-                  }
-                  chartPanes.push({ id: 'price', height: 350, series: priceSeries });
-
-                  // Pane 3: Oscillator (MACD, RVOL, etc.)
-                  if (oscNames.length > 0) {
-                    const oscSeries: SeriesConfig[] = [];
-                    // Histogram first (drawn in back)
-                    for (const col of oscNames.filter(c => c.includes('hist'))) {
-                      oscSeries.push({
-                        type: 'Histogram',
-                        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
-                          time: b.timestamp, value: b[col],
-                          color: b[col] >= 0 ? '#4CAF50' : '#f44336',
-                        })),
-                        options: { priceLineVisible: false, title: 'Hist' },
-                      });
-                    }
-                    // Lines
-                    for (const col of oscNames.filter(c => !c.includes('hist'))) {
-                      oscSeries.push({
-                        type: 'Line',
-                        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-                        options: {
-                          color: col.includes('signal') ? '#FF9800' : '#2196F3',
-                          lineWidth: 1, priceLineVisible: false,
-                          title: col.replace(/_/g, ' '),
-                        },
-                      });
-                    }
-                    // Zero reference line
-                    if (bars.length > 0) {
-                      oscSeries.push({
-                        type: 'Line',
-                        data: [
-                          { time: bars[0].timestamp, value: 0 },
-                          { time: bars[bars.length - 1].timestamp, value: 0 },
-                        ],
-                        options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
-                      });
-                    }
-                    chartPanes.push({ id: 'oscillator', height: 180, series: oscSeries });
-                  }
-
-                  return (
-                    <>
-                      {chartDataLoading && !chartDataResp && (
-                        <div className="text-xs px-3 py-1.5 mb-2 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                          Loading indicators & heatmap data...
-                        </div>
-                      )}
-                      <Card className="mb-4">
-                        <SyncedChartPane
-                          panes={chartPanes}
-                          upColor={chartPrefs.candleUp}
-                          downColor={chartPrefs.candleDown}
-                          upBorderColor={chartPrefs.candleUpBorder}
-                          gridLines={chartPrefs.gridLines}
-                          rightOffset={chartPrefs.rightOffset}
-                          formingBar={liveBar?.bar ? {
-                            time: liveBar.bar.timestamp,
-                            open: liveBar.bar.open,
-                            high: liveBar.bar.high,
-                            low: liveBar.bar.low,
-                            close: liveBar.bar.close,
-                          } : null}
-                        />
-                        {/* Legend */}
-                        <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                          {overlayNames.map((name: string, i: number) => (
-                            <span key={name} className="flex items-center gap-1">
-                              <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
-                              {name.replace(/_/g, ' ')}
-                            </span>
-                          ))}
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>+</span> Algo price</span>
-                          <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&times;</span> Alert price</span>
-                        </div>
-                      </Card>
-                    </>
-                  );
-                })()}
+                {/* ---- Synchronized Multi-Pane Chart ----
+                   M8.5 B+: chartPanes is memoized above (chartTabData) so
+                   parent re-renders from useLiveBar broadcasts (every
+                   ~250ms) no longer produce a fresh `panes` reference.
+                   SyncedChartPane's setup effect stays cold and the
+                   imperative formingBar update path handles live ticks
+                   without rebuilding the chart. */}
+                {!chartTabData.hasBars ? (
+                  <Card className="mb-4">
+                    <ChartPlaceholder
+                      label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'}
+                      height={400}
+                    />
+                  </Card>
+                ) : (
+                  <>
+                    {chartDataLoading && !chartDataResp && (
+                      <div className="text-xs px-3 py-1.5 mb-2 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                        Loading indicators & heatmap data...
+                      </div>
+                    )}
+                    <Card className="mb-4">
+                      <SyncedChartPane
+                        panes={chartTabData.chartPanes}
+                        upColor={chartPrefs.candleUp}
+                        downColor={chartPrefs.candleDown}
+                        upBorderColor={chartPrefs.candleUpBorder}
+                        gridLines={chartPrefs.gridLines}
+                        rightOffset={chartPrefs.rightOffset}
+                        formingBar={liveBar?.bar ? {
+                          time: liveBar.bar.timestamp,
+                          open: liveBar.bar.open,
+                          high: liveBar.bar.high,
+                          low: liveBar.bar.low,
+                          close: liveBar.bar.close,
+                        } : null}
+                      />
+                      {/* Legend */}
+                      <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {chartTabData.overlayNames.map((name: string, i: number) => (
+                          <span key={name} className="flex items-center gap-1">
+                            <span className="inline-block w-3 h-0.5 rounded" style={{ background: INDICATOR_COLORS[i % INDICATOR_COLORS.length] }} />
+                            {name.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&#9650;</span> Entry</span>
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitWinColor }}>&#9679;</span> Win</span>
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitLossColor }}>&#9679;</span> Loss</span>
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.exitStopColor }}>&#9679;</span> Stop</span>
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>+</span> Algo price</span>
+                        <span className="flex items-center gap-1"><span style={{ color: chartPrefs.entryColor }}>&times;</span> Alert price</span>
+                      </div>
+                    </Card>
+                  </>
+                )}
 
                 {/* Position Status */}
                 <Card className="mb-4">
