@@ -357,6 +357,9 @@ class StrategyMonitor:
         self.strat_id = strategy['id']
         self.strat_name = strategy.get('name', f'Strategy {self.strat_id}')
         self.symbol = strategy.get('symbol', 'SPY')
+        # user_id propagates from strategy row (DB) or is stamped by worker.
+        # Used by SymbolHub to route Supabase Realtime live-bar broadcasts.
+        self.user_id = strategy.get('user_id', '')
         self.tf_seconds = TIMEFRAME_SECONDS.get(
             strategy.get('timeframe', '1Min'), 60)
         # Crypto symbols trade 24/7 — override session
@@ -784,7 +787,7 @@ def load_engine_state(path: Path = _ENGINE_STATE_FILE,
 class SymbolHub:
     """Per-symbol tick dispatcher with BarBuilders and StrategyMonitors."""
 
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str, publisher: Optional['LiveBarPublisher'] = None):
         self.symbol = symbol
         self.builders: Dict[int, BarBuilder] = {}  # tf_seconds → BarBuilder
         self.monitors: Dict[int, StrategyMonitor] = {}  # strat_id → monitor
@@ -794,6 +797,39 @@ class SymbolHub:
         self._mtf_confluence: Dict[int, Set[str]] = {}
         # Shadow engines for secondary TFs not covered by real monitors
         self._shadow_engines: Dict[int, '_ShadowIndicatorEngine'] = {}
+        # Live-bar publisher (Supabase Realtime broadcast, Phase M8.5).
+        # None is a valid value: all publish calls become silent no-ops.
+        self._publisher = publisher
+        # Held refs to prevent GC of fire-and-forget asyncio tasks.
+        self._pending_publish_tasks: Set['asyncio.Task'] = set()
+
+    def _publish_completed_bar(self, tf_seconds: int, bar: dict) -> None:
+        """Fire-and-forget broadcast of a completed bar to Supabase Realtime.
+
+        Side effect only — MUST NOT block or raise into the tick handler.
+        Publishes once per (symbol, tf) regardless of how many monitors share
+        the timeframe (user_id is taken from the first matching monitor).
+        """
+        if self._publisher is None:
+            return
+        user_id = None
+        for m in self.monitors.values():
+            if m.tf_seconds == tf_seconds and getattr(m, 'user_id', ''):
+                user_id = m.user_id
+                break
+        if not user_id:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            task = loop.create_task(
+                self._publisher.publish_async(
+                    user_id, self.symbol, tf_seconds, bar, is_forming=False
+                )
+            )
+            self._pending_publish_tasks.add(task)
+            task.add_done_callback(self._pending_publish_tasks.discard)
+        except Exception as e:
+            logger.debug("LiveBar publish schedule failed: %s", e)
 
     def add_monitor(self, monitor: StrategyMonitor):
         self.monitors[monitor.strat_id] = monitor
@@ -970,6 +1006,9 @@ class SymbolHub:
                             self._mtf_confluence[tf_seconds] = own_records
                             break
 
+                # M8.5: broadcast completed bar to Supabase Realtime (live chart)
+                self._publish_completed_bar(tf_seconds, completed)
+
             # Intra-bar tick checks for all monitors on this timeframe
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
@@ -1063,6 +1102,9 @@ class SymbolHub:
                         self._mtf_confluence[tf_seconds] = own_records
                         break
 
+            # M8.5: broadcast completed bar to Supabase Realtime (live chart)
+            self._publish_completed_bar(tf_seconds, completed)
+
     def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
                         alert_callback: Callable = None,
                         config: dict = None,
@@ -1133,6 +1175,9 @@ class SymbolHub:
                                    if not r.startswith('GEN-')}
                     self._mtf_confluence[tf_seconds] = own_records
                     break
+
+        # M8.5: broadcast completed bar to Supabase Realtime (live chart)
+        self._publish_completed_bar(tf_seconds, bar_dict)
 
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
