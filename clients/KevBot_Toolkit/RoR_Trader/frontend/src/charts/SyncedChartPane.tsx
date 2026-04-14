@@ -3,14 +3,19 @@
 /**
  * SyncedChartPane — renders multiple synchronized lightweight-charts panes.
  *
- * Ported from streamlit_lwc_fork/LightweightCharts.tsx. Each pane gets its own
- * createChart() instance. Zoom/scroll is synchronized across all panes via
- * subscribeVisibleLogicalRangeChange + subscribeVisibleTimeRangeChange.
+ * M8.5 Phase B+ refactor: chart instance + series objects PERSIST across
+ * re-renders. The setup useEffect is keyed by `paneStructureKey` (a stable
+ * hash of pane id/height/series-types) so it only fires when the structure
+ * genuinely changes. A separate data effect runs on every `panes` prop
+ * change and pushes new data via `series.setData()` / `series.setMarkers()`
+ * without recreating the chart. Visible time range is saved before any
+ * structure rebuild and restored after, so the user's zoom/scroll position
+ * survives toggling indicators / changing candle count.
  *
- * Supports: Candlestick, Line, Histogram series + SessionHighlighting primitives.
+ * The forming-bar imperative update (M8.5 Phase B) is unchanged.
  */
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   createChart,
   type IChartApi, type ISeriesApi, type SeriesType, type Time,
@@ -76,6 +81,43 @@ interface SyncedChartPaneProps {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Transform raw series data points to LWC format. */
+function transformSeriesData(seriesCfg: SeriesConfig): any[] {
+  return seriesCfg.data
+    .map((d: any) => {
+      const time = toUnixTime(d.time ?? d.timestamp) as Time;
+      if (!isFinite(time as number)) return null;
+      if (seriesCfg.type === 'Candlestick') {
+        if (!isFinite(d.open) || !isFinite(d.high) || !isFinite(d.low) || !isFinite(d.close)) return null;
+        const candle: any = {
+          time, open: Number(d.open), high: Number(d.high),
+          low: Number(d.low), close: Number(d.close),
+        };
+        if (d.color) candle.color = d.color;
+        if (d.borderColor) candle.borderColor = d.borderColor;
+        if (d.wickColor) candle.wickColor = d.wickColor;
+        return candle;
+      }
+      if (!isFinite(d.value)) return null;
+      return d.color ? { time, value: Number(d.value), color: d.color }
+                     : { time, value: Number(d.value) };
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+}
+
+/** Transform marker timestamps to LWC format and sort. */
+function transformMarkers(markers: Record<string, any>[]): any[] {
+  return markers
+    .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
+    .filter((m: any) => isFinite(m.time as number))
+    .sort((a: any, b: any) => (a.time as number) - (b.time as number));
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -90,10 +132,12 @@ export default function SyncedChartPane({
 }: SyncedChartPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
-  const syncingRef = useRef(false); // prevent infinite sync loops
-  // M8.5: ref to the primary pane's Candlestick series for imperative
-  // live-bar updates. Set inside the main setup effect.
+  const seriesRef = useRef<ISeriesApi<SeriesType>[][]>([]); // [paneIdx][seriesIdx]
+  const syncingRef = useRef(false);
   const primaryCandleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  // Preserves user's zoom/scroll across rare structure rebuilds (toggle
+  // Show Conditions, candle-count change beyond visible range, etc.)
+  const lastVisibleRangeRef = useRef<{ from: Time; to: Time } | null>(null);
 
   const getThemeColors = useCallback(() => {
     if (typeof window === 'undefined') return { text: '#DDD', grid: '#2B2B2B', border: '#333', up: '#4CAF50', down: '#f44336' };
@@ -107,6 +151,24 @@ export default function SyncedChartPane({
     };
   }, []);
 
+  // M8.5 B+: stable structure hash. Changes only when pane count / heights /
+  // series types / primitives genuinely change — NOT when only data changes.
+  // Excludes data so live updates don't fire structure rebuilds.
+  const paneStructureKey = useMemo(
+    () => JSON.stringify(panes.map(p => ({
+      id: p.id,
+      height: p.height,
+      hideTimeAxis: p.hideTimeAxis,
+      seriesTypes: p.series.map(s => s.type),
+      primitives: (p.primitives || []).map(pr => pr.type),
+    }))),
+    [panes],
+  );
+
+  // ---- STRUCTURE EFFECT ----
+  // Creates chart instances + adds empty series. Runs only when structure
+  // changes (rare) or theme colors change. Restores visible range from prior
+  // chart so the user's zoom/scroll position survives the rebuild.
   useEffect(() => {
     if (!containerRef.current || panes.length === 0) return;
 
@@ -115,8 +177,25 @@ export default function SyncedChartPane({
     const down = downColor || colors.down;
     const borderUp = upBorderColor || up;
     const charts: IChartApi[] = [];
+    const allSeries: ISeriesApi<SeriesType>[][] = [];
+    let primaryCandle: ISeriesApi<'Candlestick'> | null = null;
 
-    // Create container divs for each pane
+    // Save scroll position before tearing down old charts
+    if (chartsRef.current[0]) {
+      try {
+        const r = chartsRef.current[0].timeScale().getVisibleRange();
+        if (r) lastVisibleRangeRef.current = r as any;
+      } catch { /* ignore */ }
+    }
+
+    // Tear down any prior charts first (effect re-runs replace, not append)
+    for (const c of chartsRef.current) {
+      try { c.remove(); } catch { /* ignore */ }
+    }
+    chartsRef.current = [];
+    seriesRef.current = [];
+    primaryCandleSeriesRef.current = null;
+
     const container = containerRef.current;
     container.innerHTML = '';
 
@@ -143,14 +222,12 @@ export default function SyncedChartPane({
           rightOffset: rightOffset,
         },
       });
-
       charts.push(chart);
 
-      // Create series (LWC v4 API)
-      const createdSeries: ISeriesApi<SeriesType>[] = [];
+      // Create empty series instances. Data is pushed by the data effect.
+      const paneSeries: ISeriesApi<SeriesType>[] = [];
       for (const seriesCfg of pane.series) {
         let chartSeries: ISeriesApi<SeriesType> | undefined;
-
         switch (seriesCfg.type) {
           case 'Candlestick':
             chartSeries = chart.addCandlestickSeries({
@@ -159,16 +236,13 @@ export default function SyncedChartPane({
               wickUpColor: borderUp, wickDownColor: down,
               ...seriesCfg.options,
             });
-            // M8.5: capture the first (primary-pane) candlestick series
-            // so the live-update useEffect can push forming bars here.
-            if (pi === 0 && !primaryCandleSeriesRef.current) {
-              primaryCandleSeriesRef.current = chartSeries as ISeriesApi<'Candlestick'>;
+            if (pi === 0 && !primaryCandle) {
+              primaryCandle = chartSeries as ISeriesApi<'Candlestick'>;
             }
             break;
           case 'Line':
             chartSeries = chart.addLineSeries({
-              priceLineVisible: false,
-              lastValueVisible: false,
+              priceLineVisible: false, lastValueVisible: false,
               ...seriesCfg.options,
             });
             break;
@@ -181,45 +255,9 @@ export default function SyncedChartPane({
           default:
             continue;
         }
+        paneSeries.push(chartSeries);
 
-        // Transform and set data
-        const data = seriesCfg.data
-          .map((d: any) => {
-            const time = toUnixTime(d.time ?? d.timestamp) as Time;
-            if (!isFinite(time as number)) return null;
-            if (seriesCfg.type === 'Candlestick') {
-              if (!isFinite(d.open) || !isFinite(d.high) || !isFinite(d.low) || !isFinite(d.close)) return null;
-              const candle: any = { time, open: Number(d.open), high: Number(d.high), low: Number(d.low), close: Number(d.close) };
-              // Preserve per-bar color overrides (e.g., indicator candle coloring)
-              if (d.color) candle.color = d.color;
-              if (d.borderColor) candle.borderColor = d.borderColor;
-              if (d.wickColor) candle.wickColor = d.wickColor;
-              return candle;
-            }
-            if (!isFinite(d.value)) return null;
-            return d.color ? { time, value: Number(d.value), color: d.color } : { time, value: Number(d.value) };
-          })
-          .filter(Boolean)
-          .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-
-        if (data.length > 0) chartSeries.setData(data);
-
-        // Markers (v4 native API)
-        if (seriesCfg.markers && seriesCfg.markers.length > 0 && chartSeries) {
-          try {
-            const validMarkers = seriesCfg.markers
-              .map((m: any) => ({ ...m, time: toUnixTime(m.time) as Time }))
-              .filter((m: any) => isFinite(m.time as number))
-              .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-            if (validMarkers.length > 0) {
-              chartSeries.setMarkers(validMarkers);
-            }
-          } catch (e) {
-            console.warn('setMarkers failed:', e);
-          }
-        }
-
-        // Price lines (horizontal reference lines for stop/target/entry)
+        // Price lines (set once on creation; rare)
         if ((seriesCfg as any).priceLines && chartSeries) {
           try {
             for (const pl of (seriesCfg as any).priceLines) {
@@ -227,7 +265,7 @@ export default function SyncedChartPane({
                 price: pl.price,
                 color: pl.color || 'rgba(255,255,255,0.5)',
                 lineWidth: pl.lineWidth || 1,
-                lineStyle: pl.lineStyle || 2, // 0=solid, 1=dotted, 2=dashed
+                lineStyle: pl.lineStyle || 2,
                 axisLabelVisible: pl.axisLabelVisible !== false,
                 title: pl.title || '',
               });
@@ -236,33 +274,30 @@ export default function SyncedChartPane({
             console.warn('createPriceLine failed:', e);
           }
         }
-
-        createdSeries.push(chartSeries);
       }
+      allSeries.push(paneSeries);
 
       // Attach primitives
       if (pane.primitives) {
         for (const prim of pane.primitives) {
-          const target = createdSeries[prim.seriesIndex || 0];
+          const target = paneSeries[prim.seriesIndex || 0];
           if (!target) continue;
           try {
             if (prim.type === 'sessionHighlighting') {
-              target.attachPrimitive(new SessionHighlighting(prim.options));
+              (target as any).attachPrimitive(new SessionHighlighting(prim.options));
             }
           } catch (e) {
             console.warn('Primitive attach failed:', e);
           }
         }
       }
-
-      // Don't fitContent per-chart yet — do it once after sync is set up
     }
 
     chartsRef.current = charts;
+    seriesRef.current = allSeries;
+    primaryCandleSeriesRef.current = primaryCandle;
 
-    // ---- Cross-pane synchronization (time-based) ----
-    // Use visible time range instead of logical range to avoid index misalignment
-    // when panes have different numbers of data points (e.g., oscillator warmup).
+    // ---- Cross-pane synchronization ----
     if (charts.length > 1) {
       for (const chart of charts) {
         chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
@@ -270,19 +305,18 @@ export default function SyncedChartPane({
           syncingRef.current = true;
           for (const other of charts) {
             if (other !== chart) {
-              try {
-                other.timeScale().setVisibleRange(range);
-              } catch { /* ignore if range is invalid for this chart */ }
+              try { other.timeScale().setVisibleRange(range); } catch { /* ignore */ }
             }
           }
           syncingRef.current = false;
+          // Track latest visible range so we can restore across rebuilds
+          lastVisibleRangeRef.current = range as any;
         });
       }
-    }
-
-    // Fit all charts to content independently, then sync via time range
-    for (const chart of charts) {
-      chart.timeScale().fitContent();
+    } else if (charts[0]) {
+      charts[0].timeScale().subscribeVisibleTimeRangeChange((range) => {
+        if (range) lastVisibleRangeRef.current = range as any;
+      });
     }
 
     // Resize handler
@@ -295,15 +329,61 @@ export default function SyncedChartPane({
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      for (const c of charts) c.remove();
+      for (const c of charts) {
+        try { c.remove(); } catch { /* ignore */ }
+      }
       chartsRef.current = [];
+      seriesRef.current = [];
       primaryCandleSeriesRef.current = null;
     };
-  }, [panes, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors]);
+  }, [paneStructureKey, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors]);
 
-  // M8.5: imperative live-bar update on the primary pane's candle series.
-  // Runs only when `formingBar` changes — zero React re-render cascade.
-  // Silent no-op if the primary pane has no candlestick series.
+  // ---- DATA EFFECT ----
+  // Runs whenever panes prop changes. Pushes data to existing series via
+  // setData / setMarkers — does NOT recreate the chart, so user's zoom/scroll
+  // is preserved (LWC v4: setData does not reset visible range).
+  useEffect(() => {
+    const charts = chartsRef.current;
+    const allSeries = seriesRef.current;
+    if (charts.length === 0 || allSeries.length !== panes.length) return;
+
+    for (let pi = 0; pi < panes.length; pi++) {
+      const pane = panes[pi];
+      const paneSeries = allSeries[pi];
+      if (!paneSeries || paneSeries.length !== pane.series.length) continue;
+      for (let si = 0; si < pane.series.length; si++) {
+        const cfg = pane.series[si];
+        const series = paneSeries[si];
+        if (!series) continue;
+        const data = transformSeriesData(cfg);
+        if (data.length > 0) {
+          try { series.setData(data); } catch (e) {
+            console.warn('setData failed:', e);
+          }
+        }
+        if (cfg.markers && cfg.markers.length > 0) {
+          try {
+            const valid = transformMarkers(cfg.markers);
+            if (valid.length > 0) (series as any).setMarkers(valid);
+          } catch (e) {
+            console.warn('setMarkers failed:', e);
+          }
+        }
+      }
+    }
+
+    // First-time render: fitContent. Subsequent data updates: preserve view.
+    // We detect first-time by whether lastVisibleRangeRef is still null after
+    // the structure effect ran (if it has a value, the user scrolled — keep
+    // it; if null, this is the initial mount — fit).
+    if (!lastVisibleRangeRef.current && charts[0]) {
+      try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
+    } else if (lastVisibleRangeRef.current && charts[0]) {
+      try { charts[0].timeScale().setVisibleRange(lastVisibleRangeRef.current); } catch { /* range may be invalid for new data */ }
+    }
+  }, [panes]);
+
+  // ---- LIVE FORMING-BAR EFFECT (M8.5 Phase B, unchanged) ----
   useEffect(() => {
     const series = primaryCandleSeriesRef.current;
     if (!series || !formingBar) return;
