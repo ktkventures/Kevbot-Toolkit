@@ -495,6 +495,21 @@ class StrategyMonitor:
             if sec and sec != self.tf_seconds:
                 self._required_secondary_tf.add(sec)
 
+        # M8.5 B+: populate _intrabar_triggers from resolved entry/exit
+        # triggers, filtered to those known L-type (intra-bar level cross)
+        # triggers from `_IB_L_TYPE_TRIGGERS`. Used by the WS subscription
+        # logic and by intra-bar evaluation. Was never set before, which
+        # silently broke L-type live triggers entirely.
+        self._intrabar_triggers: Set[str] = set()
+        candidate_triggers = set()
+        if resolved_entry:
+            candidate_triggers.add(resolved_entry)
+        if resolved_exits:
+            candidate_triggers.update(resolved_exits)
+        for t in candidate_triggers:
+            if t in _IB_L_TYPE_TRIGGERS:
+                self._intrabar_triggers.add(t)
+
         logger.info("StrategyMonitor: %s (%s/%ds) — indicators=%s, "
                      "triggers=%s, interpreters=%s, entry=%s, exits=%s%s",
                      self.strat_name, self.symbol, self.tf_seconds,
@@ -1763,22 +1778,13 @@ class RalphEngine:
 
                 # Build subscription channels
                 # AM.{ticker} = per-minute aggregates (stocks)
-                # A.{ticker} = per-second aggregates (for L-type intra-bar detection)
+                # A.{ticker}  = per-second aggregates (M8.5 Phase B+: required
+                #   for sub-minute primary-TF aggregation, forming-bar streaming
+                #   on all TFs, and L-type intra-bar trigger detection)
                 # XA.X:{BASE}{QUOTE} = per-minute aggregates (crypto)
                 stock_channels = [f"AM.{s}" for s in stock_symbols]
+                stock_channels += [f"A.{s}" for s in stock_symbols]
                 crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
-
-                # Add per-second channels for symbols with L-type strategies
-                for sym in stock_symbols:
-                    hub = self.hubs.get(sym)
-                    if hub:
-                        has_ltype = any(
-                            any(t in _IB_L_TYPE_TRIGGERS
-                                for t in getattr(m, '_intrabar_triggers', set()))
-                            for m in hub.monitors.values()
-                        )
-                        if has_ltype:
-                            stock_channels.append(f"A.{sym}")
 
                 all_channels = stock_channels + crypto_channels
 
