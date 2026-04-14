@@ -859,6 +859,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggers, setShowTriggers] = useState(true);
   const [btTradesOpen, setBtTradesOpen] = useState(false);
   const [fwdTradesOpen, setFwdTradesOpen] = useState(false);
+  // M8.5 B+: expand beyond 100-row cap for algo history (off by default to
+  // keep the DOM light; user opts in and accepts the render cost).
+  const [showAllAlgoHistory, setShowAllAlgoHistory] = useState(false);
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -2616,18 +2619,45 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     return Math.abs(d) <= slipTol ? 'var(--green)' : 'var(--red)';
                   };
                   // Sort algo trades by entry time descending (most recent first)
-                  const sortedAlgo = [...fwdTrades, ...btTrades]
+                  const sortedAlgoFull = [...fwdTrades, ...btTrades]
                     .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
                     .sort((a, b) => {
                       const aMs = a.entryTime && a.entryTime !== '--' ? safeDateMs(a.entryTime) : 0;
                       const bMs = b.entryTime && b.entryTime !== '--' ? safeDateMs(b.entryTime) : 0;
                       return bMs - aMs;
                     });
+                  // M8.5 B+: cap rendered rows. 7,000+ rows of algo history
+                  // would create 70,000+ DOM nodes per table and freeze Edge
+                  // on scroll/reflow. Most recent 100 covers the visible
+                  // verification use case; full list is available via
+                  // Equity & KPIs tab / export if needed later.
+                  const ALGO_DISPLAY_CAP = showAllAlgoHistory ? Infinity : 100;
+                  const sortedAlgo = sortedAlgoFull.slice(0, ALGO_DISPLAY_CAP);
                   return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
                   {/* Algo History (+ on chart — BT + FWD programmatic trades) — LEFT */}
                   <Card>
-                    <h4 className="text-sm font-medium mb-3">Algo History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({btTrades.length + fwdTrades.length})</span></h4>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-medium">
+                        Algo History{' '}
+                        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                          (showing {sortedAlgo.length.toLocaleString()} of {sortedAlgoFull.length.toLocaleString()})
+                        </span>
+                      </h4>
+                      {sortedAlgoFull.length > 100 && (
+                        <button
+                          onClick={() => setShowAllAlgoHistory(v => !v)}
+                          className="text-xs"
+                          style={{
+                            color: 'var(--accent)', background: 'transparent',
+                            border: 'none', cursor: 'pointer', padding: '2px 6px',
+                          }}
+                          title="Rendering 7,000+ rows can slow page interactions"
+                        >
+                          {showAllAlgoHistory ? 'Show recent 100' : `Show all ${sortedAlgoFull.length.toLocaleString()}`}
+                        </button>
+                      )}
+                    </div>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
