@@ -673,6 +673,13 @@ class WorkerManager:
 # ============================================================
 
 def main():
+    # Emergency kill switch — set WORKER_DISABLED=true on the Railway service
+    # to pause the worker without deleting its deployment. Exits cleanly so
+    # Railway reports a graceful shutdown rather than a crash loop.
+    if os.environ.get("WORKER_DISABLED", "").strip().lower() in ("1", "true", "yes"):
+        logger.warning("WORKER_DISABLED is set — exiting without starting engines.")
+        sys.exit(0)
+
     from db import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         logger.error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
