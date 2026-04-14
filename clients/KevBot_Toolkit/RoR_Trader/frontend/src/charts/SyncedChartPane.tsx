@@ -49,6 +49,14 @@ export interface PaneConfig {
   hideTimeAxis?: boolean;
 }
 
+export interface LiveCandle {
+  time: string | number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 interface SyncedChartPaneProps {
   panes: PaneConfig[];
   /** Candle theme colors */
@@ -58,6 +66,13 @@ interface SyncedChartPaneProps {
   gridLines?: boolean;
   /** Number of empty bars to show to the right of the last candle */
   rightOffset?: number;
+  /**
+   * M8.5: latest forming/completed bar pushed imperatively to the primary
+   * pane's candlestick series via series.update(). Does NOT trigger a
+   * re-render — the update runs in a dedicated useEffect that only
+   * depends on this prop.
+   */
+  formingBar?: LiveCandle | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,10 +86,14 @@ export default function SyncedChartPane({
   upBorderColor,
   gridLines = true,
   rightOffset = 3,
+  formingBar = null,
 }: SyncedChartPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
   const syncingRef = useRef(false); // prevent infinite sync loops
+  // M8.5: ref to the primary pane's Candlestick series for imperative
+  // live-bar updates. Set inside the main setup effect.
+  const primaryCandleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
 
   const getThemeColors = useCallback(() => {
     if (typeof window === 'undefined') return { text: '#DDD', grid: '#2B2B2B', border: '#333', up: '#4CAF50', down: '#f44336' };
@@ -140,6 +159,11 @@ export default function SyncedChartPane({
               wickUpColor: borderUp, wickDownColor: down,
               ...seriesCfg.options,
             });
+            // M8.5: capture the first (primary-pane) candlestick series
+            // so the live-update useEffect can push forming bars here.
+            if (pi === 0 && !primaryCandleSeriesRef.current) {
+              primaryCandleSeriesRef.current = chartSeries as ISeriesApi<'Candlestick'>;
+            }
             break;
           case 'Line':
             chartSeries = chart.addLineSeries({
@@ -273,8 +297,32 @@ export default function SyncedChartPane({
       window.removeEventListener('resize', handleResize);
       for (const c of charts) c.remove();
       chartsRef.current = [];
+      primaryCandleSeriesRef.current = null;
     };
   }, [panes, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors]);
+
+  // M8.5: imperative live-bar update on the primary pane's candle series.
+  // Runs only when `formingBar` changes — zero React re-render cascade.
+  // Silent no-op if the primary pane has no candlestick series.
+  useEffect(() => {
+    const series = primaryCandleSeriesRef.current;
+    if (!series || !formingBar) return;
+    const t = toUnixTime(formingBar.time);
+    if (!isFinite(t)) return;
+    if (!isFinite(formingBar.open) || !isFinite(formingBar.high) ||
+        !isFinite(formingBar.low) || !isFinite(formingBar.close)) return;
+    try {
+      series.update({
+        time: t as Time,
+        open: Number(formingBar.open),
+        high: Number(formingBar.high),
+        low: Number(formingBar.low),
+        close: Number(formingBar.close),
+      });
+    } catch {
+      // LWC rejects updates with time earlier than last bar — drop silently.
+    }
+  }, [formingBar]);
 
   if (panes.length === 0) {
     return (

@@ -44,6 +44,10 @@ interface TradingChartProps {
   rightOffset?: number;
   timeVisible?: boolean;
   secondsVisible?: boolean;
+  // M8.5: optional live-bar update applied imperatively via series.update()
+  // so that forming/completed bar pushes from Ralph don't trigger React
+  // re-renders. Prop change → single imperative call, zero cascade.
+  formingBar?: CandleData | null;
 }
 
 /** Convert ISO 8601 string or any date-like value to Unix seconds for LWC. */
@@ -64,6 +68,7 @@ export default function TradingChart({
   rightOffset = 3,
   timeVisible = true,
   secondsVisible = true,
+  formingBar = null,
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -205,6 +210,30 @@ export default function TradingChart({
       overlaySeriesRefs.current = [];
     };
   }, [ohlcv, overlays, markers, height, getThemeColors, upColor, downColor, upBorderColor, gridLines, rightOffset, timeVisible, secondsVisible]);
+
+  // M8.5: imperative live-bar update. Runs on every formingBar change; calls
+  // candleSeries.update() directly — NO setData, NO re-render of this
+  // component's children. This is the hot path for live chart updates
+  // (called up to 4× per second).
+  useEffect(() => {
+    if (!formingBar || !candleSeriesRef.current) return;
+    const t = toUnixTime(formingBar.time);
+    if (!isFinite(t)) return;
+    const bar: CandlestickData = {
+      time: t as Time,
+      open: Number(formingBar.open),
+      high: Number(formingBar.high),
+      low: Number(formingBar.low),
+      close: Number(formingBar.close),
+    };
+    if (!isFinite(bar.open) || !isFinite(bar.high) || !isFinite(bar.low) || !isFinite(bar.close)) return;
+    try {
+      candleSeriesRef.current.update(bar);
+    } catch {
+      // LWC will throw if we try to update a time earlier than the last
+      // bar — that's fine, drop silently. Next update will re-sync.
+    }
+  }, [formingBar]);
 
   if (ohlcv.length === 0) {
     return (
