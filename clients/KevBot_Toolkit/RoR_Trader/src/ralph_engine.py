@@ -234,7 +234,8 @@ class BarBuilder:
         self._partial.update(price, volume)
         return None
 
-    def accept_second_bar(self, bar_dict: dict) -> Optional[dict]:
+    def accept_second_bar(self, bar_dict: dict,
+                          close_on_boundary: bool = True) -> Optional[dict]:
         """Aggregate a per-second OHLCV bar into the current period's partial.
 
         M8.5 Phase B+: enables sub-minute primary-TF aggregation AND forming-bar
@@ -251,8 +252,20 @@ class BarBuilder:
         No gap-fill: empty periods produce no bar (matches backtest's
         dropna(subset=['open']) behavior).
 
-        Returns the completed bar dict on period close, None if still forming.
-        Locked by `test_ralph_subminute_parity.py`.
+        Args:
+            bar_dict: per-second OHLCV bar dict
+            close_on_boundary:
+                True  (default — sub-minute primary-TF use): on period boundary,
+                       close the prior partial via `_close_bar()` (appends to
+                       history, increments bar_count) and return the completed
+                       bar dict. This is the canonical sub-minute aggregation.
+                False (1Min+ chart-visual use): on period boundary, just discard
+                       the prior partial without appending. The AM channel
+                       canonical bar is what actually closes the bar via
+                       `accept_bar()`. Always returns None.
+
+        Returns the completed bar dict on period close (when close_on_boundary
+        is True), None otherwise. Locked by `test_ralph_subminute_parity.py`.
         """
         ts_raw = bar_dict.get('timestamp')
         if isinstance(ts_raw, str):
@@ -272,7 +285,10 @@ class BarBuilder:
         sec_volume = float(bar_dict.get('volume', 0))
 
         if self._partial is None or period_start > self._partial.bar_start:
-            completed = self._close_bar() if self._partial is not None else None
+            completed = None
+            if self._partial is not None and close_on_boundary:
+                completed = self._close_bar()
+            # else: discard prior partial (chart-visual mode for 1Min+)
             self._partial = PartialBar(
                 sec_open, period_start, self.tf_seconds)
             self._partial.high = sec_high
@@ -859,12 +875,18 @@ class SymbolHub:
         # Held refs to prevent GC of fire-and-forget asyncio tasks.
         self._pending_publish_tasks: Set['asyncio.Task'] = set()
 
-    def _publish_completed_bar(self, tf_seconds: int, bar: dict) -> None:
-        """Fire-and-forget broadcast of a completed bar to Supabase Realtime.
+    def _publish_completed_bar(self, tf_seconds: int, bar: dict,
+                                is_forming: bool = False) -> None:
+        """Fire-and-forget broadcast of a bar snapshot to Supabase Realtime.
 
         Side effect only — MUST NOT block or raise into the tick handler.
         Publishes once per (symbol, tf) regardless of how many monitors share
         the timeframe (user_id is taken from the first matching monitor).
+
+        is_forming=True signals the publisher to apply the per-(symbol, tf)
+        throttle window (250ms by default). is_forming=False (default) always
+        sends immediately and resets the throttle — used for canonical bar
+        closes that must never be dropped.
         """
         if self._publisher is None:
             return
@@ -879,7 +901,8 @@ class SymbolHub:
             loop = asyncio.get_event_loop()
             task = loop.create_task(
                 self._publisher.publish_async(
-                    user_id, self.symbol, tf_seconds, bar, is_forming=False
+                    user_id, self.symbol, tf_seconds, bar,
+                    is_forming=is_forming,
                 )
             )
             self._pending_publish_tasks.add(task)
@@ -1161,28 +1184,24 @@ class SymbolHub:
             # M8.5: broadcast completed bar to Supabase Realtime (live chart)
             self._publish_completed_bar(tf_seconds, completed)
 
-    def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
-                        alert_callback: Callable = None,
-                        config: dict = None,
-                        auditor: 'FidelityAuditor' = None):
-        """Handle a pre-aggregated bar from Polygon WebSocket.
+    def _run_monitor_pipeline_for_completed_bar(
+        self,
+        tf_seconds: int,
+        bar_dict: dict,
+        bar_count: int,
+        alert_callback: Optional[Callable] = None,
+        config: dict = None,
+        auditor: 'FidelityAuditor' = None,
+        source_label: str = 'polygon',
+    ) -> None:
+        """Shared monitor pipeline for any completed bar (canonical AM bar OR
+        sub-minute bar built via accept_second_bar). Updates shadow engines,
+        runs monitors, dispatches alerts, logs audit, refreshes MTF confluence,
+        and publishes the bar to the Realtime broadcast channel.
 
-        Bypasses tick aggregation — the bar arrives already complete.
-        Routes through the same monitor pipeline as tick-built bars.
+        Caller is responsible for adding the bar to the builder's history
+        (via accept_bar or _close_bar inside accept_second_bar).
         """
-        builder = self.builders.get(tf_seconds)
-        if builder is None:
-            return
-
-        timestamp = pd.Timestamp(bar_dict['timestamp'])
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.tz_localize('UTC')
-        self.last_tick_time = timestamp.to_pydatetime()
-        self.tick_count += 1
-
-        # Accept the pre-built bar into the builder (handles gap-fill)
-        builder.accept_bar(bar_dict)
-
         # Update shared confluence buffer (shadow engines first)
         shadow = self._shadow_engines.get(tf_seconds)
         if shadow and shadow.indicators._initialized:
@@ -1196,15 +1215,15 @@ class SymbolHub:
                 continue
 
             signals, audit_data = monitor.on_bar_close(
-                bar_dict, builder._bar_count,
+                bar_dict, bar_count,
                 mtf_confluence=self._mtf_confluence)
 
             pos_state = audit_data.get('position_state', '?')
             trigger_bools = audit_data.get('trigger_booleans', {})
             active_triggers = [k for k, v in trigger_bools.items() if v]
-            logger.info("BAR_CLOSE(polygon) strat=%s bar=%d close=%.2f pos=%s "
-                        "signals=%d triggers=%s",
-                        monitor.strat_id, builder._bar_count,
+            logger.info("BAR_CLOSE(%s) strat=%s bar=%d tf=%ss close=%.2f "
+                        "pos=%s signals=%d triggers=%s",
+                        source_label, monitor.strat_id, bar_count, tf_seconds,
                         bar_dict['close'], pos_state,
                         len(signals) if signals else 0,
                         active_triggers if active_triggers else "none")
@@ -1233,16 +1252,62 @@ class SymbolHub:
                     break
 
         # M8.5: broadcast completed bar to Supabase Realtime (live chart)
-        self._publish_completed_bar(tf_seconds, bar_dict)
+        self._publish_completed_bar(tf_seconds, bar_dict, is_forming=False)
+
+    def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
+                        alert_callback: Callable = None,
+                        config: dict = None,
+                        auditor: 'FidelityAuditor' = None):
+        """Handle a pre-aggregated bar from Polygon WebSocket.
+
+        Bypasses tick aggregation — the bar arrives already complete.
+        Routes through the same monitor pipeline as tick-built bars.
+        """
+        builder = self.builders.get(tf_seconds)
+        if builder is None:
+            return
+
+        timestamp = pd.Timestamp(bar_dict['timestamp'])
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize('UTC')
+        self.last_tick_time = timestamp.to_pydatetime()
+        self.tick_count += 1
+
+        # Accept the pre-built bar into the builder (handles gap-fill)
+        builder.accept_bar(bar_dict)
+
+        self._run_monitor_pipeline_for_completed_bar(
+            tf_seconds=tf_seconds,
+            bar_dict=bar_dict,
+            bar_count=builder._bar_count,
+            alert_callback=alert_callback,
+            config=config,
+            auditor=auditor,
+            source_label='polygon',
+        )
 
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
-                       config: dict = None):
-        """Handle a per-second bar from Polygon A. channel for L-type detection.
+                       config: dict = None,
+                       auditor: 'FidelityAuditor' = None):
+        """Handle a per-second bar from Polygon A. channel.
 
-        Checks the high and low of each 1-second bar against intra-bar
-        trigger levels. This replaces per-tick L-type detection with
-        per-second detection (60x fewer evaluations, captures extremes).
+        Two responsibilities (in order, latency-critical first):
+          1. L-type intra-bar trigger detection: walk this second's high then
+             low through every monitor's intra-bar trigger evaluator. Fires
+             alerts within ~1s of the trigger event.
+          2. M8.5 Phase B+ — sub-minute primary-TF aggregation AND forming-bar
+             snapshots for any TF, all from per-second bars:
+               - Sub-minute builders (tf_seconds < 60): aggregate via
+                 BarBuilder.accept_second_bar(close_on_boundary=True). On a
+                 completed bar, run the full monitor pipeline (mirror of
+                 on_polygon_bar) and publish the completed bar.
+               - 1Min+ builders (tf_seconds >= 60): aggregate via
+                 BarBuilder.accept_second_bar(close_on_boundary=False) so the
+                 partial is updated for chart visual but never appended to
+                 history (the canonical AM bar from on_polygon_bar is what
+                 actually closes the bar — preserves backtest parity).
+             Forming-bar broadcasts are throttled inside the publisher.
         """
         ts = bar_dict.get('timestamp', '')
         high = bar_dict.get('high', 0)
@@ -1253,10 +1318,9 @@ class SymbolHub:
 
         # Find which TF's bar_count to use (use the primary 60s builder)
         builder = self.builders.get(60)
-        if builder is None:
-            return
-        bar_count = builder._bar_count
+        bar_count = builder._bar_count if builder is not None else 0
 
+        # ---- (1) L-TYPE DETECTION (latency-critical, runs first) ----
         for monitor in self.monitors.values():
             if not monitor.indicators._initialized:
                 continue
@@ -1278,6 +1342,51 @@ class SymbolHub:
             if signals_low and alert_callback:
                 for sig in signals_low:
                     alert_callback(sig, monitor.strategy, config)
+
+        # ---- (2) PER-BUILDER AGGREGATION + FORMING-BAR PUBLISH ----
+        # Update last_tick_time for session checks downstream
+        try:
+            self.last_tick_time = datetime.fromisoformat(ts) if isinstance(ts, str) and ts else datetime.now(timezone.utc)
+            if self.last_tick_time.tzinfo is None:
+                self.last_tick_time = self.last_tick_time.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            self.last_tick_time = datetime.now(timezone.utc)
+
+        # Set of primary timeframes (each monitor's tf_seconds). Skip secondary
+        # TF builders — those are seeded at warmup and used for cross-TF
+        # confluence, not driven by live per-second data.
+        primary_tfs = {m.tf_seconds for m in self.monitors.values()}
+
+        for tf_seconds, b in self.builders.items():
+            if tf_seconds not in primary_tfs:
+                continue
+
+            if tf_seconds < 60:
+                # Sub-minute: per-second is the canonical source. Aggregate.
+                completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
+                if completed is not None:
+                    # Run the full monitor pipeline on the closed sub-minute bar
+                    self._run_monitor_pipeline_for_completed_bar(
+                        tf_seconds=tf_seconds,
+                        bar_dict=completed,
+                        bar_count=b._bar_count,
+                        alert_callback=alert_callback,
+                        config=config,
+                        auditor=auditor,
+                        source_label='subm',
+                    )
+                # Publish forming snapshot of the (new) partial bar
+                if b._partial is not None:
+                    self._publish_completed_bar(
+                        tf_seconds, b._partial.to_dict(), is_forming=True)
+            else:
+                # 1Min+: AM channel is canonical. Use per-second only to
+                # update the partial for chart visual. NEVER appends to
+                # history. NEVER runs monitors here.
+                b.accept_second_bar(bar_dict, close_on_boundary=False)
+                if b._partial is not None:
+                    self._publish_completed_bar(
+                        tf_seconds, b._partial.to_dict(), is_forming=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
