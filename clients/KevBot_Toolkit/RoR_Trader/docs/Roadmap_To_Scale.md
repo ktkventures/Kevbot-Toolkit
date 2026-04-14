@@ -575,6 +575,10 @@ Frontend:
 
 **Verified end-to-end (2026-04-14):** Ralph running locally, Railway worker paused via `WORKER_DISABLED=true`. Strategy 47 (NVDA 1Min RTH) shows green "Live" pill on Chart & Trades tab; broadcasts arrive every minute on bar close. Logs confirm `POST /realtime/v1/api/broadcast 202 Accepted` per (symbol, tf) bar.
 
+**Phase B+ in-progress (2026-04-14 — added late in session):**
+- **Forward-test pipeline gap — IN SCOPE for M8.5.** Alerts are firing from Ralph and landing in the `alerts` table correctly, but they're NOT being folded into per-strategy `stored_trades` / `forward_trades` automatically. Most strategies' last recorded trade is March 27 even though alerts fire today. Without this, the Chart & Trades tab cannot render algo markers (arrows with R-values, `+` cross markers) for today's trades → user cannot visually verify alert vs. backtest agreement. This blocks end-to-end alert validation, so it's promoted from a deferred follow-up to in-scope. Approach: trigger the same "Update All Data" trade-rebuild logic automatically when a matching exit alert fires. Work item tracked.
+- **Indicators/heatmap first-load caching audit — follow-up.** `/api/strategies/{id}/chart-data` endpoint takes ~10s on first load. Defer audit until after forward-test pipeline lands.
+
 **Deferred follow-ups (out of MVP scope):**
 - ~~Ralph live sub-minute bar aggregation~~ — **SHIPPED in Phase B+ (2026-04-14).**
 - ~~Forming-bar streaming via `on_second_bar` aggregation~~ — **SHIPPED in Phase B+.**
