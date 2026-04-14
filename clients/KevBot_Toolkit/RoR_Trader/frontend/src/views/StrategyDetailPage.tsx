@@ -564,9 +564,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Always load full data — date range filtering happens client-side for instant response
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
-  // Forward test computation is expensive (Polygon API) — only run on explicit button click
-  const [fwdRequested, setFwdRequested] = useState(false);
-  const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(fwdRequested ? strategyId : null);
+  // M8.5 B+: always fetch the forward/backtest split. The endpoint is cheap
+  // (just splits stored_trades at forward_test_start — no Polygon round-trip).
+  // The `fwdRequested` gate that used to exist referred to a different
+  // full-recompute path. Without this, btTrades falls through to all-trades
+  // and fwdTrades stays empty → status line shows "FWD 0" even when trades
+  // exist past the boundary.
+  const [fwdRequested, setFwdRequested] = useState(true);
+  const { data: fwdData, isLoading: fwdLoading } = useStrategyForwardTest(strategyId);
   const { data: kpiData, isLoading: kpisLoading } = useStrategyKPIs(strategyId);
   const { data: alerts } = useStrategyAlerts(strategyId);
   const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
