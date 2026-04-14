@@ -13,6 +13,7 @@ import type { TradeMarker } from '@/charts/TradingChart';
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
+import { useLiveBar } from '@/hooks/queries/useLiveBar';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -282,6 +283,42 @@ function daysSince(dateStr: string): number {
   return Math.floor((now.getTime() - d.getTime()) / 86400000);
 }
 
+// M8.5: small re-rendering pill that shows "Live ·" when Ralph has pushed
+// a bar recently, "Not live" otherwise. A 1Hz timer keeps the staleness
+// calculation honest without coupling to the chart's render cadence.
+function LiveBarStatusPill({
+  liveBar, tfSeconds,
+}: {
+  liveBar: { receivedAt: number; isForming: boolean } | null;
+  tfSeconds: number;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // "Live" window = 5 bar durations, clamped to [15s, 5min].
+  const windowMs = Math.max(15_000, Math.min(300_000, tfSeconds * 5 * 1000));
+  const isLive = liveBar != null && (now - liveBar.receivedAt) < windowMs;
+  return (
+    <span
+      className="text-[10px] px-2 py-0.5 rounded-full"
+      style={{
+        background: isLive ? 'var(--green-muted, rgba(76,175,80,0.15))' : 'var(--bg-input)',
+        color: isLive ? 'var(--green)' : 'var(--text-muted)',
+        border: `1px solid ${isLive ? 'var(--green)' : 'var(--border)'}`,
+      }}
+      title={
+        liveBar
+          ? `Last bar ${Math.floor((now - liveBar.receivedAt) / 1000)}s ago`
+          : 'Waiting for Ralph broadcast…'
+      }
+    >
+      {isLive ? '● Live' : '○ Not live'}
+    </span>
+  );
+}
+
 /** Safe date → milliseconds. Returns 0 for invalid/missing dates. Logs warnings for debugging. */
 function safeDateMs(val: string | null | undefined): number {
   if (!val || val === '--') return 0;
@@ -549,6 +586,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     if (tf.includes('Day') || tf === '1D') return 86400 * 1000;
     return 60 * 1000;
   }, [stratTimeframe]);
+  // M8.5: seconds form for useLiveBar channel filter. Parses strings like
+  // "10Sec", "1Min", "5Min", "1Hour", "1Day" — same convention Ralph uses
+  // on the backend (TIMEFRAME_SECONDS dict).
+  const tfSeconds = useMemo(() => {
+    const tf = stratTimeframe;
+    const n = parseInt(tf) || 1;
+    if (tf.includes('Sec')) return n;
+    if (tf.includes('Min')) return n * 60;
+    if (tf.includes('Hour') || tf === '1H') return n * 3600;
+    if (tf.includes('Day') || tf === '1D') return n * 86400;
+    return 60;
+  }, [stratTimeframe]);
+  // M8.5: subscribe to Ralph's Supabase Realtime broadcasts for this (symbol, tf).
+  // Returns null until the first bar arrives; stays updated on each new broadcast.
+  const liveBar = useLiveBar(stratSymbol, tfSeconds);
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
@@ -2072,6 +2124,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <input type="checkbox" checked={showTriggers} onChange={() => setShowTriggers(!showTriggers)} />
                     Show Triggers
                   </label>
+                  {/* M8.5: live-broadcast status pill. Green when Ralph has
+                      pushed a bar within the last 5× the timeframe duration,
+                      gray otherwise. */}
+                  <LiveBarStatusPill liveBar={liveBar} tfSeconds={tfSeconds} />
                 </div>
 
                 {/* ---- Synchronized Multi-Pane Chart ---- */}
@@ -2377,6 +2433,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           upBorderColor={chartPrefs.candleUpBorder}
                           gridLines={chartPrefs.gridLines}
                           rightOffset={chartPrefs.rightOffset}
+                          formingBar={liveBar?.bar ? {
+                            time: liveBar.bar.timestamp,
+                            open: liveBar.bar.open,
+                            high: liveBar.bar.high,
+                            low: liveBar.bar.low,
+                            close: liveBar.bar.close,
+                          } : null}
                         />
                         {/* Legend */}
                         <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
