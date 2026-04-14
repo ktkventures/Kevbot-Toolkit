@@ -1231,196 +1231,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return { fwd: fwdSigma, alert: alertSigma };
   }, [pvpBtTrades, pvpFwdTrades, recentAlerts]);
 
-  // Early returns after all hooks
-  if (isLoading || !strategy) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <div className="animate-pulse space-y-4">
-          <div className="h-6 rounded w-1/3" style={{ background: 'var(--border)' }} />
-          <div className="h-4 rounded w-2/3" style={{ background: 'var(--border)' }} />
-          <div className="h-64 rounded" style={{ background: 'var(--bg-input)' }} />
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: '32px' }}>
-        <div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategy.</div>
-      </div>
-    );
-  }
-
-  const fwdDays = daysSince(strategy.fwdSince);
-  const alertAccuracy = strategy.alertTrades > 0 && strategy.alertWinRate != null && strategy.fwdWinRate
-    ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
-    : '--';
-
-  // Derive exec type from trigger ID suffix
-  const deriveExecTag = (id: string): string => {
-    if (id.endsWith('_lc')) return '[LC]';
-    if (id.endsWith('_cc')) return '[CC]';
-    if (id.endsWith('_ib') || id.endsWith('_hm') || id.endsWith('_hl')) return '[L]';
-    return '[C]';
-  };
-
-  // Parse entry for badges — derive exec type from the raw trigger ID
-  const entryParsed = parseExecTag(strategy.entry);
-  if (!entryParsed.exec && strategy.entryId) {
-    entryParsed.exec = deriveExecTag(strategy.entryId);
-  }
-  const entryPack = parsePack(entryParsed.rest);
-  const exitsParsed = strategy.exit.map((e: string, i: number) => {
-    const p = parseExecTag(e);
-    const rawId = strategy.exitIds?.[i] || e;
-    if (!p.exec && rawId && rawId !== '--') p.exec = deriveExecTag(rawId);
-    return { exec: p.exec, ...parsePack(p.rest) };
-  });
-
-  // Styles
-  const selectStyle: React.CSSProperties = {
-    background: 'var(--bg-input)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '6px 12px',
-    borderRadius: '8px',
-    fontSize: '0.875rem',
-  };
-
-  const btnSecondary: React.CSSProperties = {
-    background: 'var(--bg-card)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-secondary)',
-    padding: '6px 14px',
-    borderRadius: '8px',
-    fontSize: '0.875rem',
-    cursor: 'pointer',
-  };
-
-  const thStyle: React.CSSProperties = {
-    color: 'var(--text-muted)',
-    background: 'var(--bg-secondary)',
-    textAlign: 'center' as const,
-    padding: '6px 8px',
-    fontSize: '0.7rem',
-    fontWeight: 600,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    whiteSpace: 'nowrap' as const,
-  };
-
-  const tdStyle: React.CSSProperties = {
-    padding: '6px 8px',
-    fontSize: '0.8125rem',
-    borderBottom: '1px solid var(--border)',
-    color: 'var(--text-secondary)',
-    textAlign: 'center' as const,
-    verticalAlign: 'middle' as const,
-  };
-
-  /* ======================================================================= */
-  /* KPI COMPARISON HELPER                                                     */
-  /* ======================================================================= */
-
-  function renderKpiComparison(
-    labelA: string, labelB: string, colorA: string, colorB: string,
-    dataA: { wr: number | null; pf: number | null; dr: number | null; droi: number | null; tpd: number | null; mdd: number | null },
-    dataB: { wr: number | null; pf: number | null; dr: number | null; droi: number | null; tpd: number | null; mdd: number | null },
-  ) {
-    // Coerce nulls to 0 for display
-    const a = { wr: dataA.wr ?? 0, pf: dataA.pf ?? 0, dr: dataA.dr ?? 0, droi: dataA.droi ?? 0, tpd: dataA.tpd ?? 0, mdd: dataA.mdd ?? 0 };
-    const b = { wr: dataB.wr ?? 0, pf: dataB.pf ?? 0, dr: dataB.dr ?? 0, droi: dataB.droi ?? 0, tpd: dataB.tpd ?? 0, mdd: dataB.mdd ?? 0 };
-    const rows = [
-      { label: 'Win Rate', a: `${a.wr.toFixed(1)}%`, b: `${b.wr.toFixed(1)}%`, d: b.wr - a.wr, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` },
-      { label: 'PF', a: a.pf.toFixed(2), b: b.pf.toFixed(2), d: b.pf - a.pf, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}` },
-      { label: 'Daily R', a: `${a.dr >= 0 ? '+' : ''}${a.dr.toFixed(2)}`, b: `${b.dr >= 0 ? '+' : ''}${b.dr.toFixed(2)}`, d: b.dr - a.dr, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}` },
-      { label: 'Daily ROI', a: `${a.droi.toFixed(2)}%`, b: `${b.droi.toFixed(2)}%`, d: b.droi - a.droi, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` },
-      { label: 'TPD', a: a.tpd.toFixed(1), b: b.tpd.toFixed(1), d: b.tpd - a.tpd, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}` },
-      { label: 'Max DD', a: `${a.mdd.toFixed(1)}R`, b: `${b.mdd.toFixed(1)}R`, d: b.mdd - a.mdd, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}R`, invert: true },
-    ];
-
-    return (
-      <div style={{ overflowX: 'auto' }}>
-        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th style={thStyle}>Metric</th>
-              <th style={{ ...thStyle, textAlign: 'right', color: colorA }}>{labelA}</th>
-              <th style={{ ...thStyle, textAlign: 'right', color: colorB }}>{labelB}</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Delta</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => {
-              const deltaVal = row.d;
-              const isGood = row.invert ? deltaVal <= 0 : deltaVal >= 0;
-              return (
-                <tr key={i}>
-                  <td style={tdStyle}>{row.label}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>{row.a}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>{row.b}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right', color: isGood ? 'var(--green)' : 'var(--red)' }}>{row.fmt(deltaVal)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  /* ======================================================================= */
-  /* TRADE TABLE HELPER                                                        */
-  /* ======================================================================= */
-
-  function renderTradeTable(trades: any[]) {
-    return (
-      <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
-        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              {['#', 'Entry Time', 'Exit Time', 'Hold', 'Entry $', 'Exit $', 'R', 'Exec', 'Exit Reason'].map((h) => (
-                <th key={h} style={{ ...thStyle, position: 'sticky' as const, top: 0, zIndex: 1, background: 'var(--bg-card)' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t) => (
-              <tr key={t.id}>
-                <td style={tdStyle}>{t.id}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.entryTime}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.exitTime}</td>
-                <td style={{ ...tdStyle, fontSize: '0.75rem' }}>{t.holdTime || '--'}</td>
-                <td style={tdStyle}>${t.entryPrice.toFixed(2)}</td>
-                <td style={tdStyle}>${t.exitPrice.toFixed(2)}</td>
-                <td style={{ ...tdStyle, color: t.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                  {t.pnlR >= 0 ? '+' : ''}{t.pnlR.toFixed(2)}R
-                </td>
-                <td style={tdStyle}>
-                  <span
-                    className="text-xs font-mono px-1.5 py-0.5 rounded-full"
-                    style={{
-                      color: EXEC_BADGE_COLOR,
-                      background: EXEC_BADGE_COLOR + '20',
-                    }}
-                  >
-                    {t.execType}
-                  </span>
-                </td>
-                <td style={tdStyle}>
-                  <span style={{ color: exitReasonColors[t.exitReason] || 'var(--text-secondary)' }}>
-                    {t.exitReason}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
   // M8.5 B+ — Memoize chart pane configs so SyncedChartPane's `panes` prop
   // identity is stable across re-renders triggered by useLiveBar (every
   // ~250ms forming-bar broadcast). Without this, the inline IIFE used to
@@ -1704,6 +1514,196 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
     strategy?.direction, INDICATOR_COLORS,
   ]);
+
+  // Early returns after all hooks
+  if (isLoading || !strategy) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <div className="animate-pulse space-y-4">
+          <div className="h-6 rounded w-1/3" style={{ background: 'var(--border)' }} />
+          <div className="h-4 rounded w-2/3" style={{ background: 'var(--border)' }} />
+          <div className="h-64 rounded" style={{ background: 'var(--bg-input)' }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: '32px' }}>
+        <div className="text-center py-8" style={{ color: 'var(--red)' }}>Failed to load strategy.</div>
+      </div>
+    );
+  }
+
+  const fwdDays = daysSince(strategy.fwdSince);
+  const alertAccuracy = strategy.alertTrades > 0 && strategy.alertWinRate != null && strategy.fwdWinRate
+    ? ((strategy.alertWinRate / strategy.fwdWinRate) * 100).toFixed(1)
+    : '--';
+
+  // Derive exec type from trigger ID suffix
+  const deriveExecTag = (id: string): string => {
+    if (id.endsWith('_lc')) return '[LC]';
+    if (id.endsWith('_cc')) return '[CC]';
+    if (id.endsWith('_ib') || id.endsWith('_hm') || id.endsWith('_hl')) return '[L]';
+    return '[C]';
+  };
+
+  // Parse entry for badges — derive exec type from the raw trigger ID
+  const entryParsed = parseExecTag(strategy.entry);
+  if (!entryParsed.exec && strategy.entryId) {
+    entryParsed.exec = deriveExecTag(strategy.entryId);
+  }
+  const entryPack = parsePack(entryParsed.rest);
+  const exitsParsed = strategy.exit.map((e: string, i: number) => {
+    const p = parseExecTag(e);
+    const rawId = strategy.exitIds?.[i] || e;
+    if (!p.exec && rawId && rawId !== '--') p.exec = deriveExecTag(rawId);
+    return { exec: p.exec, ...parsePack(p.rest) };
+  });
+
+  // Styles
+  const selectStyle: React.CSSProperties = {
+    background: 'var(--bg-input)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-primary)',
+    padding: '6px 12px',
+    borderRadius: '8px',
+    fontSize: '0.875rem',
+  };
+
+  const btnSecondary: React.CSSProperties = {
+    background: 'var(--bg-card)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    padding: '6px 14px',
+    borderRadius: '8px',
+    fontSize: '0.875rem',
+    cursor: 'pointer',
+  };
+
+  const thStyle: React.CSSProperties = {
+    color: 'var(--text-muted)',
+    background: 'var(--bg-secondary)',
+    textAlign: 'center' as const,
+    padding: '6px 8px',
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    whiteSpace: 'nowrap' as const,
+  };
+
+  const tdStyle: React.CSSProperties = {
+    padding: '6px 8px',
+    fontSize: '0.8125rem',
+    borderBottom: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    textAlign: 'center' as const,
+    verticalAlign: 'middle' as const,
+  };
+
+  /* ======================================================================= */
+  /* KPI COMPARISON HELPER                                                     */
+  /* ======================================================================= */
+
+  function renderKpiComparison(
+    labelA: string, labelB: string, colorA: string, colorB: string,
+    dataA: { wr: number | null; pf: number | null; dr: number | null; droi: number | null; tpd: number | null; mdd: number | null },
+    dataB: { wr: number | null; pf: number | null; dr: number | null; droi: number | null; tpd: number | null; mdd: number | null },
+  ) {
+    // Coerce nulls to 0 for display
+    const a = { wr: dataA.wr ?? 0, pf: dataA.pf ?? 0, dr: dataA.dr ?? 0, droi: dataA.droi ?? 0, tpd: dataA.tpd ?? 0, mdd: dataA.mdd ?? 0 };
+    const b = { wr: dataB.wr ?? 0, pf: dataB.pf ?? 0, dr: dataB.dr ?? 0, droi: dataB.droi ?? 0, tpd: dataB.tpd ?? 0, mdd: dataB.mdd ?? 0 };
+    const rows = [
+      { label: 'Win Rate', a: `${a.wr.toFixed(1)}%`, b: `${b.wr.toFixed(1)}%`, d: b.wr - a.wr, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` },
+      { label: 'PF', a: a.pf.toFixed(2), b: b.pf.toFixed(2), d: b.pf - a.pf, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}` },
+      { label: 'Daily R', a: `${a.dr >= 0 ? '+' : ''}${a.dr.toFixed(2)}`, b: `${b.dr >= 0 ? '+' : ''}${b.dr.toFixed(2)}`, d: b.dr - a.dr, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}` },
+      { label: 'Daily ROI', a: `${a.droi.toFixed(2)}%`, b: `${b.droi.toFixed(2)}%`, d: b.droi - a.droi, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` },
+      { label: 'TPD', a: a.tpd.toFixed(1), b: b.tpd.toFixed(1), d: b.tpd - a.tpd, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}` },
+      { label: 'Max DD', a: `${a.mdd.toFixed(1)}R`, b: `${b.mdd.toFixed(1)}R`, d: b.mdd - a.mdd, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}R`, invert: true },
+    ];
+
+    return (
+      <div style={{ overflowX: 'auto' }}>
+        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Metric</th>
+              <th style={{ ...thStyle, textAlign: 'right', color: colorA }}>{labelA}</th>
+              <th style={{ ...thStyle, textAlign: 'right', color: colorB }}>{labelB}</th>
+              <th style={{ ...thStyle, textAlign: 'right' }}>Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const deltaVal = row.d;
+              const isGood = row.invert ? deltaVal <= 0 : deltaVal >= 0;
+              return (
+                <tr key={i}>
+                  <td style={tdStyle}>{row.label}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{row.a}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{row.b}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: isGood ? 'var(--green)' : 'var(--red)' }}>{row.fmt(deltaVal)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  /* ======================================================================= */
+  /* TRADE TABLE HELPER                                                        */
+  /* ======================================================================= */
+
+  function renderTradeTable(trades: any[]) {
+    return (
+      <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
+        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              {['#', 'Entry Time', 'Exit Time', 'Hold', 'Entry $', 'Exit $', 'R', 'Exec', 'Exit Reason'].map((h) => (
+                <th key={h} style={{ ...thStyle, position: 'sticky' as const, top: 0, zIndex: 1, background: 'var(--bg-card)' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((t) => (
+              <tr key={t.id}>
+                <td style={tdStyle}>{t.id}</td>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.entryTime}</td>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{t.exitTime}</td>
+                <td style={{ ...tdStyle, fontSize: '0.75rem' }}>{t.holdTime || '--'}</td>
+                <td style={tdStyle}>${t.entryPrice.toFixed(2)}</td>
+                <td style={tdStyle}>${t.exitPrice.toFixed(2)}</td>
+                <td style={{ ...tdStyle, color: t.pnlR >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                  {t.pnlR >= 0 ? '+' : ''}{t.pnlR.toFixed(2)}R
+                </td>
+                <td style={tdStyle}>
+                  <span
+                    className="text-xs font-mono px-1.5 py-0.5 rounded-full"
+                    style={{
+                      color: EXEC_BADGE_COLOR,
+                      background: EXEC_BADGE_COLOR + '20',
+                    }}
+                  >
+                    {t.execType}
+                  </span>
+                </td>
+                <td style={tdStyle}>
+                  <span style={{ color: exitReasonColors[t.exitReason] || 'var(--text-secondary)' }}>
+                    {t.exitReason}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
 
   /* ======================================================================= */
   /* RENDER                                                                    */
