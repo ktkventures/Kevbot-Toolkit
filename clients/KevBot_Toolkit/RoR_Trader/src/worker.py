@@ -222,6 +222,7 @@ class DBRalphEngine:
             RalphEngine, load_engine_state, save_engine_state,
             _load_enabled_general_packs,
         )
+        from live_bar_publisher import make_publisher_from_env
 
         self._config = config
         self._config_updated_at = config.pop('_updated_at', '')
@@ -235,7 +236,14 @@ class DBRalphEngine:
             os.environ['POLYGON_API_KEY'] = os.getenv('POLYGON_API_KEY')
         os.environ['DATA_PROVIDER'] = os.getenv('DATA_PROVIDER', 'polygon')
 
+        # M8.5: stamp user_id onto every strategy so SymbolHub can route
+        # live-bar broadcasts to the right user's Realtime channel.
+        for strat in strategies:
+            strat.setdefault('user_id', self.user_id)
+
         engine = RalphEngine()
+        # M8.5: live-chart publisher for forming/completed bar broadcasts.
+        engine._publisher = make_publisher_from_env()
         self._engine = engine
 
         # --- Patch I/O methods ---
@@ -332,10 +340,14 @@ class DBRalphEngine:
                 for strat in strategies:
                     if strat['id'] not in added:
                         continue
+                    # M8.5: ensure hot-reloaded strategies carry user_id so
+                    # SymbolHub can route live-bar broadcasts.
+                    strat.setdefault('user_id', self.user_id)
                     sym = strat.get('symbol', 'SPY')
                     from ralph_engine import SymbolHub, StrategyMonitor
                     if sym not in engine.hubs:
-                        engine.hubs[sym] = SymbolHub(sym)
+                        engine.hubs[sym] = SymbolHub(
+                            sym, publisher=engine._publisher)
                     hub = engine.hubs[sym]
                     monitor = StrategyMonitor(
                         strat, None, general_packs=engine._general_packs)

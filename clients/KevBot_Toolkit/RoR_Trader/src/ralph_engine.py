@@ -1277,6 +1277,9 @@ class RalphEngine:
         self._last_pickle_write = 0.0
         self._last_strategy_refresh = 0.0
         self._subscribed_symbols: List[str] = []
+        # M8.5: Live-bar publisher — set by worker before start().
+        # None = live chart disabled (no broadcasts). Harmless default.
+        self._publisher: Optional['LiveBarPublisher'] = None
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
@@ -1303,7 +1306,7 @@ class RalphEngine:
 
         # Create hubs and monitors
         for sym, strats in by_symbol.items():
-            hub = SymbolHub(sym)
+            hub = SymbolHub(sym, publisher=self._publisher)
 
             for strat in strats:
                 strat_id = strat['id']
