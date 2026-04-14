@@ -138,6 +138,10 @@ export default function SyncedChartPane({
   // Preserves user's zoom/scroll across rare structure rebuilds (toggle
   // Show Conditions, candle-count change beyond visible range, etc.)
   const lastVisibleRangeRef = useRef<{ from: Time; to: Time } | null>(null);
+  // Tracks whether the data effect has run at least once for the current
+  // chart instance. Reset by the structure effect on (re)create. Only
+  // when false do we call fitContent on data load.
+  const hasRenderedInitialDataRef = useRef(false);
 
   const getThemeColors = useCallback(() => {
     if (typeof window === 'undefined') return { text: '#DDD', grid: '#2B2B2B', border: '#333', up: '#4CAF50', down: '#f44336' };
@@ -195,6 +199,9 @@ export default function SyncedChartPane({
     chartsRef.current = [];
     seriesRef.current = [];
     primaryCandleSeriesRef.current = null;
+    // The new chart hasn't received data yet — flag it so the next data
+    // effect fitContents (only on first load per chart instance).
+    hasRenderedInitialDataRef.current = false;
 
     const container = containerRef.current;
     container.innerHTML = '';
@@ -341,10 +348,19 @@ export default function SyncedChartPane({
   // ---- DATA EFFECT ----
   // Runs whenever panes prop changes. Pushes data to existing series via
   // setData / setMarkers — does NOT recreate the chart, so user's zoom/scroll
-  // is preserved (LWC v4: setData does not reset visible range).
+  // is preserved naturally (LWC v4: setData does not reset visible range;
+  // chart auto-tracks the rightmost edge if user is at it, otherwise stays
+  // wherever the user panned to).
+  //
+  // IMPORTANT: do NOT call setVisibleRange here. Doing so would force the
+  // view to a snapshotted range every time data updates, overriding LWC's
+  // natural "follow rightmost / preserve scroll" behavior. Visible-range
+  // restore is only needed across STRUCTURE rebuilds (handled in the
+  // structure effect).
   useEffect(() => {
     const charts = chartsRef.current;
     const allSeries = seriesRef.current;
+    const wasFirstLoad = !hasRenderedInitialDataRef.current;
     if (charts.length === 0 || allSeries.length !== panes.length) return;
 
     for (let pi = 0; pi < panes.length; pi++) {
@@ -355,31 +371,37 @@ export default function SyncedChartPane({
         const cfg = pane.series[si];
         const series = paneSeries[si];
         if (!series) continue;
+        // Always call setData (even with empty array) so prior data is
+        // cleared correctly when a series becomes empty.
         const data = transformSeriesData(cfg);
-        if (data.length > 0) {
-          try { series.setData(data); } catch (e) {
-            console.warn('setData failed:', e);
-          }
+        try { series.setData(data); } catch (e) {
+          console.warn('setData failed:', e);
         }
-        if (cfg.markers && cfg.markers.length > 0) {
-          try {
-            const valid = transformMarkers(cfg.markers);
-            if (valid.length > 0) (series as any).setMarkers(valid);
-          } catch (e) {
-            console.warn('setMarkers failed:', e);
-          }
+        // Always call setMarkers (even with empty array) so prior markers
+        // are cleared when alerts/trades roll off the visible window.
+        try {
+          const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
+          (series as any).setMarkers(valid);
+        } catch (e) {
+          console.warn('setMarkers failed:', e);
         }
       }
     }
 
-    // First-time render: fitContent. Subsequent data updates: preserve view.
-    // We detect first-time by whether lastVisibleRangeRef is still null after
-    // the structure effect ran (if it has a value, the user scrolled — keep
-    // it; if null, this is the initial mount — fit).
-    if (!lastVisibleRangeRef.current && charts[0]) {
-      try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
-    } else if (lastVisibleRangeRef.current && charts[0]) {
-      try { charts[0].timeScale().setVisibleRange(lastVisibleRangeRef.current); } catch { /* range may be invalid for new data */ }
+    // First-time data load for this chart instance: either restore the
+    // user's prior visible range (if we saved one before a structure
+    // rebuild) or fitContent (truly fresh chart). Subsequent data updates:
+    // do nothing — LWC preserves the user's view + auto-tracks the right
+    // edge naturally.
+    if (wasFirstLoad && charts[0]) {
+      const savedRange = lastVisibleRangeRef.current;
+      if (savedRange) {
+        try { charts[0].timeScale().setVisibleRange(savedRange); }
+        catch { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
+      } else {
+        try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
+      }
+      hasRenderedInitialDataRef.current = true;
     }
   }, [panes]);
 

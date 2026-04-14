@@ -1340,9 +1340,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
              (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
     });
 
-    if (visibleTrades.length > 0 || recentAlerts.length > 0) {
+    // M8.5 B+ — Always compute and push all 4 marker series, even when
+    // empty. recentAlerts refetches every 5s; if we conditionally added
+    // these series the price pane's series count would flip, changing the
+    // SyncedChartPane structure key and triggering a full chart rebuild
+    // (which wipes user's zoom and creates noticeable lag with large
+    // candle counts). Empty data arrays passed to setData() are fine.
+    {
       const barTimestamps = bars.map((b: any) => b.timestamp);
       const snapToBar = (tradeTime: string): string | null => {
+        if (barTimestamps.length === 0) return null;
         const tradeMs = safeDateMs(tradeTime);
         let bestTs = barTimestamps[0];
         let bestDist = Infinity;
@@ -1392,21 +1399,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         }
       }
 
-      if (algoEntryData.length > 0) {
-        priceSeries.push({
-          type: 'Line', data: algoEntryData,
-          options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: algoEntryMarkers,
-        });
-      }
-      if (algoExitData.length > 0) {
-        priceSeries.push({
-          type: 'Line', data: algoExitData,
-          options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: algoExitMarkers,
-        });
-      }
-
       const alertEntryData: any[] = [];
       const alertEntryMarkers: any[] = [];
       const seenAlertEntry = new Set<string>();
@@ -1445,20 +1437,27 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         }
       }
 
-      if (alertEntryData.length > 0) {
-        priceSeries.push({
-          type: 'Line', data: alertEntryData,
-          options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: alertEntryMarkers,
-        });
-      }
-      if (alertExitData.length > 0) {
-        priceSeries.push({
-          type: 'Line', data: alertExitData,
-          options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-          markers: alertExitMarkers,
-        });
-      }
+      // Always push all 4 marker series. Empty data + empty markers is fine.
+      priceSeries.push({
+        type: 'Line', data: algoEntryData,
+        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: algoEntryMarkers,
+      });
+      priceSeries.push({
+        type: 'Line', data: algoExitData,
+        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: algoExitMarkers,
+      });
+      priceSeries.push({
+        type: 'Line', data: alertEntryData,
+        options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: alertEntryMarkers,
+      });
+      priceSeries.push({
+        type: 'Line', data: alertExitData,
+        options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+        markers: alertExitMarkers,
+      });
     }
 
     for (let i = 0; i < overlayNames.length; i++) {
