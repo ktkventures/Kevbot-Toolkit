@@ -6,7 +6,7 @@
  * production builds.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 
 /** Candle theme definitions — mirrors SettingsDisplayPage CANDLE_THEMES */
 export const CANDLE_THEMES: Record<string, { up: string; down: string; upBorder?: string }> = {
@@ -94,36 +94,41 @@ export function useChartPrefs(): ChartPrefs {
       .catch(() => {});
   }, []);
 
-  if (!settings) return DEFAULTS;
-  const s = settings;
-
-  const theme = s.candleTheme ?? DEFAULTS.candleTheme;
-  const themeColors = CANDLE_THEMES[theme] || CANDLE_THEMES.neutral;
-
-  return {
-    timezone: s.timezone ?? DEFAULTS.timezone,
-    candleStyle: s.candleStyle ?? DEFAULTS.candleStyle,
-    candleTheme: theme,
-    candleUp: themeColors.up,
-    candleDown: themeColors.down,
-    candleUpBorder: themeColors.upBorder || themeColors.up,
-    visibleCandles: s.visibleCandles ?? DEFAULTS.visibleCandles,
-    gridLines: s.gridLines ?? DEFAULTS.gridLines,
-    rightOffset: s.rightOffset ?? DEFAULTS.rightOffset,
-    paneOrder: s.paneOrder ?? DEFAULTS.paneOrder,
-    eqBacktestColor: s.eqBacktestColor ?? DEFAULTS.eqBacktestColor,
-    eqForwardColor: s.eqForwardColor ?? DEFAULTS.eqForwardColor,
-    eqLiveColor: s.eqLiveColor ?? DEFAULTS.eqLiveColor,
-    eqShowZeroLine: s.eqShowZeroLine ?? DEFAULTS.eqShowZeroLine,
-    eqShowHWM: s.eqShowHWM ?? DEFAULTS.eqShowHWM,
-    eqXAxis: s.eqXAxis ?? DEFAULTS.eqXAxis,
-    alertSlippage: s.alertSlippage ?? DEFAULTS.alertSlippage,
-    entryColor: s.entryColor ?? DEFAULTS.entryColor,
-    exitWinColor: s.exitWinColor ?? DEFAULTS.exitWinColor,
-    exitLossColor: s.exitLossColor ?? DEFAULTS.exitLossColor,
-    exitStopColor: s.exitStopColor ?? DEFAULTS.exitStopColor,
-    exitBarCountColor: s.exitBarCountColor ?? DEFAULTS.exitBarCountColor,
-    exitHybridColor: s.exitHybridColor ?? DEFAULTS.exitHybridColor,
-    showLabels: s.showLabels ?? DEFAULTS.showLabels,
-  };
+  // Memoize the returned object so its reference is stable across renders.
+  // Without this, every consumer would see chartPrefs as a "new" value every
+  // render, busting any downstream useMemo that lists it as a dep —
+  // catastrophic for chart components that re-run heavy data transforms
+  // when chartPrefs identity changes.
+  return useMemo(() => {
+    if (!settings) return DEFAULTS;
+    const s = settings;
+    const theme = s.candleTheme ?? DEFAULTS.candleTheme;
+    const themeColors = CANDLE_THEMES[theme] || CANDLE_THEMES.neutral;
+    return {
+      timezone: s.timezone ?? DEFAULTS.timezone,
+      candleStyle: s.candleStyle ?? DEFAULTS.candleStyle,
+      candleTheme: theme,
+      candleUp: themeColors.up,
+      candleDown: themeColors.down,
+      candleUpBorder: themeColors.upBorder || themeColors.up,
+      visibleCandles: s.visibleCandles ?? DEFAULTS.visibleCandles,
+      gridLines: s.gridLines ?? DEFAULTS.gridLines,
+      rightOffset: s.rightOffset ?? DEFAULTS.rightOffset,
+      paneOrder: s.paneOrder ?? DEFAULTS.paneOrder,
+      eqBacktestColor: s.eqBacktestColor ?? DEFAULTS.eqBacktestColor,
+      eqForwardColor: s.eqForwardColor ?? DEFAULTS.eqForwardColor,
+      eqLiveColor: s.eqLiveColor ?? DEFAULTS.eqLiveColor,
+      eqShowZeroLine: s.eqShowZeroLine ?? DEFAULTS.eqShowZeroLine,
+      eqShowHWM: s.eqShowHWM ?? DEFAULTS.eqShowHWM,
+      eqXAxis: s.eqXAxis ?? DEFAULTS.eqXAxis,
+      alertSlippage: s.alertSlippage ?? DEFAULTS.alertSlippage,
+      entryColor: s.entryColor ?? DEFAULTS.entryColor,
+      exitWinColor: s.exitWinColor ?? DEFAULTS.exitWinColor,
+      exitLossColor: s.exitLossColor ?? DEFAULTS.exitLossColor,
+      exitStopColor: s.exitStopColor ?? DEFAULTS.exitStopColor,
+      exitBarCountColor: s.exitBarCountColor ?? DEFAULTS.exitBarCountColor,
+      exitHybridColor: s.exitHybridColor ?? DEFAULTS.exitHybridColor,
+      showLabels: s.showLabels ?? DEFAULTS.showLabels,
+    };
+  }, [settings]);
 }
