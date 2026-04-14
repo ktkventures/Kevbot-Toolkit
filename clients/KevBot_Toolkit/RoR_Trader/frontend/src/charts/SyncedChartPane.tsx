@@ -133,6 +133,12 @@ export default function SyncedChartPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
   const seriesRef = useRef<ISeriesApi<SeriesType>[][]>([]); // [paneIdx][seriesIdx]
+  // Last data+markers refs we pushed per (paneIdx, seriesIdx) — lets us skip
+  // setData/setMarkers when the upstream reference is unchanged, avoiding
+  // redundant work when chartTabData re-runs for an unrelated reason (e.g.
+  // alerts refetch updates markers but candle data is stale-referenced).
+  const lastDataRef = useRef<unknown[][]>([]);
+  const lastMarkersRef = useRef<unknown[][]>([]);
   const syncingRef = useRef(false);
   const primaryCandleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   // Preserves user's zoom/scroll across rare structure rebuilds (toggle
@@ -303,6 +309,9 @@ export default function SyncedChartPane({
     chartsRef.current = charts;
     seriesRef.current = allSeries;
     primaryCandleSeriesRef.current = primaryCandle;
+    // Reset data/markers tracking — new chart instance, nothing pushed yet.
+    lastDataRef.current = allSeries.map(pane => new Array(pane.length).fill(null));
+    lastMarkersRef.current = allSeries.map(pane => new Array(pane.length).fill(null));
 
     // ---- Cross-pane synchronization ----
     if (charts.length > 1) {
@@ -371,19 +380,34 @@ export default function SyncedChartPane({
         const cfg = pane.series[si];
         const series = paneSeries[si];
         if (!series) continue;
-        // Always call setData (even with empty array) so prior data is
-        // cleared correctly when a series becomes empty.
-        const data = transformSeriesData(cfg);
-        try { series.setData(data); } catch (e) {
-          console.warn('setData failed:', e);
+
+        // Skip setData if cfg.data reference is unchanged since last call —
+        // chartTabData memoization gives us stable references when the
+        // underlying inputs haven't changed. This avoids re-pushing 200+
+        // candle points to LWC every time an unrelated dep (e.g. alerts
+        // refetch) triggers a chartTabData re-run.
+        const lastData = lastDataRef.current[pi]?.[si];
+        if (cfg.data !== lastData) {
+          try {
+            const data = transformSeriesData(cfg);
+            series.setData(data);
+            if (lastDataRef.current[pi]) lastDataRef.current[pi][si] = cfg.data;
+          } catch (e) {
+            console.warn('setData failed:', e);
+          }
         }
-        // Always call setMarkers (even with empty array) so prior markers
-        // are cleared when alerts/trades roll off the visible window.
-        try {
-          const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
-          (series as any).setMarkers(valid);
-        } catch (e) {
-          console.warn('setMarkers failed:', e);
+
+        // Same optimization for markers — cfg.markers is a stable ref when
+        // chartTabData memoization holds.
+        const lastMarkers = lastMarkersRef.current[pi]?.[si];
+        if (cfg.markers !== lastMarkers) {
+          try {
+            const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
+            (series as any).setMarkers(valid);
+            if (lastMarkersRef.current[pi]) lastMarkersRef.current[pi][si] = cfg.markers;
+          } catch (e) {
+            console.warn('setMarkers failed:', e);
+          }
         }
       }
     }
