@@ -249,7 +249,11 @@ function SyncedChartPaneInner({
               wickUpColor: borderUp, wickDownColor: down,
               ...seriesCfg.options,
             });
-            if (pi === 0 && !primaryCandle) {
+            // Capture the first Candlestick across ANY pane — not just
+            // pane 0. When a heatmap pane is present, the price pane is
+            // pane 1, and pinning capture to pane 0 silently drops the
+            // forming-bar update for those strategies.
+            if (!primaryCandle) {
               primaryCandle = chartSeries as ISeriesApi<'Candlestick'>;
             }
             break;
