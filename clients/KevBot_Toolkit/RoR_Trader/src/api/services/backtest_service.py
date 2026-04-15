@@ -9,6 +9,7 @@ Calls services.py functions (extracted from app.py) to:
 """
 
 import logging
+import math
 from datetime import datetime
 
 import pandas as pd
@@ -501,8 +502,17 @@ def _serialize_chart_data(
         d = {"timestamp": ts.isoformat()}
         for col in cols:
             val = row[col]
-            if isinstance(val, (np.floating,)):
-                d[col] = round(float(val), 6) if not np.isnan(val) else None
+            # Catch every NaN/NA flavor up front so nothing float-shaped leaks into JSON.
+            # pd.isna raises on array-likes, hence the try/except.
+            try:
+                if pd.isna(val):
+                    d[col] = None
+                    continue
+            except (TypeError, ValueError):
+                pass
+            if isinstance(val, (np.floating, float)):
+                fv = float(val)
+                d[col] = round(fv, 6) if math.isfinite(fv) else None
             elif isinstance(val, (np.integer,)):
                 d[col] = int(val)
             else:
