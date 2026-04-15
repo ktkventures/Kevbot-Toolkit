@@ -792,15 +792,40 @@ def update_strategy_admin(strategy_id: int, user_id: str, updates: dict) -> dict
     """Update specific fields on a strategy (admin client, no JWT required).
 
     Used by the worker to persist algo trade records into stored_trades as
-    they fire live. `updates` is merged — pass only the fields you want to
-    change (typically `stored_trades`, `live_executions`, `kpis`).
+    they fire live. `updates` is a PARTIAL dict — pass only the fields you
+    want to change (typically `stored_trades`, `live_executions`, `kpis`).
+
+    CRITICAL: this function MUST NOT use `_strategy_to_row()` directly because
+    that helper always emits `config = {}` when no config fields are present,
+    which would overwrite the existing JSONB column and wipe trigger/stop/
+    target settings. We split fields into column-vs-config buckets manually
+    and only include `config` in the update payload when config fields are
+    actually being changed (in which case the caller must pass a FULL config
+    merge — partial JSONB updates aren't supported by PostgREST without RPC).
     """
-    row = _strategy_to_row(updates)
-    row.pop('user_id', None)
-    row.pop('id', None)
+    column_updates = {}
+    config_updates = {}
+    for k, v in updates.items():
+        if k in STRATEGY_COLUMN_FIELDS:
+            column_updates[k] = v
+        else:
+            config_updates[k] = v
+    column_updates.pop('user_id', None)
+    column_updates.pop('id', None)
+
+    payload = dict(column_updates)
+    if config_updates:
+        # Caller is changing something inside config — they must have already
+        # merged with the existing config. We can't do partial JSONB updates
+        # via the supabase-py client, so the caller's responsibility.
+        payload['config'] = config_updates
+
+    if not payload:
+        return None  # nothing to update
+
     client = get_admin_client()
     result = client.table('strategies') \
-        .update(row) \
+        .update(payload) \
         .eq('id', strategy_id) \
         .eq('user_id', user_id) \
         .execute()
