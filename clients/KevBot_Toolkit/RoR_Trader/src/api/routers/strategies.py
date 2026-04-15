@@ -354,7 +354,13 @@ def get_strategy_trades(
 
 @router.get("/{strategy_id}/forward-test")
 def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
-    """Get forward test split: backtest trades, forward trades, boundary date."""
+    """Get forward test split: backtest trades, forward trades, boundary date.
+
+    Uses the fast path whenever stored_trades exists: split the cached
+    trades at forward_test_start in pure Python — no Polygon round-trip.
+    Falls back to the full prepare_forward_test_data re-compute only when
+    stored_trades is empty (first ever load / fresh strategy).
+    """
     strat = _get_or_404(strategy_id, user)
 
     if not strat.get('forward_testing') or not strat.get('forward_test_start'):
@@ -367,6 +373,25 @@ def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
     import services as svc
     from api.services.backtest_service import _serialize_trades
 
+    stored = strat.get('stored_trades', [])
+    fwd_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+
+    if stored:
+        try:
+            trades_df = svc.trades_df_from_stored(stored)
+            bt, fw = svc.split_trades_at_boundary(trades_df, fwd_start_dt)
+            return {
+                "backtest_trades": _serialize_trades(bt),
+                "forward_trades": _serialize_trades(fw),
+                "forward_test_start": fwd_start_dt.isoformat(),
+            }
+        except Exception as e:
+            logger.warning("[FORWARD-TEST] Fast split failed for strat %s: %s — "
+                           "falling back to full compute",
+                           strategy_id, e)
+
+    # Fallback: no stored_trades yet (fresh strategy) or fast split errored.
+    # prepare_forward_test_data loads Polygon bars + reruns the engine (slow).
     _, bt, fw, fwd_start = svc.prepare_forward_test_data(strat)
     return {
         "backtest_trades": _serialize_trades(bt),
