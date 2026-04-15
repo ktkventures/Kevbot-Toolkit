@@ -20,6 +20,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
 import { usePortfolioPreview, usePortfolioRecommendations } from '@/hooks/queries/usePortfolios';
+import { useWebhookGroups } from '@/hooks/queries/useWebhookGroups';
 import { useCreatePortfolio } from '@/hooks/mutations/usePortfolioMutations';
 import { apiFetch } from '@/lib/api/client';
 
@@ -195,6 +196,7 @@ export default function PortfolioNewPage() {
     queryKey: ['requirements'],
     queryFn: () => apiFetch<any[]>('/api/requirements'),
   });
+  const { data: webhookGroups } = useWebhookGroups();
 
   // Map API strategies to builder format
   const allStrategyPool: StrategyData[] = useMemo(() => {
@@ -202,17 +204,12 @@ export default function PortfolioNewPage() {
     return apiStrategiesRaw.map(apiToBuilderStrategy);
   }, [apiStrategiesRaw]);
 
-  // Requirement set names for dropdown
-  const requirementSetOptions: string[] = useMemo(() => {
-    const names = (reqSetsRaw || []).map((rs: any) => rs.name || '--');
-    return ['None', ...names];
-  }, [reqSetsRaw]);
-
   // --- Settings state ---
   const [portfolioName, setPortfolioName] = useState('');
   const [startingBalance, setStartingBalance] = useState(25000);
   const [riskScaling, setRiskScaling] = useState(0);
-  const [requirementSet, setRequirementSet] = useState('None');
+  const [requirementSetId, setRequirementSetId] = useState<string>('');
+  const [webhookGroupId, setWebhookGroupId] = useState<string>('');
 
   // --- Strategy builder state ---
   const [selectedStrategy, setSelectedStrategy] = useState('');
@@ -254,13 +251,13 @@ export default function PortfolioNewPage() {
   }, [strategies, startingBalance, riskScaling]);
   const { data: previewData } = usePortfolioPreview(previewPayload);
 
-  // Fallback to synthetic curve while preview loads / for 0-strategy state
+  // Real combined equity curve from /preview endpoint. Empty array until preview returns.
   const combinedCurve: number[] = useMemo(() => {
     if (previewData?.equity_curve && previewData.equity_curve.length > 0) {
       return previewData.equity_curve as number[];
     }
-    return buildCombinedCurve(strategies, startingBalance, riskScaling);
-  }, [previewData, strategies, startingBalance, riskScaling]);
+    return [];
+  }, [previewData]);
 
   const drawdownCurve = useMemo(
     () => buildDrawdownCurve(combinedCurve),
@@ -309,51 +306,22 @@ export default function PortfolioNewPage() {
       };
     }
 
-    // Fallback: per-strategy aggregation while preview loads
-    const totalTrades = strategies.reduce((sum, s) => sum + s.trades, 0);
-    const weightedWR = strategies.reduce((sum, s) => sum + s.winRate * s.trades, 0) / totalTrades;
-    const weightedPF = strategies.reduce((sum, s) => sum + s.pf * s.riskPerTrade, 0)
-      / strategies.reduce((sum, s) => sum + s.riskPerTrade, 0);
-    const maxDD = Math.min(...strategies.map(s => s.maxDD));
-    const tpd = strategies.reduce((sum, s) => sum + Math.max(0.5, s.trades / 60), 0);
-    const dailyAvgPnl = strategies.reduce((sum, s) => sum + s.avgR * s.riskPerTrade * Math.max(0.5, s.trades / 60), 0)
-      * (1 + riskScaling / 100 * 0.5);
-    const avgRPerTrade = strategies.reduce((sum, s) => sum + s.avgR * s.trades, 0) / totalTrades;
-    const payoffRatio = weightedPF * (1 - weightedWR / 100) / (weightedWR / 100);
-
+    // Preview still loading — return zeros (rendered as '--' placeholders)
     return {
-      trades: totalTrades,
-      winRate: weightedWR,
-      pf: weightedPF,
-      maxDD,
-      dailyAvgPnl,
-      thirtyDayPnl: dailyAvgPnl * 21,
-      tradesPerDay: tpd,
-      monthlyPnl: dailyAvgPnl * 21,
-      quarterlyPnl: dailyAvgPnl * 63,
-      annualPnl: dailyAvgPnl * 252,
-      annualROI: (dailyAvgPnl * 252 / startingBalance) * 100,
-      avgRPerTrade,
-      payoffRatio,
-      maxConcurrent: strategies.length,
+      trades: 0, winRate: 0, pf: 0, maxDD: 0,
+      dailyAvgPnl: 0, thirtyDayPnl: 0, tradesPerDay: 0,
+      monthlyPnl: 0, quarterlyPnl: 0, annualPnl: 0, annualROI: 0,
+      avgRPerTrade: 0, payoffRatio: 0, maxConcurrent: 0,
     };
   }, [strategies, startingBalance, riskScaling, previewData]);
 
-  const riskSummary = useMemo(() => {
-    if (strategies.length === 0) {
-      return { totalRiskPerDay: 0, maxDailyLoss: 0, worstCase: 0, capitalUtil: 0 };
-    }
-    const totalRiskPerTrade = strategies.reduce((sum, s) => sum + s.riskPerTrade, 0);
-    // Assume avg ~3 trades per strategy per day
-    const totalRiskPerDay = totalRiskPerTrade * 3;
-    // Max daily loss: assume worst day = 2x average risk
-    const maxDailyLoss = totalRiskPerDay * 2;
-    // Worst case: max concurrent losing trades
-    const worstCase = totalRiskPerTrade * strategies.length;
-    // Capital utilization
-    const capitalUtil = (totalRiskPerTrade / startingBalance) * 100;
-    return { totalRiskPerDay, maxDailyLoss, worstCase, capitalUtil };
-  }, [strategies, startingBalance]);
+  // True when backend preview has returned real KPIs for the current payload
+  const hasRealKpis = Boolean(previewData?.kpis && strategies.length > 0);
+
+  // Risk Summary, Daily Peak Capital, Worst Case, Monte Carlo: these need backend
+  // endpoints that take an unsaved portfolio payload. The saved-portfolio versions
+  // (/worst-case, /capital-utilization) only accept portfolio_id today. Rendered
+  // as '--' placeholders below until a /preview-or-equivalent extension lands.
 
   // --- Handlers ---
   const handleAddStrategy = useCallback(() => {
@@ -521,25 +489,32 @@ export default function PortfolioNewPage() {
           <div>
             <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>Requirement Set</label>
             <select
-              value={requirementSet}
-              onChange={(e) => setRequirementSet(e.target.value)}
+              value={requirementSetId}
+              onChange={(e) => setRequirementSetId(e.target.value)}
               style={selectStyle}
             >
-              {requirementSetOptions.map(r => (
-                <option key={r} value={r}>{r}</option>
+              <option value="">None</option>
+              {(reqSetsRaw || []).map((rs: any) => (
+                <option key={rs.id} value={String(rs.id)}>{rs.name || `Set ${rs.id}`}</option>
               ))}
             </select>
           </div>
           <div>
-            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>Webhook Template</label>
-            <select style={selectStyle} defaultValue="paper">
-              <option value="paper">SignalStack — Paper Account</option>
-              <option value="main">SignalStack — Main Account</option>
-              <option value="discord">Discord — #trading-alerts</option>
-              <option value="none">No template (webhooks disabled)</option>
+            <label className="text-xs block mb-1.5" style={{ color: 'var(--text-muted)' }}>Webhook Group</label>
+            <select
+              value={webhookGroupId}
+              onChange={(e) => setWebhookGroupId(e.target.value)}
+              style={selectStyle}
+            >
+              <option value="">No group (webhooks disabled)</option>
+              {(webhookGroups || []).map((g: any) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}{g.service ? ` — ${g.service}` : ''}
+                </option>
+              ))}
             </select>
             <p className="text-xs mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.3 }}>
-              Defaults to paper trading. Change after testing.
+              Configure groups at <span style={{ color: 'var(--accent)' }}>/alerts/webhook-groups</span>.
             </p>
           </div>
         </div>
@@ -549,41 +524,44 @@ export default function PortfolioNewPage() {
       {strategies.length > 0 ? (
         <>
           {/* TQ filter for KPI display */}
-          {requirementSet !== 'None' && (
-            <div className="flex items-center gap-2 mb-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span>Trade Qualification:</span>
-              <select className="px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} defaultValue="on">
-                <option value="on">Apply {requirementSet} TQ rules</option>
-                <option value="off">Show all trades (no TQ filter)</option>
-              </select>
-              <span style={{ color: 'var(--orange)' }}>KPIs below reflect filtered results</span>
-            </div>
-          )}
+          {requirementSetId && (() => {
+            const rsName = (reqSetsRaw || []).find((rs: any) => String(rs.id) === requirementSetId)?.name || 'Selected set';
+            return (
+              <div className="flex items-center gap-2 mb-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span>Trade Qualification:</span>
+                <select className="px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} defaultValue="on">
+                  <option value="on">Apply {rsName} TQ rules</option>
+                  <option value="off">Show all trades (no TQ filter)</option>
+                </select>
+                <span style={{ color: 'var(--orange)' }}>KPIs below reflect filtered results</span>
+              </div>
+            );
+          })()}
           <div className="grid grid-cols-6 gap-3 mb-3">
             <MetricCard
               label="Daily Avg P&L"
-              value={`${metrics.dailyAvgPnl >= 0 ? '+' : ''}$${Math.abs(metrics.dailyAvgPnl).toFixed(0)}`}
-              delta={metrics.dailyAvgPnl >= 0 ? 'positive' : 'negative'}
-              positive={metrics.dailyAvgPnl >= 0}
+              value={hasRealKpis ? `${metrics.dailyAvgPnl >= 0 ? '+' : ''}$${Math.abs(metrics.dailyAvgPnl).toFixed(0)}` : '--'}
+              delta={hasRealKpis ? (metrics.dailyAvgPnl >= 0 ? 'positive' : 'negative') : undefined}
+              positive={hasRealKpis ? metrics.dailyAvgPnl >= 0 : undefined}
             />
-            <MetricCard label="30-Day Est." value={`${metrics.thirtyDayPnl >= 0 ? '+' : ''}$${Math.abs(metrics.thirtyDayPnl).toFixed(0)}`} />
-            <MetricCard label="Win Rate" value={`${metrics.winRate.toFixed(1)}%`} />
-            <MetricCard label="Profit Factor" value={metrics.pf.toFixed(2)} />
-            <MetricCard label="Max DD" value={`${metrics.maxDD.toFixed(1)}%`} />
-            <MetricCard label="Trades/Day" value={metrics.tradesPerDay.toFixed(1)} />
+            <MetricCard label="30-Day Est." value={hasRealKpis ? `${metrics.thirtyDayPnl >= 0 ? '+' : ''}$${Math.abs(metrics.thirtyDayPnl).toFixed(0)}` : '--'} />
+            <MetricCard label="Win Rate" value={hasRealKpis ? `${metrics.winRate.toFixed(1)}%` : '--'} />
+            <MetricCard label="Profit Factor" value={hasRealKpis ? metrics.pf.toFixed(2) : '--'} />
+            <MetricCard label="Max DD" value={hasRealKpis ? `${metrics.maxDD.toFixed(1)}%` : '--'} />
+            <MetricCard label="Trades/Day" value={hasRealKpis ? metrics.tradesPerDay.toFixed(1) : '--'} />
           </div>
 
           {/* Secondary KPIs */}
           <div className="grid grid-cols-4 sm:grid-cols-8 gap-3 mb-6">
             {[
-              { label: 'Monthly Est.', value: `${metrics.monthlyPnl >= 0 ? '+' : ''}$${Math.abs(metrics.monthlyPnl).toFixed(0)}`, color: metrics.monthlyPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label: 'Quarterly Est.', value: `${metrics.quarterlyPnl >= 0 ? '+' : ''}$${Math.abs(metrics.quarterlyPnl).toFixed(0)}`, color: metrics.quarterlyPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label: 'Annual Est.', value: `${metrics.annualPnl >= 0 ? '+' : ''}$${Math.abs(metrics.annualPnl).toFixed(0)}`, color: metrics.annualPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label: 'Annual ROI', value: `${metrics.annualROI >= 0 ? '+' : ''}${metrics.annualROI.toFixed(1)}%`, color: metrics.annualROI >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label: 'Total Trades', value: metrics.trades.toLocaleString() },
-              { label: 'Avg R / Trade', value: `${metrics.avgRPerTrade >= 0 ? '+' : ''}${metrics.avgRPerTrade.toFixed(2)}R` },
-              { label: 'Payoff Ratio', value: metrics.payoffRatio.toFixed(2) },
-              { label: 'Max Concurrent', value: String(metrics.maxConcurrent) },
+              { label: 'Monthly Est.', value: hasRealKpis ? `${metrics.monthlyPnl >= 0 ? '+' : ''}$${Math.abs(metrics.monthlyPnl).toFixed(0)}` : '--', color: hasRealKpis ? (metrics.monthlyPnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)' },
+              { label: 'Quarterly Est.', value: hasRealKpis ? `${metrics.quarterlyPnl >= 0 ? '+' : ''}$${Math.abs(metrics.quarterlyPnl).toFixed(0)}` : '--', color: hasRealKpis ? (metrics.quarterlyPnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)' },
+              { label: 'Annual Est.', value: hasRealKpis ? `${metrics.annualPnl >= 0 ? '+' : ''}$${Math.abs(metrics.annualPnl).toFixed(0)}` : '--', color: hasRealKpis ? (metrics.annualPnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)' },
+              { label: 'Annual ROI', value: hasRealKpis ? `${metrics.annualROI >= 0 ? '+' : ''}${metrics.annualROI.toFixed(1)}%` : '--', color: hasRealKpis ? (metrics.annualROI >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-muted)' },
+              { label: 'Total Trades', value: hasRealKpis ? metrics.trades.toLocaleString() : '--' },
+              { label: 'Avg R / Trade', value: hasRealKpis ? `${metrics.avgRPerTrade >= 0 ? '+' : ''}${metrics.avgRPerTrade.toFixed(2)}R` : '--' },
+              { label: 'Payoff Ratio', value: hasRealKpis ? metrics.payoffRatio.toFixed(2) : '--' },
+              { label: 'Max Concurrent', value: '--' },
             ].map((kpi) => (
               <div key={kpi.label} className="rounded-lg p-2.5" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                 <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{kpi.label}</p>
@@ -1070,36 +1048,22 @@ export default function PortfolioNewPage() {
         <Card className="mb-6">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Risk Summary</h3>
+            <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+              Placeholder — needs backend wiring
+            </span>
           </div>
           <div className="grid grid-cols-4 gap-6 mt-3">
-            <div>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Risk Per Day (est.)</p>
-              <p className="text-sm font-bold">${riskSummary.totalRiskPerDay.toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Max Daily Loss Exposure</p>
-              <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>-${riskSummary.maxDailyLoss.toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Worst Case Scenario</p>
-              <p className="text-sm font-bold" style={{ color: 'var(--red)' }}>-${riskSummary.worstCase.toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Capital Utilization</p>
-              <div className="flex items-center gap-2 mt-1">
-                <div style={{ width: 80, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{
-                    width: `${Math.min(100, riskSummary.capitalUtil)}%`, height: '100%', borderRadius: 3,
-                    background: riskSummary.capitalUtil > 5 ? 'var(--red)' : riskSummary.capitalUtil > 2 ? 'var(--orange)' : 'var(--green)',
-                  }} />
-                </div>
-                <span className="text-sm font-bold" style={{
-                  color: riskSummary.capitalUtil > 5 ? 'var(--red)' : riskSummary.capitalUtil > 2 ? 'var(--orange)' : 'var(--green)',
-                }}>
-                  {riskSummary.capitalUtil.toFixed(1)}%
-                </span>
+            {[
+              { label: 'Total Risk Per Day (est.)' },
+              { label: 'Max Daily Loss Exposure' },
+              { label: 'Worst Case Scenario' },
+              { label: 'Capital Utilization' },
+            ].map((m) => (
+              <div key={m.label}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
+                <p className="text-sm font-bold" style={{ color: 'var(--text-muted)' }}>--</p>
               </div>
-            </div>
+            ))}
           </div>
         </Card>
       )}
@@ -1109,21 +1073,26 @@ export default function PortfolioNewPage() {
         <div className="space-y-6 mb-6">
           {/* Capital Utilization */}
           <Card>
-            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Daily Peak Capital Deployed</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Daily Peak Capital Deployed</h3>
+              <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                Placeholder — needs backend wiring
+              </span>
+            </div>
             <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
               Estimated peak buying power usage per day based on strategy trade frequency and risk per trade. Red line marks your starting balance.
             </p>
-            <ChartPlaceholder label="Bar chart by day: estimated peak capital deployed per day (blue bars). Red dashed line at starting balance ($). Shows whether buying power may be a constraint." height={180} />
+            <ChartPlaceholder label="Bar chart by day: estimated peak capital deployed per day. Needs /preview extension to return capital utilization timeline for an unsaved portfolio." height={180} />
             <div className="grid grid-cols-4 gap-4 mt-3">
               {[
-                { label: 'Est. Peak / Day', value: `$${Math.round(strategies.reduce((s, st) => s + st.riskPerTrade * 3, 0)).toLocaleString()}` },
+                { label: 'Est. Peak / Day', value: '--' },
                 { label: 'Starting Balance', value: `$${startingBalance.toLocaleString()}` },
-                { label: 'Utilization', value: `${(strategies.reduce((s, st) => s + st.riskPerTrade * 3, 0) / startingBalance * 100).toFixed(1)}%` },
-                { label: 'Max Concurrent', value: `${strategies.length}` },
+                { label: 'Utilization', value: '--' },
+                { label: 'Max Concurrent', value: '--' },
               ].map((m) => (
                 <div key={m.label}>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                  <p className="text-sm font-bold">{m.value}</p>
+                  <p className="text-sm font-bold" style={m.value === '--' ? { color: 'var(--text-muted)' } : undefined}>{m.value}</p>
                 </div>
               ))}
             </div>
@@ -1131,18 +1100,23 @@ export default function PortfolioNewPage() {
 
           {/* Worst Case Analysis */}
           <Card>
-            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Worst Case Analysis</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Worst Case Analysis</h3>
+              <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                Placeholder — needs backend wiring
+              </span>
+            </div>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
               {[
-                { label: 'Worst Single Day', value: `-$${Math.round(strategies.reduce((s, st) => s + st.riskPerTrade * 2.5, 0))}` },
-                { label: 'Worst Losing Streak', value: `5 days (-$${Math.round(strategies.reduce((s, st) => s + st.riskPerTrade * 8, 0))})` },
-                { label: 'Worst 5-Day Rolling DD', value: `-$${Math.round(strategies.reduce((s, st) => s + st.riskPerTrade * 10, 0))}` },
-                { label: 'Max DD vs Balance', value: `${(strategies.reduce((s, st) => s + st.riskPerTrade * 10, 0) / startingBalance * 100).toFixed(1)}%` },
-                { label: 'Recovery Est.', value: '8-12 days' },
-              ].map((m) => (
-                <div key={m.label}>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                  <p className="text-sm font-bold" style={m.value.startsWith('-') ? { color: 'var(--red)' } : undefined}>{m.value}</p>
+                'Worst Single Day',
+                'Worst Losing Streak',
+                'Worst 5-Day Rolling DD',
+                'Max DD vs Balance',
+                'Recovery Est.',
+              ].map((label) => (
+                <div key={label}>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</p>
+                  <p className="text-sm font-bold" style={{ color: 'var(--text-muted)' }}>--</p>
                 </div>
               ))}
             </div>
@@ -1150,11 +1124,16 @@ export default function PortfolioNewPage() {
 
           {/* Monte Carlo Simulation */}
           <Card>
-            <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Risk Simulation (Monte Carlo)</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Risk Simulation (Monte Carlo)</h3>
+              <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                Placeholder — needs backend wiring
+              </span>
+            </div>
             <div className="flex items-center gap-4 mb-4 flex-wrap">
               <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Shuffle Mode:
-                <select className="ml-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}>
+                <select disabled className="ml-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.75rem' }}>
                   <option>Daily</option>
                   <option>Weekly</option>
                   <option>Individual</option>
@@ -1162,31 +1141,31 @@ export default function PortfolioNewPage() {
               </label>
               <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Simulations:
-                <input type="range" min={500} max={5000} step={500} defaultValue={1000} style={{ marginLeft: 8, verticalAlign: 'middle' }} />
+                <input type="range" disabled min={500} max={5000} step={500} defaultValue={1000} style={{ marginLeft: 8, verticalAlign: 'middle' }} />
                 <span className="font-mono ml-1">1000</span>
               </label>
-              <button className="px-3 py-1.5 rounded text-xs font-medium" style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer' }}>
+              <button disabled className="px-3 py-1.5 rounded text-xs font-medium" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'not-allowed' }}>
                 Run Simulation
               </button>
             </div>
             <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-4">
               {[
-                { label: 'Bust Probability', value: '3.1%' },
-                { label: 'Daily Pause Prob', value: '9.4%' },
-                { label: 'Max Loss Prob', value: '1.8%' },
-                { label: 'Median Max DD', value: '-4.2%' },
-                { label: '95th Pctl DD', value: '-7.1%' },
-                { label: 'Expected Worst Day', value: `-$${Math.round(strategies.reduce((s, st) => s + st.riskPerTrade * 3, 0))}` },
-              ].map((m) => (
-                <div key={m.label}>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{m.label}</p>
-                  <p className="text-sm font-bold">{m.value}</p>
+                'Bust Probability',
+                'Daily Pause Prob',
+                'Max Loss Prob',
+                'Median Max DD',
+                '95th Pctl DD',
+                'Expected Worst Day',
+              ].map((label) => (
+                <div key={label}>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</p>
+                  <p className="text-sm font-bold" style={{ color: 'var(--text-muted)' }}>--</p>
                 </div>
               ))}
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <ChartPlaceholder label="Max Drawdown Distribution histogram (50 bins)" height={180} />
-              <ChartPlaceholder label="Equity Curve Confidence Bands (5th, 25th, 50th, 75th, 95th percentiles)" height={180} />
+              <ChartPlaceholder label="Max Drawdown Distribution histogram — needs backend Monte Carlo endpoint for unsaved portfolios." height={180} />
+              <ChartPlaceholder label="Equity Curve Confidence Bands — needs backend Monte Carlo endpoint for unsaved portfolios." height={180} />
             </div>
           </Card>
         </div>
@@ -1228,7 +1207,8 @@ export default function PortfolioNewPage() {
               name: portfolioName.trim(),
               starting_balance: startingBalance,
               compound_rate: riskScaling / 100,
-              requirement_set_name: requirementSet === 'None' ? null : requirementSet,
+              requirement_set_id: requirementSetId ? Number(requirementSetId) : null,
+              webhook_group_id: webhookGroupId || null,
               strategies: strategies.map(s => ({
                 strategy_id: Number(s.id),
                 risk_per_trade: s.riskPerTrade,
