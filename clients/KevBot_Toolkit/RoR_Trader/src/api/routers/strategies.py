@@ -544,7 +544,18 @@ def get_strategy_chart_data(
         # Deduplicate
         overlay_cols = list(dict.fromkeys(overlay_cols))
         oscillator_cols = list(dict.fromkeys(oscillator_cols))
+
+        # Apply the same filtering + candle_color_column detection that the
+        # /backtest endpoint uses. Without this, Strategy Detail renders
+        # boolean/string pack columns as overlay lines and misses candle
+        # coloring for packs like Swing 1-2-3.
+        from api.services.backtest_service import classify_chart_indicators
+        overlay_cols, oscillator_cols, candle_color_column = \
+            classify_chart_indicators(df, overlay_cols, oscillator_cols, entry_conf_id)
+
         all_indicator_cols = overlay_cols + oscillator_cols
+        if candle_color_column and candle_color_column not in all_indicator_cols:
+            all_indicator_cols.append(candle_color_column)
 
         # Build heatmap condition data
         from data_loader import get_tf_label
@@ -616,6 +627,7 @@ def get_strategy_chart_data(
             "overlay_indicators": overlay_cols,
             "oscillator_indicators": oscillator_cols,
             "heatmap_conditions": heatmap_conditions,
+            "candle_color_column": candle_color_column,
         }
     except Exception as e:
         logger.exception("Failed to compute chart data for strategy %s: %s", strategy_id, e)

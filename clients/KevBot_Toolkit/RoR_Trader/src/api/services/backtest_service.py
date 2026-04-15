@@ -300,59 +300,8 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
     overlay_indicators = list(dict.fromkeys(overlay_cols))
     oscillator_indicators = list(dict.fromkeys(oscillator_cols))
 
-    # Filter out internal columns from ALL packs:
-    # - candle color columns (hex string, not a line)
-    # - level columns (used by L-type engine, not visual)
-    candle_color_column = None
-    _internal_cols = set()
-    try:
-        import pack_registry as _pr
-        for _slug, _pack in _pr.get_registered_packs().items():
-            # Collect candle color columns
-            cc_col = _pack.manifest.get("plot_config", {}).get("candle_color_column")
-            if cc_col:
-                _internal_cols.add(cc_col)
-                _tp = _pack.manifest.get("trigger_prefix", "")
-                if entry_conf_id.startswith(_slug) or (_tp and f"_{_tp}_" in entry_conf_id):
-                    candle_color_column = cc_col
-            # Collect level columns (used by L-type engine for fill prices)
-            for _t in _pack.manifest.get("triggers", []):
-                lc = _t.get("level_column")
-                if lc:
-                    _internal_cols.add(lc)
-    except Exception:
-        pass
-
-    if _internal_cols:
-        overlay_indicators = [c for c in overlay_indicators if c not in _internal_cols]
-        oscillator_indicators = [c for c in oscillator_indicators if c not in _internal_cols]
-
-    # Filter out non-plottable columns from overlays:
-    # - boolean/object columns (pattern flags, color strings)
-    # - integer columns with small value ranges (pattern codes like -2..2)
-    def _is_plottable_overlay(col_name):
-        if col_name not in df.columns:
-            return False
-        dtype = df[col_name].dtype
-        if dtype.kind not in ('f', 'i', 'u'):  # must be numeric
-            return False
-        # Integer columns with small range are likely pattern codes, not price overlays
-        if dtype.kind in ('i', 'u'):
-            col_vals = df[col_name].dropna()
-            if len(col_vals) > 0:
-                val_range = col_vals.max() - col_vals.min()
-                if val_range < 10:  # pattern codes (-2..2), boolean-like (0..1)
-                    return False
-        return True
-
-    def _is_plottable_oscillator(col_name):
-        if col_name not in df.columns:
-            return False
-        dtype = df[col_name].dtype
-        return dtype.kind in ('f', 'i', 'u')
-
-    overlay_indicators = [c for c in overlay_indicators if _is_plottable_overlay(c)]
-    oscillator_indicators = [c for c in oscillator_indicators if _is_plottable_oscillator(c)]
+    overlay_indicators, oscillator_indicators, candle_color_column = \
+        classify_chart_indicators(df, overlay_indicators, oscillator_indicators, entry_conf_id)
 
     all_indicator_cols = overlay_indicators + oscillator_indicators
     # Also include candle_color_column in serialization if present
@@ -485,6 +434,66 @@ def _build_equity_curve(trades_df: pd.DataFrame) -> list[dict]:
             "cumulative_r": round(float(cum_r.iloc[i]), 4),
         })
     return points
+
+
+def classify_chart_indicators(
+    df: pd.DataFrame,
+    overlay_cols: list[str],
+    oscillator_cols: list[str],
+    entry_conf_id: str,
+) -> tuple[list[str], list[str], str | None]:
+    """Filter overlay/oscillator columns to numeric-plottable only, strip
+    pack-internal columns (candle_color, level), and identify the entry
+    pack's candle_color_column for per-bar candle recoloring.
+
+    Shared by /backtest (StrategyBuilder) and /chart-data (StrategyDetail)
+    so both pages build charts from the same indicator classification.
+    """
+    candle_color_column = None
+    internal_cols: set[str] = set()
+    try:
+        import pack_registry as _pr
+        for slug, pack in _pr.get_registered_packs().items():
+            cc_col = pack.manifest.get("plot_config", {}).get("candle_color_column")
+            if cc_col:
+                internal_cols.add(cc_col)
+                tp = pack.manifest.get("trigger_prefix", "")
+                if entry_conf_id.startswith(slug) or (tp and f"_{tp}_" in entry_conf_id):
+                    candle_color_column = cc_col
+            for t in pack.manifest.get("triggers", []):
+                lc = t.get("level_column")
+                if lc:
+                    internal_cols.add(lc)
+    except Exception:
+        pass
+
+    if internal_cols:
+        overlay_cols = [c for c in overlay_cols if c not in internal_cols]
+        oscillator_cols = [c for c in oscillator_cols if c not in internal_cols]
+
+    def _is_plottable_overlay(col_name: str) -> bool:
+        if col_name not in df.columns:
+            return False
+        dtype = df[col_name].dtype
+        if dtype.kind not in ('f', 'i', 'u'):
+            return False
+        # Small-range integer columns are pattern codes (-2..2) or booleans,
+        # not price overlays.
+        if dtype.kind in ('i', 'u'):
+            col_vals = df[col_name].dropna()
+            if len(col_vals) > 0 and (col_vals.max() - col_vals.min()) < 10:
+                return False
+        return True
+
+    def _is_plottable_oscillator(col_name: str) -> bool:
+        if col_name not in df.columns:
+            return False
+        return df[col_name].dtype.kind in ('f', 'i', 'u')
+
+    overlay_cols = [c for c in overlay_cols if _is_plottable_overlay(c)]
+    oscillator_cols = [c for c in oscillator_cols if _is_plottable_oscillator(c)]
+
+    return overlay_cols, oscillator_cols, candle_color_column
 
 
 def _serialize_chart_data(
