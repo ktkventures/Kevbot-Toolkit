@@ -397,17 +397,17 @@ function SyncedChartPaneInner({
           }
         }
 
-        // Same optimization for markers — cfg.markers is a stable ref when
-        // chartTabData memoization holds.
-        const lastMarkers = lastMarkersRef.current[pi]?.[si];
-        if (cfg.markers !== lastMarkers) {
-          try {
-            const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
-            (series as any).setMarkers(valid);
-            if (lastMarkersRef.current[pi]) lastMarkersRef.current[pi][si] = cfg.markers;
-          } catch (e) {
-            console.warn('setMarkers failed:', e);
-          }
+        // ALWAYS call setMarkers — the ref-skip optimization doesn't apply
+        // here because (a) markers are cheap to push (handful per series),
+        // and (b) the dedup was silently swallowing updates when cfg.markers
+        // reference was unstable across chartTabData re-runs. Small cost,
+        // guarantees correctness.
+        try {
+          const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
+          (series as any).setMarkers(valid);
+        } catch (e) {
+          console.warn('[SyncedChartPane] setMarkers failed for pane=%d series=%d type=%s: %o',
+                       pi, si, cfg.type, e);
         }
       }
     }
