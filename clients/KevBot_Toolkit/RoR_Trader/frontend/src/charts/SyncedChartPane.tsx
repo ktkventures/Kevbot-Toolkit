@@ -37,6 +37,30 @@ export interface SeriesConfig {
   data: Record<string, any>[];
   options?: Record<string, any>;
   markers?: Record<string, any>[];
+  /** Opt-in metadata for the live forming-update effect. Series without a
+   * `liveRole` are never touched by the forming-bar effect (markers, etc.). */
+  liveRole?:
+    | 'overlay_line'       // price-pane indicator line driven by formingIndicators[indicatorColumn]
+    | 'oscillator_line'    // oscillator pane line
+    | 'oscillator_hist'    // oscillator pane histogram (e.g., macd_hist)
+    | 'heatmap_cell';      // heatmap cell toggled red/green by forming states
+  /** Indicator column name for overlay/oscillator roles. */
+  indicatorColumn?: string;
+  /** Heatmap role fields: column (interpreter key or cross-TF col) + target state. */
+  stateColumn?: string;
+  neededState?: string;
+  /** Numeric value to paint when the heatmap cell is live (n - idx in the pane). */
+  heatmapValue?: number;
+  /** Heatmap colors passed back to series.update() so met/unmet swap in place. */
+  heatmapMetColor?: string;
+  heatmapUnmetColor?: string;
+  /** PB cells never receive live updates — their data already reflects the
+   * previous-bar state which won't change intra-minute. Only CB cells tick. */
+  fidelity?: 'PB' | 'CB';
+  /** Whether this state column is cross-TF (look up from stateCrossTf rather
+   * than states). Cross-TF indicators don't recompute intra-bar, so the
+   * heatmap cell only ticks when the cross-TF state itself changes. */
+  crossTf?: boolean;
 }
 
 export interface PrimitiveConfig {
@@ -78,6 +102,17 @@ interface SyncedChartPaneProps {
    * depends on this prop.
    */
   formingBar?: LiveCandle | null;
+  /** Intra-bar tentative indicator values, keyed by column name. When
+   * provided alongside formingBar, drives `series.update()` on every
+   * overlay / oscillator series that declared a matching `liveRole` +
+   * `indicatorColumn`. */
+  formingIndicators?: Record<string, number> | null;
+  /** Intra-bar tentative interpreter states, keyed by interpreter key.
+   * Drives live heatmap cell color. */
+  formingStates?: Record<string, string> | null;
+  /** Cross-TF interpreter states (last-committed). Drives heatmap cells
+   * whose `crossTf` flag is true. */
+  formingStateCrossTf?: Record<string, string> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +164,9 @@ function SyncedChartPaneInner({
   gridLines = true,
   rightOffset = 3,
   formingBar = null,
+  formingIndicators = null,
+  formingStates = null,
+  formingStateCrossTf = null,
 }: SyncedChartPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
@@ -141,6 +179,17 @@ function SyncedChartPaneInner({
   const lastMarkersRef = useRef<unknown[][]>([]);
   const syncingRef = useRef(false);
   const primaryCandleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  // Keep the latest forming bar in a ref so the data effect can re-apply it
+  // after setData overwrites the candle series. Without this, every panes
+  // re-ref (alerts refetch, live pill timer, etc.) snaps the last candle
+  // back to its historical close until the next broadcast ~250ms later,
+  // looking like the stream has stopped.
+  const formingBarRef = useRef<LiveCandle | null>(null);
+  // Track the most-recent timestamp applied to each (paneIdx, seriesIdx) so
+  // we skip updates that would violate LWC's "Cannot update oldest data"
+  // invariant when the forming bar timestamp hasn't advanced past whatever
+  // the historical setData put there.
+  const lastAppliedTimesRef = useRef<number[][]>([]);
   // Preserves user's zoom/scroll across rare structure rebuilds (toggle
   // Show Conditions, candle-count change beyond visible range, etc.)
   const lastVisibleRangeRef = useRef<{ from: Time; to: Time } | null>(null);
@@ -233,6 +282,7 @@ function SyncedChartPaneInner({
           secondsVisible: true,
           visible: !pane.hideTimeAxis,
           rightOffset: rightOffset,
+          shiftVisibleRangeOnNewBar: true,
         },
       });
       charts.push(chart);
@@ -316,6 +366,7 @@ function SyncedChartPaneInner({
     // Reset data/markers tracking — new chart instance, nothing pushed yet.
     lastDataRef.current = allSeries.map(pane => new Array(pane.length).fill(null));
     lastMarkersRef.current = allSeries.map(pane => new Array(pane.length).fill(null));
+    lastAppliedTimesRef.current = allSeries.map(pane => new Array(pane.length).fill(0));
 
     // ---- Cross-pane synchronization ----
     if (charts.length > 1) {
@@ -374,29 +425,7 @@ function SyncedChartPaneInner({
     const charts = chartsRef.current;
     const allSeries = seriesRef.current;
     const wasFirstLoad = !hasRenderedInitialDataRef.current;
-    if (charts.length === 0 || allSeries.length !== panes.length) {
-      if (typeof window !== 'undefined') {
-        console.debug('[SyncedChartPane] data effect skipped',
-          { chartsLen: charts.length, allSeriesLen: allSeries.length, panesLen: panes.length });
-      }
-      return;
-    }
-    // One-shot diagnostic: count markers per series so we can verify
-    // they're reaching the chart. Logged only on first load and when
-    // the pane count actually changes (to avoid console spam on every
-    // 5s alerts refetch).
-    if (wasFirstLoad && typeof window !== 'undefined') {
-      panes.forEach((pane, pi) => {
-        pane.series.forEach((s, si) => {
-          const markerCount = s.markers ? s.markers.length : 0;
-          const dataCount = s.data ? s.data.length : 0;
-          if (markerCount > 0 || s.type === 'Candlestick') {
-            console.debug('[SyncedChartPane] series pane=%d si=%d type=%s data=%d markers=%d',
-                          pi, si, s.type, dataCount, markerCount);
-          }
-        });
-      });
-    }
+    if (charts.length === 0 || allSeries.length !== panes.length) return;
 
     for (let pi = 0; pi < panes.length; pi++) {
       const pane = panes[pi];
@@ -418,6 +447,36 @@ function SyncedChartPaneInner({
             const data = transformSeriesData(cfg);
             series.setData(data);
             if (lastDataRef.current[pi]) lastDataRef.current[pi][si] = cfg.data;
+            // Record the last historical timestamp so the forming-bar
+            // effect knows the lower bound for its series.update() calls.
+            if (data.length > 0) {
+              const lastT = Number((data[data.length - 1] as any).time);
+              if (isFinite(lastT) && lastAppliedTimesRef.current[pi]) {
+                lastAppliedTimesRef.current[pi][si] = lastT;
+              }
+            }
+            // Re-apply forming bar on the primary candle series — setData
+            // just wiped whatever live update was painted there.
+            if (series === primaryCandleSeriesRef.current && formingBarRef.current) {
+              const fb = formingBarRef.current;
+              const ft = toUnixTime(fb.time);
+              const lastHistMs = data.length > 0
+                ? Number((data[data.length - 1] as any).time)
+                : 0;
+              if (isFinite(ft) && ft >= lastHistMs && isFinite(fb.open) && isFinite(fb.high) &&
+                  isFinite(fb.low) && isFinite(fb.close)) {
+                try {
+                  series.update({
+                    time: ft as Time,
+                    open: Number(fb.open), high: Number(fb.high),
+                    low: Number(fb.low), close: Number(fb.close),
+                  });
+                  if (lastAppliedTimesRef.current[pi]) {
+                    lastAppliedTimesRef.current[pi][si] = ft;
+                  }
+                } catch { /* timestamp ordering violation, drop */ }
+              }
+            }
           } catch (e) {
             console.warn('setData failed:', e);
           }
@@ -455,26 +514,97 @@ function SyncedChartPaneInner({
     }
   }, [panes]);
 
-  // ---- LIVE FORMING-BAR EFFECT (M8.5 Phase B, unchanged) ----
+  // ---- LIVE FORMING-BAR EFFECT ----
+  // Primary candle + every overlay / oscillator / CB heatmap cell that
+  // declared a `liveRole`. Data extents advance together so LWC's visible
+  // range naturally extends past the last historical bar (the old
+  // cross-pane clamp problem disappears once every series has the same
+  // rightmost timestamp).
   useEffect(() => {
-    const series = primaryCandleSeriesRef.current;
-    if (!series || !formingBar) return;
+    formingBarRef.current = formingBar || null;
+    if (!formingBar) return;
     const t = toUnixTime(formingBar.time);
     if (!isFinite(t)) return;
-    if (!isFinite(formingBar.open) || !isFinite(formingBar.high) ||
-        !isFinite(formingBar.low) || !isFinite(formingBar.close)) return;
-    try {
-      series.update({
-        time: t as Time,
-        open: Number(formingBar.open),
-        high: Number(formingBar.high),
-        low: Number(formingBar.low),
-        close: Number(formingBar.close),
-      });
-    } catch {
-      // LWC rejects updates with time earlier than last bar — drop silently.
+
+    // 1. Primary candle — OHLCV always comes straight off formingBar.
+    const candle = primaryCandleSeriesRef.current;
+    if (candle &&
+        isFinite(formingBar.open) && isFinite(formingBar.high) &&
+        isFinite(formingBar.low) && isFinite(formingBar.close)) {
+      // Find the candle's (pi, si) in seriesRef for time-guard tracking.
+      let candlePi = -1, candleSi = -1;
+      for (let pi = 0; pi < seriesRef.current.length; pi++) {
+        const paneSeries = seriesRef.current[pi];
+        for (let si = 0; si < paneSeries.length; si++) {
+          if (paneSeries[si] === candle) { candlePi = pi; candleSi = si; break; }
+        }
+        if (candlePi >= 0) break;
+      }
+      const lastT = candlePi >= 0
+        ? (lastAppliedTimesRef.current[candlePi]?.[candleSi] ?? 0)
+        : 0;
+      if (t >= lastT) {
+        try {
+          candle.update({
+            time: t as Time,
+            open: Number(formingBar.open), high: Number(formingBar.high),
+            low: Number(formingBar.low), close: Number(formingBar.close),
+          });
+          if (candlePi >= 0 && lastAppliedTimesRef.current[candlePi]) {
+            lastAppliedTimesRef.current[candlePi][candleSi] = t;
+          }
+        } catch { /* LWC rejects out-of-order — drop silently */ }
+      }
     }
-  }, [formingBar]);
+
+    // 2. Walk every live-capable series and apply its intra-bar update.
+    for (let pi = 0; pi < panes.length; pi++) {
+      const pane = panes[pi];
+      const paneSeries = seriesRef.current[pi];
+      if (!paneSeries || paneSeries.length !== pane.series.length) continue;
+      for (let si = 0; si < pane.series.length; si++) {
+        const cfg = pane.series[si];
+        const role = cfg.liveRole;
+        if (!role || role === 'heatmap_cell' && cfg.fidelity === 'PB') continue;
+
+        const series = paneSeries[si];
+        if (!series) continue;
+        const lastT = lastAppliedTimesRef.current[pi]?.[si] ?? 0;
+        if (t < lastT) continue;
+
+        try {
+          if (role === 'overlay_line' || role === 'oscillator_line' || role === 'oscillator_hist') {
+            const col = cfg.indicatorColumn;
+            if (!col || !formingIndicators) continue;
+            const v = formingIndicators[col];
+            if (v == null || !isFinite(v)) continue;
+            if (role === 'oscillator_hist') {
+              const histColor = v >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(244,67,54,0.6)';
+              series.update({ time: t as Time, value: Number(v), color: histColor } as any);
+            } else {
+              series.update({ time: t as Time, value: Number(v) } as any);
+            }
+          } else if (role === 'heatmap_cell') {
+            const col = cfg.stateColumn;
+            const needed = cfg.neededState;
+            const paneVal = cfg.heatmapValue ?? 1;
+            const metColor = cfg.heatmapMetColor ?? 'rgba(76,175,80,0.8)';
+            const unmetColor = cfg.heatmapUnmetColor ?? 'rgba(244,67,54,0.4)';
+            if (!col || !needed) continue;
+            const stateMap = cfg.crossTf ? formingStateCrossTf : formingStates;
+            if (!stateMap) continue;
+            const cur = stateMap[col];
+            if (cur == null) continue;
+            const color = cur === needed ? metColor : unmetColor;
+            series.update({ time: t as Time, value: paneVal, color } as any);
+          }
+          if (lastAppliedTimesRef.current[pi]) {
+            lastAppliedTimesRef.current[pi][si] = t;
+          }
+        } catch { /* drop silently */ }
+      }
+    }
+  }, [formingBar, formingIndicators, formingStates, formingStateCrossTf, panes]);
 
   if (panes.length === 0) {
     return (

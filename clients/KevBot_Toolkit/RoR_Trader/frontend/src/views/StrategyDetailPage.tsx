@@ -629,6 +629,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     liveBar?.bar?.timestamp, liveBar?.bar?.open, liveBar?.bar?.high,
     liveBar?.bar?.low, liveBar?.bar?.close,
   ]);
+  // Pass-through of Ralph's tentative indicator/state payload. Refs are
+  // allowed to change on every broadcast — that's the whole point of
+  // intra-bar live updates. SyncedChartPane's forming effect re-runs
+  // and applies series.update() to each overlay/oscillator/CB-heatmap cell.
+  const formingIndicators = liveBar?.indicators ?? null;
+  const formingStates = liveBar?.states ?? null;
+  const formingStateCrossTf = liveBar?.stateCrossTf ?? null;
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
 
@@ -2254,6 +2261,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         gridLines={chartPrefs.gridLines}
                         rightOffset={chartPrefs.rightOffset}
                         formingBar={formingBarProp}
+                        formingIndicators={formingIndicators}
+                        formingStates={formingStates}
+                        formingStateCrossTf={formingStateCrossTf}
                       />
                       {/* Legend */}
                       <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>

@@ -32,6 +32,17 @@ export interface LiveBarState {
   bar: LiveBarPayload;
   isForming: boolean;
   receivedAt: number; // epoch ms
+  /** Tentative indicator values computed on the forming bar (or committed
+   * values on bar close). Keys are indicator column names (ema_9, stoch_k,
+   * macd_line, etc.). Empty when the engine hasn't warmed up yet. */
+  indicators?: Record<string, number>;
+  /** Primary-TF interpreter states evaluated against the (tentative)
+   * indicator values. Keys are interpreter keys (EMA_STACK, MACD_LINE). */
+  states?: Record<string, string>;
+  /** Cross-TF interpreter states (last-committed only — cross-TF indicators
+   * do not recompute intra-bar). Keys follow `{INTERP}__{tf_lower}`
+   * convention (e.g., `MACD_LINE__1d`). */
+  stateCrossTf?: Record<string, string>;
 }
 
 interface MeResponse {
@@ -91,6 +102,9 @@ export function useLiveBar(
           bar: payload.bar,
           isForming: Boolean(payload.is_forming),
           receivedAt: Date.now(),
+          indicators: payload.indicators || undefined,
+          states: payload.states || undefined,
+          stateCrossTf: payload.state_cross_tf || undefined,
         });
       });
       channel.subscribe();
