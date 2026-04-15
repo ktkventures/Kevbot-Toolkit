@@ -91,11 +91,17 @@ class LiveBarPublisher:
         tf_seconds: int,
         bar: dict,
         is_forming: bool,
+        extras: Optional[dict] = None,
     ) -> None:
         """Publish a bar update. Never raises, never blocks meaningfully.
 
         Forming-bar updates are silently dropped inside the throttle window.
         Completed bars are always sent and reset the throttle timer.
+
+        `extras` (when provided) is merged into the broadcast payload. Used
+        by the Ralph engine to carry tentative indicator values, interpreter
+        states, and cross-TF state snapshots so the frontend can animate
+        heatmap / oscillator / overlay panes in sync with the price candle.
         """
         if not self._enabled or not user_id:
             return
@@ -107,17 +113,21 @@ class LiveBarPublisher:
             self._mark_published(symbol, tf_seconds)
 
         endpoint = f"{self._url}/realtime/v1/api/broadcast"
+        inner_payload: dict = {
+            "symbol": symbol,
+            "tf_seconds": tf_seconds,
+            "bar": bar,
+            "is_forming": is_forming,
+        }
+        if extras:
+            inner_payload.update(extras)
+
         payload = {
             "messages": [
                 {
                     "topic": f"live_bars:{user_id}",
                     "event": "bar_update",
-                    "payload": {
-                        "symbol": symbol,
-                        "tf_seconds": tf_seconds,
-                        "bar": bar,
-                        "is_forming": is_forming,
-                    },
+                    "payload": inner_payload,
                 }
             ]
         }

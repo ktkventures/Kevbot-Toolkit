@@ -626,6 +626,40 @@ class StrategyMonitor:
 
         return signals, audit_data
 
+    def compute_tentative_state(
+        self, forming_bar: dict,
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """Run indicator + interpreter pipeline on a forming bar without
+        mutating committed engine state. Snapshots IndicatorState, applies
+        the bar as if closed, reads interpreter outputs, then restores.
+
+        Returns (indicator_values, interpreter_states). If the engine isn't
+        warmed up yet, returns empty dicts — caller should treat that as
+        "no live data available yet for this strategy."
+
+        Used by SymbolHub to pack live heatmap / oscillator / overlay values
+        into the forming-bar broadcast so the frontend can animate all panes
+        in sync with the price candle.
+        """
+        if not self.indicators._initialized:
+            return {}, {}
+
+        import copy as _copy
+        state_snapshot = _copy.deepcopy(self.indicators.state)
+        init_snapshot = self.indicators._initialized
+        try:
+            current = self.indicators.update_bar(forming_bar)
+            prev = self.indicators.get_prev_values()
+            interps, _triggers = self.trigger_eval.evaluate_bar_close(
+                current, prev, self.indicators.state.prev2_macd_hist)
+        except Exception:
+            interps = {}
+            current = {}
+        finally:
+            self.indicators.state = state_snapshot
+            self.indicators._initialized = init_snapshot
+        return current, interps
+
     def on_tick(self, price: float, timestamp: str,
                 bar_count: int) -> List[dict]:
         """Process a tick for intra-bar detection. Returns list of signals."""
@@ -890,8 +924,61 @@ class SymbolHub:
         # Held refs to prevent GC of fire-and-forget asyncio tasks.
         self._pending_publish_tasks: Set['asyncio.Task'] = set()
 
+    def _gather_tentative_state(
+        self, tf_seconds: int, forming_bar: dict,
+    ) -> Dict[str, Any]:
+        """Collect tentative indicator values + interpreter states for every
+        monitor on this TF, plus last-committed cross-TF interpreter states
+        from the shared MTF confluence buffer. Used to enrich live-bar
+        broadcasts so the frontend can animate indicator overlays, oscillator
+        panes, and CB-fidelity heatmap cells in sync with the price candle.
+
+        Returns a dict with three keys:
+            indicators: {col: value}  — merged across all monitors on this TF
+            states: {interp_key: state}  — primary-TF interpreter states
+            state_cross_tf: {col: state}  — cross-TF interpreter states (last
+                committed bar; sub-minute indicators on higher TFs don't
+                recompute intra-bar).
+
+        Returns {} on any failure — broadcast still goes out with OHLCV only.
+        """
+        try:
+            indicators: Dict[str, float] = {}
+            states: Dict[str, str] = {}
+            for m in self.monitors.values():
+                if m.tf_seconds != tf_seconds:
+                    continue
+                ind, interp = m.compute_tentative_state(forming_bar)
+                indicators.update(ind)
+                states.update(interp)
+
+            state_cross_tf: Dict[str, str] = {}
+            for other_tf, records in self._mtf_confluence.items():
+                if other_tf == tf_seconds:
+                    continue
+                for rec in records:
+                    if rec.startswith('GEN-'):
+                        continue
+                    parts = rec.split('-', 2)
+                    if len(parts) < 3:
+                        continue
+                    tf_label, interp_key, state_val = parts
+                    col = f"{interp_key}__{tf_label.lower()}"
+                    state_cross_tf[col] = state_val
+
+            return {
+                'indicators': indicators,
+                'states': states,
+                'state_cross_tf': state_cross_tf,
+            }
+        except Exception as e:
+            logger.debug("_gather_tentative_state failed: %s", e)
+            return {}
+
     def _publish_completed_bar(self, tf_seconds: int, bar: dict,
-                                is_forming: bool = False) -> None:
+                                is_forming: bool = False,
+                                extras: Optional[Dict[str, Any]] = None,
+                                ) -> None:
         """Fire-and-forget broadcast of a bar snapshot to Supabase Realtime.
 
         Side effect only — MUST NOT block or raise into the tick handler.
@@ -902,6 +989,10 @@ class SymbolHub:
         throttle window (250ms by default). is_forming=False (default) always
         sends immediately and resets the throttle — used for canonical bar
         closes that must never be dropped.
+
+        `extras` is merged into the broadcast payload alongside `bar` /
+        `is_forming`. Used for live indicator values, interpreter states,
+        and cross-TF state snapshots.
         """
         if self._publisher is None:
             return
@@ -917,7 +1008,7 @@ class SymbolHub:
             task = loop.create_task(
                 self._publisher.publish_async(
                     user_id, self.symbol, tf_seconds, bar,
-                    is_forming=is_forming,
+                    is_forming=is_forming, extras=extras,
                 )
             )
             self._pending_publish_tasks.add(task)
@@ -1222,6 +1313,13 @@ class SymbolHub:
         if shadow and shadow.indicators._initialized:
             self._mtf_confluence[tf_seconds] = shadow.on_bar_close(bar_dict)
 
+        # Collect committed indicator values + interpreter states from each
+        # monitor so the live-chart broadcast carries fresh state on bar
+        # close (matches what the backend chart-data endpoint would return
+        # for this bar on next fetch).
+        committed_indicators: Dict[str, float] = {}
+        committed_states: Dict[str, str] = {}
+
         # Run all monitors for this timeframe
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
@@ -1242,6 +1340,9 @@ class SymbolHub:
                         bar_dict['close'], pos_state,
                         len(signals) if signals else 0,
                         active_triggers if active_triggers else "none")
+
+            committed_indicators.update(audit_data.get('indicator_values', {}))
+            committed_states.update(audit_data.get('interpreter_states', {}))
 
             if signals and alert_callback:
                 for sig in signals:
@@ -1266,8 +1367,29 @@ class SymbolHub:
                     self._mtf_confluence[tf_seconds] = own_records
                     break
 
+        # Build cross-TF state snapshot the same way as the forming-bar path
+        state_cross_tf: Dict[str, str] = {}
+        for other_tf, records in self._mtf_confluence.items():
+            if other_tf == tf_seconds:
+                continue
+            for rec in records:
+                if rec.startswith('GEN-'):
+                    continue
+                parts = rec.split('-', 2)
+                if len(parts) < 3:
+                    continue
+                tf_label, interp_key, state_val = parts
+                col = f"{interp_key}__{tf_label.lower()}"
+                state_cross_tf[col] = state_val
+
         # M8.5: broadcast completed bar to Supabase Realtime (live chart)
-        self._publish_completed_bar(tf_seconds, bar_dict, is_forming=False)
+        extras = {
+            'indicators': committed_indicators,
+            'states': committed_states,
+            'state_cross_tf': state_cross_tf,
+        } if (committed_indicators or committed_states or state_cross_tf) else None
+        self._publish_completed_bar(
+            tf_seconds, bar_dict, is_forming=False, extras=extras)
 
     def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
                         alert_callback: Callable = None,
@@ -1390,18 +1512,29 @@ class SymbolHub:
                         auditor=auditor,
                         source_label='subm',
                     )
-                # Publish forming snapshot of the (new) partial bar
+                # Publish forming snapshot of the (new) partial bar, with
+                # tentative indicators + interpreter states so the frontend
+                # heatmap / oscillator / overlay panes stay in sync with
+                # the price candle.
                 if b._partial is not None:
+                    partial_dict = b._partial.to_dict()
+                    extras = self._gather_tentative_state(
+                        tf_seconds, partial_dict)
                     self._publish_completed_bar(
-                        tf_seconds, b._partial.to_dict(), is_forming=True)
+                        tf_seconds, partial_dict,
+                        is_forming=True, extras=extras)
             else:
                 # 1Min+: AM channel is canonical. Use per-second only to
                 # update the partial for chart visual. NEVER appends to
                 # history. NEVER runs monitors here.
                 b.accept_second_bar(bar_dict, close_on_boundary=False)
                 if b._partial is not None:
+                    partial_dict = b._partial.to_dict()
+                    extras = self._gather_tentative_state(
+                        tf_seconds, partial_dict)
                     self._publish_completed_bar(
-                        tf_seconds, b._partial.to_dict(), is_forming=True)
+                        tf_seconds, partial_dict,
+                        is_forming=True, extras=extras)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
