@@ -2,6 +2,7 @@
 
 import copy
 import logging
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -12,6 +13,19 @@ from api.deps import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+
+
+def _sanitize_json(obj):
+    """Recursively replace NaN/Inf floats with None so the response survives
+    Starlette's json.dumps. KPIs that divide by zero (profit_factor when
+    losses=0, etc.) otherwise blow up the whole endpoint with a 500."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_json(v) for v in obj]
+    return obj
 
 
 # =============================================================================
@@ -213,10 +227,10 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
             strat['kpis'] = {}
 
     try:
-        return svc.enrich_strategy(strat, full_compute=True)
+        return _sanitize_json(svc.enrich_strategy(strat, full_compute=True))
     except Exception as e:
         logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
-        return strat
+        return _sanitize_json(strat)
 
 
 @router.put("/{strategy_id}")
