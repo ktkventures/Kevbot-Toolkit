@@ -370,7 +370,29 @@ function SyncedChartPaneInner({
     const charts = chartsRef.current;
     const allSeries = seriesRef.current;
     const wasFirstLoad = !hasRenderedInitialDataRef.current;
-    if (charts.length === 0 || allSeries.length !== panes.length) return;
+    if (charts.length === 0 || allSeries.length !== panes.length) {
+      if (typeof window !== 'undefined') {
+        console.debug('[SyncedChartPane] data effect skipped',
+          { chartsLen: charts.length, allSeriesLen: allSeries.length, panesLen: panes.length });
+      }
+      return;
+    }
+    // One-shot diagnostic: count markers per series so we can verify
+    // they're reaching the chart. Logged only on first load and when
+    // the pane count actually changes (to avoid console spam on every
+    // 5s alerts refetch).
+    if (wasFirstLoad && typeof window !== 'undefined') {
+      panes.forEach((pane, pi) => {
+        pane.series.forEach((s, si) => {
+          const markerCount = s.markers ? s.markers.length : 0;
+          const dataCount = s.data ? s.data.length : 0;
+          if (markerCount > 0 || s.type === 'Candlestick') {
+            console.debug('[SyncedChartPane] series pane=%d si=%d type=%s data=%d markers=%d',
+                          pi, si, s.type, dataCount, markerCount);
+          }
+        });
+      });
+    }
 
     for (let pi = 0; pi < panes.length; pi++) {
       const pane = panes[pi];
