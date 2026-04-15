@@ -16,6 +16,9 @@ const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63', '#00BCD4',
 interface ChartBuildOptions {
   bars: any[];
   trades: any[];
+  /** Live alerts — rendered as xcross price-level markers so users can
+   * distinguish alert fills from backtest/forward trade fills. */
+  alerts?: any[];
   direction: string;
   overlayNames?: string[];
   oscNames?: string[];
@@ -63,7 +66,7 @@ const DEFAULT_PREFS = {
 
 export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const {
-    bars, trades, direction,
+    bars, trades, alerts = [], direction,
     overlayNames = [], oscNames = [], heatmapConds = [],
     showConditions = true, showTriggers = true,
     tfMs = 60000,
@@ -261,24 +264,81 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     },
   ];
 
-  // Entry cross markers (+)
-  if (algoEntryData.length > 0) {
-    priceSeries.push({
-      type: 'Line',
-      data: algoEntryData,
-      options: { color: prefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-      markers: algoEntryMarkers,
-    });
+  // ---- Alert (live) cross markers — xcross shape to distinguish from algo fills ----
+  const alertEntryData: any[] = [];
+  const alertEntryMarkers: any[] = [];
+  const seenAlertEntry = new Set<string>();
+  const alertExitData: any[] = [];
+  const alertExitMarkers: any[] = [];
+  const seenAlertExit = new Set<string>();
+  if (showTriggers && alerts.length > 0) {
+    const barTimestamps = bars.map((b: any) => b.timestamp);
+    const snapToBar = (t: string): string | null => {
+      const tms = _safeMs(t);
+      let bestTs = barTimestamps[0];
+      let bestDist = Infinity;
+      for (const ts of barTimestamps) {
+        const d = Math.abs(_safeMs(ts) - tms);
+        if (d < bestDist) { bestDist = d; bestTs = ts; }
+      }
+      return bestDist < 120000 ? bestTs : null;
+    };
+    for (const a of alerts) {
+      if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
+        const entryMs = _safeMs(a.entryTime);
+        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
+          const snapped = snapToBar(a.entryTime);
+          if (snapped && !seenAlertEntry.has(snapped)) {
+            seenAlertEntry.add(snapped);
+            alertEntryData.push({ time: snapped, value: a.entryPrice });
+            alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
+          }
+        }
+      }
+      if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
+        const exitMs = _safeMs(a.exitTime);
+        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
+          const snapped = snapToBar(a.exitTime);
+          if (snapped && !seenAlertExit.has(snapped)) {
+            seenAlertExit.add(snapped);
+            const reason = a.exitReason || '';
+            let color: string;
+            if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
+            else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
+            else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
+            else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
+            alertExitData.push({ time: snapped, value: a.exitPrice });
+            alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
+          }
+        }
+      }
+    }
   }
-  // Exit cross markers (+)
-  if (algoExitData.length > 0) {
-    priceSeries.push({
-      type: 'Line',
-      data: algoExitData,
-      options: { color: prefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-      markers: algoExitMarkers,
-    });
-  }
+
+  // Always push all 4 marker series so the price pane's series count stays
+  // stable across re-renders (live alert refetch every 5s, forming bar every
+  // 250ms). Empty data + empty markers is cheap; a changing series count
+  // triggers full chart rebuild and wipes the user's zoom.
+  priceSeries.push({
+    type: 'Line', data: algoEntryData,
+    options: { color: prefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    markers: algoEntryMarkers,
+  });
+  priceSeries.push({
+    type: 'Line', data: algoExitData,
+    options: { color: prefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    markers: algoExitMarkers,
+  });
+  priceSeries.push({
+    type: 'Line', data: alertEntryData,
+    options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    markers: alertEntryMarkers,
+  });
+  priceSeries.push({
+    type: 'Line', data: alertExitData,
+    options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
+    markers: alertExitMarkers,
+  });
 
   // Overlay indicators (filtered to only plottable numeric columns)
   for (let i = 0; i < filteredOverlays.length; i++) {

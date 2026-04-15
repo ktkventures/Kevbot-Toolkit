@@ -25,12 +25,19 @@ const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ss
 const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
+import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
+
 type PaneConfig = import('@/charts/SyncedChartPane').PaneConfig;
 type SeriesConfig = import('@/charts/SyncedChartPane').SeriesConfig;
 
 /* ========================================================================= */
 /* COLOR CONSTANTS                                                            */
 /* ========================================================================= */
+
+const INDICATOR_COLORS = [
+  '#2196F3', '#FF9800', '#4CAF50', '#E91E63',
+  '#00BCD4', '#9C27B0', '#FFC107', '#795548',
+];
 
 const EXEC_BADGE_COLOR = '#2196F3';
 const FIDELITY_BADGE_COLOR = '#26C6DA';
@@ -1255,19 +1262,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return { fwd: fwdSigma, alert: alertSigma };
   }, [pvpBtTrades, pvpFwdTrades, recentAlerts]);
 
-  // M8.5 B+ — Memoize chart pane configs so SyncedChartPane's `panes` prop
-  // identity is stable across re-renders triggered by useLiveBar (every
-  // ~250ms forming-bar broadcast). Without this, the inline IIFE used to
-  // produce a new `chartPanes` object on every render → SyncedChartPane's
-  // setup useEffect re-fired → chart torn down + rebuilt + fitContent →
-  // user's zoom/scroll snapped back to the right edge. Also fixes a CLAUDE.md
-  // rule violation ("Never use IIFEs for variable initialization — use
-  // useMemo instead").
-  const INDICATOR_COLORS = useMemo(() => [
-    '#2196F3', '#FF9800', '#4CAF50', '#E91E63',
-    '#00BCD4', '#9C27B0', '#FFC107', '#795548',
-  ], []);
-
+  // Use the shared buildStrategyChartPanes helper so Strategy Detail and
+  // Strategy Builder render charts through one code path. candle coloring
+  // (Swing 1-2-3 etc.), per-family oscillator panes, and internal-column
+  // filtering all come from the helper.
   const chartTabData = useMemo(() => {
     const chartSrc = chartDataResp?.chart_data;
     const rawBars = chartSrc && chartSrc.length > 0
@@ -1286,256 +1284,45 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
     const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
     const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
-    const firstBarTime = bars.length > 0 ? safeDateMs(bars[0].timestamp) : 0;
-    const lastBarTime = bars.length > 0 ? safeDateMs(bars[bars.length - 1].timestamp) : Infinity;
+    const candleColorColumn: string | undefined = (chartDataResp as any)?.candle_color_column || undefined;
 
-    // Build trade markers from stored_trades (always available) or btTrades+fwdTrades
+    // Normalize trade rows for the helper — raw times + entry_trigger so the
+    // helper can detect exec type and apply C-type shift itself.
     const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
       ? [...btTrades, ...fwdTrades]
-      : (apiStrategy?.stored_trades || []).map((t: any, i: number) => ({
-          id: i + 1,
-          entryTime: t.entry_time || '--',
-          exitTime: t.exit_time || '--',
-          entryTimeDisplay: shiftCType(t.entry_time || '--', t.exec_type || 'C'),
-          exitTimeDisplay: shiftCType(t.exit_time || '--', ['stop_loss', 'stop', 'target'].includes(t.exit_reason || '') ? 'L' : 'C'),
-          entryPrice: t.entry_price ?? 0,
-          exitPrice: t.exit_price ?? 0,
-          pnlR: t.r_multiple ?? 0,
-          execType: t.exec_type || 'C',
-          exitReason: t.exit_reason || '--',
-          isFwd: false,
+      : (apiStrategy?.stored_trades || []).map((t: any) => ({
+          entry_time: t.entry_time,
+          exit_time: t.exit_time,
+          entry_price: t.entry_price ?? 0,
+          exit_price: t.exit_price ?? 0,
+          r_multiple: t.r_multiple ?? 0,
+          exit_reason: t.exit_reason || '',
+          entry_trigger: t.entry_trigger || '',
+          exec_type: t.exec_type || 'C',
+          stop_exec_type: t.stop_exec_type,
+          target_exec_type: t.target_exec_type,
         }));
-    const tradeMarkers = !showTriggers ? [] : markerTrades.flatMap((t: any) => {
-      const m: any[] = [];
-      const dir = strategy?.direction;
-      const entryPlot = t.entryTimeDisplay || t.entryTime;
-      const exitPlot = t.exitTimeDisplay || t.exitTime;
-      const entryMs = entryPlot && entryPlot !== '--' ? safeDateMs(entryPlot) : 0;
-      const exitMs = exitPlot && exitPlot !== '--' ? safeDateMs(exitPlot) : 0;
-      if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
-        m.push({ time: entryPlot, position: dir === 'LONG' ? 'belowBar' : 'aboveBar', shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown', color: chartPrefs.entryColor, text: chartPrefs.showLabels ? 'Entry' : '', size: 1 });
-      }
-      if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
-        const reason = t.exitReason || '';
-        let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-        if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-        else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
-        else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
-        else if (reason === 'opposite_signal' || reason === 'time_exit') color = chartPrefs.exitHybridColor;
-        m.push({ time: exitPlot, position: dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'arrowDown', color, text: chartPrefs.showLabels ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(1)}R` : '', size: 1 });
-      }
-      return m;
+
+    const chartPanes = buildStrategyChartPanes({
+      bars,
+      trades: markerTrades,
+      alerts: recentAlerts,
+      direction: strategy?.direction || 'LONG',
+      overlayNames,
+      oscNames,
+      heatmapConds,
+      showConditions,
+      showTriggers,
+      tfMs,
+      candleColorColumn,
+      chartPrefs,
     });
-
-    const chartPanes: PaneConfig[] = [];
-
-    // Pane 1: Confluence heatmap
-    if (showConditions && heatmapConds.length > 0) {
-      const n = heatmapConds.length;
-      const hmSeries: SeriesConfig[] = heatmapConds.map((cond: any, idx: number) => ({
-        type: 'Histogram' as const,
-        data: bars.map((b: any, bi: number) => {
-          const isPB = cond.fidelity === 'PB';
-          const sourceBar = isPB && bi > 0 ? bars[bi - 1] : b;
-          const stateVal = sourceBar[`_state_${cond.column}`];
-          const isMet = stateVal != null && stateVal === cond.needed_state;
-          return { time: b.timestamp, value: n - idx, color: isMet ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.4)' };
-        }),
-        options: { priceLineVisible: false, lastValueVisible: false, title: cond.label },
-      }));
-      chartPanes.push({ id: 'heatmap', height: Math.max(50, n * 20 + 10), series: hmSeries, hideTimeAxis: true });
-    }
-
-    // Pane 2: Price chart
-    const priceSeries: SeriesConfig[] = [
-      {
-        type: 'Candlestick',
-        data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
-        markers: tradeMarkers,
-      },
-    ];
-
-    const visibleTrades = !showTriggers ? [] : markerTrades.filter((t: any) => {
-      const ep = t.entryTimeDisplay || t.entryTime;
-      const xp = t.exitTimeDisplay || t.exitTime;
-      const entryMs = ep && ep !== '--' ? safeDateMs(ep) : 0;
-      const exitMs = xp && xp !== '--' ? safeDateMs(xp) : 0;
-      return (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) ||
-             (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs);
-    });
-
-    // M8.5 B+ — Always compute and push all 4 marker series, even when
-    // empty. recentAlerts refetches every 5s; if we conditionally added
-    // these series the price pane's series count would flip, changing the
-    // SyncedChartPane structure key and triggering a full chart rebuild
-    // (which wipes user's zoom and creates noticeable lag with large
-    // candle counts). Empty data arrays passed to setData() are fine.
-    {
-      const barTimestamps = bars.map((b: any) => b.timestamp);
-      const snapToBar = (tradeTime: string): string | null => {
-        if (barTimestamps.length === 0) return null;
-        const tradeMs = safeDateMs(tradeTime);
-        let bestTs = barTimestamps[0];
-        let bestDist = Infinity;
-        for (const ts of barTimestamps) {
-          const dist = Math.abs(safeDateMs(ts) - tradeMs);
-          if (dist < bestDist) { bestDist = dist; bestTs = ts; }
-        }
-        return bestDist < 120000 ? bestTs : null;
-      };
-
-      const algoEntryData: any[] = [];
-      const algoEntryMarkers: any[] = [];
-      const seenAlgoEntry = new Set<string>();
-      const algoExitData: any[] = [];
-      const algoExitMarkers: any[] = [];
-      const seenAlgoExit = new Set<string>();
-
-      for (const t of visibleTrades) {
-        const entryPlot = t.entryTimeDisplay || t.entryTime;
-        const exitPlot = t.exitTimeDisplay || t.exitTime;
-        if (entryPlot && entryPlot !== '--' && t.entryPrice > 0) {
-          const entryMs = safeDateMs(entryPlot);
-          if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
-            const snapped = snapToBar(entryPlot);
-            if (snapped && !seenAlgoEntry.has(snapped)) {
-              seenAlgoEntry.add(snapped);
-              algoEntryData.push({ time: snapped, value: t.entryPrice });
-              algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
-            }
-          }
-        }
-        if (exitPlot && exitPlot !== '--' && t.exitPrice > 0) {
-          const exitMs = safeDateMs(exitPlot);
-          if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
-            const snapped = snapToBar(exitPlot);
-            if (snapped && !seenAlgoExit.has(snapped)) {
-              seenAlgoExit.add(snapped);
-              const reason = t.exitReason || '';
-              let color = t.pnlR >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-              if (reason === 'stop_loss') color = chartPrefs.exitStopColor;
-              else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = chartPrefs.exitBarCountColor;
-              else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = chartPrefs.exitHybridColor;
-              algoExitData.push({ time: snapped, value: t.exitPrice });
-              algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
-            }
-          }
-        }
-      }
-
-      const alertEntryData: any[] = [];
-      const alertEntryMarkers: any[] = [];
-      const seenAlertEntry = new Set<string>();
-      const alertExitData: any[] = [];
-      const alertExitMarkers: any[] = [];
-      const seenAlertExit = new Set<string>();
-
-      for (const a of recentAlerts) {
-        if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
-          const entryMs = safeDateMs(a.entryTime);
-          if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
-            const snapped = snapToBar(a.entryTime);
-            if (snapped && !seenAlertEntry.has(snapped)) {
-              seenAlertEntry.add(snapped);
-              alertEntryData.push({ time: snapped, value: a.entryPrice });
-              alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
-            }
-          }
-        }
-        if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
-          const exitMs = safeDateMs(a.exitTime);
-          if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
-            const snapped = snapToBar(a.exitTime);
-            if (snapped && !seenAlertExit.has(snapped)) {
-              seenAlertExit.add(snapped);
-              const reason = a.exitReason || '';
-              let color: string;
-              if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
-              else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
-              else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
-              else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
-              alertExitData.push({ time: snapped, value: a.exitPrice });
-              alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
-            }
-          }
-        }
-      }
-
-      // Always push all 4 marker series. Empty data + empty markers is fine.
-      priceSeries.push({
-        type: 'Line', data: algoEntryData,
-        options: { color: chartPrefs.entryColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: algoEntryMarkers,
-      });
-      priceSeries.push({
-        type: 'Line', data: algoExitData,
-        options: { color: chartPrefs.exitWinColor, lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: algoExitMarkers,
-      });
-      priceSeries.push({
-        type: 'Line', data: alertEntryData,
-        options: { color: 'rgba(33,150,243,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: alertEntryMarkers,
-      });
-      priceSeries.push({
-        type: 'Line', data: alertExitData,
-        options: { color: 'rgba(76,175,80,0.6)', lineVisible: false, pointMarkersVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false, title: '' },
-        markers: alertExitMarkers,
-      });
-    }
-
-    for (let i = 0; i < overlayNames.length; i++) {
-      const col = overlayNames[i];
-      priceSeries.push({
-        type: 'Line',
-        data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-        options: { color: INDICATOR_COLORS[i % INDICATOR_COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
-      });
-    }
-    chartPanes.push({ id: 'price', height: 350, series: priceSeries });
-
-    // Pane 3: Oscillator
-    if (oscNames.length > 0) {
-      const oscSeries: SeriesConfig[] = [];
-      for (const col of oscNames.filter(c => c.includes('hist'))) {
-        oscSeries.push({
-          type: 'Histogram',
-          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
-            time: b.timestamp, value: b[col],
-            color: b[col] >= 0 ? '#4CAF50' : '#f44336',
-          })),
-          options: { priceLineVisible: false, title: 'Hist' },
-        });
-      }
-      for (const col of oscNames.filter(c => !c.includes('hist'))) {
-        oscSeries.push({
-          type: 'Line',
-          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-          options: {
-            color: col.includes('signal') ? '#FF9800' : '#2196F3',
-            lineWidth: 1, priceLineVisible: false,
-            title: col.replace(/_/g, ' '),
-          },
-        });
-      }
-      if (bars.length > 0) {
-        oscSeries.push({
-          type: 'Line',
-          data: [
-            { time: bars[0].timestamp, value: 0 },
-            { time: bars[bars.length - 1].timestamp, value: 0 },
-          ],
-          options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
-        });
-      }
-      chartPanes.push({ id: 'oscillator', height: 180, series: oscSeries });
-    }
 
     return { chartPanes, overlayNames, hasBars: true };
   }, [
     chartDataResp, barsData, candleCount, showConditions, showTriggers,
     chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
-    strategy?.direction, INDICATOR_COLORS,
+    strategy?.direction,
   ]);
 
   // Early returns after all hooks
