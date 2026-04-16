@@ -1245,6 +1245,7 @@ class TriggerEvaluator:
         # Evaluate L-type triggers via gate + reachability
         high = current.get('high', 0)
         low = current.get('low', 0)
+        bar_open = current.get('open', 0)
 
         # Temporarily swap to previous bar's cached levels for crossing
         # checks (matches live mode where levels are cached at bar N-1
@@ -1283,11 +1284,17 @@ class TriggerEvaluator:
                 elif direction == 'below' and high > level >= low:
                     l_fills[trigger_id] = level
             else:
-                # Existing built-in behavior
+                # Built-in gap-through semantic: when the previous bar's level
+                # sits outside the current bar's range (common for v2 _prev
+                # triggers on illiquid / degenerate 10-sec bars), price never
+                # traded at `level` on this bar. Fill at bar_open as the
+                # first realistic touchable price on the bar. Guarantees
+                # entry_price ∈ [bar_low, bar_high]. For normal crosses
+                # (level inside the bar), max/min reduces to `level`.
                 if direction == 'above' and high >= level:
-                    l_fills[trigger_id] = level
+                    l_fills[trigger_id] = max(level, bar_open)
                 elif direction == 'below' and low <= level:
-                    l_fills[trigger_id] = level
+                    l_fills[trigger_id] = min(level, bar_open)
 
         # Restore current bar's cached levels for live-mode compatibility
         self._cached_levels = current_cached
@@ -1322,12 +1329,19 @@ class TriggerEvaluator:
                 if not self._bar_close_triggers.get(base_trigger, False):
                     continue
 
+            # Fill at the tick price that actually triggered the cross, not
+            # at the static `level`. `price` is by construction on the correct
+            # side of `level` (above for LONG, below for SHORT) and always
+            # within the forming bar's range, so entry_price ∈ [bar_low,
+            # bar_high] is guaranteed when the bar closes. This matches the
+            # backtest max/min(level, bar_open) semantic and captures realistic
+            # slippage on fast moves / gap-throughs.
             if direction == 'above' and price > level:
                 self._ib_fired[trigger_id] = True
-                return (trigger_id, level)
+                return (trigger_id, price)
             elif direction == 'below' and price < level:
                 self._ib_fired[trigger_id] = True
-                return (trigger_id, level)
+                return (trigger_id, price)
         return None
 
     def _get_ib_checks(self) -> List[Tuple[str, Tuple[float, str]]]:

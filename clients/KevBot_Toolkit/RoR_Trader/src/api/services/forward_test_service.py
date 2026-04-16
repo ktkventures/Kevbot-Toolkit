@@ -156,7 +156,13 @@ def _do_recompute(
 
 
 def _serialize_trades(trades_df) -> list[dict]:
-    """Convert a trades DataFrame into JSON-safe records for Supabase."""
+    """Convert a trades DataFrame into JSON-safe records for Supabase.
+
+    NaN / ±Inf are replaced with None — JSONB doesn't accept them and the
+    open-trade row (still in-position at snapshot time) carries NaN in
+    exit_time / exit_price / bars_held etc.
+    """
+    import math
     records = []
     for _, row in trades_df.iterrows():
         record = {}
@@ -165,9 +171,14 @@ def _serialize_trades(trades_df) -> list[dict]:
             if hasattr(val, 'isoformat'):
                 record[col] = val.isoformat()
             elif hasattr(val, 'item'):  # numpy scalar types
-                record[col] = val.item()
+                v = val.item()
+                if isinstance(v, float) and not math.isfinite(v):
+                    v = None
+                record[col] = v
             elif isinstance(val, set):
                 record[col] = list(val)
+            elif isinstance(val, float) and not math.isfinite(val):
+                record[col] = None
             else:
                 record[col] = val
         records.append(record)

@@ -1103,7 +1103,10 @@ def test_check_intrabar_hm_hl_triggers():
     # Should fire one of the _hm/_hl triggers (first match wins)
     assert trigger_id in ('utbot_buy_hm', 'utbot_buy_hl'), \
         f"Unexpected trigger: {trigger_id}"
-    assert fill_price == 100.0  # fills at level
+    # Fills at the tick price that triggered the cross, not the static level.
+    # Guarantees entry_price stays within the forming bar's range.
+    assert fill_price == 100.5, \
+        f"Expected tick-price fill 100.5, got {fill_price}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1402,6 +1405,91 @@ def _run_contract_assertions(spec, resolve_fn, IndEngine, TrigEval):
     print(f"PASSED (covered {len(fixtures)} parameterized indicators)")
 
 
+def test_ltype_gap_fill_in_bar_range():
+    """Gap-through L-type fills must land inside the bar's [low, high].
+
+    Construct a bar where the crossing level sits BELOW bar_low (LONG gap-up
+    scenario — previous bar's utbot_stop was at 100, but this bar opens at
+    101 and never trades below). Engine should fill at bar_open, not at the
+    off-bar level.
+    """
+    print("\nTest: L-type gap fill stays in bar range...", end=" ")
+
+    te = TriggerEvaluator(
+        required_interpreters={'UTBOT_V2'},
+        required_triggers={'utbot_v2_buy', 'utbot_v2_buy_ib'},
+        ema_periods=[],
+    )
+
+    # Prime the L-type gate + cached levels via a prior bar-close at price
+    # BELOW the stop (so the gate opens for a subsequent cross above).
+    prev_bar = {
+        'close': 99.5, 'high': 99.8, 'low': 99.2, 'open': 99.5, 'volume': 1000,
+        'utbot_stop': 100.0, 'utbot_stop_prev': 100.0, 'utbot_direction': -1,
+    }
+    te.evaluate_bar_close(prev_bar, {})
+
+    # Current bar gaps up — opens at 101 (above the 100 level) and never
+    # trades below the level. Reachability fires on gap, should fill at open.
+    current_bar = {
+        'close': 101.5, 'high': 101.7, 'low': 101.0, 'open': 101.0,
+        'volume': 500,
+        'utbot_stop': 101.0, 'utbot_stop_prev': 100.0, 'utbot_direction': 1,
+    }
+    _, _, l_fills = te.evaluate_bar_for_backtest(current_bar, prev_bar)
+
+    assert 'utbot_v2_buy_ib' in l_fills, \
+        f"Expected L-fill on gap-up cross, got: {list(l_fills)}"
+    fill = l_fills['utbot_v2_buy_ib']
+    assert current_bar['low'] <= fill <= current_bar['high'], \
+        (f"Fill {fill} must be within bar [{current_bar['low']}, "
+         f"{current_bar['high']}]")
+    assert fill == current_bar['open'], \
+        f"Gap-up should fill at bar_open={current_bar['open']}, got {fill}"
+
+    print(f"PASSED (gap-up filled at open={fill})")
+
+
+def test_ltype_normal_cross_fills_at_level():
+    """Normal (non-gap) L-type cross should still fill at level.
+
+    When the crossing level sits inside [bar_low, bar_high], price traded
+    through the level intra-bar — fill at the level is the realistic price.
+    Regression guard: max(level, bar_open) reduces to level when
+    bar_open < level < bar_high.
+    """
+    print("\nTest: L-type normal cross fills at level...", end=" ")
+
+    te = TriggerEvaluator(
+        required_interpreters={'UTBOT_V2'},
+        required_triggers={'utbot_v2_buy', 'utbot_v2_buy_ib'},
+        ema_periods=[],
+    )
+
+    prev_bar = {
+        'close': 99.5, 'high': 99.8, 'low': 99.2, 'open': 99.5, 'volume': 1000,
+        'utbot_stop': 100.0, 'utbot_stop_prev': 100.0, 'utbot_direction': -1,
+    }
+    te.evaluate_bar_close(prev_bar, {})
+
+    # Current bar opens BELOW level (99.7) and high crosses above (100.5).
+    # No gap — level 100.0 is within bar range. Fill should be at level.
+    current_bar = {
+        'close': 100.3, 'high': 100.5, 'low': 99.6, 'open': 99.7,
+        'volume': 500,
+        'utbot_stop': 100.2, 'utbot_stop_prev': 100.0, 'utbot_direction': 1,
+    }
+    _, _, l_fills = te.evaluate_bar_for_backtest(current_bar, prev_bar)
+
+    assert 'utbot_v2_buy_ib' in l_fills, \
+        f"Expected L-fill on normal cross, got: {list(l_fills)}"
+    fill = l_fills['utbot_v2_buy_ib']
+    assert fill == 100.0, \
+        f"Normal cross should fill at level=100.0, got {fill}"
+
+    print(f"PASSED (normal cross filled at level={fill})")
+
+
 def _install_test_groups(short_period=8, mid_period=21, long_period=50):
     """Pin the confluence group loader to a fixed EMA/MACD/etc. set.
 
@@ -1467,6 +1555,8 @@ def main():
 
     tests = [
         test_params_contract,
+        test_ltype_gap_fill_in_bar_range,
+        test_ltype_normal_cross_fills_at_level,
         test_indicator_parity,
         test_ctype_trigger_parity,
         test_ctype_trade_parity,
