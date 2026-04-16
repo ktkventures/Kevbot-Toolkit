@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import Card from '@/components/Card';
@@ -638,6 +639,30 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const formingStateCrossTf = liveBar?.stateCrossTf ?? null;
   const { data: barsData } = useBars(stratSymbol, stratTimeframe, apiStrategy?.data_days ?? 30);
   const { data: chartDataResp, isLoading: chartDataLoading } = useStrategyChartData(strategyId);
+
+  // Gap detection: useStrategyChartData has a 5-min staleTime and no
+  // refetch, so historical bars freeze at page-load time. When the Ralph
+  // worker restarts mid-session (or the page is simply left open past
+  // staleTime) the forming bar arrives minutes ahead of the last historical
+  // bar, leaving a visible void on the chart. When the gap exceeds 2 TF
+  // durations, invalidate the query so the backend re-fills the missing
+  // bars. A 30-second cooldown prevents thrashing while the refetch is in
+  // flight or while the backend is still a tick behind.
+  const queryClient = useQueryClient();
+  const lastGapRefetchRef = useRef<number>(0);
+  useEffect(() => {
+    if (!liveBar?.bar?.timestamp || !chartDataResp?.chart_data?.length || !tfSeconds) return;
+    const lastHist = chartDataResp.chart_data[chartDataResp.chart_data.length - 1];
+    const lastHistMs = new Date(lastHist.timestamp).getTime();
+    const liveMs = new Date(liveBar.bar.timestamp).getTime();
+    if (!isFinite(lastHistMs) || !isFinite(liveMs)) return;
+    const gapMs = liveMs - lastHistMs;
+    if (gapMs <= tfSeconds * 1000 * 2) return;
+    const now = Date.now();
+    if (now - lastGapRefetchRef.current < 30_000) return;
+    lastGapRefetchRef.current = now;
+    queryClient.invalidateQueries({ queryKey: ['strategy-chart-data', strategyId] });
+  }, [liveBar?.bar?.timestamp, chartDataResp, tfSeconds, strategyId, queryClient]);
 
   // ---- Client-side date range filtering (must be before strategy/KPI derivation) ----
   const isDateFiltered = dateRange && dateRange !== 'Strategy Default' && dateRange !== 'All Data';

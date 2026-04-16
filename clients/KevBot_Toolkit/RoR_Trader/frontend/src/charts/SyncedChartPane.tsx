@@ -191,8 +191,11 @@ function SyncedChartPaneInner({
   // the historical setData put there.
   const lastAppliedTimesRef = useRef<number[][]>([]);
   // Preserves user's zoom/scroll across rare structure rebuilds (toggle
-  // Show Conditions, candle-count change beyond visible range, etc.)
-  const lastVisibleRangeRef = useRef<{ from: Time; to: Time } | null>(null);
+  // Show Conditions, candle-count change beyond visible range, etc.).
+  // Stored as a LOGICAL range (bar-index floats) rather than a time range
+  // so it can exceed the data extent — critical for preserving scroll when
+  // the user has panned into the right-offset area past the last candle.
+  const lastLogicalRangeRef = useRef<{ from: number; to: number } | null>(null);
   // Tracks whether the data effect has run at least once for the current
   // chart instance. Reset by the structure effect on (re)create. Only
   // when false do we call fitContent on data load.
@@ -242,8 +245,8 @@ function SyncedChartPaneInner({
     // Save scroll position before tearing down old charts
     if (chartsRef.current[0]) {
       try {
-        const r = chartsRef.current[0].timeScale().getVisibleRange();
-        if (r) lastVisibleRangeRef.current = r as any;
+        const lr = chartsRef.current[0].timeScale().getVisibleLogicalRange();
+        if (lr) lastLogicalRangeRef.current = { from: lr.from as number, to: lr.to as number };
       } catch { /* ignore */ }
     }
 
@@ -368,25 +371,34 @@ function SyncedChartPaneInner({
     lastMarkersRef.current = allSeries.map(pane => new Array(pane.length).fill(null));
     lastAppliedTimesRef.current = allSeries.map(pane => new Array(pane.length).fill(0));
 
-    // ---- Cross-pane synchronization ----
+    // ---- Cross-pane synchronization (logical range) ----
+    // Uses LOGICAL range (bar-index floats) rather than time range. The
+    // LWC time-range API silently clamps `setVisibleRange` to each chart's
+    // data extent, which breaks two things on multi-pane charts:
+    //   (a) user pans right past the last candle → clamp on the heatmap
+    //       pane boomerangs back to the price pane, snapping the view
+    //       to the last data point;
+    //   (b) the forming-bar effect updates the price candle before the
+    //       heatmap cells advance → cross-pane sync clamps mid-batch.
+    // Logical ranges can exceed data extent (they live in bar-index space
+    // including the rightOffset region), so both cases are avoided.
     if (charts.length > 1) {
       for (const chart of charts) {
-        chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
           if (syncingRef.current || !range) return;
           syncingRef.current = true;
           for (const other of charts) {
             if (other !== chart) {
-              try { other.timeScale().setVisibleRange(range); } catch { /* ignore */ }
+              try { other.timeScale().setVisibleLogicalRange(range); } catch { /* ignore */ }
             }
           }
           syncingRef.current = false;
-          // Track latest visible range so we can restore across rebuilds
-          lastVisibleRangeRef.current = range as any;
+          lastLogicalRangeRef.current = { from: range.from as number, to: range.to as number };
         });
       }
     } else if (charts[0]) {
-      charts[0].timeScale().subscribeVisibleTimeRangeChange((range) => {
-        if (range) lastVisibleRangeRef.current = range as any;
+      charts[0].timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (range) lastLogicalRangeRef.current = { from: range.from as number, to: range.to as number };
       });
     }
 
@@ -503,9 +515,9 @@ function SyncedChartPaneInner({
     // do nothing — LWC preserves the user's view + auto-tracks the right
     // edge naturally.
     if (wasFirstLoad && charts[0]) {
-      const savedRange = lastVisibleRangeRef.current;
+      const savedRange = lastLogicalRangeRef.current;
       if (savedRange) {
-        try { charts[0].timeScale().setVisibleRange(savedRange); }
+        try { charts[0].timeScale().setVisibleLogicalRange(savedRange); }
         catch { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
       } else {
         try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
@@ -515,94 +527,122 @@ function SyncedChartPaneInner({
   }, [panes]);
 
   // ---- LIVE FORMING-BAR EFFECT ----
-  // Primary candle + every overlay / oscillator / CB heatmap cell that
-  // declared a `liveRole`. Data extents advance together so LWC's visible
-  // range naturally extends past the last historical bar (the old
-  // cross-pane clamp problem disappears once every series has the same
-  // rightmost timestamp).
+  // Primary candle + every overlay / oscillator / heatmap cell that declared
+  // a `liveRole`. Non-candle series advance FIRST so every pane's data extent
+  // reaches the forming-bar timestamp before the candle triggers LWC's
+  // `shiftVisibleRangeOnNewBar` on the price pane. Without this ordering the
+  // cross-pane sync listener propagates the price pane's advanced range to
+  // panes whose data extent hasn't moved yet, LWC silently clamps it back
+  // to their last historical bar, and the clamped range boomerangs to the
+  // price pane — locking the visible range to the load-time window.
+  //
+  // The whole batch runs under `syncingRef.current = true` so any intra-batch
+  // visible-range-change events the listener sees are ignored. After the
+  // batch, every pane's data is aligned, so `shiftVisibleRangeOnNewBar` on
+  // each chart auto-advances each pane independently and they stay in sync.
   useEffect(() => {
     formingBarRef.current = formingBar || null;
     if (!formingBar) return;
     const t = toUnixTime(formingBar.time);
     if (!isFinite(t)) return;
 
-    // 1. Primary candle — OHLCV always comes straight off formingBar.
-    const candle = primaryCandleSeriesRef.current;
-    if (candle &&
-        isFinite(formingBar.open) && isFinite(formingBar.high) &&
-        isFinite(formingBar.low) && isFinite(formingBar.close)) {
-      // Find the candle's (pi, si) in seriesRef for time-guard tracking.
-      let candlePi = -1, candleSi = -1;
-      for (let pi = 0; pi < seriesRef.current.length; pi++) {
+    const prevSyncing = syncingRef.current;
+    syncingRef.current = true;
+    try {
+      // 1. Walk every live-capable series (overlays, oscillators, heatmap CB
+      //    AND PB cells). PB cells repeat their last historical color so the
+      //    heatmap pane's data extent keeps pace even when no CB cell exists.
+      for (let pi = 0; pi < panes.length; pi++) {
+        const pane = panes[pi];
         const paneSeries = seriesRef.current[pi];
-        for (let si = 0; si < paneSeries.length; si++) {
-          if (paneSeries[si] === candle) { candlePi = pi; candleSi = si; break; }
-        }
-        if (candlePi >= 0) break;
-      }
-      const lastT = candlePi >= 0
-        ? (lastAppliedTimesRef.current[candlePi]?.[candleSi] ?? 0)
-        : 0;
-      if (t >= lastT) {
-        try {
-          candle.update({
-            time: t as Time,
-            open: Number(formingBar.open), high: Number(formingBar.high),
-            low: Number(formingBar.low), close: Number(formingBar.close),
-          });
-          if (candlePi >= 0 && lastAppliedTimesRef.current[candlePi]) {
-            lastAppliedTimesRef.current[candlePi][candleSi] = t;
-          }
-        } catch { /* LWC rejects out-of-order — drop silently */ }
-      }
-    }
+        if (!paneSeries || paneSeries.length !== pane.series.length) continue;
+        for (let si = 0; si < pane.series.length; si++) {
+          const cfg = pane.series[si];
+          const role = cfg.liveRole;
+          if (!role) continue;
 
-    // 2. Walk every live-capable series and apply its intra-bar update.
-    for (let pi = 0; pi < panes.length; pi++) {
-      const pane = panes[pi];
-      const paneSeries = seriesRef.current[pi];
-      if (!paneSeries || paneSeries.length !== pane.series.length) continue;
-      for (let si = 0; si < pane.series.length; si++) {
-        const cfg = pane.series[si];
-        const role = cfg.liveRole;
-        if (!role || role === 'heatmap_cell' && cfg.fidelity === 'PB') continue;
+          const series = paneSeries[si];
+          if (!series) continue;
+          const lastT = lastAppliedTimesRef.current[pi]?.[si] ?? 0;
+          if (t < lastT) continue;
 
-        const series = paneSeries[si];
-        if (!series) continue;
-        const lastT = lastAppliedTimesRef.current[pi]?.[si] ?? 0;
-        if (t < lastT) continue;
+          try {
+            if (role === 'overlay_line' || role === 'oscillator_line' || role === 'oscillator_hist') {
+              const col = cfg.indicatorColumn;
+              if (!col || !formingIndicators) continue;
+              const v = formingIndicators[col];
+              if (v == null || !isFinite(v)) continue;
+              if (role === 'oscillator_hist') {
+                const histColor = v >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(244,67,54,0.6)';
+                series.update({ time: t as Time, value: Number(v), color: histColor } as any);
+              } else {
+                series.update({ time: t as Time, value: Number(v) } as any);
+              }
+            } else if (role === 'heatmap_cell') {
+              const col = cfg.stateColumn;
+              const needed = cfg.neededState;
+              const paneVal = cfg.heatmapValue ?? 1;
+              const metColor = cfg.heatmapMetColor ?? 'rgba(76,175,80,0.8)';
+              const unmetColor = cfg.heatmapUnmetColor ?? 'rgba(244,67,54,0.4)';
+              if (!col || !needed) continue;
 
-        try {
-          if (role === 'overlay_line' || role === 'oscillator_line' || role === 'oscillator_hist') {
-            const col = cfg.indicatorColumn;
-            if (!col || !formingIndicators) continue;
-            const v = formingIndicators[col];
-            if (v == null || !isFinite(v)) continue;
-            if (role === 'oscillator_hist') {
-              const histColor = v >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(244,67,54,0.6)';
-              series.update({ time: t as Time, value: Number(v), color: histColor } as any);
-            } else {
-              series.update({ time: t as Time, value: Number(v) } as any);
+              let color: string;
+              if (cfg.fidelity === 'PB') {
+                // PB cells reflect the previous closed bar and don't receive
+                // a fresh intra-bar state. Repeat the last historical color
+                // at the forming-bar timestamp so the pane's data extent
+                // advances without changing the visual.
+                const last = cfg.data.length > 0 ? cfg.data[cfg.data.length - 1] as any : null;
+                color = (last && typeof last.color === 'string') ? last.color : unmetColor;
+              } else {
+                const stateMap = cfg.crossTf ? formingStateCrossTf : formingStates;
+                if (!stateMap) continue;
+                const cur = stateMap[col];
+                if (cur == null) continue;
+                color = cur === needed ? metColor : unmetColor;
+              }
+              series.update({ time: t as Time, value: paneVal, color } as any);
             }
-          } else if (role === 'heatmap_cell') {
-            const col = cfg.stateColumn;
-            const needed = cfg.neededState;
-            const paneVal = cfg.heatmapValue ?? 1;
-            const metColor = cfg.heatmapMetColor ?? 'rgba(76,175,80,0.8)';
-            const unmetColor = cfg.heatmapUnmetColor ?? 'rgba(244,67,54,0.4)';
-            if (!col || !needed) continue;
-            const stateMap = cfg.crossTf ? formingStateCrossTf : formingStates;
-            if (!stateMap) continue;
-            const cur = stateMap[col];
-            if (cur == null) continue;
-            const color = cur === needed ? metColor : unmetColor;
-            series.update({ time: t as Time, value: paneVal, color } as any);
-          }
-          if (lastAppliedTimesRef.current[pi]) {
-            lastAppliedTimesRef.current[pi][si] = t;
-          }
-        } catch { /* drop silently */ }
+            if (lastAppliedTimesRef.current[pi]) {
+              lastAppliedTimesRef.current[pi][si] = t;
+            }
+          } catch { /* drop silently */ }
+        }
       }
+
+      // 2. Primary candle LAST — every other pane's data extent is now at t,
+      //    so LWC's auto-shift on the price pane will not produce a cross-pane
+      //    sync clamp. OHLCV always comes straight off formingBar.
+      const candle = primaryCandleSeriesRef.current;
+      if (candle &&
+          isFinite(formingBar.open) && isFinite(formingBar.high) &&
+          isFinite(formingBar.low) && isFinite(formingBar.close)) {
+        let candlePi = -1, candleSi = -1;
+        for (let pi = 0; pi < seriesRef.current.length; pi++) {
+          const paneSeries = seriesRef.current[pi];
+          for (let si = 0; si < paneSeries.length; si++) {
+            if (paneSeries[si] === candle) { candlePi = pi; candleSi = si; break; }
+          }
+          if (candlePi >= 0) break;
+        }
+        const lastT = candlePi >= 0
+          ? (lastAppliedTimesRef.current[candlePi]?.[candleSi] ?? 0)
+          : 0;
+        if (t >= lastT) {
+          try {
+            candle.update({
+              time: t as Time,
+              open: Number(formingBar.open), high: Number(formingBar.high),
+              low: Number(formingBar.low), close: Number(formingBar.close),
+            });
+            if (candlePi >= 0 && lastAppliedTimesRef.current[candlePi]) {
+              lastAppliedTimesRef.current[candlePi][candleSi] = t;
+            }
+          } catch { /* LWC rejects out-of-order — drop silently */ }
+        }
+      }
+    } finally {
+      syncingRef.current = prevSyncing;
     }
   }, [formingBar, formingIndicators, formingStates, formingStateCrossTf, panes]);
 
