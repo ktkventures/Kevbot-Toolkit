@@ -20,9 +20,11 @@ import json
 import signal
 import logging
 import threading
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 # Ensure USE_DB is true and src/ is on path
 os.environ["USE_DB"] = "true"
@@ -148,19 +150,12 @@ class DBAlertDispatcher:
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
 
-        # M8.5 B+: persist algo trade record into stored_trades on exit.
-        # The exit signal from the unified engine carries a fully-formed
-        # trade_record dict (identical to what backtest produces). We just
-        # append it so the Chart & Trades tab, forward-test KPIs, and
-        # portfolio aggregates can reflect live-session trades without
-        # manual "Update All Data" clicks. Streamlit-era parity restored.
-        if sig_type == 'exit_signal':
-            try:
-                self._persist_algo_trade(strategy, signal_data)
-            except Exception as e:
-                logger.error("ALGO TRADE PERSIST FAILED [%s]: %s — %s",
-                             self.user_id[:8], strategy.get('name'), e)
-                # Don't fail the whole dispatch — the alert is already saved.
+        # stored_trades is authored by the forward-test recompute path only.
+        # The worker's output is the alerts table (above). Bar-close-driven
+        # recompute of stored_trades is handled by UserMonitor._on_bar_close
+        # which calls api.services.forward_test_service.
+        # See docs/Pack_Development_Workflow.md and the plan at
+        # /home/kevin/.claude/plans/async-humming-hearth.md
 
         # Webhook delivery
         if self._deliver_alert_fn:
@@ -170,58 +165,6 @@ class DBAlertDispatcher:
                 logger.error("Webhook delivery failed: %s", e)
 
         return alert
-
-    def _persist_algo_trade(self, strategy: dict, signal_data: dict) -> None:
-        """Append the unified-engine-produced trade record to the strategy's
-        stored_trades. Called only on exit signals (which carry a full trade
-        record built by PositionStateMachine.get_trade_record).
-
-        Safe to call repeatedly — duplicate detection uses (entry_time,
-        exit_time) tuple so replayed exit signals don't double-append.
-        """
-        trade_record = signal_data.get('trade_record')
-        if not trade_record:
-            return  # older/other signal shapes that don't carry a record
-        entry_time = trade_record.get('entry_time')
-        exit_time = trade_record.get('exit_time')
-        if not entry_time or not exit_time:
-            logger.debug("Skipping algo-trade persist: missing entry/exit time")
-            return
-
-        # Re-fetch the strategy fresh (hot-reload may have mutated it)
-        strat_db = get_strategy_by_id_admin(strategy['id'], self.user_id)
-        if strat_db is None:
-            logger.warning("Strategy %s not found for algo-trade persist",
-                           strategy['id'])
-            return
-
-        stored_trades = list(strat_db.get('stored_trades') or [])
-        # Dedup on (entry_time, exit_time) — cheap, O(n) worst case
-        dup_key = (entry_time, exit_time)
-        for t in stored_trades:
-            if (t.get('entry_time') == entry_time
-                    and t.get('exit_time') == exit_time):
-                logger.debug("Algo trade already persisted: %s", dup_key)
-                return
-
-        # Serialize sets (confluence_records) — JSONB doesn't like Python set
-        tr_clean = dict(trade_record)
-        cr = tr_clean.get('confluence_records')
-        if isinstance(cr, set):
-            tr_clean['confluence_records'] = list(cr)
-
-        stored_trades.append(tr_clean)
-
-        # Persist back. Also bump cached_kpis is None so the frontend knows
-        # to recompute on next fetch (avoid serving stale KPIs that
-        # predated this trade).
-        updates = {
-            'stored_trades': stored_trades,
-        }
-        update_strategy_admin(strategy['id'], self.user_id, updates)
-        logger.info("ALGO TRADE APPENDED [%s]: strat=%s total=%d r=%.2f",
-                    self.user_id[:8], strategy['id'],
-                    len(stored_trades), tr_clean.get('r_multiple', 0))
 
 
 # ============================================================
@@ -269,6 +212,30 @@ class DBAuditor:
 # DB-backed RalphEngine subclass
 # ============================================================
 
+class _PerStrategyThrottle:
+    """Drop bar-close recompute requests that arrive while one is already
+    in flight for the same strategy. Prevents overlapping Polygon fetches
+    on high-frequency strategies (10-sec bars closing faster than a
+    15-30s recompute). Dropped events are captured by the next bar close.
+    """
+
+    def __init__(self):
+        self._in_flight: Set[int] = set()
+        self._lock = threading.Lock()
+
+    def should_skip(self, strategy_id: int) -> bool:
+        with self._lock:
+            return strategy_id in self._in_flight
+
+    def mark_start(self, strategy_id: int) -> None:
+        with self._lock:
+            self._in_flight.add(strategy_id)
+
+    def mark_done(self, strategy_id: int) -> None:
+        with self._lock:
+            self._in_flight.discard(strategy_id)
+
+
 class DBRalphEngine:
     """Wraps RalphEngine with DB-backed I/O for the worker service.
 
@@ -283,6 +250,13 @@ class DBRalphEngine:
         self._engine = None
         self._config = None
         self._config_updated_at = ''
+        # Forward-test recompute: per-strategy throttle + bounded thread
+        # pool. Recomputes are sync (Polygon fetch + unified engine), so
+        # they run on a thread-pool executor off the async tick loop.
+        # max_workers=2 lets two distinct strategies recompute concurrently
+        # without overwhelming the host.
+        self._ft_throttle = _PerStrategyThrottle()
+        self._ft_executor: Optional[ThreadPoolExecutor] = None
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking)."""
@@ -313,6 +287,20 @@ class DBRalphEngine:
         # M8.5: live-chart publisher for forming/completed bar broadcasts.
         engine._publisher = make_publisher_from_env()
         self._engine = engine
+
+        # Forward-test recompute executor: lazy-init on first engine run.
+        # Dedicated pool (not the default executor) so unrelated async
+        # I/O on the shared loop isn't contended by a 10-30s recompute.
+        if self._ft_executor is None:
+            self._ft_executor = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix=f'ft-{self.user_id[:8]}-',
+            )
+
+        # Install bar-close hook on every SymbolHub the engine creates.
+        # Applied by the hub-creation sites below (start path + hot
+        # reload). Captures self for closure over user_id + executor.
+        self._install_bar_close_hook_on_engine(engine)
 
         # --- Patch I/O methods ---
 
@@ -515,10 +503,74 @@ class DBRalphEngine:
         """Signal the engine to stop and close the WebSocket."""
         if self._engine:
             self._engine.stop()  # Properly closes WebSocket, not just _running=False
+        if self._ft_executor is not None:
+            self._ft_executor.shutdown(wait=False, cancel_futures=True)
+            self._ft_executor = None
 
     @property
     def is_running(self):
         return self._engine and self._engine._running
+
+    # ------------------------------------------------------------------
+    # Bar-close → forward-test recompute plumbing
+    # ------------------------------------------------------------------
+
+    def _install_bar_close_hook_on_engine(self, engine) -> None:
+        """Wrap engine.hubs so every SymbolHub created during engine
+        startup or hot-reload gets our bar-close handler installed.
+
+        The hook's contract (SymbolHub.on_bar_close_hook):
+            async def hook(strategy_id, user_id, tf_seconds) -> None
+        """
+        # Wrap the dict class so __setitem__ auto-installs on new hubs.
+        original_hubs = engine.hubs
+        outer_self = self
+
+        class _HubsWithHook(dict):
+            def __setitem__(self, sym, hub):
+                hub.on_bar_close_hook = outer_self._on_bar_close
+                super().__setitem__(sym, hub)
+
+        new_hubs = _HubsWithHook(original_hubs)
+        # Install hook on any pre-existing hubs too.
+        for hub in new_hubs.values():
+            hub.on_bar_close_hook = self._on_bar_close
+        engine.hubs = new_hubs
+
+    async def _on_bar_close(self, *, strategy_id: int,
+                            user_id: Optional[str], tf_seconds: int) -> None:
+        """Fire-and-forget forward-test recompute for the closed bar.
+
+        Throttled: drops if a recompute is already in flight for the
+        same strategy. Never blocks the tick loop — actual work runs
+        on _ft_executor.
+        """
+        if not user_id:
+            return
+        if self._ft_throttle.should_skip(strategy_id):
+            logger.debug(
+                "[FT-SKIP] strategy=%s tf=%ss — recompute in flight",
+                strategy_id, tf_seconds,
+            )
+            return
+        self._ft_throttle.mark_start(strategy_id)
+        loop = asyncio.get_event_loop()
+        try:
+            from api.services.forward_test_service import (
+                recompute_and_persist_stored_trades,
+            )
+            await loop.run_in_executor(
+                self._ft_executor,
+                recompute_and_persist_stored_trades,
+                strategy_id, user_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "[FT-FAIL] strategy=%s tf=%ss: %s",
+                strategy_id, tf_seconds, e,
+            )
+        finally:
+            self._ft_throttle.mark_done(strategy_id)
 
 
 # ============================================================

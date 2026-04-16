@@ -940,82 +940,19 @@ def get_trigger_analysis(strategy_id: int, user=Depends(get_current_user)):
 def refresh_strategy(strategy_id: int, user=Depends(get_current_user)):
     """Refresh a strategy's stored_trades and KPIs with current market data.
 
-    Loads fresh bars from Polygon, runs the full backtest, updates stored_trades
-    and KPIs in the database. This is the equivalent of Streamlit's 'Update Data' button.
+    Thin wrapper around forward_test_service.recompute_and_persist_stored_trades
+    so the on-demand button and the worker bar-close hook share a single
+    implementation path. stored_trades is always backtest truth (never a
+    live append) — see docs for the architecture principle.
     """
-    strat = _get_or_404(strategy_id, user)
-    import services as svc
-
-    # Log confluence gating info for parity debugging
-    confluence = strat.get('confluence', [])
-    general_conf = strat.get('general_confluences', [])
-    logger.info(
-        "[REFRESH] Strategy %s (%s): confluence=%s, general=%s, entry=%s",
-        strategy_id, strat.get('name', '?'),
-        confluence, general_conf,
-        strat.get('entry_trigger_confluence_id', '?'),
+    # Ownership check (404 on not-yours or not-found) before dispatching
+    # to the shared service, so API responses stay identical to before.
+    _get_or_404(strategy_id, user)
+    from api.services.forward_test_service import (
+        recompute_and_persist_stored_trades,
     )
-
     try:
-        # Get full trades (backtest + forward)
-        all_trades = svc.get_strategy_trades(strat)
-        logger.info("[REFRESH] Strategy %s: computed %d trades (confluence gated)", strategy_id, len(all_trades))
-
-        if len(all_trades) == 0:
-            return {"status": "no_trades", "trades": 0}
-
-        # Extract minimal trade records for storage
-        stored = []
-        for _, row in all_trades.iterrows():
-            record = {}
-            for col in all_trades.columns:
-                val = row[col]
-                if hasattr(val, 'isoformat'):
-                    record[col] = val.isoformat()
-                elif hasattr(val, 'item'):  # numpy types
-                    record[col] = val.item()
-                elif isinstance(val, set):
-                    record[col] = list(val)
-                else:
-                    record[col] = val
-            stored.append(record)
-
-        # Compute KPIs
-        trading_days = svc.count_trading_days(all_trades) if hasattr(all_trades, 'index') else 1
-        kpis = svc.calculate_kpis(all_trades, total_trading_days=trading_days)
-
-        # Build equity curve data
-        from api.services.backtest_service import _build_equity_curve
-        eq_data = _build_equity_curve(all_trades)
-        boundary_index = None
-        if strat.get('forward_test_start'):
-            fwd_start = datetime.fromisoformat(strat['forward_test_start'])
-            bt_portion, _ = svc.split_trades_at_boundary(all_trades, fwd_start)
-            boundary_index = len(bt_portion) if len(bt_portion) > 0 else None
-
-        equity_curve_data = {
-            "exit_times": [p.get("timestamp", "") for p in eq_data],
-            "cumulative_r": [p.get("cumulative_r", 0) for p in eq_data],
-            "boundary_index": boundary_index,
-        }
-
-        # Update in database
-        from db import USE_DB
-        if USE_DB:
-            from db import update_strategy_db
-            update_strategy_db(strategy_id, {
-                **strat,
-                "stored_trades": stored,
-                "kpis": kpis,
-                "equity_curve_data": equity_curve_data,
-                "data_refreshed_at": datetime.now(timezone.utc).isoformat(),
-            })
-
-        return {
-            "status": "refreshed",
-            "trades": len(stored),
-            "kpis": kpis,
-        }
+        return recompute_and_persist_stored_trades(strategy_id, user.id)
     except Exception as e:
         logger.exception("Strategy refresh failed for %s", strategy_id)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")

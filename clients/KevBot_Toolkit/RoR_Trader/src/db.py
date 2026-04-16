@@ -41,6 +41,31 @@ def set_current_user(user_id: str, access_token: str):
     """Set the current user context for this thread."""
     _local.user_id = user_id
     _local.access_token = access_token
+    _local.admin_mode = False
+
+
+def set_admin_user_context(user_id: str):
+    """Set thread-local user context in ADMIN mode — for worker / service
+    paths that need to invoke user-context-aware helpers
+    (load_confluence_groups, load_general_packs, etc.) without a real
+    user JWT. Under admin mode, get_client() returns the admin client
+    so queries bypass RLS; get_current_user_id() still returns the
+    given user_id so WHERE-clauses scope correctly.
+
+    Always pair with clear_current_user() in a try/finally — never leak
+    admin mode into a subsequent request handler on a shared thread.
+    """
+    _local.user_id = user_id
+    _local.access_token = None
+    _local.admin_mode = True
+
+
+def clear_current_user():
+    """Clear thread-local user context. Use in finally blocks after
+    set_admin_user_context to avoid leaking admin mode."""
+    _local.user_id = None
+    _local.access_token = None
+    _local.admin_mode = False
 
 
 def get_current_user_id() -> str:
@@ -51,6 +76,10 @@ def get_current_user_id() -> str:
 def get_current_token() -> str:
     """Get the current user's JWT access token."""
     return getattr(_local, 'access_token', None)
+
+
+def _is_admin_mode() -> bool:
+    return getattr(_local, 'admin_mode', False)
 
 
 # ============================================================
@@ -67,10 +96,17 @@ def get_client():
 
     Uses the anon key. The user's JWT is set on the client so that
     Row Level Security policies are enforced server-side.
+
+    When the thread-local context is in admin mode
+    (set_admin_user_context), returns the admin client instead so
+    worker/service paths can run user-scoped queries without a JWT.
     """
     global _anon_client
     if not USE_DB:
         raise RuntimeError("get_client() called but USE_DB is false")
+
+    if _is_admin_mode():
+        return get_admin_client()
 
     from supabase import create_client
 

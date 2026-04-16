@@ -925,6 +925,14 @@ class SymbolHub:
         self._publisher = publisher
         # Held refs to prevent GC of fire-and-forget asyncio tasks.
         self._pending_publish_tasks: Set['asyncio.Task'] = set()
+        # Optional bar-close hook: an async callable installed by the
+        # worker/engine host to trigger per-strategy forward-test
+        # recompute on every primary-TF bar close. Signature:
+        #   async def hook(strategy_id: int, user_id: str, tf_seconds: int)
+        # Never blocks the tick loop — task is fire-and-forget and any
+        # exceptions are swallowed by the caller's own error handling.
+        self.on_bar_close_hook: Optional[Callable] = None
+        self._pending_bar_close_tasks: Set['asyncio.Task'] = set()
 
     def _gather_tentative_state(
         self, tf_seconds: int, forming_bar: dict,
@@ -1354,6 +1362,27 @@ class SymbolHub:
             if signals and alert_callback:
                 for sig in signals:
                     alert_callback(sig, monitor.strategy, config)
+
+            # Bar-close hook: fire-and-forget async task to trigger the
+            # forward-test recompute of stored_trades. Must not block
+            # the tick loop. Handler is responsible for its own
+            # throttling/concurrency control.
+            if self.on_bar_close_hook is not None:
+                try:
+                    loop = asyncio.get_event_loop()
+                    task = loop.create_task(self.on_bar_close_hook(
+                        strategy_id=monitor.strat_id,
+                        user_id=monitor.strategy.get('user_id'),
+                        tf_seconds=tf_seconds,
+                    ))
+                    self._pending_bar_close_tasks.add(task)
+                    task.add_done_callback(
+                        self._pending_bar_close_tasks.discard)
+                except RuntimeError:
+                    # No running event loop — best-effort, non-critical.
+                    pass
+                except Exception as e:
+                    logger.debug("bar_close_hook scheduling failed: %s", e)
 
             if auditor:
                 auditor.log_bar_close(
