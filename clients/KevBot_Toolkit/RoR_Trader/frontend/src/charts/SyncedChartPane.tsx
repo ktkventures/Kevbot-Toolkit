@@ -113,7 +113,22 @@ interface SyncedChartPaneProps {
   /** Cross-TF interpreter states (last-committed). Drives heatmap cells
    * whose `crossTf` flag is true. */
   formingStateCrossTf?: Record<string, string> | null;
+  /** IANA or alias timezone string (e.g. 'US/Mountain', 'America/Denver').
+   * Drives time-axis tick labels and crosshair tooltip. Falls back to
+   * the user's browser locale when absent. */
+  timezone?: string | null;
 }
+
+// Alias → IANA map matching StrategyDetailPage's TZ_MAP so everything
+// formats consistently. Keep in sync if adding/removing entries.
+const _TIMEZONE_ALIAS_TO_IANA: Record<string, string> = {
+  'US/Eastern': 'America/New_York',
+  'US/Central': 'America/Chicago',
+  'US/Mountain': 'America/Denver',
+  'US/Pacific': 'America/Los_Angeles',
+  'US/Alaska': 'America/Anchorage',
+  'US/Hawaii': 'Pacific/Honolulu',
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,7 +182,14 @@ function SyncedChartPaneInner({
   formingIndicators = null,
   formingStates = null,
   formingStateCrossTf = null,
+  timezone = null,
 }: SyncedChartPaneProps) {
+  // Resolve the user's timezone to a canonical IANA name LWC/Intl accept.
+  // Empty string disables the explicit tz (Intl falls back to browser).
+  const resolvedTz = useMemo(() => {
+    if (!timezone) return '';
+    return _TIMEZONE_ALIAS_TO_IANA[timezone] || timezone;
+  }, [timezone]);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartsRef = useRef<IChartApi[]>([]);
   const seriesRef = useRef<ISeriesApi<SeriesType>[][]>([]); // [paneIdx][seriesIdx]
@@ -270,6 +292,35 @@ function SyncedChartPaneInner({
       div.style.width = '100%';
       container.appendChild(div);
 
+      // Time formatters honor the user's configured timezone (Settings →
+      // Display → Formatting). Tick formatter drives axis labels; time
+      // formatter drives the crosshair tooltip. LWC delivers UTC seconds
+      // as input, so Intl with the target timezone converts to local
+      // display consistently across axis + tooltip.
+      const axisTickFormatter = resolvedTz
+        ? (time: number) => {
+            const d = new Date((time as number) * 1000);
+            return d.toLocaleString('en-US', {
+              timeZone: resolvedTz,
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+              hour12: false,
+            });
+          }
+        : undefined;
+      const localization = resolvedTz
+        ? {
+            timeFormatter: (time: number) => {
+              const d = new Date((time as number) * 1000);
+              return d.toLocaleString('en-US', {
+                timeZone: resolvedTz,
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false,
+              });
+            },
+          }
+        : undefined;
+
       const chart = createChart(div, {
         width: container.clientWidth,
         height: pane.height,
@@ -286,7 +337,9 @@ function SyncedChartPaneInner({
           visible: !pane.hideTimeAxis,
           rightOffset: rightOffset,
           shiftVisibleRangeOnNewBar: true,
+          ...(axisTickFormatter ? { tickMarkFormatter: axisTickFormatter } : {}),
         },
+        ...(localization ? { localization } : {}),
       });
       charts.push(chart);
 
@@ -419,7 +472,7 @@ function SyncedChartPaneInner({
       seriesRef.current = [];
       primaryCandleSeriesRef.current = null;
     };
-  }, [paneStructureKey, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors]);
+  }, [paneStructureKey, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors, resolvedTz]);
 
   // ---- DATA EFFECT ----
   // Runs whenever panes prop changes. Pushes data to existing series via

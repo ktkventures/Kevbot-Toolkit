@@ -2365,6 +2365,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         upBorderColor={chartPrefs.candleUpBorder}
                         gridLines={chartPrefs.gridLines}
                         rightOffset={chartPrefs.rightOffset}
+                        timezone={chartPrefs.timezone}
                         formingBar={formingBarProp}
                         formingIndicators={formingIndicators}
                         formingStates={formingStates}
@@ -2759,6 +2760,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           upBorderColor={chartPrefs.candleUpBorder}
                           gridLines={chartPrefs.gridLines}
                           rightOffset={chartPrefs.rightOffset}
+                          timezone={chartPrefs.timezone}
                         />
                       ) : (
                         <ChartPlaceholder label="No data for this condition" height={350} />

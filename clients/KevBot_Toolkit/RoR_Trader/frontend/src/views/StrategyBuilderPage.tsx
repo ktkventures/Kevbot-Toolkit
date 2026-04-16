@@ -2494,6 +2494,7 @@ export default function StrategyBuilderPage() {
                                 upBorderColor={chartPrefs.candleUpBorder}
                                 gridLines={chartPrefs.gridLines}
                                 rightOffset={chartPrefs.rightOffset}
+                                timezone={chartPrefs.timezone}
                               />
                             ) : (
                               <ChartPlaceholder label="No chart data available" height={400} />

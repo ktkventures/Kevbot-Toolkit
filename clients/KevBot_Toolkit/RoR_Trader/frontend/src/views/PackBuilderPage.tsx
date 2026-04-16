@@ -1175,6 +1175,7 @@ export default function PackBuilderPage() {
                                       upBorderColor={chartPrefs?.candleUpBorder}
                                       gridLines={chartPrefs?.gridLines}
                                       rightOffset={chartPrefs?.rightOffset}
+                                      timezone={chartPrefs?.timezone}
                                     />
                                   ) : (
                                     <ChartPlaceholder label="No chart data available" height={400} />

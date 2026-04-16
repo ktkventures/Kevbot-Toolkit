@@ -450,7 +450,7 @@ export default function TradeZoomModal({ isOpen, onClose, tradeIdx, side, trade,
 
       {chartPanes && !isLoading && (
         <div style={{ height: 400 }}>
-          <SyncedChartPane panes={chartPanes} />
+          <SyncedChartPane panes={chartPanes} timezone={chartPrefs.timezone} />
         </div>
       )}
 

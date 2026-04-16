@@ -798,6 +798,7 @@ function PreviewTab({ pack }: { pack: UserPack }) {
             upColor={chartPrefs.candleUp}
             downColor={chartPrefs.candleDown}
             upBorderColor={chartPrefs.candleUpBorder}
+            timezone={chartPrefs.timezone}
           />
 
           {/* State legend */}
