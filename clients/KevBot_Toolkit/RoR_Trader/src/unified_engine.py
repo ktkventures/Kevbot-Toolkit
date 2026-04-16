@@ -264,6 +264,169 @@ def _resolve_trigger_ids(strategy: dict, key: str) -> List[str]:
     return [t for t in strategy.get(key, []) if t]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# INDICATOR PARAMETER CONTRACT
+# ═══════════════════════════════════════════════════════════════════════════
+# Single source of truth: the params dict returned by
+# resolve_strategy_requirements MUST contain every key listed here for every
+# indicator in the required set. The engine constructors below perform strict
+# params[key] lookups — a missing key raises KeyError immediately rather than
+# silently substituting a hardcoded default.
+#
+# Adding a new indicator pack? Add it here, read its params from the matching
+# group, and the engine will pick it up automatically. Do NOT add
+# `params.get(key, default)` fallbacks in engine constructors — defaults
+# belong here where they are visible as part of the contract.
+
+class _GroupResolutionError(Exception):
+    """Raised when no matching confluence group can be found."""
+
+
+# Maps indicator slug → resolution spec.
+#   'params': list of (engine_param_key, group_param_key) pairs
+#   'templates': tuple of confluence template slugs whose groups supply params
+#   'interpreters': tuple of interpreter keys this indicator powers
+#   'defaults_only': True if indicator has no user-configurable group
+#                    (e.g., ATR for stop-loss — period is a convention)
+_INDICATOR_PARAM_SPEC: Dict[str, Dict[str, Any]] = {
+    'ema': {
+        'params': [('ema_periods', '__ema_periods__')],
+        'templates': ('ema_stack', 'ema_price_position',
+                      'ema_price_position_v2'),
+        'interpreters': ('EMA_STACK', 'EMA_PRICE_POSITION',
+                         'EMA_PRICE_POSITION_V2'),
+    },
+    'macd': {
+        'params': [
+            ('macd_fast_period', 'fast_period'),
+            ('macd_slow_period', 'slow_period'),
+            ('macd_signal_period', 'signal_period'),
+        ],
+        'templates': ('macd_line', 'macd_histogram'),
+        'interpreters': ('MACD_LINE', 'MACD_HISTOGRAM'),
+    },
+    'vwap': {
+        'params': [
+            ('vwap_sd1_mult', 'sd1_mult'),
+            ('vwap_sd2_mult', 'sd2_mult'),
+        ],
+        'templates': ('vwap',),
+        'interpreters': ('VWAP',),
+    },
+    'utbot': {
+        'params': [
+            ('utbot_atr_period', 'atr_period'),
+            ('utbot_atr_mult', 'atr_multiplier'),
+        ],
+        'templates': ('utbot', 'utbot_v2'),
+        'interpreters': ('UTBOT', 'UTBOT_V2'),
+    },
+    'rvol': {
+        'params': [('vol_sma_period', 'sma_period')],
+        'templates': ('rvol',),
+        'interpreters': ('RVOL',),
+    },
+    # ATR is used for stop-loss distance; period is a convention (14), not
+    # user-configurable via a confluence group.
+    'atr': {
+        'params': [('atr_period', 14)],
+        'defaults_only': True,
+    },
+}
+
+
+def _find_group_for_indicator(groups, strategy: dict, spec: Dict[str, Any]):
+    """Find the enabled confluence group supplying params for an indicator.
+
+    Resolution order:
+    1. Group whose trigger ID matches strategy's entry / exit trigger.
+    2. Group whose interpreter appears in the strategy's confluence records.
+    3. Any enabled group matching one of spec['templates'] (same indicator
+       family shares column names, so variant params are compatible).
+
+    Raises _GroupResolutionError if no candidate exists.
+    """
+    from confluence_groups import get_all_triggers, TEMPLATES
+
+    candidates = [g for g in groups
+                  if g.base_template in spec['templates']]
+    if not candidates:
+        raise _GroupResolutionError(
+            f"no enabled confluence group with base_template in "
+            f"{spec['templates']!r}"
+        )
+
+    # 1. Match via entry/exit trigger IDs
+    all_triggers = get_all_triggers(groups)
+    cid = strategy.get('entry_trigger_confluence_id') or ''
+    exit_cids = strategy.get('exit_trigger_confluence_ids', []) or []
+    for c in ([cid] if cid else []) + list(exit_cids):
+        if not c or c not in all_triggers:
+            continue
+        base_t = all_triggers[c].base_trigger
+        for g in candidates:
+            if g.get_trigger_id(base_t) == c:
+                return g
+
+    # 2. Match via confluence record interpreter keys
+    wanted_interps = set(spec.get('interpreters', ()))
+    if wanted_interps:
+        conf_interps = set()
+        for rec in (list(strategy.get('confluence', []))
+                    + list(strategy.get('general_confluences', []))):
+            parts = rec.split('-', 2)
+            if len(parts) >= 2 and parts[1] in wanted_interps:
+                conf_interps.add(parts[1])
+        if conf_interps:
+            for g in candidates:
+                tpl = TEMPLATES.get(g.base_template, {})
+                if any(ik in conf_interps
+                       for ik in tpl.get('interpreters', [])):
+                    return g
+
+    # 3. Variant fallback — same family, shared indicator column names
+    return candidates[0]
+
+
+def _load_enabled_groups_for_strategy(strategy: dict):
+    """Load enabled confluence groups for a strategy.
+
+    Uses thread-local user context if set (Streamlit / API request paths).
+    Falls back to admin-client lookup keyed by strategy['user_id'] when no
+    thread context is available (worker path — monitors run in threads that
+    never authenticate as the owning user).
+
+    Raises if neither a thread context nor a stamped user_id is available.
+    """
+    from confluence_groups import (
+        get_enabled_groups, _parse_group_list, create_default_groups,
+    )
+    try:
+        from db import USE_DB, get_current_user_id
+    except ImportError:
+        return get_enabled_groups()
+
+    if not USE_DB:
+        return get_enabled_groups()
+
+    if get_current_user_id():
+        return get_enabled_groups()
+
+    strat_user_id = strategy.get('user_id')
+    if not strat_user_id:
+        raise RuntimeError(
+            f"Cannot load confluence groups for strategy "
+            f"{strategy.get('id')}: no thread-local user context and "
+            f"strategy has no user_id stamped. Worker path must stamp "
+            f"user_id on every strategy dict before engine init."
+        )
+
+    from db import load_confluence_groups_admin
+    raw = load_confluence_groups_admin(strat_user_id)
+    groups = _parse_group_list(raw) if raw else create_default_groups()
+    return [g for g in groups if g.enabled]
+
+
 def resolve_strategy_requirements(strategy: dict) -> Tuple[
         Set[str], Set[str], Set[str], Dict[str, Any]]:
     """Resolve what indicators, interpreters, and triggers a strategy needs.
@@ -339,35 +502,55 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
     for conf in strategy.get('general_confluences', []):
         _process_confluence_record(conf)
 
-    # Resolve EMA periods from confluence group params
-    ema_periods = [8, 21, 50]
-    if 'ema' in indicators:
+    # Resolve indicator params from the user's confluence groups.
+    # Every group-parameterized indicator is resolved here; no downstream
+    # engine constructor may substitute hardcoded defaults. See
+    # _INDICATOR_PARAM_SPEC below for the full contract.
+    groups_cache = None
+
+    def _groups():
+        nonlocal groups_cache
+        if groups_cache is None:
+            groups_cache = _load_enabled_groups_for_strategy(strategy)
+        return groups_cache
+
+    for ind in sorted(indicators):
+        spec = _INDICATOR_PARAM_SPEC.get(ind)
+        if spec is None:
+            # No parameterized state — user packs, _user_pack_* slugs, etc.
+            continue
+        if spec.get('defaults_only'):
+            for engine_key, default_val in spec['params']:
+                params[engine_key] = default_val
+            continue
         try:
-            from confluence_groups import get_enabled_groups, get_all_triggers
-            groups = get_enabled_groups()
-            cid = (strategy.get('entry_trigger_confluence_id') or '')
-            exit_cids = strategy.get('exit_trigger_confluence_ids', [])
-            all_cids = ([cid] if cid else []) + (exit_cids or [])
-            all_triggers = get_all_triggers()
-            for c in all_cids:
-                if not c or c not in all_triggers:
-                    continue
-                for g in groups:
-                    p = g.parameters
-                    if 'short_period' in p and 'mid_period' in p:
-                        base_t = all_triggers[c].base_trigger
-                        if g.get_trigger_id(base_t) == c:
-                            ema_periods = [
-                                p.get('short_period', 9),
-                                p.get('mid_period', 21),
-                                p.get('long_period', 200)]
-                            break
-                else:
-                    continue
-                break
-        except Exception:
-            pass
-    params['ema_periods'] = ema_periods
+            group = _find_group_for_indicator(_groups(), strategy, spec)
+        except _GroupResolutionError as e:
+            raise RuntimeError(
+                f"Cannot resolve params for indicator {ind!r} on strategy "
+                f"{strategy.get('id')} ({strategy.get('name')!r}): {e}"
+            ) from e
+        gp = group.parameters
+        for engine_key, group_key in spec['params']:
+            if engine_key == 'ema_periods':
+                params[engine_key] = [
+                    gp['short_period'],
+                    gp['mid_period'],
+                    gp.get('long_period', gp['mid_period'] * 10),
+                ]
+                continue
+            if group_key not in gp:
+                raise RuntimeError(
+                    f"Confluence group {group.id!r} is missing required "
+                    f"parameter {group_key!r} needed by indicator {ind!r} "
+                    f"for strategy {strategy.get('id')}. Fix the group in "
+                    f"Confluence Packs or delete it."
+                )
+            params[engine_key] = gp[group_key]
+        logger.debug(
+            "resolved params for %s via group %s on strategy %s",
+            ind, group.id, strategy.get('id'),
+        )
 
     # Resolve user pack requirements (triggers not matched by built-in prefixes)
     # User pack indicators/interpreters are computed by the batch pipeline and
@@ -395,8 +578,38 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
             # Mark that user pack indicators need batch computation
             # (the batch pipeline will run them via run_indicators_for_group)
             indicators.add(f'_user_pack_{slug}')
-    except Exception:
-        pass
+    except Exception as e:
+        # Surface — user packs that fail to register would silently produce
+        # strategies with missing interpreters/columns at engine init.
+        logger.warning(
+            "pack_registry load failed while resolving strategy %s: %s",
+            strategy.get('id'), e,
+        )
+
+    # TriggerEvaluator always consumes ema_periods (for L-type cross
+    # registration) regardless of whether 'ema' is in the required set.
+    # When absent, empty list means "no EMA triggers to register" — this is
+    # a structural requirement of the API, not a silent parameter fallback.
+    params.setdefault('ema_periods', [])
+
+    # Contract check: every parameterized indicator in the required set has
+    # all its engine-level params populated. Any gap here is a bug in the
+    # resolver above or in _INDICATOR_PARAM_SPEC — never paper over it.
+    missing = []
+    for ind in indicators:
+        spec = _INDICATOR_PARAM_SPEC.get(ind)
+        if spec is None:
+            continue
+        for engine_key, _ in spec['params']:
+            if engine_key not in params:
+                missing.append((ind, engine_key))
+    if missing:
+        raise RuntimeError(
+            f"resolve_strategy_requirements: params contract violated for "
+            f"strategy {strategy.get('id')} ({strategy.get('name')!r}): "
+            f"missing {missing!r}. This is a bug in the resolver — do NOT "
+            f"add hardcoded defaults in the engine to paper over it."
+        )
 
     return indicators, interpreters, triggers, params
 
@@ -457,33 +670,36 @@ class IncrementalIndicatorEngine:
     """
 
     def __init__(self, required_indicators: Set[str], params: Dict[str, Any]):
+        # params must be produced by resolve_strategy_requirements.
+        # Strict lookups — missing key = bug in the resolver. Do NOT add
+        # .get(key, default) here; defaults belong in _INDICATOR_PARAM_SPEC.
         self.required = required_indicators
         self.params = params
         self.state = IndicatorState()
         self._initialized = False
 
         if 'ema' in self.required:
-            for p in params.get('ema_periods', [8, 21, 50]):
+            for p in params['ema_periods']:
                 self.state.ema[p] = 0.0
 
         if 'macd' in self.required:
-            self.state.macd_fast_period = params.get('macd_fast_period', 12)
-            self.state.macd_slow_period = params.get('macd_slow_period', 26)
-            self.state.macd_signal_period = params.get('macd_signal_period', 9)
+            self.state.macd_fast_period = params['macd_fast_period']
+            self.state.macd_slow_period = params['macd_slow_period']
+            self.state.macd_signal_period = params['macd_signal_period']
 
         if 'atr' in self.required:
-            self.state.atr_period = params.get('atr_period', 14)
+            self.state.atr_period = params['atr_period']
 
         if 'vwap' in self.required:
-            self.state.vwap_sd1_mult = params.get('vwap_sd1_mult', 1.0)
-            self.state.vwap_sd2_mult = params.get('vwap_sd2_mult', 2.0)
+            self.state.vwap_sd1_mult = params['vwap_sd1_mult']
+            self.state.vwap_sd2_mult = params['vwap_sd2_mult']
 
         if 'utbot' in self.required:
-            self.state.utbot_atr_period = params.get('utbot_atr_period', 10)
-            self.state.utbot_atr_mult = params.get('utbot_atr_mult', 1.0)
+            self.state.utbot_atr_period = params['utbot_atr_period']
+            self.state.utbot_atr_mult = params['utbot_atr_mult']
 
         if 'rvol' in self.required:
-            period = params.get('vol_sma_period', 20)
+            period = params['vol_sma_period']
             self.state.vol_sma_period = period
             self.state.vol_buffer = deque(maxlen=period)
 
@@ -742,10 +958,18 @@ class TriggerEvaluator:
 
     def __init__(self, required_interpreters: Set[str],
                  required_triggers: Set[str],
-                 ema_periods: List[int] = None):
+                 ema_periods: List[int]):
+        # ema_periods must come from resolve_strategy_requirements — pass []
+        # for strategies with no EMA indicator. No internal defaulting.
+        if ema_periods is None:
+            raise TypeError(
+                "TriggerEvaluator requires ema_periods (list). Use [] when "
+                "the strategy has no EMA indicator. Pass "
+                "resolve_strategy_requirements()['ema_periods'] directly."
+            )
         self.required_interpreters = required_interpreters
         self.required_triggers = required_triggers
-        self.ema_periods = ema_periods or [8, 21, 50]
+        self.ema_periods = ema_periods
 
         # Intra-bar state
         self._ib_fired: Dict[str, bool] = {}
@@ -2254,7 +2478,7 @@ class UnifiedStrategy:
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         self.trigger_eval = TriggerEvaluator(
             req_interp, req_trig,
-            ema_periods=params.get('ema_periods', [8, 21, 50]))
+            ema_periods=params['ema_periods'])
         self.position = PositionStateMachine(
             strategy,
             resolved_entry=self.entry_trigger,
@@ -2767,7 +2991,7 @@ def run_trades_from_cache(
     # Lightweight trigger evaluator for HM/HL confirmation only
     trigger_eval = TriggerEvaluator(
         set(), set(),
-        ema_periods=metadata.get('ema_periods', [8, 21, 50]))
+        ema_periods=metadata['ema_periods'])
 
     trades = []
 

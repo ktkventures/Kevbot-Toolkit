@@ -454,7 +454,7 @@ class StrategyMonitor:
 
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         self.trigger_eval = TriggerEvaluator(
-            req_interp, req_trig, params.get('ema_periods', [8, 21, 50]))
+            req_interp, req_trig, params['ema_periods'])
         self.position = PositionStateMachine(
             strategy, position_state,
             resolved_entry=resolved_entry,
@@ -511,12 +511,14 @@ class StrategyMonitor:
                 self._intrabar_triggers.add(t)
 
         logger.info("StrategyMonitor: %s (%s/%ds) — indicators=%s, "
-                     "triggers=%s, interpreters=%s, entry=%s, exits=%s%s",
+                     "triggers=%s, interpreters=%s, entry=%s, exits=%s%s, "
+                     "ema_periods=%s",
                      self.strat_name, self.symbol, self.tf_seconds,
                      req_ind, req_trig, req_interp,
                      resolved_entry, resolved_exits,
                      f", secondary_tfs={self._required_secondary_tf}"
-                     if self._required_secondary_tf else "")
+                     if self._required_secondary_tf else "",
+                     params.get('ema_periods'))
 
     def warmup(self, df: pd.DataFrame):
         """Initialize indicator state from historical bars."""
@@ -715,7 +717,7 @@ class _ShadowIndicatorEngine:
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         # TriggerEvaluator needs interpreters but no triggers (empty set)
         self.trigger_eval = TriggerEvaluator(
-            req_interp, set(), params.get('ema_periods', [8, 21, 50]))
+            req_interp, set(), params['ema_periods'])
 
         tf_label = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
         self._tf_short_label = tf_label.replace(
@@ -1049,7 +1051,7 @@ class SymbolHub:
             # Collect indicator/interpreter requirements from requesting monitors
             req_ind: Set[str] = {'atr'}
             req_interp: Set[str] = set()
-            ema_periods = [8, 21, 50]
+            shadow_params: Dict[str, Any] = {}
 
             for monitor in requesting_monitors:
                 all_conf = (list(monitor.strategy.get('confluence', []))
@@ -1070,14 +1072,19 @@ class SymbolHub:
                             req_ind.update(ind_set)
                             break
 
-                # Use requesting monitor's EMA params
-                _, _, _, params = resolve_strategy_requirements(monitor.strategy)
-                ema_periods = params.get('ema_periods', ema_periods)
+                # Merge params from every requesting monitor so the shadow's
+                # union of required indicators is fully covered. Shared keys
+                # (macd_fast_period, vwap_sd1_mult, etc.) should agree across
+                # monitors since they come from the same user-wide group;
+                # last-wins on conflict (rare, only if user has multiple
+                # variant groups for the same indicator family).
+                _, _, _, monitor_params = resolve_strategy_requirements(
+                    monitor.strategy)
+                shadow_params.update(monitor_params)
 
             if req_interp:
                 shadow = _ShadowIndicatorEngine(
-                    sec_tf, req_ind, req_interp,
-                    {'ema_periods': ema_periods})
+                    sec_tf, req_ind, req_interp, shadow_params)
                 self._shadow_engines[sec_tf] = shadow
                 logger.info("Created shadow engine for %s/%ss: ind=%s interp=%s",
                             self.symbol, sec_tf, req_ind, req_interp)

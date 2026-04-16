@@ -1,5 +1,11 @@
 # Pack Development Workflow
 
+## Scope
+
+This document covers **user packs** — new indicators contributed via the Pack Builder wizard, which live in `user_packs/<slug>/` and are registered through `pack_registry`.
+
+For **built-in confluence templates** (EMA, MACD, VWAP, UT Bot, RVOL — computed directly by the unified engine), see the [Built-in Template Contract](#built-in-template-contract) section at the bottom. Built-in templates go through a stricter parameter-resolution contract than user packs and have different registration requirements.
+
 ## Purpose
 
 This document describes the standardized process for creating, fixing, and validating user packs in the RoR Trader system. It distinguishes between the **user-facing AI fix flow** (what end users will eventually use) and the **dev workflow** (how Kevin and Claude collaborate on pack creation and iteration).
@@ -167,3 +173,80 @@ for k, v in (triggers or {}).items():
 ```
 
 This catches most issues quickly without needing to run a full backtest through the UI.
+
+---
+
+# Built-in Template Contract
+
+Built-in confluence templates (EMA, MACD, VWAP, UT Bot, RVOL) are computed directly by the unified engine in `IncrementalIndicatorEngine` and `TriggerEvaluator`. They have a stricter parameter contract than user packs — adding a new built-in template or parameter requires updates in four specific places, and missing any one of them will raise at strategy load rather than silently drift.
+
+## Why stricter
+
+User pack indicators are pre-computed in the DataFrame by the batch pipeline and read as columns. If a user pack param is wrong, only that pack's output is wrong.
+
+Built-in indicators run live inside the unified engine with O(1) incremental state. The engine reads parameters from a `params: dict[str, Any]` produced by `resolve_strategy_requirements(strategy)`. If any required key is missing, backtest and live silently diverge — one path reads the user's configured value, the other reads a hardcoded fallback. We explicitly don't allow this (see `unified_engine.py` `_INDICATOR_PARAM_SPEC` and the contract validator at the end of `resolve_strategy_requirements`).
+
+## Adding a parameter to an existing template
+
+Example: "I want to expose `ema_alpha_boost` on the EMA Price Position template."
+
+1. Add the parameter to the template's parameter schema in `confluence_groups.py` (the `TEMPLATES` dict). Users can now set it in the Confluence Packs UI.
+2. Add it to the `_INDICATOR_PARAM_SPEC` entry for the indicator family in `unified_engine.py`. Map the engine-side key (what the engine reads) to the group-side key (what the user sets):
+   ```python
+   _INDICATOR_PARAM_SPEC['ema']['params'].append(
+       ('ema_alpha_boost', 'alpha_boost'),
+   )
+   ```
+3. Read it strictly in the engine constructor — `params['ema_alpha_boost']`, never `.get(key, default)`.
+4. Add or update the entry in the contract test (`test_params_contract` in `test_unified_parity.py`) so a missing key would fail CI.
+
+The contract check at the end of `resolve_strategy_requirements` will refuse to return if any spec'd key is missing. Strategies using the affected indicator will fail at load time with a clear error pointing at the resolver — not quietly run with wrong values.
+
+## Adding a new built-in indicator family
+
+Example: "Bollinger Bands" as a first-class built-in (not a user pack).
+
+Steps, in order:
+
+1. **Compute logic** — `indicators.py`: batch function (`calculate_bbands(df, period, num_std)`). Used by backtest and chart rendering.
+2. **Incremental state** — `unified_engine.py` `IncrementalIndicatorEngine`: add fields to `IndicatorState`, the `_update_indicators` branch (`if 'bbands' in self.required`), and write output columns `bb_upper`, `bb_mid`, `bb_lower`, etc.
+3. **State classification** — `interpreters.py`: `interpret_bbands(df)` returning a Series of state labels (e.g. `"ABOVE_UPPER"`, `"INSIDE"`, `"BELOW_LOWER"`).
+4. **Triggers** — `triggers.py`: `detect_bbands_triggers(df)` returning a dict of bool Series. For L-type (intra-bar level-cross) support, add entries to `INTRABAR_LEVEL_MAP` in `unified_engine.py` with the `param_key` field so column names parameterize correctly from the group.
+5. **Template registration** — `confluence_groups.py`:
+   - Add the template to the `TEMPLATES` dict with `interpreters`, `indicator_columns`, `triggers`, `display_type`, and user-editable `parameters_schema`.
+   - Add to `OVERLAY_TEMPLATES` or `OSCILLATOR_TEMPLATES` for chart classification.
+6. **Engine requirements mapping** — `unified_engine.py`:
+   - Add to `TEMPLATE_REQUIREMENTS`: `'bbands': ({'bbands'}, 'BBANDS')` — indicator slug(s) and interpreter key.
+   - Add to `TRIGGER_PREFIX_TO_TEMPLATE`: `'bbands': 'bbands'` — so `resolve_strategy_requirements` can route trigger IDs to the template.
+7. **Parameter contract** — `unified_engine.py` `_INDICATOR_PARAM_SPEC`:
+   ```python
+   'bbands': {
+       'params': [
+           ('bbands_period', 'period'),
+           ('bbands_num_std', 'num_std'),
+       ],
+       'templates': ('bbands',),
+       'interpreters': ('BBANDS',),
+   }
+   ```
+8. **Strict engine reads** — in `IncrementalIndicatorEngine.__init__`, read `params['bbands_period']` directly. No `.get(key, default)`.
+9. **Chart overlay resolution** — `api/routers/strategies.py` `/chart-data`: the template's `indicator_columns` are already resolved via `group.parameters`, but if your column names are parameterized (like `ema_{period}`), add the resolution logic alongside the existing `ema_short`/`ema_mid`/`ema_long` block.
+10. **Contract test** — extend `test_params_contract` in `test_unified_parity.py` with a fixture for the new indicator family so the round-trip is pinned.
+
+The contract test guards step 7 specifically. If you add the template (steps 1-6) but forget step 7, any strategy using the new family will raise at load with a message pointing at `_INDICATOR_PARAM_SPEC`.
+
+## Reviewing the contract at a glance
+
+```
+resolve_strategy_requirements(strategy)                      [the resolver]
+  └── reads: strategy dict + user's confluence groups
+  └── uses: _INDICATOR_PARAM_SPEC to know what to populate
+  └── returns: params dict with EVERY key required by the engine
+  └── raises: if any key is missing (contract violation)
+
+IncrementalIndicatorEngine / TriggerEvaluator                [strict consumers]
+  └── reads: params[key] (no .get defaults)
+  └── raises: KeyError if a key is missing → always a resolver bug
+```
+
+Never add a `.get(key, default)` in the engine to "work around" a missing param. The right fix is always in `_INDICATOR_PARAM_SPEC` or the resolver.

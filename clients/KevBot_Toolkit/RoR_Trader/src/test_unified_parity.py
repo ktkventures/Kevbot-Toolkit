@@ -110,6 +110,8 @@ def test_indicator_parity():
             'macd_fast_period': 12,
             'macd_slow_period': 26,
             'macd_signal_period': 9,
+            'vwap_sd1_mult': 1.0,
+            'vwap_sd2_mult': 2.0,
             'utbot_atr_period': 10,
             'utbot_atr_mult': 1.0,
             'vol_sma_period': 20,
@@ -500,7 +502,8 @@ def test_enriched_df_columns():
     }
     _, enriched = run_unified_backtest(df, strategy)
 
-    # Check indicator columns exist
+    # Check indicator columns exist — test groups pin EMA to [8, 21, 50]
+    # (see _install_test_groups). Use ema_8 to match the pinned short_period.
     expected_indicators = ['ema_8', 'ema_21', 'atr']
     missing = [c for c in expected_indicators if c not in enriched.columns]
     if missing:
@@ -1303,12 +1306,167 @@ def test_mtf_confluence_gating():
           f"with_mtf={len(trades_with_mtf)}, partial={len(trades_partial)})")
 
 
+def test_params_contract():
+    """Validate every parameterized indicator in _INDICATOR_PARAM_SPEC
+    round-trips cleanly from resolve_strategy_requirements into the engine
+    constructors without hitting a hardcoded fallback.
+
+    If someone adds a new pack and forgets to add its params to the spec
+    (or the resolver), this test catches it before the engine silently
+    runs with wrong values.
+    """
+    print("\nTest: Parameter contract round-trip...")
+    import unified_engine as ue
+    from unified_engine import (
+        resolve_strategy_requirements, _INDICATOR_PARAM_SPEC,
+        IncrementalIndicatorEngine, TriggerEvaluator,
+    )
+    from confluence_groups import ConfluenceGroup, PlotSettings
+
+    # Build synthetic groups covering every parameterized template — keeps
+    # the test independent of whatever defaults happen to exist today.
+    def _mkgroup(group_id, base_template, params):
+        return ConfluenceGroup(
+            id=group_id, base_template=base_template, version='Test',
+            description='', enabled=True, is_default=False,
+            parameters=params,
+            plot_settings=PlotSettings(colors={}, line_width=1, visible=True),
+        )
+
+    _test_groups = [
+        _mkgroup('ema_stack_test', 'ema_stack',
+                 {'short_period': 9, 'mid_period': 21, 'long_period': 200}),
+        _mkgroup('macd_line_test', 'macd_line',
+                 {'fast_period': 12, 'slow_period': 26, 'signal_period': 9}),
+        _mkgroup('vwap_test', 'vwap', {'sd1_mult': 1.0, 'sd2_mult': 2.0}),
+        _mkgroup('utbot_test', 'utbot',
+                 {'atr_period': 10, 'atr_multiplier': 1.0}),
+        _mkgroup('rvol_test', 'rvol', {'sma_period': 20}),
+    ]
+    _orig_loader = ue._load_enabled_groups_for_strategy
+    ue._load_enabled_groups_for_strategy = lambda _strategy: _test_groups
+    try:
+        _run_contract_assertions(_INDICATOR_PARAM_SPEC,
+                                 resolve_strategy_requirements,
+                                 IncrementalIndicatorEngine,
+                                 TriggerEvaluator)
+    finally:
+        ue._load_enabled_groups_for_strategy = _orig_loader
+
+
+def _run_contract_assertions(spec, resolve_fn, IndEngine, TrigEval):
+
+    # Minimal strategy fixtures — one per parameterized indicator family.
+    # Triggers chosen to route through _process_trigger_id's prefix matcher.
+    # Note: every confluence template in create_default_groups() must be
+    # enabled for these to resolve. Tests run in-memory without DB.
+    fixtures = [
+        ('ema', {
+            'entry_trigger_confluence_id': 'ema_cross_bull',
+            'confluence': [],
+        }),
+        ('macd', {
+            'entry_trigger_confluence_id': 'macd_cross_bull',
+            'confluence': [],
+        }),
+        ('vwap', {
+            'entry_trigger_confluence_id': 'vwap_cross_above',
+            'confluence': [],
+        }),
+        ('utbot', {
+            'entry_trigger_confluence_id': 'utbot_buy',
+            'confluence': [],
+        }),
+        ('rvol', {
+            'entry_trigger_confluence_id': 'rvol_spike',
+            'confluence': [],
+        }),
+    ]
+
+    for indicator, strat in fixtures:
+        ind, interp, trig, params = resolve_fn(strat)
+        assert indicator in ind, \
+            f"{indicator!r} fixture failed to route into required set: {ind}"
+        for engine_key, _ in spec[indicator]['params']:
+            assert engine_key in params, \
+                (f"resolve_strategy_requirements omitted {engine_key!r} "
+                 f"for {indicator!r} — contract violation")
+        IndEngine(ind, params)
+        TrigEval(interp, trig, params['ema_periods'])
+
+    empty_strat = {'entry_trigger_confluence_id': '', 'confluence': []}
+    _, _, _, params = resolve_fn(empty_strat)
+    assert params['ema_periods'] == [], \
+        f"Empty strategy should have ema_periods=[], got {params['ema_periods']!r}"
+
+    print(f"PASSED (covered {len(fixtures)} parameterized indicators)")
+
+
+def _install_test_groups(short_period=8, mid_period=21, long_period=50):
+    """Pin the confluence group loader to a fixed EMA/MACD/etc. set.
+
+    The batch pipeline (detect_ema_triggers, calculate_macd) uses hardcoded
+    periods [8, 21, 50] for EMA and [12, 26, 9] for MACD. Tests verifying
+    unified↔batch parity must force the resolver to match. Call before any
+    test that runs run_unified_backtest with an EMA/MACD trigger.
+    """
+    import unified_engine as ue
+    from confluence_groups import ConfluenceGroup, PlotSettings
+
+    def _mk(gid, base, params):
+        return ConfluenceGroup(
+            id=gid, base_template=base, version='Test', description='',
+            enabled=True, is_default=False, parameters=params,
+            plot_settings=PlotSettings(colors={}, line_width=1, visible=True),
+        )
+
+    groups = [
+        _mk('ema_stack_test', 'ema_stack', {
+            'short_period': short_period,
+            'mid_period': mid_period,
+            'long_period': long_period,
+        }),
+        _mk('ema_price_position_test', 'ema_price_position', {
+            'short_period': short_period,
+            'mid_period': mid_period,
+            'long_period': long_period,
+        }),
+        _mk('ema_price_position_v2_test', 'ema_price_position_v2', {
+            'short_period': short_period,
+            'mid_period': mid_period,
+            'long_period': long_period,
+        }),
+        _mk('macd_line_test', 'macd_line', {
+            'fast_period': 12, 'slow_period': 26, 'signal_period': 9,
+        }),
+        _mk('macd_hist_test', 'macd_histogram', {
+            'fast_period': 12, 'slow_period': 26, 'signal_period': 9,
+        }),
+        _mk('vwap_test', 'vwap', {'sd1_mult': 1.0, 'sd2_mult': 2.0}),
+        _mk('utbot_test', 'utbot', {'atr_period': 10, 'atr_multiplier': 1.0}),
+        _mk('utbot_v2_test', 'utbot_v2',
+            {'atr_period': 10, 'atr_multiplier': 1.0}),
+        _mk('rvol_test', 'rvol', {'sma_period': 20}),
+    ]
+    ue._load_enabled_groups_for_strategy = lambda _strategy: groups
+
+
 def main():
+    # Force USE_DB=False so that _load_enabled_groups_for_strategy uses
+    # file/in-memory groups, not Supabase. data_loader.load_dotenv(override=True)
+    # may flip USE_DB back to True mid-import chain, so we pin it here after
+    # all module-level imports have run. Tests that need to pin specific
+    # group params call _install_test_groups() for a hermetic setup.
+    import db as _db
+    _db.USE_DB = False
+    _install_test_groups()
+
     print("=" * 60)
     print("Unified Engine Parity Tests")
     print("=" * 60)
 
     tests = [
+        test_params_contract,
         test_indicator_parity,
         test_ctype_trigger_parity,
         test_ctype_trade_parity,
