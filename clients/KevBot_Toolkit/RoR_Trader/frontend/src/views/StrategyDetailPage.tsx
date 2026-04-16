@@ -972,6 +972,86 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     }
   }, [strategyConfluence, selectedCondition]);
   const { data: confChartData, isLoading: confChartLoading } = useConfluenceChart(strategyId, selectedCondition);
+  // Confluence Analysis panes — memoized so the parent re-rendering (e.g. a
+  // live-bar tick on the adjacent Chart & Trades state) doesn't produce a
+  // fresh panes ref and retrigger SyncedChartPane's structure effect. That
+  // effect saves/restores the visible logical range; retriggered with a
+  // stale range on a small dataset it squishes bars into the right edge.
+  const confPanesData = useMemo(() => {
+    if (!confChartData || confChartData.bars.length === 0) return null;
+    const bars = confChartData.bars;
+
+    const stateRanges: any[] = [];
+    let regionStart: number | null = null;
+    let regionMet = false;
+    for (let i = 0; i < bars.length; i++) {
+      const bar = bars[i];
+      const met = bar._met === true || (bar._state != null && bar._state === confChartData.needed_state);
+      const t = Math.floor(safeDateMs(bar.timestamp) / 1000);
+      if (regionStart === null) { regionStart = t; regionMet = met; }
+      else if (met !== regionMet) {
+        stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
+        regionStart = t; regionMet = met;
+      }
+    }
+    if (regionStart !== null) {
+      const lastT = Math.floor(safeDateMs(bars[bars.length - 1].timestamp) / 1000);
+      stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
+    }
+    const primitives: any[] = stateRanges.length > 0
+      ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges: stateRanges } }]
+      : [];
+
+    const confOverlays: string[] = (confChartData as any).overlay_indicators || [];
+    const confOscillators: string[] = (confChartData as any).oscillator_indicators || [];
+    const COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'];
+
+    const panes: PaneConfig[] = [];
+    panes.push({
+      id: 'conf-price',
+      height: 300,
+      series: [
+        {
+          type: 'Candlestick',
+          data: bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
+        },
+        ...confOverlays.map((col: string, i: number) => ({
+          type: 'Line' as const,
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+          options: { color: COLORS[i % COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
+        })),
+      ],
+      primitives,
+    });
+
+    if (confOscillators.length > 0) {
+      const oscSeries: SeriesConfig[] = [];
+      for (const col of confOscillators.filter(c => c.includes('hist'))) {
+        oscSeries.push({
+          type: 'Histogram',
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({
+            time: b.timestamp, value: b[col], color: b[col] >= 0 ? '#4CAF50' : '#f44336',
+          })),
+          options: { priceLineVisible: false, title: 'Hist' },
+        });
+      }
+      for (const col of confOscillators.filter(c => !c.includes('hist'))) {
+        oscSeries.push({
+          type: 'Line',
+          data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+          options: { color: col.includes('signal') ? '#FF9800' : '#2196F3', lineWidth: 1, priceLineVisible: false, title: col.replace(/_/g, ' ') },
+        });
+      }
+      oscSeries.push({
+        type: 'Line',
+        data: [{ time: bars[0].timestamp, value: 0 }, { time: bars[bars.length - 1].timestamp, value: 0 }],
+        options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
+      });
+      panes.push({ id: 'conf-oscillator', height: 150, series: oscSeries });
+    }
+
+    return panes;
+  }, [confChartData]);
   const [showPosHealth, setShowPosHealth] = useState(false);
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
@@ -2671,94 +2751,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </div>
                       {confChartLoading ? (
                         <ChartPlaceholder label={`Loading ${selectedCondition.split('-')[0]} chart...`} height={350} />
-                      ) : confChartData && confChartData.bars.length > 0 ? (() => {
-                        // Build state highlighting ranges
-                        const stateRanges: any[] = [];
-                        let regionStart: number | null = null;
-                        let regionMet = false;
-                        for (let i = 0; i < confChartData.bars.length; i++) {
-                          const bar = confChartData.bars[i];
-                          // Check _met (set by backend) or compute from _state + needed_state
-                          const met = bar._met === true || (bar._state != null && bar._state === confChartData.needed_state);
-                          const t = Math.floor(safeDateMs(bar.timestamp) / 1000);
-                          if (regionStart === null) { regionStart = t; regionMet = met; }
-                          else if (met !== regionMet) {
-                            stateRanges.push({ startTime: regionStart, endTime: t, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
-                            regionStart = t; regionMet = met;
-                          }
-                        }
-                        if (regionStart !== null) {
-                          const lastT = Math.floor(safeDateMs(confChartData.bars[confChartData.bars.length - 1].timestamp) / 1000);
-                          stateRanges.push({ startTime: regionStart, endTime: lastT, color: regionMet ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.10)' });
-                        }
-                        const primitives = stateRanges.length > 0 ? [{ type: 'sessionHighlighting' as const, seriesIndex: 0, options: { ranges: stateRanges } }] : [];
-
-                        // Split indicators into overlay (on price chart) vs oscillator (separate pane)
-                        const confOverlays: string[] = (confChartData as any).overlay_indicators || [];
-                        const confOscillators: string[] = (confChartData as any).oscillator_indicators || [];
-                        const COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E91E63'];
-
-                        const confPanes: PaneConfig[] = [];
-
-                        // Price pane with overlay indicators
-                        confPanes.push({
-                          id: 'conf-price',
-                          height: 300,
-                          series: [
-                            {
-                              type: 'Candlestick',
-                              data: confChartData.bars.map((b: any) => ({ time: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close })),
-                            },
-                            ...confOverlays.map((col: string, i: number) => ({
-                              type: 'Line' as const,
-                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-                              options: { color: COLORS[i % COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
-                            })),
-                          ],
-                          primitives,
-                        });
-
-                        // Oscillator pane (if any oscillator indicators)
-                        if (confOscillators.length > 0) {
-                          const oscSeries: SeriesConfig[] = [];
-                          for (const col of confOscillators.filter(c => c.includes('hist'))) {
-                            oscSeries.push({
-                              type: 'Histogram',
-                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({
-                                time: b.timestamp, value: b[col], color: b[col] >= 0 ? '#4CAF50' : '#f44336',
-                              })),
-                              options: { priceLineVisible: false, title: 'Hist' },
-                            });
-                          }
-                          for (const col of confOscillators.filter(c => !c.includes('hist'))) {
-                            oscSeries.push({
-                              type: 'Line',
-                              data: confChartData.bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-                              options: { color: col.includes('signal') ? '#FF9800' : '#2196F3', lineWidth: 1, priceLineVisible: false, title: col.replace(/_/g, ' ') },
-                            });
-                          }
-                          // Zero line
-                          if (confChartData.bars.length > 0) {
-                            oscSeries.push({
-                              type: 'Line',
-                              data: [{ time: confChartData.bars[0].timestamp, value: 0 }, { time: confChartData.bars[confChartData.bars.length - 1].timestamp, value: 0 }],
-                              options: { color: 'rgba(128,128,128,0.3)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false },
-                            });
-                          }
-                          confPanes.push({ id: 'conf-oscillator', height: 150, series: oscSeries });
-                        }
-
-                        return (
-                          <SyncedChartPane
-                            panes={confPanes}
-                            upColor={chartPrefs.candleUp}
-                            downColor={chartPrefs.candleDown}
-                            upBorderColor={chartPrefs.candleUpBorder}
-                            gridLines={chartPrefs.gridLines}
-                            rightOffset={chartPrefs.rightOffset}
-                          />
-                        );
-                      })() : (
+                      ) : confPanesData ? (
+                        <SyncedChartPane
+                          panes={confPanesData}
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          upBorderColor={chartPrefs.candleUpBorder}
+                          gridLines={chartPrefs.gridLines}
+                          rightOffset={chartPrefs.rightOffset}
+                        />
+                      ) : (
                         <ChartPlaceholder label="No data for this condition" height={350} />
                       )}
                       {/* State legend */}

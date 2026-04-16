@@ -780,6 +780,15 @@ def get_confluence_chart(
 
         overlay_cols = list(dict.fromkeys(overlay_cols))
         oscillator_cols = list(dict.fromkeys(oscillator_cols))
+
+        # Strip non-plottable columns (bool flags, hex-string candle colors,
+        # pack-internal level/color columns). Without this filter, LWC
+        # receives string/bool values for line series and the chart's range
+        # calculation breaks — bars squish to one edge.
+        from api.services.backtest_service import classify_chart_indicators
+        entry_conf_id = strat.get('entry_trigger_confluence_id', '') or ''
+        overlay_cols, oscillator_cols, _candle_color_column = \
+            classify_chart_indicators(df, overlay_cols, oscillator_cols, entry_conf_id)
         all_cols = overlay_cols + oscillator_cols
 
         # Get interpreter state column
