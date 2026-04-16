@@ -952,7 +952,7 @@ def refresh_strategy(strategy_id: int, user=Depends(get_current_user)):
         recompute_and_persist_stored_trades,
     )
     try:
-        return recompute_and_persist_stored_trades(strategy_id, user.id)
+        return recompute_and_persist_stored_trades(strategy_id, user['id'])
     except Exception as e:
         logger.exception("Strategy refresh failed for %s", strategy_id)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
