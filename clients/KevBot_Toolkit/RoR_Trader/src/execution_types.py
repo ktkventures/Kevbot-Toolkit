@@ -53,6 +53,147 @@ class BailResult:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# EXEC TYPE MANIFEST (scaffolding for Trade_Timestamps_Spec_2026-04-17)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Declarative metadata for each execution type. Currently reference-only —
+# NOT consumed by runtime logic. Phase 1 of the Timestamps Spec will refactor
+# the runtime (`check_entry_signal`, `get_confirmation_config`,
+# `PositionStateMachine.check_entry`) to read these manifests as the single
+# source of truth, and compute `fill_ts` via `compute_fill_ts(trigger_ts,
+# bar_duration, hold_duration_s, behavior)` per the spec.
+#
+# The four manifests below describe the CURRENT behavior of C/L/LC/CC
+# verbatim. When Phase 1 lands, no behavior changes — only the plumbing that
+# propagates the manifest into the state machine.
+#
+# See: docs/Trade_Timestamps_Spec_2026-04-17.md — Part 5 "User-facing
+# semantics & pack definitions" for field definitions and the AI Wizard UI
+# that creates user-defined manifests.
+
+@dataclass
+class ExecTypeManifest:
+    """Declarative description of an execution type's lifecycle.
+
+    Every exec type — system-shipped (C/L/LC/CC) and user-created /
+    AI-generated — is described by one of these. The runtime engine reads
+    the manifest to determine fill timing, confirmation behavior, and which
+    events to emit.
+
+    Scaffolding note (2026-04-17): this dataclass is defined but not yet
+    consumed by runtime code. Wiring happens in Phase 1 of the Timestamps
+    Spec. Safe to use for documentation / tests / UI generation now.
+    """
+    code: str
+    display_name: str
+    description: str
+    trigger_kind: str              # 'bar_close' | 'level_cross' | 'custom'
+    behavior: str                  # 'A' (wait-then-fill) | 'B' (fill-then-validate)
+    hold_duration_bars: int = 0
+    hold_duration_seconds: int = 0
+    fill_offset: str = 'immediate'     # 'immediate' | 'next_bar_open' | 'after_hold'
+    events_emitted: List[str] = field(default_factory=lambda: ['fill_event'])
+    early_exit_on_invalidation: bool = False
+    source: str = 'system'             # 'system' | 'user' | 'ai_generated'
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+# Manifests describing CURRENT behavior of each built-in exec type.
+# Populated as reference data; Phase 1 wires these into the runtime.
+
+MANIFEST_C = ExecTypeManifest(
+    code='C',
+    display_name='Bar Close',
+    description=(
+        'Entry confirmed when the bar closes with the trigger condition '
+        'true. Fills at the next bar\'s open (same instant as the firing '
+        'bar\'s close for display purposes).'
+    ),
+    trigger_kind='bar_close',
+    behavior='B',
+    hold_duration_bars=0,
+    hold_duration_seconds=0,
+    fill_offset='next_bar_open',
+    events_emitted=['fill_event'],
+    early_exit_on_invalidation=False,
+    source='system',
+)
+
+MANIFEST_L = ExecTypeManifest(
+    code='L',
+    display_name='Level Cross (Immediate)',
+    description=(
+        'Entry triggers intra-bar the moment price crosses an indicator '
+        'level. Fills immediately at the cross price. No hold period, no '
+        'confirmation required.'
+    ),
+    trigger_kind='level_cross',
+    behavior='B',
+    hold_duration_bars=0,
+    hold_duration_seconds=0,
+    fill_offset='immediate',
+    events_emitted=['fill_event'],
+    early_exit_on_invalidation=False,
+    source='system',
+)
+
+MANIFEST_LC = ExecTypeManifest(
+    code='LC',
+    display_name='Level Cross (Confirmed)',
+    description=(
+        'Enters immediately on level cross (like L), but requires the '
+        'price to still be on the entry side of the line at the next '
+        'bar\'s close. If invalidated during the hold bar, exits with '
+        'reason=validation_failed.'
+    ),
+    trigger_kind='level_cross',
+    behavior='B',
+    hold_duration_bars=1,
+    hold_duration_seconds=0,
+    fill_offset='immediate',
+    events_emitted=['fill_event'],
+    early_exit_on_invalidation=True,
+    source='system',
+)
+
+MANIFEST_CC = ExecTypeManifest(
+    code='CC',
+    display_name='Close-Close Confirmed',
+    description=(
+        'Enters on the bar close that first produces the trigger, fills '
+        'at the next bar\'s open (like C), but requires the following '
+        'bar\'s close to also produce the trigger. If the follow-up bar '
+        'invalidates, exits with reason=validation_failed.'
+    ),
+    trigger_kind='bar_close',
+    behavior='B',
+    hold_duration_bars=1,
+    hold_duration_seconds=0,
+    fill_offset='next_bar_open',
+    events_emitted=['fill_event'],
+    early_exit_on_invalidation=True,
+    source='system',
+)
+
+
+EXEC_TYPE_MANIFESTS: Dict[str, ExecTypeManifest] = {
+    'C': MANIFEST_C,
+    'L': MANIFEST_L,
+    'LC': MANIFEST_LC,
+    'CC': MANIFEST_CC,
+}
+
+
+def get_manifest(exec_type: str) -> Optional[ExecTypeManifest]:
+    """Return the manifest for a given exec_type code, or None if unknown.
+
+    Scaffolding — not yet consumed by runtime. See module docstring.
+    """
+    return EXEC_TYPE_MANIFESTS.get(exec_type)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # BASE CLASS
 # ═══════════════════════════════════════════════════════════════════════════
 
