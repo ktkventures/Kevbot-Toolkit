@@ -915,6 +915,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const d = a.data || {};
     return {
       time: a.timestamp || a.time || '--',
+      barTime: a.bar_time || d.bar_time || a.timestamp || a.time || '--',
       type: (a.type || '').toLowerCase().includes('entry') ? 'ENTRY' : 'EXIT',
       trigger: a.trigger || d.trigger || '--',
       price: a.price ?? d.price ?? null,
@@ -943,6 +944,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         }
         paired.push({
           entryTime: entry?.time || '--', exitTime: evt.time || '--',
+          entryBarTime: entry?.barTime || entry?.time || '--',
+          exitBarTime: evt.barTime || evt.time || '--',
           entryPrice: entryP, exitPrice: exitP,
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
           result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
@@ -951,7 +954,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       }
     }
     for (const entry of entries) {
-      paired.push({ entryTime: entry.time || '--', exitTime: null, entryPrice: entry.price, exitPrice: null, r: null, result: 'Open', exitReason: null });
+      paired.push({
+        entryTime: entry.time || '--', exitTime: null,
+        entryBarTime: entry.barTime || entry.time || '--', exitBarTime: null,
+        entryPrice: entry.price, exitPrice: null,
+        r: null, result: 'Open', exitReason: null,
+      });
     }
     return paired.reverse();
   }, [recentAlertEvents]);

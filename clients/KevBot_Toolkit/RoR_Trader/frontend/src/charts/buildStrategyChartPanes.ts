@@ -299,10 +299,16 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
       return bestDist < 120000 ? bestTs : null;
     };
     for (const a of alerts) {
-      if (a.entryTime && a.entryTime !== '--' && a.entryPrice > 0) {
-        const entryMs = _safeMs(a.entryTime);
-        if (entryMs >= firstBarTime && entryMs <= lastBarTime) {
-          const snapped = snapToBar(a.entryTime);
+      // Prefer the bar timestamp for chart placement so an alert that
+      // saved a few seconds after the bar closed still snaps to its
+      // own bar. Wall-clock timestamp stays the source of truth for
+      // the trade-history table.
+      const entryAnchor = a.entryBarTime || a.entryTime;
+      const exitAnchor = a.exitBarTime || a.exitTime;
+      if (entryAnchor && entryAnchor !== '--' && a.entryPrice > 0) {
+        const entryMs = _safeMs(entryAnchor);
+        if (entryMs >= firstBarTime && entryMs <= lastBarTime + tfMs) {
+          const snapped = snapToBar(entryAnchor);
           if (snapped && !seenAlertEntry.has(snapped)) {
             seenAlertEntry.add(snapped);
             alertEntryData.push({ time: snapped, value: a.entryPrice });
@@ -310,10 +316,10 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
           }
         }
       }
-      if (a.exitTime && a.exitTime !== '--' && a.exitPrice > 0) {
-        const exitMs = _safeMs(a.exitTime);
-        if (exitMs >= firstBarTime && exitMs <= lastBarTime) {
-          const snapped = snapToBar(a.exitTime);
+      if (exitAnchor && exitAnchor !== '--' && a.exitPrice > 0) {
+        const exitMs = _safeMs(exitAnchor);
+        if (exitMs >= firstBarTime && exitMs <= lastBarTime + tfMs) {
+          const snapped = snapToBar(exitAnchor);
           if (snapped && !seenAlertExit.has(snapped)) {
             seenAlertExit.add(snapped);
             const reason = a.exitReason || '';

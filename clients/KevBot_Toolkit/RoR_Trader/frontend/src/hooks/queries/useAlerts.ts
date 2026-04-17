@@ -18,6 +18,7 @@ export function useStrategyAlerts(strategyId: number | null) {
     queryKey: ['alerts', 'strategy', strategyId],
     queryFn: () => apiFetch<any[]>(`/api/alerts/strategy/${strategyId}`),
     enabled: strategyId !== null,
+    refetchInterval: 5000,
   });
 }
 
