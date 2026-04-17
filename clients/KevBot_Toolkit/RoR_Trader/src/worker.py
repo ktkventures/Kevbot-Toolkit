@@ -150,12 +150,21 @@ class DBAlertDispatcher:
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
 
-        # stored_trades is authored by the forward-test recompute path only.
-        # The worker's output is the alerts table (above). Bar-close-driven
-        # recompute of stored_trades is handled by UserMonitor._on_bar_close
-        # which calls api.services.forward_test_service.
-        # See docs/Pack_Development_Workflow.md and the plan at
-        # /home/kevin/.claude/plans/async-humming-hearth.md
+        # Atomic algo-history append. Exit signals from the unified engine
+        # carry a fully-formed trade_record (PositionStateMachine.
+        # get_trade_record). Appending here — in the same dispatch that
+        # saves the alert — keeps algo history and the alerts table in
+        # lockstep. Refresh button still re-runs the full backtest via
+        # forward_test_service.recompute_and_persist_stored_trades.
+        # Reverts b83629b's write-inversion (see
+        # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1).
+        if sig_type == 'exit_signal':
+            try:
+                self._persist_algo_trade(strategy, signal_data)
+            except Exception as e:
+                logger.error("ALGO TRADE PERSIST FAILED [%s]: %s — %s",
+                             self.user_id[:8], strategy.get('name'), e)
+                # Alert is already saved; don't fail the whole dispatch.
 
         # Webhook delivery
         if self._deliver_alert_fn:
@@ -165,6 +174,55 @@ class DBAlertDispatcher:
                 logger.error("Webhook delivery failed: %s", e)
 
         return alert
+
+    def _persist_algo_trade(self, strategy: dict, signal_data: dict) -> None:
+        """Append the unified-engine-produced trade record to the strategy's
+        stored_trades. Called only on exit signals (which carry a full
+        trade record built by PositionStateMachine.get_trade_record).
+
+        Safe to call repeatedly — duplicate detection uses (entry_time,
+        exit_time) tuple so replayed exit signals don't double-append.
+        """
+        trade_record = signal_data.get('trade_record')
+        if not trade_record:
+            return  # older/other signal shapes that don't carry a record
+        entry_time = trade_record.get('entry_time')
+        exit_time = trade_record.get('exit_time')
+        if not entry_time or not exit_time:
+            logger.debug("Skipping algo-trade persist: missing entry/exit time")
+            return
+
+        # Re-fetch the strategy fresh (hot-reload may have mutated it)
+        strat_db = get_strategy_by_id_admin(strategy['id'], self.user_id)
+        if strat_db is None:
+            logger.warning("Strategy %s not found for algo-trade persist",
+                           strategy['id'])
+            return
+
+        stored_trades = list(strat_db.get('stored_trades') or [])
+        # Dedup on (entry_time, exit_time) — cheap, O(n) worst case
+        for t in stored_trades:
+            if (t.get('entry_time') == entry_time
+                    and t.get('exit_time') == exit_time):
+                logger.debug(
+                    "Algo trade already persisted: (%s, %s)",
+                    entry_time, exit_time)
+                return
+
+        # Serialize sets (confluence_records) — JSONB doesn't accept sets
+        tr_clean = dict(trade_record)
+        cr = tr_clean.get('confluence_records')
+        if isinstance(cr, set):
+            tr_clean['confluence_records'] = list(cr)
+
+        stored_trades.append(tr_clean)
+        update_strategy_admin(
+            strategy['id'], self.user_id,
+            {'stored_trades': stored_trades})
+        logger.info(
+            "ALGO TRADE APPENDED [%s]: strat=%s total=%d r=%.2f",
+            self.user_id[:8], strategy['id'],
+            len(stored_trades), tr_clean.get('r_multiple', 0) or 0)
 
 
 # ============================================================
@@ -297,10 +355,16 @@ class DBRalphEngine:
                 thread_name_prefix=f'ft-{self.user_id[:8]}-',
             )
 
-        # Install bar-close hook on every SymbolHub the engine creates.
-        # Applied by the hub-creation sites below (start path + hot
-        # reload). Captures self for closure over user_id + executor.
-        self._install_bar_close_hook_on_engine(engine)
+        # Bar-close recompute hook is OFF. stored_trades is now appended
+        # atomically by DBAlertDispatcher.dispatch on exit signals (see
+        # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1). The
+        # _install_bar_close_hook_on_engine / _on_bar_close / _ft_throttle
+        # machinery is retained on this class for:
+        #  - manual re-enablement via env flag in the future
+        #  - user-initiated refresh via /api/strategies/{id}/refresh, which
+        #    calls forward_test_service.recompute_and_persist_stored_trades
+        #    directly (not through this hook)
+        # self._install_bar_close_hook_on_engine(engine)
 
         # --- Patch I/O methods ---
 
