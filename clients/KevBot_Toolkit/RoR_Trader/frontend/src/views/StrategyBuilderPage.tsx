@@ -105,7 +105,7 @@ const TF_LABELS: Record<string, string> = {
   '1H': '1h', '4H': '4h', '1D': '1d',
 };
 const DIRECTIONS = ['LONG', 'SHORT'];
-const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
+const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended Hours', '24/7'];
 const ASSET_TYPES = ['Equity', 'Crypto'];
 const LOOKBACK_MODES = ['Days', 'Bars/Candles', 'Date Range'];
 // Stop/Target packs — selectable saved variations
@@ -1786,7 +1786,7 @@ export default function StrategyBuilderPage() {
       '1H': 7, '4H': 2, '1D': 1,  // legacy aliases
     };
     const barsPerDay = BPD[timeframe] ?? 390;
-    const sessionMult = session === 'RTH' ? 1 : session === 'Extended' ? 2.4 : session === '24/7' ? 3.7 : 1.5;
+    const sessionMult = session === 'RTH' ? 1 : session === 'Extended Hours' ? 2.4 : session === '24/7' ? 3.7 : 1.5;
     if (lookbackMode === 'Bars/Candles') return lookbackBars;
     return Math.round(lookbackDays * barsPerDay * sessionMult);
   }, [lookbackDays, lookbackBars, timeframe, session, lookbackMode]);

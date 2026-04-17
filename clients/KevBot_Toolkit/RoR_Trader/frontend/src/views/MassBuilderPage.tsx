@@ -89,7 +89,7 @@ const TF_LABELS: Record<string, string> = {
   '1Day': '1d',
 };
 const TIMEFRAMES_FALLBACK = ['1Min', '5Min', '15Min', '1Hour', '4Hour'];
-const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended', '24/7'];
+const SESSIONS = ['RTH', 'Pre-Market', 'After Hours', 'Extended Hours', '24/7'];
 const SORT_OPTIONS = ['Daily R', 'Win Rate', 'Profit Factor', 'R-Squared', 'Total R', 'Trades'];
 
 const EXEC_TYPES = ['[C]', '[L]', '[LC]', '[CC]'] as const;
