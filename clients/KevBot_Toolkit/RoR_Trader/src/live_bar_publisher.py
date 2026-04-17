@@ -12,8 +12,12 @@ Channel convention:
               is_forming: bool}
 
 Forming-bar updates are throttled per (symbol, tf_seconds) to the publisher's
-`throttle_ms` setting (default 250ms). Bar-close updates are never throttled —
+`throttle_ms` setting (default 1000ms). Bar-close updates are never throttled —
 a completed bar must always land on the frontend immediately.
+
+Throttle raised from 250ms → 1000ms in Phase 4 of
+docs/Alert_Recovery_Plan_2026-04-17.md. Chart still animates smoothly at 1Hz
+and broadcast-task scheduling drops 4× per (symbol, tf).
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ class LiveBarPublisher:
         self,
         supabase_url: str,
         service_role_key: str,
-        throttle_ms: int = 250,
+        throttle_ms: int = 1000,
         request_timeout_s: float = 0.5,
     ):
         self._url = (supabase_url or "").rstrip("/")
