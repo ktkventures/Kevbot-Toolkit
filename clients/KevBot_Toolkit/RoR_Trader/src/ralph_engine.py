@@ -1947,12 +1947,29 @@ class RalphEngine:
 
                 # Build subscription channels
                 # AM.{ticker} = per-minute aggregates (stocks)
-                # A.{ticker}  = per-second aggregates (M8.5 Phase B+: required
-                #   for sub-minute primary-TF aggregation, forming-bar streaming
-                #   on all TFs, and L-type intra-bar trigger detection)
+                # A.{ticker}  = per-second aggregates — only subscribed when
+                #   a strategy on this symbol actually needs sub-minute data:
+                #     * L-type intrabar trigger (level-cross detection), or
+                #     * sub-minute primary TF (5s/10s/15s/30s aggregation).
+                #   Unconditional A.{ticker} flooded the event loop with
+                #   per-second forming-bar work and was the main contributor
+                #   to the post-M8.5 alert-latency regression. See
+                #   docs/Alert_Recovery_Plan_2026-04-17.md Phase 2.
                 # XA.X:{BASE}{QUOTE} = per-minute aggregates (crypto)
                 stock_channels = [f"AM.{s}" for s in stock_symbols]
-                stock_channels += [f"A.{s}" for s in stock_symbols]
+                for sym in stock_symbols:
+                    hub = self.hubs.get(sym)
+                    if hub is None:
+                        continue
+                    has_ltype = any(
+                        any(t in _IB_L_TYPE_TRIGGERS
+                            for t in getattr(m, '_intrabar_triggers', set()))
+                        for m in hub.monitors.values()
+                    )
+                    has_subminute = any(
+                        m.tf_seconds < 60 for m in hub.monitors.values())
+                    if has_ltype or has_subminute:
+                        stock_channels.append(f"A.{sym}")
                 crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
 
                 all_channels = stock_channels + crypto_channels
