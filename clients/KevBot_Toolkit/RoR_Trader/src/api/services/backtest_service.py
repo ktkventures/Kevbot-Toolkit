@@ -300,6 +300,15 @@ def classify_and_serialize_chart_data(df: pd.DataFrame, req) -> tuple:
     overlay_indicators = list(dict.fromkeys(overlay_cols))
     oscillator_indicators = list(dict.fromkeys(oscillator_cols))
 
+    # Ghost overlay: surface `_prev` sibling columns for v2 L-type triggers
+    # (utbot_stop_prev, ema_N_prev). The frontend renders these as dashed
+    # lines in the same color as the non-prev sibling. Parity with
+    # /chart-data endpoint. See buildStrategyChartPanes.ts ghostOverlays.
+    for base_col in list(overlay_indicators):
+        prev_col = f"{base_col}_prev"
+        if prev_col in df.columns and prev_col not in overlay_indicators:
+            overlay_indicators.append(prev_col)
+
     overlay_indicators, oscillator_indicators, candle_color_column = \
         classify_chart_indicators(df, overlay_indicators, oscillator_indicators, entry_conf_id)
 

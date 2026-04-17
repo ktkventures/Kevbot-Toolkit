@@ -559,6 +559,23 @@ def get_strategy_chart_data(
         overlay_cols = list(dict.fromkeys(overlay_cols))
         oscillator_cols = list(dict.fromkeys(oscillator_cols))
 
+        # Ghost overlay: for v2 L-type triggers whose level column ends in
+        # `_prev` (e.g. utbot_stop_prev, ema_9_prev), include that column too.
+        # The actual fill level is the PREVIOUS bar's indicator value; the
+        # solid line shows the CURRENT bar. Plotting both lets the user see
+        # where the `+` marker actually landed without optical drift.
+        #
+        # Only include `_prev` columns whose non-prev sibling is already in
+        # overlay_cols — this scopes the ghost line to indicators the strategy
+        # actually uses, not every `_prev` column that happens to exist in df.
+        try:
+            for base_col in list(overlay_cols):
+                prev_col = f"{base_col}_prev"
+                if prev_col in df.columns and prev_col not in overlay_cols:
+                    overlay_cols.append(prev_col)
+        except Exception as _e:
+            logger.debug("ghost overlay inclusion failed: %s", _e)
+
         # Apply the same filtering + candle_color_column detection that the
         # /backtest endpoint uses. Without this, Strategy Detail renders
         # boolean/string pack columns as overlay lines and misses candle

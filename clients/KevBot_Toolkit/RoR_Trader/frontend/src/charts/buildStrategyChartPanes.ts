@@ -355,15 +355,60 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     markers: alertExitMarkers,
   });
 
-  // Overlay indicators (filtered to only plottable numeric columns)
-  for (let i = 0; i < filteredOverlays.length; i++) {
-    const col = filteredOverlays[i];
+  // Split overlays: non-_prev get solid lines with normal colors; _prev
+  // columns become dashed "ghost" lines in the same color as their sibling.
+  // Ghost lines show where v2 L-type triggers actually fire (previous bar's
+  // indicator value) so + markers sit on them rather than optically drifting
+  // from the current-bar solid line.
+  const primaryOverlays: string[] = [];
+  const ghostOverlays: string[] = [];
+  for (const col of filteredOverlays) {
+    if (col.endsWith('_prev')) ghostOverlays.push(col);
+    else primaryOverlays.push(col);
+  }
+
+  // Pass 1: primary (non-_prev) overlays get solid lines.
+  const primaryColorByCol = new Map<string, string>();
+  for (let i = 0; i < primaryOverlays.length; i++) {
+    const col = primaryOverlays[i];
+    const color = INDICATOR_COLORS[i % INDICATOR_COLORS.length];
+    primaryColorByCol.set(col, color);
     priceSeries.push({
       type: 'Line',
       data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
-      options: { color: INDICATOR_COLORS[i % INDICATOR_COLORS.length], lineWidth: 2, title: col.replace(/_/g, ' ') },
+      options: { color, lineWidth: 2, title: col.replace(/_/g, ' ') },
       liveRole: 'overlay_line',
       indicatorColumn: col,
+    });
+  }
+
+  // Pass 2: ghost (_prev) overlays — same color as sibling, dashed + thinner.
+  // Converts "#rrggbb" to a 60%-opacity rgba. Falls back to semi-transparent
+  // gray if we can't parse a sibling color.
+  const toGhostColor = (hex: string | undefined): string => {
+    if (!hex || !hex.startsWith('#') || hex.length !== 7) return 'rgba(150,150,150,0.55)';
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},0.55)`;
+  };
+  for (const col of ghostOverlays) {
+    const sibling = col.replace(/_prev$/, '');
+    const siblingColor = primaryColorByCol.get(sibling);
+    const color = toGhostColor(siblingColor);
+    priceSeries.push({
+      type: 'Line',
+      data: bars.filter((b: any) => b[col] != null).map((b: any) => ({ time: b.timestamp, value: b[col] })),
+      options: {
+        color,
+        lineWidth: 1,
+        lineStyle: 2,  // LWC dashed
+        title: col.replace(/_/g, ' '),
+        priceLineVisible: false,
+        lastValueVisible: true,
+      },
+      // No liveRole — ghost lines are last-bar snapshots; they update on
+      // bar close via the data effect, not intra-bar.
     });
   }
   chartPanes.push({ id: 'price', height: 350, series: priceSeries });
