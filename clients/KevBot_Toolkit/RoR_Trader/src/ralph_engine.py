@@ -1629,6 +1629,11 @@ class RalphEngine:
         # M8.5: Live-bar publisher — set by worker before start().
         # None = live chart disabled (no broadcasts). Harmless default.
         self._publisher: Optional['LiveBarPublisher'] = None
+        # Phase 3 (Alert_Recovery_Plan_2026-04-17): ThreadPoolExecutor for
+        # alert-dispatch DB + webhook I/O. Set by the worker before start().
+        # When None, alert dispatch runs synchronously on the event loop
+        # (legacy behavior, fine for CLI / tests — blocks ~200-500ms per alert).
+        self._alert_executor = None
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
@@ -1907,7 +1912,33 @@ class RalphEngine:
                 logger.warning("Position sync failed for S%d: %s", sid, e)
 
     def _on_alert(self, signal: dict, strategy: dict, config: dict):
-        """Callback when a strategy monitor fires a signal."""
+        """Callback when a strategy monitor fires a signal.
+
+        Called synchronously from inside the async WS consumer coroutine
+        (via hub.on_tick / hub.on_second_bar / hub.on_polygon_bar). When
+        an _alert_executor is wired (by the Railway worker), the actual
+        DB + webhook work is scheduled on a thread so the event loop is
+        not blocked on Supabase HTTP round-trips. This was the main cause
+        of the post-M8.5 alert-latency regression — see Phase 3 of
+        docs/Alert_Recovery_Plan_2026-04-17.md.
+        """
+        if self._alert_executor is None:
+            self._dispatch_alert_sync(signal, strategy, config)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Not in an async context — fall back to sync.
+            self._dispatch_alert_sync(signal, strategy, config)
+            return
+        future = loop.run_in_executor(
+            self._alert_executor,
+            self._dispatch_alert_sync, signal, strategy, config)
+        future.add_done_callback(self._log_alert_task_exception)
+
+    def _dispatch_alert_sync(self, signal: dict, strategy: dict,
+                             config: dict) -> None:
+        """Actual alert-dispatch body — runs on executor thread when wired."""
         try:
             alert = self.dispatcher.dispatch(signal, strategy, config or self._config)
             if alert:
@@ -1915,6 +1946,13 @@ class RalphEngine:
         except Exception as e:
             logger.error("Alert dispatch failed for %s (%s): %s",
                          strategy.get('name', '?'), signal.get('type', '?'), e)
+
+    @staticmethod
+    def _log_alert_task_exception(future) -> None:
+        """Log any exception from a fire-and-forget alert executor task."""
+        exc = future.exception()
+        if exc is not None:
+            logger.error("Alert executor task raised: %s", exc)
 
     async def _stream_data_polygon(self, api_key: str):
         """Subscribe to Polygon.io pre-aggregated bar WebSocket + periodic tasks.

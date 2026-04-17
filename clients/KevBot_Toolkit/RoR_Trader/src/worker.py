@@ -346,14 +346,18 @@ class DBRalphEngine:
         engine._publisher = make_publisher_from_env()
         self._engine = engine
 
-        # Forward-test recompute executor: lazy-init on first engine run.
-        # Dedicated pool (not the default executor) so unrelated async
-        # I/O on the shared loop isn't contended by a 10-30s recompute.
+        # Thread pool: shared by (a) future /refresh-driven forward-test
+        # recomputes and (b) alert-dispatch I/O (Phase 3 of Alert_Recovery_
+        # Plan_2026-04-17.md). Dedicated pool so Supabase round-trips don't
+        # stall the async WS consumer on the event loop.
         if self._ft_executor is None:
             self._ft_executor = ThreadPoolExecutor(
                 max_workers=2,
                 thread_name_prefix=f'ft-{self.user_id[:8]}-',
             )
+        # Wire the executor to the engine so _on_alert can schedule
+        # DB writes + webhook delivery off the event loop.
+        engine._alert_executor = self._ft_executor
 
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
