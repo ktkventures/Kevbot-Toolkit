@@ -93,6 +93,16 @@ class DBAlertDispatcher:
         else:
             order_action = 'sell'
 
+        # Trade_Timestamps_Spec: each alert row represents ONE event (entry
+        # or exit), so trigger_ts / fill_ts are side-agnostic columns on the
+        # alerts table. Select the side-appropriate pair from the signal.
+        is_entry = sig_type == 'entry_signal'
+        side = 'entry' if is_entry else 'exit'
+        trigger_ts = signal_data.get(
+            'entry_trigger_ts' if is_entry else 'exit_trigger_ts')
+        fill_ts = signal_data.get(
+            'entry_fill_ts' if is_entry else 'exit_fill_ts')
+
         alert = {
             'type': sig_type,
             'trigger': signal_data.get('trigger', ''),
@@ -111,17 +121,24 @@ class DBAlertDispatcher:
             'timeframe': strategy.get('timeframe', '1Min'),
             'strategy_alerts_visible': True,
             'source': 'ralph',
-            # Trade_Timestamps_Spec 4-field model. Columns don't exist yet on
-            # the alerts table (pre-migration); save_alert_admin packs these
-            # into the `data` JSONB column via its schema-drift fallback.
-            # Step 7 migration promotes them to top-level columns.
+            # Top-level columns (post-migration) for the 4-field model.
+            'event_type': 'fill',   # locked default; Behavior A cancels and
+                                    # post-check validation_failed override
+                                    # this once those paths land.
+            'side': side,
+            'trigger_ts': trigger_ts,
+            'fill_ts': fill_ts,
             'exec_type': signal_data.get('exec_type', ''),
+            'trigger_id': signal_data.get('trigger', ''),
+            'hold_duration_s': signal_data.get('hold_duration_s', 0),
+            'behavior': signal_data.get('behavior', 'B'),
+            # Also keep both entry_* and exit_* timestamps in data JSONB for
+            # full lifecycle reconstruction (useful for exit rows that want
+            # to reference their paired entry_trigger_ts).
             'entry_trigger_ts': signal_data.get('entry_trigger_ts'),
             'entry_fill_ts': signal_data.get('entry_fill_ts'),
             'exit_trigger_ts': signal_data.get('exit_trigger_ts'),
             'exit_fill_ts': signal_data.get('exit_fill_ts'),
-            'hold_duration_s': signal_data.get('hold_duration_s', 0),
-            'behavior': signal_data.get('behavior', 'B'),
         }
 
         if sig_type == 'exit_signal':
