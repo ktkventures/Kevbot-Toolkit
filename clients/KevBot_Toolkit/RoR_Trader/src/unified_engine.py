@@ -1608,6 +1608,21 @@ class PositionState:
     # CC-type stop/target confirmation tracking (M5.5)
     pending_stop_confirm_bar: Optional[int] = None
     pending_target_confirm_bar: Optional[int] = None
+    # Trade_Timestamps_Spec (2026-04-17): 4 timestamps per trade, + metadata.
+    # entry_trigger_ts = when the entry condition first became true.
+    # entry_fill_ts    = when the position actually opened (per exec manifest).
+    # exit_trigger_ts  = when the exit condition first became true.
+    # exit_fill_ts     = when the position actually closed.
+    # hold_duration_s  = configured hold from exec manifest (descriptive).
+    # behavior         = 'A' (wait-then-fill) or 'B' (fill-then-validate).
+    # `entry_time` remains as a transitional alias (= entry_fill_ts) until
+    # Step 6 of the spec execution plan drops legacy aliases.
+    entry_trigger_ts: Optional[str] = None
+    entry_fill_ts: Optional[str] = None
+    exit_trigger_ts: Optional[str] = None
+    exit_fill_ts: Optional[str] = None
+    hold_duration_s: int = 0
+    behavior: str = 'B'
 
     def to_dict(self) -> dict:
         return {
@@ -1629,6 +1644,12 @@ class PositionState:
             'hold_seconds': self.hold_seconds,
             'pending_stop_confirm_bar': self.pending_stop_confirm_bar,
             'pending_target_confirm_bar': self.pending_target_confirm_bar,
+            'entry_trigger_ts': self.entry_trigger_ts,
+            'entry_fill_ts': self.entry_fill_ts,
+            'exit_trigger_ts': self.exit_trigger_ts,
+            'exit_fill_ts': self.exit_fill_ts,
+            'hold_duration_s': self.hold_duration_s,
+            'behavior': self.behavior,
         }
 
     @classmethod
@@ -1652,6 +1673,12 @@ class PositionState:
             hold_seconds=d.get('hold_seconds', 0),
             pending_stop_confirm_bar=d.get('pending_stop_confirm_bar'),
             pending_target_confirm_bar=d.get('pending_target_confirm_bar'),
+            entry_trigger_ts=d.get('entry_trigger_ts'),
+            entry_fill_ts=d.get('entry_fill_ts'),
+            exit_trigger_ts=d.get('exit_trigger_ts'),
+            exit_fill_ts=d.get('exit_fill_ts'),
+            hold_duration_s=d.get('hold_duration_s', 0),
+            behavior=d.get('behavior', 'B'),
         )
 
 
@@ -1695,6 +1722,12 @@ class PositionStateMachine:
 
         # Rolling buffer for swing stop/target lookback
         self._high_low_buffer: deque = deque(maxlen=50)
+
+        # Trade_Timestamps_Spec: bar duration in seconds, used by
+        # execution_types.compute_fill_ts to derive fill_ts from trigger_ts.
+        # Resolved once here so per-bar calls don't repeat the lookup.
+        self.tf_seconds = TIMEFRAME_SECONDS.get(
+            strategy.get('timeframe', '1Min'), 60)
 
     def update_high_low(self, high: float, low: float):
         """Append a (high, low) pair to the rolling buffer for swing lookback."""
@@ -1803,6 +1836,23 @@ class PositionStateMachine:
         self.state.confluence_records = confluence_records
         self.state.exec_type = exec_type
 
+        # Trade_Timestamps_Spec: 4-timestamp model. For C-type entries,
+        # trigger is the bar close instant (= bar_time + bar_duration); for
+        # L-type entries invoked via this bar-centric path, trigger is the
+        # bar-start (live intra-bar path uses check_entry_intrabar with a
+        # precise cross timestamp). Fill is derived by compute_fill_ts.
+        import execution_types as _et
+        manifest = _et.get_manifest(exec_type)
+        self.state.entry_trigger_ts = bar_time
+        self.state.entry_fill_ts = _et.compute_fill_ts(
+            bar_time, self.tf_seconds, manifest)
+        self.state.hold_duration_s = (
+            manifest.hold_duration_seconds if manifest else 0)
+        self.state.behavior = manifest.behavior if manifest else 'B'
+        # Transitional: keep entry_time pointing at fill_ts so downstream
+        # readers don't break before Step 6 drops aliases.
+        self.state.entry_time = self.state.entry_fill_ts or bar_time
+
         # Schedule confirmation via execution type module
         confirm_config = module.get_confirmation_config(
             trigger_id, exec_type, bar_count, self._get_exec_variant_param)
@@ -1820,6 +1870,10 @@ class PositionStateMachine:
             'target_price': target_price,
             'bar_time': bar_time,
             'atr': atr,
+            'entry_trigger_ts': self.state.entry_trigger_ts,
+            'entry_fill_ts': self.state.entry_fill_ts,
+            'hold_duration_s': self.state.hold_duration_s,
+            'behavior': self.state.behavior,
         }
 
     def check_exit(self, trigger_booleans: Dict[str, bool],
@@ -1953,8 +2007,16 @@ class PositionStateMachine:
         from stop_target_methods import get_exec_type
         _stop_et = get_exec_type(self.stop_config)
         return {
+            # Trade_Timestamps_Spec: 4-timestamp model. entry_time / exit_time
+            # are transitional aliases (= *_fill_ts); dropped in Step 6.
             'entry_time': self.state.entry_time,
             'exit_time': exit_time,
+            'entry_trigger_ts': self.state.entry_trigger_ts,
+            'entry_fill_ts': self.state.entry_fill_ts,
+            'exit_trigger_ts': self.state.exit_trigger_ts,
+            'exit_fill_ts': self.state.exit_fill_ts,
+            'hold_duration_s': self.state.hold_duration_s,
+            'behavior': self.state.behavior,
             'entry_price': entry_price,
             'exit_price': exit_price,
             'stop_price': self.state.stop_price,
@@ -1993,10 +2055,24 @@ class PositionStateMachine:
         self.state.pending_confirm_bar = -1
         self.state.bail_action = 'exit_market'
         self.state.hold_seconds = 0
+        # Trade_Timestamps_Spec: clear 4-timestamp fields on reset.
+        self.state.entry_trigger_ts = None
+        self.state.entry_fill_ts = None
+        self.state.exit_trigger_ts = None
+        self.state.exit_fill_ts = None
+        self.state.hold_duration_s = 0
+        self.state.behavior = 'B'
         # last_exit_bar_count intentionally preserved for cooldown
 
     def _exit(self, reason: str, price: float, bar_time, bar_count: int = None) -> dict:
         """Execute exit transition and return trade record (backtest path)."""
+        # Trade_Timestamps_Spec: stamp exit timestamps BEFORE building the
+        # trade record + resetting. get_trade_record reads them from state.
+        import execution_types as _et
+        manifest = _et.get_manifest(self.state.exec_type or 'C')
+        self.state.exit_trigger_ts = bar_time
+        self.state.exit_fill_ts = _et.compute_fill_ts(
+            bar_time, self.tf_seconds, manifest)
         record = self.get_trade_record(price, bar_time, reason, reason, bar_count=bar_count)
         self._reset_position()
         return record
@@ -2013,6 +2089,13 @@ class PositionStateMachine:
         """
         if bar_count is not None:
             self.state.last_exit_bar_count = bar_count
+        # Trade_Timestamps_Spec: stamp exit timestamps BEFORE building the
+        # trade record. For C-type exits, fill happens at next bar's open.
+        import execution_types as _et
+        manifest = _et.get_manifest(self.state.exec_type or 'C')
+        self.state.exit_trigger_ts = timestamp
+        self.state.exit_fill_ts = _et.compute_fill_ts(
+            timestamp, self.tf_seconds, manifest)
         # Build trade record BEFORE _reset_position() clears state.
         trade_record = self.get_trade_record(
             exit_price=price,
@@ -2033,6 +2116,13 @@ class PositionStateMachine:
             'exec_type': self.state.exec_type or 'C',
             'exit_reason': reason,
             'atr': 0,  # filled by caller
+            # Trade_Timestamps_Spec: 4-timestamp model fields.
+            'entry_trigger_ts': self.state.entry_trigger_ts,
+            'entry_fill_ts': self.state.entry_fill_ts,
+            'exit_trigger_ts': self.state.exit_trigger_ts,
+            'exit_fill_ts': self.state.exit_fill_ts,
+            'hold_duration_s': self.state.hold_duration_s,
+            'behavior': self.state.behavior,
             # Full trade-record dict for auto-persistence into stored_trades.
             'trade_record': trade_record,
         }
@@ -2095,6 +2185,19 @@ class PositionStateMachine:
         self.state.entry_trigger = trigger_id
         self.state.exec_type = exec_type
 
+        # Trade_Timestamps_Spec: for intra-bar L-type entries, both trigger
+        # and fill happen at the cross moment. compute_fill_ts returns the
+        # same value when manifest.fill_offset == 'immediate'.
+        import execution_types as _et
+        manifest = _et.get_manifest(exec_type)
+        self.state.entry_trigger_ts = timestamp
+        self.state.entry_fill_ts = _et.compute_fill_ts(
+            timestamp, self.tf_seconds, manifest)
+        self.state.hold_duration_s = (
+            manifest.hold_duration_seconds if manifest else 0)
+        self.state.behavior = manifest.behavior if manifest else 'B'
+        self.state.entry_time = self.state.entry_fill_ts or timestamp
+
         return {
             'type': 'entry_signal',
             'trigger': trigger_id,
@@ -2103,6 +2206,10 @@ class PositionStateMachine:
             'target_price': target_price,
             'bar_time': timestamp,
             'atr': atr,
+            'entry_trigger_ts': self.state.entry_trigger_ts,
+            'entry_fill_ts': self.state.entry_fill_ts,
+            'hold_duration_s': self.state.hold_duration_s,
+            'behavior': self.state.behavior,
         }
 
     def check_exit_tick(self, price: float,
