@@ -126,6 +126,12 @@ class DBAlertDispatcher:
             'type': sig_type,
             'trigger': signal_data.get('trigger', ''),
             'price': signal_data.get('price', 0),
+            # Trade_Timestamps_Spec (2026-04-20): actual_price = near-live
+            # market price at alert-fire moment (SymbolHub.latest_close,
+            # stamped in Ralph._fire_alert). The gap between actual_price
+            # and price (theoretical fill from the engine) = price slippage.
+            # Complements the time-slippage delta column.
+            'actual_price': signal_data.get('actual_price'),
             'bar_time': signal_data.get('bar_time', ''),
             'stop_price': signal_data.get('stop_price'),
             'target_price': signal_data.get('target_price'),

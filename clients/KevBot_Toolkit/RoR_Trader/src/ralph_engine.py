@@ -916,6 +916,14 @@ class SymbolHub:
         self.monitors: Dict[int, StrategyMonitor] = {}  # strat_id → monitor
         self.tick_count = 0
         self.last_tick_time: Optional[datetime] = None
+        # Trade_Timestamps_Spec (2026-04-20): latest per-second close price
+        # for this symbol, updated on every per-second bar arrival (A
+        # channel). Used by alert dispatch to stamp `actual_price` on each
+        # alert — the near-live market price at the moment the alert fires,
+        # as distinct from the theoretical fill price from the engine. Gap
+        # between them = price slippage (complements the time slippage in
+        # the delta column).
+        self.latest_close: Optional[float] = None
         # Cross-TF confluence: tf_seconds → latest interpreter confluence records
         self._mtf_confluence: Dict[int, Set[str]] = {}
         # Shadow engines for secondary TFs not covered by real monitors
@@ -933,6 +941,21 @@ class SymbolHub:
         # exceptions are swallowed by the caller's own error handling.
         self.on_bar_close_hook: Optional[Callable] = None
         self._pending_bar_close_tasks: Set['asyncio.Task'] = set()
+
+    def _fire_alert(self, sig: dict, monitor: 'StrategyMonitor',
+                    config: dict, alert_callback: Optional[Callable]) -> None:
+        """Stamp actual_price onto the signal and invoke alert_callback.
+
+        Trade_Timestamps_Spec (2026-04-20): actual_price = the most recent
+        per-second close we've seen for this symbol. Gap between
+        actual_price and sig['price'] (engine's theoretical fill) =
+        price slippage. Zero latency — in-memory dict lookup.
+        """
+        if not alert_callback or not sig:
+            return
+        if self.latest_close is not None and 'actual_price' not in sig:
+            sig['actual_price'] = self.latest_close
+        alert_callback(sig, monitor.strategy, config)
 
     def _gather_tentative_state(
         self, tf_seconds: int, forming_bar: dict,
@@ -1174,7 +1197,7 @@ class SymbolHub:
 
                     if signals and alert_callback:
                         for sig in signals:
-                            alert_callback(sig, monitor.strategy, config)
+                            self._fire_alert(sig, monitor, config, alert_callback)
 
                     # Collect per-strategy position state for audit
                     bar_audit_positions[monitor.strat_id] = (
@@ -1222,7 +1245,7 @@ class SymbolHub:
                                           builder._bar_count)
                 if signals and alert_callback:
                     for sig in signals:
-                        alert_callback(sig, monitor.strategy, config)
+                        self._fire_alert(sig, monitor, config, alert_callback)
 
     def flush_stale_bars(self, now: datetime,
                          alert_callback: Callable = None,
@@ -1278,7 +1301,7 @@ class SymbolHub:
 
                 if signals and alert_callback:
                     for sig in signals:
-                        alert_callback(sig, monitor.strategy, config)
+                        self._fire_alert(sig, monitor, config, alert_callback)
 
                 if auditor:
                     auditor.log_bar_close(
@@ -1361,7 +1384,7 @@ class SymbolHub:
 
             if signals and alert_callback:
                 for sig in signals:
-                    alert_callback(sig, monitor.strategy, config)
+                    self._fire_alert(sig, monitor, config, alert_callback)
 
             # Bar-close hook: fire-and-forget async task to trigger the
             # forward-test recompute of stored_trades. Must not block
@@ -1446,6 +1469,13 @@ class SymbolHub:
         self.last_tick_time = timestamp.to_pydatetime()
         self.tick_count += 1
 
+        # Trade_Timestamps_Spec: record the bar close so alert dispatch
+        # can stamp actual_price on any alert that fires before the next
+        # per-second bar arrives.
+        close = bar_dict.get('close')
+        if close:
+            self.latest_close = float(close)
+
         # Accept the pre-built bar into the builder (handles gap-fill)
         builder.accept_bar(bar_dict)
 
@@ -1489,6 +1519,12 @@ class SymbolHub:
         if not high or not low:
             return
 
+        # Trade_Timestamps_Spec: record the per-second close so alert
+        # dispatch can stamp actual_price = most recent tick we've seen.
+        close = bar_dict.get('close')
+        if close:
+            self.latest_close = float(close)
+
         # Find which TF's bar_count to use (use the primary 60s builder)
         builder = self.builders.get(60)
         bar_count = builder._bar_count if builder is not None else 0
@@ -1507,14 +1543,14 @@ class SymbolHub:
             signals_high = monitor.on_tick(high, ts, bar_count)
             if signals_high and alert_callback:
                 for sig in signals_high:
-                    alert_callback(sig, monitor.strategy, config)
+                    self._fire_alert(sig, monitor, config, alert_callback)
                 continue  # Don't double-fire on same second
 
             # Check low price (catches downward level crosses)
             signals_low = monitor.on_tick(low, ts, bar_count)
             if signals_low and alert_callback:
                 for sig in signals_low:
-                    alert_callback(sig, monitor.strategy, config)
+                    self._fire_alert(sig, monitor, config, alert_callback)
 
         # ---- (2) PER-BUILDER AGGREGATION + FORMING-BAR PUBLISH ----
         # Update last_tick_time for session checks downstream

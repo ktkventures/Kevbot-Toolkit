@@ -967,7 +967,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       wallClockTime: wallClock,  // explicit — same as time
       type: isEntry ? 'ENTRY' : 'EXIT',
       trigger: a.trigger_id ?? a.trigger ?? d.trigger ?? '--',
-      price: a.price ?? d.price ?? null,
+      // Trade_Timestamps_Spec (2026-04-20): `actualPrice` = near-live
+      // market price at save moment. `price` = theoretical fill price
+      // from the engine. Gap between them is price slippage (complements
+      // time slippage shown in the delta column).
+      price: a.actual_price ?? d.actual_price ?? a.price ?? d.price ?? null,
+      theoreticalPrice: a.price ?? d.price ?? null,
+      actualPrice: a.actual_price ?? d.actual_price ?? null,
       stopPrice: a.stop_price ?? d.stop_price ?? a.entry_stop_price ?? d.entry_stop_price ?? null,
       entryPrice: a.entry_price ?? d.entry_price ?? null,
       holdDurationS: a.hold_duration_s ?? d.hold_duration_s ?? 0,

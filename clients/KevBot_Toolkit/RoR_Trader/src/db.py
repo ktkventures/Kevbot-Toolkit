@@ -205,6 +205,9 @@ ALERT_COLUMN_FIELDS = {
     'event_type', 'side', 'trigger_ts', 'fill_ts',
     'exec_type', 'trigger_id', 'price', 'bar_time',
     'hold_duration_s', 'behavior',
+    # actual_price: near-live market price at save moment (Ralph's last
+    # per-second close). Gap vs `price` (theoretical fill) = price slippage.
+    'actual_price',
     # Webhook delivery tracking — resolves pre-existing PGRST204 drift
     'webhook_deliveries',
 }
