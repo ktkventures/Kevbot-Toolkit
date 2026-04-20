@@ -609,16 +609,13 @@ def test_timestamp_4field_model():
         assert t[col] is not None and str(t[col]) not in ('', 'NaT', 'None'), \
             f"C-type trade must have {col} populated, got {t[col]!r}"
 
-    # C-type: entry_fill_ts == entry_trigger_ts + 60s, same for exit.
-    def _delta_s(a, b):
-        return (pd.Timestamp(b) - pd.Timestamp(a)).total_seconds()
-
-    entry_delta = _delta_s(t['entry_trigger_ts'], t['entry_fill_ts'])
-    exit_delta = _delta_s(t['exit_trigger_ts'], t['exit_fill_ts'])
-    assert entry_delta == 60, \
-        f"C-type entry_fill_ts should be +60s after trigger, got +{entry_delta}s"
-    assert exit_delta == 60, \
-        f"C-type exit_fill_ts should be +60s after trigger, got +{exit_delta}s"
+    # Revised 2026-04-20: for shipped exec types (C/L/LC/CC, all
+    # Behavior B), trigger_ts == fill_ts. For C-type, both represent
+    # bar close. Behavior A variants would separate them; not shipped yet.
+    assert pd.Timestamp(t['entry_trigger_ts']) == pd.Timestamp(t['entry_fill_ts']), \
+        "C-type entry_trigger_ts should equal entry_fill_ts (both = bar close)"
+    assert pd.Timestamp(t['exit_trigger_ts']) == pd.Timestamp(t['exit_fill_ts']), \
+        "C-type exit_trigger_ts should equal exit_fill_ts (both = bar close)"
 
     # Metadata fields
     assert t['hold_duration_s'] == 0, \

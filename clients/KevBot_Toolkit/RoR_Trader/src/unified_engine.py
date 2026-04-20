@@ -1836,21 +1836,24 @@ class PositionStateMachine:
         self.state.confluence_records = confluence_records
         self.state.exec_type = exec_type
 
-        # Trade_Timestamps_Spec: 4-timestamp model. For C-type entries,
-        # trigger is the bar close instant (= bar_time + bar_duration); for
-        # L-type entries invoked via this bar-centric path, trigger is the
-        # bar-start (live intra-bar path uses check_entry_intrabar with a
-        # precise cross timestamp). Fill is derived by compute_fill_ts.
+        # Trade_Timestamps_Spec (revised 2026-04-20): for shipped exec
+        # types (C/L/LC/CC, all Behavior B), trigger_ts == fill_ts — they
+        # represent the same moment. For C-type, that moment is bar close
+        # (= bar_time + bar_duration), which compute_fill_ts emits via
+        # manifest.fill_offset='next_bar_open'. For L-type via this
+        # bar-centric path, fill_offset='immediate' so fill_ts == bar_time.
+        # Behavior A exec types (wait-then-fill) would split these apart
+        # once shipped — spec supports it via the dataclass.
         import execution_types as _et
         manifest = _et.get_manifest(exec_type)
-        self.state.entry_trigger_ts = bar_time
         self.state.entry_fill_ts = _et.compute_fill_ts(
             bar_time, self.tf_seconds, manifest)
+        self.state.entry_trigger_ts = self.state.entry_fill_ts
         self.state.hold_duration_s = (
             manifest.hold_duration_seconds if manifest else 0)
         self.state.behavior = manifest.behavior if manifest else 'B'
-        # Transitional: keep entry_time pointing at fill_ts so downstream
-        # readers don't break before Step 6 drops aliases.
+        # entry_time is an internal alias that downstream services.py
+        # bridges to = entry_fill_ts. No longer emitted externally.
         self.state.entry_time = self.state.entry_fill_ts or bar_time
 
         # Schedule confirmation via execution type module
@@ -2066,13 +2069,14 @@ class PositionStateMachine:
 
     def _exit(self, reason: str, price: float, bar_time, bar_count: int = None) -> dict:
         """Execute exit transition and return trade record (backtest path)."""
-        # Trade_Timestamps_Spec: stamp exit timestamps BEFORE building the
-        # trade record + resetting. get_trade_record reads them from state.
+        # Trade_Timestamps_Spec: trigger_ts == fill_ts for shipped exec
+        # types. For C-type exits, compute_fill_ts emits bar_close (=
+        # bar_time + bar_duration). For L-type, immediate.
         import execution_types as _et
         manifest = _et.get_manifest(self.state.exec_type or 'C')
-        self.state.exit_trigger_ts = bar_time
         self.state.exit_fill_ts = _et.compute_fill_ts(
             bar_time, self.tf_seconds, manifest)
+        self.state.exit_trigger_ts = self.state.exit_fill_ts
         record = self.get_trade_record(price, bar_time, reason, reason, bar_count=bar_count)
         self._reset_position()
         return record
@@ -2089,13 +2093,13 @@ class PositionStateMachine:
         """
         if bar_count is not None:
             self.state.last_exit_bar_count = bar_count
-        # Trade_Timestamps_Spec: stamp exit timestamps BEFORE building the
-        # trade record. For C-type exits, fill happens at next bar's open.
+        # Trade_Timestamps_Spec: trigger_ts == fill_ts for shipped exec
+        # types. C-type exit: fill_ts = bar_close. L-type: immediate.
         import execution_types as _et
         manifest = _et.get_manifest(self.state.exec_type or 'C')
-        self.state.exit_trigger_ts = timestamp
         self.state.exit_fill_ts = _et.compute_fill_ts(
             timestamp, self.tf_seconds, manifest)
+        self.state.exit_trigger_ts = self.state.exit_fill_ts
         # Build trade record BEFORE _reset_position() clears state.
         trade_record = self.get_trade_record(
             exit_price=price,
@@ -2185,14 +2189,15 @@ class PositionStateMachine:
         self.state.entry_trigger = trigger_id
         self.state.exec_type = exec_type
 
-        # Trade_Timestamps_Spec: for intra-bar L-type entries, both trigger
-        # and fill happen at the cross moment. compute_fill_ts returns the
-        # same value when manifest.fill_offset == 'immediate'.
+        # Trade_Timestamps_Spec: trigger_ts == fill_ts for shipped exec
+        # types. For intra-bar L-type entries, both happen at the cross
+        # moment (fill_offset='immediate' → compute_fill_ts returns the
+        # input unchanged).
         import execution_types as _et
         manifest = _et.get_manifest(exec_type)
-        self.state.entry_trigger_ts = timestamp
         self.state.entry_fill_ts = _et.compute_fill_ts(
             timestamp, self.tf_seconds, manifest)
+        self.state.entry_trigger_ts = self.state.entry_fill_ts
         self.state.hold_duration_s = (
             manifest.hold_duration_seconds if manifest else 0)
         self.state.behavior = manifest.behavior if manifest else 'B'
