@@ -1012,6 +1012,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           entryTriggerTime: entry?.triggerTime || entry?.time || '--',
           exitTriggerTime: evt.triggerTime || evt.time || '--',
           entryPrice: entryP, exitPrice: exitP,
+          // Theoretical (engine fill price) and actual (near-live market
+          // price at save). Gap between them = price slippage.
+          entryTheoreticalPrice: entry?.theoreticalPrice ?? null,
+          exitTheoreticalPrice: evt?.theoreticalPrice ?? null,
+          entryActualPrice: entry?.actualPrice ?? null,
+          exitActualPrice: evt?.actualPrice ?? null,
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
           result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
           exitReason: evt.trigger || '--',
@@ -2723,6 +2729,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             // Compute alert hold time from entry/exit timestamps
                             const alertHoldMs = safeDateMs(row.exitTime) && safeDateMs(row.entryTime) ? safeDateMs(row.exitTime) - safeDateMs(row.entryTime) : 0;
                             const alertHold = alertHoldMs > 0 ? formatHoldTime(alertHoldMs / 1000, null) : '--';
+                            // Price tooltip: show theoretical vs actual + price slippage
+                            const priceTooltip = (theo: number | null, actual: number | null) => {
+                              if (theo == null && actual == null) return undefined;
+                              const parts: string[] = [];
+                              if (theo != null) parts.push(`Theoretical fill: $${Number(theo).toFixed(4)}`);
+                              if (actual != null) parts.push(`Market at save: $${Number(actual).toFixed(4)}`);
+                              if (theo != null && actual != null) {
+                                const slip = Number(actual) - Number(theo);
+                                const sign = slip >= 0 ? '+' : '';
+                                parts.push(`Price slippage: ${sign}$${slip.toFixed(4)}`);
+                              }
+                              return parts.join('\n');
+                            };
                             return (
                               <tr key={i}>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.entryTime)}</td>
@@ -2730,8 +2749,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.exitTime)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{alertHold}</td>
-                                <td style={tdStyle}>{row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}</td>
-                                <td style={tdStyle}>{row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}</td>
+                                <td style={{ ...tdStyle, cursor: row.entryTheoreticalPrice != null || row.entryActualPrice != null ? 'help' : 'default' }}
+                                    title={priceTooltip(row.entryTheoreticalPrice, row.entryActualPrice)}>
+                                  {row.entryPrice != null ? `$${Number(row.entryPrice).toFixed(2)}` : '--'}
+                                </td>
+                                <td style={{ ...tdStyle, cursor: row.exitTheoreticalPrice != null || row.exitActualPrice != null ? 'help' : 'default' }}
+                                    title={priceTooltip(row.exitTheoreticalPrice, row.exitActualPrice)}>
+                                  {row.exitPrice != null ? `$${Number(row.exitPrice).toFixed(2)}` : '\u2014'}
+                                </td>
                                 <td style={{ ...tdStyle, color: row.r && row.r >= 0 ? 'var(--green)' : row.r ? 'var(--red)' : 'var(--text-muted)', fontWeight: 600 }}>
                                   {row.r != null ? `${row.r >= 0 ? '+' : ''}${Number(row.r).toFixed(2)}` : '\u2014'}
                                 </td>
