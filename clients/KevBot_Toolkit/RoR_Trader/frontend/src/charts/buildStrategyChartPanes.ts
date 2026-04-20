@@ -79,43 +79,11 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const filteredOscs = oscNames.filter((col) => isPlottableColumn(bars, col));
 
   // L-type exit reasons fire mid-bar (intra-bar touch). Other exec types
-  // (C, CC) fire at bar close — shift to next bar open for realistic plotting.
-  const ALWAYS_L_TYPE_EXITS = new Set(['unconfirmed_hl']);
-
-  // Determine exec type from trigger suffix for C-type shift
-  const getExecType = (id: string) => {
-    if (!id) return 'C';
-    if (id.endsWith('_lc') || id.endsWith('_hm') || id.endsWith('_hl')) return 'L';
-    if (id.endsWith('_ib')) return 'L';
-    if (id.endsWith('_cc')) return 'CC';
-    return 'C';
-  };
-
-  // Resolve the effective exec type for a trade exit, taking the per-trade
-  // stop/target exec_type into account (M5.5 — stops and targets now support
-  // L/C/LC/CC dispatch). Falls back to L for unconfirmed_hl, C otherwise.
-  const getExitExecType = (trade: any): string => {
-    const reason = trade.exit_reason || trade.exitReason || '';
-    if (ALWAYS_L_TYPE_EXITS.has(reason)) return 'L';
-    if (reason === 'stop_loss' || reason === 'stop') {
-      return trade.stop_exec_type || trade.stopExecType || 'L';
-    }
-    if (reason === 'target') {
-      return trade.target_exec_type || trade.targetExecType || 'L';
-    }
-    return 'C';
-  };
-
-  // Shift C-type timestamps to next bar open for realistic plotting
-  const shiftIfCType = (iso: string, execType: string) => {
-    if (!iso || iso === '--') return iso;
-    if (execType === 'L' || execType === 'LC') return iso; // L-type: no shift
-    try {
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return iso;
-      return new Date(d.getTime() + tfMs).toISOString();
-    } catch { return iso; }
-  };
+  // Trade_Timestamps_Spec Step 6: the getExecType / getExitExecType /
+  // shiftIfCType helpers that used to derive the C-type bar shift from
+  // trigger suffixes / exit_reason are no longer needed — trades now carry
+  // entry_fill_ts / exit_fill_ts pre-stamped by the engine at the actual
+  // fill moment, regardless of exec type. Removed.
 
   if (bars.length === 0) return [];
 
@@ -135,9 +103,7 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const tradeMarkers = !showTriggers ? [] : trades.flatMap((t: any) => {
     const m: any[] = [];
     const dir = direction;
-    const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
     const exitReason = t.exit_reason || t.exitReason || '';
-    const exitExec = getExitExecType(t);
     const entryTime = t.entry_fill_ts || t.entryFillTs;
     const exitTime = t.exit_fill_ts || t.exitFillTs;
     const entryMs = entryTime && entryTime !== '--' ? _safeMs(entryTime) : 0;
@@ -186,15 +152,11 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     };
 
     for (const t of trades) {
-      const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
       const exitReason = t.exit_reason || t.exitReason || '';
-      const exitExec = getExitExecType(t);
-      const entryFillTs = t.entry_fill_ts || t.entryFillTs;
-      const exitFillTs = t.exit_fill_ts || t.exitFillTs;
-      const rawEntryTime = t.entry_time || t.entryTime;
-      const rawExitTime = t.exit_time || t.exitTime;
-      const entryTime = entryFillTs || shiftIfCType(rawEntryTime, entryExec);
-      const exitTime = exitFillTs || shiftIfCType(rawExitTime, exitExec);
+      // Trade_Timestamps_Spec: fill_ts is canonical; shiftIfCType path
+      // removed per locked decision #5.
+      const entryTime = t.entry_fill_ts || t.entryFillTs;
+      const exitTime = t.exit_fill_ts || t.exitFillTs;
       const entryPrice = t.entry_price ?? t.entryPrice ?? 0;
       const exitPrice = t.exit_price ?? t.exitPrice ?? 0;
       const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
