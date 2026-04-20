@@ -2067,13 +2067,62 @@ class PositionStateMachine:
         self.state.behavior = 'B'
         # last_exit_bar_count intentionally preserved for cooldown
 
+    def _resolve_exit_exec_type(self, reason: str) -> str:
+        """Determine the exec_type that governs fill_ts for this exit event.
+
+        Trade_Timestamps_Spec (2026-04-20 bugfix): stops and targets have
+        their own exec_type (from stop_config / target_config) — a C-type
+        entry can have an L-type stop that fires intra-bar. Using the
+        entry's exec_type for the exit's fill_ts calculation pushes the
+        fill_ts into the future for those L-type exits.
+
+        Resolution rules:
+          - Intra-bar HM/HL unconfirmed exits → always L
+          - stop_loss → stop_config's exec_type
+          - target → target_config's exec_type
+          - time_exit / bar_count / max_hold / eod / opposite → C (bar close)
+          - signal_exit triggers (e.g. ema_cross_bear, and *_ib variants) →
+            look up via get_trigger_exec_type
+          - bail reasons from exec-type modules → entry's exec_type
+
+        Returns 'C' | 'L' | 'LC' | 'CC' (defaults to 'C' if unknown).
+        """
+        from stop_target_methods import get_exec_type as _stop_target_exec
+        # Intra-bar L-type safety net
+        if reason in ('unconfirmed_hm', 'unconfirmed_hl'):
+            return 'L'
+        if reason == 'stop_loss':
+            return _stop_target_exec(self.stop_config) or 'C'
+        if reason == 'target':
+            return _stop_target_exec(self.target_config) or 'C'
+        # Bar-close evaluated time/count exits
+        _BAR_CLOSE_EXITS = {
+            'bar_count_exit', 'max_hold_bars', 'max_hold_seconds',
+            'eod_exit', 'time_of_day_exit', 'session_exit',
+            'opposite_signal',
+        }
+        if reason in _BAR_CLOSE_EXITS:
+            return 'C'
+        # Signal-exit trigger ids (e.g. 'ema_cross_bear', 'ema_cross_bear_ib')
+        try:
+            trig_exec = get_trigger_exec_type(reason)
+            if trig_exec:
+                return trig_exec
+        except Exception:
+            pass
+        # Bail reasons from exec-type modules follow the entry's exec type
+        return self.state.exec_type or 'C'
+
     def _exit(self, reason: str, price: float, bar_time, bar_count: int = None) -> dict:
         """Execute exit transition and return trade record (backtest path)."""
-        # Trade_Timestamps_Spec: trigger_ts == fill_ts for shipped exec
-        # types. For C-type exits, compute_fill_ts emits bar_close (=
-        # bar_time + bar_duration). For L-type, immediate.
+        # Trade_Timestamps_Spec (2026-04-20 bugfix): exit exec_type depends
+        # on the EXIT event itself, not the entry's. A stop_loss firing
+        # intra-bar is L-type regardless of the entry's C-type. Resolve
+        # per-exit-reason via _resolve_exit_exec_type, then compute fill_ts
+        # with that manifest.
         import execution_types as _et
-        manifest = _et.get_manifest(self.state.exec_type or 'C')
+        exit_exec = self._resolve_exit_exec_type(reason)
+        manifest = _et.get_manifest(exit_exec)
         self.state.exit_fill_ts = _et.compute_fill_ts(
             bar_time, self.tf_seconds, manifest)
         self.state.exit_trigger_ts = self.state.exit_fill_ts
@@ -2093,10 +2142,11 @@ class PositionStateMachine:
         """
         if bar_count is not None:
             self.state.last_exit_bar_count = bar_count
-        # Trade_Timestamps_Spec: trigger_ts == fill_ts for shipped exec
-        # types. C-type exit: fill_ts = bar_close. L-type: immediate.
+        # Trade_Timestamps_Spec (2026-04-20 bugfix): exit exec_type depends
+        # on the EXIT event, not the entry's. See _resolve_exit_exec_type.
         import execution_types as _et
-        manifest = _et.get_manifest(self.state.exec_type or 'C')
+        exit_exec = self._resolve_exit_exec_type(reason)
+        manifest = _et.get_manifest(exit_exec)
         self.state.exit_fill_ts = _et.compute_fill_ts(
             timestamp, self.tf_seconds, manifest)
         self.state.exit_trigger_ts = self.state.exit_fill_ts
