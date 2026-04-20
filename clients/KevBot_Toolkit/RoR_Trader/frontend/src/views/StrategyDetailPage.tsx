@@ -916,27 +916,31 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
   // Map raw alerts to event-level format.
-  // Trade_Timestamps_Spec: fill_ts is the primary display anchor. trigger_ts
-  // is supplementary (tooltips / expanded rows). alerts.timestamp remains
-  // only as a last-resort audit fallback for any rare row missing fill_ts.
-  // Legacy bar_time / entry_time paths removed per locked decision #5.
+  // Trade_Timestamps_Spec (revised 2026-04-20):
+  //   Alert history displays alerts.timestamp = wall-clock save moment =
+  //   when the webhook actually fired in reality. This is the "reality"
+  //   side of the algo-vs-alert comparison. Algo history displays
+  //   fill_ts (theoretical). The delta between them is processing lag.
+  //   trigger_ts / fill_ts are kept on the row for tooltip display of
+  //   the theoretical moments the alert corresponded to.
   const recentAlertEvents = useMemo(() => (alerts || EMPTY_ALERTS).map((a: any) => {
-    // Read trigger_ts / fill_ts from top-level first (post-migration rows),
-    // then data JSONB fallback (rows that wrote before columns existed),
-    // then top-level side-specific legacy key as last resort.
     const d = a.data || {};
     const isEntry = (a.type || '').toLowerCase().includes('entry');
     const fillTs = (a.fill_ts ?? d.fill_ts)
       ?? (isEntry ? (a.entry_fill_ts ?? d.entry_fill_ts) : (a.exit_fill_ts ?? d.exit_fill_ts));
     const triggerTs = (a.trigger_ts ?? d.trigger_ts)
       ?? (isEntry ? (a.entry_trigger_ts ?? d.entry_trigger_ts) : (a.exit_trigger_ts ?? d.exit_trigger_ts));
-    const anchor = fillTs || a.timestamp || '--';
+    const wallClock = a.timestamp || '--';
     return {
-      time: anchor,
-      barTime: anchor,
-      triggerTime: triggerTs || anchor,  // supplementary — for tooltips
-      fillTime: fillTs || anchor,
-      wallClockTime: a.timestamp || '--',  // audit only
+      // Primary display anchor: wall-clock save moment (≈ webhook fire).
+      time: wallClock,
+      // barTime stays wall-clock so chart alert-markers snap to the
+      // bar containing the webhook fire moment (not the theoretical bar).
+      barTime: wallClock,
+      // Theoretical moments surfaced for tooltips / delta computation.
+      triggerTime: triggerTs || wallClock,
+      fillTime: fillTs || wallClock,
+      wallClockTime: wallClock,  // explicit — same as time
       type: isEntry ? 'ENTRY' : 'EXIT',
       trigger: a.trigger_id ?? a.trigger ?? d.trigger ?? '--',
       price: a.price ?? d.price ?? null,
@@ -965,10 +969,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         if (stopP != null && stopP !== 0 && entryP && exitP) {
           rMult = (exitP - entryP) / Math.abs(entryP - stopP);
         }
+        // Trade_Timestamps_Spec: entryTime / exitTime = wall-clock save
+        // (when the webhook fired). entryFillTime / exitFillTime = the
+        // theoretical fill moments, surfaced so the row can compute a
+        // delta vs algo history.
         paired.push({
           entryTime: entry?.time || '--', exitTime: evt.time || '--',
           entryBarTime: entry?.barTime || entry?.time || '--',
           exitBarTime: evt.barTime || evt.time || '--',
+          entryFillTime: entry?.fillTime || entry?.time || '--',
+          exitFillTime: evt.fillTime || evt.time || '--',
+          entryTriggerTime: entry?.triggerTime || entry?.time || '--',
+          exitTriggerTime: evt.triggerTime || evt.time || '--',
           entryPrice: entryP, exitPrice: exitP,
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
           result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
