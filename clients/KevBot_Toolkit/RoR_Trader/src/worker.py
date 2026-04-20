@@ -411,9 +411,14 @@ class DBRalphEngine:
         # recomputes and (b) alert-dispatch I/O (Phase 3 of Alert_Recovery_
         # Plan_2026-04-17.md). Dedicated pool so Supabase round-trips don't
         # stall the async WS consumer on the event loop.
+        # max_workers=8: enough parallelism that burst-firing across many
+        # strategies doesn't queue. Supabase connection cap (~60) leaves
+        # plenty of headroom. For network-bound work the GIL releases
+        # during IO so thread parallelism helps. (Bumped from 2 → 8
+        # 2026-04-20 to eliminate alert-queue time as a latency variable.)
         if self._ft_executor is None:
             self._ft_executor = ThreadPoolExecutor(
-                max_workers=2,
+                max_workers=8,
                 thread_name_prefix=f'ft-{self.user_id[:8]}-',
             )
         # Wire the executor to the engine so _on_alert can schedule
