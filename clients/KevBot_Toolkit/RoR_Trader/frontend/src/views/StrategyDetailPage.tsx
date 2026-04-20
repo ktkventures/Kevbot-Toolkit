@@ -664,6 +664,30 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     queryClient.invalidateQueries({ queryKey: ['strategy-chart-data', strategyId] });
   }, [liveBar?.bar?.timestamp, chartDataResp, tfSeconds, strategyId, queryClient]);
 
+  // Event-driven algo-history refresh: when a new alert lands for this
+  // strategy, the worker has atomically appended to stored_trades (exit
+  // signals) or otherwise made the DB truth newer than our cached copy.
+  // Invalidate the strategy queries so stored_trades / fwd-test data
+  // refetch — no polling, fires only when an alert actually arrives.
+  // (Decision: invalidate on alerts.length increase. Cheap. Scales fine
+  // because invalidation is per-viewed-strategy, not global.)
+  const lastAlertIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!alerts || alerts.length === 0 || strategyId == null) return;
+    const latestId = Math.max(...alerts.map((a: any) => a.id ?? 0));
+    if (lastAlertIdRef.current === null) {
+      lastAlertIdRef.current = latestId;
+      return;
+    }
+    if (latestId > lastAlertIdRef.current) {
+      lastAlertIdRef.current = latestId;
+      queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-trades', strategyId] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-forward-test', strategyId] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-kpis', strategyId] });
+    }
+  }, [alerts, strategyId, queryClient]);
+
   // ---- Client-side date range filtering (must be before strategy/KPI derivation) ----
   const isDateFiltered = dateRange && dateRange !== 'Strategy Default' && dateRange !== 'All Data';
 
