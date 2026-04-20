@@ -236,16 +236,21 @@ class DBAlertDispatcher:
         stored_trades. Called only on exit signals (which carry a full
         trade record built by PositionStateMachine.get_trade_record).
 
-        Safe to call repeatedly — duplicate detection uses (entry_time,
-        exit_time) tuple so replayed exit signals don't double-append.
+        Safe to call repeatedly — duplicate detection uses the
+        (entry_fill_ts, exit_fill_ts) tuple so replayed exit signals don't
+        double-append.
+
+        Trade_Timestamps_Spec Step 6 regression fix: trade_record no
+        longer carries legacy entry_time / exit_time aliases. Read the
+        canonical entry_fill_ts / exit_fill_ts fields instead.
         """
         trade_record = signal_data.get('trade_record')
         if not trade_record:
             return  # older/other signal shapes that don't carry a record
-        entry_time = trade_record.get('entry_time')
-        exit_time = trade_record.get('exit_time')
-        if not entry_time or not exit_time:
-            logger.debug("Skipping algo-trade persist: missing entry/exit time")
+        entry_fill_ts = trade_record.get('entry_fill_ts')
+        exit_fill_ts = trade_record.get('exit_fill_ts')
+        if not entry_fill_ts or not exit_fill_ts:
+            logger.debug("Skipping algo-trade persist: missing entry/exit fill_ts")
             return
 
         # Re-fetch the strategy fresh (hot-reload may have mutated it)
@@ -256,13 +261,13 @@ class DBAlertDispatcher:
             return
 
         stored_trades = list(strat_db.get('stored_trades') or [])
-        # Dedup on (entry_time, exit_time) — cheap, O(n) worst case
+        # Dedup on (entry_fill_ts, exit_fill_ts) — cheap, O(n) worst case
         for t in stored_trades:
-            if (t.get('entry_time') == entry_time
-                    and t.get('exit_time') == exit_time):
+            if (t.get('entry_fill_ts') == entry_fill_ts
+                    and t.get('exit_fill_ts') == exit_fill_ts):
                 logger.debug(
                     "Algo trade already persisted: (%s, %s)",
-                    entry_time, exit_time)
+                    entry_fill_ts, exit_fill_ts)
                 return
 
         # Serialize sets (confluence_records) — JSONB doesn't accept sets
