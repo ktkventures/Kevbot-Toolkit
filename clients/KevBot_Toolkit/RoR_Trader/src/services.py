@@ -210,6 +210,19 @@ def unified_trades(
 
     if not isinstance(trades_df, pd.DataFrame):
         trades_df = pd.DataFrame()
+    # Trade_Timestamps_Spec (2026-04-17): engine emits entry_fill_ts /
+    # exit_fill_ts as canonical fields. Alias to entry_time / exit_time
+    # here so existing downstream consumers (split_trades_at_boundary,
+    # calculate_kpis, drawdown, etc.) keep working. Engine emit contract
+    # stays clean per locked decision #5; this is an internal services
+    # bridge. Same shape as trades_df_from_stored.
+    if len(trades_df) > 0:
+        if 'entry_fill_ts' in trades_df.columns:
+            trades_df['entry_time'] = pd.to_datetime(
+                trades_df['entry_fill_ts'], utc=True, errors='coerce')
+        if 'exit_fill_ts' in trades_df.columns:
+            trades_df['exit_time'] = pd.to_datetime(
+                trades_df['exit_fill_ts'], utc=True, errors='coerce')
     return trades_df
 
 
@@ -220,13 +233,27 @@ def unified_trades(
 def trades_df_from_stored(stored_trades: list) -> pd.DataFrame:
     """Reconstruct a trades DataFrame from stored minimal records.
 
-    Extracted from app.py:1475.
+    Trade_Timestamps_Spec (2026-04-17): engine emits entry_fill_ts /
+    exit_fill_ts as the canonical timestamp fields on new stored_trades.
+    This function aliases them to entry_time / exit_time columns here so
+    existing downstream consumers (split_trades_at_boundary, calculate_kpis,
+    drawdown computations, etc.) keep working without a bulk rename. The
+    engine's emit contract stays clean (no legacy aliases per locked
+    decision #5); this is an internal bridge at the services layer.
     """
     if not stored_trades:
         return pd.DataFrame(columns=["entry_time", "exit_time", "r_multiple", "win"])
     df = pd.DataFrame(stored_trades)
-    df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
-    df["exit_time"] = pd.to_datetime(df["exit_time"], utc=True)
+    # Prefer the new fill_ts fields; fall back to legacy entry_time /
+    # exit_time for any pre-migration row that might slip through.
+    if "entry_fill_ts" in df.columns:
+        df["entry_time"] = pd.to_datetime(df["entry_fill_ts"], utc=True, errors='coerce')
+    elif "entry_time" in df.columns:
+        df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True, errors='coerce')
+    if "exit_fill_ts" in df.columns:
+        df["exit_time"] = pd.to_datetime(df["exit_fill_ts"], utc=True, errors='coerce')
+    elif "exit_time" in df.columns:
+        df["exit_time"] = pd.to_datetime(df["exit_time"], utc=True, errors='coerce')
     return df
 
 
