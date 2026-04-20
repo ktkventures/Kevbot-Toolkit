@@ -72,14 +72,33 @@ RESTART_BACKOFF_MAX = 300   # max seconds to wait before restarting crashed engi
 class DBAlertDispatcher:
     """AlertDispatcher that saves alerts to DB and fires webhooks."""
 
+    # Portfolio membership cache TTL (seconds). Portfolios don't change
+    # per-bar, so caching avoids a Supabase round trip on every alert.
+    # Trade_Timestamps_Spec: part of the dispatch-latency optimization
+    # push — saves ~200-400ms per alert.
+    _PORTFOLIO_CACHE_TTL_S = 60.0
+
     def __init__(self, user_id: str):
         self.user_id = user_id
         self._deliver_alert_fn = None
+        # Portfolio cache: (portfolios_list, loaded_at_epoch_s).
+        self._portfolio_cache: Optional[tuple[list, float]] = None
         try:
             from alert_monitor import deliver_alert
             self._deliver_alert_fn = deliver_alert
         except Exception:
             logger.warning("Could not import deliver_alert — webhooks disabled")
+
+    def _get_portfolios_cached(self) -> list:
+        """Load portfolios for this user with a short TTL cache."""
+        now = time.time()
+        if self._portfolio_cache is not None:
+            portfolios, loaded_at = self._portfolio_cache
+            if now - loaded_at < self._PORTFOLIO_CACHE_TTL_S:
+                return portfolios
+        portfolios = load_portfolios_admin(self.user_id)
+        self._portfolio_cache = (portfolios, now)
+        return portfolios
 
     def dispatch(self, signal_data: dict, strategy: dict,
                  config: dict) -> Optional[dict]:
@@ -145,10 +164,11 @@ class DBAlertDispatcher:
             alert['entry_price'] = signal_data.get('entry_price')
             alert['entry_stop_price'] = signal_data.get('entry_stop_price')
 
-        # Enrich with portfolio context using admin client
-        # (worker has no user JWT so the normal load_portfolios() RLS path fails)
+        # Enrich with portfolio context using admin client.
+        # Cached with 60s TTL — portfolios don't change per-bar, avoids
+        # a Supabase round trip per alert.
         try:
-            portfolios = load_portfolios_admin(self.user_id)
+            portfolios = self._get_portfolios_cached()
             context = []
             for port in portfolios:
                 for alloc in port.get('strategies', []):
