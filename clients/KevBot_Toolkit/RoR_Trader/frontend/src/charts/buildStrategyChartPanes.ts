@@ -128,18 +128,24 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
   const firstBarTime = bars.length > 0 ? _safeMs(bars[0].timestamp) : 0;
   const lastBarTime = bars.length > 0 ? _safeMs(bars[bars.length - 1].timestamp) : Infinity;
 
-  // ---- Trade markers (arrows) with C-type shift ----
+  // ---- Trade markers (arrows) ----
+  // Trade_Timestamps_Spec: prefer entry_fill_ts / exit_fill_ts (already the
+  // fill moment — no shift needed). Fall back to legacy entry_time /
+  // exit_time + shiftIfCType for pre-migration rows where entry_time was
+  // the firing-bar START. Post Step 7 migration, legacy fallback becomes
+  // dead code and Step 6 can remove it alongside the alias drop.
   const tradeMarkers = !showTriggers ? [] : trades.flatMap((t: any) => {
     const m: any[] = [];
     const dir = direction;
-    const rawEntryTime = t.entry_time || t.entryTime;
-    const rawExitTime = t.exit_time || t.exitTime;
     const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
     const exitReason = t.exit_reason || t.exitReason || '';
     const exitExec = getExitExecType(t);
-    // Shift C-type to next bar open
-    const entryTime = shiftIfCType(rawEntryTime, entryExec);
-    const exitTime = shiftIfCType(rawExitTime, exitExec);
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
+    const rawEntryTime = t.entry_time || t.entryTime;
+    const rawExitTime = t.exit_time || t.exitTime;
+    const entryTime = entryFillTs || shiftIfCType(rawEntryTime, entryExec);
+    const exitTime = exitFillTs || shiftIfCType(rawExitTime, exitExec);
     const entryMs = entryTime && entryTime !== '--' ? _safeMs(entryTime) : 0;
     const exitMs = exitTime && exitTime !== '--' ? _safeMs(exitTime) : 0;
     const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
@@ -186,13 +192,15 @@ export function buildStrategyChartPanes(opts: ChartBuildOptions): PaneConfig[] {
     };
 
     for (const t of trades) {
-      const rawEntryTime = t.entry_time || t.entryTime;
-      const rawExitTime = t.exit_time || t.exitTime;
       const entryExec = getExecType(t.entry_trigger || t.entryTrigger || '');
       const exitReason = t.exit_reason || t.exitReason || '';
       const exitExec = getExitExecType(t);
-      const entryTime = shiftIfCType(rawEntryTime, entryExec);
-      const exitTime = shiftIfCType(rawExitTime, exitExec);
+      const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+      const exitFillTs = t.exit_fill_ts || t.exitFillTs;
+      const rawEntryTime = t.entry_time || t.entryTime;
+      const rawExitTime = t.exit_time || t.exitTime;
+      const entryTime = entryFillTs || shiftIfCType(rawEntryTime, entryExec);
+      const exitTime = exitFillTs || shiftIfCType(rawExitTime, exitExec);
       const entryPrice = t.entry_price ?? t.entryPrice ?? 0;
       const exitPrice = t.exit_price ?? t.exitPrice ?? 0;
       const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;

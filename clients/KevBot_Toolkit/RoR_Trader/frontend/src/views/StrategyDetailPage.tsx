@@ -825,18 +825,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }, [kpiData, isDateFiltered, clientKPIs, holdTimeStats]);
   // Map API trades (snake_case) to V5 format — useMemo prevents Terser const-chaining TDZ
-  const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => ({
-    id: t.id ?? i + 1,
-    entryTime: t.entry_time || t.entryTime || '--',
-    exitTime: t.exit_time || t.exitTime || '--',
-    entryPrice: t.entry_price ?? t.entryPrice ?? 0,
-    exitPrice: t.exit_price ?? t.exitPrice ?? 0,
-    pnlR: t.r_multiple ?? t.pnlR ?? 0,
-    execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
-    exitReason: t.exit_reason || t.exitReason || '--',
-    holdTime: formatHoldTime(t.hold_time_seconds, t.bars_held),
-    isFwd: t.isFwd ?? false,
-  })), [trades]);
+  const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => {
+    // Trade_Timestamps_Spec: fill_ts is the display anchor (primary).
+    // entry_time / exit_time remain as transitional alias on new trades and
+    // as legacy bar-start on pre-migration trades; the legacy case is
+    // handled in *Display columns below via shiftCType.
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
+    return {
+      id: t.id ?? i + 1,
+      entryTime: entryFillTs || t.entry_time || t.entryTime || '--',
+      exitTime: exitFillTs || t.exit_time || t.exitTime || '--',
+      entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+      exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+      pnlR: t.r_multiple ?? t.pnlR ?? 0,
+      execType: t.exec_type ? `[${t.exec_type}]` : (t.execType || '[C]'),
+      exitReason: t.exit_reason || t.exitReason || '--',
+      holdTime: formatHoldTime(t.hold_time_seconds, t.bars_held),
+      isFwd: t.isFwd ?? false,
+    };
+  }), [trades]);
 
   // Inject pulse CSS
   useEffect(() => {
@@ -909,18 +917,33 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
-  // Map raw alerts to event-level format (for Alerts tab)
-  // Map raw alerts — handle both flattened (from _row_to_alert) and nested (data JSONB) formats
+  // Map raw alerts to event-level format.
+  // Trade_Timestamps_Spec: primary display anchor is fill_ts. trigger_ts is
+  // supplementary (tooltips / expanded rows). For pre-spec legacy rows
+  // missing fill_ts, fall back to bar_time then wall-clock timestamp.
   const recentAlertEvents = useMemo(() => (alerts || EMPTY_ALERTS).map((a: any) => {
     const d = a.data || {};
+    const isEntry = (a.type || '').toLowerCase().includes('entry');
+    const fillTs = isEntry
+      ? (a.entry_fill_ts ?? d.entry_fill_ts)
+      : (a.exit_fill_ts ?? d.exit_fill_ts);
+    const triggerTs = isEntry
+      ? (a.entry_trigger_ts ?? d.entry_trigger_ts)
+      : (a.exit_trigger_ts ?? d.exit_trigger_ts);
+    const anchor = fillTs || a.bar_time || d.bar_time || a.timestamp || a.time || '--';
     return {
-      time: a.timestamp || a.time || '--',
-      barTime: a.bar_time || d.bar_time || a.timestamp || a.time || '--',
-      type: (a.type || '').toLowerCase().includes('entry') ? 'ENTRY' : 'EXIT',
+      time: anchor,
+      barTime: anchor,
+      triggerTime: triggerTs || anchor,  // supplementary — for tooltips
+      fillTime: fillTs || anchor,
+      wallClockTime: a.timestamp || a.time || '--',  // audit only
+      type: isEntry ? 'ENTRY' : 'EXIT',
       trigger: a.trigger || d.trigger || '--',
       price: a.price ?? d.price ?? null,
       stopPrice: a.stop_price ?? d.stop_price ?? a.entry_stop_price ?? d.entry_stop_price ?? null,
       entryPrice: a.entry_price ?? d.entry_price ?? null,
+      holdDurationS: a.hold_duration_s ?? d.hold_duration_s ?? 0,
+      behavior: a.behavior ?? d.behavior ?? 'B',
       status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
     };
   }), [alerts]);
@@ -1094,12 +1117,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const rawExec = t.exec_type || 'C';
     const exitReason = t.exit_reason || '--';
     const exitExec = exitExecTypeOf(exitReason);
+    // Trade_Timestamps_Spec: prefer fill_ts (already fill-moment, no shift
+    // needed). Fall back to legacy entry_time/exit_time + shiftCType for
+    // pre-migration rows.
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
     return {
       id: i + 1,
-      entryTime: t.entry_time || '--',
-      exitTime: t.exit_time || '--',
-      entryTimeDisplay: shiftCType(t.entry_time || '--', rawExec),
-      exitTimeDisplay: shiftCType(t.exit_time || '--', exitExec),
+      entryTime: entryFillTs || t.entry_time || '--',
+      exitTime: exitFillTs || t.exit_time || '--',
+      entryTimeDisplay: entryFillTs || shiftCType(t.entry_time || '--', rawExec),
+      exitTimeDisplay: exitFillTs || shiftCType(t.exit_time || '--', exitExec),
       entryPrice: t.entry_price ?? 0,
       exitPrice: t.exit_price ?? 0,
       pnlR: t.r_multiple ?? 0,
@@ -1115,12 +1143,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
     const exitReason = t.exit_reason || t.exitReason || '--';
     const exitExec = exitExecTypeOf(exitReason);
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
     return {
       id: t.id ?? i + 1,
-      entryTime: t.entry_time || t.entryTime || '--',
-      exitTime: t.exit_time || t.exitTime || '--',
-      entryTimeDisplay: shiftCType(t.entry_time || t.entryTime || '--', rawExec),
-      exitTimeDisplay: shiftCType(t.exit_time || t.exitTime || '--', exitExec),
+      entryTime: entryFillTs || t.entry_time || t.entryTime || '--',
+      exitTime: exitFillTs || t.exit_time || t.exitTime || '--',
+      entryTimeDisplay: entryFillTs || shiftCType(t.entry_time || t.entryTime || '--', rawExec),
+      exitTimeDisplay: exitFillTs || shiftCType(t.exit_time || t.exitTime || '--', exitExec),
       entryPrice: t.entry_price ?? t.entryPrice ?? 0,
       exitPrice: t.exit_price ?? t.exitPrice ?? 0,
       pnlR: t.r_multiple ?? t.pnlR ?? 0,
