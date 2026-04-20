@@ -826,16 +826,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }, [kpiData, isDateFiltered, clientKPIs, holdTimeStats]);
   // Map API trades (snake_case) to V5 format — useMemo prevents Terser const-chaining TDZ
   const allTrades = useMemo(() => (trades || EMPTY_TRADES).map((t: any, i: number) => {
-    // Trade_Timestamps_Spec: fill_ts is the display anchor (primary).
-    // entry_time / exit_time remain as transitional alias on new trades and
-    // as legacy bar-start on pre-migration trades; the legacy case is
-    // handled in *Display columns below via shiftCType.
+    // Trade_Timestamps_Spec: fill_ts is the canonical display anchor.
+    // Legacy entry_time / exit_time aliases dropped per locked decision #5.
     const entryFillTs = t.entry_fill_ts || t.entryFillTs;
     const exitFillTs = t.exit_fill_ts || t.exitFillTs;
     return {
       id: t.id ?? i + 1,
-      entryTime: entryFillTs || t.entry_time || t.entryTime || '--',
-      exitTime: exitFillTs || t.exit_time || t.exitTime || '--',
+      entryTime: entryFillTs || '--',
+      exitTime: exitFillTs || '--',
       entryPrice: t.entry_price ?? t.entryPrice ?? 0,
       exitPrice: t.exit_price ?? t.exitPrice ?? 0,
       pnlR: t.r_multiple ?? t.pnlR ?? 0,
@@ -918,27 +916,29 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
   // Map raw alerts to event-level format.
-  // Trade_Timestamps_Spec: primary display anchor is fill_ts. trigger_ts is
-  // supplementary (tooltips / expanded rows). For pre-spec legacy rows
-  // missing fill_ts, fall back to bar_time then wall-clock timestamp.
+  // Trade_Timestamps_Spec: fill_ts is the primary display anchor. trigger_ts
+  // is supplementary (tooltips / expanded rows). alerts.timestamp remains
+  // only as a last-resort audit fallback for any rare row missing fill_ts.
+  // Legacy bar_time / entry_time paths removed per locked decision #5.
   const recentAlertEvents = useMemo(() => (alerts || EMPTY_ALERTS).map((a: any) => {
+    // Read trigger_ts / fill_ts from top-level first (post-migration rows),
+    // then data JSONB fallback (rows that wrote before columns existed),
+    // then top-level side-specific legacy key as last resort.
     const d = a.data || {};
     const isEntry = (a.type || '').toLowerCase().includes('entry');
-    const fillTs = isEntry
-      ? (a.entry_fill_ts ?? d.entry_fill_ts)
-      : (a.exit_fill_ts ?? d.exit_fill_ts);
-    const triggerTs = isEntry
-      ? (a.entry_trigger_ts ?? d.entry_trigger_ts)
-      : (a.exit_trigger_ts ?? d.exit_trigger_ts);
-    const anchor = fillTs || a.bar_time || d.bar_time || a.timestamp || a.time || '--';
+    const fillTs = (a.fill_ts ?? d.fill_ts)
+      ?? (isEntry ? (a.entry_fill_ts ?? d.entry_fill_ts) : (a.exit_fill_ts ?? d.exit_fill_ts));
+    const triggerTs = (a.trigger_ts ?? d.trigger_ts)
+      ?? (isEntry ? (a.entry_trigger_ts ?? d.entry_trigger_ts) : (a.exit_trigger_ts ?? d.exit_trigger_ts));
+    const anchor = fillTs || a.timestamp || '--';
     return {
       time: anchor,
       barTime: anchor,
       triggerTime: triggerTs || anchor,  // supplementary — for tooltips
       fillTime: fillTs || anchor,
-      wallClockTime: a.timestamp || a.time || '--',  // audit only
+      wallClockTime: a.timestamp || '--',  // audit only
       type: isEntry ? 'ENTRY' : 'EXIT',
-      trigger: a.trigger || d.trigger || '--',
+      trigger: a.trigger_id ?? a.trigger ?? d.trigger ?? '--',
       price: a.price ?? d.price ?? null,
       stopPrice: a.stop_price ?? d.stop_price ?? a.entry_stop_price ?? d.entry_stop_price ?? null,
       entryPrice: a.entry_price ?? d.entry_price ?? null,
@@ -1087,25 +1087,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [showTriggerTiming, setShowTriggerTiming] = useState(false);
   const [showTradeByTrade, setShowTradeByTrade] = useState(false);
 
-  // Forward test trades — wrapped in useMemo to prevent Terser from chaining
-  // const declarations (which causes TDZ errors in production builds)
-  // Shift a C-type timestamp to the next bar open (more accurate to reality)
-  const shiftCType = useMemo(() => (iso: string, execType: string): string => {
-    if (!iso || iso === '--') return iso;
-    try {
-      const isL = execType.includes('L') || execType.includes('HM') || execType.includes('HL');
-      if (isL) return iso;
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) {
-        console.warn('[StrategyDetail] shiftCType: invalid date:', iso);
-        return iso;
-      }
-      return new Date(d.getTime() + tfMs).toISOString();
-    } catch (e) {
-      console.warn('[StrategyDetail] shiftCType error:', iso, e);
-      return iso;
-    }
-  }, [tfMs]);
+  // Trade_Timestamps_Spec: the `shiftCType` helper that used to convert
+  // firing-bar-START into fill-moment is no longer needed — trades now
+  // carry entry_fill_ts / exit_fill_ts already stamped at the fill moment
+  // by the engine. Removed per Step 6 alongside the legacy aliases.
 
   // Derive exit exec type from exit_reason:
   // L-type: stop_loss, target, unconfirmed_hl, unconfirmed_hm (price crosses a level)
@@ -1117,17 +1102,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const rawExec = t.exec_type || 'C';
     const exitReason = t.exit_reason || '--';
     const exitExec = exitExecTypeOf(exitReason);
-    // Trade_Timestamps_Spec: prefer fill_ts (already fill-moment, no shift
-    // needed). Fall back to legacy entry_time/exit_time + shiftCType for
-    // pre-migration rows.
+    // Trade_Timestamps_Spec: fill_ts is canonical. shiftCType is now a
+    // no-op fallback for any freak row missing fill_ts — all post-migration
+    // rows carry it.
     const entryFillTs = t.entry_fill_ts || t.entryFillTs;
     const exitFillTs = t.exit_fill_ts || t.exitFillTs;
     return {
       id: i + 1,
-      entryTime: entryFillTs || t.entry_time || '--',
-      exitTime: exitFillTs || t.exit_time || '--',
-      entryTimeDisplay: entryFillTs || shiftCType(t.entry_time || '--', rawExec),
-      exitTimeDisplay: exitFillTs || shiftCType(t.exit_time || '--', exitExec),
+      entryTime: entryFillTs || '--',
+      exitTime: exitFillTs || '--',
+      entryTimeDisplay: entryFillTs || '--',
+      exitTimeDisplay: exitFillTs || '--',
       entryPrice: t.entry_price ?? 0,
       exitPrice: t.exit_price ?? 0,
       pnlR: t.r_multiple ?? 0,
@@ -1137,7 +1122,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       holdTime: formatHoldTime(t.hold_time_seconds, t.bars_held),
       isFwd: true,
     };
-  }), [fwdData, shiftCType]);
+  }), [fwdData]);
 
   const btTrades = useMemo(() => (fwdData?.backtest_trades || allTrades).map((t: any, i: number) => {
     const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
@@ -1147,10 +1132,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const exitFillTs = t.exit_fill_ts || t.exitFillTs;
     return {
       id: t.id ?? i + 1,
-      entryTime: entryFillTs || t.entry_time || t.entryTime || '--',
-      exitTime: exitFillTs || t.exit_time || t.exitTime || '--',
-      entryTimeDisplay: entryFillTs || shiftCType(t.entry_time || t.entryTime || '--', rawExec),
-      exitTimeDisplay: exitFillTs || shiftCType(t.exit_time || t.exitTime || '--', exitExec),
+      entryTime: entryFillTs || '--',
+      exitTime: exitFillTs || '--',
+      entryTimeDisplay: entryFillTs || '--',
+      exitTimeDisplay: exitFillTs || '--',
       entryPrice: t.entry_price ?? t.entryPrice ?? 0,
       exitPrice: t.exit_price ?? t.exitPrice ?? 0,
       pnlR: t.r_multiple ?? t.pnlR ?? 0,
@@ -1160,7 +1145,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       holdTime: formatHoldTime(t.hold_time_seconds ?? t.holdTimeSeconds, t.bars_held ?? t.barsHeld),
       isFwd: false,
     };
-  }), [fwdData, allTrades, shiftCType]);
+  }), [fwdData, allTrades]);
 
   // Trade-to-Alert mapping — MUST be after btTrades declaration
   const tradeAlertMapping = useMemo(() => {

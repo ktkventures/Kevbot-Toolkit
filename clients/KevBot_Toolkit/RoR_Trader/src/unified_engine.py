@@ -2008,10 +2008,9 @@ class PositionStateMachine:
         from stop_target_methods import get_exec_type
         _stop_et = get_exec_type(self.stop_config)
         return {
-            # Trade_Timestamps_Spec: 4-timestamp model. entry_time / exit_time
-            # are transitional aliases (= *_fill_ts); dropped in Step 6.
-            'entry_time': self.state.entry_time,
-            'exit_time': exit_time,
+            # Trade_Timestamps_Spec: 4-timestamp model is the contract.
+            # Legacy entry_time / exit_time aliases dropped per locked
+            # decision #5 — readers must use *_fill_ts / *_trigger_ts.
             'entry_trigger_ts': self.state.entry_trigger_ts,
             'entry_fill_ts': self.state.entry_fill_ts,
             'exit_trigger_ts': self.state.exit_trigger_ts,
@@ -2112,12 +2111,12 @@ class PositionStateMachine:
             'bar_time': timestamp,
             'entry_price': self.state.entry_price,
             'entry_stop_price': self.state.stop_price,
-            'entry_time': self.state.entry_time,
             'direction': self.state.direction,
             'exec_type': self.state.exec_type or 'C',
             'exit_reason': reason,
             'atr': 0,  # filled by caller
-            # Trade_Timestamps_Spec: 4-timestamp model fields.
+            # Trade_Timestamps_Spec: 4-timestamp model is the contract.
+            # Legacy entry_time alias dropped per locked decision #5.
             'entry_trigger_ts': self.state.entry_trigger_ts,
             'entry_fill_ts': self.state.entry_fill_ts,
             'exit_trigger_ts': self.state.exit_trigger_ts,
@@ -2923,8 +2922,13 @@ def run_unified_backtest(
             risk = entry_price * 0.01
         unrealized_pnl = (last_close - entry_price) if direction == 'LONG' else (entry_price - last_close)
         trades.append({
-            'entry_time': pos.entry_time,
-            'exit_time': None,
+            # Trade_Timestamps_Spec: 4-field model on open trades (exit fields null).
+            'entry_trigger_ts': pos.entry_trigger_ts,
+            'entry_fill_ts': pos.entry_fill_ts,
+            'exit_trigger_ts': None,
+            'exit_fill_ts': None,
+            'hold_duration_s': pos.hold_duration_s,
+            'behavior': pos.behavior,
             'entry_price': entry_price,
             'exit_price': None,
             'stop_price': pos.stop_price,
@@ -3176,8 +3180,13 @@ def run_trades_from_cache(
         unrealized = ((last_close - entry_price) if pos.direction == 'LONG'
                       else (entry_price - last_close))
         trades.append({
-            'entry_time': pos.entry_time,
-            'exit_time': None,
+            # Trade_Timestamps_Spec: 4-field model on open trades (exit fields null).
+            'entry_trigger_ts': pos.entry_trigger_ts,
+            'entry_fill_ts': pos.entry_fill_ts,
+            'exit_trigger_ts': None,
+            'exit_fill_ts': None,
+            'hold_duration_s': pos.hold_duration_s,
+            'behavior': pos.behavior,
             'entry_price': entry_price,
             'exit_price': None,
             'stop_price': pos.stop_price,

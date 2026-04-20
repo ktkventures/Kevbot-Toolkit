@@ -383,10 +383,18 @@ def _serialize_trades(trades_df: pd.DataFrame) -> list[dict]:
         return []
 
     records = trades_df.copy()
-    for col in ["entry_time", "exit_time"]:
+    # Trade_Timestamps_Spec: convert any pandas Timestamp / datetime to ISO
+    # strings for JSON safety. Covers both legacy (if still present) and new
+    # 4-field timestamps.
+    _ts_cols = [
+        "entry_time", "exit_time",
+        "entry_trigger_ts", "entry_fill_ts",
+        "exit_trigger_ts", "exit_fill_ts",
+    ]
+    for col in _ts_cols:
         if col in records.columns:
             records[col] = records[col].apply(
-                lambda x: x.isoformat() if pd.notna(x) and hasattr(x, 'isoformat') else None
+                lambda x: x.isoformat() if pd.notna(x) and hasattr(x, 'isoformat') else (None if pd.isna(x) else x)
             )
 
     # Convert numpy types to native Python for JSON serialization

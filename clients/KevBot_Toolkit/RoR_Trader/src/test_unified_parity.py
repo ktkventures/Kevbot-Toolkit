@@ -316,10 +316,10 @@ def test_ctype_trade_parity():
         ut = unified_trades.iloc[i]
 
         # Entry time
-        if str(bt['entry_time']) != str(ut['entry_time']):
+        if str(bt['entry_trigger_ts']) != str(ut['entry_trigger_ts']):
             mismatches.append(
-                f"  Trade {i}: entry_time batch={bt['entry_time']} "
-                f"unified={ut['entry_time']}")
+                f"  Trade {i}: entry_time batch={bt['entry_trigger_ts']} "
+                f"unified={ut['entry_trigger_ts']}")
 
         # Entry price (should be close for C-type)
         if abs(bt['entry_price'] - ut['entry_price']) > 0.001:
@@ -385,7 +385,7 @@ def test_ltype_triggers():
         entry_price = t['entry_price']
 
         # Find the bar where entry occurred
-        entry_time = t['entry_time']
+        entry_time = t['entry_trigger_ts']
         if entry_time in enriched.index:
             bar = enriched.loc[entry_time]
             bar_close = bar['close']
@@ -550,14 +550,15 @@ def test_trade_schema():
         return
 
     required_cols = {
-        'entry_time', 'exit_time', 'entry_price', 'exit_price',
-        'stop_price', 'initial_stop_price', 'target_price',
-        'pnl', 'risk', 'r_multiple', 'win', 'exit_reason',
-        'entry_trigger', 'exit_trigger', 'confluence_records',
-        # Trade_Timestamps_Spec 4-field model + metadata
+        # Trade_Timestamps_Spec is the contract — legacy entry_time /
+        # exit_time aliases dropped per locked decision #5.
         'entry_trigger_ts', 'entry_fill_ts',
         'exit_trigger_ts', 'exit_fill_ts',
         'hold_duration_s', 'behavior',
+        'entry_price', 'exit_price',
+        'stop_price', 'initial_stop_price', 'target_price',
+        'pnl', 'risk', 'r_multiple', 'win', 'exit_reason',
+        'entry_trigger', 'exit_trigger', 'confluence_records',
     }
     actual_cols = set(trades.columns)
     missing = required_cols - actual_cols
@@ -618,12 +619,6 @@ def test_timestamp_4field_model():
         f"C-type entry_fill_ts should be +60s after trigger, got +{entry_delta}s"
     assert exit_delta == 60, \
         f"C-type exit_fill_ts should be +60s after trigger, got +{exit_delta}s"
-
-    # `entry_time` transitional alias matches `entry_fill_ts` through Step 5.
-    assert pd.Timestamp(t['entry_time']) == pd.Timestamp(t['entry_fill_ts']), \
-        "transitional alias entry_time should equal entry_fill_ts"
-    assert pd.Timestamp(t['exit_time']) == pd.Timestamp(t['exit_fill_ts']), \
-        "transitional alias exit_time should equal exit_fill_ts"
 
     # Metadata fields
     assert t['hold_duration_s'] == 0, \
@@ -811,8 +806,8 @@ def test_hm_unconfirmed():
     # Each unconfirmed trade should exit at the next bar's open
     checked = 0
     for _, t in unconfirmed.iterrows():
-        entry_time = t['entry_time']
-        exit_time = t['exit_time']
+        entry_time = t['entry_trigger_ts']
+        exit_time = t['exit_trigger_ts']
         # Find entry and exit bar indices
         entry_idx = df.index.get_loc(entry_time)
         if entry_idx + 1 >= len(df):
@@ -958,7 +953,7 @@ def test_utbot_hm_ltype_gate():
         # Verify entry prices are at UT Bot stop level (not close)
         for _, t in trades.iterrows():
             # Entry prices from L-type fills are at indicator levels
-            entry_bar_idx = df.index.get_loc(t['entry_time'])
+            entry_bar_idx = df.index.get_loc(t['entry_trigger_ts'])
             bar_close = float(df.iloc[entry_bar_idx]['close'])
             if abs(t['entry_price'] - bar_close) > 0.001:
                 # Entry was at indicator level, not close — confirms L-type fill
@@ -1363,7 +1358,7 @@ def test_mtf_confluence_gating():
     # All entries should be in the second half (bars 250+)
     if len(trades_partial) > 0 and 'entry_time' in trades_partial.columns:
         for _, trade in trades_partial.iterrows():
-            entry_idx = df2.index.get_loc(trade['entry_time'])
+            entry_idx = df2.index.get_loc(trade['entry_trigger_ts'])
             assert entry_idx >= 250, \
                 f"Trade entered at bar {entry_idx}, expected >= 250"
 
