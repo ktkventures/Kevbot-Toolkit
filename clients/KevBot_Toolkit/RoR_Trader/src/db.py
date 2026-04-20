@@ -193,11 +193,18 @@ def _row_to_strategy(row: dict) -> dict:
 # Alert Transformation Helpers
 # ============================================================
 
-# Fields stored as dedicated alert columns (not in data JSONB)
+# Fields stored as dedicated alert columns (not in data JSONB).
+# Trade_Timestamps_Spec (2026-04-17): added event_type, side, trigger_ts,
+# fill_ts, exec_type, trigger_id, price, bar_time as top-level columns via
+# ALTER TABLE on 2026-04-20. hold_duration_s / behavior / webhook_deliveries
+# remain in `data` JSONB until a follow-up migration adds them.
 ALERT_COLUMN_FIELDS = {
     'id', 'user_id', 'type', 'strategy_id', 'strategy_name',
     'symbol', 'direction', 'timeframe', 'source',
     'acknowledged', 'webhook_sent', 'timestamp',
+    # New top-level columns for the 4-timestamp model
+    'event_type', 'side', 'trigger_ts', 'fill_ts',
+    'exec_type', 'trigger_id', 'price', 'bar_time',
 }
 
 
