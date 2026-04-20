@@ -111,6 +111,17 @@ class DBAlertDispatcher:
             'timeframe': strategy.get('timeframe', '1Min'),
             'strategy_alerts_visible': True,
             'source': 'ralph',
+            # Trade_Timestamps_Spec 4-field model. Columns don't exist yet on
+            # the alerts table (pre-migration); save_alert_admin packs these
+            # into the `data` JSONB column via its schema-drift fallback.
+            # Step 7 migration promotes them to top-level columns.
+            'exec_type': signal_data.get('exec_type', ''),
+            'entry_trigger_ts': signal_data.get('entry_trigger_ts'),
+            'entry_fill_ts': signal_data.get('entry_fill_ts'),
+            'exit_trigger_ts': signal_data.get('exit_trigger_ts'),
+            'exit_fill_ts': signal_data.get('exit_fill_ts'),
+            'hold_duration_s': signal_data.get('hold_duration_s', 0),
+            'behavior': signal_data.get('behavior', 'B'),
         }
 
         if sig_type == 'exit_signal':
