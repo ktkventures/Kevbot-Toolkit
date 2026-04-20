@@ -194,17 +194,19 @@ def _row_to_strategy(row: dict) -> dict:
 # ============================================================
 
 # Fields stored as dedicated alert columns (not in data JSONB).
-# Trade_Timestamps_Spec (2026-04-17): added event_type, side, trigger_ts,
-# fill_ts, exec_type, trigger_id, price, bar_time as top-level columns via
-# ALTER TABLE on 2026-04-20. hold_duration_s / behavior / webhook_deliveries
-# remain in `data` JSONB until a follow-up migration adds them.
+# Trade_Timestamps_Spec (2026-04-17): 8 columns added 2026-04-20 in the
+# primary migration; 3 more (hold_duration_s, behavior, webhook_deliveries)
+# added in the follow-up ALTER, promoting everything out of JSONB drift.
 ALERT_COLUMN_FIELDS = {
     'id', 'user_id', 'type', 'strategy_id', 'strategy_name',
     'symbol', 'direction', 'timeframe', 'source',
     'acknowledged', 'webhook_sent', 'timestamp',
-    # New top-level columns for the 4-timestamp model
+    # Trade_Timestamps_Spec top-level columns (4-timestamp model + metadata)
     'event_type', 'side', 'trigger_ts', 'fill_ts',
     'exec_type', 'trigger_id', 'price', 'bar_time',
+    'hold_duration_s', 'behavior',
+    # Webhook delivery tracking — resolves pre-existing PGRST204 drift
+    'webhook_deliveries',
 }
 
 
