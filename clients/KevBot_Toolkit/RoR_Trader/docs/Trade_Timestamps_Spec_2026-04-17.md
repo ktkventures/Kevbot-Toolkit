@@ -1,9 +1,35 @@
 # Trade Timestamps Spec — 2026-04-17
 
-## Design decisions (locked 2026-04-17)
+## Revision note — 2026-04-20
 
-Six decisions are locked before implementation begins. Any change to these
-reopens the spec discussion.
+A seventh decision surfaced during live verification and clarifies the
+display-anchor intent. Updating the doc to match the shipped behavior on
+`dev`:
+
+> **Decision #7 — Alert history anchors on `alerts.timestamp` (wall-clock
+> save, ≈ webhook fire moment). Algo history anchors on `entry_fill_ts`
+> (theoretical fill). The delta between them = processing lag, always a
+> small positive number in a healthy system.**
+
+The original Part 1 language ("every surface anchors on fill_ts") was wrong
+intent — collapsing both to fill_ts destroys the delta column's meaning.
+Sections below have been revised in place to reflect this.
+
+Also simplified: trigger_ts == fill_ts for all currently-shipped exec types
+(C / L / LC / CC, all Behavior B). They represent the same moment — bar
+close for C/CC, cross moment for L/LC. Two fields retained on the state
+machine for future Behavior A (wait-then-fill) variants.
+
+Also reverted: event-timed webhook delivery (originally Tier 2). Webhooks
+now fire immediately at save for all exec types — the engine already waits
+for bar-close confirmation before dispatching on C-type, so the webhook
+goes out exactly when the trigger is confirmed. No scheduling delay.
+
+---
+
+## Design decisions (locked 2026-04-17, revised 2026-04-20)
+
+Seven decisions are locked. Any change to these reopens the spec discussion.
 
 1. **Timestamps per side: 2, not 3.** Each side of a trade (entry/exit) stores
    `trigger_ts` and `fill_ts` only. Confirmation is never a distinct
@@ -11,6 +37,10 @@ reopens the spec discussion.
    Behavior B passing validation is silent and failing validation materializes
    as an exit event with its own `exit_trigger_ts`. A separate `confirm_ts`
    field would add data-model noise without informing display.
+   **For all currently-shipped exec types (C / L / LC / CC, all Behavior B),
+   `trigger_ts` and `fill_ts` are the same moment** — bar close for C/CC,
+   cross moment for L/LC. Behavior A variants would separate them; none
+   ship today.
 2. **Column naming: `entry_*_ts` / `exit_*_ts`.** Descriptive and explicit —
    names carry side (entry/exit), role (trigger/fill), and type (timestamp).
    Uniform across every surface.
@@ -29,6 +59,14 @@ reopens the spec discussion.
    `bail_action` machinery). Behavior A variants are deferred to a future
    spec; the data model supports both but no Behavior A pack ships in this
    phase.
+
+7. **Display anchors: algo history on `fill_ts`, alert history on
+   `alerts.timestamp`.** (Added 2026-04-20.) Algo history shows the
+   theoretical fill moment (backtest truth). Alert history shows the
+   wall-clock save moment, which approximates webhook-fire time within
+   a few milliseconds. The delta between them is the only useful signal
+   (processing lag). Anchoring both on `fill_ts` was the original doc's
+   intent but destroys the delta's meaning; revised.
 
 Also locked: **soft clean-slate migration.** On migration, keep strategy
 config rows, wipe `stored_trades = []`, truncate old `alerts`. Strategies
@@ -130,22 +168,26 @@ exec type manifests.
   emits a normal exit with `exit_reason = 'validation_failed'`. The trade
   record always exists.
 
-### Universal display anchor
+### Display anchors (revised 2026-04-20)
 
-Every surface displays `fill_ts` as the primary anchor. `trigger_ts` is
-available in tooltips, expanded rows, and scenario replays — never in the
-primary column of a table.
+Algo history and alert history anchor on **different** moments by design,
+so the delta between them is the trader's slippage / processing-lag signal.
 
-Clean parity:
+| Table | Anchor | Meaning |
+|---|---|---|
+| Algo history | `entry_fill_ts` / `exit_fill_ts` | Theoretical — backtest truth |
+| Alert history | `alerts.timestamp` | Reality — wall-clock save ≈ webhook fire |
+| Chart entry/exit arrows | `fill_ts` | Theoretical fill position (one arrow per trade) |
+| Chart `x` alert markers | `alerts.timestamp` | Where the webhook fired in real time (one `x` per alert) |
 
-- Alert history table — anchored on `entry_fill_ts` / `exit_fill_ts`
-- Algo history table — anchored on `entry_fill_ts` / `exit_fill_ts`
-- Chart entry/exit arrows — placed at `fill_ts`
-- Chart trigger dots (optional) — placed at `trigger_ts` behind a user toggle
+The **delta** on a paired row = `alerts.timestamp − entry_fill_ts` =
+processing lag in seconds. Healthy system: small positive value (~0.5s).
+Never negative — we don't fire before the theoretical moment (engine waits
+for bar close / cross before dispatching).
 
-On a 15Min C-type strategy, both tables display `15:30` (the fill moment)
-instead of one showing `15:15` (bar start) and the other showing `15:30:00.7`
-(wall-clock save). Traders see the moment they could have executed.
+Original intent of the doc (v1): anchor both tables on fill_ts, collapsing
+them to the same second. That looked clean in the UI but destroyed the
+delta signal. Revised to honor the "theoretical vs reality" distinction.
 
 ### Storage strategy
 
@@ -585,9 +627,10 @@ All open questions from the initial draft have been locked — see the
 
 Spec is "done" when, after implementation:
 
-1. Alert history table and algo history table display the **same timestamp**
-   for every trade on every exec type, on every timeframe. Both anchor on
-   `fill_ts`.
+1. **Revised 2026-04-20:** Alert history anchors on `alerts.timestamp`
+   (wall-clock save ≈ webhook fire). Algo history anchors on
+   `entry_fill_ts` (theoretical). Delta column displays the gap, always
+   small-positive in a healthy system.
 2. Chart entry/exit markers align with both tables' displayed timestamps.
    Trigger dots optional behind a user toggle.
 3. For a 15Min C-type strategy, opening the strategy detail page and
