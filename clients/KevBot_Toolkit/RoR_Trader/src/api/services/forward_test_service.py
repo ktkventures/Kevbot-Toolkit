@@ -161,15 +161,22 @@ def _serialize_trades(trades_df) -> list[dict]:
     NaN / ±Inf are replaced with None — JSONB doesn't accept them and the
     open-trade row (still in-position at snapshot time) carries NaN in
     exit_time / exit_price / bars_held etc.
+
+    Trade_Timestamps_Spec hotfix (2026-04-20): pandas NaT.isoformat()
+    returns the literal string 'NaT' — downstream rendering then shows
+    'Invalid Date'. Check pd.isna() BEFORE isoformat so NaT → None.
     """
     import math
+    import pandas as pd
     records = []
     for _, row in trades_df.iterrows():
         record = {}
         for col in trades_df.columns:
             val = row[col]
             if hasattr(val, 'isoformat'):
-                record[col] = val.isoformat()
+                # NaT / NaN timestamps: isoformat returns 'NaT' string.
+                # Convert to None so JSON consumers get a clean null.
+                record[col] = None if pd.isna(val) else val.isoformat()
             elif hasattr(val, 'item'):  # numpy scalar types
                 v = val.item()
                 if isinstance(v, float) and not math.isfinite(v):

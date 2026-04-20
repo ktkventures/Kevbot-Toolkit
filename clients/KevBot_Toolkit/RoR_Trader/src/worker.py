@@ -276,6 +276,16 @@ class DBAlertDispatcher:
                     entry_fill_ts, exit_fill_ts)
                 return
 
+        # Remove any prior "open" placeholder with the same entry_fill_ts.
+        # forward_test_service recomputes may have emitted an open-position
+        # row while the position was still held; now that we have a real
+        # exit, replace the placeholder rather than leaving it duplicated.
+        stored_trades = [
+            t for t in stored_trades
+            if not (t.get('entry_fill_ts') == entry_fill_ts
+                    and t.get('exit_fill_ts') in (None, 'NaT', ''))
+        ]
+
         # Serialize sets (confluence_records) — JSONB doesn't accept sets
         tr_clean = dict(trade_record)
         cr = tr_clean.get('confluence_records')

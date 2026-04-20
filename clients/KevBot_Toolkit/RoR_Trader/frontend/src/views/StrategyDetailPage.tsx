@@ -1331,9 +1331,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const rawTz = chartPrefs.timezone || 'US/Mountain';
     const tz = TZ_MAP[rawTz] || rawTz;
     return (iso: string | null | undefined, badge?: string) => {
-      if (!iso || iso === '--') return <span>--</span>;
+      // Guard sentinel / missing values so we don't render 'Invalid Date'
+      // for legacy rows or open-position placeholders that carry 'NaT' /
+      // 'Invalid Date' / null as their exit timestamp.
+      if (iso == null || iso === '--' || iso === 'NaT' || iso === 'Invalid Date') {
+        return <span style={{ color: 'var(--text-muted)' }}>--</span>;
+      }
       try {
         const d = new Date(iso);
+        if (isNaN(d.getTime())) {
+          return <span style={{ color: 'var(--text-muted)' }}>--</span>;
+        }
         const datePart = d.toLocaleString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
         const timePart = d.toLocaleString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
         const isL = badge === 'L';
@@ -1346,7 +1354,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             <span style={{ fontSize: '0.7rem' }}>{timePart}</span>
           </span>
         );
-      } catch { return <span>{iso}</span>; }
+      } catch { return <span style={{ color: 'var(--text-muted)' }}>--</span>; }
     };
   }, [chartPrefs.timezone]);
 
