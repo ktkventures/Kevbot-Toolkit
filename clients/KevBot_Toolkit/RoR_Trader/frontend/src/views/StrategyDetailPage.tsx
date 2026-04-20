@@ -1433,13 +1433,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
     const candleColorColumn: string | undefined = (chartDataResp as any)?.candle_color_column || undefined;
 
-    // Normalize trade rows for the helper — raw times + entry_trigger so the
-    // helper can detect exec type and apply C-type shift itself.
+    // Normalize trade rows for the helper. buildStrategyChartPanes reads
+    // t.entry_fill_ts / t.exit_fill_ts directly (snake_case, raw schema).
+    // The btTrades / fwdTrades mappings above expose camelCase display
+    // fields (entryTime / entryTimeDisplay), so we surface the raw
+    // fill_ts here explicitly.
     const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
-      ? [...btTrades, ...fwdTrades]
+      ? [...btTrades, ...fwdTrades].map((t: any) => ({
+          ...t,
+          entry_fill_ts: t.entry_fill_ts ?? t.entryFillTs ?? t.entryTime ?? t.entryTimeDisplay,
+          exit_fill_ts: t.exit_fill_ts ?? t.exitFillTs ?? t.exitTime ?? t.exitTimeDisplay,
+        }))
       : (apiStrategy?.stored_trades || []).map((t: any) => ({
-          entry_time: t.entry_time,
-          exit_time: t.exit_time,
+          entry_fill_ts: t.entry_fill_ts,
+          exit_fill_ts: t.exit_fill_ts,
           entry_price: t.entry_price ?? 0,
           exit_price: t.exit_price ?? 0,
           r_multiple: t.r_multiple ?? 0,
