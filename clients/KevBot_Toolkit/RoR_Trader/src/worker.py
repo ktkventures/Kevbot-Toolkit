@@ -194,63 +194,22 @@ class DBAlertDispatcher:
                              self.user_id[:8], strategy.get('name'), e)
                 # Alert is already saved; don't fail the whole dispatch.
 
-        # Webhook delivery.
-        # Trade_Timestamps_Spec Part 2: fill_event fires at fill_ts. For
-        # L-type (fill_ts == trigger_ts) we deliver immediately. For C-type
-        # on 1Min+ bars, fill_ts is in the future (next bar's open), so we
-        # schedule delivery via threading.Timer to align with the displayed
-        # fill moment.
-        #
-        # Caveat: pending timers are lost if the worker restarts between
-        # alert save and scheduled delivery. For L-type (zero delay) this
-        # is impossible; for C-type, a Railway redeploy during the
-        # bar_duration window drops the webhook. Accepted tradeoff — if
-        # durability becomes critical, migrate to a persisted queue with
-        # a cron-driven dispatcher.
+        # Webhook delivery — fires immediately on save for all exec types.
+        # Trade_Timestamps_Spec (revised 2026-04-20): the webhook fire
+        # moment is what "alert history" displays (= alerts.timestamp).
+        # C-type already waits for bar-close confirmation at the engine
+        # layer before dispatch is called; L-type dispatches at the cross
+        # moment. In both cases, the webhook should go out immediately
+        # when the engine emits — no scheduling delay. Firing early would
+        # defeat the purpose of C-type; firing late would introduce
+        # artificial lag.
         if self._deliver_alert_fn:
-            self._schedule_webhook_delivery(alert, config, fill_ts)
+            try:
+                self._deliver_alert_fn(alert, config)
+            except Exception as e:
+                logger.error("Webhook delivery failed: %s", e)
 
         return alert
-
-    def _schedule_webhook_delivery(self, alert: dict, config: dict,
-                                   fill_ts: Optional[str]) -> None:
-        """Deliver webhook now for L-type / past-fill, or scheduled for C-type.
-
-        See Trade_Timestamps_Spec Part 2 — fill_event policy.
-        """
-        if fill_ts is None:
-            self._deliver_now(alert, config)
-            return
-        try:
-            from datetime import datetime, timezone
-            fill_dt = datetime.fromisoformat(str(fill_ts).replace('Z', '+00:00'))
-            if fill_dt.tzinfo is None:
-                fill_dt = fill_dt.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            delay_s = (fill_dt - now).total_seconds()
-        except Exception as e:
-            logger.debug("fill_ts parse failed (%s), delivering now: %s",
-                         fill_ts, e)
-            self._deliver_now(alert, config)
-            return
-        # Cap at sensible bounds — negative delay or giant delay => deliver now.
-        if delay_s <= 0 or delay_s > 86400:
-            self._deliver_now(alert, config)
-            return
-        # Schedule on a daemon Timer so shutdown doesn't block.
-        timer = threading.Timer(
-            delay_s, self._deliver_now, args=(alert, config))
-        timer.daemon = True
-        timer.start()
-        logger.info("WEBHOOK SCHEDULED [%s]: +%0.1fs to align with fill_ts=%s",
-                    self.user_id[:8], delay_s, fill_ts)
-
-    def _deliver_now(self, alert: dict, config: dict) -> None:
-        """Fire the configured webhook delivery callback, log errors."""
-        try:
-            self._deliver_alert_fn(alert, config)
-        except Exception as e:
-            logger.error("Webhook delivery failed: %s", e)
 
     def _persist_algo_trade(self, strategy: dict, signal_data: dict) -> None:
         """Append the unified-engine-produced trade record to the strategy's
