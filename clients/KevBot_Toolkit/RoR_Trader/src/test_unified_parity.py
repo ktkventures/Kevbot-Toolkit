@@ -554,6 +554,10 @@ def test_trade_schema():
         'stop_price', 'initial_stop_price', 'target_price',
         'pnl', 'risk', 'r_multiple', 'win', 'exit_reason',
         'entry_trigger', 'exit_trigger', 'confluence_records',
+        # Trade_Timestamps_Spec 4-field model + metadata
+        'entry_trigger_ts', 'entry_fill_ts',
+        'exit_trigger_ts', 'exit_fill_ts',
+        'hold_duration_s', 'behavior',
     }
     actual_cols = set(trades.columns)
     missing = required_cols - actual_cols
@@ -570,6 +574,64 @@ def test_trade_schema():
     assert isinstance(t['entry_trigger'], str), "entry_trigger should be str"
 
     print(f"PASS ({len(trades)} trades, all columns present)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TEST 7.5: Trade_Timestamps_Spec 4-field timestamp semantics
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_timestamp_4field_model():
+    """Verify trade records carry entry/exit × trigger/fill timestamps with
+    exec-type-appropriate offsets between trigger and fill."""
+    print("Test 7.5: 4-field timestamp model...", end=" ")
+
+    df = generate_test_data(500, seed=34)
+
+    # C-type strategy — fill_ts should equal trigger_ts + bar_duration (60s)
+    strategy_c = {
+        'id': 'test_ts_c',
+        'direction': 'LONG',
+        'entry_trigger': 'ema_cross_bull',
+        'exit_triggers': ['ema_cross_bear'],
+        'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+        'timeframe': '1Min',
+    }
+    trades_c, _ = run_unified_backtest(df, strategy_c)
+
+    if len(trades_c) == 0:
+        print("PASS (no trades — skipped timing assertions)")
+        return
+
+    t = trades_c.iloc[0]
+    for col in ('entry_trigger_ts', 'entry_fill_ts',
+                'exit_trigger_ts', 'exit_fill_ts'):
+        assert t[col] is not None and str(t[col]) not in ('', 'NaT', 'None'), \
+            f"C-type trade must have {col} populated, got {t[col]!r}"
+
+    # C-type: entry_fill_ts == entry_trigger_ts + 60s, same for exit.
+    def _delta_s(a, b):
+        return (pd.Timestamp(b) - pd.Timestamp(a)).total_seconds()
+
+    entry_delta = _delta_s(t['entry_trigger_ts'], t['entry_fill_ts'])
+    exit_delta = _delta_s(t['exit_trigger_ts'], t['exit_fill_ts'])
+    assert entry_delta == 60, \
+        f"C-type entry_fill_ts should be +60s after trigger, got +{entry_delta}s"
+    assert exit_delta == 60, \
+        f"C-type exit_fill_ts should be +60s after trigger, got +{exit_delta}s"
+
+    # `entry_time` transitional alias matches `entry_fill_ts` through Step 5.
+    assert pd.Timestamp(t['entry_time']) == pd.Timestamp(t['entry_fill_ts']), \
+        "transitional alias entry_time should equal entry_fill_ts"
+    assert pd.Timestamp(t['exit_time']) == pd.Timestamp(t['exit_fill_ts']), \
+        "transitional alias exit_time should equal exit_fill_ts"
+
+    # Metadata fields
+    assert t['hold_duration_s'] == 0, \
+        f"C-type manifest has hold_duration_seconds=0, got {t['hold_duration_s']}"
+    assert t['behavior'] in ('A', 'B'), \
+        f"behavior should be 'A' or 'B', got {t['behavior']!r}"
+
+    print(f"PASS ({len(trades_c)} C-type trades, entry/exit deltas +60s)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1564,6 +1626,7 @@ def main():
         test_ltype_gate,
         test_enriched_df_columns,
         test_trade_schema,
+        test_timestamp_4field_model,
         test_trailing_stop,
         test_exec_type_classification,
         test_hm_confirmed,
