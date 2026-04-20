@@ -186,11 +186,59 @@ EXEC_TYPE_MANIFESTS: Dict[str, ExecTypeManifest] = {
 
 
 def get_manifest(exec_type: str) -> Optional[ExecTypeManifest]:
-    """Return the manifest for a given exec_type code, or None if unknown.
-
-    Scaffolding — not yet consumed by runtime. See module docstring.
-    """
+    """Return the manifest for a given exec_type code, or None if unknown."""
     return EXEC_TYPE_MANIFESTS.get(exec_type)
+
+
+def compute_fill_ts(trigger_ts, bar_duration_s: int,
+                    manifest: Optional[ExecTypeManifest]):
+    """Compute the fill timestamp for a given trigger moment and exec manifest.
+
+    Inputs:
+        trigger_ts: ISO string or pandas.Timestamp or datetime — the
+            moment the trigger condition was first confirmed.
+        bar_duration_s: primary-TF bar duration in seconds (used for C-type
+            and CC-type 'next_bar_open' offsets).
+        manifest: the ExecTypeManifest describing the exec type's fill
+            offset. If None, defaults to 'immediate' (trigger == fill).
+
+    Returns:
+        The fill timestamp in the same type as the input (ISO string in,
+        ISO string out).
+
+    Rules (per Trade_Timestamps_Spec_2026-04-17.md):
+        - fill_offset 'immediate'     -> trigger_ts
+        - fill_offset 'next_bar_open' -> trigger_ts + bar_duration_s
+        - fill_offset 'after_hold'    -> trigger_ts + hold_duration_seconds
+    """
+    if trigger_ts is None:
+        return None
+    if manifest is None:
+        return trigger_ts
+
+    offset_s = 0
+    if manifest.fill_offset == 'next_bar_open':
+        offset_s = int(bar_duration_s or 0)
+    elif manifest.fill_offset == 'after_hold':
+        offset_s = int(manifest.hold_duration_seconds or 0)
+    # 'immediate' -> offset_s stays 0
+
+    if offset_s == 0:
+        return trigger_ts
+
+    # Preserve input type in output
+    import pandas as _pd
+    from datetime import timedelta as _td, datetime as _dt
+    was_str = isinstance(trigger_ts, str)
+    ts = _pd.Timestamp(trigger_ts) if was_str else trigger_ts
+    if isinstance(ts, _pd.Timestamp):
+        ts = ts + _pd.Timedelta(seconds=offset_s)
+        return ts.isoformat() if was_str else ts
+    if isinstance(ts, _dt):
+        ts = ts + _td(seconds=offset_s)
+        return ts.isoformat() if was_str else ts
+    # Unknown type — fall back to trigger_ts
+    return trigger_ts
 
 
 # ═══════════════════════════════════════════════════════════════════════════
