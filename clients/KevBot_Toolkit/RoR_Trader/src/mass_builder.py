@@ -298,12 +298,14 @@ def run_mass_search(
     Returns:
         List of result dicts sorted by daily_r descending.
     """
+    import os
     import pandas as pd
-    from app import (
+    from services import (
         prepare_data_with_indicators, get_secondary_tf_map,
-        get_base_trigger_id, calculate_kpis, count_trading_days,
-        find_best_combinations, _get_data_feed, get_data_source,
+        calculate_kpis, count_trading_days, find_best_combinations,
     )
+    from alerts import _get_base_trigger_id as get_base_trigger_id
+    from data_loader import get_data_source
     from confluence_groups import (
         get_enabled_groups, get_all_triggers, load_confluence_groups,
         TEMPLATES as _CONF_TEMPLATES, expand_direction_to_states,
@@ -317,7 +319,7 @@ def run_mass_search(
     all_rm_packs = load_risk_management_packs()
     rm_pack_map = {p.id: p for p in all_rm_packs}
     enabled_gen = gp_module.get_enabled_general_packs(gp_module.load_general_packs())
-    data_feed = _get_data_feed()
+    data_feed = os.getenv('ALPACA_DATA_FEED', 'sip')
 
     tickers = search_config.get('tickers', [])
     timeframes = search_config.get('timeframes', ['1Min'])
@@ -548,8 +550,10 @@ def run_mass_search(
                                       phase_detail=f"Loading {symbol} {tf}",
                                       inner_step=0, inner_total=1)
                 try:
-                    from app import _get_secondary_tfs
-                    sec_tfs = _get_secondary_tfs(tf)
+                    from db import load_settings_db
+                    from data_loader import SUB_MINUTE_TIMEFRAMES
+                    _enabled_tfs = set(load_settings_db().get("enabled_timeframes", ["1Min"]))
+                    sec_tfs = tuple(sorted(_enabled_tfs - {tf} - SUB_MINUTE_TIMEFRAMES))
                     df = prepare_data_with_indicators(
                         symbol, data_days, data_seed,
                         start_date=start_date, end_date=end_date,
