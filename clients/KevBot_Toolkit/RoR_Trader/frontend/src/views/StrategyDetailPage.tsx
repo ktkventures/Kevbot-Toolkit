@@ -420,6 +420,7 @@ const TABS = [
   'Configuration',
   'Alerts',
   'Alert Analysis',
+  'Unified Trades',
 ];
 
 /* ========================================================================= */
@@ -1299,6 +1300,108 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
     return { alertMatches: alertResults, algoMatches: algoResults };
   }, [recentAlerts, fwdTrades, btTrades, chartPrefs.alertSlippage, tfMs]);
+
+  // Unified Trade Reconciliation (Trade_Timestamps_Spec Part 10, Tier 1).
+  // Greedy join algo trades to alerts on fill_ts within the user's slippage
+  // tolerance. Produces one row per unique trade (by best match) plus rows
+  // for unconsumed alerts. Kevin's locked terminology:
+  //   - matched       = algo + alert, both within tolerance
+  //   - partial_match = algo + alert, found within 3× tolerance (drift)
+  //   - missed        = algo has no matching alert (algo_only)
+  //   - phantom       = alert has no matching algo (alert_only)
+  const unifiedTrades = useMemo(() => {
+    const algoAll = [...fwdTrades, ...btTrades];
+    const tolSec = chartPrefs.alertSlippage || 5;
+    const tolMs = tolSec * 1000;
+    const partialTolMs = Math.max(tolMs * 3, tfMs); // allow up to 1 bar drift
+
+    // Sort algo trades by entry time ascending for stable greedy matching
+    const algoSorted = algoAll
+      .filter((t: any) => t.entryTime && t.entryTime !== '--')
+      .slice()
+      .sort((a: any, b: any) => safeDateMs(a.entryTime) - safeDateMs(b.entryTime));
+
+    // Build alert index with original positions retained
+    const alertIndexed = recentAlerts
+      .map((a: any, idx: number) => ({ a, idx }))
+      .filter((x: any) => x.a.entryTime && x.a.entryTime !== '--');
+
+    const consumed = new Set<number>();
+    const rows: any[] = [];
+
+    for (const algo of algoSorted) {
+      const aMs = safeDateMs(algo.entryTime);
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (const { a, idx } of alertIndexed) {
+        if (consumed.has(idx)) continue;
+        const alertMs = safeDateMs(a.entryFillTime || a.entryTime);
+        const dist = Math.abs(alertMs - aMs);
+        if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
+      }
+
+      let state: 'matched' | 'partial_match' | 'missed' = 'missed';
+      let alert: any = null;
+      let entryDeltaSec: number | null = null;
+      let exitDeltaSec: number | null = null;
+
+      if (bestIdx >= 0 && bestDist <= tolMs) {
+        state = 'matched';
+        alert = recentAlerts[bestIdx];
+        consumed.add(bestIdx);
+      } else if (bestIdx >= 0 && bestDist <= partialTolMs) {
+        state = 'partial_match';
+        alert = recentAlerts[bestIdx];
+        consumed.add(bestIdx);
+      }
+
+      if (alert) {
+        const algoMs = safeDateMs(algo.entryTime);
+        const alertEntryMs = safeDateMs(alert.entryFillTime || alert.entryTime);
+        entryDeltaSec = (alertEntryMs - algoMs) / 1000;
+        if (alert.exitTime && alert.exitTime !== '--' && algo.exitTime && algo.exitTime !== '--') {
+          const algoExitMs = safeDateMs(algo.exitTime);
+          const alertExitMs = safeDateMs(alert.exitFillTime || alert.exitTime);
+          exitDeltaSec = (alertExitMs - algoExitMs) / 1000;
+        }
+      }
+
+      rows.push({
+        state, algo, alert,
+        entryTime: algo.entryTime,
+        exitTime: algo.exitTime,
+        algoR: algo.pnlR ?? null,
+        alertR: alert?.r ?? null,
+        entryDeltaSec,
+        exitDeltaSec,
+      });
+    }
+
+    // Remaining alerts = phantom (alert_only)
+    for (const { a, idx } of alertIndexed) {
+      if (consumed.has(idx)) continue;
+      rows.push({
+        state: 'phantom' as const,
+        algo: null,
+        alert: a,
+        entryTime: a.entryTime,
+        exitTime: a.exitTime,
+        algoR: null,
+        alertR: a.r ?? null,
+        entryDeltaSec: null,
+        exitDeltaSec: null,
+      });
+    }
+
+    // Sort newest-first by entry time
+    rows.sort((x, y) => safeDateMs(y.entryTime) - safeDateMs(x.entryTime));
+
+    const counts = rows.reduce((acc: any, r: any) => {
+      acc[r.state] = (acc[r.state] || 0) + 1;
+      return acc;
+    }, {});
+    return { rows, counts, tolSec };
+  }, [fwdTrades, btTrades, recentAlerts, chartPrefs.alertSlippage, tfMs]);
 
   // Timezone-aware timestamp formatter
   const formatTime = useMemo(() => {
@@ -3744,6 +3847,108 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   </Card>
                 </CollapsibleSection>
+              </div>
+            )}
+
+            {/* =========================================================== */}
+            {/* TAB 7: UNIFIED TRADES                                        */}
+            {/* =========================================================== */}
+            {tab === 'Unified Trades' && (
+              <div>
+                <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                  Unified Trade Reconciliation
+                </h3>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Greedy-matches algo trades (backtest + forward) to alerts on <code>fill_ts</code> within
+                  <strong> {unifiedTrades.tolSec}s </strong> slippage tolerance. Rows outside tolerance but within one bar
+                  are marked <em>drift</em>. Anything unmatched is surfaced so you can investigate.
+                </p>
+
+                {/* Summary counts */}
+                <div className="grid grid-cols-4 gap-3 mb-4">
+                  {[
+                    { label: 'Matched', key: 'matched', color: 'var(--green)' },
+                    { label: 'Drift', key: 'partial_match', color: 'var(--orange)' },
+                    { label: 'Missed', key: 'missed', color: 'var(--blue)' },
+                    { label: 'Phantom', key: 'phantom', color: 'var(--red)' },
+                  ].map((k) => (
+                    <Card key={k.key}>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{k.label}</p>
+                      <p className="text-xl font-semibold" style={{ color: k.color }}>
+                        {unifiedTrades.counts[k.key] ?? 0}
+                      </p>
+                    </Card>
+                  ))}
+                </div>
+
+                {/* Rows */}
+                <Card>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr>
+                          {['#', 'State', 'Entry (fill)', 'Exit (fill)', 'Algo R', 'Alert R', 'Δ Entry', 'Δ Exit'].map((h) => (
+                            <th key={h} style={thStyle}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unifiedTrades.rows.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
+                              No algo trades or alerts yet for this strategy.
+                            </td>
+                          </tr>
+                        ) : unifiedTrades.rows.map((r: any, i: number) => {
+                          const stateMeta: Record<string, { label: string; color: string; bg: string }> = {
+                            matched: { label: 'Matched', color: 'var(--green)', bg: 'var(--green-muted)' },
+                            partial_match: { label: 'Drift', color: 'var(--orange)', bg: 'rgba(255, 152, 0, 0.15)' },
+                            missed: { label: 'Missed', color: 'var(--blue)', bg: 'rgba(33, 150, 243, 0.15)' },
+                            phantom: { label: 'Phantom', color: 'var(--red)', bg: 'var(--red-muted)' },
+                          };
+                          const meta = stateMeta[r.state] || stateMeta.matched;
+                          const deltaColor = (v: number | null) =>
+                            v == null ? 'var(--text-muted)'
+                              : Math.abs(v) <= unifiedTrades.tolSec ? 'var(--green)'
+                                : Math.abs(v) <= unifiedTrades.tolSec * 3 ? 'var(--orange)'
+                                  : 'var(--red)';
+                          return (
+                            <tr key={i}>
+                              <td style={tdStyle}>{i + 1}</td>
+                              <td style={tdStyle}>
+                                <span
+                                  className="text-xs px-2 py-0.5 rounded-full font-medium"
+                                  style={{ color: meta.color, background: meta.bg }}
+                                >
+                                  {meta.label}
+                                </span>
+                              </td>
+                              <td style={tdStyle}>{renderTime(r.entryTime)}</td>
+                              <td style={tdStyle}>{renderTime(r.exitTime)}</td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', color: r.algoR == null ? 'var(--text-muted)' : r.algoR >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                {r.algoR == null ? '--' : `${r.algoR >= 0 ? '+' : ''}${Number(r.algoR).toFixed(2)}R`}
+                              </td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', color: r.alertR == null ? 'var(--text-muted)' : r.alertR >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                {r.alertR == null ? '--' : `${r.alertR >= 0 ? '+' : ''}${Number(r.alertR).toFixed(2)}R`}
+                              </td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', color: deltaColor(r.entryDeltaSec) }}>
+                                {r.entryDeltaSec == null ? '--' : `${r.entryDeltaSec >= 0 ? '+' : ''}${r.entryDeltaSec.toFixed(1)}s`}
+                              </td>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace', color: deltaColor(r.exitDeltaSec) }}>
+                                {r.exitDeltaSec == null ? '--' : `${r.exitDeltaSec >= 0 ? '+' : ''}${r.exitDeltaSec.toFixed(1)}s`}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+
+                <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+                  Slippage tolerance is configurable in Display Settings (current: {unifiedTrades.tolSec}s).
+                  Higher-frequency strategies may need a tighter tolerance to avoid over-matching.
+                </p>
               </div>
             )}
           </div>
