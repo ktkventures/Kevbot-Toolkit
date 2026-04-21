@@ -26,6 +26,7 @@ import DailyBarChart from '@/charts/DailyBarChart';
 import SparkLine from '@/charts/SparkLine';
 import BalanceHistoryChart from '@/charts/BalanceHistoryChart';
 import {
+  usePortfolios,
   usePortfolio,
   usePortfolioCompute,
   usePortfolioTrades,
@@ -229,15 +230,37 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   const { data: computeData } = usePortfolioCompute(portfolioId ?? null, ['kpis']);
   const { data: openPositionsData } = usePortfolioOpenPositions(portfolioId ?? null);
   const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'alerts');
+  // alert_kpis is only surfaced on the ?preview=true list endpoint (not on
+  // the single-portfolio GET or compute). Reuse the list query so it stays
+  // cached across page navigation from the Portfolios list.
+  const { data: portfolioList } = usePortfolios({ preview: true });
 
-  const alertKpis = (computeData as any)?.alert_kpis || (portfolio as any)?.alert_kpis || {};
-  const plannedKpis = (computeData as any)?.kpis || (portfolio as any)?.kpis || {};
+  const preview = useMemo(
+    () => (portfolioList || []).find((p: any) => p?.id === portfolioId),
+    [portfolioList, portfolioId],
+  );
+
+  const alertKpis: any =
+    (preview as any)?.alert_kpis ||
+    (portfolio as any)?.alert_kpis ||
+    (computeData as any)?.alert_kpis ||
+    {};
+  const plannedKpis: any =
+    (preview as any)?.kpis ||
+    (portfolio as any)?.kpis ||
+    (computeData as any)?.kpis ||
+    {};
   const openPositions: any[] = (openPositionsData as any)?.open_positions || [];
   const startingBalance = (portfolio as any)?.starting_balance ?? 0;
-  const currentAllocated = openPositions.reduce(
+  const currentNotional = openPositions.reduce(
     (sum: number, p: any) => sum + (Number(p.buying_power_used) || 0), 0,
   );
-  const currentAvailable = Math.max(0, startingBalance - currentAllocated);
+  const currentRisk = openPositions.reduce(
+    (sum: number, p: any) => sum + (Number(p.risk_per_trade) || 0), 0,
+  );
+  // For cash-account semantics, "available" clamps at zero when notional
+  // exceeds balance. Users can see both the raw notional and the risk.
+  const currentAvailable = Math.max(0, startingBalance - currentRisk);
   const peakAllocated = (capUtil as any)?.peak_allocated ?? (capUtil as any)?.peak ?? null;
 
   const fmtR = (v: any) => v == null ? '--' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}R`;
@@ -363,7 +386,9 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         </div>
       </Card>
 
-      {/* Open Positions — live from /api/portfolios/{id}/open-positions */}
+      {/* Open Positions — live from /api/portfolios/{id}/open-positions.
+          Notional = qty × entry_price (total position value, not margin).
+          Risk = risk_per_trade (actual $ at risk until stop hits). */}
       <Card className="mb-6">
         <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
           Open Positions
@@ -376,14 +401,14 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Strategy', 'Symbol', 'Dir', 'Entry', 'Stop', 'Qty', 'Exposure', 'Duration'].map((h) => (
+                {['Strategy', 'Symbol', 'Dir', 'Entry', 'Stop', 'Qty', 'Notional', 'Risk', 'Duration'].map((h) => (
                   <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {openPositions.length === 0 ? (
-                <tr><td colSpan={8} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                <tr><td colSpan={9} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                   No open positions.
                 </td></tr>
               ) : openPositions.map((p: any, i: number) => (
@@ -403,8 +428,19 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
                     {p.stop_price != null ? `$${Number(p.stop_price).toFixed(2)}` : '--'}
                   </td>
                   <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>{p.quantity ?? '--'}</td>
-                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>
+                  <td
+                    className="py-2 px-3 text-sm"
+                    style={{ fontFamily: 'monospace' }}
+                    title="Notional value: quantity × entry price. Total position size."
+                  >
                     {p.buying_power_used != null ? fmtUsd(p.buying_power_used) : '--'}
+                  </td>
+                  <td
+                    className="py-2 px-3 text-sm"
+                    style={{ fontFamily: 'monospace', color: 'var(--orange)' }}
+                    title="Capital at risk: risk_per_trade (loss if stop hits)."
+                  >
+                    {p.risk_per_trade != null ? fmtUsd(p.risk_per_trade) : '--'}
                   </td>
                   <td className="py-2 px-3 text-sm" style={{ color: 'var(--text-muted)' }}>{durationFrom(p.entry_time)}</td>
                 </tr>
@@ -447,12 +483,18 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
             <p className="text-lg font-semibold">{fmtUsd(startingBalance)}</p>
           </div>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Available</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Available</p>
             <p className="text-lg font-semibold" style={{ color: 'var(--green)' }}>{fmtUsd(currentAvailable)}</p>
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>balance − risk</p>
           </div>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Currently Allocated</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--orange)' }}>{fmtUsd(currentAllocated)}</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Committed</p>
+            <p className="text-sm font-semibold" style={{ color: 'var(--orange)' }}>
+              {fmtUsd(currentNotional)} <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>notional</span>
+            </p>
+            <p className="text-sm font-semibold" style={{ color: 'var(--orange)' }}>
+              {fmtUsd(currentRisk)} <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>risk</span>
+            </p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Peak Allocated Today</p>
@@ -462,8 +504,9 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         <ChartPlaceholder label={`24-hour buying power chart (${bpDate}): Available BP over time — needs worker data`} height={180} />
         <div className="flex items-center justify-between mt-2">
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Utilization: {startingBalance > 0 ? `${((currentAllocated / startingBalance) * 100).toFixed(1)}%` : '--'}
-            {' '}&middot; Max concurrent positions today: {openPositions.length}
+            Risk utilization: {startingBalance > 0 ? `${((currentRisk / startingBalance) * 100).toFixed(1)}%` : '--'}
+            {' '}&middot; Notional utilization: {startingBalance > 0 ? `${((currentNotional / startingBalance) * 100).toFixed(0)}%` : '--'}
+            {' '}&middot; Concurrent positions: {openPositions.length}
           </p>
         </div>
       </Card>

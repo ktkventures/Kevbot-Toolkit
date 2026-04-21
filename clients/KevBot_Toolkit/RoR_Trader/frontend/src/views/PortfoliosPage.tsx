@@ -197,12 +197,28 @@ function MiniEquityCurve({ portfolioId, points, fwdStartPct, hasAlerts, showHWM,
   const h = height;
   const pad = 3;
 
-  // Real backend data or empty-state placeholder
-  const btPoints: number[] = hasReal ? (points as number[]) : [];
+  // Empty state: render a clear message instead of a flat zero line that
+  // looks like a broken chart. Kevin saw flat lines on portfolios with no
+  // stored trades yet and mistook them for rendering bugs.
   if (!hasReal) {
-    // Empty-state: flat line at zero so the card layout stays stable
-    for (let i = 0; i <= totalPoints; i++) btPoints.push(0);
+    return (
+      <div
+        style={{
+          height: h,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--text-muted)',
+          fontSize: '0.75rem',
+          fontStyle: 'italic',
+        }}
+      >
+        No trades yet — run Update All Data on a strategy to populate
+      </div>
+    );
   }
+
+  const btPoints: number[] = points as number[];
 
   const fwdPoints = btPoints.slice(fwdIdx);
   const livePoints = hasAlerts && hasReal ? fwdPoints.slice() : [];
