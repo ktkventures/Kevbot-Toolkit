@@ -33,6 +33,7 @@ import {
   usePortfolioAccount,
   usePortfolioWorstCase,
   usePortfolioCapitalUtilization,
+  usePortfolioOpenPositions,
   usePortfolioRequirementsCheck,
 } from '@/hooks/queries/usePortfolios';
 import { useStrategies } from '@/hooks/queries/useStrategies';
@@ -217,11 +218,52 @@ const TABS = [
 ];
 
 // ---- 1. Live Dashboard ----
-function LiveDashboardTab() {
+function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   const [bpDate, setBpDate] = useState(new Date().toISOString().split('T')[0]);
   const [showTradeChart, setShowTradeChart] = useState<number | null>(null);
   const [anomalyTab, setAnomalyTab] = useState('All');
   const [dataMode, setDataMode] = useState<'Planned' | 'Executed'>('Planned');
+
+  // Live data hooks
+  const { data: portfolio } = usePortfolio(portfolioId ?? null);
+  const { data: computeData } = usePortfolioCompute(portfolioId ?? null, ['kpis']);
+  const { data: openPositionsData } = usePortfolioOpenPositions(portfolioId ?? null);
+  const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'alerts');
+
+  const alertKpis = (computeData as any)?.alert_kpis || (portfolio as any)?.alert_kpis || {};
+  const plannedKpis = (computeData as any)?.kpis || (portfolio as any)?.kpis || {};
+  const openPositions: any[] = (openPositionsData as any)?.open_positions || [];
+  const startingBalance = (portfolio as any)?.starting_balance ?? 0;
+  const currentAllocated = openPositions.reduce(
+    (sum: number, p: any) => sum + (Number(p.buying_power_used) || 0), 0,
+  );
+  const currentAvailable = Math.max(0, startingBalance - currentAllocated);
+  const peakAllocated = (capUtil as any)?.peak_allocated ?? (capUtil as any)?.peak ?? null;
+
+  const fmtR = (v: any) => v == null ? '--' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}R`;
+  const fmtPct = (v: any) => v == null ? '--' : `${Number(v).toFixed(1)}%`;
+  const fmtUsd = (v: any) => v == null ? '--' : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const fmtTime = (iso?: string) => {
+    if (!iso || iso === '--') return '--';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '--';
+      return d.toLocaleString('en-US', {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+    } catch { return '--'; }
+  };
+  const durationFrom = (iso?: string) => {
+    if (!iso) return '--';
+    const d = new Date(iso); if (isNaN(d.getTime())) return '--';
+    const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (mins < 60) return `${mins}m`;
+    const h = Math.floor(mins / 60); const m = mins % 60;
+    if (h < 24) return `${h}h${m > 0 ? ` ${m}m` : ''}`;
+    const days = Math.floor(h / 24);
+    return `${days}d ${h % 24}h`;
+  };
 
   const shiftDate = (days: number) => {
     const d = new Date(bpDate);
@@ -269,13 +311,32 @@ function LiveDashboardTab() {
         </div>
       </div>
 
-      {/* KPI Row */}
+      {/* KPI Row — live (alert-sourced) vs planned (backtest) */}
       <div className="grid grid-cols-5 gap-3 mb-6">
-        <MetricCard label="Alert Trades" value="--" />
-        <MetricCard label="Win Rate" value="--" />
-        <MetricCard label="Total P&L" value="--" />
-        <MetricCard label="Expected P&L" value="--" />
-        <MetricCard label="vs Plan" value="--" />
+        <MetricCard
+          label="Alert Trades"
+          value={alertKpis.total_trades != null ? String(alertKpis.total_trades) : '--'}
+        />
+        <MetricCard
+          label="Win Rate"
+          value={fmtPct(alertKpis.win_rate)}
+        />
+        <MetricCard
+          label="Total P&L"
+          value={fmtR(alertKpis.total_r)}
+        />
+        <MetricCard
+          label="Expected P&L"
+          value={fmtR(plannedKpis.total_r)}
+        />
+        <MetricCard
+          label="vs Plan"
+          value={
+            alertKpis.total_r != null && plannedKpis.total_r != null && plannedKpis.total_r !== 0
+              ? `${((alertKpis.total_r / plannedKpis.total_r - 1) * 100).toFixed(1)}%`
+              : '--'
+          }
+        />
       </div>
 
       {/* Performance vs Plan Chart */}
@@ -302,12 +363,12 @@ function LiveDashboardTab() {
         </div>
       </Card>
 
-      {/* Open Positions */}
+      {/* Open Positions — live from /api/portfolios/{id}/open-positions */}
       <Card className="mb-6">
         <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
           Open Positions
           <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-            0
+            {openPositions.length}
           </span>
         </h3>
 
@@ -315,13 +376,39 @@ function LiveDashboardTab() {
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Strategy', 'Symbol', 'Dir', 'Entry', 'Current', 'Unrealized', 'Duration', 'Status', ''].map((h) => (
+                {['Strategy', 'Symbol', 'Dir', 'Entry', 'Stop', 'Qty', 'Exposure', 'Duration'].map((h) => (
                   <th key={h} className="text-left py-2 px-3 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              <tr><td colSpan={9} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No open positions — worker data not available yet.</td></tr>
+              {openPositions.length === 0 ? (
+                <tr><td colSpan={8} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                  No open positions.
+                </td></tr>
+              ) : openPositions.map((p: any, i: number) => (
+                <tr key={p.strategy_id ?? i} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td className="py-2 px-3 text-sm">{p.strategy_name || '--'}</td>
+                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>{p.symbol || '--'}</td>
+                  <td className="py-2 px-3 text-sm" style={{ color: p.direction === 'LONG' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                    {p.direction || '--'}
+                  </td>
+                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>
+                    {p.entry_price != null ? `$${Number(p.entry_price).toFixed(2)}` : '--'}
+                    {p.entry_time && (
+                      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{fmtTime(p.entry_time)}</div>
+                    )}
+                  </td>
+                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace', color: 'var(--red)' }}>
+                    {p.stop_price != null ? `$${Number(p.stop_price).toFixed(2)}` : '--'}
+                  </td>
+                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>{p.quantity ?? '--'}</td>
+                  <td className="py-2 px-3 text-sm" style={{ fontFamily: 'monospace' }}>
+                    {p.buying_power_used != null ? fmtUsd(p.buying_power_used) : '--'}
+                  </td>
+                  <td className="py-2 px-3 text-sm" style={{ color: 'var(--text-muted)' }}>{durationFrom(p.entry_time)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -357,25 +444,26 @@ function LiveDashboardTab() {
         <div className="grid grid-cols-4 gap-4 mb-4">
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Starting Balance</p>
-            <p className="text-lg font-semibold">--</p>
+            <p className="text-lg font-semibold">{fmtUsd(startingBalance)}</p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Available</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--green)' }}>--</p>
+            <p className="text-lg font-semibold" style={{ color: 'var(--green)' }}>{fmtUsd(currentAvailable)}</p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Currently Allocated</p>
-            <p className="text-lg font-semibold" style={{ color: 'var(--orange)' }}>--</p>
+            <p className="text-lg font-semibold" style={{ color: 'var(--orange)' }}>{fmtUsd(currentAllocated)}</p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Peak Allocated Today</p>
-            <p className="text-lg font-semibold">--</p>
+            <p className="text-lg font-semibold">{peakAllocated != null ? fmtUsd(peakAllocated) : '--'}</p>
           </div>
         </div>
         <ChartPlaceholder label={`24-hour buying power chart (${bpDate}): Available BP over time — needs worker data`} height={180} />
         <div className="flex items-center justify-between mt-2">
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Utilization: -- &middot; Max concurrent positions today: --
+            Utilization: {startingBalance > 0 ? `${((currentAllocated / startingBalance) * 100).toFixed(1)}%` : '--'}
+            {' '}&middot; Max concurrent positions today: {openPositions.length}
           </p>
         </div>
       </Card>
@@ -2201,7 +2289,7 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
       <TabBar tabs={TABS}>
         {(tab) => (
           <div>
-            {tab === 'Live Dashboard' && <LiveDashboardTab />}
+            {tab === 'Live Dashboard' && <LiveDashboardTab portfolioId={portfolioId} />}
             {tab === 'Performance' && <PerformanceTab portfolioId={portfolioId} />}
             {tab === 'Strategies' && <StrategiesTab portfolioId={portfolioId} />}
             {tab === 'Prop Firm Check' && <PropFirmCheckTab portfolioId={portfolioId} />}
