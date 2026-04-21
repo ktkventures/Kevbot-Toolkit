@@ -18,5 +18,9 @@ ENV PYTHONPATH=/app/src
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl --fail http://localhost:${PORT:-8000}/health || exit 1
 
-# Run FastAPI
-CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
+# Run FastAPI — single worker so mass_builder's in-memory _active_searches
+# dict is shared across all requests (POST /run writes it; GET /progress reads
+# it; with >1 worker these hit separate processes and state is lost). Moving
+# to Redis/DB for shared state is the proper multi-worker solution; tracked
+# for M9 scale work.
+CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
