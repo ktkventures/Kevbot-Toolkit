@@ -2468,7 +2468,9 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
   const { data: portfolio, isLoading: portfolioLoading, error: portfolioError } = usePortfolio(portfolioId);
   const { data: computeData } = usePortfolioCompute(portfolioId, ['kpis']);
   const { data: trades } = usePortfolioTrades(portfolioId);
-  const { data: anomalyData } = usePortfolioAnomalies(portfolioId);
+  // Anomaly Detection tab is deferred (Kevin's note 2026-04-21). The hook
+  // fires a network request that isn't consumed; skip it until wired.
+  // const { data: anomalyData } = usePortfolioAnomalies(portfolioId);
   const { data: account } = usePortfolioAccount(portfolioId);
   const { data: apiStrategiesRaw } = useStrategies();
   const deleteMut = useDeletePortfolio();
