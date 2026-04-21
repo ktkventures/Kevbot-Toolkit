@@ -136,7 +136,7 @@ def list_strategies(
                 enriched.append(s)
         strategies = enriched
 
-    return strategies
+    return _sanitize_json(strategies)
 
 
 @router.post("")
