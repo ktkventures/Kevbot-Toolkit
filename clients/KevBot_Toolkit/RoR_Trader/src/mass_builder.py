@@ -915,6 +915,46 @@ _active_searches: Dict[str, dict] = {}
 _search_lock = threading.Lock()
 
 
+def cleanup_orphaned_mass_searches() -> int:
+    """Mark any mass_searches row in 'running' state as 'orphaned'.
+
+    Called on API startup. A fresh API process has no worker threads by
+    definition, so any DB row still showing 'running' belongs to a prior
+    process whose daemon thread died with the pod. The row is unrecoverable
+    (no checkpoint yet — Tier 2 roadmap), so we mark it 'orphaned' to stop
+    the frontend polling loop and let the user decide whether to retry.
+
+    Returns the count of rows updated.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        return 0
+    try:
+        from db import get_admin_client
+        client = get_admin_client()
+        # Find 'running' rows first (so we can log IDs + count)
+        resp = client.table('mass_searches') \
+            .select('id') \
+            .eq('status', 'running') \
+            .execute()
+        running = resp.data if resp and resp.data else []
+        if not running:
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        client.table('mass_searches') \
+            .update({'status': 'orphaned', 'updated_at': now_iso}) \
+            .eq('status', 'running') \
+            .execute()
+        ids = [r.get('id') for r in running]
+        logger.info(
+            "Mass search startup cleanup: marked %d orphaned row(s) ids=%s",
+            len(ids), ids)
+        return len(ids)
+    except Exception as e:
+        logger.warning("Mass search orphan cleanup failed: %s", e)
+        return 0
+
+
 def get_search_progress(search_id: str) -> dict:
     """Get current progress for a running search (thread-safe)."""
     with _search_lock:

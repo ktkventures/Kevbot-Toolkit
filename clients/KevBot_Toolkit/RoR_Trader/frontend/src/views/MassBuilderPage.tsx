@@ -536,6 +536,17 @@ export default function MassBuilderPage() {
       setPhaseDetail('');
       setConfProgress(0);
       setConfLabel('');
+    } else if (status === 'orphaned') {
+      // Worker thread died (usually on API deploy). Tier 2 roadmap will
+      // add checkpoint/resume; for now the user can Edit the saved row
+      // and re-run from scratch.
+      setIsAnalyzing(false);
+      setProgress(0);
+      setProgressLabel('Search interrupted — the API restarted mid-run. Re-run from Mass Results.');
+      setPhase(null);
+      setPhaseDetail('');
+      setConfProgress(0);
+      setConfLabel('');
     }
   }, [progressData]);
 

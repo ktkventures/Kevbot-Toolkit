@@ -86,6 +86,13 @@ def create_app() -> FastAPI:
     import pack_registry
     pack_registry.scan_and_load_all()
 
+    # Mass Builder orphan cleanup — on every API boot, mark any
+    # mass_searches row still showing 'running' as 'orphaned'. A fresh
+    # process has no daemon threads by definition; any such row is a
+    # leftover from a previous pod whose worker died on deploy.
+    from mass_builder import cleanup_orphaned_mass_searches
+    cleanup_orphaned_mass_searches()
+
     # Health check
     @app.get("/health")
     def health():

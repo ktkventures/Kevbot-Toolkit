@@ -14,7 +14,7 @@ interface SavedSearch {
   id: string;
   name: string;
   date: string;
-  status: 'completed' | 'running' | 'queued';
+  status: 'completed' | 'running' | 'queued' | 'orphaned';
   // Config summary
   tickers: string[];
   timeframes: string[];
@@ -66,6 +66,8 @@ function mapApiSearch(raw: any): SavedSearch {
     status: raw.status === 'completed' ? 'completed'
       : raw.status === 'running' ? 'running'
       : raw.status === 'queued' ? 'queued'
+      : raw.status === 'orphaned' ? 'orphaned'
+      : raw.status === 'failed' ? 'orphaned'  // surface failed as interrupted
       : raw.status === 'cancelled' ? 'completed'  // collapse cancelled into a terminal bucket
       : 'completed',
     tickers: Array.isArray(cfg.tickers) ? cfg.tickers : [],
@@ -256,6 +258,20 @@ export default function MassResultsPage() {
           const isRunning = search.status === 'running';
           const isQueued = search.status === 'queued';
           const isComplete = search.status === 'completed';
+          const isOrphaned = search.status === 'orphaned';
+
+          const badgeColor = isComplete ? 'var(--green)'
+            : isRunning ? 'var(--accent)'
+            : isOrphaned ? 'var(--orange)'
+            : 'var(--text-muted)';
+          const badgeBg = isComplete ? 'var(--green-muted)'
+            : isRunning ? 'var(--accent-muted)'
+            : isOrphaned ? 'rgba(255, 152, 0, 0.15)'
+            : 'var(--bg-input)';
+          const badgeLabel = isComplete ? `${search.resultCount} results`
+            : isRunning ? 'Running'
+            : isOrphaned ? 'Interrupted'
+            : 'Queued';
 
           return (
             <Card key={search.id}>
@@ -266,13 +282,21 @@ export default function MassResultsPage() {
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <h3 className="font-semibold text-sm">{search.name}</h3>
                     <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{
-                      color: isComplete ? 'var(--green)' : isRunning ? 'var(--accent)' : 'var(--text-muted)',
-                      background: isComplete ? 'var(--green-muted)' : isRunning ? 'var(--accent-muted)' : 'var(--bg-input)',
+                      color: badgeColor, background: badgeBg,
                     }}>
-                      {isComplete ? `${search.resultCount} results` : isRunning ? 'Running' : 'Queued'}
+                      {badgeLabel}
                     </span>
                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{search.date}</span>
                   </div>
+
+                  {/* Interrupted: explain + point to retry via Edit → Analyze */}
+                  {isOrphaned && (
+                    <p className="text-xs mb-2" style={{ color: 'var(--orange)' }}>
+                      Search stopped before completing — the API restarted mid-run.
+                      Click <strong>Edit</strong> to re-open the config, then <strong>Analyze</strong> to re-run.
+                      (Tier 2 roadmap: resume from last checkpoint.)
+                    </p>
+                  )}
 
                   {/* Row 2: Config summary — counts matching the Mass Builder tab badges */}
                   <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>

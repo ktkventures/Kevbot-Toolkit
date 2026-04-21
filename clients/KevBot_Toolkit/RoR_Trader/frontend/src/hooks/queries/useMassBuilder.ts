@@ -46,7 +46,10 @@ export function useMassProgress(searchId: string | number | null) {
       conf_total?: number;
     }>(`/api/mass-builder/progress/${searchId}`),
     enabled: searchId !== null,
-    // Poll 250ms while running for sub-second phase/bar updates; stop when done.
+    // Poll 250ms while running for sub-second phase/bar updates; stop when
+    // done. Terminal states: completed, cancelled, failed, orphaned (added
+    // by Tier 1 — an API pod restart killed the worker thread). Anything
+    // not 'running' or 'queued' stops the poll loop.
     refetchInterval: (query) =>
       query.state.data?.status === 'running' ? 250 : false,
   });
