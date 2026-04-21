@@ -11,6 +11,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import PageHeader from '@/components/PageHeader';
 import TabBar from '@/components/TabBar';
@@ -20,6 +21,9 @@ import MetricCard from '@/components/MetricCard';
 import ChartPlaceholder from '@/components/ChartPlaceholder';
 import EquityCurve from '@/charts/EquityCurve';
 import DistributionChart from '@/charts/DistributionChart';
+// Dynamic import matches Strategy Detail's usage pattern — avoids SSR
+// issues with Recharts and the chart's internal useState hooks.
+const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { ssr: false });
 import CombinedEquityCurve from '@/charts/CombinedEquityCurve';
 import DrawdownChart from '@/charts/DrawdownChart';
 import DailyBarChart from '@/charts/DailyBarChart';
@@ -219,7 +223,16 @@ const TABS = [
 ];
 
 // ---- 1. Live Dashboard ----
-function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
+function LiveDashboardTab({
+  portfolioId,
+  visibility,
+}: {
+  portfolioId?: number;
+  // Shared visibility state from parent (Phase B1). Keys are strategy IDs
+  // as strings; undefined / true = visible, false = hidden. Feeds the
+  // Performance vs Plan chart's "combined visible strategies" aggregation.
+  visibility: Record<string, boolean>;
+}) {
   const [bpDate, setBpDate] = useState(new Date().toISOString().split('T')[0]);
   const [showTradeChart, setShowTradeChart] = useState<number | null>(null);
   const [anomalyTab, setAnomalyTab] = useState('All');
@@ -231,6 +244,7 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   const { data: openPositionsData } = usePortfolioOpenPositions(portfolioId ?? null);
   const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'alerts');
   const { data: accountData } = usePortfolioAccount(portfolioId ?? null);
+  const { data: allStrategies } = useStrategies();
   // alert_kpis is only surfaced on the ?preview=true list endpoint (not on
   // the single-portfolio GET or compute). Reuse the list query so it stays
   // cached across page navigation from the Portfolios list.
@@ -285,6 +299,51 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   // minus risk committed (not notional, which could overshoot on leverage).
   const currentAvailable = Math.max(0, currentBalance - currentRisk);
   const peakAllocated = (capUtil as any)?.peak_allocated ?? (capUtil as any)?.peak ?? null;
+
+  // Phase B2: aggregate visible strategies' trades for the Performance vs
+  // Plan chart. Each strategy carries its own stored_trades and
+  // forward_test_start, so we split per-strategy. Visibility default =
+  // true (absent keys treated as visible).
+  const strategiesMap = useMemo(() => {
+    const m = new Map<number, any>();
+    for (const s of (allStrategies || []) as any[]) m.set(Number(s.id), s);
+    return m;
+  }, [allStrategies]);
+
+  const portStrategyAllocs: any[] = (portfolio as any)?.strategies || [];
+  const visibleStrategyIds = useMemo(() => {
+    return new Set(
+      portStrategyAllocs
+        .map((a: any) => Number(a.strategy_id ?? a.id))
+        .filter((sid) => Number.isFinite(sid) && visibility[String(sid)] !== false),
+    );
+  }, [portStrategyAllocs, visibility]);
+
+  const { pvpBtTrades, pvpFwdTrades } = useMemo(() => {
+    const bt: any[] = [];
+    const fwd: any[] = [];
+    for (const sid of Array.from(visibleStrategyIds)) {
+      const strat = strategiesMap.get(sid as number);
+      if (!strat) continue;
+      const fwdStartMs = strat.forward_test_start
+        ? new Date(strat.forward_test_start).getTime()
+        : Number.POSITIVE_INFINITY;
+      const trades = Array.isArray(strat.stored_trades) ? strat.stored_trades : [];
+      for (const t of trades) {
+        const r = t.r_multiple ?? t.pnlR;
+        if (r == null) continue;
+        const entryIso = t.entry_fill_ts || t.entry_time;
+        const entryMs = entryIso ? new Date(entryIso).getTime() : NaN;
+        const item = { r_multiple: Number(r), entry_time: entryIso, exit_time: t.exit_fill_ts || t.exit_time };
+        if (Number.isFinite(entryMs) && entryMs < fwdStartMs) bt.push(item);
+        else fwd.push(item);
+      }
+    }
+    return { pvpBtTrades: bt, pvpFwdTrades: fwd };
+  }, [visibleStrategyIds, strategiesMap]);
+
+  const visibleCount = visibleStrategyIds.size;
+  const totalEnrolled = portStrategyAllocs.length;
 
   const fmtR = (v: any) => v == null ? '--' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}R`;
   const fmtPct = (v: any) => v == null ? '--' : `${Number(v).toFixed(1)}%`;
@@ -388,28 +447,50 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         />
       </div>
 
-      {/* Performance vs Plan Chart */}
+      {/* Performance vs Plan Chart — aggregated across visible strategies.
+          First-pass port (Phase B2) uses R-multiple math from the shared
+          PerformanceVsPlan component. Dollar-weighted benchmark upgrade
+          deferred to a follow-up (portfolio compute endpoint already
+          provides the data). */}
       <Card className="mb-6">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Performance vs Plan</h3>
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--accent)', opacity: 0.5 }} /> Benchmark
-            </span>
-            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span className="w-3 h-0.5 inline-block rounded" style={{ background: 'rgba(99,102,241,0.2)' }} /> Confidence Band
-            </span>
-            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span className="w-3 h-0.5 inline-block" style={{ background: 'var(--green)' }} /> Actual
-            </span>
+          <div>
+            <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Performance vs Plan</h3>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              Combined from <strong>{visibleCount}</strong> of {totalEnrolled} visible
+              {' '}{totalEnrolled === 1 ? 'strategy' : 'strategies'} on the Strategies tab.
+              R-multiple math (equal-risk approximation); dollar-weighted upgrade coming.
+            </p>
           </div>
         </div>
-        <div className="flex items-center justify-center py-12" style={{ height: 400, color: 'var(--text-muted)' }}>
-          <div className="text-center">
-            <p className="text-sm mb-1">Performance vs Plan chart requires portfolio compute data.</p>
-            <p className="text-xs">Click <strong>Re-Analyze</strong> to generate benchmark + actual equity curves.</p>
+        {pvpBtTrades.length >= 10 && pvpFwdTrades.length >= 3 ? (
+          <PerformanceVsPlan
+            btTrades={pvpBtTrades}
+            fwdTrades={pvpFwdTrades}
+            height={320}
+          />
+        ) : (
+          <div className="flex items-center justify-center py-12" style={{ height: 280, color: 'var(--text-muted)' }}>
+            <div className="text-center">
+              {visibleCount === 0 ? (
+                <>
+                  <p className="text-sm mb-1">No visible strategies selected.</p>
+                  <p className="text-xs">Toggle at least one strategy to <strong>Visible</strong> on the Strategies tab.</p>
+                </>
+              ) : pvpBtTrades.length < 10 ? (
+                <>
+                  <p className="text-sm mb-1">Need ≥10 backtest trades across visible strategies (currently {pvpBtTrades.length}).</p>
+                  <p className="text-xs">Run <strong>Update All Data</strong> or add more visible strategies.</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm mb-1">Need ≥3 forward-test trades to plot actual vs plan (currently {pvpFwdTrades.length}).</p>
+                  <p className="text-xs">Forward-test data accumulates as the strategy fires live.</p>
+                </>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </Card>
 
       {/* Open Positions — live from /api/portfolios/{id}/open-positions.
@@ -1170,8 +1251,18 @@ function PerformanceTab({ portfolioId }: { portfolioId?: number }) {
 }
 
 // ---- 3. Strategies ----
-function StrategiesTab({ portfolioId }: { portfolioId?: number }) {
-  const [visibility, setVisibility] = useState<Record<string, boolean>>({});
+function StrategiesTab({
+  portfolioId,
+  visibility,
+  toggleVisibility,
+}: {
+  portfolioId?: number;
+  visibility: Record<string, boolean>;
+  toggleVisibility: (id: string) => void;
+}) {
+  // Visibility state is owned by the parent (PortfolioDetailPage) so the
+  // Live Dashboard Performance vs Plan chart can read it. `activeState`
+  // stays local — only used for the Active/Inactive UI on this tab.
   const [activeState, setActiveState] = useState<Record<string, boolean>>({});
 
   const { data: portfolio } = usePortfolio(portfolioId ?? null);
@@ -1181,7 +1272,6 @@ function StrategiesTab({ portfolioId }: { portfolioId?: number }) {
     ['kpis', 'equity_curve_with_strategies'],
   );
 
-  const toggleVisibility = (id: string) => setVisibility((prev) => ({ ...prev, [id]: !prev[id] }));
   const toggleActive = (id: string) => setActiveState((prev) => ({ ...prev, [id]: !prev[id] }));
 
   // Build per-strategy row data from the portfolio's strategies allocation + strategy details
@@ -2272,6 +2362,13 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
   const dupMut = useDuplicatePortfolio();
   const reanalyzeMut = useReanalyzePortfolio();
 
+  // Shared visibility state — toggled on Strategies tab, read on Live
+  // Dashboard's Performance vs Plan chart (Phase B1). Session-only, not
+  // persisted to DB. Default: all visible (absent keys === true).
+  const [visibility, setVisibility] = useState<Record<string, boolean>>({});
+  const toggleVisibility = (id: string) =>
+    setVisibility((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }));
+
   useEffect(() => {
     const id = 'portfolio-detail-pulse-css';
     if (!document.getElementById(id)) {
@@ -2372,9 +2469,20 @@ export default function PortfolioDetailPage({ portfolioId }: PortfolioDetailPage
       <TabBar tabs={TABS}>
         {(tab) => (
           <div>
-            {tab === 'Live Dashboard' && <LiveDashboardTab portfolioId={portfolioId} />}
+            {tab === 'Live Dashboard' && (
+              <LiveDashboardTab
+                portfolioId={portfolioId}
+                visibility={visibility}
+              />
+            )}
             {tab === 'Performance' && <PerformanceTab portfolioId={portfolioId} />}
-            {tab === 'Strategies' && <StrategiesTab portfolioId={portfolioId} />}
+            {tab === 'Strategies' && (
+              <StrategiesTab
+                portfolioId={portfolioId}
+                visibility={visibility}
+                toggleVisibility={toggleVisibility}
+              />
+            )}
             {tab === 'Prop Firm Check' && <PropFirmCheckTab portfolioId={portfolioId} />}
             {tab === 'Account' && <AccountTab portfolioId={portfolioId} />}
             {tab === 'Webhooks' && <WebhooksTab portfolioId={portfolioId} />}
