@@ -12,6 +12,8 @@ import os
 import json
 import base64
 import logging
+import threading
+import time as _time
 
 from fastapi import HTTPException, Header
 
@@ -25,6 +27,24 @@ _DEV_USER_ID = os.getenv("DEV_USER_ID", "00000000-0000-0000-0000-000000000000")
 
 if _DEV_BYPASS:
     logger.warning("⚠️  DEV_BYPASS_AUTH is enabled — all requests authenticated as %s", _DEV_USER_ID)
+
+# Token validation cache.
+#
+# Every authenticated request was making a sync httpx call to Supabase's
+# /auth/v1/user endpoint. With --workers 1 (required so mass_builder's
+# in-memory progress state is shared across requests), a single slow
+# Supabase response blocked the whole API for up to 5s, cascading into
+# 503 storms when multiple requests queued behind it (2026-04-21).
+#
+# Cache key: token (the raw JWT). Value: (expires_at_monotonic,). If the
+# monotonic clock shows we're within the TTL window, skip the remote
+# validation entirely. JWT tokens carry their own `exp` claim which is
+# always enforced independently (we decode it every request to extract
+# user_id), so cache-miss correctness is preserved.
+_AUTH_CACHE: dict = {}
+_AUTH_CACHE_LOCK = threading.Lock()
+_AUTH_CACHE_TTL_S = 300  # 5 minutes — balances security (revocation window)
+                         # against load on Supabase auth endpoint
 
 
 def get_current_user(authorization: str = Header(default="")):
@@ -84,9 +104,26 @@ def get_current_user(authorization: str = Header(default="")):
 def _validate_with_supabase(token: str):
     """Validate a JWT by calling Supabase's auth.getUser() endpoint.
 
-    This is the most reliable way to validate tokens regardless of
-    the signing algorithm (HS256, EdDSA, etc.).
+    Cached for 5 minutes per token to avoid hammering Supabase on every
+    request. The JWT's own `exp` claim is always enforced (decoded on
+    every request upstream), so the cache can't extend a token's
+    lifetime — it only skips the remote "is this token still valid
+    with the auth provider" check. If Supabase revokes a token, it
+    will stop being accepted after the TTL window (≤5 min).
     """
+    # Cache hit path — short-circuit the remote call entirely
+    now = _time.monotonic()
+    with _AUTH_CACHE_LOCK:
+        cached_expires = _AUTH_CACHE.get(token)
+        if cached_expires is not None and cached_expires > now:
+            return
+        # Opportunistic cleanup — if the cache has grown past 1k entries,
+        # drop anything expired so it can't grow unbounded.
+        if len(_AUTH_CACHE) > 1000:
+            stale = [k for k, v in _AUTH_CACHE.items() if v <= now]
+            for k in stale:
+                _AUTH_CACHE.pop(k, None)
+
     url = os.getenv("SUPABASE_URL", "")
     key = os.getenv("SUPABASE_ANON_KEY", "")
 
@@ -114,3 +151,8 @@ def _validate_with_supabase(token: str):
     except Exception as e:
         logger.warning("Supabase auth validation error: %s", e)
         raise HTTPException(status_code=401, detail="Token validation error")
+
+    # Success — cache for TTL so subsequent requests on this token don't
+    # make a new network call.
+    with _AUTH_CACHE_LOCK:
+        _AUTH_CACHE[token] = now + _AUTH_CACHE_TTL_S
