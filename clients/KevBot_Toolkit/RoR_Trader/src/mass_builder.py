@@ -927,19 +927,26 @@ def is_search_running(search_id: str) -> bool:
         return info.get('status') == 'running'
 
 
-def cancel_search(search_id: str):
+def cancel_search(search_id):
     """Signal a running search to stop."""
+    search_id = str(search_id)
     with _search_lock:
         if search_id in _active_searches:
             _active_searches[search_id]['cancelled'] = True
 
 
-def start_mass_search_async(search_id: str, search_config: dict):
+def start_mass_search_async(search_id, search_config: dict):
     """Launch a mass search in a background daemon thread.
 
     Progress is written to _active_searches (in-memory, polled by UI)
     and periodically flushed to the database.
     """
+    # Normalize to string so in-memory lookups match what the FastAPI
+    # router passes (URL path params are always str). Supabase returns
+    # the row id as int, which would otherwise mismatch the router's
+    # str-keyed get_search_progress() lookups.
+    search_id = str(search_id)
+
     # Capture the current user context so the background thread can
     # load user-specific packs from the database (confluence groups,
     # RM packs, general packs, strategies).
