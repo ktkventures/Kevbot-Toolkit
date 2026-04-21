@@ -420,16 +420,34 @@ export default function PortfoliosPage() {
               setRefreshCount(0);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
+              const failed: { id: number; status: number | string; detail: string }[] = [];
               for (let i = 0; i < refreshTargets.length; i++) {
+                const sid = refreshTargets[i];
                 try {
-                  await fetch(`${base}/api/strategies/${refreshTargets[i]}/refresh`, {
+                  const res = await fetch(`${base}/api/strategies/${sid}/refresh`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                   });
-                } catch (e) { /* skip failures */ }
+                  if (!res.ok) {
+                    let detail = '';
+                    try { detail = await res.text(); } catch { /* ignore */ }
+                    failed.push({ id: sid, status: res.status, detail: detail.slice(0, 200) });
+                    console.error(`[Update All Data] strategy ${sid} failed (${res.status}): ${detail.slice(0, 200)}`);
+                  }
+                } catch (e: any) {
+                  failed.push({ id: sid, status: 'network_error', detail: String(e?.message || e) });
+                  console.error(`[Update All Data] strategy ${sid} network error:`, e);
+                }
                 setRefreshCount(i + 1);
               }
               setRefreshing(false);
+              if (failed.length > 0) {
+                console.warn(`[Update All Data] ${failed.length}/${refreshTargets.length} failed:`, failed);
+                alert(
+                  `${refreshTargets.length - failed.length} of ${refreshTargets.length} strategies refreshed. ` +
+                  `${failed.length} failed — see browser console for IDs and details.`
+                );
+              }
               window.location.reload();
             }}
             title={refreshTargets.length === 0

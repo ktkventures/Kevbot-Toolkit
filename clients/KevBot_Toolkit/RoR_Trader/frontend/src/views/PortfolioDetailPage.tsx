@@ -254,18 +254,25 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   const openPositions: any[] = (openPositionsData as any)?.open_positions || [];
   const startingBalance = (portfolio as any)?.starting_balance ?? 0;
 
-  // Current balance = starting_balance + sum of ledger amounts (deposits +,
-  // withdrawals -, trading_pnl signed). This reflects the user's actual
-  // working capital, which they maintain via the Account tab. Falls back
-  // to starting_balance when account ledger isn't loaded yet.
+  // Current balance = user-maintained working capital. Per Kevin's intent
+  // ("the user will update that as needed to communicate with their
+  // balance they have that they're working with"), this is:
+  //   starting_balance + deposits − withdrawals
+  // trading_pnl auto-entries are EXCLUDED — those are historical P&L
+  // tracking, not spendable buying power. The user manually keeps this
+  // in sync via the Account tab. Matches the Account tab's intended
+  // semantics; prefers backend-computed account.balance when non-zero.
   const currentBalance = useMemo(() => {
     const base = (accountData as any)?.starting_balance ?? startingBalance;
     const ledger = (accountData as any)?.ledger;
     if (!Array.isArray(ledger)) return base;
-    return ledger.reduce(
-      (sum: number, e: any) => sum + (Number(e?.amount) || 0),
-      base,
-    );
+    const deposits = ledger
+      .filter((e: any) => e?.type === 'deposit')
+      .reduce((s: number, e: any) => s + Math.abs(Number(e?.amount) || 0), 0);
+    const withdrawals = ledger
+      .filter((e: any) => e?.type === 'withdrawal')
+      .reduce((s: number, e: any) => s + Math.abs(Number(e?.amount) || 0), 0);
+    return base + deposits - withdrawals;
   }, [accountData, startingBalance]);
 
   const currentNotional = openPositions.reduce(
@@ -1601,11 +1608,22 @@ function AccountTab({ portfolioId }: { portfolioId?: number }) {
   const withdrawals = ledger.filter((e) => e.type === 'withdrawal').reduce((s, e) => s + Math.abs(e.amount ?? 0), 0);
   const tradingPnl = ledger.filter((e) => e.type === 'trading_pnl').reduce((s, e) => s + (e.amount ?? 0), 0);
   const netDeposits = deposits - withdrawals;
-  const currentBalance = account?.balance ?? 0;
-  // Starting balance = first deposit entry amount, or 0
+  // Starting balance = account.starting_balance (preferred), else first
+  // deposit entry, else 0.
   const startingBalance = (() => {
+    const explicit = (account as any)?.starting_balance;
+    if (typeof explicit === 'number' && explicit > 0) return explicit;
     const firstDeposit = ledger.find((e) => e.type === 'deposit');
     return firstDeposit ? Math.abs(firstDeposit.amount ?? 0) : 0;
+  })();
+  // Current balance — match the Live Dashboard's calc so both surfaces
+  // agree. Prefer backend-computed account.balance when non-zero (Kevin
+  // had portfolios where backend returned balance=0 but had real starting
+  // balance + deposits; this fallback keeps the UI coherent).
+  const currentBalance = (() => {
+    const backend = (account as any)?.balance;
+    if (typeof backend === 'number' && backend > 0) return backend;
+    return startingBalance + deposits - withdrawals;
   })();
 
   // Running balance history for chart
