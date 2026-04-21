@@ -202,6 +202,21 @@ export default function MassResultsPage() {
         subtitle="Browse and manage saved mass builder searches"
       />
 
+      {/* Preview-KPIs warning — shown alongside any Mass Builder output. */}
+      <div
+        className="mb-4 px-3 py-2 rounded flex items-start gap-2"
+        style={{ background: 'rgba(255, 152, 0, 0.12)', border: '1px solid var(--orange)' }}
+      >
+        <span style={{ color: 'var(--orange)', fontSize: '1rem', lineHeight: 1 }}>⚠</span>
+        <p className="text-xs" style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          <span className="font-semibold" style={{ color: 'var(--orange)' }}>Preview KPIs.</span>{' '}
+          Results below rank candidates via a post-filter on the base backtest.
+          Real engine performance can differ when confluence filters out trades whose
+          position-state blocked other candidates. Save interesting strategies, then run{' '}
+          <strong>Update All Data</strong> on each to confirm with engine-accurate KPIs.
+        </p>
+      </div>
+
       {/* Controls */}
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>

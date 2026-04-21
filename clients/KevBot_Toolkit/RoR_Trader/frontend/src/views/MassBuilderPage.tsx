@@ -830,6 +830,26 @@ export default function MassBuilderPage() {
     <div>
       <PageHeader title="Mass Strategy Builder" subtitle="Bulk strategy discovery and optimization engine" />
 
+      {/* Preview-KPIs warning — Mass Builder runs a base backtest and
+          post-filters by confluence, which can produce KPIs that differ
+          from engine-accurate numbers (the base's position-state blocking
+          hides trades the live engine would take under gating). Always
+          verify strategy KPIs via "Update All Data" after saving. */}
+      <div
+        className="mb-4 px-3 py-2 rounded flex items-start gap-2"
+        style={{ background: 'rgba(255, 152, 0, 0.12)', border: '1px solid var(--orange)' }}
+      >
+        <span style={{ color: 'var(--orange)', fontSize: '1rem', lineHeight: 1 }}>⚠</span>
+        <p className="text-xs" style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          <span className="font-semibold" style={{ color: 'var(--orange)' }}>Preview KPIs.</span>{' '}
+          Mass Builder ranks strategies using a post-filter on a single base backtest.
+          Real engine performance can differ — the base run&apos;s position-state blocking hides
+          trades the live engine takes under confluence gating. After saving any strategy
+          from here, click <strong>Update All Data</strong> on the Strategy Detail page for
+          engine-accurate KPIs.
+        </p>
+      </div>
+
       {/* Edit-mode banner — shown when loaded via ?edit={id} from Mass Results */}
       {isEditMode && cloneApplied && (
         <div className="mb-4 px-3 py-2 rounded flex items-center justify-between" style={{ background: 'var(--accent-muted)', border: '1px solid var(--accent)' }}>
