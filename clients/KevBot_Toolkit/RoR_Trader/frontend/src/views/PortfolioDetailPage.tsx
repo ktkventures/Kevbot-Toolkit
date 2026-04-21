@@ -41,6 +41,7 @@ import {
   useAddLedgerEntry, useRemoveLedgerEntry, useUpdatePortfolio,
 } from '@/hooks/mutations/usePortfolioMutations';
 import { useWebhookGroups } from '@/hooks/queries/useWebhookGroups';
+import { useWebhookDeliveryLog } from '@/hooks/queries/useWebhooks';
 import PortfolioDetailV5 from '@/app/portfolios/[id]/versions/V5';
 
 const statusColors: Record<string, string> = {
@@ -1926,14 +1927,148 @@ function WebhooksTab({ portfolioId }: { portfolioId?: number }) {
         )}
       </Card>
 
-      {/* Delivery History (placeholder — requires live alert data, deferred to M8.5) */}
-      <Card className="mb-6">
-        <h3 className="text-sm font-medium mb-3">Webhook Delivery History</h3>
-        <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
-          Delivery history will appear here once live alerts start firing (M8.5).
-        </p>
-      </Card>
+      {/* Delivery History — wired to /api/webhooks/delivery-log */}
+      <WebhookDeliveryHistory portfolioId={portfolioId} />
     </div>
+  );
+}
+
+// ---- Webhook Delivery History ----
+// Pulls user-scoped delivery log and filters to this portfolio's strategies.
+// Empty state still shown when nothing has fired yet.
+function WebhookDeliveryHistory({ portfolioId }: { portfolioId?: number }) {
+  const { data: portfolio } = usePortfolio(portfolioId ?? null);
+  const { data: deliveries, isLoading } = useWebhookDeliveryLog({ limit: 100 });
+
+  const portfolioStrategyNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of (portfolio?.strategies as any[]) || []) {
+      const name = s?.name ?? s?.strategy_name ?? s?.strategy?.name;
+      if (name) names.add(String(name));
+    }
+    return names;
+  }, [portfolio]);
+
+  const filtered = useMemo(() => {
+    if (!deliveries) return [];
+    if (portfolioStrategyNames.size === 0) return deliveries;
+    return deliveries.filter((d: any) =>
+      portfolioStrategyNames.has(d.strategy_name || d.strategy || '')
+    );
+  }, [deliveries, portfolioStrategyNames]);
+
+  const fmtTime = (iso: string) => {
+    if (!iso || iso === '--') return '--';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '--';
+      return d.toLocaleString('en-US', {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+    } catch { return '--'; }
+  };
+
+  const statusColor = (code: number, success?: boolean) => {
+    if (success === true || (code >= 200 && code < 300)) return 'var(--green)';
+    if (code === 0) return 'var(--text-muted)';
+    return 'var(--red)';
+  };
+
+  return (
+    <Card className="mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium">Webhook Delivery History</h3>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {filtered.length} recent
+        </span>
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
+          Loading...
+        </p>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
+          No webhook deliveries yet for this portfolio&apos;s strategies.
+          Deliveries will appear here once alerts fire and webhooks dispatch.
+        </p>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Time', 'Event', 'Strategy', 'Symbol', 'Status', 'Latency'].map((h) => (
+                  <th
+                    key={h}
+                    className="text-left py-2 px-3 text-xs font-medium"
+                    style={{
+                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
+                      textTransform: 'uppercase', letterSpacing: '0.05em',
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 50).map((d: any, i: number) => {
+                const statusCode = d.status_code ?? d.status ?? 0;
+                const latency = d.latency_ms ?? d.latency ?? null;
+                return (
+                  <tr key={d.id ?? `${d.alert_id}-${i}`}>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.75rem', fontFamily: 'monospace',
+                      borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      {fmtTime(d.sent_at || d.timestamp || d.alert_timestamp)}
+                    </td>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.8125rem',
+                      borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      <span className="text-xs px-2 py-0.5 rounded-full" style={{
+                        background: 'var(--accent-muted)', color: 'var(--accent)',
+                      }}>
+                        {d.event_type || d.event || d.alert_type || '--'}
+                      </span>
+                    </td>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.8125rem',
+                      borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      {d.strategy_name || d.strategy || '--'}
+                    </td>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.8125rem', fontFamily: 'monospace',
+                      borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      {d.symbol || '--'}
+                      {d.direction && <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>{d.direction}</span>}
+                    </td>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.8125rem', fontFamily: 'monospace',
+                      borderBottom: '1px solid var(--border)',
+                      color: statusColor(statusCode, d.success),
+                      fontWeight: 600,
+                    }}>
+                      {statusCode || (d.success ? 'OK' : 'FAIL')}
+                    </td>
+                    <td style={{
+                      padding: '8px 12px', fontSize: '0.75rem', fontFamily: 'monospace',
+                      borderBottom: '1px solid var(--border)', color: 'var(--text-muted)',
+                    }}>
+                      {latency != null ? `${Number(latency).toFixed(0)}ms` : '--'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
   );
 }
 
