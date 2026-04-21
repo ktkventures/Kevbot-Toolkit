@@ -82,12 +82,20 @@ def get_current_user(authorization: str = Header(default="")):
 
         user_id = payload.get("sub")
         email = payload.get("email", "")
+        jwt_exp = int(payload.get("exp") or 0)
 
         if not user_id:
             raise HTTPException(status_code=401, detail="No subject in token")
 
-        # Validate token via Supabase auth API
-        _validate_with_supabase(token)
+        # Enforce the JWT's own expiration claim BEFORE calling Supabase.
+        # This is the primary correctness check; Supabase is a secondary
+        # "is this token revoked?" check that gracefully degrades.
+        import time as _t
+        if jwt_exp and jwt_exp <= int(_t.time()):
+            raise HTTPException(status_code=401, detail="Token expired")
+
+        # Validate token via Supabase auth API (cached + degrades gracefully)
+        _validate_with_supabase(token, jwt_exp)
 
     except HTTPException:
         raise
@@ -101,15 +109,22 @@ def get_current_user(authorization: str = Header(default="")):
     return {"id": user_id, "email": email}
 
 
-def _validate_with_supabase(token: str):
+def _validate_with_supabase(token: str, jwt_exp: int):
     """Validate a JWT by calling Supabase's auth.getUser() endpoint.
 
     Cached for 5 minutes per token to avoid hammering Supabase on every
     request. The JWT's own `exp` claim is always enforced (decoded on
     every request upstream), so the cache can't extend a token's
     lifetime — it only skips the remote "is this token still valid
-    with the auth provider" check. If Supabase revokes a token, it
-    will stop being accepted after the TTL window (≤5 min).
+    with the auth provider" check.
+
+    Degraded mode (2026-04-21): when Supabase is unreachable or slow,
+    fall back to trusting the JWT's `exp` claim alone (the caller has
+    already verified exp is in the future before we get here). This
+    prevents a slow Supabase from taking the whole API down. Trade-off:
+    revoked tokens stay accepted until their natural expiration
+    (typically 1 hour). Tracked as a reliability>security-window
+    decision until we implement proper JWKS signature verification.
     """
     # Cache hit path — short-circuit the remote call entirely
     now = _time.monotonic()
@@ -130,6 +145,8 @@ def _validate_with_supabase(token: str):
     if not url:
         raise HTTPException(status_code=500, detail="SUPABASE_URL not configured")
 
+    # Shorter timeout (was 5s) — we'd rather fall back to exp-only
+    # validation than block the single uvicorn worker for 5 seconds.
     import httpx
     try:
         resp = httpx.get(
@@ -138,21 +155,34 @@ def _validate_with_supabase(token: str):
                 "Authorization": f"Bearer {token}",
                 "apikey": key,
             },
-            timeout=5.0,
+            timeout=2.0,
         )
-        if resp.status_code != 200:
-            logger.warning("Supabase auth validation failed: %d %s", resp.status_code, resp.text[:100])
+        if resp.status_code == 200:
+            # Success — cache for TTL
+            with _AUTH_CACHE_LOCK:
+                _AUTH_CACHE[token] = now + _AUTH_CACHE_TTL_S
+            return
+        if resp.status_code in (401, 403):
+            # Auth provider explicitly rejected the token
+            logger.warning("Supabase rejected token: %d %s", resp.status_code, resp.text[:100])
             raise HTTPException(status_code=401, detail="Token validation failed")
+        # Other non-200 from Supabase (500, 502, 503, etc.) — fall through
+        # to degraded mode rather than failing the request.
+        logger.warning("Supabase auth returned %d — falling back to exp-only validation", resp.status_code)
     except httpx.TimeoutException:
-        logger.warning("Supabase auth validation timed out")
-        raise HTTPException(status_code=503, detail="Auth service timeout")
+        logger.warning("Supabase auth validation timed out — falling back to exp-only validation")
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Supabase auth validation error: %s", e)
-        raise HTTPException(status_code=401, detail="Token validation error")
+        logger.warning("Supabase auth validation error (%s) — falling back to exp-only validation", e)
 
-    # Success — cache for TTL so subsequent requests on this token don't
-    # make a new network call.
-    with _AUTH_CACHE_LOCK:
-        _AUTH_CACHE[token] = now + _AUTH_CACHE_TTL_S
+    # Degraded mode: Supabase is down or slow. Trust the JWT's exp claim
+    # (already verified upstream by the caller). Cache with a SHORTER TTL
+    # (1 min instead of 5) so we re-probe Supabase soon in case it
+    # recovers, but we're not locking the user out in the meantime.
+    _now_s = int(_time.time())
+    if jwt_exp and jwt_exp > _now_s:
+        with _AUTH_CACHE_LOCK:
+            _AUTH_CACHE[token] = now + 60  # short TTL
+        return
+    raise HTTPException(status_code=401, detail="Token expired")
