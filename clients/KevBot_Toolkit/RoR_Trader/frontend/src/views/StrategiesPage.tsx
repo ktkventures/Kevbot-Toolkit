@@ -410,7 +410,7 @@ export default function StrategiesPage() {
               window.location.reload();
             }}
           >
-            {refreshing ? `Refreshing ${refreshCount}/${strategies.length}...` : 'Update Data'}
+            {refreshing ? `Refreshing ${refreshCount}/${strategies.length}...` : 'Update All Data'}
           </button>
           <Link href="/strategy-builder"><button style={btnPrimary}>+ New Strategy</button></Link>
         </div>

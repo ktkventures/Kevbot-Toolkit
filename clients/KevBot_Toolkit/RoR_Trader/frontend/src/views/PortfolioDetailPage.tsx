@@ -230,6 +230,7 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
   const { data: computeData } = usePortfolioCompute(portfolioId ?? null, ['kpis']);
   const { data: openPositionsData } = usePortfolioOpenPositions(portfolioId ?? null);
   const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'alerts');
+  const { data: accountData } = usePortfolioAccount(portfolioId ?? null);
   // alert_kpis is only surfaced on the ?preview=true list endpoint (not on
   // the single-portfolio GET or compute). Reuse the list query so it stays
   // cached across page navigation from the Portfolios list.
@@ -252,15 +253,30 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
     {};
   const openPositions: any[] = (openPositionsData as any)?.open_positions || [];
   const startingBalance = (portfolio as any)?.starting_balance ?? 0;
+
+  // Current balance = starting_balance + sum of ledger amounts (deposits +,
+  // withdrawals -, trading_pnl signed). This reflects the user's actual
+  // working capital, which they maintain via the Account tab. Falls back
+  // to starting_balance when account ledger isn't loaded yet.
+  const currentBalance = useMemo(() => {
+    const base = (accountData as any)?.starting_balance ?? startingBalance;
+    const ledger = (accountData as any)?.ledger;
+    if (!Array.isArray(ledger)) return base;
+    return ledger.reduce(
+      (sum: number, e: any) => sum + (Number(e?.amount) || 0),
+      base,
+    );
+  }, [accountData, startingBalance]);
+
   const currentNotional = openPositions.reduce(
     (sum: number, p: any) => sum + (Number(p.buying_power_used) || 0), 0,
   );
   const currentRisk = openPositions.reduce(
     (sum: number, p: any) => sum + (Number(p.risk_per_trade) || 0), 0,
   );
-  // For cash-account semantics, "available" clamps at zero when notional
-  // exceeds balance. Users can see both the raw notional and the risk.
-  const currentAvailable = Math.max(0, startingBalance - currentRisk);
+  // For cash-account semantics, "available" = current working capital
+  // minus risk committed (not notional, which could overshoot on leverage).
+  const currentAvailable = Math.max(0, currentBalance - currentRisk);
   const peakAllocated = (capUtil as any)?.peak_allocated ?? (capUtil as any)?.peak ?? null;
 
   const fmtR = (v: any) => v == null ? '--' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}R`;
@@ -334,7 +350,10 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         </div>
       </div>
 
-      {/* KPI Row — live (alert-sourced) vs planned (backtest) */}
+      {/* KPI Row — live (alert-sourced) vs planned (backtest). Portfolio
+          KPIs use total_pnl (dollars), not total_r. calculate_portfolio_kpis
+          in src/portfolios.py returns total_pnl / win_rate / total_trades
+          etc. — see agent audit for the full shape. */}
       <div className="grid grid-cols-5 gap-3 mb-6">
         <MetricCard
           label="Alert Trades"
@@ -346,17 +365,17 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         />
         <MetricCard
           label="Total P&L"
-          value={fmtR(alertKpis.total_r)}
+          value={fmtUsd(alertKpis.total_pnl)}
         />
         <MetricCard
           label="Expected P&L"
-          value={fmtR(plannedKpis.total_r)}
+          value={fmtUsd(plannedKpis.total_pnl)}
         />
         <MetricCard
           label="vs Plan"
           value={
-            alertKpis.total_r != null && plannedKpis.total_r != null && plannedKpis.total_r !== 0
-              ? `${((alertKpis.total_r / plannedKpis.total_r - 1) * 100).toFixed(1)}%`
+            alertKpis.total_pnl != null && plannedKpis.total_pnl != null && plannedKpis.total_pnl !== 0
+              ? `${((alertKpis.total_pnl / plannedKpis.total_pnl - 1) * 100).toFixed(1)}%`
               : '--'
           }
         />
@@ -479,8 +498,11 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         </div>
         <div className="grid grid-cols-4 gap-4 mb-4">
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Starting Balance</p>
-            <p className="text-lg font-semibold">{fmtUsd(startingBalance)}</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Current Balance</p>
+            <p className="text-lg font-semibold">{fmtUsd(currentBalance)}</p>
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              from Account tab ledger
+            </p>
           </div>
           <div>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Available</p>
@@ -504,8 +526,8 @@ function LiveDashboardTab({ portfolioId }: { portfolioId?: number }) {
         <ChartPlaceholder label={`24-hour buying power chart (${bpDate}): Available BP over time — needs worker data`} height={180} />
         <div className="flex items-center justify-between mt-2">
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Risk utilization: {startingBalance > 0 ? `${((currentRisk / startingBalance) * 100).toFixed(1)}%` : '--'}
-            {' '}&middot; Notional utilization: {startingBalance > 0 ? `${((currentNotional / startingBalance) * 100).toFixed(0)}%` : '--'}
+            Risk utilization: {currentBalance > 0 ? `${((currentRisk / currentBalance) * 100).toFixed(1)}%` : '--'}
+            {' '}&middot; Notional utilization: {currentBalance > 0 ? `${((currentNotional / currentBalance) * 100).toFixed(0)}%` : '--'}
             {' '}&middot; Concurrent positions: {openPositions.length}
           </p>
         </div>

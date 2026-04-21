@@ -390,13 +390,58 @@ export default function PortfoliosPage() {
     padding: '6px 14px', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer',
   };
 
+  // Bulk refresh — refresh every strategy enrolled in any portfolio. Dedups
+  // by strategy_id so a strategy in multiple portfolios only runs once.
+  // Matches the pattern on My Strategies (plain fetch to sidestep production
+  // bundler issues with apiFetch).
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const refreshTargets = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of apiPortfoliosRaw || []) {
+      for (const s of (p?.strategies as any[]) || []) {
+        const sid = s?.strategy_id ?? s?.id;
+        if (sid != null) ids.add(Number(sid));
+      }
+    }
+    return Array.from(ids);
+  }, [apiPortfoliosRaw]);
+
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">My Portfolios</h1>
         <div className="flex gap-3">
-          <button style={btnSecondary}>Update Data</button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            disabled={refreshing || refreshTargets.length === 0}
+            onClick={async () => {
+              if (refreshing || refreshTargets.length === 0) return;
+              setRefreshing(true);
+              setRefreshCount(0);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              for (let i = 0; i < refreshTargets.length; i++) {
+                try {
+                  await fetch(`${base}/api/strategies/${refreshTargets[i]}/refresh`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  });
+                } catch (e) { /* skip failures */ }
+                setRefreshCount(i + 1);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+            title={refreshTargets.length === 0
+              ? 'No strategies enrolled in any portfolio'
+              : `Refresh ${refreshTargets.length} unique strategies across all portfolios`}
+          >
+            {refreshing
+              ? `Refreshing ${refreshCount}/${refreshTargets.length}...`
+              : 'Update All Data'}
+          </button>
           <button style={btnPrimary} onClick={() => router.push('/portfolios/new')}>+ New Portfolio</button>
         </div>
       </div>
