@@ -86,12 +86,22 @@ def create_app() -> FastAPI:
     import pack_registry
     pack_registry.scan_and_load_all()
 
-    # Mass Builder orphan cleanup — on every API boot, mark any
-    # mass_searches row still showing 'running' as 'orphaned'. A fresh
-    # process has no daemon threads by definition; any such row is a
-    # leftover from a previous pod whose worker died on deploy.
-    from mass_builder import cleanup_orphaned_mass_searches
-    cleanup_orphaned_mass_searches()
+    # Mass Builder orphan cleanup — runs in a background thread so a slow
+    # Supabase response at boot can't block uvicorn from binding (the
+    # original sync call was hanging the container startup with no output
+    # when Supabase was under load, producing persistent 502s even after
+    # the deploy reported SUCCESS). The cleanup still runs on boot but
+    # uvicorn starts serving requests immediately.
+    import threading
+    def _startup_cleanup():
+        try:
+            from mass_builder import cleanup_orphaned_mass_searches
+            cleanup_orphaned_mass_searches()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Mass search startup cleanup failed (non-fatal): %s", e)
+    threading.Thread(target=_startup_cleanup, daemon=True, name="startup_orphan_cleanup").start()
 
     # Health check
     @app.get("/health")
