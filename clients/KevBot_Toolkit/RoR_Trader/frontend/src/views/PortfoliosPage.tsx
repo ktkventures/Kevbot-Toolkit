@@ -349,6 +349,21 @@ export default function PortfoliosPage() {
     return result;
   }, [startPortfolios, statusFilter, tagFilter, sortBy]);
 
+  // Bulk refresh state — MUST be declared before any early return so hooks
+  // order is stable across isLoading / error branches. Fixes React #310.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const refreshTargets = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of apiPortfoliosRaw || []) {
+      for (const s of (p?.strategies as any[]) || []) {
+        const sid = s?.strategy_id ?? s?.id;
+        if (sid != null) ids.add(Number(sid));
+      }
+    }
+    return Array.from(ids);
+  }, [apiPortfoliosRaw]);
+
   // ---- Loading / Error states (after all hooks) ----
   if (isLoading) {
     return (
@@ -389,23 +404,6 @@ export default function PortfoliosPage() {
     background: 'var(--accent)', border: 'none', color: 'white',
     padding: '6px 14px', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer',
   };
-
-  // Bulk refresh — refresh every strategy enrolled in any portfolio. Dedups
-  // by strategy_id so a strategy in multiple portfolios only runs once.
-  // Matches the pattern on My Strategies (plain fetch to sidestep production
-  // bundler issues with apiFetch).
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshCount, setRefreshCount] = useState(0);
-  const refreshTargets = useMemo(() => {
-    const ids = new Set<number>();
-    for (const p of apiPortfoliosRaw || []) {
-      for (const s of (p?.strategies as any[]) || []) {
-        const sid = s?.strategy_id ?? s?.id;
-        if (sid != null) ids.add(Number(sid));
-      }
-    }
-    return Array.from(ids);
-  }, [apiPortfoliosRaw]);
 
   return (
     <div>
