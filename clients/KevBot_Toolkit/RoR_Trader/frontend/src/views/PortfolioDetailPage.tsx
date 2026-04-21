@@ -24,6 +24,7 @@ import DistributionChart from '@/charts/DistributionChart';
 // Dynamic import matches Strategy Detail's usage pattern — avoids SSR
 // issues with Recharts and the chart's internal useState hooks.
 const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { ssr: false });
+const BuyingPowerTimeline = dynamic(() => import('@/charts/BuyingPowerTimeline'), { ssr: false });
 import CombinedEquityCurve from '@/charts/CombinedEquityCurve';
 import DrawdownChart from '@/charts/DrawdownChart';
 import DailyBarChart from '@/charts/DailyBarChart';
@@ -237,6 +238,7 @@ function LiveDashboardTab({
   const [showTradeChart, setShowTradeChart] = useState<number | null>(null);
   const [anomalyTab, setAnomalyTab] = useState('All');
   const [dataMode, setDataMode] = useState<'Planned' | 'Executed'>('Planned');
+  const [showAllTrades, setShowAllTrades] = useState(false);
 
   // Live data hooks
   const { data: portfolio } = usePortfolio(portfolioId ?? null);
@@ -245,6 +247,7 @@ function LiveDashboardTab({
   const { data: capUtil } = usePortfolioCapitalUtilization(portfolioId ?? null, 'alerts');
   const { data: accountData } = usePortfolioAccount(portfolioId ?? null);
   const { data: allStrategies } = useStrategies();
+  const { data: tradesData } = usePortfolioTrades(portfolioId ?? null);
   // alert_kpis is only surfaced on the ?preview=true list endpoint (not on
   // the single-portfolio GET or compute). Reuse the list query so it stays
   // cached across page navigation from the Portfolios list.
@@ -344,6 +347,23 @@ function LiveDashboardTab({
 
   const visibleCount = visibleStrategyIds.size;
   const totalEnrolled = portStrategyAllocs.length;
+
+  // Trade History (Phase C1): filter portfolio trades to visible strategies,
+  // newest first, cap at 100 rows by default with Show all toggle.
+  const tradeRows = useMemo(() => {
+    const all: any[] = Array.isArray((tradesData as any)?.trades)
+      ? ((tradesData as any).trades as any[])
+      : (Array.isArray(tradesData) ? (tradesData as any[]) : []);
+    const filtered = all.filter(
+      (t: any) => visibleStrategyIds.has(Number(t.strategy_id)),
+    );
+    filtered.sort((a: any, b: any) => {
+      const ae = new Date(a.entry_time || a.entry_fill_ts || 0).getTime();
+      const be = new Date(b.entry_time || b.entry_fill_ts || 0).getTime();
+      return be - ae; // newest first
+    });
+    return filtered;
+  }, [tradesData, visibleStrategyIds]);
 
   const fmtR = (v: any) => v == null ? '--' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}R`;
   const fmtPct = (v: any) => v == null ? '--' : `${Number(v).toFixed(1)}%`;
@@ -611,7 +631,15 @@ function LiveDashboardTab({
             <p className="text-lg font-semibold">{peakAllocated != null ? fmtUsd(peakAllocated) : '--'}</p>
           </div>
         </div>
-        <ChartPlaceholder label={`24-hour buying power chart (${bpDate}): Available BP over time — needs worker data`} height={180} />
+        {/* 24-hour intraday buying power chart — Phase C2. Green = available
+            BP, orange = capital deployed. Step-line reflects "state held
+            until next entry/exit event". */}
+        <BuyingPowerTimeline
+          timeline={Array.isArray((capUtil as any)?.timeline) ? (capUtil as any).timeline : []}
+          date={bpDate}
+          startingBalance={currentBalance}
+          height={220}
+        />
         <div className="flex items-center justify-between mt-2">
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Risk utilization: {currentBalance > 0 ? `${((currentRisk / currentBalance) * 100).toFixed(1)}%` : '--'}
@@ -650,27 +678,112 @@ function LiveDashboardTab({
         </p>
       </Card>
 
-      {/* Trade History — matching Streamlit 13 columns */}
+      {/* Trade History — Phase C1. P Qty = planned_quantity (risk / stop
+          distance), E Qty = quantity actually executed. When a live alert
+          fires but the backtest engine doesn't match, E Qty = 0 (phantom).
+          For backtest-only trades (no alert), both are equal. */}
       <Card>
-        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>Trade History</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Trade History{' '}
+            <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+              ({Math.min(tradeRows.length, showAllTrades ? tradeRows.length : 100).toLocaleString()}
+              {' '}of {tradeRows.length.toLocaleString()},
+              {' '}visible strategies only)
+            </span>
+          </h3>
+          {tradeRows.length > 100 && (
+            <button
+              onClick={() => setShowAllTrades(v => !v)}
+              className="text-xs"
+              style={{
+                color: 'var(--accent)', background: 'transparent',
+                border: 'none', cursor: 'pointer', padding: '2px 6px',
+              }}
+              title="Rendering many rows can slow page interactions"
+            >
+              {showAllTrades ? 'Show recent 100' : `Show all ${tradeRows.length.toLocaleString()}`}
+            </button>
+          )}
+        </div>
 
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 900 }}>
             <thead>
               <tr>
-                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'P Qty', 'E Qty', 'R', 'P&L', 'Status', ''].map((h) => (
-                  <th key={h} className="text-left py-2 px-2 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', whiteSpace: 'nowrap' }}>{h}</th>
+                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'P Qty', 'E Qty', 'R', 'P&L', 'Status'].map((h) => (
+                  <th key={h} className="text-left py-2 px-2 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', whiteSpace: 'nowrap', position: 'sticky', top: 0 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              <tr><td colSpan={13} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No trade history — worker data not available yet.</td></tr>
+              {tradeRows.length === 0 ? (
+                <tr><td colSpan={12} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                  {visibleStrategyIds.size === 0
+                    ? 'Toggle at least one strategy to Visible on the Strategies tab.'
+                    : 'No trade history yet. Run Update All Data or wait for live trades.'}
+                </td></tr>
+              ) : tradeRows.slice(0, showAllTrades ? tradeRows.length : 100).map((t: any, i: number) => {
+                const strat = strategiesMap.get(Number(t.strategy_id));
+                const symbol = t.symbol ?? strat?.symbol ?? '--';
+                const direction = t.direction ?? strat?.direction ?? 'LONG';
+                const plannedQty = t.planned_quantity ?? t.quantity ?? null;
+                // Executed qty: matched=true OR (no alert attempt, so equals planned).
+                // Phantom trades = alert fired but no backtest match → E Qty = 0.
+                const isPhantom = t.phantom === true;
+                const executedQty = isPhantom ? 0 : (t.quantity ?? plannedQty);
+                const dataSource = t.data_source || 'backtest';
+                const statusLabel = isPhantom
+                  ? 'Phantom'
+                  : dataSource === 'live_executions'
+                    ? 'Live'
+                    : t.matched === true
+                      ? 'Matched'
+                      : 'Backtest';
+                const statusColor = isPhantom ? 'var(--red)'
+                  : dataSource === 'live_executions' ? 'var(--green)'
+                  : t.matched === true ? 'var(--green)'
+                  : 'var(--text-muted)';
+                const statusBg = isPhantom ? 'var(--red-muted)'
+                  : dataSource === 'live_executions' ? 'var(--green-muted)'
+                  : t.matched === true ? 'var(--green-muted)'
+                  : 'var(--bg-input)';
+                const r = Number(t.r_multiple ?? 0);
+                const pnl = Number(t.dollar_pnl ?? 0);
+                return (
+                  <tr key={`${t.strategy_id}-${t.entry_time}-${i}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>{i + 1}</td>
+                    <td className="py-2 px-2 text-sm" style={{ whiteSpace: 'nowrap' }}>{t.strategy_name || strat?.name || `Strategy ${t.strategy_id}`}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{symbol}</td>
+                    <td className="py-2 px-2 text-sm" style={{ color: direction === 'LONG' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{direction}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{t.entry_price != null ? `$${Number(t.entry_price).toFixed(2)}` : '--'}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{t.exit_price != null ? `$${Number(t.exit_price).toFixed(2)}` : '--'}</td>
+                    <td className="py-2 px-2 text-xs" style={{ color: 'var(--text-muted)' }}>{t.exit_reason || '--'}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{plannedQty ?? '--'}</td>
+                    <td
+                      className="py-2 px-2 text-sm"
+                      style={{ fontFamily: 'monospace', color: executedQty === 0 && plannedQty ? 'var(--red)' : 'inherit' }}
+                      title={isPhantom ? 'Phantom trade: alert fired but backtest did not match — not executed' : undefined}
+                    >
+                      {executedQty ?? '--'}
+                    </td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace', color: r >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {r >= 0 ? '+' : ''}{r.toFixed(2)}R
+                    </td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace', color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {pnl >= 0 ? '+' : '-'}${Math.abs(pnl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="py-2 px-2 text-xs">
+                      <span className="px-2 py-0.5 rounded-full font-medium" style={{ color: statusColor, background: statusBg }}>
+                        {statusLabel}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-
-        {/* Trade chart modal */}
-        {/* Trade chart modal — will be wired when worker provides live trade data */}
       </Card>
     </div>
   );
