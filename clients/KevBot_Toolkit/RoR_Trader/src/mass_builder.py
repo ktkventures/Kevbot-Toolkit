@@ -825,16 +825,16 @@ def run_mass_search(
                                     )
                                     _diag['conf_search_total_sec'] += _time.monotonic() - _conf_t0
                                     _diag['conf_combos_total'] += _combos_seen['n']
-                                    if len(best) > 0:
-                                        for _, row in best.iterrows():
+                                    if best:
+                                        for row in best:
                                             combo_kpis = {
                                                 k: row[k] for k in base_kpis
-                                                if k in row.index
+                                                if k in row
                                             }
                                             if not meets_required_performance(
                                                     combo_kpis, required_perf):
                                                 continue
-                                            combo_set = row['combination']
+                                            combo_set = set(row['combination'])
                                             conf_config = dict(config)
                                             tf_confs = [c for c in combo_set
                                                         if not c.startswith('GEN-')]

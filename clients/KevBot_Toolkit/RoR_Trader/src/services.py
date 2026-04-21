@@ -1147,11 +1147,19 @@ def find_best_combinations(
     total_trading_days: int = None,
     exclude_prefix: str = None,
     include_prefix: str = None,
+    allowed_labels: set = None,
+    progress_callback=None,
 ) -> list[dict]:
     """Find the best confluence combinations automatically.
 
     Ported from Streamlit app.py:find_best_combinations (lines 1547-1624).
     Uses pre-computed numpy boolean masks for fast subset filtering.
+
+    allowed_labels: if provided, restrict search to records in this set.
+        Matching is both by exact membership and by suffix (TF-agnostic for
+        records like "{tf}-{INTERP}-{STATE}" — any TF prefix is accepted if
+        "{INTERP}-{STATE}" is in the set).
+    progress_callback(idx, total): called during the combination loop.
 
     Returns: List of dicts with combination KPIs, sorted by profit_factor desc.
     """
@@ -1176,6 +1184,15 @@ def find_best_combinations(
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
     if include_prefix:
         all_records = {r for r in all_records if r.startswith(include_prefix)}
+    if allowed_labels:
+        def _matches(rec: str) -> bool:
+            if rec in allowed_labels:
+                return True
+            parts = rec.split("-", 2)
+            if len(parts) == 3 and f"{parts[1]}-{parts[2]}" in allowed_labels:
+                return True
+            return False
+        all_records = {r for r in all_records if _matches(r)}
 
     # Pre-compute boolean mask per record (vectorized)
     n_trades = len(trades_df)
@@ -1191,30 +1208,40 @@ def find_best_combinations(
     # Only test records that appear in >= min_trades
     valid_records = sorted([r for r, m in record_masks.items() if m.sum() >= min_trades])
 
-    results = []
+    all_combos = []
     for depth in range(1, min(max_depth + 1, len(valid_records) + 1)):
         for combo in combinations(valid_records, depth):
-            # AND the pre-computed masks
-            combined = record_masks[combo[0]]
-            for r in combo[1:]:
-                combined = combined & record_masks[r]
+            all_combos.append(combo)
+    total = len(all_combos)
 
-            count = int(combined.sum())
-            if count >= min_trades:
-                subset = trades_df[combined]
-                kpis = calculate_kpis(subset, starting_balance=starting_balance,
-                                      risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
-                results.append({
-                    'combination': list(sorted(combo)),
-                    'combo_str': ' + '.join(sorted(combo)),
-                    'depth': len(combo),
-                    'total_trades': kpis['total_trades'],
-                    'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
-                    'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),
-                    'avg_r': round(_safe_float(kpis.get('avg_r', 0)), 3),
-                    'daily_r': round(_safe_float(kpis.get('daily_r', 0)), 3),
-                    'r_squared': round(_safe_float(kpis.get('r_squared', 0)), 3),
-                })
+    results = []
+    for idx, combo in enumerate(all_combos):
+        if progress_callback and idx % 50 == 0:
+            progress_callback(idx, total)
+        # AND the pre-computed masks
+        combined = record_masks[combo[0]]
+        for r in combo[1:]:
+            combined = combined & record_masks[r]
+
+        count = int(combined.sum())
+        if count >= min_trades:
+            subset = trades_df[combined]
+            kpis = calculate_kpis(subset, starting_balance=starting_balance,
+                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
+            results.append({
+                'combination': list(sorted(combo)),
+                'combo_str': ' + '.join(sorted(combo)),
+                'depth': len(combo),
+                'total_trades': kpis['total_trades'],
+                'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
+                'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),
+                'avg_r': round(_safe_float(kpis.get('avg_r', 0)), 3),
+                'daily_r': round(_safe_float(kpis.get('daily_r', 0)), 3),
+                'r_squared': round(_safe_float(kpis.get('r_squared', 0)), 3),
+            })
+
+    if progress_callback:
+        progress_callback(total, total)
 
     results.sort(key=lambda r: (r.get('profit_factor', 0), r.get('total_trades', 0)), reverse=True)
     return results[:top_n]
