@@ -937,6 +937,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // M8.5 B+: expand beyond 100-row cap for algo history (off by default to
   // keep the DOM light; user opts in and accepts the render cost).
   const [showAllAlgoHistory, setShowAllAlgoHistory] = useState(false);
+  // Unified Trades tab state: date range filter + pagination. Default
+  // 'Forward Only' so backtest rows don't drown out live reconciliation
+  // signal (strategy 117 has 2,172 backtest trades we don't want counted
+  // as Missed).
+  const [unifiedDateFilter, setUnifiedDateFilter] = useState<
+    'All' | 'Forward Only' | 'Backtest Only' | 'Last 7 Days' | 'Last 30 Days' | 'Last 90 Days'
+  >('Forward Only');
+  const [showAllUnified, setShowAllUnified] = useState(false);
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -1303,33 +1311,99 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
   // Unified Trade Reconciliation (Trade_Timestamps_Spec Part 10, Tier 1).
   // Greedy join algo trades to alerts on fill_ts within the user's slippage
-  // tolerance. Produces one row per unique trade (by best match) plus rows
-  // for unconsumed alerts. Kevin's locked terminology:
+  // tolerance. Produces one row per unique trade plus rows for unconsumed
+  // alerts. Kevin's locked terminology:
   //   - matched       = algo + alert, both within tolerance
   //   - partial_match = algo + alert, found within 3× tolerance (drift)
-  //   - missed        = algo has no matching alert (algo_only)
-  //   - phantom       = alert has no matching algo (alert_only)
+  //   - missed        = forward algo with no matching alert (alert was
+  //                     expected to fire but didn't)
+  //   - phantom       = alert with no matching algo
+  //   - backtest      = algo trade from before forward_test_start — no
+  //                     alert was ever expected. Kept in the table so trade
+  //                     numbering stays contiguous and the user can see
+  //                     historical context when date filter includes them.
   const unifiedTrades = useMemo(() => {
-    const algoAll = [...fwdTrades, ...btTrades];
+    // Tag origin so we can distinguish forward trades (match-eligible)
+    // from backtest trades (no alert expected).
+    const algoAll = [
+      ...fwdTrades.map((t: any) => ({ ...t, _origin: 'forward' as const })),
+      ...btTrades.map((t: any) => ({ ...t, _origin: 'backtest' as const })),
+    ];
+
+    // Assign trade numbers: oldest = #1, regardless of current filter. Stable
+    // across filter changes so the same trade always carries the same number.
+    const algoByAge = algoAll
+      .filter((t: any) => t.entryTime && t.entryTime !== '--')
+      .slice()
+      .sort((a: any, b: any) => safeDateMs(a.entryTime) - safeDateMs(b.entryTime));
+    const tradeNumMap = new Map<any, number>();
+    algoByAge.forEach((t, i) => tradeNumMap.set(t, i + 1));
+
     const tolSec = chartPrefs.alertSlippage || 5;
     const tolMs = tolSec * 1000;
     const partialTolMs = Math.max(tolMs * 3, tfMs); // allow up to 1 bar drift
 
-    // Sort algo trades by entry time ascending for stable greedy matching
+    // Date range filter — applied BEFORE matching so state counts reflect
+    // only what the user is viewing.
+    const now = Date.now();
+    const withinDays = (ms: number, days: number) => (now - ms) <= days * 86400000;
+    const filterAlgo = (t: any) => {
+      if (unifiedDateFilter === 'All') return true;
+      if (unifiedDateFilter === 'Forward Only') return t._origin === 'forward';
+      if (unifiedDateFilter === 'Backtest Only') return t._origin === 'backtest';
+      const ms = safeDateMs(t.entryTime);
+      if (unifiedDateFilter === 'Last 7 Days') return withinDays(ms, 7);
+      if (unifiedDateFilter === 'Last 30 Days') return withinDays(ms, 30);
+      if (unifiedDateFilter === 'Last 90 Days') return withinDays(ms, 90);
+      return true;
+    };
+    const filterAlert = (a: any) => {
+      // Alerts only exist post-forward_test_start, so 'Backtest Only' → drop.
+      if (unifiedDateFilter === 'Backtest Only') return false;
+      if (unifiedDateFilter === 'All' || unifiedDateFilter === 'Forward Only') return true;
+      const ms = safeDateMs(a.entryTime);
+      if (unifiedDateFilter === 'Last 7 Days') return withinDays(ms, 7);
+      if (unifiedDateFilter === 'Last 30 Days') return withinDays(ms, 30);
+      if (unifiedDateFilter === 'Last 90 Days') return withinDays(ms, 90);
+      return true;
+    };
+
+    // Sort filtered algo by entry time ascending for stable greedy matching
     const algoSorted = algoAll
+      .filter(filterAlgo)
       .filter((t: any) => t.entryTime && t.entryTime !== '--')
       .slice()
       .sort((a: any, b: any) => safeDateMs(a.entryTime) - safeDateMs(b.entryTime));
 
-    // Build alert index with original positions retained
+    // Build alert index with original positions retained, filtered by date
     const alertIndexed = recentAlerts
       .map((a: any, idx: number) => ({ a, idx }))
-      .filter((x: any) => x.a.entryTime && x.a.entryTime !== '--');
+      .filter((x: any) =>
+        x.a.entryTime && x.a.entryTime !== '--' && filterAlert(x.a));
 
     const consumed = new Set<number>();
     const rows: any[] = [];
 
     for (const algo of algoSorted) {
+      const tradeNum = tradeNumMap.get(algo) ?? 0;
+
+      // Backtest trades: no alert expected, no match attempt.
+      if (algo._origin === 'backtest') {
+        rows.push({
+          state: 'backtest' as const,
+          tradeNum,
+          algo, alert: null,
+          entryTime: algo.entryTime,
+          exitTime: algo.exitTime,
+          algoR: algo.pnlR ?? null,
+          alertR: null,
+          entryDeltaSec: null,
+          exitDeltaSec: null,
+        });
+        continue;
+      }
+
+      // Forward trades: greedy-match to closest unmatched alert.
       const aMs = safeDateMs(algo.entryTime);
       let bestIdx = -1;
       let bestDist = Infinity;
@@ -1367,7 +1441,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       }
 
       rows.push({
-        state, algo, alert,
+        state,
+        tradeNum,
+        algo, alert,
         entryTime: algo.entryTime,
         exitTime: algo.exitTime,
         algoR: algo.pnlR ?? null,
@@ -1377,11 +1453,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       });
     }
 
-    // Remaining alerts = phantom (alert_only)
+    // Remaining alerts = phantom (alert_only). Phantoms get no trade number
+    // since they don't correspond to an algo trade.
     for (const { a, idx } of alertIndexed) {
       if (consumed.has(idx)) continue;
       rows.push({
         state: 'phantom' as const,
+        tradeNum: null,
         algo: null,
         alert: a,
         entryTime: a.entryTime,
@@ -1393,15 +1471,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       });
     }
 
-    // Sort newest-first by entry time
+    // Sort newest-first by entry time for display
     rows.sort((x, y) => safeDateMs(y.entryTime) - safeDateMs(x.entryTime));
 
     const counts = rows.reduce((acc: any, r: any) => {
       acc[r.state] = (acc[r.state] || 0) + 1;
       return acc;
     }, {});
-    return { rows, counts, tolSec };
-  }, [fwdTrades, btTrades, recentAlerts, chartPrefs.alertSlippage, tfMs]);
+    return { rows, counts, tolSec, totalAlgo: algoByAge.length };
+  }, [fwdTrades, btTrades, recentAlerts, chartPrefs.alertSlippage, tfMs, unifiedDateFilter]);
 
   // Timezone-aware timestamp formatter
   const formatTime = useMemo(() => {
@@ -3853,24 +3931,49 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             {/* =========================================================== */}
             {/* TAB 7: UNIFIED TRADES                                        */}
             {/* =========================================================== */}
-            {tab === 'Unified Trades' && (
+            {tab === 'Unified Trades' && (() => {
+              const UNIFIED_DISPLAY_CAP = showAllUnified ? Infinity : 100;
+              const visibleRows = unifiedTrades.rows.slice(0, UNIFIED_DISPLAY_CAP);
+              return (
               <div>
                 <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                   Unified Trade Reconciliation
                 </h3>
                 <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-                  Greedy-matches algo trades (backtest + forward) to alerts on <code>fill_ts</code> within
+                  Greedy-matches algo trades to alerts on <code>fill_ts</code> within
                   <strong> {unifiedTrades.tolSec}s </strong> slippage tolerance. Rows outside tolerance but within one bar
                   are marked <em>drift</em>. Anything unmatched is surfaced so you can investigate.
                 </p>
 
-                {/* Summary counts */}
-                <div className="grid grid-cols-4 gap-3 mb-4">
+                {/* Date range filter */}
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Show:</span>
+                  <select
+                    value={unifiedDateFilter}
+                    onChange={(e) => setUnifiedDateFilter(e.target.value as typeof unifiedDateFilter)}
+                    className="text-xs px-2 py-1 rounded"
+                    style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                  >
+                    <option value="Forward Only">Forward Only</option>
+                    <option value="All">All</option>
+                    <option value="Backtest Only">Backtest Only</option>
+                    <option value="Last 7 Days">Last 7 Days</option>
+                    <option value="Last 30 Days">Last 30 Days</option>
+                    <option value="Last 90 Days">Last 90 Days</option>
+                  </select>
+                  <span className="text-xs ml-2" style={{ color: 'var(--text-muted)' }}>
+                    {unifiedTrades.rows.length.toLocaleString()} row{unifiedTrades.rows.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {/* Summary counts — 5 states now */}
+                <div className="grid grid-cols-5 gap-3 mb-4">
                   {[
                     { label: 'Matched', key: 'matched', color: 'var(--green)' },
                     { label: 'Drift', key: 'partial_match', color: 'var(--orange)' },
                     { label: 'Missed', key: 'missed', color: 'var(--blue)' },
                     { label: 'Phantom', key: 'phantom', color: 'var(--red)' },
+                    { label: 'Backtest', key: 'backtest', color: 'var(--text-muted)' },
                   ].map((k) => (
                     <Card key={k.key}>
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{k.label}</p>
@@ -3883,7 +3986,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                 {/* Rows */}
                 <Card>
-                  <div style={{ overflowX: 'auto' }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium">
+                      Trades{' '}
+                      <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                        (showing {visibleRows.length.toLocaleString()} of {unifiedTrades.rows.length.toLocaleString()})
+                      </span>
+                    </h4>
+                    {unifiedTrades.rows.length > 100 && (
+                      <button
+                        onClick={() => setShowAllUnified(v => !v)}
+                        className="text-xs"
+                        style={{
+                          color: 'var(--accent)', background: 'transparent',
+                          border: 'none', cursor: 'pointer', padding: '2px 6px',
+                        }}
+                        title="Rendering 1,000+ rows can slow page interactions"
+                      >
+                        {showAllUnified ? 'Show recent 100' : `Show all ${unifiedTrades.rows.length.toLocaleString()}`}
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
                     <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                       <thead>
                         <tr>
@@ -3893,18 +4017,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         </tr>
                       </thead>
                       <tbody>
-                        {unifiedTrades.rows.length === 0 ? (
+                        {visibleRows.length === 0 ? (
                           <tr>
                             <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-muted)' }}>
-                              No algo trades or alerts yet for this strategy.
+                              No trades match the current filter.
                             </td>
                           </tr>
-                        ) : unifiedTrades.rows.map((r: any, i: number) => {
+                        ) : visibleRows.map((r: any, i: number) => {
                           const stateMeta: Record<string, { label: string; color: string; bg: string }> = {
                             matched: { label: 'Matched', color: 'var(--green)', bg: 'var(--green-muted)' },
                             partial_match: { label: 'Drift', color: 'var(--orange)', bg: 'rgba(255, 152, 0, 0.15)' },
                             missed: { label: 'Missed', color: 'var(--blue)', bg: 'rgba(33, 150, 243, 0.15)' },
                             phantom: { label: 'Phantom', color: 'var(--red)', bg: 'var(--red-muted)' },
+                            backtest: { label: 'Backtest', color: 'var(--text-muted)', bg: 'var(--bg-input)' },
                           };
                           const meta = stateMeta[r.state] || stateMeta.matched;
                           const deltaColor = (v: number | null) =>
@@ -3913,8 +4038,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 : Math.abs(v) <= unifiedTrades.tolSec * 3 ? 'var(--orange)'
                                   : 'var(--red)';
                           return (
-                            <tr key={i}>
-                              <td style={tdStyle}>{i + 1}</td>
+                            <tr key={`${r.tradeNum ?? 'a'}-${i}`}>
+                              <td style={{ ...tdStyle, fontFamily: 'monospace' }}>
+                                {r.tradeNum ?? '--'}
+                              </td>
                               <td style={tdStyle}>
                                 <span
                                   className="text-xs px-2 py-0.5 rounded-full font-medium"
@@ -3946,11 +4073,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 </Card>
 
                 <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
-                  Slippage tolerance is configurable in Display Settings (current: {unifiedTrades.tolSec}s).
-                  Higher-frequency strategies may need a tighter tolerance to avoid over-matching.
+                  Trade # 1 = oldest trade (stable across filters). Slippage tolerance is configurable
+                  in Display Settings (current: {unifiedTrades.tolSec}s). Higher-frequency strategies
+                  may need a tighter tolerance to avoid over-matching.
                 </p>
               </div>
-            )}
+              );
+            })()}
           </div>
         )}
       </TabBar>
