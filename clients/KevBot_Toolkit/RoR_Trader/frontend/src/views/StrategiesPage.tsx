@@ -250,6 +250,7 @@ export default function StrategiesPage() {
   // Bulk refresh — uses plain fetch to avoid production bundler issues
   const [refreshing, setRefreshing] = useState(false);
   const [refreshCount, setRefreshCount] = useState(0);
+  const [refreshTotal, setRefreshTotal] = useState(0);
 
   useEffect(() => {
     const id = 'strategies-pulse-css';
@@ -395,6 +396,7 @@ export default function StrategiesPage() {
               if (refreshing || strategies.length === 0) return;
               setRefreshing(true);
               setRefreshCount(0);
+              setRefreshTotal(strategies.length);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
               for (let i = 0; i < strategies.length; i++) {
@@ -410,7 +412,7 @@ export default function StrategiesPage() {
               window.location.reload();
             }}
           >
-            {refreshing ? `Refreshing ${refreshCount}/${strategies.length}...` : 'Update All Data'}
+            {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update All Data'}
           </button>
           <Link href="/strategy-builder"><button style={btnPrimary}>+ New Strategy</button></Link>
         </div>
@@ -444,6 +446,33 @@ export default function StrategiesPage() {
           </button>
           <button style={btnSecondary} className="text-sm">
             Update Portfolio
+          </button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            className="text-sm"
+            disabled={refreshing || selectedIds.size === 0}
+            onClick={async () => {
+              if (refreshing || selectedIds.size === 0) return;
+              const ids = Array.from(selectedIds);
+              setRefreshing(true);
+              setRefreshCount(0);
+              setRefreshTotal(ids.length);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              for (let i = 0; i < ids.length; i++) {
+                try {
+                  await fetch(`${base}/api/strategies/${ids[i]}/refresh`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  });
+                } catch (e) { /* skip failures */ }
+                setRefreshCount(i + 1);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+          >
+            {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update Data'}
           </button>
           <button style={btnSecondary} className="text-sm">
             Add Tag
