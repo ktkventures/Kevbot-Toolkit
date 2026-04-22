@@ -273,100 +273,203 @@ def log_monitor_error(strategy_id: int, error: str):
     save_monitor_status(status)
 
 
-def _get_event_key(alert_type: str, direction: str) -> str:
-    """Map alert type + direction to webhook event filter key."""
-    if alert_type == "entry_signal":
-        return "entry_long" if direction == "LONG" else "entry_short"
-    elif alert_type == "exit_signal":
-        return "exit_long" if direction == "LONG" else "exit_short"
-    elif alert_type == "compliance_breach":
+def _is_limit_exec_type(exec_type: str) -> bool:
+    """Classify an exec_type as market vs limit for event-slot routing.
+
+    L-family (L0 / L1 / LC) = limit orders.
+    C-family (C / CC) = market-style bar-close execution.
+    Empty / unknown exec_type returns False from this helper BUT the
+    caller (_get_event_key) treats unknowns as `None` rather than
+    defaulting to market — see Kevin's no-silent-defaults preference
+    saved in memory.
+    """
+    if not exec_type:
+        return False
+    return exec_type.upper().startswith('L')
+
+
+def _get_event_key(alert_type: str, direction: str, exec_type: str):
+    """Map alert metadata to the full 11-event webhook taxonomy key.
+
+    Returns None on empty/unknown exec_type for entry/exit alerts — we
+    cannot tell whether to route to the market or limit slot, and
+    silently picking one would hide a real bug (a limit-configured
+    strategy dispatching via the market slot, or vice versa). The
+    diagnostic is surfaced in the Details drawer by deliver_alert.
+
+    Cancel + compliance_breach don't split by market/limit in the 11-
+    event enum, so exec_type is irrelevant for those paths.
+    """
+    alert_type = (alert_type or "").strip()
+    direction = (direction or "").strip().upper()
+    exec_type = (exec_type or "").strip()
+
+    if alert_type == "compliance_breach":
         return "compliance_breach"
-    return ""
+    if alert_type == "cancel_signal":
+        if direction == "LONG":
+            return "cancel_long"
+        if direction == "SHORT":
+            return "cancel_short"
+        return None
 
-
-def _portfolio_has_active_webhooks(port_config: dict) -> bool:
-    """Check if a portfolio config has at least one enabled webhook."""
-    for wh in port_config.get("webhooks", []):
-        if wh.get("enabled", True):
-            return True
-    return False
+    # entry_signal / exit_signal require exec_type to determine market vs limit.
+    if alert_type not in ("entry_signal", "exit_signal"):
+        return None
+    if not exec_type:
+        return None  # loud failure — caller records a diagnostic row
+    side_key = "entry" if alert_type == "entry_signal" else "exit"
+    dir_key = "long" if direction == "LONG" else "short" if direction == "SHORT" else None
+    if dir_key is None:
+        return None
+    kind_key = "limit" if _is_limit_exec_type(exec_type) else "market"
+    return f"{side_key}_{dir_key}_{kind_key}"
 
 
 def deliver_alert(alert: dict, config: dict):
-    """
-    Deliver an alert to all matching portfolio webhooks.
-    Populates alert['webhook_deliveries'] with per-webhook results.
+    """Dispatch an alert to every subscribed portfolio's webhook group.
 
-    Delivers to any portfolio that has enabled webhooks (no separate
-    alerts_enabled toggle required).
+    Phase 39 wiring (2026-04-22): each portfolio carries ``webhook_group_id``
+    pointing at a webhook group (11-event taxonomy, per-event URL +
+    payload). For each ``portfolio_context`` entry on the alert, we load
+    the portfolio, resolve its group, pick the event slot matching the
+    alert's (type × direction × exec_type), render the payload, and POST.
+
+    Every portfolio is represented in ``webhook_deliveries[]`` — success,
+    failure, or diagnostic skip — so the Details drawer always tells
+    Kevin what happened. No silent drops.
+
+    Legacy per-portfolio ``config.portfolios[pid].webhooks[]`` array has
+    been removed. Nothing in production used it; keeping it around made
+    the modern path confusing.
     """
+    from alerts import (
+        build_placeholder_context,
+        get_webhook_group_by_id,
+        render_payload,
+        send_webhook,
+        update_alert,
+    )
+    from portfolios import get_portfolio_by_id
+
     deliveries = []
     alert_type = alert.get("type", "")
     direction = alert.get("direction", "")
+    exec_type = alert.get("exec_type", "")
 
-    # Map alert type + direction to event key
-    event_key = _get_event_key(alert_type, direction)
+    event_key = _get_event_key(alert_type, direction, exec_type)
 
-    # Determine which portfolios to check
-    portfolio_ids = set()
+    # Collect (pid → portfolio_context) to iterate.
+    targets: list[tuple[int, dict | None]] = []
     if alert_type == "compliance_breach":
         pid = alert.get("portfolio_id")
-        if pid:
-            portfolio_ids.add(pid)
-    else:
-        for ctx in alert.get("portfolio_context", []):
-            portfolio_ids.add(ctx.get("portfolio_id"))
-
-    for pid in portfolio_ids:
-        port_config = config.get("portfolios", {}).get(str(pid), {})
-        if not _portfolio_has_active_webhooks(port_config):
-            continue
-
-        # Get portfolio context for this specific portfolio
-        port_ctx = None
-        for ctx in alert.get("portfolio_context", []):
-            if ctx.get("portfolio_id") == pid:
-                port_ctx = ctx
-                break
-        if not port_ctx and alert_type == "compliance_breach":
-            port_ctx = {
+        if pid is not None:
+            targets.append((pid, {
                 "portfolio_id": pid,
                 "portfolio_name": alert.get("portfolio_name", ""),
-            }
-
-        for wh in port_config.get("webhooks", []):
-            if not wh.get("enabled", True):
+            }))
+    else:
+        seen = set()
+        for ctx in alert.get("portfolio_context") or []:
+            pid = ctx.get("portfolio_id")
+            if pid is None or pid in seen:
                 continue
+            seen.add(pid)
+            targets.append((pid, ctx))
 
-            # Check event filter
-            events = wh.get("events", {})
-            if event_key and not events.get(event_key, False):
-                continue
+    now_iso = datetime.now().isoformat()
 
-            # Build payload
-            placeholder_ctx = build_placeholder_context(alert, port_ctx)
-            template = wh.get("payload_template", "")
-            custom_payload = render_payload(template, placeholder_ctx) if template else None
-
-            # Send
-            result = send_webhook(wh.get("url", ""), alert, custom_payload)
-
+    for pid, port_ctx in targets:
+        portfolio = get_portfolio_by_id(pid)
+        if portfolio is None:
             deliveries.append({
-                "webhook_id": wh.get("id", ""),
-                "webhook_name": wh.get("name", ""),
-                "portfolio_id": pid,
-                "sent_at": datetime.now().isoformat(),
-                "success": result["success"],
-                "status_code": result.get("status_code"),
-                "payload_sent": result.get("payload_sent", ""),
-                "error": result.get("error", ""),
+                "webhook_id": "", "webhook_name": "",
+                "portfolio_id": pid, "sent_at": now_iso,
+                "success": False, "status_code": None,
+                "payload_sent": "",
+                "error": f"Portfolio {pid} not found at dispatch time",
             })
+            continue
+
+        group_id = portfolio.get("webhook_group_id")
+        if not group_id:
+            # Portfolio has no webhook group configured — not an error,
+            # just nothing subscribed. No delivery record emitted so the
+            # Details drawer's empty-state note accurately describes
+            # "no webhook template was subscribed."
+            continue
+
+        group = get_webhook_group_by_id(group_id)
+        if group is None:
+            deliveries.append({
+                "webhook_id": group_id, "webhook_name": "",
+                "portfolio_id": pid, "sent_at": now_iso,
+                "success": False, "status_code": None,
+                "payload_sent": "",
+                "error": f"Webhook group {group_id} not found",
+            })
+            continue
+
+        group_name = group.get("name", "")
+
+        # Diagnostic: event_key is None when exec_type is missing on
+        # entry/exit alerts. Surface, don't fall back silently.
+        if event_key is None:
+            deliveries.append({
+                "webhook_id": group_id, "webhook_name": group_name,
+                "portfolio_id": pid, "sent_at": now_iso,
+                "success": False, "status_code": None,
+                "payload_sent": "",
+                "error": (
+                    "Cannot route webhook: missing or unknown exec_type. "
+                    f"alert_type={alert_type!r} direction={direction!r} "
+                    f"exec_type={exec_type!r}. Fix at alert-generation "
+                    "time rather than adding a silent fallback."
+                ),
+            })
+            continue
+
+        event_cfg = (group.get("events") or {}).get(event_key) or {}
+        url_mode = group.get("url_mode", "per_event")
+        url = (group.get("shared_url", "") if url_mode == "shared"
+               else event_cfg.get("url", ""))
+        payload_template = event_cfg.get("payload", "")
+
+        if not url:
+            deliveries.append({
+                "webhook_id": group_id, "webhook_name": group_name,
+                "portfolio_id": pid, "sent_at": now_iso,
+                "success": False, "status_code": None,
+                "payload_sent": payload_template or "",
+                "error": (
+                    f"Event {event_key!r} not configured in webhook group "
+                    f"{group_name!r} (no URL)"
+                ),
+            })
+            continue
+
+        placeholder_ctx = build_placeholder_context(alert, port_ctx)
+        custom_payload = (
+            render_payload(payload_template, placeholder_ctx)
+            if payload_template else None
+        )
+        result = send_webhook(url, alert, custom_payload)
+
+        deliveries.append({
+            "webhook_id": group_id,
+            "webhook_name": group_name,
+            "portfolio_id": pid,
+            "sent_at": now_iso,
+            "success": bool(result.get("success")),
+            "status_code": result.get("status_code"),
+            "payload_sent": result.get("payload_sent", ""),
+            "error": result.get("error", ""),
+        })
 
     alert["webhook_deliveries"] = deliveries
     alert["webhook_sent"] = any(d["success"] for d in deliveries) if deliveries else False
 
-    # Re-save the alert with delivery info (thread-safe)
-    from alerts import update_alert
+    # Re-save the alert with delivery info (thread-safe).
     update_alert(alert.get("id"), {
         "webhook_deliveries": deliveries,
         "webhook_sent": alert["webhook_sent"],

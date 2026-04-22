@@ -717,14 +717,14 @@ function LiveDashboardTab({
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 900 }}>
             <thead>
               <tr>
-                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'P Qty', 'E Qty', 'R', 'P&L', 'Status', ''].map((h, i) => (
+                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'RPT Qty', 'BP Qty', 'E Qty', 'R', 'P&L', 'Status', ''].map((h, i) => (
                   <th key={`${h}-${i}`} className="text-left py-2 px-2 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', whiteSpace: 'nowrap', position: 'sticky', top: 0 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {tradeRows.length === 0 ? (
-                <tr><td colSpan={13} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                <tr><td colSpan={14} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                   {visibleStrategyIds.size === 0
                     ? 'Toggle at least one strategy to Visible on the Strategies tab.'
                     : 'No trade history yet. Run Update All Data or wait for live trades.'}
@@ -733,11 +733,20 @@ function LiveDashboardTab({
                 const strat = strategiesMap.get(Number(t.strategy_id));
                 const symbol = t.symbol ?? strat?.symbol ?? '--';
                 const direction = t.direction ?? strat?.direction ?? 'LONG';
-                const plannedQty = t.planned_quantity ?? t.quantity ?? null;
-                // Executed qty: matched=true OR (no alert attempt, so equals planned).
-                // Phantom trades = alert fired but no backtest match → E Qty = 0.
+                // Quantity taxonomy (2026-04-22): three columns.
+                // - RPT Qty = risk-sized (what the strategy's risk_per_trade
+                //   implies given the stop distance).
+                // - BP Qty = buying-power-sized (what the portfolio's
+                //   available cash allows at entry price). Null for
+                //   historical rows — backend hasn't backfilled these.
+                // - E Qty (executed) = min(RPT, BP) — what the webhook
+                //   carried and the broker traded. Phantom = 0.
+                const rptQty = t.rpt_quantity ?? t.planned_quantity ?? t.quantity ?? null;
+                const bpQty = t.bp_quantity ?? null; // null → '--' in UI
                 const isPhantom = t.phantom === true;
-                const executedQty = isPhantom ? 0 : (t.quantity ?? plannedQty);
+                const executedQty = isPhantom ? 0 : (t.executed_quantity ?? t.quantity ?? rptQty);
+                // Legacy alias still used by the Details modal wiring.
+                const plannedQty = rptQty;
                 // data_source taxonomy set by backend (portfolios.py
                 // get_portfolio_combined_view): 'matched' | 'live' | 'phantom'
                 // | 'forward_test' | 'backtest'. Frontend maps to a badge per
@@ -779,11 +788,12 @@ function LiveDashboardTab({
                     <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{t.entry_price != null ? `$${Number(t.entry_price).toFixed(2)}` : '--'}</td>
                     <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{t.exit_price != null ? `$${Number(t.exit_price).toFixed(2)}` : '--'}</td>
                     <td className="py-2 px-2 text-xs" style={{ color: 'var(--text-muted)' }}>{t.exit_reason || '--'}</td>
-                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }}>{plannedQty ?? '--'}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace' }} title="Risk-sized quantity (risk_per_trade / stop distance)">{rptQty ?? '--'}</td>
+                    <td className="py-2 px-2 text-sm" style={{ fontFamily: 'monospace', color: bpQty == null ? 'var(--text-muted)' : 'inherit' }} title="Buying-power-sized quantity (available BP / entry price)">{bpQty ?? '--'}</td>
                     <td
                       className="py-2 px-2 text-sm"
-                      style={{ fontFamily: 'monospace', color: executedQty === 0 && plannedQty ? 'var(--red)' : 'inherit' }}
-                      title={isPhantom ? 'Phantom trade: alert fired but backtest did not match — not executed' : undefined}
+                      style={{ fontFamily: 'monospace', color: executedQty === 0 && rptQty ? 'var(--red)' : 'inherit' }}
+                      title={isPhantom ? 'Phantom trade: alert fired but backtest did not match — not executed' : 'Executed quantity — min(RPT, BP). What the webhook carried.'}
                     >
                       {executedQty ?? '--'}
                     </td>

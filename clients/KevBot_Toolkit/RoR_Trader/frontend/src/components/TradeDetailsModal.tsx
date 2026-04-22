@@ -95,9 +95,36 @@ function TradeSummary({ trade }: { trade: TradeRow }) {
     ['Exit reason', trade.exit_reason || '--'],
     ['Exec type', trade.exec_type || '--'],
     [
-      'Planned / Executed qty',
-      <span key="qty" style={{ fontFamily: 'monospace' }}>
-        {trade.planned_quantity ?? '--'} / {trade.quantity ?? '--'}
+      'RPT Qty',
+      <span
+        key="rpt"
+        style={{ fontFamily: 'monospace' }}
+        title="Risk-sized quantity (risk_per_trade / stop distance)"
+      >
+        {trade.rpt_quantity ?? trade.planned_quantity ?? trade.quantity ?? '--'}
+      </span>,
+    ],
+    [
+      'BP Qty',
+      <span
+        key="bp"
+        style={{
+          fontFamily: 'monospace',
+          color: trade.bp_quantity == null ? 'var(--text-muted)' : 'inherit',
+        }}
+        title="Buying-power-sized quantity (available BP / entry price)"
+      >
+        {trade.bp_quantity ?? '--'}
+      </span>,
+    ],
+    [
+      'Executed Qty',
+      <span
+        key="exec"
+        style={{ fontFamily: 'monospace' }}
+        title="What the webhook carried — min(RPT, BP)"
+      >
+        {trade.executed_quantity ?? trade.quantity ?? '--'}
       </span>,
     ],
     [

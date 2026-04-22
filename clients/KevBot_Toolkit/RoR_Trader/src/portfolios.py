@@ -1402,6 +1402,26 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                           or pending_entry.get('trigger', '')  # use entry trigger as hint
                           or 'signal')
 
+            # Quantity taxonomy — raw-alerts fallback path. We have the
+            # raw entry alert here (`pending_entry`); its portfolio_context
+            # (if populated by the worker enrichment) carries the real
+            # rpt/bp/executed quantities for this portfolio. Fall back
+            # to RPT math if absent (older alerts, misc paths).
+            entry_pc = None
+            for pc in (pending_entry.get('portfolio_context') or []):
+                if pc.get('portfolio_id') == alloc.get('portfolio_id') \
+                        or pc.get('position_risk') == risk_per_trade:
+                    entry_pc = pc
+                    break
+            rpt_quantity = (entry_pc.get('rpt_quantity')
+                            if entry_pc and entry_pc.get('rpt_quantity') is not None
+                            else quantity)
+            bp_quantity = (entry_pc.get('bp_quantity')
+                           if entry_pc else None)
+            executed_quantity = (entry_pc.get('executed_quantity')
+                                 if entry_pc and entry_pc.get('executed_quantity') is not None
+                                 else quantity)
+
             trades.append({
                 'strategy_id': sid,
                 'strategy_name': strategy_name,
@@ -1419,8 +1439,11 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'exit_slippage_r': 0,
                 'risk_per_trade': risk_per_trade,
                 'dollar_pnl': round(r_multiple * risk_per_trade, 2),
-                'planned_quantity': quantity,
-                'quantity': quantity,
+                'planned_quantity': quantity,  # legacy alias
+                'quantity': executed_quantity,
+                'rpt_quantity': rpt_quantity,
+                'bp_quantity': bp_quantity,
+                'executed_quantity': executed_quantity,
                 'buying_power_used': buying_power_used,
                 'matched': True,
                 'phantom': False,
@@ -1520,6 +1543,19 @@ def get_portfolio_alert_trades(portfolio: dict,
                     adjusted_r = stored_r - entry_slip - exit_slip
                     quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1
 
+                    # Quantity taxonomy (2026-04-22 BP-cap work):
+                    # rpt_quantity = risk-sized (historic `quantity` math).
+                    # bp_quantity = None for live_execution rows until
+                    #   match_alerts_to_trades propagates portfolio_context
+                    #   (future follow-up — would be filled from
+                    #   entry_alert.portfolio_context[pid].bp_quantity).
+                    # executed_quantity = what the webhook actually carried;
+                    #   for historical rows mirrors rpt (no cap applied).
+                    rpt_quantity = quantity
+                    bp_quantity = entry_ex.get('bp_quantity')  # None today
+                    executed_quantity = entry_ex.get(
+                        'executed_quantity', quantity)
+
                     alert_trades.append({
                         'strategy_id': sid,
                         'strategy_name': strategy_name,
@@ -1537,8 +1573,11 @@ def get_portfolio_alert_trades(portfolio: dict,
                         'exit_slippage_r': exit_slip,
                         'risk_per_trade': risk_per_trade,
                         'dollar_pnl': adjusted_r * risk_per_trade,
-                        'planned_quantity': quantity,
-                        'quantity': quantity,
+                        'planned_quantity': quantity,  # legacy alias
+                        'quantity': executed_quantity,
+                        'rpt_quantity': rpt_quantity,
+                        'bp_quantity': bp_quantity,
+                        'executed_quantity': executed_quantity,
                         'buying_power_used': quantity * entry_price,
                         'matched': True,
                         'phantom': False,

@@ -151,14 +151,39 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
             qty_price = entry_price
             qty_stop = entry_stop
 
-    quantity = ""
+    # RPT quantity = floor(risk_per_trade / |price - stop|). Historic
+    # default. Webhook templates that used {{quantity}} before the 2026-04-22
+    # BP-cap work got this value.
+    rpt_quantity = ""
     if qty_price and qty_stop and position_risk:
         try:
             stop_distance = abs(float(qty_price) - float(qty_stop))
             if stop_distance > 0:
-                quantity = str(int(float(position_risk) / stop_distance))
+                rpt_quantity = str(int(float(position_risk) / stop_distance))
         except (ValueError, TypeError, ZeroDivisionError):
             pass
+
+    # BP + executed quantities are stamped onto portfolio_context by the
+    # worker at alert-fire time (worker.py). Older alerts missing these
+    # fields fall back to RPT — preserves legacy template behavior.
+    bp_quantity = ""
+    executed_quantity = ""
+    if portfolio_context:
+        if portfolio_context.get("bp_quantity") is not None:
+            bp_quantity = str(int(portfolio_context.get("bp_quantity") or 0))
+        if portfolio_context.get("executed_quantity") is not None:
+            executed_quantity = str(int(portfolio_context.get("executed_quantity") or 0))
+        # If worker computed rpt_quantity (normal case), prefer its value
+        # over our local fallback — it already accounted for any
+        # per-portfolio risk_per_trade overrides.
+        if portfolio_context.get("rpt_quantity") is not None:
+            rpt_quantity = str(int(portfolio_context.get("rpt_quantity") or 0))
+
+    # {{quantity}} in templates = executed_quantity (BP-capped) when the
+    # worker computed it. Falls back to RPT for legacy alerts / any path
+    # that didn't populate portfolio_context. Matches Kevin's locked
+    # policy: webhook carries what we can actually afford to trade.
+    quantity = executed_quantity or rpt_quantity
 
     ctx = {
         "symbol": str(alert.get("symbol", "")),
@@ -173,6 +198,9 @@ def build_placeholder_context(alert: dict, portfolio_context: dict = None) -> di
         "direction": direction,
         "risk_per_trade": str(position_risk or alert.get("risk_per_trade", "")),
         "quantity": quantity,
+        "rpt_quantity": rpt_quantity,
+        "bp_quantity": bp_quantity,
+        "executed_quantity": executed_quantity or rpt_quantity,
         "atr": str(alert.get("atr", "")),
         "trigger_name": str(alert.get("trigger", "")),
         "exec_type": str(alert.get("exec_type", "C")),

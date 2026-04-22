@@ -83,6 +83,11 @@ class DBAlertDispatcher:
         self._deliver_alert_fn = None
         # Portfolio cache: (portfolios_list, loaded_at_epoch_s).
         self._portfolio_cache: Optional[tuple[list, float]] = None
+        # Per-portfolio deployed capital tracker (2026-04-22 BP-cap work).
+        # Shape: {portfolio_id: {strategy_id: dollars_deployed}}.
+        # Lazy-seeded on first dispatch() call from existing open positions.
+        self._deployed_capital: Dict[int, Dict[int, float]] = {}
+        self._deployed_seeded: bool = False
         try:
             from alert_monitor import deliver_alert
             self._deliver_alert_fn = deliver_alert
@@ -99,6 +104,65 @@ class DBAlertDispatcher:
         portfolios = load_portfolios_admin(self.user_id)
         self._portfolio_cache = (portfolios, now)
         return portfolios
+
+    def _seed_deployed_capital(self, portfolios: list) -> None:
+        """Initialize self._deployed_capital from existing open positions.
+
+        Called lazily on first dispatch. Walks each portfolio's open
+        positions (derived from strategy.live_executions / fallback
+        alerts via get_portfolio_alert_trades) and records the
+        currently-held buying_power_used per (portfolio, strategy).
+        Without this, a worker restart mid-session would treat every
+        portfolio as fully liquid and over-size the next entry.
+        """
+        try:
+            from portfolios import get_portfolio_alert_trades
+        except Exception as e:
+            logger.warning("Cannot seed deployed capital (import failed): %s", e)
+            return
+
+        # Strategy lookup for get_portfolio_alert_trades. Admin-scoped —
+        # we're already running as the service role.
+        def _strat_lookup(sid):
+            try:
+                return get_strategy_by_id_admin(sid, self.user_id)
+            except Exception:
+                return None
+
+        total_seeded = 0
+        for port in portfolios:
+            pid = port.get('id')
+            if pid is None:
+                continue
+            try:
+                data = get_portfolio_alert_trades(port, _strat_lookup)
+            except Exception as e:
+                logger.warning(
+                    "Deployed-capital seed failed for portfolio %s: %s", pid, e)
+                continue
+            bucket = self._deployed_capital.setdefault(pid, {})
+            for op in data.get('open_positions') or []:
+                sid = op.get('strategy_id')
+                bp_used = op.get('buying_power_used') or 0
+                if sid is not None and bp_used > 0:
+                    bucket[sid] = float(bp_used)
+                    total_seeded += 1
+        if total_seeded:
+            logger.info(
+                "Deployed-capital tracker seeded: %d open position(s) "
+                "across %d portfolio(s)",
+                total_seeded, len(self._deployed_capital))
+
+    def _available_bp_for_portfolio(self, portfolio: dict) -> float:
+        """Return balance minus currently-deployed capital for this portfolio."""
+        try:
+            from portfolios import compute_account_balance
+        except Exception:
+            return 0.0
+        balance = compute_account_balance(portfolio.get('account') or {})
+        deployed = sum(
+            self._deployed_capital.get(portfolio.get('id'), {}).values())
+        return max(balance - deployed, 0.0)
 
     def dispatch(self, signal_data: dict, strategy: dict,
                  config: dict) -> Optional[dict]:
@@ -175,14 +239,61 @@ class DBAlertDispatcher:
         # a Supabase round trip per alert.
         try:
             portfolios = self._get_portfolios_cached()
+            # Lazy-seed deployed capital tracker on first dispatch (keeps
+            # cold-start cheap — no cost if the engine never fires an alert).
+            if not self._deployed_seeded:
+                self._seed_deployed_capital(portfolios)
+                self._deployed_seeded = True
+
+            # Derive per-share risk from the signal's price + stop. Shared
+            # across all portfolios since the strategy's stop is the same
+            # regardless of subscriber.
+            sig_price = signal_data.get('price') or 0
+            sig_stop = signal_data.get('stop_price') or 0
+            try:
+                per_share_risk = abs(float(sig_price) - float(sig_stop))
+            except (TypeError, ValueError):
+                per_share_risk = 0.0
+            try:
+                price_f = float(sig_price) if sig_price else 0.0
+            except (TypeError, ValueError):
+                price_f = 0.0
+
             context = []
             for port in portfolios:
                 for alloc in port.get('strategies', []):
                     if alloc.get('strategy_id') == strategy['id']:
+                        risk_per_trade = alloc.get('risk_per_trade', 100.0)
+
+                        rpt_qty = (int(risk_per_trade / per_share_risk)
+                                   if per_share_risk > 0 else 0)
+                        available_bp = self._available_bp_for_portfolio(port)
+                        bp_qty = (int(available_bp / price_f)
+                                  if price_f > 0 else 0)
+                        executed_qty = min(rpt_qty, bp_qty)
+
+                        # Compute balance once; expose for audit trail.
+                        try:
+                            from portfolios import compute_account_balance
+                            account_balance = compute_account_balance(
+                                port.get('account') or {})
+                        except Exception:
+                            account_balance = 0.0
+
                         context.append({
                             "portfolio_id": port['id'],
-                            "portfolio_name": port.get('name', f"Portfolio {port['id']}"),
-                            "position_risk": alloc.get('risk_per_trade', 100.0),
+                            "portfolio_name": port.get(
+                                'name', f"Portfolio {port['id']}"),
+                            "position_risk": risk_per_trade,
+                            # 2026-04-22 BP-cap work. Webhook payload uses
+                            # executed_quantity; Trade History UI shows all
+                            # three for visibility.
+                            "rpt_quantity": rpt_qty,
+                            "bp_quantity": bp_qty,
+                            "executed_quantity": executed_qty,
+                            "available_bp_at_fire": round(available_bp, 2),
+                            "account_balance_at_fire": round(
+                                account_balance, 2),
                         })
                         break
             alert['portfolio_context'] = context
@@ -203,6 +314,33 @@ class DBAlertDispatcher:
                      self.user_id[:8], sig_type, strategy.get('name'),
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
+
+        # Update deployed-capital tracker so the NEXT entry's BP calc
+        # reflects this trade. Entry: add executed_qty * price per
+        # subscribed portfolio. Exit: release whatever was tracked for
+        # that (portfolio, strategy). Ordering matters — must run after
+        # save_alert so the alert's portfolio_context exists, but before
+        # the webhook dispatch so the deployed state reflects the event
+        # that just happened (shouldn't matter for this alert but matters
+        # for any concurrent alert firing against the same portfolio).
+        try:
+            if sig_type == 'entry_signal':
+                for pctx in alert.get('portfolio_context') or []:
+                    pid = pctx.get('portfolio_id')
+                    exec_qty = pctx.get('executed_quantity') or 0
+                    if pid is not None and exec_qty > 0 and price_f > 0:
+                        self._deployed_capital.setdefault(pid, {})[
+                            strategy['id']] = exec_qty * price_f
+            elif sig_type == 'exit_signal':
+                for pctx in alert.get('portfolio_context') or []:
+                    pid = pctx.get('portfolio_id')
+                    if pid is not None:
+                        self._deployed_capital.get(pid, {}).pop(
+                            strategy['id'], None)
+        except Exception as e:
+            # Don't fail the dispatch if tracker update has a bug —
+            # worst case, next entry's BP qty is slightly wrong.
+            logger.warning("Deployed-capital update failed: %s", e)
 
         # Atomic algo-history append. Exit signals from the unified engine
         # carry a fully-formed trade_record (PositionStateMachine.
