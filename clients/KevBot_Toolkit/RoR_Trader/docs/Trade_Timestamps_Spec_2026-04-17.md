@@ -1,5 +1,32 @@
 # Trade Timestamps Spec — 2026-04-17
 
+## Implementation status — 2026-04-21
+
+Comprehensive status pass after a full day of shipping portfolio + reconciliation work.
+
+| Part | Status | Notes |
+|---|---|---|
+| **Design decisions #1–7** | ✅ Shipped | All locked 2026-04-17, decision #7 revised 2026-04-20 |
+| **Part 1** — Two-timestamp model | ✅ Shipped | `entry_fill_ts` / `exit_fill_ts` / `trigger_ts` / `exec_type` live across engine + DB + frontend |
+| **Part 2** — Event lifecycle & webhook policy | ✅ Shipped | Webhooks fire immediately at save (Tier 2 scheduling reverted). `cancel_event` scaffolded but unused until Behavior A packs ship |
+| **Part 3** — Codebase touchpoints | ✅ Shipped | All listed files updated in `feat/timestamp-spec` branch, merged 2026-04-20 |
+| **Part 4** — DB migration (soft clean-slate) | ✅ Shipped | 12 top-level columns promoted on `alerts`; soft-wipe of `stored_trades = []` executed 2026-04-20 |
+| **Part 5** — Pack Builder + AI Wizard UI | ❌ Deferred | Biggest remaining piece. Full frontend session of its own |
+| **Part 6** — Rollout plan | ✅ Phases 1–4 shipped | Phase 5 (Pack Builder UI) deferred per Part 5 |
+| **Part 7** — Risks | — | All risks from shipped parts absorbed without incident |
+| **Part 8** — Relationships | ✅ Applied | Alert Recovery Plan fixes landed; Webhook Event System (Phase 39) cross-referenced |
+| **Part 9** — Acceptance criteria | ✅ #1, #2, #3, #4, #6, #8 met | #5 (Behavior A pack lifecycle) and #7 (Pack Builder UI) pending Part 5 |
+| **Part 10 Tier 1** — Unified Trade Reconciliation (display-time join) | ✅ Shipped 2026-04-21 | See "Part 10 Tier 1 — Shipped" section below |
+| **Part 10 Tier 2** — `trade_reconciliations` cache table | ❌ Deferred | Materialization for scale; client-side join is adequate at current volume |
+| **Part 11** — Storage scaling (`strategy_trades` normalized table) | ❌ Deferred | Not urgent at current scale (~2k trades per top strategy). Logged as roadmap 9w prerequisite |
+
+**Acute ops issues surfaced during shipping (all resolved same day):**
+- Auth JWT validations hammering Supabase on every request → **cached 5 min / token with graceful Supabase-outage fallback** (commits c289cf0, 8019793)
+- Mass Builder searches stranded as orphans on API pod restart → **startup cleanup + frontend orphan badge** (commit 46146ed)
+- Recurring NaN-in-JSON serialization pattern on KPI-heavy endpoints → **fixed on `/api/strategies` (501f28b) and `/api/portfolios/{id}/trades` (70fdec3)**; added to backlog
+
+---
+
 ## Revision note — 2026-04-20
 
 A seventh decision surfaced during live verification and clarifies the
@@ -658,6 +685,19 @@ Spec is "done" when, after implementation:
 ---
 
 ## Part 10 — Unified Trade Reconciliation
+
+### Tier 1 — Shipped 2026-04-21
+
+New **Unified Trades** tab on Strategy Detail. Pure frontend — reads existing `stored_trades` + alerts, no new table, non-invasive to existing tabs. Greedy join on `fill_ts` within user's slippage tolerance (Display Settings). States: `matched` / `partial_match` (Drift) / `missed` / `phantom` / `backtest` (added post-feedback 2026-04-21 to distinguish pre-forward-test trades from actual missed alerts on strategy 117's 2,172 historical trades).
+
+UX refinements shipped:
+- Date range filter (default "Forward Only" so backtest rows don't drown out live reconciliation signal)
+- Trade numbering: oldest = #1, table sorted newest-first
+- Pagination: 100-row cap with "Show all N" toggle (mirrors Algo History pattern)
+
+Commits: `fdbad98` (initial tab), `2c916c9` (UX refinements).
+
+Tier 2 (materialized `trade_reconciliations` cache table) and Tier 3 (divergence-monitoring watchdog) remain deferred.
 
 ### Why
 
