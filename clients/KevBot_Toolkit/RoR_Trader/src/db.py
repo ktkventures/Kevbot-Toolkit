@@ -12,6 +12,7 @@ import os
 import json
 import threading
 import logging
+import contextvars
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -29,57 +30,69 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # ============================================================
-# User Context (thread-local)
-# Streamlit runs each session in its own thread, so we store
-# the authenticated user's ID and JWT per-thread.
+# User Context (contextvars)
+#
+# History: originally `threading.local` — fine for Streamlit where each
+# session runs on one thread. Broke under FastAPI + uvicorn, where a
+# sync dependency (`get_current_user`) and a sync endpoint run in
+# anyio's threadpool and can land on DIFFERENT worker threads under
+# load. Thread-local set on T1 was invisible on T2 → `user_id = None`,
+# which postgrest stringified to the literal "None" and Supabase
+# rejected as an invalid UUID (2026-04-22).
+#
+# ContextVar is async-safe: anyio's to_thread.run_sync() copies the
+# current Context into the worker thread (via contextvars.copy_context),
+# so the user_id set in the dependency propagates to the endpoint
+# regardless of which threadpool worker runs it. Daemon threads we spawn
+# manually (mass_builder worker) don't inherit the parent Context, but
+# they always call set_admin_user_context / set_current_user themselves
+# before any DB work — same as before.
 # ============================================================
 
-_local = threading.local()
+_user_id_var: contextvars.ContextVar = contextvars.ContextVar("user_id", default=None)
+_access_token_var: contextvars.ContextVar = contextvars.ContextVar("access_token", default=None)
+_admin_mode_var: contextvars.ContextVar = contextvars.ContextVar("admin_mode", default=False)
 
 
 def set_current_user(user_id: str, access_token: str):
-    """Set the current user context for this thread."""
-    _local.user_id = user_id
-    _local.access_token = access_token
-    _local.admin_mode = False
+    """Set the current user context for this request/task."""
+    _user_id_var.set(user_id)
+    _access_token_var.set(access_token)
+    _admin_mode_var.set(False)
 
 
 def set_admin_user_context(user_id: str):
-    """Set thread-local user context in ADMIN mode — for worker / service
-    paths that need to invoke user-context-aware helpers
-    (load_confluence_groups, load_general_packs, etc.) without a real
-    user JWT. Under admin mode, get_client() returns the admin client
-    so queries bypass RLS; get_current_user_id() still returns the
-    given user_id so WHERE-clauses scope correctly.
-
-    Always pair with clear_current_user() in a try/finally — never leak
-    admin mode into a subsequent request handler on a shared thread.
+    """Set user context in ADMIN mode — for worker / service paths that
+    need to invoke user-context-aware helpers (load_confluence_groups,
+    load_general_packs, etc.) without a real user JWT. Under admin mode,
+    get_client() returns the admin client so queries bypass RLS;
+    get_current_user_id() still returns the given user_id so WHERE-clauses
+    scope correctly.
     """
-    _local.user_id = user_id
-    _local.access_token = None
-    _local.admin_mode = True
+    _user_id_var.set(user_id)
+    _access_token_var.set(None)
+    _admin_mode_var.set(True)
 
 
 def clear_current_user():
-    """Clear thread-local user context. Use in finally blocks after
-    set_admin_user_context to avoid leaking admin mode."""
-    _local.user_id = None
-    _local.access_token = None
-    _local.admin_mode = False
+    """Clear user context. Safe to call even if nothing was set."""
+    _user_id_var.set(None)
+    _access_token_var.set(None)
+    _admin_mode_var.set(False)
 
 
 def get_current_user_id() -> str:
     """Get the current user's UUID. Returns None if not authenticated."""
-    return getattr(_local, 'user_id', None)
+    return _user_id_var.get()
 
 
 def get_current_token() -> str:
     """Get the current user's JWT access token."""
-    return getattr(_local, 'access_token', None)
+    return _access_token_var.get()
 
 
 def _is_admin_mode() -> bool:
-    return getattr(_local, 'admin_mode', False)
+    return _admin_mode_var.get()
 
 
 # ============================================================
