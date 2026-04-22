@@ -508,6 +508,26 @@ def update_alert_db(alert_id: int, updates: dict) -> dict | None:
     return _row_to_alert(result.data[0]) if result.data else None
 
 
+def get_alert_by_id_db(alert_id: int) -> dict | None:
+    """Load a single alert row by id, scoped to the current user.
+
+    Used by the Portfolio Trade History Details drawer (roadmap 9ad) to
+    surface the full alert including its `webhook_deliveries` JSONB array.
+    RLS enforces user scoping when called with a user-scoped client, but
+    we still filter on user_id explicitly so this is safe under either
+    get_client() or get_admin_client().
+    """
+    user_id = get_current_user_id()
+    client = get_client()
+    q = client.table('alerts').select('*').eq('id', alert_id)
+    if user_id:
+        q = q.eq('user_id', user_id)
+    result = q.limit(1).execute()
+    if not result.data:
+        return None
+    return _row_to_alert(result.data[0])
+
+
 def get_alerts_for_strategy_db(strategy_id: int, limit: int = 100) -> list:
     """Load alerts for a specific strategy."""
     client = get_client()

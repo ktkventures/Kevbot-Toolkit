@@ -25,6 +25,9 @@ import DistributionChart from '@/charts/DistributionChart';
 // issues with Recharts and the chart's internal useState hooks.
 const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { ssr: false });
 const BuyingPowerTimeline = dynamic(() => import('@/charts/BuyingPowerTimeline'), { ssr: false });
+// Details drawer for individual Trade History rows (roadmap 9ad). Dynamic
+// because the modal pulls webhook payloads lazily and only when opened.
+const TradeDetailsModal = dynamic(() => import('@/components/TradeDetailsModal'), { ssr: false });
 import CombinedEquityCurve from '@/charts/CombinedEquityCurve';
 import DrawdownChart from '@/charts/DrawdownChart';
 import DailyBarChart from '@/charts/DailyBarChart';
@@ -239,6 +242,9 @@ function LiveDashboardTab({
   const [anomalyTab, setAnomalyTab] = useState('All');
   const [dataMode, setDataMode] = useState<'Planned' | 'Executed'>('Planned');
   const [showAllTrades, setShowAllTrades] = useState(false);
+  // Per-row Details drawer state. Carries the full row so the modal can
+  // render even if react-query invalidates the source list behind it.
+  const [detailsTrade, setDetailsTrade] = useState<{ row: any; number: number } | null>(null);
 
   // Live data hooks
   const { data: portfolio } = usePortfolio(portfolioId ?? null);
@@ -711,14 +717,14 @@ function LiveDashboardTab({
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 900 }}>
             <thead>
               <tr>
-                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'P Qty', 'E Qty', 'R', 'P&L', 'Status'].map((h) => (
-                  <th key={h} className="text-left py-2 px-2 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', whiteSpace: 'nowrap', position: 'sticky', top: 0 }}>{h}</th>
+                {['#', 'Strategy', 'Symbol', 'Dir', 'Entry $', 'Exit $', 'Reason', 'P Qty', 'E Qty', 'R', 'P&L', 'Status', ''].map((h, i) => (
+                  <th key={`${h}-${i}`} className="text-left py-2 px-2 text-xs font-medium" style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', whiteSpace: 'nowrap', position: 'sticky', top: 0 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {tradeRows.length === 0 ? (
-                <tr><td colSpan={12} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                <tr><td colSpan={13} className="py-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                   {visibleStrategyIds.size === 0
                     ? 'Toggle at least one strategy to Visible on the Strategies tab.'
                     : 'No trade history yet. Run Update All Data or wait for live trades.'}
@@ -792,6 +798,22 @@ function LiveDashboardTab({
                         {statusLabel}
                       </span>
                     </td>
+                    <td className="py-2 px-2 text-xs">
+                      <button
+                        onClick={() => setDetailsTrade({ row: t, number: i + 1 })}
+                        className="text-xs px-2 py-0.5 rounded"
+                        style={{
+                          color: 'var(--accent)',
+                          background: 'transparent',
+                          border: '1px solid var(--border)',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title="View full trade detail + webhook payload + delivery status"
+                      >
+                        Details
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -799,6 +821,16 @@ function LiveDashboardTab({
           </table>
         </div>
       </Card>
+
+      {/* Trade Details drawer — webhook payload + delivery status per row
+          (roadmap 9ad). Rendered at the tab root so the portal modal
+          overlays the whole view, not just the Card. */}
+      <TradeDetailsModal
+        trade={detailsTrade?.row ?? null}
+        tradeNumber={detailsTrade?.number}
+        isOpen={detailsTrade !== null}
+        onClose={() => setDetailsTrade(null)}
+      />
     </div>
   );
 }

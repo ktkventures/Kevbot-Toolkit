@@ -1426,6 +1426,11 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'phantom': False,
                 'exec_type': pending_entry.get('trigger', 'C')[:2] if pending_entry.get('trigger') else 'C',
                 'data_source': 'raw_alerts',
+                # Raw-alerts fallback: alert dicts carry `id` directly
+                # (no separate live_execution record). Details drawer
+                # (roadmap 9ad) looks these up to show webhook_deliveries.
+                'entry_alert_id': pending_entry.get('id'),
+                'exit_alert_id': alert.get('id'),
             })
             pending_entry = None
 
@@ -1539,6 +1544,11 @@ def get_portfolio_alert_trades(portfolio: dict,
                         'phantom': False,
                         'exec_type': stored_trade.get('exec_type', 'C'),
                         'data_source': 'live_executions',
+                        # Expose alert IDs so the Portfolio Trade History
+                        # Details drawer (roadmap 9ad) can fetch the full
+                        # alert row + webhook_deliveries per entry/exit.
+                        'entry_alert_id': entry_ex.get('alert_id'),
+                        'exit_alert_id': exit_ex.get('alert_id'),
                     })
                 else:
                     quantity = int(risk_per_trade / per_share_risk) if per_share_risk > 0 else 1

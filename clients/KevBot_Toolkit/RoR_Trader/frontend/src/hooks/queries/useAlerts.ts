@@ -22,6 +22,46 @@ export function useStrategyAlerts(strategyId: number | null) {
   });
 }
 
+// Single alert lookup (GET /api/alerts/{id}) — returns the full alert row
+// including its webhook_deliveries JSONB array. Powers the Portfolio Trade
+// History Details drawer (roadmap 9ad).
+export interface WebhookDelivery {
+  webhook_id?: string;
+  webhook_name?: string;
+  portfolio_id?: number;
+  sent_at?: string;
+  success?: boolean;
+  status_code?: number | null;
+  payload_sent?: string | null;
+  error?: string | null;
+}
+
+export interface AlertRow {
+  id: number;
+  type?: string;
+  strategy_id?: number;
+  strategy_name?: string;
+  symbol?: string;
+  direction?: string;
+  trigger_id?: string;
+  price?: number | null;
+  actual_price?: number | null;
+  timestamp?: string;
+  trigger_ts?: string;
+  fill_ts?: string;
+  webhook_deliveries?: WebhookDelivery[];
+  [key: string]: any;
+}
+
+export function useAlertDetails(alertId: number | null | undefined) {
+  return useQuery({
+    queryKey: ['alert-details', alertId],
+    queryFn: () => apiFetch<AlertRow>(`/api/alerts/${alertId}`),
+    enabled: alertId != null,
+    staleTime: 30_000, // deliveries don't retroactively change
+  });
+}
+
 export function useAlertConfig() {
   return useQuery({
     queryKey: ['alert-config'],

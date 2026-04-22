@@ -71,3 +71,30 @@ def update_alert_config(config: dict = Body(...), user=Depends(get_current_user)
     from alerts import save_alert_config
     save_alert_config(config)
     return {"status": "saved"}
+
+
+# =============================================================================
+# SINGLE ALERT LOOKUP
+# =============================================================================
+#
+# Declared LAST so the literal-path routes above (/config, /strategy/{...},
+# /clear, "") take precedence over this integer-path route. FastAPI matches
+# routes in declaration order; if /{alert_id} came before /config, a request
+# for /api/alerts/config would fail 422 trying to coerce "config" → int.
+
+@router.get("/{alert_id}")
+def get_alert(alert_id: int, user=Depends(get_current_user)):
+    """Get a single alert by id, including its webhook_deliveries array.
+
+    Powers the Portfolio Trade History Details drawer (roadmap 9ad):
+    the frontend uses this to show the rendered webhook payload that
+    was dispatched for a specific trade + the HTTP delivery result.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="DB mode required")
+    from db import get_alert_by_id_db
+    alert = get_alert_by_id_db(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert
