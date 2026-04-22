@@ -1230,10 +1230,16 @@ def start_mass_search_async(search_id, search_config: dict,
                         info.pop('conf_step', None)
                         info.pop('conf_total', None)
 
-                # Flush to DB every 10 seconds
+                # Flush to DB every 60 seconds (was 10s before 2026-04-22).
+                # Each flush rewrites the full config_data JSONB blob, which
+                # includes the checkpoint payload — cheap on a small search,
+                # expensive at 70+ strategy scale. Checkpoints land at the
+                # (symbol, tf) boundary which typically takes >60s anyway,
+                # so recovery granularity is unchanged; we just stop hammering
+                # Supabase with redundant mid-group progress writes.
                 nonlocal last_db_flush
                 now = _time.monotonic()
-                if now - last_db_flush > 10:
+                if now - last_db_flush > 60:
                     last_db_flush = now
                     try:
                         update_mass_search(search_id, {

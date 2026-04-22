@@ -53,7 +53,7 @@ class LiveBarPublisher:
         self._timeout = request_timeout_s
         self._client: Optional[httpx.AsyncClient] = None
         # (symbol, tf_seconds) -> last-published epoch ms
-        self._last_published: dict[tuple[str, int], float] = {}
+        self._last_published: dict[str, float] = {}
 
         self._enabled = bool(self._url and self._key)
         if not self._enabled:
@@ -74,19 +74,27 @@ class LiveBarPublisher:
             )
         return self._client
 
-    def _should_throttle(self, symbol: str, tf_seconds: int) -> bool:
-        """Return True if this forming-bar update is within the throttle window."""
-        key = (symbol, tf_seconds)
+    def _should_throttle(self, user_id: str) -> bool:
+        """Return True if this update is within the throttle window for user_id.
+
+        2026-04-22: throttle key changed from (symbol, tf_seconds) → user_id.
+        With many symbols × timeframes, per-pair throttling still produced
+        hundreds of broadcasts/sec per user, which was the top contributor to
+        Supabase project-health degradation (repeated 'unhealthy' resets).
+        Per-user coalescing caps it at ~1 broadcast/sec regardless of how many
+        charts/indicators are fanning in. Alerts + webhooks are on an entirely
+        separate code path and unaffected.
+        """
         now_ms = time.time() * 1000
-        last = self._last_published.get(key)
+        last = self._last_published.get(user_id)
         if last is not None and (now_ms - last) < self._throttle_ms:
             return True
-        self._last_published[key] = now_ms
+        self._last_published[user_id] = now_ms
         return False
 
-    def _mark_published(self, symbol: str, tf_seconds: int) -> None:
+    def _mark_published(self, user_id: str) -> None:
         """Reset the throttle timestamp for a completed bar."""
-        self._last_published[(symbol, tf_seconds)] = time.time() * 1000
+        self._last_published[user_id] = time.time() * 1000
 
     async def publish_async(
         self,
@@ -110,11 +118,13 @@ class LiveBarPublisher:
         if not self._enabled or not user_id:
             return
 
-        if is_forming:
-            if self._should_throttle(symbol, tf_seconds):
-                return
-        else:
-            self._mark_published(symbol, tf_seconds)
+        # Per-user throttle applies to both forming AND completed bars now.
+        # A 1-minute completed-bar close only fires once per minute anyway, so
+        # it won't be dropped. The throttle only trims the case where many
+        # fast bars (1s TFs, multi-symbol fan-in) would otherwise swamp Supabase.
+        if self._should_throttle(user_id):
+            return
+        self._mark_published(user_id)
 
         endpoint = f"{self._url}/realtime/v1/api/broadcast"
         inner_payload: dict = {
