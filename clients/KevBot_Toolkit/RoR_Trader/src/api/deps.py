@@ -47,12 +47,20 @@ _AUTH_CACHE_TTL_S = 300  # 5 minutes — balances security (revocation window)
                          # against load on Supabase auth endpoint
 
 
-def get_current_user(authorization: str = Header(default="")):
-    """Extract and validate Supabase JWT. Sets thread-local user context for db.py.
+async def get_current_user(authorization: str = Header(default="")):
+    """Extract and validate Supabase JWT. Sets user context for db.py.
 
     Uses Supabase's own auth API to validate the token rather than
     local JWT verification — this handles all signing key formats
     (HS256 legacy, EdDSA new keys) without needing the signing secret.
+
+    Must be `async def` so the ContextVar.set() inside runs in the
+    request's task context, not in a threadpool worker's copied context.
+    If it were a sync dep, FastAPI would run it via `run_in_threadpool`,
+    the ContextVar changes would stay in the worker's throwaway context,
+    and the downstream sync endpoint (also run_in_threadpool'd) would
+    see the parent context's default None. That was the root cause of
+    the `invalid input syntax for type uuid: "None"` 500s (2026-04-22).
 
     In dev mode (DEV_BYPASS_AUTH=true), skips validation and uses the
     service role key for database access.
@@ -94,8 +102,14 @@ def get_current_user(authorization: str = Header(default="")):
         if jwt_exp and jwt_exp <= int(_t.time()):
             raise HTTPException(status_code=401, detail="Token expired")
 
-        # Validate token via Supabase auth API (cached + degrades gracefully)
-        _validate_with_supabase(token, jwt_exp)
+        # Validate token via Supabase auth API (cached + degrades gracefully).
+        # Offloaded to a threadpool so the 2s httpx.get doesn't block the
+        # event loop for other in-flight requests. _validate_with_supabase
+        # doesn't touch ContextVars, so running it in a worker thread is
+        # safe (the ContextVar.set() below happens back in this async
+        # context, which is what propagates to downstream endpoints).
+        import asyncio as _asyncio
+        await _asyncio.to_thread(_validate_with_supabase, token, jwt_exp)
 
     except HTTPException:
         raise
