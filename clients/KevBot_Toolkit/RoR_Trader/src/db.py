@@ -1027,22 +1027,26 @@ def load_mass_searches() -> list:
     Merges row-level fields (id, status, created_at, updated_at) with the
     config_data JSONB payload so callers see a unified dict. Row-level status
     is authoritative — config_data's status may lag behind.
+
+    In USE_DB mode we RAISE on DB errors instead of silently falling back to
+    the file-mode cache. On Railway there is no file, so the fallback used
+    to return [] and the frontend would render "No saved searches yet" —
+    indistinguishable from a user who genuinely has no searches. Raising
+    lets the API return 500, which React Query treats as an error (keeping
+    the previously-fetched data visible) rather than as an empty list.
     """
     if USE_DB:
-        try:
-            client = get_client()
-            result = client.table('mass_searches') \
-                .select('*') \
-                .order('created_at', desc=True) \
-                .execute()
-            merged = []
-            for r in (result.data or []):
-                row = dict(r)
-                cfg = row.pop('config_data', {}) or {}
-                merged.append({**cfg, **row})
-            return merged
-        except Exception as e:
-            logger.warning("load_mass_searches DB error (falling back to file): %s", e)
+        client = get_client()
+        result = client.table('mass_searches') \
+            .select('*') \
+            .order('created_at', desc=True) \
+            .execute()
+        merged = []
+        for r in (result.data or []):
+            row = dict(r)
+            cfg = row.pop('config_data', {}) or {}
+            merged.append({**cfg, **row})
+        return merged
     return _load_mass_searches_file()
 
 

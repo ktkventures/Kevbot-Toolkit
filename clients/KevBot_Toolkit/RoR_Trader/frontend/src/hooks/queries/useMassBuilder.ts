@@ -18,6 +18,10 @@ export function useMassResults() {
       }
       return false;
     },
+    // Keep the previous list visible during refetches. A transient API error
+    // (Supabase flake, Railway cold start) would otherwise blank the page to
+    // "No saved searches yet" until the next successful poll.
+    placeholderData: (prev) => prev,
   });
 }
 
