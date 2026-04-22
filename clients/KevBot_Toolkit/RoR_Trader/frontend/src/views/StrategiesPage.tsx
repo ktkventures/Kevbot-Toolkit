@@ -144,12 +144,18 @@ const EQ_FWD_COLOR = '#FF9800';
 const EQ_LIVE_COLOR = '#4CAF50';
 
 function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: { equityCurveData?: { cumulative_r: number[]; boundary_index?: number | null }; fwdStartPct: number; hasAlerts: boolean; showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number }) {
-  const cumR = equityCurveData?.cumulative_r || [];
+  // Drop any non-finite values (NaN/Infinity/null) — one of them in cumR
+  // makes Math.min/max return NaN, which propagates into every toY() call
+  // and Recharts logs "Expected number" errors for every SVG attribute.
+  const cumR = (equityCurveData?.cumulative_r || []).filter((v) => Number.isFinite(v));
   const totalPoints = cumR.length;
   if (totalPoints < 2) {
     return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>--</span></div>;
   }
-  const fwdIdx = equityCurveData?.boundary_index ?? Math.max(1, Math.floor(totalPoints * fwdStartPct));
+  const rawBoundary = equityCurveData?.boundary_index;
+  const fwdIdx = Number.isFinite(rawBoundary)
+    ? Math.min(Math.max(rawBoundary as number, 1), totalPoints - 1)
+    : Math.max(1, Math.floor(totalPoints * (Number.isFinite(fwdStartPct) ? fwdStartPct : 0.5)));
   const w = 320;
   const h = height;
   const pad = 3;
