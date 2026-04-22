@@ -121,8 +121,17 @@ def _do_recompute(
 
     stored = _serialize_trades(all_trades)
 
-    trading_days = svc.count_trading_days(all_trades) \
-        if hasattr(all_trades, 'index') else 1
+    # Prefer trading_days attached by services.get_strategy_trades (counted
+    # on the source bars DataFrame's DatetimeIndex). Falls back to
+    # count_trading_days(trades_df) which returns 1 for an integer-indexed
+    # trades DF — that fallback was the source of a ~180× inflated daily_r
+    # before 2026-04-22 (trades DF has a RangeIndex, so .index.normalize
+    # didn't exist → count_trading_days returned 1 → daily_r = total_r).
+    trading_days = all_trades.attrs.get('trading_days') \
+        if hasattr(all_trades, 'attrs') else None
+    if not trading_days or trading_days < 1:
+        trading_days = svc.count_trading_days(all_trades) \
+            if hasattr(all_trades, 'index') else 1
     kpis = svc.calculate_kpis(all_trades, total_trading_days=trading_days)
 
     from api.services.backtest_service import _build_equity_curve

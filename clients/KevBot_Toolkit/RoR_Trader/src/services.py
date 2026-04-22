@@ -294,8 +294,15 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
         return pd.DataFrame()
 
     if strat.get('forward_testing') and strat.get('forward_test_start'):
-        _, bt, fw, _ = prepare_forward_test_data(strat, data_feed=data_feed)
-        return pd.concat([bt, fw], ignore_index=True)
+        df_full, bt, fw, _ = prepare_forward_test_data(strat, data_feed=data_feed)
+        trades = pd.concat([bt, fw], ignore_index=True)
+        # Attach trading_days from the source bars so callers can compute
+        # daily_r against the full period (matches Mass Builder semantics).
+        # count_trading_days returns 1 for trades-only DFs (integer index),
+        # which would otherwise inflate refresh KPIs ~180× for a 180-day
+        # window. The df has a DatetimeIndex so normalize().nunique() works.
+        trades.attrs['trading_days'] = count_trading_days(df_full) if len(df_full) else 1
+        return trades
     else:
         data_days = strat.get('data_days', 30)
         data_seed = strat.get('data_seed', 42)
@@ -316,7 +323,10 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
             secondary_tfs=sec_tfs)
         if len(df) == 0:
             return pd.DataFrame()
-        return unified_trades(df, strat)
+        trades = unified_trades(df, strat)
+        # See note in the forward-test branch above.
+        trades.attrs['trading_days'] = count_trading_days(df)
+        return trades
 
 
 def prepare_forward_test_data(
