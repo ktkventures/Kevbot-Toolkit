@@ -88,6 +88,76 @@ def get_progress(search_id: str, user=Depends(get_current_user)):
     }
 
 
+@router.post("/resume/{search_id}")
+def resume_mass_search(search_id: str, user=Depends(get_current_user)):
+    """Resume an orphaned (or failed) mass search from the last checkpoint.
+
+    Reads the saved config + checkpoint payload from the search row and
+    relaunches the worker with resume_checkpoint set, so it skips
+    (symbol, tf) groups that have already completed. See Roadmap 9s.
+
+    Flow:
+      1. Fetch the saved search.
+      2. Validate status is 'orphaned' or 'failed' (can't resume a running
+         or completed search).
+      3. Read the `config` + `checkpoint` subkeys from config_data (both
+         surfaced at top level by get_mass_search's merge).
+      4. Flip DB status to 'running' and relaunch the worker with the
+         checkpoint.
+
+    If no checkpoint exists (e.g. orphan happened before the first group
+    finished), resumes from scratch using the saved config — equivalent
+    to clicking Edit → Analyze but keeps the same search_id.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="Mass builder requires DB mode")
+
+    from db import get_mass_search, update_mass_search
+    from mass_builder import start_mass_search_async
+
+    search = get_mass_search(search_id)
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    status = search.get('status')
+    if status not in ('orphaned', 'failed'):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume a search with status '{status}'. "
+                   f"Only orphaned or failed searches can be resumed.",
+        )
+
+    # get_mass_search merges config_data into the top level, so both of
+    # these are reachable directly.
+    checkpoint = search.get('checkpoint')
+    # The original run's config was stored on `config_data.config` by
+    # the original POST /run handler.
+    config = search.get('config') or {}
+    if not config:
+        raise HTTPException(
+            status_code=400,
+            detail="Search has no stored config — cannot resume.",
+        )
+
+    # Flip status first so any concurrent polls see 'running'.
+    update_mass_search(search_id, {'status': 'running'})
+
+    # Launch worker with checkpoint (may be None for empty-checkpoint case).
+    start_mass_search_async(search_id, config, resume_checkpoint=checkpoint)
+
+    completed_groups = 0
+    if isinstance(checkpoint, dict):
+        completed_groups = len(checkpoint.get('completed_symbol_tfs') or [])
+
+    return {
+        "search_id": search_id,
+        "status": "running",
+        "resumed_from_checkpoint": checkpoint is not None,
+        "completed_groups": completed_groups,
+    }
+
+
 @router.post("/cancel/{search_id}")
 def cancel_search(search_id: str, user=Depends(get_current_user)):
     """Cancel a running mass search.

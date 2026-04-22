@@ -76,6 +76,23 @@ export function useCancelMassSearch() {
   });
 }
 
+// Resume an orphaned mass search from its last checkpoint (Roadmap 9s).
+// Backend: POST /api/mass-builder/resume/{id} — reads saved config +
+// checkpoint, relaunches the worker skipping already-completed groups.
+export function useResumeMassSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (searchId: number | string) =>
+      apiFetch<{
+        search_id: number | string;
+        status: string;
+        resumed_from_checkpoint: boolean;
+        completed_groups: number;
+      }>(`/api/mass-builder/resume/${searchId}`, { method: 'POST' }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['mass-results'] }); },
+  });
+}
+
 export function useDeleteMassResult() {
   const qc = useQueryClient();
   return useMutation({

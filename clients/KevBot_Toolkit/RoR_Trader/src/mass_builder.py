@@ -284,6 +284,8 @@ def new_search_id() -> str:
 def run_mass_search(
     search_config: dict,
     progress_callback: Callable[[int, int, str], None] = None,
+    resume_checkpoint: Optional[dict] = None,
+    checkpoint_callback: Optional[Callable[[list, list, dict], None]] = None,
 ) -> list:
     """Execute a mass strategy search.
 
@@ -294,6 +296,14 @@ def run_mass_search(
     Args:
         search_config: Mass search configuration dict.
         progress_callback: Called with (current_step, total_steps, label).
+        resume_checkpoint: Optional dict with 'completed_symbol_tfs',
+            'partial_results', 'diagnostics_so_far' to skip already-done
+            work. Produced by checkpoint_callback on a prior interrupted
+            run. See Roadmap 9s.
+        checkpoint_callback: Called at the end of each (symbol, tf) group
+            with (completed_symbol_tfs, results_snapshot, diag_snapshot)
+            so the caller can persist a resumable snapshot to DB. No-op
+            if None.
 
     Returns:
         List of result dicts sorted by daily_r descending.
@@ -518,6 +528,36 @@ def run_mass_search(
         'confluence_results': 0, 'direction_skips': 0,
     }
 
+    # Resume-from-checkpoint bookkeeping (Roadmap 9s). When resume_checkpoint
+    # is provided, seed the completed-groups set and restore prior results +
+    # diagnostics so the overall run appears continuous.
+    completed_symbol_tfs: set = set()
+    _completed_symbol_tfs_list: list = []
+    _combos_per_group = (len(directions) * len(entry_cids)
+                         * len(exit_combos) * len(pack_combos))
+    _steps_per_group = 1 + _combos_per_group  # 1 data-load step + combos
+    if resume_checkpoint:
+        raw_completed = resume_checkpoint.get('completed_symbol_tfs') or []
+        for pair in raw_completed:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                completed_symbol_tfs.add((str(pair[0]), str(pair[1])))
+                _completed_symbol_tfs_list.append([str(pair[0]), str(pair[1])])
+        prior_results = resume_checkpoint.get('partial_results') or []
+        if isinstance(prior_results, list):
+            results.extend(prior_results)
+        prior_diag = resume_checkpoint.get('diagnostics_so_far') or {}
+        if isinstance(prior_diag, dict):
+            for k, v in prior_diag.items():
+                # Don't overwrite overall_start — wall_total calculated on
+                # final diag will reflect only this process's runtime, which
+                # is fine for calibration (resume-time != original run time).
+                if k == 'overall_start':
+                    continue
+                _diag[k] = v
+        print(f"[MASS] resume: {len(completed_symbol_tfs)} completed groups, "
+              f"{len(results)} prior results, {_diag.get('backtests_run', 0)} "
+              f"backtests already run")
+
     logger.info("Mass search: %d tickers × %d TFs × %d dirs × %d entries "
                 "× %d exit_combos = %d base configs",
                 len(tickers), len(timeframes), len(directions),
@@ -528,6 +568,19 @@ def run_mass_search(
         sym_session = '24/7' if asset_type == 'crypto' else session
 
         for tf in timeframes:
+            # Resume: skip (symbol, tf) groups already completed on a prior
+            # run. Fast-forward the step counter so progress bar math stays
+            # correct.
+            if (symbol, tf) in completed_symbol_tfs:
+                step += _steps_per_group
+                if progress_callback:
+                    progress_callback(step, total_steps,
+                                      f"{symbol} {tf} — resumed (skipped)",
+                                      phase='load',
+                                      phase_detail=f"{symbol} {tf} skipped (resume)",
+                                      inner_step=1, inner_total=1)
+                continue
+
             # ── Level 1: Load data (one per symbol+TF, cached) ──
             ck = _cache_key(symbol, tf, data_days, sym_session,
                             start_date, end_date)
@@ -870,6 +923,22 @@ def run_mass_search(
             logger.info("Mass search: %s/%s group complete, %d results so far",
                         symbol, tf, len(results))
 
+            # Checkpoint emission (Roadmap 9s). End of a (symbol, tf) group
+            # is our natural resume boundary — all downstream combos for
+            # this group are done, next group starts a fresh data load.
+            _completed_symbol_tfs_list.append([symbol, tf])
+            completed_symbol_tfs.add((symbol, tf))
+            if checkpoint_callback:
+                try:
+                    checkpoint_callback(
+                        list(_completed_symbol_tfs_list),
+                        list(results),
+                        dict(_diag),
+                    )
+                except Exception as _cp_err:
+                    logger.warning("Checkpoint callback failed (non-fatal): %s",
+                                   _cp_err)
+
     # Sort by user's chosen metric, trim to max_results
     _sort_metric = required_perf.get('sort_by', 'daily_r')
     results.sort(key=lambda r: r.get('kpis', {}).get(_sort_metric, -999),
@@ -975,7 +1044,8 @@ def cancel_search(search_id):
             _active_searches[search_id]['cancelled'] = True
 
 
-def start_mass_search_async(search_id, search_config: dict):
+def start_mass_search_async(search_id, search_config: dict,
+                            resume_checkpoint: Optional[dict] = None):
     """Launch a mass search in a background daemon thread.
 
     Progress is written to _active_searches (in-memory, polled by UI)
@@ -1076,7 +1146,45 @@ def start_mass_search_async(search_id, search_config: dict):
                     except Exception:
                         pass
 
-            raw = run_mass_search(search_config, progress_callback=_progress)
+            # Checkpoint callback — persists completed (symbol, tf) pairs +
+            # partial results + running diagnostics to DB so this search can
+            # be resumed from the last completed group if the worker thread
+            # dies (API pod restart, etc.). See Roadmap 9s.
+            def _checkpoint(completed_pairs, results_snapshot, diag_snapshot):
+                # Strip stored_trades from partial_results (too large for
+                # JSONB; matches the final flush strip behavior).
+                slim_results = []
+                for r in results_snapshot:
+                    if isinstance(r, dict):
+                        slim_results.append(
+                            {k: v for k, v in r.items() if k != 'stored_trades'}
+                        )
+                    else:
+                        slim_results.append(r)
+                checkpoint_payload = {
+                    'completed_symbol_tfs': completed_pairs,
+                    'partial_results': slim_results,
+                    'diagnostics_so_far': {
+                        k: v for k, v in diag_snapshot.items()
+                        # Skip the monotonic start marker; not useful on resume
+                        if k != 'overall_start'
+                    },
+                    'last_checkpoint_at': datetime.now(timezone.utc).isoformat(),
+                }
+                with _search_lock:
+                    if search_id in _active_searches:
+                        _active_searches[search_id]['checkpoint'] = checkpoint_payload
+                try:
+                    update_mass_search(search_id, {'checkpoint': checkpoint_payload})
+                except Exception as e:
+                    logger.warning("Checkpoint DB flush failed (non-fatal): %s", e)
+
+            raw = run_mass_search(
+                search_config,
+                progress_callback=_progress,
+                resume_checkpoint=resume_checkpoint,
+                checkpoint_callback=_checkpoint,
+            )
 
             # run_mass_search returns (results_list, diagnostics_dict)
             results, diagnostics = raw if isinstance(raw, tuple) else (raw, {})

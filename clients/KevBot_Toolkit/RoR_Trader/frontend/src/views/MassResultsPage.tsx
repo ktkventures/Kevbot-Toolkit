@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
-import { useMassResults, useDeleteMassResult, useCancelMassSearch, useMassProgress } from '@/hooks/queries/useMassBuilder';
+import { useMassResults, useDeleteMassResult, useCancelMassSearch, useMassProgress, useResumeMassSearch } from '@/hooks/queries/useMassBuilder';
 
 /* ========================================================================= */
 /* TYPES                                                                      */
@@ -40,6 +40,9 @@ interface SavedSearch {
   elapsed: string | null;
   eta: string | null;
   currentStep: string | null;
+  // Checkpoint (if orphaned + resumable)
+  checkpointGroupCount: number;
+  plannedGroupCount: number;
 }
 
 /* ========================================================================= */
@@ -102,6 +105,13 @@ function mapApiSearch(raw: any): SavedSearch {
     elapsed: raw.elapsed ?? null,
     eta: raw.eta ?? null,
     currentStep: raw.current_step ?? null,
+    // Checkpoint for resume UX — count completed (symbol, tf) groups and
+    // compare against the planned total. 'checkpoint' surfaces at top
+    // level because get_mass_search merges config_data with the row.
+    checkpointGroupCount: Array.isArray(raw.checkpoint?.completed_symbol_tfs)
+      ? raw.checkpoint.completed_symbol_tfs.length : 0,
+    plannedGroupCount:
+      (cfg.tickers?.length ?? 0) * (cfg.timeframes?.length ?? 0),
   };
 }
 
@@ -124,6 +134,7 @@ export default function MassResultsPage() {
   const { data: apiResults, isLoading, error } = useMassResults();
   const deleteMut = useDeleteMassResult();
   const cancelMut = useCancelMassSearch();
+  const resumeMut = useResumeMassSearch();
 
   // ---- Local UI state ----
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -195,6 +206,14 @@ export default function MassResultsPage() {
     // single Mass Builder page. Re-running creates a new search; the
     // original saved record is never overwritten.
     router.push(`/mass-builder?edit=${searchId}`);
+  }
+
+  function handleResume(searchId: string) {
+    // Resume an orphaned search from its last checkpoint (Roadmap 9s).
+    // Backend loads the saved config + checkpoint and relaunches the
+    // worker skipping already-completed (symbol, tf) groups. Same
+    // search_id stays in use so results list stays stable.
+    resumeMut.mutate(searchId);
   }
 
   return (
@@ -289,12 +308,20 @@ export default function MassResultsPage() {
                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{search.date}</span>
                   </div>
 
-                  {/* Interrupted: explain + point to retry via Edit → Analyze */}
+                  {/* Interrupted: explain + point to Resume (or Edit fallback) */}
                   {isOrphaned && (
                     <p className="text-xs mb-2" style={{ color: 'var(--orange)' }}>
-                      Search stopped before completing — the API restarted mid-run.
-                      Click <strong>Edit</strong> to re-open the config, then <strong>Analyze</strong> to re-run.
-                      (Tier 2 roadmap: resume from last checkpoint.)
+                      Search stopped before completing — the API restarted mid-run.{' '}
+                      {search.checkpointGroupCount > 0 ? (
+                        <>
+                          <strong>{search.checkpointGroupCount}</strong>
+                          {search.plannedGroupCount > 0 && <> of <strong>{search.plannedGroupCount}</strong></>}{' '}
+                          (symbol × timeframe) group{search.checkpointGroupCount === 1 ? '' : 's'} completed —
+                          click <strong>Resume</strong> to pick up from the next group.
+                        </>
+                      ) : (
+                        <>No checkpoint yet — click <strong>Resume</strong> to restart from scratch, or <strong>Edit</strong> to tweak the config first.</>
+                      )}
                     </p>
                   )}
 
@@ -349,6 +376,33 @@ export default function MassResultsPage() {
                     >
                       Edit
                     </button>
+                  )}
+                  {isOrphaned && (
+                    <>
+                      <button
+                        style={{
+                          ...btnSecondary,
+                          background: 'var(--accent)',
+                          color: 'white',
+                          border: 'none',
+                          opacity: resumeMut.isPending ? 0.6 : 1,
+                        }}
+                        disabled={resumeMut.isPending}
+                        onClick={() => handleResume(search.id)}
+                        title={search.checkpointGroupCount > 0
+                          ? `Resume from group ${search.checkpointGroupCount + 1}`
+                          : 'Restart from scratch (no checkpoint)'}
+                      >
+                        {resumeMut.isPending ? 'Resuming…' : 'Resume'}
+                      </button>
+                      <button
+                        style={btnSecondary}
+                        onClick={() => handleEdit(search.id)}
+                        title="Edit the saved config (creates a new search on Analyze)"
+                      >
+                        Edit
+                      </button>
+                    </>
                   )}
                   {isRunning && (
                     <button

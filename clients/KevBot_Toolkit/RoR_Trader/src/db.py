@@ -1124,12 +1124,15 @@ def update_mass_search(search_id, updates: dict):
             row = {'updated_at': datetime.now(timezone.utc).isoformat()}
             if 'status' in updates:
                 row['status'] = updates['status']
-            # Store results, progress, summary in config_data
-            if 'results' in updates or 'progress' in updates or 'summary' in updates:
+            # Store results, progress, summary, checkpoint in config_data.
+            # `checkpoint` is the resume-from-checkpoint payload (Roadmap 9s):
+            # completed_symbol_tfs + partial_results + diagnostics_so_far.
+            _jsonb_keys = ('results', 'progress', 'summary', 'checkpoint')
+            if any(k in updates for k in _jsonb_keys):
                 # Read existing config_data, merge updates into it
                 result = client.table('mass_searches').select('config_data').eq('id', search_id).maybe_single().execute()
                 cfg = (result.data or {}).get('config_data', {}) if result and result.data else {}
-                for key in ('results', 'progress', 'summary'):
+                for key in _jsonb_keys:
                     if key in updates:
                         cfg[key] = updates[key]
                 # Sanitize for JSON: convert numpy/pandas types
