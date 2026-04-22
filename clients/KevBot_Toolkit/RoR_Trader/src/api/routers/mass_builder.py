@@ -88,6 +88,22 @@ def get_progress(search_id: str, user=Depends(get_current_user)):
     }
 
 
+@router.post("/cleanup-orphans")
+def cleanup_orphans_now(user=Depends(get_current_user)):
+    """Manual trigger for the startup cleanup logic — useful for unsticking
+    searches whose worker died before the startup cleanup could catch them
+    (e.g., daemon thread scheduling delay, or a bug in the startup path).
+
+    Runs the same cleanup_orphaned_mass_searches as on API boot. Returns
+    {resumed, orphaned, ids_resumed, ids_orphaned}.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="Mass builder requires DB mode")
+    from mass_builder import cleanup_orphaned_mass_searches
+    return cleanup_orphaned_mass_searches()
+
+
 @router.post("/resume/{search_id}")
 def resume_mass_search(search_id: str, user=Depends(get_current_user)):
     """Resume an orphaned (or failed) mass search from the last checkpoint.

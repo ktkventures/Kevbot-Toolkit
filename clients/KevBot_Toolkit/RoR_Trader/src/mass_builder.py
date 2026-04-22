@@ -984,44 +984,133 @@ _active_searches: Dict[str, dict] = {}
 _search_lock = threading.Lock()
 
 
-def cleanup_orphaned_mass_searches() -> int:
-    """Mark any mass_searches row in 'running' state as 'orphaned'.
+_MAX_AUTO_RESUMES = 3  # retry cap: if a search fails to complete after
+                        # this many auto-resumes, mark orphaned and require
+                        # a manual Edit+Restart. Prevents infinite retry
+                        # loops on fundamentally broken searches.
 
-    Called on API startup. A fresh API process has no worker threads by
-    definition, so any DB row still showing 'running' belongs to a prior
-    process whose daemon thread died with the pod. The row is unrecoverable
-    (no checkpoint yet — Tier 2 roadmap), so we mark it 'orphaned' to stop
-    the frontend polling loop and let the user decide whether to retry.
 
-    Returns the count of rows updated.
+def cleanup_orphaned_mass_searches() -> dict:
+    """Handle mass_searches rows still in 'running' state on API startup.
+
+    A fresh API process has no worker threads by definition, so any DB row
+    still showing 'running' belongs to a prior process whose daemon thread
+    died (pod restart, deploy, crash). Two paths per row:
+
+    * **Auto-resume** (Roadmap 9s Tier 2 follow-up, 2026-04-21): row has a
+      checkpoint with ≥1 completed (symbol, tf) group AND resume_count <
+      _MAX_AUTO_RESUMES. Relaunch the worker with the saved config +
+      checkpoint; Kevin's overnight queued searches continue through
+      deploys without intervention.
+
+    * **Orphan**: no checkpoint (died before first group completed) OR
+      retry cap exhausted. Mark 'orphaned' so the user can Edit+Restart
+      or click Resume (which uses the same relaunch code but bumps
+      resume_count and is a no-op if capped).
+
+    Returns a summary dict: {resumed: int, orphaned: int, ids_resumed: [],
+    ids_orphaned: []}.
     """
+    summary = {'resumed': 0, 'orphaned': 0, 'ids_resumed': [], 'ids_orphaned': []}
     from db import USE_DB
     if not USE_DB:
-        return 0
+        return summary
     try:
-        from db import get_admin_client
+        from db import get_admin_client, update_mass_search
         client = get_admin_client()
-        # Find 'running' rows first (so we can log IDs + count)
+        # Pull the full config_data with each row so we can decide per-row
+        # whether to auto-resume or mark orphaned without extra round-trips.
         resp = client.table('mass_searches') \
-            .select('id') \
+            .select('id, config_data, user_id') \
             .eq('status', 'running') \
             .execute()
         running = resp.data if resp and resp.data else []
         if not running:
-            return 0
+            logger.info("Mass search startup cleanup: 0 running rows found")
+            return summary
+
         now_iso = datetime.now(timezone.utc).isoformat()
-        client.table('mass_searches') \
-            .update({'status': 'orphaned', 'updated_at': now_iso}) \
-            .eq('status', 'running') \
-            .execute()
-        ids = [r.get('id') for r in running]
+
+        for row in running:
+            sid = row.get('id')
+            cfg_data = row.get('config_data') or {}
+            checkpoint = cfg_data.get('checkpoint') or {}
+            completed = checkpoint.get('completed_symbol_tfs') or []
+            resume_count = int(checkpoint.get('resume_count') or 0)
+            saved_config = cfg_data.get('config') or {}
+
+            can_resume = (
+                isinstance(checkpoint, dict)
+                and len(completed) > 0
+                and resume_count < _MAX_AUTO_RESUMES
+                and isinstance(saved_config, dict)
+                and saved_config  # non-empty
+            )
+
+            if can_resume:
+                # Bump retry counter BEFORE launching so a crash loop is
+                # bounded. Leave status='running' since the new worker
+                # takes over immediately.
+                new_checkpoint = dict(checkpoint)
+                new_checkpoint['resume_count'] = resume_count + 1
+                new_checkpoint['last_auto_resumed_at'] = now_iso
+                try:
+                    # Write the bumped checkpoint via admin client — the
+                    # normal update_mass_search uses the user-scoped client
+                    # which has no JWT at startup. We already have the row
+                    # via admin so we know it exists; a direct update is
+                    # safe.
+                    _merged_cfg = dict(cfg_data)
+                    _merged_cfg['checkpoint'] = new_checkpoint
+                    client.table('mass_searches').update({
+                        'config_data': _merged_cfg,
+                        'updated_at': now_iso,
+                    }).eq('id', sid).execute()
+
+                    # Relaunch worker in admin-mode context so user-scoped
+                    # DB queries (user packs, strategies) still resolve to
+                    # the original owner's data without needing a JWT.
+                    row_user_id = row.get('user_id')
+                    start_mass_search_async(
+                        sid, saved_config,
+                        resume_checkpoint=new_checkpoint,
+                        user_id_override=row_user_id,
+                    )
+                    summary['resumed'] += 1
+                    summary['ids_resumed'].append(sid)
+                    logger.info(
+                        "Mass search auto-resumed id=%s at %d/%d groups "
+                        "(attempt %d/%d)",
+                        sid, len(completed),
+                        len(saved_config.get('tickers') or []) *
+                        len(saved_config.get('timeframes') or []) or len(completed),
+                        resume_count + 1, _MAX_AUTO_RESUMES)
+                except Exception as e:
+                    logger.warning("Auto-resume failed for id=%s: %s — "
+                                   "falling back to orphan", sid, e)
+                    # Fall through to orphan handling for this row
+                    client.table('mass_searches') \
+                        .update({'status': 'orphaned', 'updated_at': now_iso}) \
+                        .eq('id', sid).execute()
+                    summary['orphaned'] += 1
+                    summary['ids_orphaned'].append(sid)
+            else:
+                # Mark orphaned
+                client.table('mass_searches') \
+                    .update({'status': 'orphaned', 'updated_at': now_iso}) \
+                    .eq('id', sid).execute()
+                summary['orphaned'] += 1
+                summary['ids_orphaned'].append(sid)
+
         logger.info(
-            "Mass search startup cleanup: marked %d orphaned row(s) ids=%s",
-            len(ids), ids)
-        return len(ids)
+            "Mass search startup cleanup: resumed=%d orphaned=%d "
+            "(ids_resumed=%s, ids_orphaned=%s)",
+            summary['resumed'], summary['orphaned'],
+            summary['ids_resumed'], summary['ids_orphaned'])
+        return summary
     except Exception as e:
         logger.warning("Mass search orphan cleanup failed: %s", e)
-        return 0
+        return summary
 
 
 def get_search_progress(search_id: str) -> dict:
@@ -1045,7 +1134,8 @@ def cancel_search(search_id):
 
 
 def start_mass_search_async(search_id, search_config: dict,
-                            resume_checkpoint: Optional[dict] = None):
+                            resume_checkpoint: Optional[dict] = None,
+                            user_id_override: Optional[str] = None):
     """Launch a mass search in a background daemon thread.
 
     Progress is written to _active_searches (in-memory, polled by UI)
@@ -1060,9 +1150,15 @@ def start_mass_search_async(search_id, search_config: dict,
     # Capture the current user context so the background thread can
     # load user-specific packs from the database (confluence groups,
     # RM packs, general packs, strategies).
+    #
+    # For auto-resumed searches triggered by cleanup_orphaned_mass_searches
+    # at startup, there's no request JWT — the caller passes
+    # user_id_override so the worker can use admin-mode context to query
+    # the original owner's data without a token.
     from db import get_current_user_id, get_current_token
-    _user_id = get_current_user_id()
-    _token = get_current_token()
+    _user_id = user_id_override or get_current_user_id()
+    _token = get_current_token() if user_id_override is None else None
+    _use_admin_ctx = user_id_override is not None
 
     with _search_lock:
         _active_searches[search_id] = {
@@ -1079,7 +1175,14 @@ def start_mass_search_async(search_id, search_config: dict,
         try:
             # Re-establish user context on this thread so DB queries
             # (confluence groups, RM packs, etc.) return user's data.
-            if _user_id and _token:
+            # Two paths: normal request-triggered runs have both user_id
+            # and token → set_current_user. Auto-resumed runs at startup
+            # have user_id only (no JWT) → admin-mode with user_id so
+            # user-scoped queries still filter to the owner's rows.
+            if _use_admin_ctx and _user_id:
+                from db import set_admin_user_context
+                set_admin_user_context(_user_id)
+            elif _user_id and _token:
                 from db import set_current_user
                 set_current_user(_user_id, _token)
 
