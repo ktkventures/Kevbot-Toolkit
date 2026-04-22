@@ -536,10 +536,15 @@ def get_trades(portfolio_id: int, user=Depends(get_current_user)):
     trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
     combined = trade_data.get('combined_trades')
 
-    return {
+    # _sanitize_for_json handles NaN/Inf floats (e.g. open trades have
+    # r_multiple=NaN which cascades through dollar_pnl and breaks
+    # json.dumps without this pass). Matches the pattern on list/preview
+    # endpoints. Kevin observed 500s on portfolio 27 (10s strategy with
+    # 800+ trades including open ones) that traced to this.
+    return _sanitize_for_json({
         "trades": _serialize_df(combined),
         "equity_curve": _serialize_series(trade_data.get('equity_curve')),
-    }
+    })
 
 
 # =============================================================================
