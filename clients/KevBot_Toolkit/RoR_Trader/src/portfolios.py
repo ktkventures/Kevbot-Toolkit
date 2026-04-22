@@ -1587,6 +1587,136 @@ def get_portfolio_alert_trades(portfolio: dict,
     }
 
 
+def get_portfolio_combined_view(portfolio: dict,
+                                 get_strategy_fn: Callable,
+                                 get_trades_fn: Callable) -> dict:
+    """Unified portfolio trade list with clear source tags.
+
+    Merges stored_trades (backtest + forward test) with live alert trades and
+    dedupes. Each row carries a ``data_source`` that the frontend uses to
+    render status badges:
+
+      - ``'backtest'``     stored_trade entered before the strategy's
+                           ``forward_test_start`` — purely historical, no
+                           live alerts expected.
+      - ``'forward_test'`` stored_trade entered at/after ``forward_test_start``
+                           with no matching live alert — the engine ran live
+                           but the alert system didn't fire (or hasn't fired
+                           yet for this bar).
+      - ``'matched'``      live alert that paired with a forward-test
+                           stored_trade — slippage data is real, webhooks
+                           fired correctly.
+      - ``'live'``         live alert without a matching stored_trade — the
+                           engine and alert pipeline disagreed (phantom
+                           candidate).
+
+    When an alert matches a stored_trade we drop the stored_trade row and
+    keep the alert row (richer: has slippage, actual prices). The equity
+    curve stays backtest-based since alerts may be partial (no exit yet).
+
+    Returns a dict with the same shape as ``get_portfolio_trades``:
+        ``{'combined_trades': list[dict], 'equity_curve': Series,
+           'daily_pnl': DataFrame, 'open_positions': list[dict]}``
+
+    Note: unlike the other combined_trades producers here, this one returns
+    a list[dict], not a DataFrame — the endpoint serializes it directly.
+    """
+    import pandas as _pd  # local alias to avoid shadowing module pd
+    bt_data = get_portfolio_trades(portfolio, get_strategy_fn, get_trades_fn)
+    bt_df = bt_data.get('combined_trades')
+
+    alert_data = get_portfolio_alert_trades(portfolio, get_strategy_fn)
+    alert_rows = alert_data.get('alert_trades', [])
+
+    # Build (strategy_id, normalized_entry_time) keys for alerts that matched
+    # a stored_trade — we dedupe these out of the backtest set.
+    def _norm_ts(v):
+        if v is None or v == '':
+            return None
+        if isinstance(v, str):
+            return v[:19]  # ISO trim to second
+        if hasattr(v, 'isoformat'):
+            try:
+                return v.isoformat()[:19] if not _pd.isna(v) else None
+            except Exception:
+                return v.isoformat()[:19]
+        return str(v)[:19]
+
+    matched_keys = set()
+    for ar in alert_rows:
+        if ar.get('matched'):
+            key = (ar.get('strategy_id'), _norm_ts(ar.get('entry_time')))
+            matched_keys.add(key)
+
+    # Collect each strategy's forward_test_start for tagging
+    fwd_starts = {}
+    for ps in portfolio.get('strategies', []):
+        sid = ps.get('strategy_id')
+        strat = get_strategy_fn(sid)
+        if strat and strat.get('forward_test_start'):
+            try:
+                fwd_starts[sid] = _pd.Timestamp(strat['forward_test_start'])
+            except Exception:
+                pass
+
+    out_rows: list = []
+
+    if bt_df is not None and len(bt_df) > 0:
+        bt_records = bt_df.to_dict('records')
+        for row in bt_records:
+            sid = row.get('strategy_id')
+            key = (sid, _norm_ts(row.get('entry_time')))
+            if key in matched_keys:
+                continue  # alert row will represent this trade
+            fwd_start = fwd_starts.get(sid)
+            is_forward = False
+            if fwd_start is not None:
+                try:
+                    et = _pd.Timestamp(row.get('entry_time'))
+                    # Align timezone awareness before comparing
+                    if et.tz is None and fwd_start.tz is not None:
+                        et = et.tz_localize(fwd_start.tz)
+                    elif et.tz is not None and fwd_start.tz is None:
+                        fwd_start = fwd_start.tz_localize(et.tz)
+                    is_forward = et >= fwd_start
+                except Exception:
+                    is_forward = False
+            row['data_source'] = 'forward_test' if is_forward else 'backtest'
+            out_rows.append(row)
+
+    for ar in alert_rows:
+        ar = dict(ar)  # don't mutate caller's list
+        if ar.get('phantom'):
+            ar['data_source'] = 'live'
+        elif ar.get('matched'):
+            ar['data_source'] = 'matched'
+        else:
+            ar['data_source'] = 'live'
+        out_rows.append(ar)
+
+    # Sort by exit_time (strings and timestamps both work with this key)
+    def _sort_key(r):
+        et = r.get('exit_time')
+        if et is None or et == '':
+            return ''
+        if isinstance(et, str):
+            return et
+        if hasattr(et, 'isoformat'):
+            try:
+                return et.isoformat() if not _pd.isna(et) else ''
+            except Exception:
+                return et.isoformat()
+        return str(et)
+    out_rows.sort(key=_sort_key)
+
+    return {
+        'combined_trades': out_rows,
+        'equity_curve': bt_data.get('equity_curve'),
+        'daily_pnl': bt_data.get('daily_pnl'),
+        'open_positions': alert_data.get('open_positions', []),
+    }
+
+
 def compute_portfolio_benchmark(portfolio: dict,
                                  get_strategy_fn: Callable,
                                  get_trades_fn: Callable = None,

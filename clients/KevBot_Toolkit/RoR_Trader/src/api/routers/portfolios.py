@@ -528,13 +528,22 @@ def compute_portfolio(
 
 @router.get("/{portfolio_id}/trades")
 def get_trades(portfolio_id: int, user=Depends(get_current_user)):
-    """Get combined trade data for a portfolio."""
+    """Get combined trade data for a portfolio.
+
+    2026-04-22: switched from ``get_portfolio_trades`` (backtest only) to
+    ``get_portfolio_combined_view`` which merges backtest + forward-test +
+    live alert trades with deduped ``data_source`` tags. Closes a Phase C
+    wiring gap — the frontend was already reading ``matched`` / ``phantom``
+    / ``data_source`` but the endpoint only returned stored_trades, so
+    every row rendered as "Backtest" even when live alerts had fired.
+    """
     portfolio = _get_or_404(portfolio_id, user)
 
-    from portfolios import get_portfolio_trades
+    from portfolios import get_portfolio_combined_view
 
-    trade_data = get_portfolio_trades(portfolio, _get_strategy_fn, _get_trades_fn)
-    combined = trade_data.get('combined_trades')
+    trade_data = get_portfolio_combined_view(
+        portfolio, _get_strategy_fn, _get_trades_fn)
+    combined_rows = trade_data.get('combined_trades') or []
 
     # _sanitize_for_json handles NaN/Inf floats (e.g. open trades have
     # r_multiple=NaN which cascades through dollar_pnl and breaks
@@ -542,7 +551,7 @@ def get_trades(portfolio_id: int, user=Depends(get_current_user)):
     # endpoints. Kevin observed 500s on portfolio 27 (10s strategy with
     # 800+ trades including open ones) that traced to this.
     return _sanitize_for_json({
-        "trades": _serialize_df(combined),
+        "trades": combined_rows,
         "equity_curve": _serialize_series(trade_data.get('equity_curve')),
     })
 

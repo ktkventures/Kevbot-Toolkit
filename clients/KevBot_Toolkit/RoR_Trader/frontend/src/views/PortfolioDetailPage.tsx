@@ -732,22 +732,36 @@ function LiveDashboardTab({
                 // Phantom trades = alert fired but no backtest match → E Qty = 0.
                 const isPhantom = t.phantom === true;
                 const executedQty = isPhantom ? 0 : (t.quantity ?? plannedQty);
+                // data_source taxonomy set by backend (portfolios.py
+                // get_portfolio_combined_view): 'matched' | 'live' | 'phantom'
+                // | 'forward_test' | 'backtest'. Frontend maps to a badge per
+                // bucket. Legacy 'live_executions' / 'raw_alerts' also handled
+                // so older API responses still render meaningfully.
                 const dataSource = t.data_source || 'backtest';
-                const statusLabel = isPhantom
-                  ? 'Phantom'
-                  : dataSource === 'live_executions'
-                    ? 'Live'
-                    : t.matched === true
-                      ? 'Matched'
-                      : 'Backtest';
-                const statusColor = isPhantom ? 'var(--red)'
-                  : dataSource === 'live_executions' ? 'var(--green)'
-                  : t.matched === true ? 'var(--green)'
-                  : 'var(--text-muted)';
-                const statusBg = isPhantom ? 'var(--red-muted)'
-                  : dataSource === 'live_executions' ? 'var(--green-muted)'
-                  : t.matched === true ? 'var(--green-muted)'
-                  : 'var(--bg-input)';
+                let statusLabel: string;
+                let statusColor: string;
+                let statusBg: string;
+                if (isPhantom) {
+                  statusLabel = 'Phantom';
+                  statusColor = 'var(--red)';
+                  statusBg = 'var(--red-muted)';
+                } else if (dataSource === 'matched' || dataSource === 'live_executions' || (t.matched === true && dataSource !== 'forward_test' && dataSource !== 'backtest')) {
+                  statusLabel = 'Matched';
+                  statusColor = 'var(--green)';
+                  statusBg = 'var(--green-muted)';
+                } else if (dataSource === 'live' || dataSource === 'raw_alerts') {
+                  statusLabel = 'Live';
+                  statusColor = '#2196F3';
+                  statusBg = 'rgba(33, 150, 243, 0.15)';
+                } else if (dataSource === 'forward_test') {
+                  statusLabel = 'Forward Test';
+                  statusColor = '#FF9800';
+                  statusBg = 'rgba(255, 152, 0, 0.15)';
+                } else {
+                  statusLabel = 'Backtest';
+                  statusColor = 'var(--text-muted)';
+                  statusBg = 'var(--bg-input)';
+                }
                 const r = Number(t.r_multiple ?? 0);
                 const pnl = Number(t.dollar_pnl ?? 0);
                 return (
