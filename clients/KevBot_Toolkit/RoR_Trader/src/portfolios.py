@@ -1463,7 +1463,11 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'buying_power_used': buying_power_used,
                 'matched': True,
                 'phantom': False,
-                'exec_type': pending_entry.get('trigger', 'C')[:2] if pending_entry.get('trigger') else 'C',
+                # Prefer the engine-stamped exec_type on the alert; falls back
+                # to empty string if missing (surfaces loudly rather than guessing
+                # from the trigger name, which yielded things like "ut" for
+                # "utbot_long_reset" — meaningless for execution routing).
+                'exec_type': pending_entry.get('exec_type', '') or '',
                 'data_source': 'raw_alerts',
                 # Raw-alerts fallback: alert dicts carry `id` directly
                 # (no separate live_execution record). Details drawer
