@@ -86,7 +86,12 @@ class DBAlertDispatcher:
         # Per-portfolio deployed capital tracker (2026-04-22 BP-cap work).
         # Shape: {portfolio_id: {strategy_id: dollars_deployed}}.
         # Lazy-seeded on first dispatch() call from existing open positions.
+        # Protected by a lock because RalphEngine fires multiple strategies
+        # concurrently on the same DBAlertDispatcher instance; unsynchronized
+        # dict mutation across threads surfaces as "dict changed size during
+        # iteration" under load.
         self._deployed_capital: Dict[int, Dict[int, float]] = {}
+        self._deployed_lock = threading.Lock()
         self._deployed_seeded: bool = False
         try:
             from alert_monitor import deliver_alert
@@ -140,13 +145,14 @@ class DBAlertDispatcher:
                 logger.warning(
                     "Deployed-capital seed failed for portfolio %s: %s", pid, e)
                 continue
-            bucket = self._deployed_capital.setdefault(pid, {})
-            for op in data.get('open_positions') or []:
-                sid = op.get('strategy_id')
-                bp_used = op.get('buying_power_used') or 0
-                if sid is not None and bp_used > 0:
-                    bucket[sid] = float(bp_used)
-                    total_seeded += 1
+            with self._deployed_lock:
+                bucket = self._deployed_capital.setdefault(pid, {})
+                for op in data.get('open_positions') or []:
+                    sid = op.get('strategy_id')
+                    bp_used = op.get('buying_power_used') or 0
+                    if sid is not None and bp_used > 0:
+                        bucket[sid] = float(bp_used)
+                        total_seeded += 1
         if total_seeded:
             logger.info(
                 "Deployed-capital tracker seeded: %d open position(s) "
@@ -160,8 +166,11 @@ class DBAlertDispatcher:
         except Exception:
             return 0.0
         balance = compute_account_balance(portfolio.get('account') or {})
-        deployed = sum(
-            self._deployed_capital.get(portfolio.get('id'), {}).values())
+        with self._deployed_lock:
+            # Snapshot values inside the lock so concurrent mutation of the
+            # inner dict can't blow up mid-sum.
+            deployed = sum(
+                list(self._deployed_capital.get(portfolio.get('id'), {}).values()))
         return max(balance - deployed, 0.0)
 
     def dispatch(self, signal_data: dict, strategy: dict,
@@ -324,19 +333,20 @@ class DBAlertDispatcher:
         # that just happened (shouldn't matter for this alert but matters
         # for any concurrent alert firing against the same portfolio).
         try:
-            if sig_type == 'entry_signal':
-                for pctx in alert.get('portfolio_context') or []:
-                    pid = pctx.get('portfolio_id')
-                    exec_qty = pctx.get('executed_quantity') or 0
-                    if pid is not None and exec_qty > 0 and price_f > 0:
-                        self._deployed_capital.setdefault(pid, {})[
-                            strategy['id']] = exec_qty * price_f
-            elif sig_type == 'exit_signal':
-                for pctx in alert.get('portfolio_context') or []:
-                    pid = pctx.get('portfolio_id')
-                    if pid is not None:
-                        self._deployed_capital.get(pid, {}).pop(
-                            strategy['id'], None)
+            with self._deployed_lock:
+                if sig_type == 'entry_signal':
+                    for pctx in alert.get('portfolio_context') or []:
+                        pid = pctx.get('portfolio_id')
+                        exec_qty = pctx.get('executed_quantity') or 0
+                        if pid is not None and exec_qty > 0 and price_f > 0:
+                            self._deployed_capital.setdefault(pid, {})[
+                                strategy['id']] = exec_qty * price_f
+                elif sig_type == 'exit_signal':
+                    for pctx in alert.get('portfolio_context') or []:
+                        pid = pctx.get('portfolio_id')
+                        if pid is not None:
+                            self._deployed_capital.get(pid, {}).pop(
+                                strategy['id'], None)
         except Exception as e:
             # Don't fail the dispatch if tracker update has a bug —
             # worst case, next entry's BP qty is slightly wrong.

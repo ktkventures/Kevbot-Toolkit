@@ -1346,11 +1346,17 @@ def compute_strategy_r_distribution(stored_trades: list,
 
 
 def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
-                                   risk_per_trade: float) -> tuple:
+                                   risk_per_trade: float,
+                                   portfolio_id: int = None) -> tuple:
     """Pair raw entry+exit alerts chronologically into trade records.
 
     Used as a fallback when live_executions aren't available.
     Returns (trades_list, open_positions_list).
+
+    portfolio_id (optional): used to locate the matching portfolio_context
+    entry on each alert so we can copy through rpt/bp/executed quantity
+    fields for the Trade History display. Falls back to position_risk
+    matching if portfolio_id isn't supplied or doesn't match.
     """
     sid = strategy.get('id')
     strategy_name = strategy.get('name', f'Strategy {sid}')
@@ -1409,7 +1415,7 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
             # to RPT math if absent (older alerts, misc paths).
             entry_pc = None
             for pc in (pending_entry.get('portfolio_context') or []):
-                if pc.get('portfolio_id') == alloc.get('portfolio_id') \
+                if (portfolio_id is not None and pc.get('portfolio_id') == portfolio_id) \
                         or pc.get('position_risk') == risk_per_trade:
                     entry_pc = pc
                     break
@@ -1617,7 +1623,7 @@ def get_portfolio_alert_trades(portfolio: dict,
             sid = alloc.get('strategy_id')
             risk_per_trade = alloc.get('risk_per_trade', 100.0)
             trades, opens = _pair_raw_alerts_for_strategy(
-                raw_alerts, strat, risk_per_trade
+                raw_alerts, strat, risk_per_trade, portfolio_id=pid
             )
             if trades or opens:
                 strategies_with_data.add(sid)

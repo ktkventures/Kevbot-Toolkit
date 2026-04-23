@@ -359,6 +359,24 @@ def deliver_alert(alert: dict, config: dict):
 
     event_key = _get_event_key(alert_type, direction, exec_type)
 
+    # Per-call caches — keep lookups local to this alert's dispatch.
+    # If an alert fans out to N portfolios sharing the same webhook_group,
+    # we hit Supabase once per unique portfolio + once per unique group
+    # instead of 2N times. Also reduces memory churn from duplicate
+    # result dicts hanging around until GC.
+    _portfolio_cache: dict = {}
+    _group_cache: dict = {}
+
+    def _get_portfolio_cached(pid):
+        if pid not in _portfolio_cache:
+            _portfolio_cache[pid] = get_portfolio_by_id(pid)
+        return _portfolio_cache[pid]
+
+    def _get_group_cached(gid):
+        if gid not in _group_cache:
+            _group_cache[gid] = get_webhook_group_by_id(gid)
+        return _group_cache[gid]
+
     # Collect (pid → portfolio_context) to iterate.
     targets: list[tuple[int, dict | None]] = []
     if alert_type == "compliance_breach":
@@ -380,7 +398,7 @@ def deliver_alert(alert: dict, config: dict):
     now_iso = datetime.now().isoformat()
 
     for pid, port_ctx in targets:
-        portfolio = get_portfolio_by_id(pid)
+        portfolio = _get_portfolio_cached(pid)
         if portfolio is None:
             deliveries.append({
                 "webhook_id": "", "webhook_name": "",
@@ -399,7 +417,7 @@ def deliver_alert(alert: dict, config: dict):
             # "no webhook template was subscribed."
             continue
 
-        group = get_webhook_group_by_id(group_id)
+        group = _get_group_cached(group_id)
         if group is None:
             deliveries.append({
                 "webhook_id": group_id, "webhook_name": "",
