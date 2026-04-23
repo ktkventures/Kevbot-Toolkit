@@ -348,7 +348,7 @@ def get_portfolio_by_id_db(portfolio_id: int) -> dict | None:
 
 # Fields stored in portfolio dicts but NOT as DB columns.
 # These get nested inside the 'account' JSONB column for DB persistence.
-_PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode', 'webhook_group_id'}
+_PORTFOLIO_NON_DB_FIELDS = {'change_log', 'journal_entries', 'buying_power_mode'}
 
 
 def _prepare_portfolio_for_db(d: dict) -> dict:
@@ -705,6 +705,68 @@ def delete_webhook_template_db(template_id: str) -> bool:
 
 
 # ============================================================
+# Webhook Groups CRUD (database path) — Phase 39
+# ============================================================
+# Table created by migrations/phase39_webhook_groups.sql. RLS filters by
+# auth.uid() = user_id, so user-scoped calls need a JWT. Worker calls are
+# routed through get_client() which returns the admin client when
+# _admin_mode_var is True (see set_admin_user_context).
+
+def load_webhook_groups_db() -> list:
+    """Load all webhook groups for the current user."""
+    user_id = get_current_user_id()
+    client = get_client()
+    q = client.table('webhook_groups').select('*').order('created_at')
+    if user_id:
+        q = q.eq('user_id', user_id)
+    result = q.execute()
+    return result.data or []
+
+
+def get_webhook_group_by_id_db(group_id: str) -> dict | None:
+    """Load a single webhook group by ID. RLS enforces user scoping."""
+    client = get_client()
+    result = client.table('webhook_groups') \
+        .select('*') \
+        .eq('id', group_id) \
+        .maybe_single() \
+        .execute()
+    return result.data if result and result.data else None
+
+
+def save_webhook_group_db(group: dict) -> dict:
+    """Insert a new webhook group. Uses the caller-supplied id."""
+    payload = dict(group)
+    payload['user_id'] = get_current_user_id()
+    client = get_client()
+    result = client.table('webhook_groups').insert(payload).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_webhook_group_db(group_id: str, updates: dict) -> dict | None:
+    """Update a webhook group by ID."""
+    payload = dict(updates)
+    payload.pop('id', None)
+    payload.pop('user_id', None)
+    client = get_client()
+    result = client.table('webhook_groups') \
+        .update(payload) \
+        .eq('id', group_id) \
+        .execute()
+    return result.data[0] if result.data else None
+
+
+def delete_webhook_group_db(group_id: str) -> bool:
+    """Delete a webhook group by ID."""
+    client = get_client()
+    result = client.table('webhook_groups') \
+        .delete() \
+        .eq('id', group_id) \
+        .execute()
+    return bool(result.data)
+
+
+# ============================================================
 # Monitor Status CRUD (database path)
 # ============================================================
 
@@ -923,7 +985,10 @@ def load_portfolios_admin(user_id: str) -> list:
         .eq('user_id', user_id) \
         .order('id') \
         .execute()
-    return result.data
+    # Apply the same JSONB → top-level restoration as the user-scoped path so
+    # the worker sees change_log / journal_entries / buying_power_mode at the
+    # top level, not buried inside account as `_p37_*` keys.
+    return [_restore_portfolio_from_db(r) for r in result.data]
 
 
 def save_alert_admin(alert: dict, user_id: str) -> dict:

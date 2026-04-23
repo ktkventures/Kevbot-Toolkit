@@ -378,10 +378,28 @@ class DBAlertDispatcher:
         # defeat the purpose of C-type; firing late would introduce
         # artificial lag.
         if self._deliver_alert_fn:
+            # Set admin user context so deliver_alert's internal get_client()
+            # calls (get_portfolio_by_id, get_webhook_group_by_id_db,
+            # update_alert) route through the admin client and bypass RLS.
+            # Without this, anon PATCHes to the alerts table silently write
+            # zero rows and webhook_deliveries never persists — which is
+            # exactly the state that was masking the Phase 39 schema drift
+            # until 2026-04-23. Reset to previous context after the call.
+            try:
+                from db import set_admin_user_context, clear_current_user
+                set_admin_user_context(self.user_id)
+            except Exception:
+                pass
             try:
                 self._deliver_alert_fn(alert, config)
             except Exception as e:
                 logger.error("Webhook delivery failed: %s", e)
+            finally:
+                try:
+                    from db import clear_current_user
+                    clear_current_user()
+                except Exception:
+                    pass
 
         return alert
 
