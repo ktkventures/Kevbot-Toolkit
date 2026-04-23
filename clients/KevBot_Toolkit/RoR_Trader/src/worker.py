@@ -91,6 +91,12 @@ class DBAlertDispatcher:
         # dict mutation across threads surfaces as "dict changed size during
         # iteration" under load.
         self._deployed_capital: Dict[int, Dict[int, float]] = {}
+        # Parallel tracker keyed the same way. Holds the executed share
+        # quantity at entry time so the paired exit alert can close at the
+        # right size. Exit signals don't carry a stop price, which makes
+        # per_share_risk == 0 and would yield rpt_qty = 0; that's wrong for
+        # exits — we want to unwind the position, not resize it.
+        self._position_quantity: Dict[int, Dict[int, int]] = {}
         self._deployed_lock = threading.Lock()
         self._deployed_seeded: bool = False
         try:
@@ -147,12 +153,16 @@ class DBAlertDispatcher:
                 continue
             with self._deployed_lock:
                 bucket = self._deployed_capital.setdefault(pid, {})
+                qty_bucket = self._position_quantity.setdefault(pid, {})
                 for op in data.get('open_positions') or []:
                     sid = op.get('strategy_id')
                     bp_used = op.get('buying_power_used') or 0
+                    qty = op.get('quantity') or 0
                     if sid is not None and bp_used > 0:
                         bucket[sid] = float(bp_used)
                         total_seeded += 1
+                    if sid is not None and qty > 0:
+                        qty_bucket[sid] = int(qty)
         if total_seeded:
             logger.info(
                 "Deployed-capital tracker seeded: %d open position(s) "
@@ -281,6 +291,24 @@ class DBAlertDispatcher:
                                   if price_f > 0 else 0)
                         executed_qty = min(rpt_qty, bp_qty)
 
+                        # Exit signals must close the existing position — they
+                        # don't get re-sized. Exit alerts usually lack a stop
+                        # price, making per_share_risk = 0, which would leave
+                        # rpt_qty/executed_qty at 0 and send `"quantity": 0`
+                        # to the broker. Override with the tracked position
+                        # size for this (portfolio, strategy) pair.
+                        if sig_type == 'exit_signal':
+                            with self._deployed_lock:
+                                held_qty = self._position_quantity.get(
+                                    port['id'], {}).get(strategy['id'], 0)
+                            if held_qty > 0:
+                                executed_qty = int(held_qty)
+                                # Surface the held size in both RPT/BP slots
+                                # too so the Details drawer shows coherent
+                                # numbers instead of "RPT 0 / BP N / Exec N".
+                                rpt_qty = int(held_qty)
+                                bp_qty = int(held_qty)
+
                         # Compute balance once; expose for audit trail.
                         try:
                             from portfolios import compute_account_balance
@@ -341,11 +369,17 @@ class DBAlertDispatcher:
                         if pid is not None and exec_qty > 0 and price_f > 0:
                             self._deployed_capital.setdefault(pid, {})[
                                 strategy['id']] = exec_qty * price_f
+                            # Remember the filled size so the paired exit
+                            # alert can close the same position.
+                            self._position_quantity.setdefault(pid, {})[
+                                strategy['id']] = int(exec_qty)
                 elif sig_type == 'exit_signal':
                     for pctx in alert.get('portfolio_context') or []:
                         pid = pctx.get('portfolio_id')
                         if pid is not None:
                             self._deployed_capital.get(pid, {}).pop(
+                                strategy['id'], None)
+                            self._position_quantity.get(pid, {}).pop(
                                 strategy['id'], None)
         except Exception as e:
             # Don't fail the dispatch if tracker update has a bug —
