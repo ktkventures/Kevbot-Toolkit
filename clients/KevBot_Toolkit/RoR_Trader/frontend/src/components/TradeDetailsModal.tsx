@@ -219,8 +219,11 @@ function WebhookSection({
         <EmptyNote red>Failed to load webhook details — {String(error)}</EmptyNote>
       ) : !data?.webhook_deliveries || data.webhook_deliveries.length === 0 ? (
         <EmptyNote>
-          Alert fired (id {alertId}) but no webhook deliveries recorded — no portfolio
-          with a webhook template was subscribed at dispatch time.
+          Alert fired (id {alertId}) but no webhook deliveries recorded. Either
+          the alert was dispatched before webhook groups were wired, or the
+          strategy was not included in any portfolio at dispatch time. Newer
+          alerts surface a diagnostic row here when a portfolio is missing a
+          webhook group.
         </EmptyNote>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
