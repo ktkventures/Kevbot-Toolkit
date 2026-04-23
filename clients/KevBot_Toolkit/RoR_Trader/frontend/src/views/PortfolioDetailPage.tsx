@@ -1875,15 +1875,12 @@ function AccountTab({ portfolioId }: { portfolioId?: number }) {
     const firstDeposit = ledger.find((e) => e.type === 'deposit');
     return firstDeposit ? Math.abs(firstDeposit.amount ?? 0) : 0;
   })();
-  // Current balance — match the Live Dashboard's calc so both surfaces
-  // agree. Prefer backend-computed account.balance when non-zero (Kevin
-  // had portfolios where backend returned balance=0 but had real starting
-  // balance + deposits; this fallback keeps the UI coherent).
-  const currentBalance = (() => {
-    const backend = (account as any)?.balance;
-    if (typeof backend === 'number' && backend > 0) return backend;
-    return startingBalance + deposits - withdrawals;
-  })();
+  // Current balance is strictly the sum of ledger entries by type
+  // (deposits add, withdrawals subtract, trading_pnl is signed). Starting
+  // balance is a separate display anchor and is NOT included here — new
+  // portfolios get their starting balance auto-seeded as a 'deposit' row
+  // on create, so it still shows up via `deposits` for new portfolios.
+  const currentBalance = deposits - withdrawals + tradingPnl;
 
   // Running balance history for chart
   const sortedLedger = [...ledger].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));

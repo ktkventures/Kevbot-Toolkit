@@ -1428,6 +1428,16 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                                  if entry_pc and entry_pc.get('executed_quantity') is not None
                                  else quantity)
 
+            # Dollar P&L is (price_diff × executed_quantity), sign-flipped for
+            # SHORT. r_multiple × risk_per_trade was the old formula — it's
+            # only equivalent to reality when executed == RPT-planned. With
+            # BP capping, executed can be much smaller; using the planned
+            # risk budget overstates P&L by the cap ratio.
+            if direction == 'LONG':
+                dollar_pnl = (exit_price - entry_price) * executed_quantity
+            else:
+                dollar_pnl = (entry_price - exit_price) * executed_quantity
+
             trades.append({
                 'strategy_id': sid,
                 'strategy_name': strategy_name,
@@ -1444,7 +1454,7 @@ def _pair_raw_alerts_for_strategy(alerts: list, strategy: dict,
                 'entry_slippage_r': 0,
                 'exit_slippage_r': 0,
                 'risk_per_trade': risk_per_trade,
-                'dollar_pnl': round(r_multiple * risk_per_trade, 2),
+                'dollar_pnl': round(dollar_pnl, 2),
                 'planned_quantity': quantity,  # legacy alias
                 'quantity': executed_quantity,
                 'rpt_quantity': rpt_quantity,

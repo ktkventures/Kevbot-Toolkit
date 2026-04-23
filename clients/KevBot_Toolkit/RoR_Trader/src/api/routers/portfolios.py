@@ -313,6 +313,24 @@ def create_portfolio(portfolio: dict = Body(...), user=Depends(get_current_user)
     """Create a new portfolio."""
     portfolio['created_at'] = datetime.now(timezone.utc).isoformat()
 
+    # Seed the ledger with a 'Starting balance' deposit so compute_account_balance
+    # (ledger-sum) reflects the seed capital from day 0 — starting_balance remains
+    # a separate anchor used for growth-over-time display.
+    try:
+        starting_balance = float(portfolio.get('starting_balance') or 0)
+    except (TypeError, ValueError):
+        starting_balance = 0.0
+    existing_ledger = ((portfolio.get('account') or {}).get('ledger')) or []
+    if starting_balance > 0 and not existing_ledger:
+        from portfolios import add_ledger_entry
+        add_ledger_entry(
+            portfolio,
+            entry_type='deposit',
+            amount=starting_balance,
+            note='Starting balance',
+            auto=True,
+        )
+
     from db import USE_DB
     if USE_DB:
         from db import save_portfolio_db

@@ -16,7 +16,7 @@ interface BalanceHistoryChartProps {
 }
 
 export default function BalanceHistoryChart({ data, height = 200 }: BalanceHistoryChartProps) {
-  if (data.length < 2) {
+  if (data.length < 1) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
         No balance history yet

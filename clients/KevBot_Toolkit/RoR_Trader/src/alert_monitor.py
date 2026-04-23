@@ -411,10 +411,19 @@ def deliver_alert(alert: dict, config: dict):
 
         group_id = portfolio.get("webhook_group_id")
         if not group_id:
-            # Portfolio has no webhook group configured — not an error,
-            # just nothing subscribed. No delivery record emitted so the
-            # Details drawer's empty-state note accurately describes
-            # "no webhook template was subscribed."
+            # Surface as a diagnostic row so the Details drawer shows the
+            # config gap instead of silently dropping the subscription
+            # (per Kevin's no-silent-defaults policy, 2026-04-22).
+            deliveries.append({
+                "webhook_id": "", "webhook_name": "",
+                "portfolio_id": pid, "sent_at": now_iso,
+                "success": False, "status_code": None,
+                "payload_sent": "",
+                "error": (
+                    f"Portfolio {pid} has no webhook_group_id configured — "
+                    "subscribe it to a webhook group to enable delivery."
+                ),
+            })
             continue
 
         group = _get_group_cached(group_id)
