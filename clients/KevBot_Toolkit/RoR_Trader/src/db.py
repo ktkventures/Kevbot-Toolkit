@@ -964,16 +964,33 @@ def load_trades_admin(strategy_id: int, user_id: str | None = None) -> list:
     user_id filter is optional — with the FK + CASCADE we know every
     trade's user_id matches the strategy's user_id, but we accept the
     parameter so callers can still supply it for defence-in-depth.
+
+    PostgREST/Supabase caps every response at 1000 rows regardless of
+    `limit` / `Range` headers (confirmed 2026-04-24). Strategies in this
+    app can exceed 20k trades, so the loader paginates via `.range()`
+    until a partial page comes back. Stops at a hard ceiling so a runaway
+    query can't load the whole table.
     """
     client = get_admin_client()
-    q = client.table('trades') \
-        .select('*') \
-        .eq('strategy_id', strategy_id) \
-        .order('entry_fill_ts')
-    if user_id:
-        q = q.eq('user_id', user_id)
-    result = q.execute()
-    return [_row_to_trade(r) for r in (result.data or [])]
+    PAGE_SIZE = 1000
+    MAX_TRADES = 200_000  # hard ceiling — flags a bug if ever hit
+    all_rows: list = []
+    offset = 0
+    while offset < MAX_TRADES:
+        q = client.table('trades') \
+            .select('*') \
+            .eq('strategy_id', strategy_id) \
+            .order('entry_fill_ts') \
+            .range(offset, offset + PAGE_SIZE - 1)
+        if user_id:
+            q = q.eq('user_id', user_id)
+        result = q.execute()
+        page = result.data or []
+        all_rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+    return [_row_to_trade(r) for r in all_rows]
 
 
 def insert_trade_admin(strategy_id: int, user_id: str, trade: dict) -> dict | None:
