@@ -15,7 +15,7 @@ import Link from 'next/link';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
-import { useDeleteStrategy, useDuplicateStrategy, useBulkDeleteStrategies } from '@/hooks/mutations/useStrategyMutations';
+import { useDeleteStrategy, useDuplicateStrategy, useBulkDeleteStrategies, useSetAlertTracking } from '@/hooks/mutations/useStrategyMutations';
 
 /* ========================================================================= */
 /* TYPES                                                                       */
@@ -252,6 +252,7 @@ export default function StrategiesPage() {
   const deleteMut = useDeleteStrategy();
   const dupMut = useDuplicateStrategy();
   const bulkDeleteMut = useBulkDeleteStrategies();
+  const alertTrackingMut = useSetAlertTracking();
 
   // Bulk refresh — uses plain fetch to avoid production bundler issues
   const [refreshing, setRefreshing] = useState(false);
@@ -932,13 +933,19 @@ export default function StrategiesPage() {
                 <span className="flex-1" />
                 {/* Alert tracking toggle */}
                 <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Alerts</span>
-                <div
-                  className="relative w-7 h-4 rounded-full cursor-pointer flex-shrink-0"
+                <button
+                  type="button"
+                  disabled={alertTrackingMut.isPending}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    alertTrackingMut.mutate({ id: Number(strat.id), enabled: !strat.alertTracking });
+                  }}
+                  className="relative w-7 h-4 rounded-full cursor-pointer flex-shrink-0 p-0"
                   style={{ background: strat.alertTracking ? 'var(--accent)' : 'var(--bg-input)', border: strat.alertTracking ? 'none' : '1px solid var(--border)' }}
-                  title={strat.alertTracking ? 'Alerts on' : 'Alerts off'}
+                  title={strat.alertTracking ? 'Alerts on — click to disable' : 'Alerts off — click to enable'}
                 >
                   <div className="absolute top-0.5 w-3 h-3 rounded-full transition-all" style={{ background: 'white', left: strat.alertTracking ? '12px' : '2px' }} />
-                </div>
+                </button>
                 <input
                   type="checkbox"
                   checked={selectedIds.has(strat.id)}

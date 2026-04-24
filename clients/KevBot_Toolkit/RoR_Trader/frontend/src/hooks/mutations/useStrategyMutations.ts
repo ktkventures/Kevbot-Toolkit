@@ -89,6 +89,27 @@ export function useBulkDeleteStrategies() {
 }
 
 /**
+ * Toggle alert tracking on a strategy. When disabled, the engine still
+ * generates algo trades but no alerts are saved → no webhooks fire.
+ * Default for new strategies is ``false`` — users need a way to flip on.
+ */
+export function useSetAlertTracking() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      apiFetch(`/api/strategies/${id}/alert-tracking`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+      queryClient.invalidateQueries({ queryKey: ['strategy', id] });
+    },
+  });
+}
+
+
+/**
  * Admin override for a strategy's ``forward_test_start``. Unblocks the
  * "recreate old strategy under current schema, then restore original start
  * date" workflow.

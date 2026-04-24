@@ -425,6 +425,67 @@ def set_forward_test_start(
     }
 
 
+@router.patch("/{strategy_id}/alert-tracking")
+def set_alert_tracking(
+    strategy_id: int,
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Toggle ``alert_tracking_enabled`` for a strategy.
+
+    Without this flag the engine still processes bars and produces algo
+    trades but never writes alerts → webhooks never fire. Default is
+    False on newly-created strategies, so users need an explicit way to
+    flip it on.
+
+    Expects body: ``{"enabled": true | false}``. On enable, stamps
+    ``alert_tracking_reset_at`` with now() so downstream alert-matching
+    can anchor to the latest enable moment.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="DB mode required")
+
+    raw = body.get('enabled', ...)
+    if raw is ...:
+        raise HTTPException(
+            status_code=400,
+            detail="body must include 'enabled' (boolean)",
+        )
+    if not isinstance(raw, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'enabled' must be a boolean, got {type(raw).__name__}",
+        )
+
+    from db import get_strategy_by_id_db, update_strategy_db
+    existing = get_strategy_by_id_db(strategy_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updates: dict = {
+        'alert_tracking_enabled': raw,
+        'updated_at': now_iso,
+    }
+    # Stamp reset_at only when turning ON, so the timestamp reflects
+    # "alerts have been live since this moment". Leaving the value
+    # unchanged on disable preserves the historical enable anchor.
+    if raw:
+        updates['alert_tracking_reset_at'] = now_iso
+
+    result = update_strategy_db(strategy_id, updates)
+    if result is None:
+        raise HTTPException(status_code=500, detail="Update failed")
+
+    return {
+        "status": "updated",
+        "alert_tracking_enabled": raw,
+        "alert_tracking_reset_at": result.get('alert_tracking_reset_at'),
+        "id": strategy_id,
+    }
+
+
 # =============================================================================
 # TRADE DATA
 # =============================================================================

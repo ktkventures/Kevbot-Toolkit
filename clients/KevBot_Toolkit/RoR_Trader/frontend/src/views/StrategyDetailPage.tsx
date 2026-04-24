@@ -15,7 +15,7 @@ import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart } from '@/hooks/mutations/useStrategyMutations';
+import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useSetAlertTracking } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 
@@ -3155,6 +3155,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         strategyId={Number(strategy.id)}
                         currentValue={String(strategy.fwdSince || '')}
                       />
+                      <AlertTrackingToggle
+                        strategyId={Number(strategy.id)}
+                        currentValue={Boolean(strategy.monitored)}
+                      />
                     </div>
                   </Card>
 
@@ -4237,6 +4241,63 @@ function ForwardTestStartEditor({
       <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
         After saving, click Refresh Data above to regenerate trades against the new boundary.
       </span>
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Alert Tracking toggle
+// ----------------------------------------------------------------------------
+// Without this flag the engine still produces algo trades but no alerts are
+// saved → no webhooks fire. Defaults to false on newly-saved strategies.
+// ============================================================================
+function AlertTrackingToggle({
+  strategyId,
+  currentValue,
+}: {
+  strategyId: number;
+  currentValue: boolean;
+}) {
+  const mutation = useSetAlertTracking();
+  const enabled = currentValue;
+
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Alert Tracking
+      </span>
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium" style={{ color: enabled ? 'var(--accent)' : 'var(--text-muted)' }}>
+          {enabled ? 'ON' : 'OFF'}
+        </span>
+        <button
+          type="button"
+          disabled={mutation.isPending}
+          onClick={() =>
+            mutation.mutate(
+              { id: strategyId, enabled: !enabled },
+              {
+                onError: (err: any) => {
+                  alert(`Failed to toggle alert tracking: ${String(err?.message || err)}`);
+                },
+              }
+            )
+          }
+          className="relative w-8 h-4 rounded-full cursor-pointer flex-shrink-0 p-0"
+          style={{
+            background: enabled ? 'var(--accent)' : 'var(--bg-input)',
+            border: enabled ? 'none' : '1px solid var(--border)',
+            opacity: mutation.isPending ? 0.6 : 1,
+          }}
+          title={enabled ? 'Alerts on — click to disable' : 'Alerts off — click to enable'}
+        >
+          <div
+            className="absolute top-0.5 w-3 h-3 rounded-full transition-all"
+            style={{ background: 'white', left: enabled ? '14px' : '2px' }}
+          />
+        </button>
+      </div>
     </div>
   );
 }
