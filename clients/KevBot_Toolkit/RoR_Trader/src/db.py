@@ -1569,7 +1569,16 @@ def save_mass_search(search: dict) -> str:
     if USE_DB:
         try:
             client = get_client()
-            user_id = getattr(_local, 'user_id', None)
+            # Historical: this used to reference a module-level
+            # threading.local() named `_local`. The user-context layer
+            # migrated to ContextVar on 2026-04-22 (see top of this
+            # module), but this reference was missed — stayed broken
+            # silently because the except clause falls back to file
+            # storage, which on Railway is the API container's ephemeral
+            # filesystem. Mass Builder progress tracking then polls the
+            # DB and never finds the search, so the UI hangs. Fix:
+            # use get_current_user_id().
+            user_id = get_current_user_id()
             row = {
                 'user_id': user_id,
                 'name': search.get('name', 'Untitled'),
