@@ -173,6 +173,122 @@ def test_user_id_and_id_stripped_from_column_payload():
 
 
 # =============================================================================
+# Phase 40 — trades-table feature flag tests
+# =============================================================================
+
+def _with_flag_on(fn):
+    """Run fn with USE_TRADES_TABLE=true set in env."""
+    import os
+    prev = os.environ.get('USE_TRADES_TABLE')
+    os.environ['USE_TRADES_TABLE'] = 'true'
+    try:
+        return fn()
+    finally:
+        if prev is None:
+            os.environ.pop('USE_TRADES_TABLE', None)
+        else:
+            os.environ['USE_TRADES_TABLE'] = prev
+
+
+def test_flag_on_strips_stored_trades_from_strategies_update():
+    """With flag ON, update_strategy_admin must NOT write stored_trades to the
+    strategies table. Trades should be redirected to the trades table via
+    trades_store.replace_trades_for_strategy.
+    """
+    def run():
+        db = _setup_db_module()
+        fake_client = FakeClient()
+        captured_trades_calls = []
+
+        def fake_replace(strategy_id, user_id, trades):
+            captured_trades_calls.append(
+                {'strategy_id': strategy_id, 'user_id': user_id, 'trades': trades}
+            )
+            return True
+
+        import trades_store as ts
+        with mock.patch.object(db, 'get_admin_client', return_value=fake_client), \
+             mock.patch.object(ts, 'replace_trades_for_strategy', side_effect=fake_replace):
+            db.update_strategy_admin(
+                strategy_id=999,
+                user_id='user-uuid',
+                updates={'stored_trades': [{'r': 1.0, 'entry_fill_ts': 't1'}]},
+            )
+
+        payload = fake_client.fake_query.last_update_payload
+        # The strategies UPDATE must NOT include stored_trades when flag ON
+        # (either the UPDATE was skipped entirely, or stored_trades got stripped).
+        if payload is not None:
+            assert 'stored_trades' not in payload, (
+                f"flag-on payload leaks stored_trades: {payload}"
+            )
+        # And the trades-table redirect fired with the extracted list
+        assert len(captured_trades_calls) == 1, (
+            f"expected 1 replace_trades_for_strategy call, got {len(captured_trades_calls)}"
+        )
+        assert captured_trades_calls[0]['strategy_id'] == 999
+        assert captured_trades_calls[0]['trades'] == [{'r': 1.0, 'entry_fill_ts': 't1'}]
+
+    _with_flag_on(run)
+
+
+def test_flag_on_mixed_fields_still_writes_config_to_strategies():
+    """With flag ON, a mixed payload (stored_trades + a config field) should
+    redirect stored_trades to the trades table AND still update the config
+    JSONB on strategies (preserving the partial-update safety)."""
+    def run():
+        db = _setup_db_module()
+        fake_client = FakeClient()
+
+        import trades_store as ts
+        with mock.patch.object(db, 'get_admin_client', return_value=fake_client), \
+             mock.patch.object(ts, 'replace_trades_for_strategy', return_value=True):
+            db.update_strategy_admin(
+                strategy_id=999,
+                user_id='user-uuid',
+                updates={
+                    'stored_trades': [{'r': 2.0}],
+                    'bar_count_exit': 7,
+                },
+            )
+
+        payload = fake_client.fake_query.last_update_payload
+        assert payload is not None, "strategies update should still fire for config fields"
+        assert 'stored_trades' not in payload, f"stored_trades leaked: {payload}"
+        assert payload.get('config') == {'bar_count_exit': 7}
+
+    _with_flag_on(run)
+
+
+def test_flag_on_omitted_stored_trades_skips_trades_call():
+    """With flag ON, if the updates dict doesn't mention stored_trades at all,
+    the trades table must not be touched (preserves partial-update safety)."""
+    def run():
+        db = _setup_db_module()
+        fake_client = FakeClient()
+        calls = []
+
+        def fake_replace(*a, **k):
+            calls.append((a, k))
+            return True
+
+        import trades_store as ts
+        with mock.patch.object(db, 'get_admin_client', return_value=fake_client), \
+             mock.patch.object(ts, 'replace_trades_for_strategy', side_effect=fake_replace):
+            db.update_strategy_admin(
+                strategy_id=999,
+                user_id='user-uuid',
+                updates={'bar_count_exit': 9},  # config-only, no stored_trades
+            )
+
+        assert calls == [], (
+            f"trades table was touched despite stored_trades not in updates: {calls}"
+        )
+
+    _with_flag_on(run)
+
+
+# =============================================================================
 # Self-execution path
 # =============================================================================
 
@@ -183,6 +299,10 @@ if __name__ == '__main__':
         test_partial_update_with_mixed_fields_splits_correctly,
         test_empty_updates_returns_none_without_calling_db,
         test_user_id_and_id_stripped_from_column_payload,
+        # Phase 40 — trades-table feature flag
+        test_flag_on_strips_stored_trades_from_strategies_update,
+        test_flag_on_mixed_fields_still_writes_config_to_strategies,
+        test_flag_on_omitted_stored_trades_skips_trades_call,
     ]
     failed = 0
     for t in tests:

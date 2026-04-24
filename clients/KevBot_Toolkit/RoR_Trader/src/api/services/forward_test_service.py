@@ -106,7 +106,8 @@ def _do_recompute(
 
     if len(all_trades) == 0:
         # No trades to persist, but still mark the timestamp so the
-        # caller knows we ran.
+        # caller knows we ran. update_strategy_admin handles the
+        # flag-aware trades-table redirect automatically.
         if USE_DB:
             update_strategy_admin(strategy_id, user_id, {
                 'stored_trades': [],
@@ -149,6 +150,10 @@ def _do_recompute(
     }
 
     if USE_DB:
+        # Flag-aware: update_strategy_admin redirects stored_trades to
+        # the trades table automatically when USE_TRADES_TABLE is ON.
+        # kpis + equity_curve_data stay as strategies-row columns either
+        # way.
         update_strategy_admin(strategy_id, user_id, {
             'stored_trades': stored,
             'kpis': kpis,

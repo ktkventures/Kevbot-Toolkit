@@ -184,11 +184,16 @@ def _strategy_to_row(strat: dict) -> dict:
     return row
 
 
-def _row_to_strategy(row: dict) -> dict:
+def _row_to_strategy(row: dict, hydrate_trades: bool = True) -> dict:
     """Merge a database row back into a flat strategy dict.
 
     Unpacks the 'config' JSONB column and merges it with the column fields,
     producing the same flat dict shape that the rest of the app expects.
+
+    Phase 40: when ``USE_TRADES_TABLE`` is ON and ``hydrate_trades=True``,
+    populate ``stored_trades`` from the trades table so callers see the
+    same DTO as under the JSONB-era. Pass ``hydrate_trades=False`` on the
+    lite list path where we deliberately don't want the trades payload.
     """
     strat = {}
     for k, v in row.items():
@@ -199,6 +204,16 @@ def _row_to_strategy(row: dict) -> dict:
                 strat.update(v)
         else:
             strat[k] = v
+    if hydrate_trades:
+        try:
+            import trades_store as _trades_store
+            if _trades_store._flag_on() and strat.get('id'):
+                strat['stored_trades'] = _trades_store.load_trades_for_strategy(
+                    strat['id'], strat.get('user_id'))
+        except Exception:
+            # Never let hydration failures break strategy loads — callers
+            # that need trades can call hydrate_strategy_trades explicitly.
+            pass
     return strat
 
 
@@ -292,6 +307,10 @@ def load_strategies_db_lite() -> list:
 
     Reduces strategies-table read traffic by ~35× on fat strategies (one
     with 3000 trades observed at 2.5 MB stored_trades vs ~75 KB lean).
+
+    Phase 40: hydrate_trades=False to skip the per-strategy trades-table
+    fetch when flag ON — list views don't need trades and hydrating N
+    strategies' worth would defeat the whole lite-loader purpose.
     """
     user_id = get_current_user_id()
     client = get_client()
@@ -300,7 +319,7 @@ def load_strategies_db_lite() -> list:
         .eq('user_id', user_id) \
         .order('id') \
         .execute()
-    return [_row_to_strategy(r) for r in result.data]
+    return [_row_to_strategy(r, hydrate_trades=False) for r in result.data]
 
 
 def get_strategy_by_id_db(strategy_id: int) -> dict | None:
@@ -320,16 +339,56 @@ def save_strategy_db(strategy: dict) -> dict:
     """Insert a new strategy for the current user. Returns the saved strategy."""
     user_id = get_current_user_id()
     strategy['user_id'] = user_id
+
+    # Phase 40: when the trades-table is authoritative, pull stored_trades
+    # off the payload so the strategies row stays lean, and re-insert them
+    # into the trades table after the strategy row exists (the new row's
+    # assigned id is needed as the FK target).
+    pending_trades = None
+    try:
+        import trades_store as _trades_store
+        if _trades_store._flag_on():
+            pending_trades = strategy.pop('stored_trades', None) or []
+    except Exception:
+        _trades_store = None
+
     row = _strategy_to_row(strategy)
     # Remove 'id' so the database assigns the next SERIAL value
     row.pop('id', None)
     client = get_client()
     result = client.table('strategies').insert(row).execute()
-    return _row_to_strategy(result.data[0])
+    saved = _row_to_strategy(result.data[0])
+
+    if pending_trades and _trades_store is not None and _trades_store._flag_on():
+        try:
+            _trades_store.replace_trades_for_strategy(
+                saved['id'], saved.get('user_id') or user_id, pending_trades)
+            # Echo the trades back onto the returned dict so callers see
+            # the same shape they would have gotten from the JSONB path.
+            saved['stored_trades'] = pending_trades
+        except Exception as e:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "save_strategy_db: trades-table insert failed for "
+                "strategy %s: %s", saved.get('id'), e)
+
+    return saved
 
 
 def update_strategy_db(strategy_id: int, updated: dict) -> dict | None:
     """Update an existing strategy by ID. Returns the updated strategy."""
+    # Phase 40: redirect stored_trades writes to the trades table when flag ON.
+    # Only touch the trades table when the caller actually included a
+    # stored_trades key — partial updates that don't mention it must NOT
+    # wipe trades (mirrors the feedback_jsonb_partial_updates rule).
+    pending_trades = None
+    try:
+        import trades_store as _trades_store
+        if _trades_store._flag_on() and 'stored_trades' in updated:
+            pending_trades = updated.pop('stored_trades', None) or []
+    except Exception:
+        _trades_store = None
+
     row = _strategy_to_row(updated)
     row.pop('user_id', None)  # Don't allow changing user_id
     row.pop('id', None)       # Don't include PK in the SET clause
@@ -338,9 +397,23 @@ def update_strategy_db(strategy_id: int, updated: dict) -> dict | None:
         .update(row) \
         .eq('id', strategy_id) \
         .execute()
-    if result.data:
-        return _row_to_strategy(result.data[0])
-    return None
+
+    saved = _row_to_strategy(result.data[0]) if result.data else None
+
+    if pending_trades is not None and _trades_store is not None and _trades_store._flag_on():
+        try:
+            uid = (saved.get('user_id') if saved else None) or get_current_user_id()
+            _trades_store.replace_trades_for_strategy(
+                strategy_id, uid, pending_trades)
+            if saved is not None:
+                saved['stored_trades'] = pending_trades
+        except Exception as e:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "update_strategy_db: trades-table replace failed for "
+                "strategy %s: %s", strategy_id, e)
+
+    return saved
 
 
 def delete_strategy_db(strategy_id: int) -> bool:
@@ -801,6 +874,187 @@ def delete_webhook_group_db(group_id: str) -> bool:
 
 
 # ============================================================
+# Trades CRUD (database path) — Phase 40
+# ============================================================
+# Table created by migrations/phase40_trades_table.sql. RLS policies
+# filter by auth.uid() = user_id. Worker + API callers need admin-mode
+# context for service-role access; that's set at the request boundary
+# the same way as for alerts/strategies.
+#
+# Hot columns (filtered/joined/aggregated heavily) + a single `data`
+# JSONB for the long tail. Mirrors the alerts-table pattern.
+TRADE_COLUMN_FIELDS = {
+    'id', 'strategy_id', 'user_id',
+    'entry_alert_id', 'exit_alert_id',
+    'entry_trigger_ts', 'entry_fill_ts',
+    'exit_trigger_ts', 'exit_fill_ts',
+    'entry_price', 'exit_price',
+    'r_multiple', 'dollar_pnl', 'executed_quantity',
+    'direction', 'exec_type', 'exit_reason', 'data_source',
+    'created_at',
+}
+
+
+def _trade_to_row(trade: dict) -> dict:
+    """Split a flat trade dict into column + data JSONB format.
+
+    Accepts legacy ``entry_time`` / ``exit_time`` aliases and maps them to
+    the canonical ``entry_fill_ts`` / ``exit_fill_ts`` columns so older
+    backfill payloads persist into the right fields. Mirrors the alerts
+    _alert_to_row pattern.
+    """
+    row: dict = {}
+    data: dict = {}
+    legacy_entry = trade.get('entry_time')
+    legacy_exit = trade.get('exit_time')
+    for k, v in trade.items():
+        if k in ('entry_time', 'exit_time'):
+            continue  # handled via the canonical *_fill_ts below
+        if k in TRADE_COLUMN_FIELDS:
+            row[k] = v
+        else:
+            data[k] = v
+    # Back-fill canonical timestamps from legacy aliases when needed
+    if row.get('entry_fill_ts') in (None, '') and legacy_entry:
+        row['entry_fill_ts'] = legacy_entry
+    if row.get('exit_fill_ts') in (None, '') and legacy_exit:
+        row['exit_fill_ts'] = legacy_exit
+    # confluence_records can arrive as a set (trade record originals use
+    # a set) — JSONB can't serialize sets; cast to a sorted list to keep
+    # order deterministic across inserts.
+    cr = data.get('confluence_records')
+    if isinstance(cr, set):
+        data['confluence_records'] = sorted(cr)
+    row['data'] = data if data else {}
+    return row
+
+
+def _row_to_trade(row: dict) -> dict:
+    """Reconstruct a flat trade dict from a trades table row.
+
+    Merges the `data` JSONB back into the top-level dict so downstream
+    consumers see the same shape as legacy stored_trades entries. Also
+    emits the legacy ``entry_time`` / ``exit_time`` aliases so older
+    consumers (Streamlit app.py, some services helpers) keep working
+    without a bulk rename.
+    """
+    trade: dict = {}
+    for k, v in row.items():
+        if k == 'data':
+            if isinstance(v, str):
+                try:
+                    v = json.loads(v)
+                except Exception:
+                    v = {}
+            if isinstance(v, dict) and v:
+                trade.update(v)
+        else:
+            trade[k] = v
+    # Legacy aliases for consumers that haven't migrated to *_fill_ts.
+    if trade.get('entry_fill_ts') and not trade.get('entry_time'):
+        trade['entry_time'] = trade['entry_fill_ts']
+    if trade.get('exit_fill_ts') and not trade.get('exit_time'):
+        trade['exit_time'] = trade['exit_fill_ts']
+    return trade
+
+
+def load_trades_admin(strategy_id: int, user_id: str | None = None) -> list:
+    """Load all trades for a strategy (admin client). Ordered by entry_fill_ts.
+
+    user_id filter is optional — with the FK + CASCADE we know every
+    trade's user_id matches the strategy's user_id, but we accept the
+    parameter so callers can still supply it for defence-in-depth.
+    """
+    client = get_admin_client()
+    q = client.table('trades') \
+        .select('*') \
+        .eq('strategy_id', strategy_id) \
+        .order('entry_fill_ts')
+    if user_id:
+        q = q.eq('user_id', user_id)
+    result = q.execute()
+    return [_row_to_trade(r) for r in (result.data or [])]
+
+
+def insert_trade_admin(strategy_id: int, user_id: str, trade: dict) -> dict | None:
+    """Insert a single trade row (admin client). Returns the saved row
+    reconstructed into legacy flat shape, or None on conflict / failure.
+    """
+    row = _trade_to_row(trade)
+    row['strategy_id'] = strategy_id
+    row['user_id'] = user_id
+    row.pop('id', None)
+    row.pop('created_at', None)
+    client = get_admin_client()
+    try:
+        result = client.table('trades').insert(row).execute()
+    except Exception as e:
+        # Unique-index collision on (strategy_id, entry_fill_ts, exit_fill_ts)
+        # is not fatal — it's the idempotency guardrail. Other errors bubble.
+        msg = str(e).lower()
+        if 'duplicate' in msg or 'unique' in msg or 'conflict' in msg:
+            return None
+        raise
+    return _row_to_trade(result.data[0]) if result.data else None
+
+
+def delete_trades_for_strategy_admin(strategy_id: int) -> int:
+    """Delete every trade row for a strategy. Returns deleted row count."""
+    client = get_admin_client()
+    result = client.table('trades') \
+        .delete() \
+        .eq('strategy_id', strategy_id) \
+        .execute()
+    return len(result.data) if result.data else 0
+
+
+def delete_trade_placeholder_admin(strategy_id: int, entry_fill_ts) -> int:
+    """Delete any open-position placeholder row for (strategy, entry_fill_ts).
+
+    forward_test_service may emit a row with exit_fill_ts IS NULL while a
+    position is still held. Once the exit fires, the worker wants to
+    replace that placeholder with the closed trade rather than leave
+    both in place. Returns deleted row count.
+    """
+    if entry_fill_ts is None or entry_fill_ts == '':
+        return 0
+    client = get_admin_client()
+    result = client.table('trades') \
+        .delete() \
+        .eq('strategy_id', strategy_id) \
+        .eq('entry_fill_ts', entry_fill_ts) \
+        .is_('exit_fill_ts', 'null') \
+        .execute()
+    return len(result.data) if result.data else 0
+
+
+def replace_trades_admin(
+    strategy_id: int,
+    user_id: str,
+    trades: list[dict],
+) -> int:
+    """Atomically replace all trades for a strategy (admin client).
+
+    DELETE followed by bulk INSERT. Used by the forward-test recompute
+    and Mass Builder backtest-save paths. Returns inserted row count.
+    """
+    client = get_admin_client()
+    client.table('trades').delete().eq('strategy_id', strategy_id).execute()
+    if not trades:
+        return 0
+    rows = []
+    for trade in trades:
+        row = _trade_to_row(trade)
+        row['strategy_id'] = strategy_id
+        row['user_id'] = user_id
+        row.pop('id', None)
+        row.pop('created_at', None)
+        rows.append(row)
+    result = client.table('trades').insert(rows).execute()
+    return len(result.data) if result.data else 0
+
+
+# ============================================================
 # Monitor Status CRUD (database path)
 # ============================================================
 
@@ -941,14 +1195,21 @@ def load_alert_config_admin(user_id: str) -> dict:
 
 
 def load_strategies_admin(user_id: str) -> list:
-    """Load all strategies for a specific user (admin client)."""
+    """Load all strategies for a specific user (admin client).
+
+    Phase 40: hydrate_trades=False because Worker's "no strategies to
+    monitor" diagnostic fallback only reads id/name/symbol-level fields;
+    fetching trades per strategy here would spike Supabase load for a
+    debug path. Callers that need trades should use
+    ``get_strategy_by_id_admin`` for the specific strategy.
+    """
     client = get_admin_client()
     result = client.table('strategies') \
         .select('*') \
         .eq('user_id', user_id) \
         .order('id') \
         .execute()
-    return [_row_to_strategy(r) for r in result.data]
+    return [_row_to_strategy(r, hydrate_trades=False) for r in result.data]
 
 
 # Columns needed for Worker monitoring decisions (triggers, confluence,
@@ -990,7 +1251,8 @@ def load_strategies_monitoring_admin(user_id: str) -> list:
         .eq('user_id', user_id) \
         .order('id') \
         .execute()
-    return [_row_to_strategy(r) for r in result.data]
+    # hydrate_trades=False — monitor cycle never reads trades.
+    return [_row_to_strategy(r, hydrate_trades=False) for r in result.data]
 
 
 def get_strategy_by_id_admin(strategy_id: int, user_id: str) -> dict | None:
@@ -1032,6 +1294,19 @@ def update_strategy_admin(strategy_id: int, user_id: str, updates: dict) -> dict
     column_updates.pop('user_id', None)
     column_updates.pop('id', None)
 
+    # Phase 40: when the trades-table is authoritative, strip stored_trades
+    # out of the strategies UPDATE payload and write to the trades table
+    # instead. Only acts when 'stored_trades' is explicitly in the incoming
+    # updates dict — omitting it means "don't touch trades" (preserves the
+    # feedback_jsonb_partial_updates safety rule).
+    pending_trades = None
+    try:
+        import trades_store as _trades_store
+        if _trades_store._flag_on() and 'stored_trades' in column_updates:
+            pending_trades = column_updates.pop('stored_trades', None) or []
+    except Exception:
+        _trades_store = None
+
     payload = dict(column_updates)
     if config_updates:
         # Caller is changing something inside config — they must have already
@@ -1039,18 +1314,33 @@ def update_strategy_admin(strategy_id: int, user_id: str, updates: dict) -> dict
         # via the supabase-py client, so the caller's responsibility.
         payload['config'] = config_updates
 
-    if not payload:
+    if not payload and pending_trades is None:
         return None  # nothing to update
 
-    client = get_admin_client()
-    result = client.table('strategies') \
-        .update(payload) \
-        .eq('id', strategy_id) \
-        .eq('user_id', user_id) \
-        .execute()
-    if result.data:
-        return _row_to_strategy(result.data[0])
-    return None
+    saved = None
+    if payload:
+        client = get_admin_client()
+        result = client.table('strategies') \
+            .update(payload) \
+            .eq('id', strategy_id) \
+            .eq('user_id', user_id) \
+            .execute()
+        if result.data:
+            saved = _row_to_strategy(result.data[0])
+
+    if pending_trades is not None and _trades_store is not None and _trades_store._flag_on():
+        try:
+            _trades_store.replace_trades_for_strategy(
+                strategy_id, user_id, pending_trades)
+            if saved is not None:
+                saved['stored_trades'] = pending_trades
+        except Exception as e:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "update_strategy_admin: trades-table replace failed for "
+                "strategy %s: %s", strategy_id, e)
+
+    return saved
 
 
 def load_portfolios_admin(user_id: str) -> list:

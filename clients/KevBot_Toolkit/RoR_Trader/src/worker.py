@@ -459,6 +459,43 @@ class DBAlertDispatcher:
             logger.debug("Skipping algo-trade persist: missing entry/exit fill_ts")
             return
 
+        # Serialize sets (confluence_records) — JSONB doesn't accept sets
+        tr_clean = dict(trade_record)
+        cr = tr_clean.get('confluence_records')
+        if isinstance(cr, set):
+            tr_clean['confluence_records'] = list(cr)
+
+        # Flag ON path: single-row INSERT into the trades table. Avoids the
+        # full-column JSONB rewrite that was causing statement timeouts.
+        try:
+            import trades_store
+        except Exception:
+            trades_store = None
+        if trades_store is not None and trades_store._flag_on():
+            # Replace any stale open-position placeholder for this entry
+            # (forward_test_service may have emitted one while the position
+            # was still held; now that we have the real exit, it should
+            # go away so the only row left is the closed trade).
+            try:
+                from db import delete_trade_placeholder_admin
+                delete_trade_placeholder_admin(strategy['id'], entry_fill_ts)
+            except Exception as e:
+                logger.warning("Failed to clear trade placeholder: %s", e)
+
+            inserted = trades_store.insert_trade(
+                strategy['id'], self.user_id, tr_clean)
+            if inserted:
+                logger.info(
+                    "ALGO TRADE APPENDED [%s]: strat=%s trades-table r=%.2f",
+                    self.user_id[:8], strategy['id'],
+                    tr_clean.get('r_multiple', 0) or 0)
+            else:
+                logger.debug(
+                    "Algo trade insert skipped (likely duplicate or error): "
+                    "strat=%s", strategy['id'])
+            return
+
+        # Flag OFF path (legacy): read strategy, append to stored_trades, write back.
         # Re-fetch the strategy fresh (hot-reload may have mutated it)
         strat_db = get_strategy_by_id_admin(strategy['id'], self.user_id)
         if strat_db is None:
@@ -485,12 +522,6 @@ class DBAlertDispatcher:
             if not (t.get('entry_fill_ts') == entry_fill_ts
                     and t.get('exit_fill_ts') in (None, 'NaT', ''))
         ]
-
-        # Serialize sets (confluence_records) — JSONB doesn't accept sets
-        tr_clean = dict(trade_record)
-        cr = tr_clean.get('confluence_records')
-        if isinstance(cr, set):
-            tr_clean['confluence_records'] = list(cr)
 
         stored_trades.append(tr_clean)
         update_strategy_admin(
