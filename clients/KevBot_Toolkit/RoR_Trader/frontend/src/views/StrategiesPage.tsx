@@ -59,6 +59,7 @@ interface Strategy {
   sigmaAlert: number;
   equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null };
   updatedAt: string;
+  portfolioCount: number;
 }
 
 /* ========================================================================= */
@@ -96,14 +97,20 @@ function apiToStrategy(s: any): Strategy {
     fwdWinRate: s.forward_kpis?.win_rate ?? null,
     fwdPF: s.forward_kpis?.profit_factor ?? null,
     fwdDailyROI: null, // {{fwd_daily_roi}} — needs computation
-    fwdTrades: s.forward_kpis?.trades ?? 0,
+    // fwdTrades: prefer the server-computed forward_trades_count (list endpoint
+    // attaches this by counting trades with entry_fill_ts >= forward_test_start).
+    // Falls back to enrich's forward_kpis.trades when ?enrich=true is used.
+    fwdTrades: s.forward_trades_count ?? s.forward_kpis?.trades ?? 0,
     fwdSince: s.forward_test_start || '',
     // Alert KPIs (from enrich_strategy)
     alertWinRate: s.alert_kpis?.win_rate ?? null,
     alertPF: s.alert_kpis?.profit_factor ?? null,
     alertDailyR: s.alert_kpis?.daily_r ?? null,
     alertDailyROI: null, // {{alert_daily_roi}}
-    alertTrades: s.alert_kpis?.trades ?? 0,
+    // Prefer server-computed alert_trades_count (COUNT(*) from alerts table).
+    // Falls back to alert_kpis.trades (from live_executions, only populated
+    // by enrich_strategy).
+    alertTrades: s.alert_trades_count ?? s.alert_kpis?.trades ?? 0,
     alertMaxDD: s.alert_kpis?.max_r_drawdown ?? null,
     entry: s.entry_trigger_confluence_id || '--',
     exit: s.exit_trigger_confluence_ids || [],
@@ -118,6 +125,9 @@ function apiToStrategy(s: any): Strategy {
     sigmaAlert: s.sigma_alert ?? 0,
     equityCurveData: s.equity_curve_data || undefined,
     updatedAt: s.updated_at || s.created_at || '',
+    // Attached server-side by the list endpoint (count of portfolios whose
+    // `strategies` array contains this strategy's id).
+    portfolioCount: s.portfolio_count ?? 0,
   };
 }
 
@@ -739,7 +749,7 @@ export default function StrategiesPage() {
                 </div>
               )}
 
-              {/* Meta line: symbol · direction · timeframe · session · BT days (trades) · Fwd days (trades) · Alerts (count) · updated */}
+              {/* Meta line: symbol · direction · timeframe · session · BT days (trades) · Fwd days (trades) · Alerts (count) · Portfolios (count) · updated */}
               {/* Matches the subtitle on the Strategy Detail page so counts are consistent across views. */}
               <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                 {strat.symbol} {strat.direction}
@@ -750,6 +760,9 @@ export default function StrategiesPage() {
                 <span style={{ color: EQ_BT_COLOR }}> · BT {strat.btDays}d ({strat.trades.toLocaleString()})</span>
                 <span style={{ color: EQ_FWD_COLOR }}> · Fwd {fwdDays}d ({strat.fwdTrades.toLocaleString()})</span>
                 <span style={{ color: EQ_LIVE_COLOR }}> · Alerts ({strat.alertTrades.toLocaleString()})</span>
+                <span style={{ color: strat.portfolioCount > 0 ? '#9C27B0' : 'var(--text-muted)' }}>
+                  {' '}· Portfolios ({strat.portfolioCount})
+                </span>
                 <span> · Updated {timeAgo(strat.updatedAt)}</span>
               </p>
 

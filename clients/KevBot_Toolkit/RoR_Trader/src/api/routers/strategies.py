@@ -149,7 +149,98 @@ def list_strategies(
                 enriched.append(s)
         strategies = enriched
 
+    # Augment every strategy with three cheap count fields so the list-card
+    # subtitle can show them alongside backtest counts:
+    #   - portfolio_count: how many portfolios include this strategy
+    #   - forward_trades_count: trades after forward_test_start (= post-save
+    #     algo activity)
+    #   - alert_trades_count: total alert rows for this strategy (= live fires)
+    if USE_DB and strategies:
+        _augment_with_counts(strategies)
+
     return _sanitize_json(strategies)
+
+
+def _augment_with_counts(strategies: list) -> None:
+    """Attach portfolio_count / forward_trades_count / alert_trades_count.
+
+    Uses PostgREST count-exact HEAD-style requests (limit=0, Prefer=count=exact)
+    — returns only the count header, not the row bodies, so each request is
+    tiny. Parallelized via ThreadPoolExecutor to keep total list-endpoint
+    latency under a second for typical user strategy counts.
+
+    Mutates `strategies` in place. Failures fall back to 0 so the list
+    still renders if any individual count request errors.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from db import (
+        get_admin_client, get_current_user_id, load_portfolios_admin,
+    )
+
+    user_id = get_current_user_id()
+
+    # Portfolio count — one fetch of portfolios, count in Python.
+    port_counts: dict[int, int] = {}
+    try:
+        ports = load_portfolios_admin(user_id) if user_id else []
+        for p in ports:
+            for alloc in (p.get('strategies') or []):
+                sid = alloc.get('strategy_id')
+                if sid is None:
+                    continue
+                port_counts[int(sid)] = port_counts.get(int(sid), 0) + 1
+    except Exception as e:
+        logger.warning("[LIST] Portfolio count failed: %s", e)
+
+    client = get_admin_client()
+
+    def _count_alerts(sid: int) -> tuple[int, int]:
+        try:
+            r = client.table('alerts') \
+                .select('id', count='exact') \
+                .eq('strategy_id', sid) \
+                .limit(0) \
+                .execute()
+            return sid, (r.count or 0)
+        except Exception:
+            return sid, 0
+
+    def _count_forward_trades(sid: int, fwd_start) -> tuple[int, int]:
+        if not fwd_start:
+            return sid, 0
+        try:
+            r = client.table('trades') \
+                .select('id', count='exact') \
+                .eq('strategy_id', sid) \
+                .gte('entry_fill_ts', fwd_start) \
+                .limit(0) \
+                .execute()
+            return sid, (r.count or 0)
+        except Exception:
+            return sid, 0
+
+    alert_counts: dict[int, int] = {}
+    fwd_counts: dict[int, int] = {}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        alert_futures = {ex.submit(_count_alerts, s['id']): s['id'] for s in strategies if s.get('id')}
+        fwd_futures = {
+            ex.submit(_count_forward_trades, s['id'], s.get('forward_test_start')): s['id']
+            for s in strategies if s.get('id')
+        }
+        for fut in as_completed(alert_futures):
+            sid, n = fut.result()
+            alert_counts[sid] = n
+        for fut in as_completed(fwd_futures):
+            sid, n = fut.result()
+            fwd_counts[sid] = n
+
+    for s in strategies:
+        sid = s.get('id')
+        if sid is None:
+            continue
+        s['portfolio_count'] = port_counts.get(int(sid), 0)
+        s['alert_trades_count'] = alert_counts.get(sid, 0)
+        s['forward_trades_count'] = fwd_counts.get(sid, 0)
 
 
 @router.post("")
