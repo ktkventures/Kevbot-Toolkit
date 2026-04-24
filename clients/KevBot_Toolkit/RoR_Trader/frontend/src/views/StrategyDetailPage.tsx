@@ -15,7 +15,7 @@ import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy } from '@/hooks/mutations/useStrategyMutations';
+import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 
@@ -3145,13 +3145,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         { label: 'Method', value: strategy.method },
                         { label: 'Created', value: strategy.createdAt },
                         { label: 'Updated', value: strategy.updatedAt },
-                        { label: 'FW Start', value: strategy.fwdSince },
                       ].map((row) => (
                         <div key={row.label} className="flex items-center justify-between">
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{row.label}</span>
                           <span className="text-sm font-medium">{row.value}</span>
                         </div>
                       ))}
+                      <ForwardTestStartEditor
+                        strategyId={Number(strategy.id)}
+                        currentValue={String(strategy.fwdSince || '')}
+                      />
                     </div>
                   </Card>
 
@@ -4101,6 +4104,139 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           } : null}
         />
       )}
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Admin override for forward_test_start
+// ----------------------------------------------------------------------------
+// Inline edit control on the Strategy Setup card. Shown on Configuration tab
+// next to the other read-only rows. Exists to unblock the "recreate under
+// current schema + restore original start date" workflow when cleaning up
+// legacy strategies — see Phase 40 + strategy cleanup notes.
+// After saving, caller should separately hit the Refresh Data button to
+// regenerate stored_trades + equity_curve_data against the new boundary.
+// ============================================================================
+function ForwardTestStartEditor({
+  strategyId,
+  currentValue,
+}: {
+  strategyId: number;
+  currentValue: string;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState<string>('');
+  const mutation = useSetForwardTestStart();
+
+  // Convert ISO8601 current value → input[type=datetime-local] expected format
+  // (YYYY-MM-DDTHH:MM). When in edit mode, initialize from the current value.
+  useEffect(() => {
+    if (!isEditing) return;
+    if (currentValue) {
+      try {
+        const d = new Date(currentValue);
+        if (!Number.isNaN(d.getTime())) {
+          const pad = (n: number) => String(n).padStart(2, '0');
+          const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          setDraft(local);
+          return;
+        }
+      } catch {}
+    }
+    setDraft('');
+  }, [isEditing, currentValue]);
+
+  const handleSave = () => {
+    // Convert local datetime input → ISO8601. Empty = clear.
+    let payload: string | null = null;
+    if (draft) {
+      try {
+        payload = new Date(draft).toISOString();
+      } catch {
+        alert('Invalid date — please pick a valid date/time');
+        return;
+      }
+    }
+    mutation.mutate(
+      { id: strategyId, forwardTestStart: payload },
+      {
+        onSuccess: () => setIsEditing(false),
+        onError: (err: any) => {
+          alert(`Save failed: ${String(err?.message || err)}`);
+        },
+      }
+    );
+  };
+
+  const handleCancel = () => setIsEditing(false);
+
+  if (!isEditing) {
+    return (
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          FW Start
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{currentValue || '—'}</span>
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            className="text-xs px-2 py-0.5 rounded"
+            style={{
+              color: 'var(--accent)',
+              border: '1px solid var(--border)',
+              background: 'transparent',
+            }}
+          >
+            Edit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        FW Start (admin override)
+      </span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          type="datetime-local"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={mutation.isPending}
+          className="text-sm px-2 py-1 rounded"
+          style={{
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={mutation.isPending}
+          className="text-xs px-3 py-1 rounded font-medium"
+          style={{ background: 'var(--accent)', color: 'white' }}
+        >
+          {mutation.isPending ? 'Saving...' : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={handleCancel}
+          disabled={mutation.isPending}
+          className="text-xs px-3 py-1 rounded"
+          style={{ color: 'var(--text-muted)', background: 'transparent' }}
+        >
+          Cancel
+        </button>
+      </div>
+      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        After saving, click Refresh Data above to regenerate trades against the new boundary.
+      </span>
     </div>
   );
 }

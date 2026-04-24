@@ -353,6 +353,78 @@ def bulk_delete(
     return {"status": "deleted", "count": deleted}
 
 
+@router.patch("/{strategy_id}/forward-test-start")
+def set_forward_test_start(
+    strategy_id: int,
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Admin override for ``forward_test_start``.
+
+    Unblocks the "recreate under current schema + restore original start
+    date" workflow. Expects body: ``{"forward_test_start": "<ISO8601>"}``
+    or ``{"forward_test_start": null}`` to clear. No recompute is triggered
+    — caller should hit /refresh afterward if they want stored_trades and
+    equity_curve_data regenerated against the new boundary.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="DB mode required")
+
+    raw = body.get('forward_test_start', ...)
+    if raw is ...:
+        raise HTTPException(
+            status_code=400,
+            detail="body must include 'forward_test_start' (ISO8601 string or null)",
+        )
+
+    # Validate input. Accept ISO8601 strings or explicit null/empty to clear.
+    normalized: str | None
+    if raw is None or raw == '':
+        normalized = None
+    elif isinstance(raw, str):
+        try:
+            # Parse then re-emit so we store a canonical representation.
+            parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            normalized = parsed.isoformat()
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid ISO8601 datetime: {raw!r}",
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"forward_test_start must be a string or null, got {type(raw).__name__}",
+        )
+
+    from db import get_strategy_by_id_db, update_strategy_db
+    existing = get_strategy_by_id_db(strategy_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # Partial update — ONLY touches forward_test_start. Preserves stored_trades,
+    # equity_curve_data, kpis, config, etc. update_strategy_db handles the
+    # config JSONB partial-update rules correctly as long as stored_trades
+    # isn't in the payload (trades-table redirect won't fire, good).
+    result = update_strategy_db(strategy_id, {
+        'forward_test_start': normalized,
+        'forward_testing': bool(normalized),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
+    if result is None:
+        raise HTTPException(status_code=500, detail="Update failed")
+
+    return {
+        "status": "updated",
+        "forward_test_start": normalized,
+        "forward_testing": bool(normalized),
+        "id": strategy_id,
+    }
+
+
 # =============================================================================
 # TRADE DATA
 # =============================================================================

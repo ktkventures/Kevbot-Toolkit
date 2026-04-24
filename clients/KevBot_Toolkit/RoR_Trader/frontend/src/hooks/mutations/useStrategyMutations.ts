@@ -87,3 +87,29 @@ export function useBulkDeleteStrategies() {
     },
   });
 }
+
+/**
+ * Admin override for a strategy's ``forward_test_start``. Unblocks the
+ * "recreate old strategy under current schema, then restore original start
+ * date" workflow.
+ *
+ * Pass `forwardTestStart: null` (or empty string) to clear. No refresh is
+ * triggered — caller should invoke useRefreshStrategy afterward if they
+ * want stored_trades + equity_curve_data regenerated against the new
+ * boundary.
+ */
+export function useSetForwardTestStart() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, forwardTestStart }: { id: number; forwardTestStart: string | null }) =>
+      apiFetch(`/api/strategies/${id}/forward-test-start`, {
+        method: 'PATCH',
+        body: JSON.stringify({ forward_test_start: forwardTestStart }),
+      }),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['strategies'] });
+      queryClient.invalidateQueries({ queryKey: ['strategy', id] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-forward-test', id] });
+    },
+  });
+}
