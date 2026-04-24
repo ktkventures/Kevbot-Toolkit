@@ -2,6 +2,16 @@
 
 Generated from a full DB audit of strategies with **forward algo trades but zero live alerts**. These are strategies where the unified engine's backtest path produces trades, but the live-bar engine never fires alerts — most likely cause is legacy trigger names or stale confluence-pack references that the live path doesn't resolve.
 
+## Plan: keep old strategies side-by-side for diagnostic comparison
+
+**Do NOT delete the old strategies after recreating.** The current approach is to keep them around as a reference, side-by-side with the recreated versions, so we can compare:
+
+- Whether the recreated strategy fires alerts (proves the legacy trigger names are the issue)
+- Whether the algo trades come out the same (proves the engine is processing both correctly)
+- What changed in the trigger names between old and new (helps catalogue the renames)
+
+This gives us troubleshooting data to either confirm "old triggers are broken in the live path" or surface a different root cause we haven't seen yet. Once we're confident the recreated versions are working, we can decide whether to delete the originals in a future cleanup pass.
+
 ## How to use this doc
 
 1. Open Strategy Builder
@@ -10,9 +20,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 
 3. Save with name `Recreated <ID> — <original name>` so you can match new vs old
 
-4. Once the recreated strategy starts firing alerts (give it ~30 min), delete the old strategy
+4. Wait ~30 min and watch the Strategies list. Recreated strategy should start showing `Alerts (>0)`. Original stays at `Alerts (0)` (or whatever it was) — that contrast IS the diagnostic signal.
 
-5. If a portfolio referenced the old strategy, swap to the new strategy id on the portfolio's Strategies tab
+5. **Do not delete the original yet.** Keep both around for as long as you want the comparison data. If a portfolio referenced the old strategy, swap the portfolio's Strategies tab to the new id; the old strategy can stay in the list dormant.
 
 
 ## Watch-outs
@@ -56,7 +66,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 50
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 50 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 51 — META LONG - Mass #13
@@ -86,7 +98,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 51
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 51 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 59 — AAPL LONG - Mass #5
@@ -116,7 +130,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 59
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 59 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 63 — AMD LONG - Mass #14
@@ -146,7 +162,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 63
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 63 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 64 — AAPL LONG - Mass #16
@@ -176,7 +194,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 64
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 64 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 66 — AAPL LONG - Mass #23
@@ -206,7 +226,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 66
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 66 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 111 — SPY LONG - 1
@@ -236,7 +258,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 111
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 111 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 122 — SPY LONG 1Min Mass #136
@@ -266,7 +290,9 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 122
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 122 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab
 
 
 ## Strategy 129 — extend test new table
@@ -296,4 +322,6 @@ Generated from a full DB audit of strategies with **forward algo trades but zero
 - [ ] Verified entry trigger picker found the same/equivalent
 - [ ] Saved + waited ~30 min for first signal
 - [ ] First alert fired (check alert count on Strategies list page)
-- [ ] Deleted strategy 129
+- [ ] Compared alerts/fwd counts on Strategies list — recreated firing, original 129 still 0
+- [ ] Original kept side-by-side for diagnostic comparison (do NOT delete yet)
+- [ ] If portfolio uses original, swap to recreated on portfolio Strategies tab

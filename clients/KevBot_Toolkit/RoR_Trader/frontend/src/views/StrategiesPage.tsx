@@ -702,7 +702,12 @@ export default function StrategiesPage() {
                     <div className="w-2.5 h-2.5 rounded-full absolute top-0 left-0" style={{ background: 'var(--green)', animation: 'pulse 2s ease-out infinite', opacity: 0.5 }} />
                   </div>
                 )}
-                <h3 className="font-semibold text-base">{strat.name}</h3>
+                <h3 className="font-semibold text-base">
+                  <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginRight: '0.4rem' }}>
+                    #{strat.id}
+                  </span>
+                  {strat.name}
+                </h3>
                 <span
                   className="text-xs px-2 py-0.5 rounded-full font-medium"
                   style={{
