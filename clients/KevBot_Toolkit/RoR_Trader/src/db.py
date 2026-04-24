@@ -340,6 +340,14 @@ def save_strategy_db(strategy: dict) -> dict:
     user_id = get_current_user_id()
     strategy['user_id'] = user_id
 
+    # Alerts are always on for monitored strategies — there's no UI toggle
+    # any more (removed 2026-04-24 after confirming the flag was never
+    # actually checked in the worker's alert-save path). Force the column
+    # default so downstream display paths stay consistent.
+    strategy.setdefault('alert_tracking_enabled', True)
+    if strategy.get('alert_tracking_enabled') and not strategy.get('alert_tracking_reset_at'):
+        strategy['alert_tracking_reset_at'] = datetime.now(timezone.utc).isoformat()
+
     # Phase 40: when the trades-table is authoritative, pull stored_trades
     # off the payload so the strategies row stays lean, and re-insert them
     # into the trades table after the strategy row exists (the new row's
