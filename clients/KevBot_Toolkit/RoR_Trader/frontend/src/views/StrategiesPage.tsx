@@ -58,6 +58,7 @@ interface Strategy {
   sigmaFwd: number;
   sigmaAlert: number;
   equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null };
+  updatedAt: string;
 }
 
 /* ========================================================================= */
@@ -116,6 +117,7 @@ function apiToStrategy(s: any): Strategy {
     sigmaFwd: s.sigma_fwd ?? 0,
     sigmaAlert: s.sigma_alert ?? 0,
     equityCurveData: s.equity_curve_data || undefined,
+    updatedAt: s.updated_at || s.created_at || '',
   };
 }
 
@@ -134,6 +136,20 @@ function daysSince(dateStr: string): number {
   const d = new Date(dateStr);
   const now = new Date();
   return Math.floor((now.getTime() - d.getTime()) / 86400000);
+}
+
+/** Compact "x ago" for the meta line. Falls back to `--` on empty. */
+function timeAgo(dateStr: string): string {
+  if (!dateStr) return '--';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '--';
+  const diff = (Date.now() - d.getTime()) / 1000; // seconds
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  // Older than a week — show the date
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 /** Generate a mini equity curve SVG from mock cumulative R data */
@@ -723,17 +739,18 @@ export default function StrategiesPage() {
                 </div>
               )}
 
-              {/* Meta line: symbol | direction | session | BT days | Fwd days | alert accuracy */}
+              {/* Meta line: symbol · direction · timeframe · session · BT days (trades) · Fwd days (trades) · Alerts (count) · updated */}
+              {/* Matches the subtitle on the Strategy Detail page so counts are consistent across views. */}
               <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                 {strat.symbol} {strat.direction}
+                <span> · {strat.timeframe}</span>
                 {strat.session !== 'RTH' && (
-                  <span style={{ color: '#9C27B0' }}> | {strat.session}</span>
+                  <span style={{ color: '#9C27B0' }}> · {strat.session}</span>
                 )}
-                <span style={{ color: EQ_BT_COLOR }}> | BT {strat.btDays}d</span>
-                <span style={{ color: EQ_FWD_COLOR }}> | Fwd {fwdDays}d</span>
-                {strat.alertTracking && (
-                  <span style={{ color: EQ_LIVE_COLOR }}> | Alert Acc {(94 + parseInt(strat.id) * 0.7).toFixed(1)}%</span>
-                )}
+                <span style={{ color: EQ_BT_COLOR }}> · BT {strat.btDays}d ({strat.trades.toLocaleString()})</span>
+                <span style={{ color: EQ_FWD_COLOR }}> · Fwd {fwdDays}d ({strat.fwdTrades.toLocaleString()})</span>
+                <span style={{ color: EQ_LIVE_COLOR }}> · Alerts ({strat.alertTrades.toLocaleString()})</span>
+                <span> · Updated {timeAgo(strat.updatedAt)}</span>
               </p>
 
               {/* Mini equity curve (3-segment per display settings V5) */}
