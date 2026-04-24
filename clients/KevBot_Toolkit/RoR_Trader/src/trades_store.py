@@ -24,9 +24,59 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Short-TTL read cache
+# ---------------------------------------------------------------------------
+# Strategy Detail page fires 5-6 endpoints in parallel on load (main,
+# /trades, /forward-test, /kpis, /chart-data, /trigger-analysis). Each one
+# calls get_strategy_by_id_db → _row_to_strategy → hydrates trades. For a
+# strategy with 1000+ trades, each hydration paginates Supabase 2+ times.
+# Without caching, a single page load = 10-15 paginated queries.
+#
+# 8-second TTL keyed on (strategy_id, user_id). Long enough to dedupe the
+# parallel fan-out of one page load, short enough that Strategy Detail
+# showing "live" data after a fresh exit stays current (worker dispatch
+# also invalidates the cache on insert/replace below).
+_CACHE_TTL_S = 8.0
+_cache: dict[tuple, tuple[float, list]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_key(strategy_id: int, user_id: Optional[str]) -> tuple:
+    return (int(strategy_id), user_id or "")
+
+
+def _cache_get(key: tuple) -> Optional[list]:
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is None:
+            return None
+        ts, trades = hit
+        if time.time() - ts > _CACHE_TTL_S:
+            _cache.pop(key, None)
+            return None
+        return trades
+
+
+def _cache_set(key: tuple, trades: list) -> None:
+    with _cache_lock:
+        _cache[key] = (time.time(), trades)
+
+
+def _cache_invalidate(strategy_id: int, user_id: Optional[str] = None) -> None:
+    """Invalidate cache entries for a strategy. Called after writes."""
+    with _cache_lock:
+        # Match any user_id for this strategy (defensive — we usually
+        # write with a specific user, but invalidation is cheap).
+        sid = int(strategy_id)
+        for k in [k for k in _cache if k[0] == sid]:
+            _cache.pop(k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +115,15 @@ def load_trades_for_strategy(
     """
     if not _flag_on():
         return []
+    key = _cache_key(strategy_id, user_id)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     try:
         from db import load_trades_admin
-        return load_trades_admin(strategy_id, user_id)
+        trades = load_trades_admin(strategy_id, user_id)
+        _cache_set(key, trades)
+        return trades
     except Exception as e:
         logger.warning(
             "trades_store.load_trades_for_strategy failed for strategy %s: %s",
@@ -141,6 +197,7 @@ def insert_trade(
     try:
         from db import insert_trade_admin
         insert_trade_admin(strategy_id, user_id, trade_record)
+        _cache_invalidate(strategy_id, user_id)
         return True
     except Exception as e:
         logger.error(
@@ -170,6 +227,7 @@ def replace_trades_for_strategy(
     try:
         from db import replace_trades_admin
         replace_trades_admin(strategy_id, user_id, list(trade_records))
+        _cache_invalidate(strategy_id, user_id)
         return True
     except Exception as e:
         logger.error(
