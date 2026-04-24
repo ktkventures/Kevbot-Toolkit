@@ -917,6 +917,48 @@ def load_strategies_admin(user_id: str) -> list:
     return [_row_to_strategy(r) for r in result.data]
 
 
+# Columns needed for Worker monitoring decisions (triggers, confluence,
+# session, timeframe, alert tracking). Explicitly EXCLUDES the three
+# JSONB columns that can grow into the megabytes per strategy:
+#   - stored_trades         (trade history; single strategy observed at 2.56 MB)
+#   - equity_curve_data     (per-trade cumulative-R points; ~70 KB typical)
+#   - live_executions       (position-state mirror; grows with trade count)
+# Ralph engine doesn't touch any of those three at monitoring time, and the
+# one worker path that legitimately needs stored_trades (_persist_algo_trade)
+# uses get_strategy_by_id_admin for a single row — not this bulk path.
+# Update this list whenever a column is added to the strategies schema.
+_STRATEGY_MONITOR_COLUMNS = (
+    'id,user_id,name,symbol,direction,timeframe,'
+    'config,kpis,'
+    'alert_tracking_enabled,alert_tracking_reset_at,'
+    'created_at,updated_at,data_refreshed_at,'
+    'discrepancies,discrepancies_dismissed_at,'
+    'forward_test_start,forward_testing,strategy_origin'
+)
+
+
+def load_strategies_monitoring_admin(user_id: str) -> list:
+    """Load all strategies for a user, excluding heavy JSONB columns.
+
+    Use this variant for the Worker's polling / hot-reload path where we
+    only need monitoring metadata (triggers, confluence, timeframe). On
+    a strategy with ~3000 trades, this is ~2.5 MB / strategy cheaper than
+    ``load_strategies_admin`` — a big deal when the Worker re-polls every
+    hot-reload cycle and Supabase statement-timeouts are the limiting
+    factor (see roadmap 9an).
+
+    If you need trade history, equity_curve_data, or live_executions, use
+    ``load_strategies_admin`` or ``get_strategy_by_id_admin`` instead.
+    """
+    client = get_admin_client()
+    result = client.table('strategies') \
+        .select(_STRATEGY_MONITOR_COLUMNS) \
+        .eq('user_id', user_id) \
+        .order('id') \
+        .execute()
+    return [_row_to_strategy(r) for r in result.data]
+
+
 def get_strategy_by_id_admin(strategy_id: int, user_id: str) -> dict | None:
     """Load a single strategy by ID for a specific user (admin client)."""
     client = get_admin_client()
@@ -1076,7 +1118,10 @@ def get_monitored_strategies_db(user_id: str) -> list:
     import logging
     _log = logging.getLogger("worker")
 
-    strategies = load_strategies_admin(user_id)
+    # Use the lite variant (no stored_trades / equity_curve_data /
+    # live_executions) — monitoring decisions only need config + trigger
+    # fields, and the Worker polls this every hot-reload cycle.
+    strategies = load_strategies_monitoring_admin(user_id)
     _log.info("[%s] get_monitored: scanning %d strategies",
               user_id[:8], len(strategies))
 
