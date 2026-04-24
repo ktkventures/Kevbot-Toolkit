@@ -25,8 +25,11 @@ def get_dashboard_summary(user=Depends(get_current_user)):
     portfolios = []
 
     if USE_DB:
-        from db import load_strategies_db, load_portfolios_db
-        strategies = load_strategies_db() or []
+        # Use lite loader — summary only reads kpis + alert_tracking_enabled
+        # + shallow fields. Full stored_trades/live_executions are ~35×
+        # heavier and never touched here.
+        from db import load_strategies_db_lite, load_portfolios_db
+        strategies = load_strategies_db_lite() or []
         portfolios = load_portfolios_db() or []
     else:
         import json, os

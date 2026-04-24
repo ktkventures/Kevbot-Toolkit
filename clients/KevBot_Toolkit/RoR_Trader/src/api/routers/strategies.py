@@ -106,14 +106,27 @@ def _trade_before(trade: dict, cutoff: datetime) -> bool:
 
 @router.get("")
 def list_strategies(
-    enrich: bool = Query(True, description="Include forward KPIs, sigma, status"),
+    enrich: bool = Query(False, description="Include forward KPIs, sigma, status"),
     user=Depends(get_current_user),
 ):
-    """Load all strategies for the current user, optionally enriched."""
+    """Load all strategies for the current user, optionally enriched.
+
+    Default path (enrich=False) uses load_strategies_db_lite() — excludes
+    `stored_trades` and `live_executions` columns. This is what the frontend
+    Strategies list page consumes (doesn't use enriched fields). Huge
+    Supabase load reduction on fat strategies.
+
+    Opt-in enrichment (?enrich=true) falls back to the full load so forward
+    KPIs / sigma / status can be computed. Used by anything that needs those.
+    """
     from db import USE_DB
     if USE_DB:
-        from db import load_strategies_db
-        strategies = load_strategies_db()
+        if enrich:
+            from db import load_strategies_db
+            strategies = load_strategies_db()
+        else:
+            from db import load_strategies_db_lite
+            strategies = load_strategies_db_lite()
     else:
         import json, os
         path = os.path.join(os.path.dirname(__file__), '..', '..', 'strategies.json')

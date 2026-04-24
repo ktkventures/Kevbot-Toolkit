@@ -269,6 +269,40 @@ def load_strategies_db() -> list:
     return [_row_to_strategy(r) for r in result.data]
 
 
+# Columns returned by the lean list path. Includes `equity_curve_data` so
+# frontend sparklines keep working (~70 KB typical), but EXCLUDES
+# `stored_trades` (can hit 2.5 MB per strategy) and `live_executions`.
+# Callers that genuinely need those — recompute paths, forward-test splits,
+# strategy-detail page — use load_strategies_db() or get_strategy_by_id_db.
+_STRATEGY_LIST_COLUMNS = (
+    'id,user_id,name,symbol,direction,timeframe,'
+    'config,kpis,equity_curve_data,'
+    'alert_tracking_enabled,alert_tracking_reset_at,'
+    'created_at,updated_at,data_refreshed_at,'
+    'discrepancies,discrepancies_dismissed_at,'
+    'forward_test_start,forward_testing,strategy_origin'
+)
+
+
+def load_strategies_db_lite() -> list:
+    """Load all strategies for the current user, skipping heavy JSONB.
+
+    Excludes `stored_trades` and `live_executions`. Use for list endpoints,
+    dashboard summaries, and any view that doesn't actually iterate trades.
+
+    Reduces strategies-table read traffic by ~35× on fat strategies (one
+    with 3000 trades observed at 2.5 MB stored_trades vs ~75 KB lean).
+    """
+    user_id = get_current_user_id()
+    client = get_client()
+    result = client.table('strategies') \
+        .select(_STRATEGY_LIST_COLUMNS) \
+        .eq('user_id', user_id) \
+        .order('id') \
+        .execute()
+    return [_row_to_strategy(r) for r in result.data]
+
+
 def get_strategy_by_id_db(strategy_id: int) -> dict | None:
     """Load a single strategy by ID for the current user."""
     client = get_client()
