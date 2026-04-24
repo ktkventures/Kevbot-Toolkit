@@ -400,6 +400,25 @@ def update_strategy_db(strategy_id: int, updated: dict) -> dict | None:
     row = _strategy_to_row(updated)
     row.pop('user_id', None)  # Don't allow changing user_id
     row.pop('id', None)       # Don't include PK in the SET clause
+
+    # CRITICAL: partial-update safety. _strategy_to_row always emits a
+    # `config` key (empty `{}` when no config-bucket fields are present).
+    # On an UPDATE that sends `config: {}`, PostgREST overwrites the
+    # JSONB column with `{}` and wipes trigger/confluence/stop settings.
+    # This is the `feedback_jsonb_partial_updates` rule — strategies 70+71
+    # got wiped on 2026-04-14, and strategies 129+130 got wiped on
+    # 2026-04-24 via my own set_forward_test_start endpoint. Only include
+    # `config` in the payload when the caller actually provided
+    # config-bucket fields to change.
+    caller_had_config_fields = any(
+        k not in STRATEGY_COLUMN_FIELDS for k in updated.keys()
+    )
+    if not caller_had_config_fields:
+        row.pop('config', None)
+
+    if not row:
+        return None  # nothing to update
+
     client = get_client()
     result = client.table('strategies') \
         .update(row) \
