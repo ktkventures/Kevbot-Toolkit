@@ -240,7 +240,16 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
             strat['kpis'] = {}
 
     try:
-        return _sanitize_json(svc.enrich_strategy(strat, full_compute=True))
+        # full_compute=False: rely on stored_trades being kept fresh by the
+        # worker's bar-close hook (forward_test_service.recompute_and_persist_
+        # stored_trades) instead of re-running the full backtest on every
+        # detail load. full_compute=True was hanging Strategy Detail for
+        # brand-new strategies (no forward trades yet → triggered a full
+        # Polygon+backtest recompute per load, 30s+ per hit). The stored
+        # path gives correct data for any monitored strategy; unmonitored
+        # strategies with no forward trades return None and the UI shows
+        # "Insufficient forward data" which is accurate.
+        return _sanitize_json(svc.enrich_strategy(strat, full_compute=False))
     except Exception as e:
         logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
         return _sanitize_json(strat)
