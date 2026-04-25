@@ -54,6 +54,13 @@ MANIFEST_OPTIONAL_FIELDS = [
     # declared, the pack ships an indicator_incremental.py file containing
     # a class with the contract documented in pack_builder_context.md.
     "incremental_class",
+    # Modular trigger-to-execution-type bridge. Each entry maps a trigger
+    # base name to the indicator column the engine should treat as the
+    # intra-bar level for L/LC executions. Manifest authors declare ONE
+    # base trigger per logical signal; the registry materializes runtime
+    # IDs (with _ib/_lc/_cc suffixes) automatically based on this map.
+    # See pack_builder_context.md for the modular trigger pattern.
+    "trigger_levels",
 ]
 
 
@@ -355,6 +362,52 @@ def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
             ccc = plot_config.get("candle_color_column")
             if ccc is not None and ccc not in manifest["indicator_columns"]:
                 errors.append(f"plot_config.candle_color_column '{ccc}' not in indicator_columns")
+
+    # Validate trigger_levels shape if present. Each entry must reference a
+    # trigger base that exists in `triggers` and an indicator column that
+    # exists in `indicator_columns`. Cross direction must be 'above' or
+    # 'below'. The registry uses this to auto-generate L/LC suffixed
+    # runtime trigger IDs at install time.
+    trigger_levels = manifest.get("trigger_levels")
+    if trigger_levels is not None:
+        if not isinstance(trigger_levels, dict):
+            errors.append(
+                "'trigger_levels' must be a dict mapping trigger_base -> "
+                "{level_column, cross}"
+            )
+        else:
+            trigger_bases = {t.get("base") for t in manifest.get("triggers", [])
+                             if isinstance(t, dict)}
+            indicator_cols = set(manifest.get("indicator_columns", []))
+            for base, lvl in trigger_levels.items():
+                if base not in trigger_bases:
+                    errors.append(
+                        f"trigger_levels['{base}'] references a trigger base "
+                        f"that is not in the triggers list"
+                    )
+                if not isinstance(lvl, dict):
+                    errors.append(
+                        f"trigger_levels['{base}'] must be a dict with "
+                        f"'level_column' and 'cross'"
+                    )
+                    continue
+                level_col = lvl.get("level_column")
+                cross_dir = lvl.get("cross")
+                if not level_col or not isinstance(level_col, str):
+                    errors.append(
+                        f"trigger_levels['{base}'].level_column must be "
+                        f"a non-empty string"
+                    )
+                elif level_col not in indicator_cols:
+                    errors.append(
+                        f"trigger_levels['{base}'].level_column "
+                        f"'{level_col}' is not in indicator_columns"
+                    )
+                if cross_dir not in ("above", "below"):
+                    errors.append(
+                        f"trigger_levels['{base}'].cross must be 'above' "
+                        f"or 'below', got {cross_dir!r}"
+                    )
 
     # Validate incremental_class shape if present. Existence of the actual
     # class file is checked at register time, not here — manifest-level

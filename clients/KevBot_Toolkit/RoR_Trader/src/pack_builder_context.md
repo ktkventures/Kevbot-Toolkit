@@ -85,10 +85,13 @@ Your response MUST contain exactly three fenced code blocks in this order:
       "base": "trigger_name",
       "name": "Human Trigger Name",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
+      "type": "BOTH"
     }
   ],
+
+  "trigger_levels": {
+    "trigger_name": {"level_column": "col_name_1", "cross": "above"}
+  },
 
   "indicator_columns": ["col_name_1", "col_name_2"],
   "column_color_map": {
@@ -107,6 +110,8 @@ Your response MUST contain exactly three fenced code blocks in this order:
   }
 }
 ```
+
+**Trigger note:** Triggers carry no `execution` field. The system materializes runtime variants (C, L, LC, CC) automatically — see "Triggers and Execution Types" below. `trigger_levels` is optional; include it only for triggers that represent a meaningful intra-bar level cross.
 
 ### Manifest Rules
 
@@ -373,95 +378,117 @@ class YourPackIncremental:
 - Pack uses look-ahead patterns that genuinely can't be computed online (e.g., needs to know "this is a swing high" which requires future bars). Document this in the description; users see "batch-only" in the UI.
 - Pack is pure exploration / not yet ready for live deployment.
 
-### Trigger Execution Types
+### Triggers and Execution Types — The Modular Pattern
 
-> **Note:** These execution types are registered as independent modules in `execution_types.py`. Users enable/disable and configure them on the **Execution Types** page, not per-pack. Pack authors only need to declare the correct `execution` value in each trigger definition.
+This is the single most important section of this document. Read it carefully and follow it exactly.
 
-Every trigger has an execution type that determines when it fires and at what price. There are four execution types available:
+#### Core principle
 
-| Execution | Suffix | Fill Price | When It Fires | Manifest Value |
-|-----------|--------|-----------|---------------|----------------|
-| **Bar Close (C)** | _(none)_ | Bar close price | At bar close | `"bar_close"` |
-| **Intra-Bar (L-type)** | `_ib` | Indicator level | When price crosses level mid-bar | `"intra_bar"` |
-| **Hybrid Market (HM)** | `_hm` | Indicator level | Intra-bar cross + bar-close confirmation | `"hybrid_market"` |
-| **Hybrid Limit (HL)** | `_hl` | Indicator level | Intra-bar cross + bar-close confirmation | `"hybrid_limit"` |
+A **trigger** answers "WHEN does the signal fire?" — it's a single boolean event in time (e.g. "price crossed above the trailing stop"). An **execution type** answers "HOW does the order fill once the signal fires?" — it's an orthogonal mechanism (fill at bar close, fill at the level cross, fill with confirmation, etc.).
 
-**Bar Close (C):** Standard entry/exit at bar close price. The trigger boolean fires when the bar closes.
+These two concerns are independent. **The pack manifest describes only the trigger; the engine layers the execution types on top automatically.**
 
-**Intra-Bar (L-type):** Enters when price crosses an indicator level within the bar. More realistic for crossover-based entries. The fill price is the indicator level, not bar close. Classified as L0 (current bar's level) or L1 (previous bar's level) based on whether the level column uses a `_prev` suffix.
+You will emit **one trigger entry per logical signal**. Do NOT emit multiple variants of the same logical signal differing only in execution type. The system materializes the execution variants at install time.
 
-**Hybrid Market (HM):** Enters intra-bar like L-type, but checks bar-close confirmation. If the indicator state does NOT confirm the trade direction at bar close, the position exits at market (next tick) — conservative approach that limits unconfirmed exposure to one bar.
+#### What you emit in the manifest
 
-**Hybrid Limit (HL):** Same as HM for entry, but on non-confirmation places a virtual limit order at the entry price (break-even exit). If price returns to entry, exits at no loss. Otherwise falls through to normal exit rules — optimistic approach.
-
-**Declaring triggers with execution types in the manifest:**
-
-For a pack with all four variants:
+Each trigger entry is minimal:
 ```json
 "triggers": [
-  {"base": "buy", "name": "Buy Signal", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-  {"base": "buy_ib", "name": "Buy Signal [L]", "direction": "BOTH", "type": "BOTH", "execution": "intra_bar", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
-  {"base": "buy_hm", "name": "Buy Signal [HM]", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_market", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"},
-  {"base": "buy_hl", "name": "Buy Signal [HL]", "direction": "BOTH", "type": "BOTH", "execution": "hybrid_limit", "column_base": "buy", "level_column": "my_line_prev", "cross": "above"}
+  {"base": "bull_flip", "name": "Bullish Trailing Stop Flip",
+   "direction": "BOTH", "type": "BOTH"},
+  {"base": "bear_flip", "name": "Bearish Trailing Stop Flip",
+   "direction": "BOTH", "type": "BOTH"}
 ]
 ```
 
-**Required fields for intra-bar/hybrid triggers:**
-- `column_base`: The bar-close trigger base whose boolean this trigger shares
-- `level_column`: The DataFrame column containing the indicator level for fills (registered automatically in `INTRABAR_LEVEL_MAP`)
-- `cross`: Direction of the level cross — `"above"` or `"below"`
+Required fields per trigger:
+- `base`: short snake_case logical name. **Must NOT include exec-type suffixes** (`_ib`, `_lc`, `_cc`, `_hm`, `_hl`). The system applies suffixes automatically. Example: `bull_flip`, NOT `bull_flip_ib`.
+- `name`: human-readable label.
+- `direction`: always `"BOTH"`.
+- `type`: always `"BOTH"`.
 
-These fields are used to register the trigger in the unified engine's `INTRABAR_LEVEL_MAP` at pack install time, enabling both backtest simulation and live tick-level detection.
+There is **no** `execution` field. There is **no** `column_base` field. There is **no** `level_column` or `cross` field on individual trigger entries. **DO NOT EMIT THESE FIELDS.**
 
-### L0 vs L1 Classification
+#### How you declare a level cross (for L-type and LC executions)
 
-Intra-bar triggers are automatically classified based on the `level_column`:
-- **L0** (current bar's level): Column does NOT end in `_prev` (e.g., `"vwap"`) — the cross level updates every bar
-- **L1** (previous bar's level): Column ends in `_prev` (e.g., `"utbot_stop_prev"`) — the cross level is fixed from the previous bar
+If a trigger represents a level cross — i.e. the engine could meaningfully detect intra-bar that price crossed a specific indicator value — declare that level **once** in a top-level `trigger_levels` block:
 
-**When to use `_prev` columns (L1):** Any indicator where the plotted line recalculates or jumps when the signal fires (ATR trailing stops, dynamic support/resistance, adaptive moving averages). The realistic entry price is the **previous bar's** level — that's the line price actually had to cross.
-
-To create a `_prev` column in `indicator.py`:
-```python
-result["your_line_prev"] = result["your_line"].shift(1)
+```json
+"trigger_levels": {
+  "bull_flip": {"level_column": "my_indicator_prev", "cross": "above"},
+  "bear_flip": {"level_column": "my_indicator_prev", "cross": "below"}
+}
 ```
 
-**When to use current columns (L0):** Static or slow-moving indicators where the level barely changes bar-to-bar (VWAP, standard EMAs). The current bar's level is close enough to the actual cross price.
+The keys are trigger `base` names that exist in your `triggers` array. Each entry has:
+- `level_column`: the indicator column the engine should treat as the cross level. Must exist in `indicator_columns`.
+- `cross`: `"above"` or `"below"` — which direction crossing the level confirms the signal.
 
-### Gate Logic for Intra-Bar Triggers
+Triggers without an entry in `trigger_levels` are pure bar-close events (no L-type variant; the engine still emits C and CC variants for them).
 
-All intra-bar and hybrid triggers use a gate: the previous bar's close must be on the **opposite side** of the indicator level from the cross direction. This prevents phantom entries on bars where price is already past the level.
+Triggers with an entry get the L (intra-bar) and LC (level-cross + bar-close confirmation) variants automatically.
 
-The gate is computed automatically by the unified engine — pack authors only need to declare `level_column` and `cross` in the trigger definition.
+#### What the engine produces from this at runtime
 
-### LC and CC Execution Types (Composite)
+For each base trigger, the engine materializes runtime IDs by suffix. Given `trigger_prefix: "utbm"` and the example above, the engine registers:
 
-In addition to the four base execution types, two composite types combine L-type entry with bar-close confirmation:
+| Trigger emitted in manifest | Runtime IDs produced |
+|---|---|
+| `bull_flip` (with trigger_levels entry) | `utbm_bull_flip` (C), `utbm_bull_flip_ib` (L), `utbm_bull_flip_lc` (LC), `utbm_bull_flip_cc` (CC) |
+| `bull_flip` (no trigger_levels entry) | `utbm_bull_flip` (C), `utbm_bull_flip_cc` (CC) |
 
-| Execution | Description | Manifest Value |
-|-----------|-------------|----------------|
-| **Level-Close (LC)** | Enters at indicator level (like L-type), then requires bar-close confirmation. If the bar closes without confirming the direction, a bail action occurs. | `"level_close"` |
-| **Close-Close (CC)** | Enters at bar close, then requires the next bar to close confirming the direction. If the next bar doesn't confirm, exits at market. | `"close_close"` |
+Strategy authors pick one of these runtime IDs in Strategy Builder. Users toggle which exec variants are enabled per trigger. **You do not enumerate these in the manifest. They are generated.**
 
-**LC parameters:**
-- `confirm_bar_offset`: 0 (same bar) or 1 (next bar) — how many bars to wait for confirmation
-- `bail_action`: `"exit_market"` (exit at market on non-confirmation) or `"exit_limit"` (place limit order at entry price for break-even exit)
+#### The four canonical execution types
 
-**CC parameters:**
-- `confirm_bar_offset`: typically 1 (next bar close must confirm)
-- `bail_action`: `"exit_market"` (exit at market on non-confirmation)
+For reference only — you do not declare these in the manifest:
 
-LC is a superset of HM — LC with `confirm_bar_offset=0` and `bail_action=exit_market` is equivalent to HM. CC is a genuinely new type that provides close-to-close confirmation.
+| Type | Code | Meaning |
+|---|---|---|
+| Bar Close | C | Order fills at the close of the bar where the signal fires |
+| Level Cross | L | Order fills intra-bar when price crosses `level_column` (only when `trigger_levels` entry exists) |
+| Level + Close Confirm | LC | Same intra-bar fill as L, but exits at market if the bar's close doesn't confirm direction |
+| Close + Close Confirm | CC | Order fills at bar close, exits at market if the next bar's close doesn't confirm direction |
 
-### Execution Types Are Separate Modules
+Legacy codes you may see in older built-in packs (`HM`, `HL`) are sub-modes of the LC type. You do not emit them.
 
-Execution types (C, L, LC, CC) are now **independent pluggable modules** managed on the Execution Types page, not configured per-pack. Each module (`BarCloseExecution`, `LevelExecution`, `LevelCloseExecution`, `CloseCloseExecution`) is enabled/disabled globally by the user.
+#### L0 vs L1: the `_prev` suffix on level columns
 
-Pack triggers declare their base execution type via the `execution` field in the manifest (e.g., `"bar_close"`, `"intra_bar"`). The engine generates variants for all enabled execution types automatically from the trigger's boolean signal.
+When you declare a `level_column` in `trigger_levels`, choose between two patterns based on indicator behavior:
 
-**`_exec_config` is legacy.** Existing built-in packs still have `_exec_config` in their parameters for backward compatibility. New packs created through the Pack Builder should NOT include `_exec_config`. Execution type configuration is managed independently on the Execution Types page.
+**L1 (previous bar's level — most common for dynamic indicators):** name the column with a `_prev` suffix. The engine uses the previous bar's value as the cross threshold. Use this for ATR trailing stops, adaptive moving averages, dynamic support/resistance — any line that recalculates or jumps when the signal fires.
 
-**Pack authors should focus on writing correct bar-close (C-type) trigger logic.** The engine handles L-type, LC, and CC variants automatically by applying the execution protocol to the trigger signal.
+```python
+# In indicator.py:
+result["my_indicator_prev"] = result["my_indicator"]   # CURRENT bar's value
+# DO NOT .shift() here. The engine adds the 1-bar lag automatically.
+```
+
+The `_prev` suffix is a **naming convention** that signals to the engine "treat this as L1." The actual time-shift happens inside the engine's cache. You provide the current bar's value with no shift; the engine uses it on bar N+1.
+
+**L0 (current bar's level — for static indicators):** name the column without `_prev`. Use for VWAP, fixed thresholds, slow EMAs — any line where the level barely changes bar-to-bar.
+
+#### Gate logic (handled by the engine)
+
+For L-type fills, the engine requires that the previous bar's close was on the *opposite* side of the level from the cross direction (so a "cross above" only fires if price was previously below the level). This prevents phantom fills when price is already past the line. You don't implement this; the engine does.
+
+#### What you write in the trigger detector function
+
+Your `detect_*_triggers()` function returns one boolean Series per trigger base — keyed exactly as `{trigger_prefix}_{base}`. **Do not include suffixed variants in the dict.**
+
+For the UT Bot example with `trigger_prefix: "utbm"`:
+```python
+def detect_ut_bot_modular_triggers(df, **params):
+    prev_close = df["close"].shift(1)
+    prev_stop  = df["utbm_trailing_stop"].shift(1)
+    return {
+        "utbm_bull_flip": (prev_close < prev_stop) & (df["close"] > df["utbm_trailing_stop"]),
+        "utbm_bear_flip": (prev_close > prev_stop) & (df["close"] < df["utbm_trailing_stop"]),
+    }
+```
+
+Two keys, matching the two manifest entries. The engine produces all the suffixed variants from these two booleans.
 
 ### PB/CB Fidelity (Strategy Builder Concern)
 
@@ -519,12 +546,12 @@ This is the single source of truth for validation. Module-level sandbox/simulati
     "OVERSOLD": "RSI below oversold threshold (<30 default)"
   },
   "triggers": [
-    {"base": "cross_into_overbought", "name": "RSI Crosses Into Overbought", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-    {"base": "cross_out_of_overbought", "name": "RSI Leaves Overbought", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-    {"base": "cross_into_oversold", "name": "RSI Crosses Into Oversold", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-    {"base": "cross_out_of_oversold", "name": "RSI Leaves Oversold", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-    {"base": "cross_above_midline", "name": "RSI Crosses Above Midline", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"},
-    {"base": "cross_below_midline", "name": "RSI Crosses Below Midline", "direction": "BOTH", "type": "BOTH", "execution": "bar_close"}
+    {"base": "cross_into_overbought",   "name": "RSI Crosses Into Overbought",  "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_out_of_overbought", "name": "RSI Leaves Overbought",        "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_into_oversold",     "name": "RSI Crosses Into Oversold",    "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_out_of_oversold",   "name": "RSI Leaves Oversold",          "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_above_midline",     "name": "RSI Crosses Above Midline",    "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_below_midline",     "name": "RSI Crosses Below Midline",    "direction": "BOTH", "type": "BOTH"}
   ],
   "indicator_columns": ["rsi"],
   "column_color_map": {"rsi": "rsi_color"},
@@ -534,6 +561,16 @@ This is the single source of truth for validation. Module-level sandbox/simulati
   "requires_indicators": ["rsi"]
 }
 ```
+
+> **Why no `trigger_levels` block?** RSI is an oscillator value, not a price level. Price doesn't "cross" 70 — RSI does, and RSI is computed only at bar close. So no L-type variant is meaningful here. The engine still emits C and CC variants automatically.
+
+> **For an overlay pack with price-level triggers** (UT Bot, Bollinger Bands, EMAs), add a `trigger_levels` block that maps each level-cross trigger to its column, e.g.:
+> ```json
+> "trigger_levels": {
+>   "bull_flip": {"level_column": "utbm_trailing_stop_prev", "cross": "above"}
+> }
+> ```
+> The engine will materialize C, L, LC, and CC variants automatically. **Do not enumerate `_ib`/`_lc`/`_cc` triggers in the manifest.**
 
 ### indicator.py
 ```python

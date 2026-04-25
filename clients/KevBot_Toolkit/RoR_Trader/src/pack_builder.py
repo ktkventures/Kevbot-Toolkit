@@ -166,12 +166,13 @@ You are an expert at designing technical indicator packs for a trading platform.
 A pack has three parts:
 - **parameters**: Configurable inputs (type: int, float, str, or bool). Each needs: name, type, default, label. Optional: min, max.
 - **outputs**: Mutually exclusive state classifications. Every bar maps to exactly one state. 3-7 states typical. Use UPPER_SNAKE_CASE.
-- **triggers**: Signal events (state transitions or condition changes). Each needs: name, base (snake_case key), direction, type, execution.
+- **triggers**: Signal events. ONE entry per logical signal — see the modular pattern below.
 
 Rules:
 - Output states must be mutually exclusive (no overlapping conditions)
 - Trigger base keys must be snake_case, unique, and descriptive
-- CRITICAL: Trigger base keys must NOT start with the indicator name/prefix. The system automatically prepends a trigger_prefix. For example, if the pack is "RSI Zones" with trigger_prefix "rsi", use base "cross_above_midline" NOT "rsi_cross_above_midline" — the system creates "rsi_cross_above_midline" automatically.
+- CRITICAL: Trigger base keys must NOT start with the indicator name/prefix and must NOT include execution-type suffixes (`_ib`, `_lc`, `_cc`, `_hm`, `_hl`). The system automatically prepends the trigger_prefix and adds exec-type suffixes. For example, with trigger_prefix "rsi" use base "cross_above_midline" — the system creates the runtime ID "rsi_cross_above_midline" and any needed suffixed variants.
+- CRITICAL: Modular execution-types pattern. Triggers describe WHEN a signal fires; execution types (C, L, LC, CC) describe HOW orders fill. They are orthogonal. You emit ONE trigger entry per logical signal; the system materializes execution-type variants automatically at install time. Do NOT enumerate `_ib`/`_lc`/`_cc`/`_hm`/`_hl` variants in your triggers list. Do NOT include an `execution` field — it is not a property of the trigger.
 - IMPORTANT: Triggers are direction-agnostic and type-agnostic. ALWAYS use direction "BOTH" and type "BOTH". Users decide how to use each trigger (entry/exit, long/short) in the Strategy Builder. Do NOT create separate long/short or entry/exit versions of the same signal.
 - IMPORTANT: Avoid redundant triggers. If two triggers would fire on the exact same bar with the same boolean logic, they should be one trigger. For example, "RSI crosses above midline" is one trigger — don't create both "entry long on midline cross" and "exit short on midline cross".
 - Each trigger should describe a specific state transition (from_state → to_state) when applicable
@@ -184,7 +185,7 @@ Required format:
 {
   "parameters": [{"name": "...", "type": "int|float|str|bool", "default": ..., "label": "...", "min": ..., "max": ...}],
   "outputs": [{"code": "STATE_NAME", "description": "When this state occurs"}],
-  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "BOTH", "type": "BOTH", "execution": "bar_close", "from_state": "STATE_A", "to_state": "STATE_B"}],
+  "triggers": [{"name": "Human Name", "base": "snake_case_key", "sentiment": "bullish|bearish|neutral", "direction": "BOTH", "type": "BOTH", "from_state": "STATE_A", "to_state": "STATE_B"}],
   "summary": "Brief description of the proposed structure"
 }
 """
@@ -268,12 +269,14 @@ def generate_code_prompt(
         parts.append("")
 
     if triggers:
-        parts.append("### Triggers (use these exactly)")
+        parts.append("### Triggers (one entry per logical signal — DO NOT add execution-type variants)")
         for t in triggers:
             direction = t.get('direction', 'BOTH')
-            ttype = t.get('type', 'ENTRY')
-            execution = t.get('execution', 'bar_close')
-            parts.append(f"- `{t['base']}` — {t.get('name', t['base'])} ({direction}, {ttype}, {execution})")
+            ttype = t.get('type', 'BOTH')
+            parts.append(
+                f"- `{t['base']}` — {t.get('name', t['base'])} "
+                f"({direction}, {ttype})"
+            )
         parts.append("")
 
     if pine_script.strip():
@@ -291,21 +294,28 @@ def generate_code_prompt(
     parts.append("7. Return None for bars with insufficient data (NaN values)")
     parts.append("8. Outputs MUST be mutually exclusive — every bar maps to exactly one state")
     parts.append("9. Include column_color_map mapping each plottable indicator_column to its plot_schema color key")
-    parts.append("10. CRITICAL — Trigger naming: In the manifest, trigger `base` must NOT start with the trigger_prefix. "
-                 "The system automatically creates the full key as `{trigger_prefix}_{base}`. "
-                 "Example: trigger_prefix='rsi', base='cross_above_midline' → key is 'rsi_cross_above_midline'. "
-                 "WRONG: base='rsi_cross_above_midline' → would create 'rsi_rsi_cross_above_midline'.")
-    parts.append("11. In detect_*_triggers(), the dict keys must be `{trigger_prefix}_{base}` matching the manifest triggers exactly")
+    parts.append("10. CRITICAL — Trigger naming: In the manifest, trigger `base` must NOT start with the trigger_prefix and must NOT include exec-type suffixes (`_ib`, `_lc`, `_cc`, `_hm`, `_hl`). "
+                 "The system creates the full runtime key as `{trigger_prefix}_{base}` and adds exec-type suffixes automatically. "
+                 "Example: trigger_prefix='rsi', base='cross_above_midline' → runtime key 'rsi_cross_above_midline' (plus auto-generated `_cc` variant). "
+                 "WRONG: base='rsi_cross_above_midline' (double-prefixed) or base='cross_above_midline_ib' (suffix-baked).")
+    parts.append("11. In detect_*_triggers(), return one boolean Series per trigger keyed exactly as `{trigger_prefix}_{base}`. "
+                 "DO NOT return suffixed variants (`_ib`, `_lc`, `_cc`). The engine derives them from your single boolean.")
     parts.append("12. All triggers must use direction 'BOTH' and type 'BOTH' — triggers are neutral, users decide usage in Strategy Builder")
-    parts.append("13. For overlay indicators with price-level values (EMAs, bands, thresholds), add _ib trigger variants with level_column and cross fields for intra-bar L-type execution. "
-                 "CRITICAL: Do NOT use .shift() on level columns. The engine automatically adds the 1-bar lag by caching values at bar N close and using them on bar N+1. "
-                 "Provide the CURRENT bar's value (no shift) and use the _prev suffix on the column name for L1 classification. "
-                 "Example: result['my_entry_level_prev'] = result['close']  (NOT .shift(1)). "
-                 "CRITICAL: Level columns must have a value on EVERY bar, not just trigger bars. "
-                 "Do NOT use .where(trigger_boolean, other=np.nan) — the engine needs a valid level every bar to detect intra-bar crosses. "
-                 "For pattern-based packs with candle coloring but no indicator lines, skip _ib variants — only bar_close triggers are needed.")
-    parts.append("14. Level columns (used as level_column in triggers) and candle color columns (candle_color_column in plot_config) are internal — "
-                 "include them in indicator_columns but do NOT add them to column_color_map or plot_schema")
+    parts.append("13. CRITICAL — Triggers carry NO `execution` field. Do not emit per-execution-type variants in the triggers array. "
+                 "One trigger entry per logical signal. The system auto-materializes runtime variants C, L, LC, CC at install time based on the optional `trigger_levels` block (see #14).")
+    parts.append("14. For triggers that represent a meaningful intra-bar level cross (price crosses an indicator line — moving averages, bands, trailing stops, etc.), "
+                 "add a top-level `trigger_levels` block to the manifest. Format: "
+                 "`{\"<trigger_base>\": {\"level_column\": \"<column_in_indicator_columns>\", \"cross\": \"above\"|\"below\"}}`. "
+                 "The engine auto-generates L (intra-bar) and LC (level + close confirm) variants for every entry. "
+                 "Triggers without a `trigger_levels` entry only get C and CC variants. "
+                 "Pure pattern-based triggers, oscillator value transitions (RSI crossing 70), and bar-shape detections do NOT need a `trigger_levels` entry — they are bar-close events with no meaningful intra-bar level.")
+    parts.append("15. CRITICAL — Level column rules in indicator.py: "
+                 "Use the `_prev` suffix on the column NAME for dynamic indicators where the line recalculates each bar (ATR trailing stops, adaptive support/resistance). "
+                 "But DO NOT actually `.shift(1)` the values — the engine adds the 1-bar lag automatically by caching at bar N close and using on bar N+1. "
+                 "Example: `result['my_line_prev'] = result['my_line']` (NO .shift). "
+                 "The level column must have a valid value on EVERY bar; do NOT use `.where(trigger_boolean, other=np.nan)` to filter it.")
+    parts.append("16. Level columns (referenced from `trigger_levels`) and candle color columns (referenced from `plot_config.candle_color_column`) are internal — "
+                 "include them in indicator_columns but do NOT add them to column_color_map or plot_schema.")
 
     user_prompt = "\n".join(parts)
     return context, user_prompt
@@ -344,7 +354,9 @@ Rules:
 - Functions must match the names declared in the manifest
 - Do not use open(), exec(), eval(), os, sys, subprocess, or any I/O
 - All triggers must use direction "BOTH" and type "BOTH"
-- When adding _ib (intra-bar) trigger variants, add a level column with the _prev suffix BUT do NOT use .shift() — the engine adds the 1-bar lag automatically. Use result['my_level_prev'] = result['close'] (current value, _prev for L1 classification). The .shift() would cause a 2-bar lag.
+- ONE trigger entry per logical signal. Trigger `base` must NOT include exec-type suffixes (`_ib`, `_lc`, `_cc`, `_hm`, `_hl`). Triggers must NOT carry an `execution` field. The system materializes runtime variants C, L, LC, CC automatically. If the existing manifest has duplicated suffixed triggers (e.g. `buy`, `buy_ib`, `buy_hm`, `buy_hl`), collapse them into ONE base trigger.
+- For triggers that represent a meaningful intra-bar level cross (price crossing an indicator line), declare the cross level in a top-level `trigger_levels` block, e.g. `"trigger_levels": {"buy": {"level_column": "my_line_prev", "cross": "above"}}`. The level column must exist in `indicator_columns`. Triggers without a `trigger_levels` entry only get C and CC variants.
+- Level columns use the `_prev` suffix on the column NAME for dynamic indicators (ATR stops, adaptive lines), but DO NOT actually .shift() the values — the engine adds the 1-bar lag automatically. Use `result['my_level_prev'] = result['my_line']` (current value, no shift). .shift() would cause a 2-bar lag.
 - Level columns must have a value on EVERY bar, not just trigger bars. Do NOT use .where(trigger_boolean, other=np.nan) — the engine needs a valid level every bar to detect intra-bar crosses.
 - Level columns and candle color columns are internal — include in indicator_columns but NOT in column_color_map or plot_schema
 """

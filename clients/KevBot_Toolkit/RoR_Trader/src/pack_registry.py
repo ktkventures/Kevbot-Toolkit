@@ -412,13 +412,54 @@ def _inject_into_interpreters(
     interpreter_func: Optional[Callable],
     trigger_func: Optional[Callable],
 ) -> None:
-    """Add interpreter config and functions to interpreters registries."""
+    """Add interpreter config and functions to interpreters registries.
+
+    Trigger list construction follows the modular pattern when the manifest
+    declares a `trigger_levels` block:
+
+      - Each base trigger becomes a C-variant (no suffix) and a CC-variant
+        (`_cc` suffix) at runtime.
+      - Triggers that have a `trigger_levels` entry additionally become
+        L-variant (`_ib` suffix) and LC-variant (`_lc`).
+
+    Legacy packs (no `trigger_levels` block) keep their pre-existing per-
+    trigger enumeration behavior — each manifest trigger entry registers
+    one runtime ID exactly as authored. This preserves backward compat
+    until packs are migrated.
+    """
     from interpreters import (
         INTERPRETERS,
         InterpreterConfig,
         register_interpreter,
         register_trigger_detector,
     )
+
+    prefix = manifest["trigger_prefix"]
+    raw_triggers = manifest.get("triggers", [])
+    trigger_levels = manifest.get("trigger_levels")
+
+    if trigger_levels is not None:
+        # Modular pattern. Skip any legacy suffix-baked entries the AI may
+        # have produced under the old prompt — the expansion below covers
+        # them, and including both would double-register.
+        suffixes = ("_ib", "_lc", "_cc", "_hm", "_hl")
+        base_entries = [
+            t for t in raw_triggers
+            if not any(t.get("base", "").endswith(sfx) for sfx in suffixes)
+        ]
+
+        runtime_ids: list[str] = []
+        for t in base_entries:
+            base = t["base"]
+            full = f"{prefix}_{base}"
+            runtime_ids.append(full)                # C: always
+            if base in trigger_levels:
+                runtime_ids.append(f"{full}_ib")    # L: requires a level
+                runtime_ids.append(f"{full}_lc")    # LC: requires a level
+            runtime_ids.append(f"{full}_cc")        # CC: always
+    else:
+        # Legacy: trust the manifest's enumerated triggers list verbatim.
+        runtime_ids = [f"{prefix}_{t['base']}" for t in raw_triggers]
 
     for interp_key in manifest["interpreters"]:
         INTERPRETERS[interp_key] = InterpreterConfig(
@@ -427,10 +468,7 @@ def _inject_into_interpreters(
             category=manifest["category"],
             requires_indicators=manifest.get("requires_indicators", []),
             outputs=manifest["outputs"],
-            triggers=[
-                f"{manifest['trigger_prefix']}_{t['base']}"
-                for t in manifest["triggers"]
-            ],
+            triggers=runtime_ids,
         )
 
         # Register wrapped functions that match the built-in (df) -> ... signature
@@ -458,15 +496,16 @@ def _inject_into_indicators(
 def _inject_intrabar_level_map(manifest: dict) -> None:
     """Register intra-bar level mappings for user pack triggers.
 
-    Triggers with execution "intra_bar", "hybrid_market", or "hybrid_limit"
-    need entries in unified_engine.INTRABAR_LEVEL_MAP so the live engine
-    can detect level crosses on each tick and the backtest can simulate
-    intra-bar fills.
+    Two paths:
 
-    Each such trigger must declare a "level_column" and "cross" direction
-    in the manifest trigger definition.  Example:
-        {"base": "buy_ib", "execution": "intra_bar",
-         "level_column": "my_line_prev", "cross": "above", ...}
+      - **Modular (preferred):** manifest has a top-level ``trigger_levels``
+        block mapping each trigger base name to ``{level_column, cross}``.
+        Each entry registers one base trigger ID into INTRABAR_LEVEL_MAP;
+        the runtime suffixed variants (`_ib`, `_lc`) all share that base.
+
+      - **Legacy:** manifest enumerates per-trigger ``execution`` /
+        ``level_column`` / ``cross`` fields on individual trigger entries.
+        Kept for packs that haven't migrated to the modular pattern.
     """
     try:
         from unified_engine import INTRABAR_LEVEL_MAP, _IB_L_TYPE_TRIGGERS
@@ -474,6 +513,26 @@ def _inject_intrabar_level_map(manifest: dict) -> None:
         return
 
     prefix = manifest["trigger_prefix"]
+    trigger_levels = manifest.get("trigger_levels")
+
+    # Modular path
+    if trigger_levels is not None:
+        for base, lvl in trigger_levels.items():
+            if not isinstance(lvl, dict):
+                continue
+            level_col = lvl.get("level_column")
+            cross_dir = lvl.get("cross")
+            if not level_col or not cross_dir:
+                continue
+            full_base = f"{prefix}_{base}"
+            INTRABAR_LEVEL_MAP[full_base] = {
+                "column": level_col,
+                "cross": cross_dir,
+            }
+            _IB_L_TYPE_TRIGGERS.add(full_base)
+        return  # done; don't also walk the legacy fields
+
+    # Legacy path
     for t in manifest.get("triggers", []):
         if t.get("execution") not in ("intra_bar", "hybrid_market", "hybrid_limit"):
             continue
