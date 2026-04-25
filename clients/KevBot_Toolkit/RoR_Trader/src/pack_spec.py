@@ -61,44 +61,48 @@ VALID_DISPLAY_TYPES = ["overlay", "oscillator", "hidden"]
 
 VALID_TRIGGER_DIRECTIONS = ["LONG", "SHORT", "BOTH"]
 VALID_TRIGGER_TYPES = ["ENTRY", "EXIT", "BOTH"]
-VALID_TRIGGER_EXECUTIONS = ["bar_close", "intra_bar", "hybrid_market", "hybrid_limit"]
+VALID_TRIGGER_EXECUTIONS = ["bar_close", "intra_bar", "hybrid_market", "hybrid_limit", "close_close"]
 
 VALID_PARAM_TYPES = ["int", "float", "str", "bool"]
 
-# Built-in trigger prefixes that user packs cannot use
+# Built-in trigger prefixes that user packs cannot use.
+# Source of truth: unified_engine.TRIGGER_PREFIX_TO_TEMPLATE — only the
+# prefixes registered there belong to true built-ins. Earlier versions of
+# this file mirrored *user-pack* prefixes into this set ("bb", "src", "st",
+# "sw123", "strat", "rsi"), which made every user pack fail validation on
+# the second load: the pack's own prefix would now appear "reserved", so
+# the validator rejected it. That left supertrend, swing_123, bollinger
+# bands, sr_channels, strat_assistant, and rsi_zones invalid in the API
+# (preview returned 404; parity tests returned 0 fires) until the pack
+# was re-saved with a brand-new prefix. Keep this list aligned with the
+# engine, not with anything users have authored.
 BUILTIN_TRIGGER_PREFIXES = {
     "ema", "ema_pp", "ema_pp_v2",
     "macd", "macd_hist",
     "vwap", "rvol",
     "utbot", "utbot_v2",
     "bar_count",
-    "bb", "src", "st", "sw123", "strat",
-    "rsi",  # rsi_zones user pack
 }
 
-# Built-in indicator columns that user packs cannot collide with
+# Built-in indicator columns that user packs cannot collide with.
+# Same rule as above: only columns produced by the engine's built-in
+# indicators (in indicators.py) — never columns claimed by a user pack.
 BUILTIN_INDICATOR_COLUMNS = {
     "ema_8", "ema_21", "ema_50",
     "macd_line", "macd_signal", "macd_hist",
     "vwap", "vwap_sd1_upper", "vwap_sd1_lower", "vwap_sd2_upper", "vwap_sd2_lower",
     "atr", "vol_sma", "rvol",
     "utbot_stop", "utbot_stop_prev", "utbot_direction",
-    "bb_upper", "bb_basis", "bb_lower", "bb_bandwidth",
-    "src_nearest_top", "src_nearest_bot", "src_num_channels", "src_in_channel",
-    "st_line", "st_direction", "st_atr",
-    "sw123_pattern", "sw123_candle_color",
-    "strat_bar_type", "strat_combo", "strat_actionable", "strat_candle_color",
-    "rsi_value",  # rsi_zones user pack
 }
 
-# Built-in interpreter keys that user packs cannot collide with
+# Built-in interpreter keys that user packs cannot collide with.
+# Source of truth: interpreters.INTERPRETERS at module-load time (i.e. the
+# keys defined statically in that file, before any user pack registers).
 BUILTIN_INTERPRETER_KEYS = {
     "EMA_STACK", "EMA_PRICE_POSITION", "EMA_PRICE_POSITION_V2",
     "MACD_LINE", "MACD_HISTOGRAM",
     "VWAP", "RVOL",
     "UTBOT", "UTBOT_V2",
-    "BOLLINGER_BANDS", "SR_CHANNELS", "SUPERTREND", "SWING_123", "STRAT_ASSISTANT",
-    "RSI_ZONES",  # rsi_zones user pack
 }
 
 SLUG_PATTERN = re.compile(r'^[a-z][a-z0-9_]*$')
