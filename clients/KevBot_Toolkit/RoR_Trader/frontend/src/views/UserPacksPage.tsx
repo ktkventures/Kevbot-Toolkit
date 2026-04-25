@@ -1120,7 +1120,11 @@ const VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
 };
 
 function ParitySimulatorTab({ pack }: { pack: UserPack }) {
-  const entryTriggers = pack.triggers.filter((t) => t.type === 'ENTRY');
+  // Triggers are direction- and type-agnostic by design — the AI builder
+  // emits type='BOTH' on every trigger. Filtering to type==='ENTRY' here
+  // would empty the dropdown for any modern pack. Show all triggers; the
+  // user picks which one to test.
+  const entryTriggers = pack.triggers;
   const [trigger, setTrigger] = useState(entryTriggers[0]?.id || '');
   const [symbol, setSymbol] = useState('SPY');
   const [timeframe, setTimeframe] = useState('1Min');
