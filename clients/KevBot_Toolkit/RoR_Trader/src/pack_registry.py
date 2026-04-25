@@ -24,6 +24,7 @@ Usage:
 import importlib.util
 import json
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -50,6 +51,11 @@ class RegisteredPack:
     indicator_func: Optional[Callable] = None
     interpreter_func: Optional[Callable] = None
     trigger_func: Optional[Callable] = None
+    # Optional class for live-mode incremental computation. None means the
+    # pack is batch-only — backtests work, but the live worker has no way
+    # to update the indicator per tick, so triggers won't fire in live
+    # mode. The Parity Simulator surfaces this as FAIL_SILENT.
+    incremental_class: Optional[type] = None
     pack_dir: Path = field(default_factory=Path)
     is_valid: bool = False
     validation_errors: List[str] = field(default_factory=list)
@@ -167,6 +173,33 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
             if not exists:
                 errors.append(err)
 
+    # Validate the optional incremental_class sibling. Same AST safety
+    # rules as indicator.py — it's a loose-leaf Python file the engine
+    # imports at runtime to drive O(1) per-bar updates in live mode.
+    incremental_decl = manifest.get("incremental_class")
+    incremental_module_name = None
+    incremental_path = None
+    if incremental_decl:
+        incremental_module_name = incremental_decl.get(
+            "module", "indicator_incremental"
+        )
+        incremental_path = pack_dir / f"{incremental_module_name}.py"
+        if not incremental_path.exists():
+            errors.append(
+                f"incremental_class declared but {incremental_module_name}.py "
+                f"not found in pack directory"
+            )
+        else:
+            py_valid, py_errors = validate_python_file(str(incremental_path))
+            errors.extend(py_errors)
+            class_name = incremental_decl.get("class_name")
+            if class_name:
+                exists, err = validate_function_exists(
+                    str(incremental_path), class_name
+                )
+                if not exists:
+                    errors.append(err)
+
     # Validate and import interpreter.py
     interpreter_path = pack_dir / "interpreter.py"
     interpreter_func = None
@@ -190,7 +223,40 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
                 errors.append(err)
 
     # If validation passed, import the modules
+    incremental_class = None
     if not errors:
+        # Load the incremental sibling FIRST (if declared), and register it
+        # under its bare name in sys.modules so indicator.py can do
+        # `from indicator_incremental import X` at module load time.
+        # We use a per-pack unique internal name to avoid collisions
+        # between packs that all use the same conventional sibling name.
+        if incremental_path is not None and incremental_module_name:
+            try:
+                inc_module = _import_module_safely(
+                    incremental_path,
+                    f"user_pack_{slug}_{incremental_module_name}",
+                )
+                incremental_class = getattr(
+                    inc_module, incremental_decl["class_name"], None
+                )
+                if incremental_class is None:
+                    errors.append(
+                        f"Class '{incremental_decl['class_name']}' not found "
+                        f"after import of {incremental_module_name}.py"
+                    )
+                # Make `from indicator_incremental import X` resolve correctly
+                # when indicator.py is imported next. We restore the prior
+                # binding (if any) once indicator.py is loaded.
+                _prior = sys.modules.get(incremental_module_name)
+                sys.modules[incremental_module_name] = inc_module
+            except Exception as e:
+                errors.append(
+                    f"Failed to import {incremental_module_name}.py: {e}"
+                )
+                _prior = None  # nothing to restore
+        else:
+            _prior = None
+
         try:
             ind_module = _import_module_safely(
                 indicator_path, f"user_pack_{slug}_indicator"
@@ -203,6 +269,16 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
                 )
         except Exception as e:
             errors.append(f"Failed to import indicator.py: {e}")
+        finally:
+            # Restore sys.modules so the next pack's load doesn't see this
+            # pack's incremental module under the bare name. The class
+            # itself is captured by the closure inside indicator.py via
+            # the module-level `from indicator_incremental import X` line.
+            if incremental_module_name and incremental_path is not None:
+                if _prior is not None:
+                    sys.modules[incremental_module_name] = _prior
+                else:
+                    sys.modules.pop(incremental_module_name, None)
 
         try:
             interp_module = _import_module_safely(
@@ -233,6 +309,7 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
         indicator_func=indicator_func,
         interpreter_func=interpreter_func,
         trigger_func=trigger_func,
+        incremental_class=incremental_class,
         pack_dir=pack_dir,
         is_valid=len(errors) == 0,
         validation_errors=errors,
@@ -374,6 +451,13 @@ def _import_module_safely(file_path: Path, module_name: str):
         if hasattr(builtins, name)
     }
     safe_builtins_dict["__import__"] = builtins.__import__
+    # Required for `class Foo:` definitions in pack code (used by
+    # incremental_class siblings). The AST validator already enforces
+    # the import allow-list and bans dangerous calls — granting class
+    # construction adds no new escape hatch beyond what's already
+    # available via def, so this is consistent with the existing
+    # safety model.
+    safe_builtins_dict["__build_class__"] = builtins.__build_class__
     module.__builtins__ = safe_builtins_dict
 
     spec.loader.exec_module(module)

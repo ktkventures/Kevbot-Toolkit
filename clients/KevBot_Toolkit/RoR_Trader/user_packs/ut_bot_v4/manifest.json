@@ -1,0 +1,86 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "ut_bot_v4",
+  "name": "UT Bot V4",
+  "category": "Custom",
+  "description": "ATR-based trailing stop that flips direction when price closes on the opposite side of the stop line, producing bull and bear flip signals.",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-04-24T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": ["UT_BOT_V4"],
+  "trigger_prefix": "utv4",
+  "parameters_schema": {
+    "key_value": {
+      "type": "float",
+      "default": 1,
+      "min": 0.1,
+      "max": 10,
+      "label": "Key Value (ATR Multiplier)"
+    },
+    "atr_period": {
+      "type": "int",
+      "default": 10,
+      "min": 1,
+      "max": 200,
+      "label": "ATR Period"
+    }
+  },
+  "plot_schema": {
+    "stop_color": {
+      "type": "color",
+      "default": "#f59e0b",
+      "label": "Trailing Stop Line Color"
+    }
+  },
+  "outputs": ["BULL_TREND", "BEAR_TREND", "BULL_FLIP", "BEAR_FLIP"],
+  "output_descriptions": {
+    "BULL_TREND": "Price is above the ATR trailing stop and position is long (stop ratcheting upward beneath price)",
+    "BEAR_TREND": "Price is below the ATR trailing stop and position is short (stop ratcheting downward above price)",
+    "BULL_FLIP": "Current bar: previous close was at or below the trailing stop and current close crossed above it — bullish direction flip bar",
+    "BEAR_FLIP": "Current bar: previous close was at or above the trailing stop and current close crossed below it — bearish direction flip bar"
+  },
+  "triggers": [
+    {
+      "base": "bull_flip",
+      "name": "Bull Flip (Price Crosses Above Trail Stop)",
+      "direction": "BOTH",
+      "type": "BOTH"
+    },
+    {
+      "base": "bear_flip",
+      "name": "Bear Flip (Price Crosses Below Trail Stop)",
+      "direction": "BOTH",
+      "type": "BOTH"
+    }
+  ],
+  "trigger_levels": {
+    "bull_flip": {
+      "level_column": "utv4_trailing_stop_prev",
+      "cross": "above"
+    },
+    "bear_flip": {
+      "level_column": "utv4_trailing_stop_prev",
+      "cross": "below"
+    }
+  },
+  "indicator_columns": [
+    "utv4_trailing_stop",
+    "utv4_trailing_stop_prev"
+  ],
+  "column_color_map": {
+    "utv4_trailing_stop": "stop_color"
+  },
+  "indicator_function": "calculate_ut_bot_v4",
+  "interpreter_function": "interpret_ut_bot_v4",
+  "trigger_function": "detect_ut_bot_v4_triggers",
+  "requires_indicators": [
+    "utv4_trailing_stop",
+    "utv4_trailing_stop_prev"
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "UtBotV4Incremental"
+  }
+}

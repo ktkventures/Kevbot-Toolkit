@@ -131,7 +131,15 @@ INTERPRETER_KEY_PATTERN = re.compile(r'^[A-Z][A-Z0-9_]*$')
 # PYTHON CODE SAFETY
 # =============================================================================
 
-ALLOWED_IMPORTS = {"pandas", "numpy", "math", "typing"}
+# External imports allowed in indicator.py / interpreter.py.
+# Intra-pack siblings (`indicator_incremental`) are added below to allow
+# the batch indicator to delegate to the live-mode incremental class —
+# this keeps both paths reading from one source of truth instead of
+# maintaining two parallel implementations that could drift apart.
+ALLOWED_IMPORTS = {
+    "pandas", "numpy", "math", "typing",
+    "indicator_incremental",  # intra-pack sibling, see pack_builder_context.md
+}
 
 DISALLOWED_CALLS = {
     "open", "exec", "eval", "compile", "__import__",
@@ -508,7 +516,12 @@ def validate_python_file(file_path: str) -> Tuple[bool, List[str]]:
 
 def validate_function_exists(file_path: str, func_name: str) -> Tuple[bool, str]:
     """
-    Verify that a function is defined in the given Python file.
+    Verify that a function or class is defined in the given Python file.
+
+    Used to check that an indicator/interpreter/trigger function
+    declared in the manifest actually exists in the pack code, and that
+    an `incremental_class` declaration (a class, not a function) is
+    likewise present.
 
     Returns:
         (exists, error_message_if_not)
@@ -525,10 +538,10 @@ def validate_function_exists(file_path: str, func_name: str) -> Tuple[bool, str]
         return False, f"Syntax error: {e}"
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == func_name:
             return True, ""
 
-    return False, f"Function '{func_name}' not found in {path.name}"
+    return False, f"'{func_name}' not found in {path.name}"
 
 
 def _get_call_name(node: ast.Call) -> str:

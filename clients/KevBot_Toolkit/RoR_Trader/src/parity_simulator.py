@@ -201,21 +201,11 @@ def _run_live_replay_path(
     req_ind, req_interp, req_trig, params = resolve_strategy_requirements(strategy)
     ema_periods = params.get('ema_periods', [])
 
-    # Strip the `_user_pack_{slug}` markers — they're sentinel values
-    # that aren't real indicator names. IncrementalIndicatorEngine
-    # would crash trying to compute them. Stripping them mirrors what
-    # the live worker does at startup (it just doesn't have the
-    # incremental path for user packs, full stop).
-    real_indicators = {i for i in req_ind if not i.startswith('_user_pack_')}
-    user_pack_markers = {i for i in req_ind if i.startswith('_user_pack_')}
-    if user_pack_markers:
-        logger.info(
-            "[parity] live replay will SKIP %d user pack indicator(s): %s — "
-            "live engine has no incremental path for these (engine-level "
-            "limitation, not a bug in the simulator)",
-            len(user_pack_markers), sorted(user_pack_markers))
-
-    ind_engine = IncrementalIndicatorEngine(real_indicators, params)
+    # Pass `_user_pack_<slug>` markers through to the engine — it knows
+    # how to instantiate the pack's incremental_class for each one
+    # (packs without an incremental_class are batch-only and silently
+    # skipped, which surfaces as FAIL_SILENT in the diff).
+    ind_engine = IncrementalIndicatorEngine(req_ind, params)
     trig_eval = TriggerEvaluator(req_interp, req_trig, ema_periods)
 
     # Warmup: prod worker calls monitor.warmup(df) with prior bars to

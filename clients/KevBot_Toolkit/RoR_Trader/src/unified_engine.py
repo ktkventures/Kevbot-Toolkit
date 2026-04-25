@@ -703,6 +703,54 @@ class IncrementalIndicatorEngine:
             self.state.vol_sma_period = period
             self.state.vol_buffer = deque(maxlen=period)
 
+        # User packs: instantiate the incremental class for any required
+        # indicator marker `_user_pack_<slug>` whose pack ships an
+        # incremental_class. Packs without one are batch-only and stay
+        # silent in live mode (FAIL_SILENT in the parity simulator) —
+        # that's by design, see pack_builder_context.md.
+        self._user_pack_engines: dict = {}
+        user_pack_markers = [
+            i for i in self.required if i.startswith('_user_pack_')
+        ]
+        if user_pack_markers:
+            try:
+                import pack_registry
+                # Resolve pack-specific params from the user's enabled
+                # confluence group for that pack, falling back to the
+                # manifest's parameters_schema defaults. This matches
+                # what the batch path (run_indicators_for_group) does.
+                from confluence_groups import load_confluence_groups
+                try:
+                    groups = load_confluence_groups()
+                except Exception:
+                    groups = []
+                groups_by_template = {g.base_template: g for g in groups}
+                for marker in user_pack_markers:
+                    slug = marker[len('_user_pack_'):]
+                    pack = pack_registry.get_pack(slug)
+                    if pack is None or pack.incremental_class is None:
+                        continue  # batch-only — no live wiring
+                    pack_params = {}
+                    g = groups_by_template.get(slug)
+                    if g and isinstance(g.parameters, dict):
+                        pack_params = dict(g.parameters)
+                    # Fill in any missing keys from manifest defaults
+                    for key, spec in pack.manifest.get(
+                        'parameters_schema', {}
+                    ).items():
+                        pack_params.setdefault(key, spec.get('default'))
+                    try:
+                        self._user_pack_engines[slug] = pack.incremental_class(
+                            **pack_params
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "could not instantiate incremental_class for "
+                            "user pack %r: %s", slug, e)
+            except Exception as e:
+                logger.warning(
+                    "user pack incremental load failed: %s", e)
+
     def warmup(self, df: pd.DataFrame):
         """Initialize state from historical bars."""
         if len(df) < 2:
@@ -942,6 +990,20 @@ class IncrementalIndicatorEngine:
                 prev_key = f'ema_{period}_prev'
                 vals[prev_key] = self.state.prev_values.get(
                     f'ema_{period}', vals.get(f'ema_{period}', 0.0))
+
+        # ── User pack incremental classes ──
+        # Each registered pack updates its own state and returns a dict
+        # of column values + trigger booleans (under their full
+        # `{trigger_prefix}_{base}` keys). Merge into `vals` so the
+        # TriggerEvaluator picks them up alongside built-in indicators.
+        for slug, engine in getattr(self, '_user_pack_engines', {}).items():
+            try:
+                out = engine.update_bar(bar)
+                if isinstance(out, dict):
+                    vals.update(out)
+            except Exception as e:
+                logger.warning(
+                    "user pack %r incremental update failed: %s", slug, e)
 
         self.state.current = vals
 
@@ -1199,6 +1261,21 @@ class TriggerEvaluator:
             triggers['utbot_v2_sell'] = (
                 current.get('utbot_direction', 0) == -1
                 and prev.get('utbot_direction', 0) != -1)
+
+        # ── User pack triggers ──
+        # Any required trigger that the built-in branches above didn't
+        # populate may have been written into `current` by a user
+        # pack's incremental class (under `{trigger_prefix}_{base}`).
+        # Pick those up by direct lookup. Suffixed runtime variants
+        # (`_ib`, `_lc`, `_cc`) are handled by their respective
+        # execution_types modules off the base trigger; we only need to
+        # source the C-variant boolean here.
+        for trig_id in self.required_triggers:
+            if trig_id in triggers:
+                continue  # already produced by a built-in branch above
+            val = current.get(trig_id)
+            if isinstance(val, bool):
+                triggers[trig_id] = val
 
         # Store for gating and caching
         self._bar_close_triggers = dict(triggers)
