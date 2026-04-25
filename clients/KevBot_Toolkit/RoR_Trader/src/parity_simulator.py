@@ -314,7 +314,126 @@ def _run_backtest_path(
 
 
 # ---------------------------------------------------------------------------
-# Public V1 entrypoint (backtest + live replay; diff/verdict in commit 3)
+# Diff engine — classify fires + emit verdict
+# ---------------------------------------------------------------------------
+
+# Verdict semantics — kept narrow on purpose so the UI can switch on a
+# single string and a future grader can promote/demote categories without
+# changing the API.
+VERDICT_PASS = 'PASS'                 # parity_score == 1.0, no divergence
+VERDICT_PARTIAL = 'PARTIAL'           # both paths fire but disagree on some bars
+VERDICT_FAIL_SILENT = 'FAIL_SILENT'   # backtest fires, live fires zero — the worst case
+VERDICT_FAIL_REVERSE = 'FAIL_REVERSE' # live fires, backtest fires zero — also a smell
+VERDICT_NO_FIRES = 'NO_FIRES'         # neither path fires — test inconclusive
+VERDICT_TOLERANCE = 'PASS_WITHIN_TOLERANCE'  # all divergence inside warmup
+
+
+def _diff_fire_lists(
+    backtest_fires: list[dict],
+    live_fires: list[dict],
+    warmup_bars: int,
+) -> dict:
+    """Classify each fire as matched / backtest_only / live_only.
+
+    Match key: `bar_idx`. Both paths derive it from the same DataFrame
+    index, so a same-bar fire from each path is a true match.
+
+    Warmup handling: backtest fires inside the warmup window aren't
+    actually divergent — the live path can't see them. We pull them out
+    into `backtest_warmup` so the parity score isn't artificially
+    deflated, and the verdict accounts for them as "explained".
+    """
+    backtest_warmup = [f for f in backtest_fires
+                       if f.get('bar_idx', 0) < warmup_bars]
+    backtest_post = [f for f in backtest_fires
+                     if f.get('bar_idx', 0) >= warmup_bars]
+
+    live_by_bar = {f['bar_idx']: f for f in live_fires}
+    bt_by_bar = {f['bar_idx']: f for f in backtest_post}
+
+    matched: list[dict] = []
+    backtest_only: list[dict] = []
+    live_only: list[dict] = []
+
+    for bar_idx, bt in bt_by_bar.items():
+        if bar_idx in live_by_bar:
+            matched.append({
+                'bar_idx': bar_idx,
+                'timestamp': bt.get('timestamp'),
+                'trigger': bt.get('trigger'),
+            })
+        else:
+            backtest_only.append(bt)
+
+    for bar_idx, lv in live_by_bar.items():
+        if bar_idx not in bt_by_bar:
+            live_only.append(lv)
+
+    total_post_warmup = len(matched) + len(backtest_only) + len(live_only)
+    parity_score = (len(matched) / total_post_warmup
+                    if total_post_warmup > 0 else None)
+
+    return {
+        'matched': matched,
+        'backtest_only': backtest_only,
+        'live_only': live_only,
+        'backtest_warmup': backtest_warmup,
+        'parity_score': parity_score,
+    }
+
+
+def _verdict_from_diff(
+    backtest_fires: list[dict],
+    live_fires: list[dict],
+    diff: dict,
+) -> tuple[str, str]:
+    """Map the diff into a single-word verdict + a one-line explanation.
+
+    Returns (verdict, explanation).
+    """
+    bt_n = len(backtest_fires)
+    lv_n = len(live_fires)
+    bt_post_n = bt_n - len(diff['backtest_warmup'])
+    matched_n = len(diff['matched'])
+    bt_only_n = len(diff['backtest_only'])
+    lv_only_n = len(diff['live_only'])
+
+    if bt_n == 0 and lv_n == 0:
+        return VERDICT_NO_FIRES, (
+            'Neither path produced fires — test inconclusive. Try a '
+            'longer window or a different symbol/timeframe.'
+        )
+
+    if bt_n > 0 and lv_n == 0:
+        return VERDICT_FAIL_SILENT, (
+            f'{bt_n} backtest fire(s) but 0 live fires — pack works in '
+            f'batch mode but is silent in production. Likely a missing '
+            f'incremental-indicator path (common for user packs).'
+        )
+
+    if lv_n > 0 and bt_n == 0:
+        return VERDICT_FAIL_REVERSE, (
+            f'{lv_n} live fire(s) but 0 backtest fires — unusual; '
+            f'check that the trigger column is present in the enriched '
+            f'DataFrame and named `trig_{{trigger}}`.'
+        )
+
+    if bt_only_n == 0 and lv_only_n == 0 and bt_post_n > 0:
+        return VERDICT_PASS, (
+            f'{matched_n} fire(s) matched on every post-warmup bar — '
+            f'parity confirmed.'
+        )
+
+    # Mixed outcome — there's overlap but also disagreement.
+    return VERDICT_PARTIAL, (
+        f'{matched_n} matched, {bt_only_n} backtest-only, '
+        f'{lv_only_n} live-only — divergence on {bt_only_n + lv_only_n} '
+        f'bar(s). Investigate indicator/interpreter incremental parity.'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public V1 entrypoint
 # ---------------------------------------------------------------------------
 
 def run_pack_parity_test(
@@ -329,8 +448,8 @@ def run_pack_parity_test(
 ) -> dict:
     """Run a parity test for a single pack's entry trigger.
 
-    Runs both paths (backtest + live replay) and returns each fire list.
-    Diff + verdict are added in commit 3.
+    Pipeline: backtest path → live replay → diff → verdict. Returns the
+    full result schema (no fields left empty for later commits).
     """
     backtest_fires, enriched_df = _run_backtest_path(
         pack_id=pack_id, entry_trigger=entry_trigger,
@@ -356,6 +475,11 @@ def run_pack_parity_test(
     # Filter to just the trigger we care about — replay records every
     # trigger the evaluator emits, but the test is for one specific one.
     live_fires = [f for f in live_fires_all if f.get('trigger') == entry_trigger]
+    live_fires_other = [f for f in live_fires_all
+                        if f.get('trigger') != entry_trigger]
+
+    diff = _diff_fire_lists(backtest_fires, live_fires, warmup_bars)
+    verdict, explanation = _verdict_from_diff(backtest_fires, live_fires, diff)
 
     return {
         'pack_id': pack_id,
@@ -367,17 +491,18 @@ def run_pack_parity_test(
         'warmup_bars': warmup_bars,
         'backtest_fires': backtest_fires,
         'live_fires': live_fires,
-        'live_fires_other_triggers': [
-            f for f in live_fires_all if f.get('trigger') != entry_trigger
-        ],
-        'matched': [],             # commit 3
-        'backtest_only': [],       # commit 3
-        'live_only': [],           # commit 3
-        'parity_score': None,      # commit 3
-        'verdict': 'NOT_YET_RUN',  # commit 3
+        'live_fires_other_triggers': live_fires_other,
+        'matched': diff['matched'],
+        'backtest_only': diff['backtest_only'],
+        'live_only': diff['live_only'],
+        'backtest_warmup': diff['backtest_warmup'],
+        'parity_score': diff['parity_score'],
+        'verdict': verdict,
+        'explanation': explanation,
         'summary': (
-            f'backtest={len(backtest_fires)} live={len(live_fires)} for '
-            f'{entry_trigger} on {symbol}/{timeframe}/{days}d'
+            f'{verdict}: {len(diff["matched"])}/{len(diff["matched"]) + len(diff["backtest_only"]) + len(diff["live_only"])} '
+            f'matched (parity={diff["parity_score"]}) for {entry_trigger} on '
+            f'{symbol}/{timeframe}/{days}d'
         ),
     }
 
@@ -423,10 +548,11 @@ if __name__ == '__main__':
         pack_id=pack_id, entry_trigger=trigger,
         symbol=symbol, timeframe=timeframe, days=days,
     )
-    # Truncate fires list for printing — just show counts + first 3
+    # Truncate fire lists for printing — just show counts + first 3
     short = dict(result)
-    for key in ('backtest_fires', 'live_fires', 'live_fires_other_triggers'):
-        vals = result.get(key, [])
+    for key in ('backtest_fires', 'live_fires', 'live_fires_other_triggers',
+                'matched', 'backtest_only', 'live_only', 'backtest_warmup'):
+        vals = result.get(key, []) or []
         short[key] = (
             f"[{len(vals)} fires] "
             + (str(vals[:3]) if vals else '(empty)')
