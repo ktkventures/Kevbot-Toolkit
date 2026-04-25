@@ -1119,6 +1119,15 @@ const VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
   NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
 };
 
+// Suffixes for each execution type — appended to the trigger base
+// before the API resolves the full runtime ID.
+const EXEC_SUFFIX: Record<'C' | 'L' | 'LC' | 'CC', string> = {
+  C: '',       // bar_close — no suffix
+  L: '_ib',    // intra-bar level cross
+  LC: '_lc',   // level + close confirm
+  CC: '_cc',   // close + close confirm
+};
+
 function ParitySimulatorTab({ pack }: { pack: UserPack }) {
   // Triggers are direction- and type-agnostic by design — the AI builder
   // emits type='BOTH' on every trigger. Filtering to type==='ENTRY' here
@@ -1126,6 +1135,7 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
   // user picks which one to test.
   const entryTriggers = pack.triggers;
   const [trigger, setTrigger] = useState(entryTriggers[0]?.id || '');
+  const [execType, setExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('C');
   const [symbol, setSymbol] = useState('SPY');
   const [timeframe, setTimeframe] = useState('1Min');
   const [days, setDays] = useState(7);
@@ -1143,11 +1153,15 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
     setError(null);
     setResult(null);
     try {
+      // Suffix the trigger base with the chosen exec type. The backend
+      // resolver maps it to the full runtime ID (e.g. bull_flip + L
+      // → utv4_bull_flip_ib).
+      const suffixedTrigger = trigger + EXEC_SUFFIX[execType];
       const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
         method: 'POST',
         body: JSON.stringify({
           pack_id: pack.id,
-          entry_trigger: trigger,
+          entry_trigger: suffixedTrigger,
           symbol,
           timeframe,
           days,
@@ -1176,7 +1190,7 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
           FAIL_SILENT means the pack works in batch mode but is silent in production.
         </p>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
           <div>
             <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Trigger</label>
             <select
@@ -1189,6 +1203,20 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
               {entryTriggers.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Exec type</label>
+            <select
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={execType}
+              onChange={(e) => setExecType(e.target.value as 'C' | 'L' | 'LC' | 'CC')}
+            >
+              <option value="C">C — bar close</option>
+              <option value="L">L — intra-bar level cross</option>
+              <option value="LC">LC — level + close confirm</option>
+              <option value="CC">CC — close + close confirm</option>
             </select>
           </div>
           <div>

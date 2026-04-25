@@ -153,6 +153,7 @@ export default function PackBuilderPage() {
 
   // Parity Simulator state
   const [parityTrigger, setParityTrigger] = useState('');
+  const [parityExecType, setParityExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('C');
   const [paritySymbol, setParitySymbol] = useState('SPY');
   const [parityTimeframe, setParityTimeframe] = useState('1Min');
   const [parityDays, setParityDays] = useState(7);
@@ -1035,6 +1036,19 @@ export default function PackBuilderPage() {
                           </select>
                         </div>
                         <div>
+                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Exec type</label>
+                          <select
+                            style={{ ...inputStyle, width: 200, fontSize: '0.75rem' }}
+                            value={parityExecType}
+                            onChange={(e) => setParityExecType(e.target.value as 'C' | 'L' | 'LC' | 'CC')}
+                          >
+                            <option value="C">C — bar close</option>
+                            <option value="L">L — intra-bar level cross</option>
+                            <option value="LC">LC — level + close confirm</option>
+                            <option value="CC">CC — close + close confirm</option>
+                          </select>
+                        </div>
+                        <div>
                           <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
                           <input
                             type="text"
@@ -1087,11 +1101,14 @@ export default function PackBuilderPage() {
                             setParityError(null);
                             setParityResult(null);
                             try {
+                              const execSuffix = (
+                                {C: '', L: '_ib', LC: '_lc', CC: '_cc'}
+                              )[parityExecType];
                               const res = await apiFetch<any>('/api/packs/parity-test', {
                                 method: 'POST',
                                 body: JSON.stringify({
                                   pack_id: installResult!.slug,
-                                  entry_trigger: parityTrigger,
+                                  entry_trigger: parityTrigger + execSuffix,
                                   symbol: paritySymbol,
                                   timeframe: parityTimeframe,
                                   days: parityDays,

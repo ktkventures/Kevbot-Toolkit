@@ -991,8 +991,16 @@ const PARITY_VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
   NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
 };
 
+const TF_EXEC_SUFFIX: Record<'C' | 'L' | 'LC' | 'CC', string> = {
+  C: '',
+  L: '_ib',
+  LC: '_lc',
+  CC: '_cc',
+};
+
 function ParitySimulatorTab({ pack }: { pack: TfPack }) {
   const [trigger, setTrigger] = useState(pack.triggers[0]?.id || '');
+  const [execType, setExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('C');
   const [symbol, setSymbol] = useState('SPY');
   const [timeframe, setTimeframe] = useState('1Min');
   const [days, setDays] = useState(7);
@@ -1011,12 +1019,14 @@ function ParitySimulatorTab({ pack }: { pack: TfPack }) {
     setResult(null);
     try {
       // pack.templateKey is what the engine knows (utbot_v2, ema_stack, …).
-      // Backend resolves the trigger prefix from the template key.
+      // Suffix the trigger with the chosen exec type; backend resolves
+      // the full runtime ID via TRIGGER_PREFIX_TO_TEMPLATE.
+      const suffixedTrigger = trigger + TF_EXEC_SUFFIX[execType];
       const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
         method: 'POST',
         body: JSON.stringify({
           pack_id: pack.templateKey,
-          entry_trigger: trigger,
+          entry_trigger: suffixedTrigger,
           symbol,
           timeframe,
           days,
@@ -1045,7 +1055,7 @@ function ParitySimulatorTab({ pack }: { pack: TfPack }) {
           FAIL_SILENT means the pack works in batch mode but is silent in production.
         </p>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
           <div>
             <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Trigger</label>
             <select
@@ -1058,6 +1068,20 @@ function ParitySimulatorTab({ pack }: { pack: TfPack }) {
               {pack.triggers.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Exec type</label>
+            <select
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={execType}
+              onChange={(e) => setExecType(e.target.value as 'C' | 'L' | 'LC' | 'CC')}
+            >
+              <option value="C">C — bar close</option>
+              <option value="L">L — intra-bar level cross</option>
+              <option value="LC">LC — level + close confirm</option>
+              <option value="CC">CC — close + close confirm</option>
             </select>
           </div>
           <div>
