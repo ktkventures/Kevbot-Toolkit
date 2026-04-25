@@ -367,3 +367,53 @@ def _dict_to_time_exit_pack(d: dict):
         is_default=d.get("is_default", False),
         parameters=d.get("parameters", {}),
     )
+
+
+# =============================================================================
+# PARITY SIMULATOR
+# =============================================================================
+
+@router.post("/parity-test")
+def run_parity_test(
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Run a backtest-vs-live parity test for a pack's entry trigger.
+
+    Body: {
+      "pack_id": str,
+      "entry_trigger": str,
+      "symbol": str = "SPY",
+      "timeframe": str = "1Min",
+      "days": int = 7,
+      "session": str = "RTH",
+      "feed": str = "sip",
+      "warmup_bars": int = 200,
+    }
+
+    Returns the full parity result schema — see parity_simulator
+    docstring for field descriptions.
+
+    Long-running: a 7-day SPY/1Min run is ~2s; longer windows or
+    sub-second feeds will scale roughly linearly with bar count.
+    """
+    pack_id = body.get("pack_id")
+    entry_trigger = body.get("entry_trigger")
+    if not pack_id or not entry_trigger:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail="pack_id and entry_trigger are required",
+        )
+
+    from parity_simulator import run_pack_parity_test
+    return run_pack_parity_test(
+        pack_id=pack_id,
+        entry_trigger=entry_trigger,
+        symbol=body.get("symbol", "SPY"),
+        timeframe=body.get("timeframe", "1Min"),
+        days=int(body.get("days", 7)),
+        session=body.get("session", "RTH"),
+        feed=body.get("feed", "sip"),
+        warmup_bars=int(body.get("warmup_bars", 200)),
+    )
