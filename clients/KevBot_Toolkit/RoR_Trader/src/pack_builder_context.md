@@ -99,7 +99,12 @@ Your response MUST contain exactly three fenced code blocks in this order:
   "interpreter_function": "interpret_your_pack",
   "trigger_function": "detect_your_pack_triggers",
 
-  "requires_indicators": ["col_name_1"]
+  "requires_indicators": ["col_name_1"],
+
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "YourPackIncremental"
+  }
 }
 ```
 
@@ -308,6 +313,65 @@ User pack L-type triggers use a stricter reachability check than built-ins:
 This prevents phantom fills on gap opens — if a bar opens above the level and never goes below, it didn't actually cross intra-bar. The strict check filters those out, ensuring the L-type fill reflects an actual price cross during the bar.
 - **Level columns are internal engine columns, not visual indicators.** Columns used as `level_column` in trigger definitions (e.g., `sw123t_bull_entry_level`) are consumed by the execution engine for fill price calculation. They should be included in `indicator_columns` so they're computed, but the system automatically excludes them from chart overlay rendering. Do NOT include them in `column_color_map` or `plot_schema`.
 - **Candle color columns are not overlay lines.** If the pack uses `candle_color_column` in `plot_config`, that column contains hex color strings for bar coloring. The system automatically uses it for candle coloring and excludes it from line overlays.
+
+### Optional: Live-Mode Incremental Class
+
+A pack's `indicator.py` is the **batch** implementation — it operates on a full DataFrame at once (vectorized pandas). That powers backtests. But the live worker receives one bar at a time from the WebSocket, so it can't call the batch function on every tick — it would O(N²) the entire history.
+
+To run in live mode, a pack must additionally provide an **incremental class** that tracks rolling state and updates O(1) per bar. Built-in indicators (EMA, MACD, VWAP, RVOL, UTBOT) have this; user packs can opt in by declaring `incremental_class` in the manifest and shipping `indicator_incremental.py` alongside `indicator.py`.
+
+A pack **without** `incremental_class` is explicitly batch-only. Backtests work; the live worker logs that the pack was skipped; the Parity Simulator returns `FAIL_SILENT`. This is a valid state — many indicators don't have a clean incremental form yet, and the parity simulator surfaces that gap rather than hiding it.
+
+**Contract:**
+
+```python
+# indicator_incremental.py
+class YourPackIncremental:
+    def __init__(self, **params):
+        """Receive the same params dict that calculate_your_pack(**params) would.
+
+        Initialize whatever rolling state the indicator needs. Mirror the
+        same defaults as the batch function — they MUST match, or backtest
+        and live diverge.
+        """
+        self.period = params.get("period", 14)
+        self._buffer = []           # rolling window state
+        self._last_value = None     # most recent indicator value
+
+    def warmup(self, df) -> None:
+        """Optional: bulk-seed state from a prior DataFrame.
+
+        Called once at engine startup with the warmup window. Defaults to
+        replaying each row through update_bar() if not overridden.
+        """
+        for _, row in df.iterrows():
+            self.update_bar(dict(row))
+
+    def update_bar(self, bar: dict) -> dict:
+        """Process one bar; return the new indicator column values.
+
+        Args:
+            bar: dict with keys timestamp, open, high, low, close, volume
+
+        Returns:
+            dict mapping column_name -> value, where keys MUST match
+            indicator_columns in the manifest. The engine merges this
+            into its `current` indicator state for the trigger evaluator.
+        """
+        # ... compute next value from previous state + new bar ...
+        return {"your_column": new_value}
+```
+
+**Key rules:**
+- The class's `__init__(**params)` must accept the exact same params dict that `calculate_*()` does.
+- `update_bar(bar)` must return a dict whose keys are a subset of `indicator_columns` from the manifest. Internal scratch state is kept on `self` and never returned.
+- Numeric outputs must match the batch function's outputs to within float tolerance for the same inputs. The Parity Simulator is the verification — `PASS` means the two paths agree on every fire bar; `PARTIAL` or `FAIL_SILENT` flags drift.
+- Don't read from the network, filesystem, or any module outside the allowed import set (`pandas`, `numpy`, `math`, `typing`).
+- Level columns for L-type triggers (`*_prev` columns) must be populated on every `update_bar()` call, same rule as the batch function.
+
+**When to omit:**
+- Pack uses look-ahead patterns that genuinely can't be computed online (e.g., needs to know "this is a swing high" which requires future bars). Document this in the description; users see "batch-only" in the UI.
+- Pack is pure exploration / not yet ready for live deployment.
 
 ### Trigger Execution Types
 

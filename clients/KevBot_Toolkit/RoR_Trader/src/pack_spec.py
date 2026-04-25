@@ -49,7 +49,18 @@ MANIFEST_OPTIONAL_FIELDS = [
     "display_type",
     "column_color_map",
     "plot_config",
+    # Live-mode incremental computation. Optional: a pack without this is
+    # explicitly batch-only (works in backtest, FAIL_SILENT in live). When
+    # declared, the pack ships an indicator_incremental.py file containing
+    # a class with the contract documented in pack_builder_context.md.
+    "incremental_class",
 ]
+
+
+# Schema for the incremental_class manifest entry. Lightweight — full
+# class shape is enforced at register-time in pack_registry, not here.
+INCREMENTAL_CLASS_REQUIRED_FIELDS = ["class_name"]
+INCREMENTAL_CLASS_OPTIONAL_FIELDS = ["module"]  # default: "indicator_incremental"
 
 VALID_PACK_TYPES = ["tf_confluence"]
 
@@ -344,6 +355,27 @@ def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
             ccc = plot_config.get("candle_color_column")
             if ccc is not None and ccc not in manifest["indicator_columns"]:
                 errors.append(f"plot_config.candle_color_column '{ccc}' not in indicator_columns")
+
+    # Validate incremental_class shape if present. Existence of the actual
+    # class file is checked at register time, not here — manifest-level
+    # validation just confirms the declaration shape is sane.
+    inc = manifest.get("incremental_class")
+    if inc is not None:
+        if not isinstance(inc, dict):
+            errors.append(
+                "'incremental_class' must be a dict with 'class_name' "
+                "(and optional 'module', defaulting to 'indicator_incremental')"
+            )
+        else:
+            for f in INCREMENTAL_CLASS_REQUIRED_FIELDS:
+                if f not in inc:
+                    errors.append(f"incremental_class missing required field '{f}'")
+            cn = inc.get("class_name")
+            if cn is not None and not isinstance(cn, str):
+                errors.append("incremental_class.class_name must be a string")
+            mod = inc.get("module")
+            if mod is not None and not isinstance(mod, str):
+                errors.append("incremental_class.module must be a string (Python module name without .py)")
 
     return len(errors) == 0, errors
 
