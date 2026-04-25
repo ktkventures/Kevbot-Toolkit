@@ -133,64 +133,35 @@ def _load_bars_raw(
 
 
 # ---------------------------------------------------------------------------
-# Backtest path — extract trigger fires from enriched DataFrame
+# Shared replay loop — used by both backtest and live paths
 # ---------------------------------------------------------------------------
 
-def _extract_trigger_fires_from_enriched(
-    enriched_df: pd.DataFrame,
-    trigger_name: str,
-) -> list[dict]:
-    """Pull trigger-fire events from the unified engine's enriched output.
-
-    The unified engine writes one boolean column per trigger named
-    `trig_{trigger_name}`. We collect every bar where that column is True.
-    """
-    col = f'trig_{trigger_name}'
-    if col not in enriched_df.columns:
-        logger.warning(
-            "[parity] backtest path produced no column %s — "
-            "trigger may not exist in this engine's registry", col)
-        return []
-
-    fires: list[dict] = []
-    series = enriched_df[col].fillna(False).astype(bool)
-    for idx, fired in enumerate(series):
-        if fired:
-            ts = enriched_df.index[idx]
-            fires.append({
-                'bar_idx': int(idx),
-                'timestamp': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
-                'trigger': trigger_name,
-            })
-    return fires
-
-
-def _run_live_replay_path(
+def _replay_engine_bars(
     strategy: dict,
     df: pd.DataFrame,
+    indicator_mode: str,  # 'batch' | 'incremental'
     warmup_bars: int = 200,
 ) -> list[dict]:
-    """Replay bars sequentially through the live engine's classes.
+    """Run the engine's TriggerEvaluator over `df` bar-by-bar.
 
-    Mirrors what the worker does in production: fresh
-    IncrementalIndicatorEngine + TriggerEvaluator, optional warmup with
-    the first N bars, then process the remaining one at a time. The
-    result is the set of trigger fires the LIVE worker would have
-    produced over this same window.
+    The two paths share this loop and differ only in where each bar's
+    indicator state comes from:
 
-    KEY ARCHITECTURAL CAVEAT
-    ------------------------
-    User pack indicators are resolved as `_user_pack_{slug}` markers
-    in `resolve_strategy_requirements` (unified_engine.py:578-580) but
-    are computed only in batch mode via `run_indicators_for_group`. The
-    IncrementalIndicatorEngine has no per-bar code path for them. So
-    any user-pack trigger will silently never fire in this replay —
-    that's by design at the engine level, and it's the exact root
-    cause of strategies like 129 firing in backtest but not live.
+      - **'incremental'** (live mode): instantiate
+        IncrementalIndicatorEngine and call ``update_bar(bar)`` per bar.
+        For user packs with an ``incremental_class``, this drives the
+        per-bar O(1) update.
+      - **'batch'** (backtest mode): the DataFrame is already enriched
+        with indicator + trigger columns by ``prepare_data_with_indicators``;
+        we read each row directly and feed it as ``current`` to the
+        evaluator.
 
-    Built-in triggers (utbot, utbot_v2, ema_stack, ema_price_position,
-    macd_line, macd_histogram, vwap, rvol) DO have incremental paths
-    and will fire normally.
+    Both paths call ``evaluate_bar_for_backtest`` which returns
+    ``(interps, c_triggers, l_fills)`` — that's the engine's full
+    single-bar evaluation, including L-type reachability checks against
+    the bar's high/low. Fires are emitted for both C-type triggers
+    (from ``c_triggers`` booleans) and L-type / LC fills (from the
+    ``l_fills`` dict, keyed by suffixed trigger ID).
     """
     from unified_engine import (
         resolve_strategy_requirements,
@@ -200,63 +171,144 @@ def _run_live_replay_path(
 
     req_ind, req_interp, req_trig, params = resolve_strategy_requirements(strategy)
     ema_periods = params.get('ema_periods', [])
-
-    # Pass `_user_pack_<slug>` markers through to the engine — it knows
-    # how to instantiate the pack's incremental_class for each one
-    # (packs without an incremental_class are batch-only and silently
-    # skipped, which surfaces as FAIL_SILENT in the diff).
-    ind_engine = IncrementalIndicatorEngine(req_ind, params)
     trig_eval = TriggerEvaluator(req_interp, req_trig, ema_periods)
 
-    # Warmup: prod worker calls monitor.warmup(df) with prior bars to
-    # seed indicator state. Matches that here. Fires don't count during
-    # warmup — only the post-warmup window.
-    bars_to_replay = df
-    skip_warmup_idx = 0
+    if indicator_mode == 'incremental':
+        ind_engine = IncrementalIndicatorEngine(req_ind, params)
+    else:
+        ind_engine = None
+
+    def _row_to_current(row: pd.Series) -> dict:
+        """Build a `current` dict from an enriched-DF row (batch mode)."""
+        cur: dict = {}
+        for col, val in row.items():
+            # Skip NaN / non-numeric junk that can confuse downstream logic
+            if isinstance(val, float) and val != val:
+                continue
+            # The trigger-evaluator's user-pack pickup loop reads booleans
+            # from `current` keyed by trigger ID (e.g. `utv4_bull_flip`),
+            # but the enriched DF keys those columns with a `trig_` prefix.
+            # Strip the prefix when copying so the pickup matches.
+            if isinstance(col, str) and col.startswith('trig_'):
+                cur[col[len('trig_'):]] = bool(val)
+                continue
+            cur[col] = val
+        for k in ('open', 'high', 'low', 'close', 'volume'):
+            if k in row:
+                cur[k] = row[k]
+        return cur
+
+    # Warmup: walk the first N bars through both engine and evaluator so
+    # state (rolling indicators, _cached_levels, _ib_gate_open) is seeded
+    # before fires start counting. In batch mode there's no incremental
+    # engine to warmup, but the evaluator still needs to walk the bars
+    # to seed _cached_levels for L-type reachability checks.
     if warmup_bars > 0 and len(df) > warmup_bars:
-        try:
-            ind_engine.warmup(df.iloc[:warmup_bars])
-            bars_to_replay = df.iloc[warmup_bars:]
-            skip_warmup_idx = warmup_bars
-            logger.info(
-                "[parity] live replay warmup: %d bars seeded, %d remaining",
-                warmup_bars, len(bars_to_replay))
-        except Exception as e:
-            logger.warning(
-                "[parity] live replay warmup failed (proceeding without): %s", e)
+        warmup_df = df.iloc[:warmup_bars]
+        replay_df = df.iloc[warmup_bars:]
+        skip_idx = warmup_bars
+        if ind_engine is not None:
+            try:
+                ind_engine.warmup(warmup_df)
+            except Exception as e:
+                logger.warning("[parity] %s warmup failed: %s", indicator_mode, e)
+        prev_values: dict = {}
+        for ts, row in warmup_df.iterrows():
+            try:
+                if ind_engine is not None:
+                    bar = row.to_dict(); bar['timestamp'] = ts
+                    current = ind_engine.update_bar(bar)
+                else:
+                    current = _row_to_current(row)
+                prev2 = trig_eval._bar_close_triggers.get('__prev2_macd_hist', 0.0)  # noqa
+                trig_eval.evaluate_bar_for_backtest(current, prev_values, 0.0)
+                prev_values = current
+            except Exception:
+                # Ignore warmup errors — they typically come from indicators
+                # that need more history than the warmup window provides.
+                pass
+        logger.info(
+            "[parity] %s replay warmup: %d bars seeded, %d remaining",
+            indicator_mode, warmup_bars, len(replay_df))
+    else:
+        replay_df = df
+        skip_idx = 0
+        prev_values = {}
 
     fires: list[dict] = []
-    for offset, (ts, row) in enumerate(bars_to_replay.iterrows()):
-        bar_idx = skip_warmup_idx + offset
-        bar = row.to_dict()
-        # Mirror the worker's bar shape (timestamp + OHLCV)
-        bar['timestamp'] = ts
+    for offset, (ts, row) in enumerate(replay_df.iterrows()):
+        bar_idx = skip_idx + offset
 
         try:
-            current = ind_engine.update_bar(bar)
-            prev_values = ind_engine.get_prev_values()
-            prev2_macd_hist = getattr(ind_engine.state, 'prev2_macd_hist', 0.0)
-            _interps, triggers = trig_eval.evaluate_bar_close(
-                current, prev_values, prev2_macd_hist)
+            if ind_engine is not None:
+                bar = row.to_dict(); bar['timestamp'] = ts
+                current = ind_engine.update_bar(bar)
+                eval_prev = ind_engine.get_prev_values()
+                prev2_macd_hist = getattr(
+                    ind_engine.state, 'prev2_macd_hist', 0.0)
+            else:
+                current = _row_to_current(row)
+                eval_prev = prev_values
+                prev2_macd_hist = 0.0  # batch-mode MACD hist tracking deferred
+
+            _interps, c_triggers, l_fills = trig_eval.evaluate_bar_for_backtest(
+                current, eval_prev, prev2_macd_hist)
         except Exception as e:
             logger.exception(
-                "[parity] live replay error at bar %d (%s): %s",
-                bar_idx, ts, e)
+                "[parity] %s replay error at bar %d (%s): %s",
+                indicator_mode, bar_idx, ts, e)
+            prev_values = current if 'current' in locals() else prev_values
             continue
 
-        for trig_name, fired in (triggers or {}).items():
+        ts_iso = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+
+        for trig_name, fired in (c_triggers or {}).items():
             if fired:
                 fires.append({
                     'bar_idx': bar_idx,
-                    'timestamp': (ts.isoformat() if hasattr(ts, 'isoformat')
-                                  else str(ts)),
+                    'timestamp': ts_iso,
                     'trigger': trig_name,
                 })
+        for trig_name, fill_price in (l_fills or {}).items():
+            fires.append({
+                'bar_idx': bar_idx,
+                'timestamp': ts_iso,
+                'trigger': trig_name,
+                'fill_price': float(fill_price),
+            })
+
+        prev_values = current
 
     logger.info(
-        "[parity] live replay: %d trigger fires across %d bars",
-        len(fires), len(bars_to_replay))
+        "[parity] %s replay: %d fires across %d bars",
+        indicator_mode, len(fires), len(replay_df))
     return fires
+
+
+def _run_live_replay_path(
+    strategy: dict,
+    df: pd.DataFrame,
+    warmup_bars: int = 200,
+) -> list[dict]:
+    """Replay bars through the live engine's IncrementalIndicatorEngine.
+
+    Now uses ``evaluate_bar_for_backtest`` so L-type and LC fires are
+    captured via reachability checks against bar high/low — matching
+    the engine's backtest semantics. Real production mode runs tick-by-
+    tick which we can't reproduce without a tick feed; the bar-level
+    reachability check is the standard approximation.
+
+    User packs with an ``incremental_class`` get full PASS via this
+    path. Packs without one have no live indicator values, so their
+    triggers stay silent (the diff engine reports FAIL_SILENT — that's
+    the diagnostic surface).
+    """
+    return _replay_engine_bars(
+        strategy=strategy,
+        df=df,
+        indicator_mode='incremental',
+        warmup_bars=warmup_bars,
+    )
 
 
 def _run_backtest_path(
@@ -267,14 +319,21 @@ def _run_backtest_path(
     days: int = 7,
     session: str = 'RTH',
     feed: str = 'sip',
+    warmup_bars: int = 200,
 ) -> tuple[list[dict], pd.DataFrame]:
-    """Run the unified engine in backtest mode and extract fire events.
+    """Run the engine in batch (backtest) mode and capture all fires.
+
+    Loads bars with all indicator + trigger columns precomputed, then
+    walks them through the same evaluation loop as the live path —
+    just sourcing each bar's `current` dict from the enriched DF
+    columns instead of an incremental indicator engine. This produces
+    both C-type (from the precomputed `trig_*` booleans, picked up via
+    the user-pack pickup loop in TriggerEvaluator) and L-type / LC
+    fires (from the engine's reachability check on bar high/low).
 
     Returns (fires, enriched_df). enriched_df is returned for downstream
     diff context (e.g. showing indicator state at divergent bars).
     """
-    from unified_engine import run_unified_backtest
-
     df = _load_bars_with_indicators(symbol, timeframe, days, session, feed)
     if len(df) < 2:
         logger.warning(
@@ -286,21 +345,17 @@ def _run_backtest_path(
                                      timeframe=timeframe, symbol=symbol,
                                      session=session)
 
-    try:
-        trades_df, enriched_df = run_unified_backtest(
-            df, strategy, general_packs=[])
-    except Exception as e:
-        logger.exception(
-            "[parity] run_unified_backtest failed for %s/%s: %s",
-            pack_id, entry_trigger, e)
-        return [], df
-
-    fires = _extract_trigger_fires_from_enriched(enriched_df, entry_trigger)
+    fires = _replay_engine_bars(
+        strategy=strategy,
+        df=df,
+        indicator_mode='batch',
+        warmup_bars=warmup_bars,
+    )
     logger.info(
-        "[parity] backtest path: %d bars loaded, %d trigger fires "
+        "[parity] backtest path: %d bars loaded, %d total fires "
         "for %s on %s/%s/%dd",
         len(df), len(fires), entry_trigger, symbol, timeframe, days)
-    return fires, enriched_df
+    return fires, df
 
 
 # ---------------------------------------------------------------------------
@@ -526,11 +581,19 @@ def run_pack_parity_test(
             "[parity] resolved trigger '%s' → '%s' via pack %s prefix",
             raw_input_trigger, entry_trigger, pack_id)
 
-    backtest_fires, enriched_df = _run_backtest_path(
+    backtest_fires_all, enriched_df = _run_backtest_path(
         pack_id=pack_id, entry_trigger=entry_trigger,
         symbol=symbol, timeframe=timeframe, days=days,
-        session=session, feed=feed,
+        session=session, feed=feed, warmup_bars=warmup_bars,
     )
+    # Both paths now record every trigger the evaluator emits (including
+    # sibling C/L/LC/CC variants for the same pack). Filter to just the
+    # one we're testing — sibling fires are tracked separately for
+    # diagnostic display.
+    backtest_fires = [f for f in backtest_fires_all
+                      if f.get('trigger') == entry_trigger]
+    backtest_fires_other = [f for f in backtest_fires_all
+                            if f.get('trigger') != entry_trigger]
 
     # The live worker doesn't see the indicator/interpreter/trigger columns
     # we computed in batch — strip them off so the replay path operates on
@@ -547,8 +610,6 @@ def run_pack_parity_test(
     live_fires_all = _run_live_replay_path(
         strategy=strategy, df=raw_df, warmup_bars=warmup_bars,
     )
-    # Filter to just the trigger we care about — replay records every
-    # trigger the evaluator emits, but the test is for one specific one.
     live_fires = [f for f in live_fires_all if f.get('trigger') == entry_trigger]
     live_fires_other = [f for f in live_fires_all
                         if f.get('trigger') != entry_trigger]
@@ -565,6 +626,7 @@ def run_pack_parity_test(
         'bars_loaded': len(enriched_df),
         'warmup_bars': warmup_bars,
         'backtest_fires': backtest_fires,
+        'backtest_fires_other_triggers': backtest_fires_other,
         'live_fires': live_fires,
         'live_fires_other_triggers': live_fires_other,
         'matched': diff['matched'],
