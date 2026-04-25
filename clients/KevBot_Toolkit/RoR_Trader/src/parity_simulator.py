@@ -165,6 +165,110 @@ def _extract_trigger_fires_from_enriched(
     return fires
 
 
+def _run_live_replay_path(
+    strategy: dict,
+    df: pd.DataFrame,
+    warmup_bars: int = 200,
+) -> list[dict]:
+    """Replay bars sequentially through the live engine's classes.
+
+    Mirrors what the worker does in production: fresh
+    IncrementalIndicatorEngine + TriggerEvaluator, optional warmup with
+    the first N bars, then process the remaining one at a time. The
+    result is the set of trigger fires the LIVE worker would have
+    produced over this same window.
+
+    KEY ARCHITECTURAL CAVEAT
+    ------------------------
+    User pack indicators are resolved as `_user_pack_{slug}` markers
+    in `resolve_strategy_requirements` (unified_engine.py:578-580) but
+    are computed only in batch mode via `run_indicators_for_group`. The
+    IncrementalIndicatorEngine has no per-bar code path for them. So
+    any user-pack trigger will silently never fire in this replay —
+    that's by design at the engine level, and it's the exact root
+    cause of strategies like 129 firing in backtest but not live.
+
+    Built-in triggers (utbot, utbot_v2, ema_stack, ema_price_position,
+    macd_line, macd_histogram, vwap, rvol) DO have incremental paths
+    and will fire normally.
+    """
+    from unified_engine import (
+        resolve_strategy_requirements,
+        IncrementalIndicatorEngine,
+        TriggerEvaluator,
+    )
+
+    req_ind, req_interp, req_trig, params = resolve_strategy_requirements(strategy)
+    ema_periods = params.get('ema_periods', [])
+
+    # Strip the `_user_pack_{slug}` markers — they're sentinel values
+    # that aren't real indicator names. IncrementalIndicatorEngine
+    # would crash trying to compute them. Stripping them mirrors what
+    # the live worker does at startup (it just doesn't have the
+    # incremental path for user packs, full stop).
+    real_indicators = {i for i in req_ind if not i.startswith('_user_pack_')}
+    user_pack_markers = {i for i in req_ind if i.startswith('_user_pack_')}
+    if user_pack_markers:
+        logger.info(
+            "[parity] live replay will SKIP %d user pack indicator(s): %s — "
+            "live engine has no incremental path for these (engine-level "
+            "limitation, not a bug in the simulator)",
+            len(user_pack_markers), sorted(user_pack_markers))
+
+    ind_engine = IncrementalIndicatorEngine(real_indicators, params)
+    trig_eval = TriggerEvaluator(req_interp, req_trig, ema_periods)
+
+    # Warmup: prod worker calls monitor.warmup(df) with prior bars to
+    # seed indicator state. Matches that here. Fires don't count during
+    # warmup — only the post-warmup window.
+    bars_to_replay = df
+    skip_warmup_idx = 0
+    if warmup_bars > 0 and len(df) > warmup_bars:
+        try:
+            ind_engine.warmup(df.iloc[:warmup_bars])
+            bars_to_replay = df.iloc[warmup_bars:]
+            skip_warmup_idx = warmup_bars
+            logger.info(
+                "[parity] live replay warmup: %d bars seeded, %d remaining",
+                warmup_bars, len(bars_to_replay))
+        except Exception as e:
+            logger.warning(
+                "[parity] live replay warmup failed (proceeding without): %s", e)
+
+    fires: list[dict] = []
+    for offset, (ts, row) in enumerate(bars_to_replay.iterrows()):
+        bar_idx = skip_warmup_idx + offset
+        bar = row.to_dict()
+        # Mirror the worker's bar shape (timestamp + OHLCV)
+        bar['timestamp'] = ts
+
+        try:
+            current = ind_engine.update_bar(bar)
+            prev_values = ind_engine.get_prev_values()
+            prev2_macd_hist = getattr(ind_engine.state, 'prev2_macd_hist', 0.0)
+            _interps, triggers = trig_eval.evaluate_bar_close(
+                current, prev_values, prev2_macd_hist)
+        except Exception as e:
+            logger.exception(
+                "[parity] live replay error at bar %d (%s): %s",
+                bar_idx, ts, e)
+            continue
+
+        for trig_name, fired in (triggers or {}).items():
+            if fired:
+                fires.append({
+                    'bar_idx': bar_idx,
+                    'timestamp': (ts.isoformat() if hasattr(ts, 'isoformat')
+                                  else str(ts)),
+                    'trigger': trig_name,
+                })
+
+    logger.info(
+        "[parity] live replay: %d trigger fires across %d bars",
+        len(fires), len(bars_to_replay))
+    return fires
+
+
 def _run_backtest_path(
     pack_id: str,
     entry_trigger: str,
@@ -210,7 +314,7 @@ def _run_backtest_path(
 
 
 # ---------------------------------------------------------------------------
-# Public V1 entrypoint (backtest only — live replay added in commit 2)
+# Public V1 entrypoint (backtest + live replay; diff/verdict in commit 3)
 # ---------------------------------------------------------------------------
 
 def run_pack_parity_test(
@@ -221,21 +325,37 @@ def run_pack_parity_test(
     days: int = 7,
     session: str = 'RTH',
     feed: str = 'sip',
+    warmup_bars: int = 200,
 ) -> dict:
     """Run a parity test for a single pack's entry trigger.
 
-    V1 (this commit): runs backtest path only, returns fires.
-    Live replay path is added in commit 2; full diff + verdict in commit 3.
-
-    Returns a dict shaped to match the final V1 result schema, with
-    `live_fires`, `matched`, `backtest_only`, `live_only` empty until
-    later commits.
+    Runs both paths (backtest + live replay) and returns each fire list.
+    Diff + verdict are added in commit 3.
     """
     backtest_fires, enriched_df = _run_backtest_path(
         pack_id=pack_id, entry_trigger=entry_trigger,
         symbol=symbol, timeframe=timeframe, days=days,
         session=session, feed=feed,
     )
+
+    # The live worker doesn't see the indicator/interpreter/trigger columns
+    # we computed in batch — strip them off so the replay path operates on
+    # the same OHLCV shape it'd see in production.
+    raw_cols = [c for c in enriched_df.columns
+                if c.lower() in ('open', 'high', 'low', 'close', 'volume')]
+    raw_df = enriched_df[raw_cols].copy() if raw_cols else enriched_df
+
+    strategy = _build_strategy_proxy(
+        pack_id, entry_trigger,
+        timeframe=timeframe, symbol=symbol, session=session,
+    )
+
+    live_fires_all = _run_live_replay_path(
+        strategy=strategy, df=raw_df, warmup_bars=warmup_bars,
+    )
+    # Filter to just the trigger we care about — replay records every
+    # trigger the evaluator emits, but the test is for one specific one.
+    live_fires = [f for f in live_fires_all if f.get('trigger') == entry_trigger]
 
     return {
         'pack_id': pack_id,
@@ -244,15 +364,21 @@ def run_pack_parity_test(
         'timeframe': timeframe,
         'days': days,
         'bars_loaded': len(enriched_df),
+        'warmup_bars': warmup_bars,
         'backtest_fires': backtest_fires,
-        'live_fires': [],          # commit 2
+        'live_fires': live_fires,
+        'live_fires_other_triggers': [
+            f for f in live_fires_all if f.get('trigger') != entry_trigger
+        ],
         'matched': [],             # commit 3
         'backtest_only': [],       # commit 3
         'live_only': [],           # commit 3
         'parity_score': None,      # commit 3
         'verdict': 'NOT_YET_RUN',  # commit 3
-        'summary': (f'V1 backtest-path-only — {len(backtest_fires)} fires for '
-                    f'{entry_trigger} on {symbol}/{timeframe}/{days}d'),
+        'summary': (
+            f'backtest={len(backtest_fires)} live={len(live_fires)} for '
+            f'{entry_trigger} on {symbol}/{timeframe}/{days}d'
+        ),
     }
 
 
@@ -297,11 +423,12 @@ if __name__ == '__main__':
         pack_id=pack_id, entry_trigger=trigger,
         symbol=symbol, timeframe=timeframe, days=days,
     )
-    # Truncate fires list for printing — just show counts + first 5
+    # Truncate fires list for printing — just show counts + first 3
     short = dict(result)
-    short['backtest_fires'] = (
-        f"[{len(result['backtest_fires'])} fires] "
-        + (str(result['backtest_fires'][:3]) if result['backtest_fires']
-           else '(empty)')
-    )
+    for key in ('backtest_fires', 'live_fires', 'live_fires_other_triggers'):
+        vals = result.get(key, [])
+        short[key] = (
+            f"[{len(vals)} fires] "
+            + (str(vals[:3]) if vals else '(empty)')
+        )
     print(json.dumps(short, indent=2, default=str))
