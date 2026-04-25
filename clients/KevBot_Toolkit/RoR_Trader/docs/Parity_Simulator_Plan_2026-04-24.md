@@ -371,3 +371,87 @@ type for *any* pack, including the migrated ones. C exercises the AI
 prompt generalization, which is the bigger architectural risk now that
 ut_bot_v4 was recreated by hand. B is opportunistic — only worth
 spending time on if we've already proven A and C.
+
+---
+
+## EOD 2026-04-24 — what shipped, what's next
+
+### Shipped tonight
+
+**Follow-up A — DONE.** Both backtest and live replay paths now share
+`_replay_engine_bars` calling `evaluate_bar_for_backtest`. L-type and
+LC fires are captured via reachability against bar high/low. Verified
+on ut_bot_v4: bull_flip C/L/LC and bear_flip C/L/LC all PASS with
+parity=1.0. CC returns NO_FIRES because confirmation logic isn't
+exercised by `evaluate_bar_for_backtest` — that's now a known and
+documented limit, not a bug. Commit `5f6b7eb`.
+
+**Follow-up C — 1 of 9 packs migrated (supertrend).** Same shape as
+ut_bot_v4: collapsed enumerated triggers, added trigger_levels block,
+hand-authored indicator_incremental.py, made indicator.py a thin
+wrapper. All variants PASS (st_bull_flip C/L, st_bear_flip L,
+st_near_stop_bull C — pattern-only, no level). Commit `a4f5958`.
+
+**UI: Run All Combos** (UserPacksPage only so far). Replaces the
+single-trigger + single-exec-type dropdowns with one "Run All Combos"
+button that loops through every (trigger × C/L/LC) pair sequentially
+and renders verdicts as a table. CC dropped from the test set since
+its trigger fires at the same bar as C — adding it would just
+duplicate the C result. Commit `47f3b89`.
+
+### Tomorrow's first move
+
+Pick up at one of these, in priority order:
+
+1. **Replicate Run All Combos to PackBuilderPage + TfConfluencePage**
+   parity tabs. They still have the old single-test UI. ~30 min.
+   Same component pattern as UserPacksPage (`47f3b89`); essentially
+   copy-paste with adjusted state names + pack source.
+
+2. **Migrate the next pack — bollinger_bands.** Same playbook as
+   supertrend: hand-author indicator_incremental.py, refactor
+   indicator.py to thin wrapper, update manifest to modular shape,
+   verify with parity sim. ~30–45 min. After this, RSI is the next
+   logical step (Wilder RMA recursion bridges to the harder packs).
+
+3. **Backend batch endpoint** — `/api/packs/parity-test/batch` that
+   takes a list of `(entry_trigger, ...)` and returns a list of
+   results, loading bars/enriched_df ONCE and running the engine
+   loop N times against the same data. ~5x speedup for big packs
+   (rsi_zones has 12 base triggers × 3 = 36 combos). Worth it once
+   we start sweeping the legacy packs in volume. ~1 hour.
+
+### Pending follow-ups (not blocking, not forgotten)
+
+- **Click-into-row drilldown.** Run-all UI surfaces only the first
+  divergent combo's fire list. For multi-failure debugging, rows
+  should be clickable to switch which divergent combo's drilldown
+  appears. ~20 min.
+- **Follow-up B (Hi-Fi parity smoke).** Run parity at sub-minute
+  timeframe to confirm user pack incremental classes work with
+  Hi-Fi data feeds. Deferred until Hi-Fi confluence semantics are
+  firm.
+- **Sweep remaining 8 packs** to the modular pattern: bollinger_bands,
+  rsi_zones, rsi_zones_2, rsi_zones_3, sr_channels, stochastic_oscillator,
+  strat_assistant, swing_123, swing_123_test. Routine work once the
+  template is fully proven. The two RSI duplicates (rsi_zones and
+  rsi_zones_3 both want prefix `rsi`) need one to be renamed first.
+
+### State of the world
+
+- **Two user packs at full PASS:** ut_bot_v4 (newly built), supertrend
+  (newly migrated). Eight packs still on the legacy pattern, all
+  validating fine but FAIL_SILENT in live mode (which is correct
+  diagnostic surfacing — they have no incremental_class).
+- **Built-in TF Confluence packs unchanged:** utbot_v2 etc. still
+  PASS via their hand-tuned IncrementalIndicatorEngine code paths.
+  Migrating them to manifests too is a Phase 2 item — not urgent
+  since they already work.
+- **AI builder produces the modular shape directly.** Verified by
+  Kevin's ut_bot_v4 generation earlier: 2 triggers, trigger_levels
+  block, no execution field, no per-trigger suffixes. Prompt
+  rewrites in `pack_builder.py` and `pack_builder_context.md` are
+  doing their job.
+- **Backup branches:** `dev-backup-pre-modular-triggers-2026-04-24`,
+  `dev-backup-pre-l-tick-sim-2026-04-24`. Either is a safe revert
+  point.
