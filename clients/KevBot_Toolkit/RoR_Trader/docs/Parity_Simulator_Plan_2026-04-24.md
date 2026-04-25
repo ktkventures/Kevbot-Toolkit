@@ -244,3 +244,130 @@ Following the order above, starting with commit 1. Will pause + check in after e
 If anything in this plan looks off or you'd rather scope V1 differently, course-correct here:
 - ✅ → proceed with the plan as-is
 - ⚠️ → drop me a note in the chat; I'll adjust the plan before coding
+
+---
+
+## Follow-ups discovered after V1 shipped (added 2026-04-24 EOD)
+
+V1 (commits 1–6) shipped successfully, plus several extensions: trigger-prefix
+resolution for built-ins and user packs, the pack_spec fix that revived 9
+broken user packs, the modular trigger pattern, the `incremental_class`
+schema field, and engine wiring that let `ut_bot_v4` become the first
+user pack to achieve PASS in the parity simulator (matching the built-in
+`utbot_v2` numbers exactly: 124 backtest / 112 live / 112 matched). At
+that point we stopped to plan the next round of work. Three real gaps
+surfaced from validating against ut_bot_v4:
+
+### Follow-up A — Live replay tick simulation for L-type triggers
+
+**Problem:** `_run_live_replay_path` only calls `evaluate_bar_close()`, so
+it only emits C and CC trigger booleans. L-type and LC-type triggers fire
+intra-bar via the engine's reachability check (low ≤ level ≤ high). The
+simulator's *backtest* path (`run_unified_backtest` → `evaluate_bar_for_backtest`)
+already handles L-type via reachability and produces correct fire counts,
+but the *live replay* path doesn't. Result: running parity on
+`utv4_bull_flip_ib` would show a non-zero backtest count and zero live
+fires — falsely flagging L-type as broken when it's really our test
+harness that's incomplete.
+
+**Plan:**
+1. After each `evaluate_bar_close()` call in `_run_live_replay_path`,
+   walk `INTRABAR_LEVEL_MAP` for any required base trigger that has a
+   level entry. For each, compute the reachability check
+   (`low <= level <= high` for "above" cross, mirror for "below") using
+   the bar's high/low and the cached level value (the `_prev` column).
+   If reachable AND the gate is open (previous close on the opposite
+   side), emit the suffixed `_ib` fire.
+2. Apply the same logic for `_lc` (level cross + bar-close confirmation):
+   reachability AND the bar-close trigger boolean both true.
+3. Write the fires into the same `fires` list with `trigger` set to the
+   suffixed runtime ID.
+4. The diff engine and verdict logic require no changes — they operate on
+   trigger IDs, and the suffixed variants now flow through naturally.
+
+**Effort:** ~half day. Most of the logic already exists in
+`evaluate_bar_for_backtest`; we're cribbing the same reachability check
+into the replay path with the same "gate open" semantics.
+
+**Verification:** parity test on `utv4_bull_flip_ib` should return PASS
+with similar fire counts to `utv4_bull_flip` (slightly different because
+L-type fires only on bars where price actually crosses the level
+intra-bar, vs. C-type which fires on any close that crosses the level).
+
+### Follow-up B — Hi-Fi compatibility (parity smoke + manifest hint)
+
+**Question:** does the modular pattern + incremental_class wiring
+support the existing Hi-Fi (sub-minute drill-down) feature?
+
+**Architectural answer:** structurally yes, but two layers to think
+about:
+
+1. **L-type fills at second-level precision (existing Hi-Fi behavior).**
+   The L-type entry mechanism only needs the level value (provided by
+   the user pack's batch indicator on the strategy's primary timeframe)
+   plus the engine's tick-level cross detection. Hi-Fi already shows
+   *which second within the bar* the cross occurred. User packs inherit
+   this for free as long as the L-type wiring works (Follow-up A above).
+   No per-pack Hi-Fi code needed.
+
+2. **Hi-Fi confluence (re-evaluating conditions on intra-bar partial
+   data — the `CB` fidelity case).** Not fully built; see
+   `project_hifi_confluence_conundrum.md`. When it ships, user pack
+   indicators would need to compute on 1-second bars to participate.
+   The incremental class is timeframe-agnostic (it processes any bar),
+   so it'd "just work" if the engine feeds it 1-second data — but that
+   wiring doesn't yet exist for user packs. Defer until Hi-Fi
+   confluence has firm semantics.
+
+**Plan (when L-type tick sim is done):**
+1. Run a parity test on `ut_bot_v4` at `1Min` (current default).
+2. Run the same test at a sub-minute timeframe if Hi-Fi data feeds are
+   exposed to the parity sim — confirm PASS verdict still holds at
+   higher granularity. If the engine doesn't yet feed sub-minute bars
+   to user pack incremental classes, document the gap and defer the
+   wiring to alongside Hi-Fi confluence work.
+3. Add a one-line note to `pack_builder_context.md` reminding pack
+   authors that incremental classes are timeframe-agnostic — params
+   should be sensible for the user's chosen timeframe. (No new schema
+   field needed; this is a clarity nudge for the AI.)
+
+**Effort:** ~1 hour for the smoke test if Hi-Fi data flow already
+covers user packs; deferred indefinitely otherwise.
+
+### Follow-up C — Migrate one more pack to the modular pattern
+
+**Goal:** prove the pattern generalizes beyond the UT Bot test case
+before sweeping the rest. Lowest-friction candidates, in order:
+
+1. **`supertrend`** — single-state recursion, similar shape to UT Bot.
+   Re-run through the AI builder with the new prompt; expect a clean
+   modular manifest + an indicator_incremental.py that mirrors the
+   batch indicator. Run parity sim → expect PASS once the incremental
+   class lands.
+2. **`bollinger_bands`** — vectorized SMA + std, no state past the
+   rolling window. Easier to migrate; mostly a check that the prompt
+   produces good code for non-recursive indicators too.
+3. **`rsi_zones`** — Wilder RMA, simple recursion; bridges to the
+   stateful pattern. By this point we've validated three different
+   indicator shapes (recursive trail, windowed stats, smoothed
+   recursion).
+
+**Effort:** ~30–60 min per pack. Most of the time is verifying the AI
+output is right; if any AI-generated indicator_incremental.py drifts
+from the batch path, the parity simulator catches it immediately
+(non-zero backtest_only or live_only count).
+
+**Decision point after these three:** if all three flip from
+FAIL_SILENT to PASS without manual fixes, declare the migration
+template ready and queue the remaining 7 packs as a routine sweep
+(ideally as a single AI-builder regen pass — no human authoring per
+pack). If any pack needs custom intervention, document the failure
+mode and refine the AI prompt before continuing.
+
+### Order
+
+A → C → B. Live replay tick sim (A) is needed before we can verify L-
+type for *any* pack, including the migrated ones. C exercises the AI
+prompt generalization, which is the bigger architectural risk now that
+ut_bot_v4 was recreated by hand. B is opportunistic — only worth
+spending time on if we've already proven A and C.
