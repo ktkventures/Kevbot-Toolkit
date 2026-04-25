@@ -1087,6 +1087,282 @@ function SignalValidationTab({ pack }: { pack: UserPack }) {
 }
 
 /* ========================================================================
+   Detail: Parity Simulator Tab
+   ======================================================================== */
+
+interface ParityResult {
+  pack_id: string;
+  entry_trigger: string;
+  symbol: string;
+  timeframe: string;
+  days: number;
+  bars_loaded: number;
+  warmup_bars: number;
+  backtest_fires: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  live_fires: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  matched: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  backtest_only: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  live_only: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  backtest_warmup: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
+  parity_score: number | null;
+  verdict: string;
+  explanation: string;
+  summary: string;
+}
+
+const VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
+  PASS: { color: 'var(--green)', bg: 'var(--green-muted)' },
+  PASS_WITHIN_TOLERANCE: { color: 'var(--green)', bg: 'var(--green-muted)' },
+  PARTIAL: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+  FAIL_SILENT: { color: 'var(--red)', bg: 'var(--red-muted)' },
+  FAIL_REVERSE: { color: 'var(--red)', bg: 'var(--red-muted)' },
+  NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+};
+
+function ParitySimulatorTab({ pack }: { pack: UserPack }) {
+  const entryTriggers = pack.triggers.filter((t) => t.type === 'ENTRY');
+  const [trigger, setTrigger] = useState(entryTriggers[0]?.id || '');
+  const [symbol, setSymbol] = useState('SPY');
+  const [timeframe, setTimeframe] = useState('1Min');
+  const [days, setDays] = useState(7);
+  const [warmupBars, setWarmupBars] = useState(200);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<ParityResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runTest = async () => {
+    if (!trigger) {
+      setError('Select an entry trigger first.');
+      return;
+    }
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
+        method: 'POST',
+        body: JSON.stringify({
+          pack_id: pack.id,
+          entry_trigger: trigger,
+          symbol,
+          timeframe,
+          days,
+          warmup_bars: warmupBars,
+        }),
+      });
+      setResult(res);
+    } catch (e: any) {
+      setError(e?.message || 'Parity test failed.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const verdictStyle = result
+    ? VERDICT_COLORS[result.verdict] || VERDICT_COLORS.NO_FIRES
+    : null;
+
+  return (
+    <div className="space-y-3">
+      <Card>
+        <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Replays the same OHLCV window through the backtest path and the live worker&apos;s
+          incremental engine, then compares trigger fires bar-by-bar. PASS means parity confirmed.
+          FAIL_SILENT means the pack works in batch mode but is silent in production.
+        </p>
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Trigger</label>
+            <select
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={trigger}
+              onChange={(e) => setTrigger(e.target.value)}
+            >
+              {entryTriggers.length === 0 && <option value="">(no entry triggers)</option>}
+              {entryTriggers.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Symbol</label>
+            <input
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
+            <select
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={timeframe}
+              onChange={(e) => setTimeframe(e.target.value)}
+            >
+              <option value="1Min">1Min</option>
+              <option value="5Min">5Min</option>
+              <option value="15Min">15Min</option>
+              <option value="1Hour">1Hour</option>
+              <option value="1Day">1Day</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Days</label>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={days}
+              onChange={(e) => setDays(parseInt(e.target.value) || 7)}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Warmup bars</label>
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={warmupBars}
+              onChange={(e) => setWarmupBars(parseInt(e.target.value) || 0)}
+            />
+          </div>
+        </div>
+
+        <button
+          className="text-xs px-3 py-1.5 rounded font-medium"
+          style={{
+            background: running ? 'var(--bg-input)' : 'var(--accent)',
+            color: running ? 'var(--text-muted)' : 'white',
+            cursor: running ? 'not-allowed' : 'pointer',
+          }}
+          onClick={runTest}
+          disabled={running || !trigger}
+        >
+          {running ? 'Running…' : 'Run Parity Test'}
+        </button>
+
+        {error && (
+          <p className="text-xs mt-3 px-3 py-2 rounded" style={{ color: 'var(--red)', background: 'var(--red-muted)' }}>
+            {error}
+          </p>
+        )}
+      </Card>
+
+      {result && verdictStyle && (
+        <Card>
+          <div className="flex items-center gap-3 mb-2">
+            <span
+              className="text-xs px-2 py-1 rounded font-semibold"
+              style={{ color: verdictStyle.color, background: verdictStyle.bg }}
+            >
+              {result.verdict}
+            </span>
+            {result.parity_score !== null && (
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                parity_score = {(result.parity_score * 100).toFixed(1)}%
+              </span>
+            )}
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {result.bars_loaded.toLocaleString()} bars loaded
+            </span>
+          </div>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+            {result.explanation}
+          </p>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <Stat label="Backtest fires" value={result.backtest_fires.length} />
+            <Stat label="Live fires" value={result.live_fires.length} />
+            <Stat label="Matched" value={result.matched.length} accent="green" />
+            <Stat
+              label="Divergent"
+              value={result.backtest_only.length + result.live_only.length}
+              accent={result.backtest_only.length + result.live_only.length > 0 ? 'red' : undefined}
+            />
+          </div>
+
+          {result.backtest_warmup.length > 0 && (
+            <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+              {result.backtest_warmup.length} backtest fire(s) inside the warmup window — excluded from the score.
+            </p>
+          )}
+
+          {(result.backtest_only.length > 0 || result.live_only.length > 0) && (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {result.backtest_only.length > 0 && (
+                <FireList
+                  title="Backtest only (live missed these)"
+                  fires={result.backtest_only}
+                  accent="red"
+                />
+              )}
+              {result.live_only.length > 0 && (
+                <FireList
+                  title="Live only (backtest missed these)"
+                  fires={result.live_only}
+                  accent="orange"
+                />
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, accent }: { label: string; value: number; accent?: 'green' | 'red' }) {
+  const color = accent === 'green' ? 'var(--green)' : accent === 'red' ? 'var(--red)' : 'var(--text-primary)';
+  return (
+    <div className="px-3 py-2 rounded" style={{ background: 'var(--bg-input)' }}>
+      <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-sm font-semibold mt-0.5" style={{ color }}>{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+function FireList({
+  title,
+  fires,
+  accent,
+}: {
+  title: string;
+  fires: Array<{ bar_idx: number; timestamp: string }>;
+  accent: 'red' | 'orange';
+}) {
+  const color = accent === 'red' ? 'var(--red)' : 'var(--orange)';
+  return (
+    <div>
+      <div className="text-xs font-medium mb-1" style={{ color }}>{title}</div>
+      <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
+        {fires.slice(0, 50).map((f) => (
+          <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
+            <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>
+              {new Date(f.timestamp).toLocaleString()}
+            </span>
+          </div>
+        ))}
+        {fires.length > 50 && (
+          <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>
+            … {fires.length - 50} more
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ========================================================================
    Detail: Code Tab
    ======================================================================== */
 
@@ -1470,19 +1746,7 @@ function DetailView({
             {tab === 'States & Triggers' && <OutputsTriggersTab pack={pack} />}
             {tab === 'Chart Preview' && <PreviewTab pack={pack} />}
             {tab === 'Signal Validation' && <SignalValidationTab pack={pack} />}
-            {tab === 'Parity Simulator' && (
-              <Card>
-                <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
-                <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-                  Compares backtest trigger timing against live engine (Ralph) trigger timing to verify
-                  they fire on the same bars. Requires the live engine to have accumulated alert trade history.
-                </p>
-                <p className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}>
-                  Coming soon — depends on Ralph engine replay capability or sufficient live alert history.
-                  In the meantime, use the Strategy Detail page&apos;s &quot;Alert Trades&quot; tab to compare backtest vs alert timing for strategies using this pack.
-                </p>
-              </Card>
-            )}
+            {tab === 'Parity Simulator' && <ParitySimulatorTab pack={pack} />}
             {tab === 'Code' && <CodeTab pack={pack} />}
             {tab === 'Danger Zone' && <DangerZoneTab pack={pack} onDelete={onDelete} />}
           </div>
