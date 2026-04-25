@@ -453,35 +453,60 @@ def _ensure_user_packs_loaded() -> None:
 
 
 def _resolve_engine_trigger_id(pack_id: str, entry_trigger: str) -> str:
-    """Convert a manifest `base` trigger to the engine's full registered ID.
+    """Convert a manifest/template `base` trigger to the engine's full ID.
 
-    The frontend sends the trigger's `base` (e.g. `bullish_c2_detected`)
-    because that's what's in the manifest. The unified engine and live
-    worker register triggers as `{trigger_prefix}_{base}` — i.e.
-    `s123t_bullish_c2_detected`. If we don't bridge this, both paths will
-    look for the wrong name and silently produce zero fires.
+    Two cases:
+    - **User packs** (TfConfluence user_packs): the frontend sends the
+      manifest's `base` (e.g. `bullish_c2_detected`). The engine
+      registers triggers as `{trigger_prefix}_{base}` — i.e.
+      `s123t_bullish_c2_detected`.
+    - **Built-in templates** (ema_stack, macd_line, utbot_v2 …): the
+      frontend sends the template trigger's `id` (e.g. `cross_bull` or
+      `buy`). The engine prefixes with the template's
+      TRIGGER_PREFIX_TO_TEMPLATE entry — i.e. `ema_cross_bull` or
+      `utbot_v2_buy`.
 
-    Returns the prefixed ID. If the input already starts with the pack's
-    prefix (caller passed a fully-qualified ID), returns it unchanged.
+    If the caller already passed a fully-qualified ID (the smoke-test
+    path uses this), this function recognizes the prefix and returns it
+    unchanged.
     """
+    if not entry_trigger:
+        return entry_trigger
+
+    # Case 1: user pack — look up the trigger_prefix in pack_registry.
     try:
         import pack_registry
         registered = pack_registry.get_registered_packs()
         pack = registered.get(pack_id)
-        if pack is None:
-            return entry_trigger  # not a user pack — pass through (built-ins like utbot_v2)
-        prefix = pack.manifest.get('trigger_prefix', '')
-        if not prefix:
-            return entry_trigger
-        # Already prefixed? leave it alone.
-        if entry_trigger.startswith(prefix + '_') or entry_trigger == prefix:
-            return entry_trigger
-        return f'{prefix}_{entry_trigger}'
+        if pack is not None:
+            prefix = pack.manifest.get('trigger_prefix', '')
+            if prefix:
+                if entry_trigger.startswith(prefix + '_') or entry_trigger == prefix:
+                    return entry_trigger
+                return f'{prefix}_{entry_trigger}'
     except Exception as e:
         logger.warning(
-            "[parity] could not resolve trigger prefix for pack %s: %s",
-            pack_id, e)
-        return entry_trigger
+            "[parity] user-pack lookup failed for %s: %s", pack_id, e)
+
+    # Case 2: built-in template — invert TRIGGER_PREFIX_TO_TEMPLATE.
+    try:
+        from unified_engine import TRIGGER_PREFIX_TO_TEMPLATE
+        # template name → prefix (multiple prefixes can map to the same
+        # template; pick the longest one to avoid `ema` matching when
+        # `ema_pp_v2` is wanted).
+        candidates = [pfx for pfx, tpl in TRIGGER_PREFIX_TO_TEMPLATE.items()
+                      if tpl == pack_id]
+        if candidates:
+            prefix = max(candidates, key=len)
+            if entry_trigger.startswith(prefix + '_') or entry_trigger == prefix:
+                return entry_trigger
+            return f'{prefix}_{entry_trigger}'
+    except Exception as e:
+        logger.warning(
+            "[parity] built-in template lookup failed for %s: %s", pack_id, e)
+
+    # No prefix info — pass through (caller already supplied the full ID).
+    return entry_trigger
 
 
 # ---------------------------------------------------------------------------
