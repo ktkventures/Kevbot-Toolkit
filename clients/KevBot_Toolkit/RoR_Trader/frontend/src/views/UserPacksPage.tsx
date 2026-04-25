@@ -1119,66 +1119,97 @@ const VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
   NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
 };
 
-// Suffixes for each execution type — appended to the trigger base
-// before the API resolves the full runtime ID.
-const EXEC_SUFFIX: Record<'C' | 'L' | 'LC' | 'CC', string> = {
-  C: '',       // bar_close — no suffix
-  L: '_ib',    // intra-bar level cross
-  LC: '_lc',   // level + close confirm
-  CC: '_cc',   // close + close confirm
-};
+// Exec types tested per trigger. CC is intentionally omitted — it
+// fires at the same bar as C at the trigger level; CC's distinctive
+// behavior (exit-on-non-confirmation) is a position-state-machine
+// concern, not trigger parity. Re-adding CC here would just duplicate
+// the C result.
+const EXEC_TYPES_TO_TEST: Array<{ key: 'C' | 'L' | 'LC'; suffix: string; label: string }> = [
+  { key: 'C',  suffix: '',     label: 'C' },
+  { key: 'L',  suffix: '_ib',  label: 'L' },
+  { key: 'LC', suffix: '_lc',  label: 'LC' },
+];
+
+interface ComboResult {
+  triggerId: string;
+  triggerName: string;
+  execType: 'C' | 'L' | 'LC';
+  status: 'pending' | 'running' | 'done' | 'error';
+  result?: ParityResult;
+  error?: string;
+}
 
 function ParitySimulatorTab({ pack }: { pack: UserPack }) {
-  // Triggers are direction- and type-agnostic by design — the AI builder
-  // emits type='BOTH' on every trigger. Filtering to type==='ENTRY' here
-  // would empty the dropdown for any modern pack. Show all triggers; the
-  // user picks which one to test.
   const entryTriggers = pack.triggers;
-  const [trigger, setTrigger] = useState(entryTriggers[0]?.id || '');
-  const [execType, setExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('C');
   const [symbol, setSymbol] = useState('SPY');
   const [timeframe, setTimeframe] = useState('1Min');
   const [days, setDays] = useState(7);
   const [warmupBars, setWarmupBars] = useState(200);
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<ParityResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [combos, setCombos] = useState<ComboResult[]>([]);
+  const [topError, setTopError] = useState<string | null>(null);
 
-  const runTest = async () => {
-    if (!trigger) {
-      setError('Select an entry trigger first.');
+  const totalCombos = entryTriggers.length * EXEC_TYPES_TO_TEST.length;
+
+  const runAllCombos = async () => {
+    if (entryTriggers.length === 0) {
+      setTopError('Pack has no triggers to test.');
       return;
     }
     setRunning(true);
-    setError(null);
-    setResult(null);
-    try {
-      // Suffix the trigger base with the chosen exec type. The backend
-      // resolver maps it to the full runtime ID (e.g. bull_flip + L
-      // → utv4_bull_flip_ib).
-      const suffixedTrigger = trigger + EXEC_SUFFIX[execType];
-      const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
-        method: 'POST',
-        body: JSON.stringify({
-          pack_id: pack.id,
-          entry_trigger: suffixedTrigger,
-          symbol,
-          timeframe,
-          days,
-          warmup_bars: warmupBars,
-        }),
-      });
-      setResult(res);
-    } catch (e: any) {
-      setError(e?.message || 'Parity test failed.');
-    } finally {
-      setRunning(false);
+    setTopError(null);
+    // Initialize all combos as pending so the table shows immediately.
+    const initial: ComboResult[] = [];
+    for (const t of entryTriggers) {
+      for (const et of EXEC_TYPES_TO_TEST) {
+        initial.push({
+          triggerId: t.id,
+          triggerName: t.name,
+          execType: et.key,
+          status: 'pending',
+        });
+      }
     }
+    setCombos(initial);
+
+    // Sequential to avoid hammering the API and so progress is observable.
+    for (let i = 0; i < initial.length; i++) {
+      const combo = initial[i];
+      const exec = EXEC_TYPES_TO_TEST.find((e) => e.key === combo.execType)!;
+      // Mark this row running.
+      setCombos((prev) => prev.map((c, idx) => idx === i ? { ...c, status: 'running' } : c));
+      try {
+        const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
+          method: 'POST',
+          body: JSON.stringify({
+            pack_id: pack.id,
+            entry_trigger: combo.triggerId + exec.suffix,
+            symbol,
+            timeframe,
+            days,
+            warmup_bars: warmupBars,
+          }),
+        });
+        setCombos((prev) => prev.map((c, idx) =>
+          idx === i ? { ...c, status: 'done', result: res } : c
+        ));
+      } catch (e: any) {
+        setCombos((prev) => prev.map((c, idx) =>
+          idx === i ? { ...c, status: 'error', error: e?.message || 'failed' } : c
+        ));
+      }
+    }
+    setRunning(false);
   };
 
-  const verdictStyle = result
-    ? VERDICT_COLORS[result.verdict] || VERDICT_COLORS.NO_FIRES
-    : null;
+  const completedCount = combos.filter((c) => c.status === 'done' || c.status === 'error').length;
+
+  // Surface the most useful divergent-fires drilldown beneath the table:
+  // the first combo with non-empty backtest_only or live_only fires, in
+  // table order. Avoids stacking N drilldowns when most rows agree.
+  const firstDivergent = combos.find((c) =>
+    c.result && (c.result.backtest_only.length > 0 || c.result.live_only.length > 0)
+  );
 
   return (
     <div className="space-y-3">
@@ -1186,39 +1217,11 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
         <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
           Replays the same OHLCV window through the backtest path and the live worker&apos;s
-          incremental engine, then compares trigger fires bar-by-bar. PASS means parity confirmed.
-          FAIL_SILENT means the pack works in batch mode but is silent in production.
+          incremental engine, then compares trigger fires bar-by-bar. Tests every trigger
+          across the C, L, and LC execution types.
         </p>
 
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
-          <div>
-            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Trigger</label>
-            <select
-              className="w-full text-xs px-2 py-1 rounded"
-              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-              value={trigger}
-              onChange={(e) => setTrigger(e.target.value)}
-            >
-              {entryTriggers.length === 0 && <option value="">(no entry triggers)</option>}
-              {entryTriggers.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Exec type</label>
-            <select
-              className="w-full text-xs px-2 py-1 rounded"
-              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-              value={execType}
-              onChange={(e) => setExecType(e.target.value as 'C' | 'L' | 'LC' | 'CC')}
-            >
-              <option value="C">C — bar close</option>
-              <option value="L">L — intra-bar level cross</option>
-              <option value="LC">LC — level + close confirm</option>
-              <option value="CC">CC — close + close confirm</option>
-            </select>
-          </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
           <div>
             <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Symbol</label>
             <input
@@ -1269,83 +1272,115 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
           </div>
         </div>
 
-        <button
-          className="text-xs px-3 py-1.5 rounded font-medium"
-          style={{
-            background: running ? 'var(--bg-input)' : 'var(--accent)',
-            color: running ? 'var(--text-muted)' : 'white',
-            cursor: running ? 'not-allowed' : 'pointer',
-          }}
-          onClick={runTest}
-          disabled={running || !trigger}
-        >
-          {running ? 'Running…' : 'Run Parity Test'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            className="text-xs px-3 py-1.5 rounded font-medium"
+            style={{
+              background: running ? 'var(--bg-input)' : 'var(--accent)',
+              color: running ? 'var(--text-muted)' : 'white',
+              cursor: running ? 'not-allowed' : 'pointer',
+            }}
+            onClick={runAllCombos}
+            disabled={running || entryTriggers.length === 0}
+          >
+            {running
+              ? `Running ${completedCount + 1}/${totalCombos}…`
+              : `Run All Combos (${totalCombos})`}
+          </button>
+          {!running && combos.length > 0 && (
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {combos.filter((c) => c.result?.verdict === 'PASS' || c.result?.verdict === 'PASS_WITHIN_TOLERANCE').length} passing,
+              {' '}
+              {combos.filter((c) =>
+                c.result && (c.result.verdict === 'FAIL_SILENT' || c.result.verdict === 'FAIL_REVERSE' || c.result.verdict === 'PARTIAL')
+              ).length} failing
+            </span>
+          )}
+        </div>
 
-        {error && (
+        {topError && (
           <p className="text-xs mt-3 px-3 py-2 rounded" style={{ color: 'var(--red)', background: 'var(--red-muted)' }}>
-            {error}
+            {topError}
           </p>
         )}
       </Card>
 
-      {result && verdictStyle && (
+      {combos.length > 0 && (
         <Card>
-          <div className="flex items-center gap-3 mb-2">
-            <span
-              className="text-xs px-2 py-1 rounded font-semibold"
-              style={{ color: verdictStyle.color, background: verdictStyle.bg }}
-            >
-              {result.verdict}
-            </span>
-            {result.parity_score !== null && (
-              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                parity_score = {(result.parity_score * 100).toFixed(1)}%
-              </span>
-            )}
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {result.bars_loaded.toLocaleString()} bars loaded
-            </span>
+          <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+            Results ({completedCount}/{totalCombos} complete)
+          </h5>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Trigger', 'Exec', 'Verdict', 'Parity', 'Backtest', 'Live', 'Matched', 'Divergent'].map((h) => (
+                    <th key={h} className="text-left py-1.5 px-2 text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {combos.map((c, i) => {
+                  const r = c.result;
+                  const verdict = c.status === 'pending' ? 'PENDING'
+                    : c.status === 'running' ? 'RUNNING…'
+                    : c.status === 'error' ? 'ERROR'
+                    : r?.verdict || '—';
+                  const vstyle = VERDICT_COLORS[verdict] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+                  const divergent = r ? r.backtest_only.length + r.live_only.length : 0;
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{c.triggerName}</td>
+                      <td className="py-1.5 px-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{c.execType}</td>
+                      <td className="py-1.5 px-2">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                              style={{ color: vstyle.color, background: vstyle.bg }}>
+                          {verdict}
+                        </span>
+                      </td>
+                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>
+                        {r?.parity_score !== null && r?.parity_score !== undefined
+                          ? `${(r.parity_score * 100).toFixed(0)}%` : '—'}
+                      </td>
+                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.backtest_fires.length ?? '—'}</td>
+                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.live_fires.length ?? '—'}</td>
+                      <td className="py-1.5 px-2" style={{ color: 'var(--green)' }}>{r?.matched.length ?? '—'}</td>
+                      <td className="py-1.5 px-2" style={{ color: divergent > 0 ? 'var(--red)' : 'var(--text-secondary)' }}>
+                        {r ? divergent : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
-            {result.explanation}
+        </Card>
+      )}
+
+      {firstDivergent && firstDivergent.result && (
+        <Card>
+          <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--orange)' }}>
+            Divergent fires — {firstDivergent.triggerName} [{firstDivergent.execType}]
+          </h5>
+          <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+            First failing combo shown below. Click each row in the table above to drill into other failures (todo).
           </p>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-            <Stat label="Backtest fires" value={result.backtest_fires.length} />
-            <Stat label="Live fires" value={result.live_fires.length} />
-            <Stat label="Matched" value={result.matched.length} accent="green" />
-            <Stat
-              label="Divergent"
-              value={result.backtest_only.length + result.live_only.length}
-              accent={result.backtest_only.length + result.live_only.length > 0 ? 'red' : undefined}
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {firstDivergent.result.backtest_only.length > 0 && (
+              <FireList
+                title="Backtest only (live missed these)"
+                fires={firstDivergent.result.backtest_only}
+                accent="red"
+              />
+            )}
+            {firstDivergent.result.live_only.length > 0 && (
+              <FireList
+                title="Live only (backtest missed these)"
+                fires={firstDivergent.result.live_only}
+                accent="orange"
+              />
+            )}
           </div>
-
-          {result.backtest_warmup.length > 0 && (
-            <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
-              {result.backtest_warmup.length} backtest fire(s) inside the warmup window — excluded from the score.
-            </p>
-          )}
-
-          {(result.backtest_only.length > 0 || result.live_only.length > 0) && (
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-              {result.backtest_only.length > 0 && (
-                <FireList
-                  title="Backtest only (live missed these)"
-                  fires={result.backtest_only}
-                  accent="red"
-                />
-              )}
-              {result.live_only.length > 0 && (
-                <FireList
-                  title="Live only (backtest missed these)"
-                  fires={result.live_only}
-                  accent="orange"
-                />
-              )}
-            </div>
-          )}
         </Card>
       )}
     </div>
