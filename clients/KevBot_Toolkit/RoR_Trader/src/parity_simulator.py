@@ -433,6 +433,58 @@ def _verdict_from_diff(
 
 
 # ---------------------------------------------------------------------------
+# Trigger ID resolution — pack base name → prefixed engine ID
+# ---------------------------------------------------------------------------
+
+def _ensure_user_packs_loaded() -> None:
+    """Make sure scan_and_load_all() has run.
+
+    Idempotent — if packs are already registered, this is a no-op. Needed
+    because the smoke-test entrypoint imports this module without booting
+    the API, so the pack_registry never gets populated.
+    """
+    try:
+        import pack_registry
+        # Internal flag — only run a full scan once per process.
+        if not getattr(pack_registry, '_registry_loaded', False):
+            pack_registry.scan_and_load_all()
+    except Exception as e:
+        logger.warning("[parity] pack registry load failed: %s", e)
+
+
+def _resolve_engine_trigger_id(pack_id: str, entry_trigger: str) -> str:
+    """Convert a manifest `base` trigger to the engine's full registered ID.
+
+    The frontend sends the trigger's `base` (e.g. `bullish_c2_detected`)
+    because that's what's in the manifest. The unified engine and live
+    worker register triggers as `{trigger_prefix}_{base}` — i.e.
+    `s123t_bullish_c2_detected`. If we don't bridge this, both paths will
+    look for the wrong name and silently produce zero fires.
+
+    Returns the prefixed ID. If the input already starts with the pack's
+    prefix (caller passed a fully-qualified ID), returns it unchanged.
+    """
+    try:
+        import pack_registry
+        registered = pack_registry.get_registered_packs()
+        pack = registered.get(pack_id)
+        if pack is None:
+            return entry_trigger  # not a user pack — pass through (built-ins like utbot_v2)
+        prefix = pack.manifest.get('trigger_prefix', '')
+        if not prefix:
+            return entry_trigger
+        # Already prefixed? leave it alone.
+        if entry_trigger.startswith(prefix + '_') or entry_trigger == prefix:
+            return entry_trigger
+        return f'{prefix}_{entry_trigger}'
+    except Exception as e:
+        logger.warning(
+            "[parity] could not resolve trigger prefix for pack %s: %s",
+            pack_id, e)
+        return entry_trigger
+
+
+# ---------------------------------------------------------------------------
 # Public V1 entrypoint
 # ---------------------------------------------------------------------------
 
@@ -451,6 +503,14 @@ def run_pack_parity_test(
     Pipeline: backtest path → live replay → diff → verdict. Returns the
     full result schema (no fields left empty for later commits).
     """
+    _ensure_user_packs_loaded()
+    raw_input_trigger = entry_trigger
+    entry_trigger = _resolve_engine_trigger_id(pack_id, entry_trigger)
+    if entry_trigger != raw_input_trigger:
+        logger.info(
+            "[parity] resolved trigger '%s' → '%s' via pack %s prefix",
+            raw_input_trigger, entry_trigger, pack_id)
+
     backtest_fires, enriched_df = _run_backtest_path(
         pack_id=pack_id, entry_trigger=entry_trigger,
         symbol=symbol, timeframe=timeframe, days=days,
