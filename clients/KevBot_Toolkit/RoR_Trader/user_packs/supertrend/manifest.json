@@ -5,8 +5,8 @@
   "category": "Trend",
   "description": "ATR-based trend-following indicator with dynamic support/resistance bands and trend direction",
   "author": "user",
-  "version": "1.0.0",
-  "created_at": "2026-02-19T00:00:00Z",
+  "version": "2.0.0",
+  "created_at": "2026-04-24T00:00:00Z",
   "pack_type": "tf_confluence",
   "display_type": "overlay",
   "interpreters": ["SUPERTREND"],
@@ -55,50 +55,41 @@
     {
       "base": "bull_flip",
       "name": "Trend Flips Bullish",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "bull_flip_ib",
-      "name": "Trend Flips Bullish",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "bull_flip"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "bear_flip",
       "name": "Trend Flips Bearish",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "bear_flip_ib",
-      "name": "Trend Flips Bearish",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "bear_flip"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "near_stop_bull",
       "name": "Approaching Bull Stop",
       "direction": "BOTH",
-      "type": "EXIT",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "near_stop_bear",
       "name": "Approaching Bear Stop",
       "direction": "BOTH",
-      "type": "EXIT",
-      "execution": "bar_close"
+      "type": "BOTH"
     }
   ],
+  "trigger_levels": {
+    "bull_flip": {
+      "level_column": "st_line_prev",
+      "cross": "above"
+    },
+    "bear_flip": {
+      "level_column": "st_line_prev",
+      "cross": "below"
+    }
+  },
   "indicator_columns": [
     "st_line",
+    "st_line_prev",
     "st_direction",
     "st_atr"
   ],
@@ -111,5 +102,9 @@
   "requires_indicators": [
     "st_line",
     "st_direction"
-  ]
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "SupertrendIncremental"
+  }
 }
