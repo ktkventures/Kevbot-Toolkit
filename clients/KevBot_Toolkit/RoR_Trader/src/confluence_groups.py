@@ -1124,28 +1124,43 @@ def get_group_triggers(group: ConfluenceGroup) -> List[TriggerDefinition]:
 
         # Auto-generate execution type variants for bar_close triggers
         # that don't already have explicit variants or suffixed siblings.
-        # L-type (_ib) only generated for packs with indicator overlay lines
-        # (level columns to cross). Pattern-based packs (candle coloring, hidden
-        # display) only get CC variants since there's no price level to cross.
+        # L-type (_ib) and LC (_lc) only generated when the pack tells us
+        # this trigger has a meaningful intra-bar level to cross. Two ways
+        # a pack can declare that:
+        #   1. **Modern (modular pattern):** top-level `trigger_levels`
+        #      block keyed by trigger base. Set by user packs that follow
+        #      the new prompt + schema.
+        #   2. **Legacy:** per-trigger `level_column` field on the
+        #      individual trigger entry. Used by older built-in packs and
+        #      by user packs authored before the modular rewrite.
+        # Pattern-based packs (candle coloring, hidden display, oscillator
+        # values) have no price level to cross and only get CC variants.
         if execution == "bar_close" and not has_exec_variants:
             existing_bases = {t["base"] for t in template.get("triggers", [])}
             display_type = template.get("display_type", "overlay")
             has_candle_color = bool(template.get("plot_config", {}).get("candle_color_column"))
-            # L-type requires a price level to cross — only for overlay packs
-            # without candle coloring (those have actual indicator lines)
-            has_level_columns = (
+
+            modular_levels = template.get("trigger_levels") or {}
+            base_has_modern_level = base in modular_levels
+
+            # Legacy path: any trigger in this template carries a
+            # level_column field (and the pack is overlay without candle
+            # coloring). Mirror the original semantics.
+            base_has_legacy_level = (
                 display_type == "overlay"
                 and not has_candle_color
-                and any(not t.get("base", "").endswith(("_ib", "_hm", "_hl", "_lc", "_cc"))
-                        for t in template.get("triggers", [])
-                        if t.get("level_column"))
+                and any(
+                    not t.get("base", "").endswith(("_ib", "_hm", "_hl", "_lc", "_cc"))
+                    for t in template.get("triggers", [])
+                    if t.get("level_column")
+                )
             )
+
+            base_supports_level = base_has_modern_level or base_has_legacy_level
+
             for suffix, (label, exec_type) in EXEC_VARIANT_LABELS.items():
-                # Skip L-type for packs without level columns
-                if suffix == '_ib' and not has_level_columns:
-                    continue
-                # Skip LC for packs without level columns (LC = level entry + close confirm)
-                if suffix == '_lc' and not has_level_columns:
+                # L and LC require a level to cross
+                if suffix in ('_ib', '_lc') and not base_supports_level:
                     continue
                 suffixed_base = base + suffix
                 if suffixed_base not in existing_bases:

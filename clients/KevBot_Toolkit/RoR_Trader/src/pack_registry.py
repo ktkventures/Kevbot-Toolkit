@@ -487,6 +487,11 @@ def _inject_into_templates(manifest: dict) -> None:
         "display_type": manifest.get("display_type", "overlay"),
         "column_color_map": manifest.get("column_color_map", {}),
         "plot_config": manifest.get("plot_config", {}),
+        # Carry through the modular pattern's trigger_levels block so the
+        # Strategy-Builder trigger expander knows which base triggers
+        # support L/LC variants (per-trigger level_column on individual
+        # entries is the legacy hint; trigger_levels is the modern one).
+        "trigger_levels": manifest.get("trigger_levels", {}),
         "_user_pack": True,
     }
 
