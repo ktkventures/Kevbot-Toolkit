@@ -203,15 +203,22 @@ def _replay_engine_bars(
     # before fires start counting. In batch mode there's no incremental
     # engine to warmup, but the evaluator still needs to walk the bars
     # to seed _cached_levels for L-type reachability checks.
+    #
+    # NOTE: the inner loop's `ind_engine.update_bar(bar)` calls drive the
+    # engine's warmup organically (update_bar uses `not _initialized` to
+    # detect the first bar, exactly like warmup() does). We do NOT call
+    # `ind_engine.warmup(warmup_df)` separately — that would feed every
+    # warmup bar through the engine twice, which corrupts user packs
+    # whose state cares about bar ORDER (e.g. sr_channels' pivot buffer
+    # would see a bar_199 → bar_0 discontinuity at the second pass and
+    # detect spurious pivots near the boundary). Most other packs
+    # tolerated the double-walk because their rolling windows converge
+    # to the same state regardless, but sr_channels was off-by-one on
+    # ~3% of fires until this was fixed.
     if warmup_bars > 0 and len(df) > warmup_bars:
         warmup_df = df.iloc[:warmup_bars]
         replay_df = df.iloc[warmup_bars:]
         skip_idx = warmup_bars
-        if ind_engine is not None:
-            try:
-                ind_engine.warmup(warmup_df)
-            except Exception as e:
-                logger.warning("[parity] %s warmup failed: %s", indicator_mode, e)
         prev_values: dict = {}
         for ts, row in warmup_df.iterrows():
             try:
@@ -220,7 +227,6 @@ def _replay_engine_bars(
                     current = ind_engine.update_bar(bar)
                 else:
                     current = _row_to_current(row)
-                prev2 = trig_eval._bar_close_triggers.get('__prev2_macd_hist', 0.0)  # noqa
                 trig_eval.evaluate_bar_for_backtest(current, prev_values, 0.0)
                 prev_values = current
             except Exception:
