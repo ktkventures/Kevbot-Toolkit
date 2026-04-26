@@ -476,35 +476,38 @@ parity surfaces (UserPacksPage, PackBuilderPage, TfConfluencePage).
 | rsi_zones_2 | ✅ PASS | Wilder RMA (rsi2 prefix) |
 | rsi_zones_3 | ✅ PASS | Wilder RMA + smoothing (renamed prefix `rsi3` to fix legacy collision) |
 | stochastic_oscillator | ✅ PASS | three-stage rolling |
-| sr_channels | ⚠️ PARTIAL ~97% | pivot-cluster S/R; 2-5 fires per trigger off-by-one between batch/live |
+| sr_channels | ✅ PASS | pivot-cluster S/R (fixed by warmup-double-walk fix `88ba5a7`) |
 
 The rsi_zones_3 prefix-collision issue is **resolved** — that pack now
 uses prefix `rsi3` so all three RSI variants coexist at runtime.
 
+The sr_channels off-by-one was traced to a double-warmup bug in
+`_replay_engine_bars` — the warmup section was calling
+`ind_engine.warmup(warmup_df)` AND then walking those same bars again
+through `ind_engine.update_bar()` in the inner loop, feeding each
+user pack's incremental class twice. Most packs were tolerant
+(rolling windows converge regardless of pass count), but sr_channels
+has an explicit pivot-history buffer where bar order matters; the
+second pass created a `bar_199 → bar_0` discontinuity that produced
+spurious pivots near the boundary. Removing the redundant warmup
+call fixed it; all 11 packs now PASS at parity=1.0.
+
 ### Outstanding work
 
-1. **sr_channels off-by-one investigation.** ~3% of fires fire one bar
-   earlier in live than batch (or vice versa). Algorithm is structurally
-   correct — both paths produce the same total fire count per trigger,
-   just with rare 1-bar misalignments. Most likely buffer-trim or
-   pivot-confirmation timing edge. Likely a half-day of focused
-   debugging to track down. Not blocking; the pack works in
-   production for the 97% of fires that do match.
+1. **Click-into-row drilldown for the run-all UI.** Currently surfaces
+   only the first divergent combo's fire list. With all packs now at
+   PASS this is mostly relevant for next-time-something-diverges
+   during pack development. ~20 min.
 
-2. **Click-into-row drilldown for the run-all UI.** Currently surfaces
-   only the first divergent combo's fire list. For multi-failure debugging
-   (sr_channels has divergent fires across all 6 triggers), rows should
-   be clickable to switch which combo's drilldown appears. ~20 min.
-
-3. **Backend batch endpoint for parity-test.** Loads bars once, runs
+2. **Backend batch endpoint for parity-test.** Loads bars once, runs
    the engine for all combos against the same enriched DF. ~5x speedup
-   for big packs; useful when sweeping the legacy packs in volume but
-   we've now done that — value is mostly future-facing.
+   for big packs; the original use case (sweeping legacy packs) is now
+   done, so value is purely future-facing.
 
-4. **Hi-Fi parity smoke** (Follow-up B). Run parity at sub-minute
+3. **Hi-Fi parity smoke** (Follow-up B). Run parity at sub-minute
    timeframes once Hi-Fi data is exposed to the parity sim.
 
-5. **Migrate built-in TF Confluence packs to manifest form.** Lowest
+4. **Migrate built-in TF Confluence packs to manifest form.** Lowest
    priority since they already PASS via hand-tuned IncrementalIndicatorEngine
    code. Would deliver a single code path (no more "built-in vs user
    pack" split) but is purely refactor — no functional change.
