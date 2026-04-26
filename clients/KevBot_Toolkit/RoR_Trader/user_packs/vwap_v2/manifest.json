@@ -1,0 +1,68 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "vwap_v2",
+  "name": "VWAP v2",
+  "category": "Volume",
+  "description": "Volume-weighted average price with ±1σ and ±2σ bands. Seven mutually exclusive position zones plus VWAP-cross and band-extreme triggers. Sessions reset on >30-minute bar gaps.",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": ["VWAP_V2"],
+  "trigger_prefix": "vwapv2",
+  "parameters_schema": {
+    "sd1_mult": {"type": "float", "default": 1.0, "min": 0.5, "max": 4.0, "label": "SD1 Multiplier"},
+    "sd2_mult": {"type": "float", "default": 2.0, "min": 0.5, "max": 6.0, "label": "SD2 Multiplier"}
+  },
+  "plot_schema": {
+    "vwap_color":     {"type": "color", "default": "#a855f7", "label": "VWAP Line Color"},
+    "sd1_color":      {"type": "color", "default": "#f59e0b", "label": "±1σ Band Color"},
+    "sd2_color":      {"type": "color", "default": "#ef4444", "label": "±2σ Band Color"}
+  },
+  "outputs": [">+2σ", ">+1σ", ">V", "@V", "<V", "<-1σ", "<-2σ"],
+  "output_descriptions": {
+    ">+2σ":   "Price above VWAP + 2σ — extended high",
+    ">+1σ":   "Price between +1σ and +2σ above VWAP",
+    ">V":     "Price between VWAP+0.5σ and +1σ above VWAP",
+    "@V":     "Price within ±0.5σ of VWAP — at the line",
+    "<V":     "Price between VWAP-0.5σ and -1σ below VWAP",
+    "<-1σ":  "Price between -1σ and -2σ below VWAP",
+    "<-2σ":  "Price below VWAP - 2σ — extended low"
+  },
+  "triggers": [
+    {"base": "cross_above",         "name": "Price Crosses Above VWAP", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_below",         "name": "Price Crosses Below VWAP", "direction": "BOTH", "type": "BOTH"},
+    {"base": "enter_upper_extreme", "name": "Enter Upper Extreme (>+2σ)", "direction": "BOTH", "type": "BOTH"},
+    {"base": "enter_lower_extreme", "name": "Enter Lower Extreme (<-2σ)", "direction": "BOTH", "type": "BOTH"},
+    {"base": "return_to_vwap",      "name": "Return to VWAP from Extreme", "direction": "BOTH", "type": "BOTH"}
+  ],
+  "trigger_levels": {
+    "cross_above":         {"level_column": "vwapv2_value",    "cross": "above"},
+    "cross_below":         {"level_column": "vwapv2_value",    "cross": "below"},
+    "enter_upper_extreme": {"level_column": "vwapv2_sd2_upper", "cross": "above"},
+    "enter_lower_extreme": {"level_column": "vwapv2_sd2_lower", "cross": "below"}
+  },
+  "indicator_columns": [
+    "vwapv2_value",
+    "vwapv2_sd1_upper",
+    "vwapv2_sd1_lower",
+    "vwapv2_sd2_upper",
+    "vwapv2_sd2_lower"
+  ],
+  "column_color_map": {
+    "vwapv2_value":     "vwap_color",
+    "vwapv2_sd1_upper": "sd1_color",
+    "vwapv2_sd1_lower": "sd1_color",
+    "vwapv2_sd2_upper": "sd2_color",
+    "vwapv2_sd2_lower": "sd2_color"
+  },
+  "indicator_function": "calculate_vwap_v2",
+  "interpreter_function": "interpret_vwap_v2",
+  "trigger_function": "detect_vwap_v2_triggers",
+  "requires_indicators": ["vwapv2_value"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "VwapV2Incremental"
+  }
+}
