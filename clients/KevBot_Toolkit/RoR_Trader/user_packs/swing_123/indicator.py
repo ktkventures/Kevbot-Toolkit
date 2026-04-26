@@ -1,62 +1,45 @@
+"""Swing 1-2-3 — batch indicator (thin wrapper over the incremental class).
+
+Replays each row through `Swing123Incremental.update_bar`. Both batch
+and live paths share the same code, so they cannot drift apart — the
+parity simulator verifies bit-equivalence.
+"""
+
 import pandas as pd
-import numpy as np
+from indicator_incremental import Swing123Incremental
 
 
 def calculate_swing_123(df: pd.DataFrame, **params) -> pd.DataFrame:
-    """
-    Detect Swing 1-2-3 candle patterns.
+    engine = Swing123Incremental(**params)
 
-    Candle 2 (C2): Reversal candidate
-        Bull C2: Makes lower low than prior bar AND closes above prior close
-        Bear C2: Makes higher high than prior bar AND closes below prior close
+    pattern: list = []
+    candle_color: list = []
+    bull_c2: list = []
+    bull_c3: list = []
+    bear_c2: list = []
+    bear_c3: list = []
 
-    Candle 3 (C3): Continuation confirmation
-        Bull C3: Prior bar was Bull C2 AND current close > prior high
-        Bear C3: Prior bar was Bear C2 AND current close < prior low
+    for _, row in df.iterrows():
+        out = engine.update_bar({
+            "open": row.get("open", 0.0),
+            "high": row.get("high", 0.0),
+            "low": row.get("low", 0.0),
+            "close": row.get("close", 0.0),
+            "volume": row.get("volume", 0.0),
+        })
+        pattern.append(out["sw123_pattern"])
+        candle_color.append(out["sw123_candle_color"])
+        bull_c2.append(out["sw123_bull_c2"])
+        bull_c3.append(out["sw123_bull_c3"])
+        bear_c2.append(out["sw123_bear_c2"])
+        bear_c3.append(out["sw123_bear_c3"])
 
-    Outputs:
-        sw123_pattern: Integer code (0=neutral, 1=bull_c2, 2=bull_c3, -1=bear_c2, -2=bear_c3)
-        sw123_candle_color: Hex color string for bar coloring (or empty for default)
-    """
     result = df.copy()
-    close = result["close"].values
-    high = result["high"].values
-    low = result["low"].values
-    n = len(close)
-
-    pattern = np.zeros(n, dtype=int)
-    colors = [""] * n
-
-    # Default colors
-    bull_c2_color = "#FFD11A"
-    bull_c3_color = "#FFFF00"
-    bear_c2_color = "#FF66B3"
-    bear_c3_color = "#FF33CC"
-
-    for i in range(1, n):
-        # Candle 2 conditions
-        bull_c2 = low[i] < low[i - 1] and close[i] > close[i - 1]
-        bear_c2 = high[i] > high[i - 1] and close[i] < close[i - 1]
-
-        # Candle 3 conditions (check if prior bar was C2)
-        bull_c3 = (pattern[i - 1] == 1) and close[i] > high[i - 1]
-        bear_c3 = (pattern[i - 1] == -1) and close[i] < low[i - 1]
-
-        # Priority: C3 > C2 (matching Pine Script)
-        if bull_c3:
-            pattern[i] = 2
-            colors[i] = bull_c3_color
-        elif bear_c3:
-            pattern[i] = -2
-            colors[i] = bear_c3_color
-        elif bull_c2:
-            pattern[i] = 1
-            colors[i] = bull_c2_color
-        elif bear_c2:
-            pattern[i] = -1
-            colors[i] = bear_c2_color
-
     result["sw123_pattern"] = pattern
-    result["sw123_candle_color"] = colors
-
+    result["sw123_candle_color"] = candle_color
+    # Trigger booleans cached for interpreter.py to forward.
+    result["__sw123_bull_c2"] = bull_c2
+    result["__sw123_bull_c3"] = bull_c3
+    result["__sw123_bear_c2"] = bear_c2
+    result["__sw123_bear_c3"] = bear_c3
     return result

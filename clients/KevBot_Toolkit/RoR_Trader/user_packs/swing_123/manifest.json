@@ -5,8 +5,8 @@
   "category": "Trend",
   "description": "Candle 2 and Candle 3 pattern detection for swing reversal and continuation signals",
   "author": "user",
-  "version": "1.0.0",
-  "created_at": "2026-02-19T00:00:00Z",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
   "pack_type": "tf_confluence",
   "display_type": "hidden",
   "interpreters": ["SWING_123"],
@@ -55,70 +55,26 @@
     {
       "base": "bull_c2",
       "name": "Bullish Candle 2",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close",
-      "exec_variants": {
-        "C": {"enabled": true, "reference_bar": 0, "order_type": "market"},
-        "L": {"enabled": false, "reference_bar": -1, "order_type": "market", "hold_seconds": 0},
-        "LC": {"enabled": false, "confirm_bar_offset": 0, "bail_action": "exit_market"},
-        "CC": {"enabled": true, "confirm_bar_offset": 1, "bail_action": "exit_market"}
-      }
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "bull_c3",
       "name": "Bullish Candle 3",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close",
-      "exec_variants": {
-        "C": {"enabled": true, "reference_bar": 0, "order_type": "market"},
-        "L": {"enabled": false},
-        "LC": {"enabled": false},
-        "CC": {"enabled": false, "confirm_bar_offset": 1, "bail_action": "exit_market"}
-      }
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "bear_c2",
       "name": "Bearish Candle 2",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close",
-      "exec_variants": {
-        "C": {"enabled": true, "reference_bar": 0, "order_type": "market"},
-        "L": {"enabled": false, "reference_bar": -1, "order_type": "market", "hold_seconds": 0},
-        "LC": {"enabled": false, "confirm_bar_offset": 0, "bail_action": "exit_market"},
-        "CC": {"enabled": true, "confirm_bar_offset": 1, "bail_action": "exit_market"}
-      }
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "bear_c3",
       "name": "Bearish Candle 3",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close",
-      "exec_variants": {
-        "C": {"enabled": true, "reference_bar": 0, "order_type": "market"},
-        "L": {"enabled": false},
-        "LC": {"enabled": false},
-        "CC": {"enabled": false, "confirm_bar_offset": 1, "bail_action": "exit_market"}
-      }
-    },
-    {
-      "base": "bull_c2_cc",
-      "name": "Bullish C2 → C3 Confirmed (CC)",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "close_close",
-      "column_base": "bull_c2"
-    },
-    {
-      "base": "bear_c2_cc",
-      "name": "Bearish C2 → C3 Confirmed (CC)",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "close_close",
-      "column_base": "bear_c2"
+      "direction": "BOTH",
+      "type": "BOTH"
     }
   ],
   "indicator_columns": [
@@ -131,5 +87,9 @@
   "trigger_function": "detect_swing_123_triggers",
   "requires_indicators": [
     "sw123_pattern"
-  ]
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "Swing123Incremental"
+  }
 }
