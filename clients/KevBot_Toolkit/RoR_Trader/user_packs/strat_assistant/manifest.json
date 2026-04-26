@@ -5,8 +5,8 @@
   "category": "Trend",
   "description": "The Strat bar pattern classification (1-2-3), strategy combo detection, and actionable signals (Shooter/Hammer)",
   "author": "user",
-  "version": "1.0.0",
-  "created_at": "2026-02-19T00:00:00Z",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
   "pack_type": "tf_confluence",
   "display_type": "hidden",
   "interpreters": ["STRAT_ASSISTANT"],
@@ -61,44 +61,38 @@
     {
       "base": "bull_c2",
       "name": "Bullish 2-Up",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "bear_c2",
       "name": "Bearish 2-Down",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "outside_bar",
       "name": "Outside Bar (3)",
       "direction": "BOTH",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "inside_bar",
       "name": "Inside Bar (1)",
       "direction": "BOTH",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "shooter",
       "name": "Shooter Signal",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "hammer",
       "name": "Hammer Signal",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "direction": "BOTH",
+      "type": "BOTH"
     }
   ],
   "indicator_columns": [
@@ -113,5 +107,9 @@
   "trigger_function": "detect_strat_assistant_triggers",
   "requires_indicators": [
     "strat_bar_type"
-  ]
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "StratAssistantIncremental"
+  }
 }
