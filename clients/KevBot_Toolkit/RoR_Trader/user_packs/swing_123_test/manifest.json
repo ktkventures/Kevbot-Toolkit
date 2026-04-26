@@ -5,13 +5,11 @@
   "category": "Custom",
   "description": "Detects Swing 1-2-3 candle patterns where C2 absorbs pressure and C3 confirms breakout/breakdown",
   "author": "user",
-  "version": "1.0.0",
-  "created_at": "2026-01-01T00:00:00Z",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
   "pack_type": "tf_confluence",
   "display_type": "overlay",
-  "interpreters": [
-    "SWING_123_TEST"
-  ],
+  "interpreters": ["SWING_123_TEST"],
   "trigger_prefix": "s123t",
   "parameters_schema": {
     "min_c2_wick_pct": {
@@ -59,67 +57,54 @@
     "BEARISH_C3"
   ],
   "output_descriptions": {
-    "NEUTRAL": "No active Swing 1-2-3 pattern forming or recently completed. Bar shows no qualifying C2 or C3 structure.",
-    "BULLISH_C2": "Bullish Candle 2 detected: current bar made a lower low than the prior bar AND closed above the prior bar's close. Buyers absorbed selling pressure \u2014 the setup candle. The low of this candle is the line-in-the-sand stop reference.",
-    "BULLISH_C3": "Bullish Candle 3 confirmed: prior bar was a Bullish C2 AND current bar closed above the prior bar's high. Full bullish 1-2-3 pattern complete \u2014 buyers have overpowered sellers and broken out above the C2 high.",
-    "BEARISH_C2": "Bearish Candle 2 detected: current bar made a higher high than the prior bar AND closed below the prior bar's close. Sellers absorbed buying pressure \u2014 the setup candle. The high of this candle is the stop reference for short setups.",
-    "BEARISH_C3": "Bearish Candle 3 confirmed: prior bar was a Bearish C2 AND current bar closed below the prior bar's low. Full bearish 1-2-3 pattern complete \u2014 sellers have overpowered buyers and broken down below the C2 low."
+    "NEUTRAL": "No active Swing 1-2-3 pattern forming or recently completed.",
+    "BULLISH_C2": "Bullish setup candle: lower low than the prior bar AND closed above the prior bar's close.",
+    "BULLISH_C3": "Bullish breakout confirmed: prior bar was a Bullish C2 AND current close above prior bar's high.",
+    "BEARISH_C2": "Bearish setup candle: higher high than the prior bar AND closed below the prior bar's close.",
+    "BEARISH_C3": "Bearish breakdown confirmed: prior bar was a Bearish C2 AND current close below prior bar's low."
   },
   "triggers": [
     {
       "base": "bullish_c2_detected",
       "name": "Bullish C2 Setup Detected",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
-    },
-    {
-      "base": "bullish_c2_detected_ib",
-      "name": "Bullish C2 Setup Intra-Bar Entry",
-      "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "intra_bar",
-      "level_column": "sw123t_bull_entry_level_prev",
-      "cross": "above"
+      "type": "BOTH"
     },
     {
       "base": "bullish_c3_confirmed",
       "name": "Bullish C3 Breakout Confirmed",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "bearish_c2_detected",
       "name": "Bearish C2 Setup Detected",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
-    },
-    {
-      "base": "bearish_c2_detected_ib",
-      "name": "Bearish C2 Setup Intra-Bar Entry",
-      "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "intra_bar",
-      "level_column": "sw123t_bear_entry_level_prev",
-      "cross": "below"
+      "type": "BOTH"
     },
     {
       "base": "bearish_c3_confirmed",
       "name": "Bearish C3 Breakdown Confirmed",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "pattern_reset",
       "name": "Pattern Reset to Neutral",
       "direction": "BOTH",
-      "type": "BOTH",
-      "execution": "bar_close"
+      "type": "BOTH"
     }
   ],
+  "trigger_levels": {
+    "bullish_c2_detected": {
+      "level_column": "sw123t_bull_entry_level_prev",
+      "cross": "above"
+    },
+    "bearish_c2_detected": {
+      "level_column": "sw123t_bear_entry_level_prev",
+      "cross": "below"
+    }
+  },
   "indicator_columns": [
     "sw123t_bull_c2",
     "sw123t_bear_c2",
@@ -140,8 +125,10 @@
     "sw123t_bull_c2",
     "sw123t_bear_c2",
     "sw123t_bull_c3",
-    "sw123t_bear_c3",
-    "sw123t_bull_entry_level_prev",
-    "sw123t_bear_entry_level_prev"
-  ]
+    "sw123t_bear_c3"
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "Swing123TestIncremental"
+  }
 }
