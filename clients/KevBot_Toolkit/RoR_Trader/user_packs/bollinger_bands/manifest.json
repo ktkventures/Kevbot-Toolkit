@@ -5,13 +5,11 @@
   "category": "Momentum",
   "description": "Bollinger Bands with upper/mid/lower zone classification and squeeze detection triggers",
   "author": "user",
-  "version": "1.0.0",
-  "created_at": "2026-02-17T00:00:00Z",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
   "pack_type": "tf_confluence",
   "display_type": "overlay",
-  "interpreters": [
-    "BOLLINGER_BANDS"
-  ],
+  "interpreters": ["BOLLINGER_BANDS"],
   "trigger_prefix": "bb",
   "parameters_schema": {
     "bb_period": {
@@ -76,9 +74,9 @@
     "LOWER_ZONE"
   ],
   "output_descriptions": {
-    "SQUEEZE_UPPER": "Price in upper zone while bandwidth is below squeeze threshold \u2014 tight bands, price near upper",
-    "SQUEEZE_MID": "Price in mid zone while bandwidth is below squeeze threshold \u2014 tight bands, price near basis",
-    "SQUEEZE_LOWER": "Price in lower zone while bandwidth is below squeeze threshold \u2014 tight bands, price near lower",
+    "SQUEEZE_UPPER": "Price in upper zone while bandwidth is below squeeze threshold — tight bands, price near upper",
+    "SQUEEZE_MID": "Price in mid zone while bandwidth is below squeeze threshold — tight bands, price near basis",
+    "SQUEEZE_LOWER": "Price in lower zone while bandwidth is below squeeze threshold — tight bands, price near lower",
     "UPPER_ZONE": "Price above basis (midline) in normal volatility",
     "MID_ZONE": "Price near basis within 25% of band width in normal volatility",
     "LOWER_ZONE": "Price below basis (midline) in normal volatility"
@@ -87,83 +85,66 @@
     {
       "base": "cross_upper",
       "name": "Cross Above Upper Band",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "cross_upper_ib",
-      "name": "Cross Above Upper Band",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "cross_upper"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "cross_lower",
       "name": "Cross Below Lower Band",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "cross_lower_ib",
-      "name": "Cross Below Lower Band",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "cross_lower"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "cross_basis_up",
       "name": "Cross Above Basis",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "cross_basis_up_ib",
-      "name": "Cross Above Basis",
-      "direction": "LONG",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "cross_basis_up"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "cross_basis_down",
       "name": "Cross Below Basis",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "bar_close"
-    },
-    {
-      "base": "cross_basis_down_ib",
-      "name": "Cross Below Basis",
-      "direction": "SHORT",
-      "type": "ENTRY",
-      "execution": "intra_bar",
-      "column_base": "cross_basis_down"
+      "direction": "BOTH",
+      "type": "BOTH"
     },
     {
       "base": "squeeze_on",
       "name": "Squeeze Starts",
       "direction": "BOTH",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "type": "BOTH"
     },
     {
       "base": "squeeze_off",
       "name": "Squeeze Ends",
       "direction": "BOTH",
-      "type": "ENTRY",
-      "execution": "bar_close"
+      "type": "BOTH"
     }
   ],
+  "trigger_levels": {
+    "cross_upper": {
+      "level_column": "bb_upper_prev",
+      "cross": "above"
+    },
+    "cross_lower": {
+      "level_column": "bb_lower_prev",
+      "cross": "below"
+    },
+    "cross_basis_up": {
+      "level_column": "bb_basis_prev",
+      "cross": "above"
+    },
+    "cross_basis_down": {
+      "level_column": "bb_basis_prev",
+      "cross": "below"
+    }
+  },
   "indicator_columns": [
     "bb_upper",
     "bb_basis",
     "bb_lower",
-    "bb_bandwidth"
+    "bb_bandwidth",
+    "bb_upper_prev",
+    "bb_basis_prev",
+    "bb_lower_prev"
   ],
   "column_color_map": {
     "bb_upper": "upper_color",
@@ -178,5 +159,9 @@
     "bb_basis",
     "bb_lower",
     "bb_bandwidth"
-  ]
+  ],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "BollingerBandsIncremental"
+  }
 }
