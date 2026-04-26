@@ -511,3 +511,34 @@ call fixed it; all 11 packs now PASS at parity=1.0.
    priority since they already PASS via hand-tuned IncrementalIndicatorEngine
    code. Would deliver a single code path (no more "built-in vs user
    pack" split) but is purely refactor — no functional change.
+
+## EOD 2026-04-26 (cont.) — TF Confluence built-in mirrors shipped
+
+Item #4 above (migrate the TF Confluence built-ins) is **done** as
+parallel user packs rather than an in-place rewrite. Originals remain
+in place; cutover deferred until production confidence builds.
+
+Backup branch: `dev-backup-pre-tf-confluence-tests-2026-04-26`.
+
+| Built-in | Mirror pack (prefix) | Parity | Notes |
+|---|---|---|---|
+| rvol | `rvol_v2` (`rv2`) | ✅ PASS 178/42/289 | shipped `bf9dc67` |
+| vwap | `vwap_v2` (`vwapv2`) | ✅ PASS 13/15 combos | shipped `bf9dc67`; surfaced two SAFE_BUILTINS gaps (no `Exception`, no `hasattr`) |
+| macd_line | `macd_line_v2` (`mlv2`) | ✅ PASS 4/4 | shipped `2473e1c` |
+| macd_histogram | `macd_histogram_v2` (`mhv2`) | ✅ PASS 4/4 | shipped `2473e1c` — **fixes** built-in's `prev2_macd_hist=0.0` momentum_shift bug by tracking prev2 internally and using a fresh prefix the engine's hardcoded branch doesn't match |
+| ema_stack | `ema_stack_v2` (`esv2`) | ✅ PASS 2/4, 2 NO_FIRES | shipped `2473e1c` — **fixes** built-in's hardcoded `ema_8`/`ema_50` lookup by storing periods on the incremental class |
+| ema_price_position (L0) | `ema_pp_v3` (`eppv3`) | ✅ PASS 12/12 | shipped `2473e1c` — L0 semantic, level cols without `_prev` |
+| ema_price_position_v2 (L1) | `ema_pp_v4` (`eppv4`) | ✅ PASS 12/12 | shipped `2473e1c` — L1 semantic, `_prev` cols, engine adds 1-bar lag |
+
+**Skipped:** `bar_count` — fundamentally different (operates on position
+state, not per-bar indicator output). Better suited for the existing
+`time_exit_packs` system; not a parity-sim candidate.
+
+All 7 mirrors pass the 33 manifest validations and the SAFE_BUILTINS
+sandbox restrictions. Two engine-level bugs in the built-ins were
+sidestepped (not fixed in place) by giving the new packs different
+prefixes so the engine's hardcoded trigger branches don't apply.
+
+Originals remain registered. No user-visible change yet — these become
+defaults when Kevin chooses to cut over confluence groups to the new
+prefixes.
