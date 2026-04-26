@@ -1,0 +1,82 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "ema_pp_v3",
+  "name": "EMA Price Position v3",
+  "category": "Trend",
+  "description": "Three EMAs + price-vs-EMA position classification (24 orderings of P/S/M/L) and bar-close cross triggers. L-type intra-bar entries cross the current bar's EMA value (L0 semantic).",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": ["EMA_PP_V3"],
+  "trigger_prefix": "eppv3",
+  "parameters_schema": {
+    "short_period": {"type": "int", "default": 8,  "min": 2, "max": 100, "label": "Short EMA Period"},
+    "mid_period":   {"type": "int", "default": 21, "min": 2, "max": 200, "label": "Mid EMA Period"},
+    "long_period":  {"type": "int", "default": 50, "min": 2, "max": 500, "label": "Long EMA Period"}
+  },
+  "plot_schema": {
+    "short_color": {"type": "color", "default": "#22c55e", "label": "Short EMA Color"},
+    "mid_color":   {"type": "color", "default": "#eab308", "label": "Mid EMA Color"},
+    "long_color":  {"type": "color", "default": "#ef4444", "label": "Long EMA Color"}
+  },
+  "outputs": [
+    "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
+    "SPML", "SPLM", "SMPL", "SMLP", "SLPM", "SLMP",
+    "MPSL", "MPLS", "MSPL", "MSLP", "MLPS", "MLSP",
+    "LPSM", "LPMS", "LSPM", "LSMP", "LMPS", "LMSP"
+  ],
+  "output_descriptions": {
+    "PSML": "Price > Short > Mid > Long — full bull alignment, price leading",
+    "PSLM": "Price > Short > Long > Mid — short leading, mid weakest",
+    "PMSL": "Price > Mid > Short > Long — mid above short, both above long",
+    "PMLS": "Price > Mid > Long > Short — mid leading, short weakest",
+    "PLSM": "Price > Long > Short > Mid — long resilient, mid weakest",
+    "PLMS": "Price > Long > Mid > Short — long leading, short weakest",
+    "SPML": "Short > Price > Mid > Long — short above price, price holding",
+    "SPLM": "Short > Price > Long > Mid — short top, mid weak",
+    "SMPL": "Short > Mid > Price > Long — short and mid above price",
+    "SMLP": "Short > Mid > Long > Price — full short stack above price",
+    "SLPM": "Short > Long > Price > Mid — short top, mid weakest",
+    "SLMP": "Short > Long > Mid > Price — long stack above price, short top",
+    "MPSL": "Mid > Price > Short > Long — mid leading, short below price",
+    "MPLS": "Mid > Price > Long > Short — mid leading, short weakest",
+    "MSPL": "Mid > Short > Price > Long — mid and short above price",
+    "MSLP": "Mid > Short > Long > Price — full mid stack above price",
+    "MLPS": "Mid > Long > Price > Short — mid leading, short weakest",
+    "MLSP": "Mid > Long > Short > Price — full mid stack above price",
+    "LPSM": "Long > Price > Short > Mid — long top, transitional",
+    "LPMS": "Long > Price > Mid > Short — long top, transitional",
+    "LSPM": "Long > Short > Price > Mid — long top, mid weakest",
+    "LSMP": "Long > Short > Mid > Price — full long stack above price",
+    "LMPS": "Long > Mid > Price > Short — long top, short weakest",
+    "LMSP": "Long > Mid > Short > Price — full bear alignment"
+  },
+  "triggers": [
+    {"base": "cross_short_up",   "name": "Price Crosses Above Short EMA", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_short_down", "name": "Price Crosses Below Short EMA", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_mid_up",     "name": "Price Crosses Above Mid EMA",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_mid_down",   "name": "Price Crosses Below Mid EMA",   "direction": "BOTH", "type": "BOTH"}
+  ],
+  "trigger_levels": {
+    "cross_short_up":   {"level_column": "eppv3_short", "cross": "above"},
+    "cross_short_down": {"level_column": "eppv3_short", "cross": "below"},
+    "cross_mid_up":     {"level_column": "eppv3_mid",   "cross": "above"},
+    "cross_mid_down":   {"level_column": "eppv3_mid",   "cross": "below"}
+  },
+  "indicator_columns": ["eppv3_short", "eppv3_mid", "eppv3_long"],
+  "column_color_map": {
+    "eppv3_short": "short_color",
+    "eppv3_mid":   "mid_color",
+    "eppv3_long":  "long_color"
+  },
+  "indicator_function": "calculate_ema_pp_v3",
+  "interpreter_function": "interpret_ema_pp_v3",
+  "trigger_function": "detect_ema_pp_v3_triggers",
+  "requires_indicators": ["eppv3_short", "eppv3_mid", "eppv3_long"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "EmaPpV3Incremental"
+  }
+}

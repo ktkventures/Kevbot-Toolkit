@@ -1,0 +1,82 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "ema_pp_v4",
+  "name": "EMA Price Position v4",
+  "category": "Trend",
+  "description": "Three EMAs + price-vs-EMA position classification with L1-type intra-bar level columns (`_prev` suffix). Engine adds a 1-bar lag automatically — provides a more conservative cross-detection semantic than v3.",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "overlay",
+  "interpreters": ["EMA_PP_V4"],
+  "trigger_prefix": "eppv4",
+  "parameters_schema": {
+    "short_period": {"type": "int", "default": 8,  "min": 2, "max": 100, "label": "Short EMA Period"},
+    "mid_period":   {"type": "int", "default": 21, "min": 2, "max": 200, "label": "Mid EMA Period"},
+    "long_period":  {"type": "int", "default": 50, "min": 2, "max": 500, "label": "Long EMA Period"}
+  },
+  "plot_schema": {
+    "short_color": {"type": "color", "default": "#22c55e", "label": "Short EMA Color"},
+    "mid_color":   {"type": "color", "default": "#eab308", "label": "Mid EMA Color"},
+    "long_color":  {"type": "color", "default": "#ef4444", "label": "Long EMA Color"}
+  },
+  "outputs": [
+    "PSML", "PSLM", "PMSL", "PMLS", "PLSM", "PLMS",
+    "SPML", "SPLM", "SMPL", "SMLP", "SLPM", "SLMP",
+    "MPSL", "MPLS", "MSPL", "MSLP", "MLPS", "MLSP",
+    "LPSM", "LPMS", "LSPM", "LSMP", "LMPS", "LMSP"
+  ],
+  "output_descriptions": {
+    "PSML": "Price > Short > Mid > Long — full bull alignment",
+    "PSLM": "Price > Short > Long > Mid",
+    "PMSL": "Price > Mid > Short > Long",
+    "PMLS": "Price > Mid > Long > Short",
+    "PLSM": "Price > Long > Short > Mid",
+    "PLMS": "Price > Long > Mid > Short",
+    "SPML": "Short > Price > Mid > Long",
+    "SPLM": "Short > Price > Long > Mid",
+    "SMPL": "Short > Mid > Price > Long",
+    "SMLP": "Short > Mid > Long > Price",
+    "SLPM": "Short > Long > Price > Mid",
+    "SLMP": "Short > Long > Mid > Price",
+    "MPSL": "Mid > Price > Short > Long",
+    "MPLS": "Mid > Price > Long > Short",
+    "MSPL": "Mid > Short > Price > Long",
+    "MSLP": "Mid > Short > Long > Price",
+    "MLPS": "Mid > Long > Price > Short",
+    "MLSP": "Mid > Long > Short > Price",
+    "LPSM": "Long > Price > Short > Mid",
+    "LPMS": "Long > Price > Mid > Short",
+    "LSPM": "Long > Short > Price > Mid",
+    "LSMP": "Long > Short > Mid > Price",
+    "LMPS": "Long > Mid > Price > Short",
+    "LMSP": "Long > Mid > Short > Price — full bear alignment"
+  },
+  "triggers": [
+    {"base": "cross_short_up",   "name": "Price Crosses Above Short EMA", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_short_down", "name": "Price Crosses Below Short EMA", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_mid_up",     "name": "Price Crosses Above Mid EMA",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_mid_down",   "name": "Price Crosses Below Mid EMA",   "direction": "BOTH", "type": "BOTH"}
+  ],
+  "trigger_levels": {
+    "cross_short_up":   {"level_column": "eppv4_short_prev", "cross": "above"},
+    "cross_short_down": {"level_column": "eppv4_short_prev", "cross": "below"},
+    "cross_mid_up":     {"level_column": "eppv4_mid_prev",   "cross": "above"},
+    "cross_mid_down":   {"level_column": "eppv4_mid_prev",   "cross": "below"}
+  },
+  "indicator_columns": ["eppv4_short_prev", "eppv4_mid_prev", "eppv4_long_prev"],
+  "column_color_map": {
+    "eppv4_short_prev": "short_color",
+    "eppv4_mid_prev":   "mid_color",
+    "eppv4_long_prev":  "long_color"
+  },
+  "indicator_function": "calculate_ema_pp_v4",
+  "interpreter_function": "interpret_ema_pp_v4",
+  "trigger_function": "detect_ema_pp_v4_triggers",
+  "requires_indicators": ["eppv4_short_prev", "eppv4_mid_prev", "eppv4_long_prev"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "EmaPpV4Incremental"
+  }
+}

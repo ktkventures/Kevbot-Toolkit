@@ -1,0 +1,50 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "macd_line_v2",
+  "name": "MACD Line v2",
+  "category": "Momentum",
+  "description": "MACD with fast/slow/signal EMAs. Four position states (M>S+, M>S-, M<S+, M<S-) and signal-cross + zero-cross triggers.",
+  "author": "user",
+  "version": "1.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "oscillator",
+  "interpreters": ["MACD_LINE_V2"],
+  "trigger_prefix": "mlv2",
+  "parameters_schema": {
+    "fast_period":   {"type": "int", "default": 12, "min": 2,  "max": 50,  "label": "Fast EMA Period"},
+    "slow_period":   {"type": "int", "default": 26, "min": 5,  "max": 100, "label": "Slow EMA Period"},
+    "signal_period": {"type": "int", "default": 9,  "min": 2,  "max": 30,  "label": "Signal EMA Period"}
+  },
+  "plot_schema": {
+    "line_color":   {"type": "color", "default": "#3b82f6", "label": "MACD Line Color"},
+    "signal_color": {"type": "color", "default": "#f59e0b", "label": "Signal Line Color"},
+    "hist_color":   {"type": "color", "default": "#94a3b8", "label": "Histogram Color"}
+  },
+  "outputs": ["M>S+", "M>S-", "M<S+", "M<S-"],
+  "output_descriptions": {
+    "M>S+": "MACD above signal line, both above zero — strong bullish momentum",
+    "M>S-": "MACD above signal line but both below zero — bullish recovery",
+    "M<S+": "MACD below signal line but both above zero — bullish weakening",
+    "M<S-": "MACD below signal line, both below zero — strong bearish momentum"
+  },
+  "triggers": [
+    {"base": "cross_bull",       "name": "MACD Crosses Above Signal",  "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_bear",       "name": "MACD Crosses Below Signal",  "direction": "BOTH", "type": "BOTH"},
+    {"base": "zero_cross_up",    "name": "MACD Crosses Above Zero",    "direction": "BOTH", "type": "BOTH"},
+    {"base": "zero_cross_down",  "name": "MACD Crosses Below Zero",    "direction": "BOTH", "type": "BOTH"}
+  ],
+  "indicator_columns": ["mlv2_line", "mlv2_signal", "mlv2_hist"],
+  "column_color_map": {
+    "mlv2_line":   "line_color",
+    "mlv2_signal": "signal_color"
+  },
+  "indicator_function": "calculate_macd_line_v2",
+  "interpreter_function": "interpret_macd_line_v2",
+  "trigger_function": "detect_macd_line_v2_triggers",
+  "requires_indicators": ["mlv2_line", "mlv2_signal"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "MacdLineV2Incremental"
+  }
+}
