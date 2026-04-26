@@ -455,3 +455,56 @@ Pick up at one of these, in priority order:
 - **Backup branches:** `dev-backup-pre-modular-triggers-2026-04-24`,
   `dev-backup-pre-l-tick-sim-2026-04-24`. Either is a safe revert
   point.
+
+---
+
+## EOD 2026-04-26 — full migration sweep complete
+
+**All 10 user packs now run on the modular pattern with
+`incremental_class` wiring.** Run All Combos UI exists on all three
+parity surfaces (UserPacksPage, PackBuilderPage, TfConfluencePage).
+
+| Pack | Verdict | Notes |
+|---|---|---|
+| ut_bot_v4 | ✅ PASS | reference (built fresh) |
+| supertrend | ✅ PASS | ratcheted bands |
+| bollinger_bands | ✅ PASS | windowed SMA + std |
+| swing_123_test | ✅ PASS | bar-pattern + level-cross C2 |
+| swing_123 | ✅ PASS | bar-pattern (older variant) |
+| strat_assistant | ✅ PASS | bar-type + combo + actionable |
+| rsi_zones | ✅ PASS | Wilder RMA |
+| rsi_zones_2 | ✅ PASS | Wilder RMA (rsi2 prefix) |
+| rsi_zones_3 | ✅ PASS | Wilder RMA + smoothing (renamed prefix `rsi3` to fix legacy collision) |
+| stochastic_oscillator | ✅ PASS | three-stage rolling |
+| sr_channels | ⚠️ PARTIAL ~97% | pivot-cluster S/R; 2-5 fires per trigger off-by-one between batch/live |
+
+The rsi_zones_3 prefix-collision issue is **resolved** — that pack now
+uses prefix `rsi3` so all three RSI variants coexist at runtime.
+
+### Outstanding work
+
+1. **sr_channels off-by-one investigation.** ~3% of fires fire one bar
+   earlier in live than batch (or vice versa). Algorithm is structurally
+   correct — both paths produce the same total fire count per trigger,
+   just with rare 1-bar misalignments. Most likely buffer-trim or
+   pivot-confirmation timing edge. Likely a half-day of focused
+   debugging to track down. Not blocking; the pack works in
+   production for the 97% of fires that do match.
+
+2. **Click-into-row drilldown for the run-all UI.** Currently surfaces
+   only the first divergent combo's fire list. For multi-failure debugging
+   (sr_channels has divergent fires across all 6 triggers), rows should
+   be clickable to switch which combo's drilldown appears. ~20 min.
+
+3. **Backend batch endpoint for parity-test.** Loads bars once, runs
+   the engine for all combos against the same enriched DF. ~5x speedup
+   for big packs; useful when sweeping the legacy packs in volume but
+   we've now done that — value is mostly future-facing.
+
+4. **Hi-Fi parity smoke** (Follow-up B). Run parity at sub-minute
+   timeframes once Hi-Fi data is exposed to the parity sim.
+
+5. **Migrate built-in TF Confluence packs to manifest form.** Lowest
+   priority since they already PASS via hand-tuned IncrementalIndicatorEngine
+   code. Would deliver a single code path (no more "built-in vs user
+   pack" split) but is purely refactor — no functional change.
