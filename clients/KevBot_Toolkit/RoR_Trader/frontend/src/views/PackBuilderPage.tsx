@@ -151,16 +151,23 @@ export default function PackBuilderPage() {
   const [sbZoomTrade, setSbZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: any } | null>(null);
   const [sbLastConfig, setSbLastConfig] = useState<any>(null);
 
-  // Parity Simulator state
-  const [parityTrigger, setParityTrigger] = useState('');
-  const [parityExecType, setParityExecType] = useState<'C' | 'L' | 'LC' | 'CC'>('C');
+  // Parity Simulator state — run-all-combos table
   const [paritySymbol, setParitySymbol] = useState('SPY');
   const [parityTimeframe, setParityTimeframe] = useState('1Min');
   const [parityDays, setParityDays] = useState(7);
   const [parityWarmup, setParityWarmup] = useState(200);
   const [parityRunning, setParityRunning] = useState(false);
-  const [parityResult, setParityResult] = useState<any | null>(null);
-  const [parityError, setParityError] = useState<string | null>(null);
+  // Each combo = (trigger × exec type) row; status updates in place as
+  // sequential calls progress.
+  const [parityCombos, setParityCombos] = useState<Array<{
+    triggerId: string;
+    triggerName: string;
+    execType: 'C' | 'L' | 'LC';
+    status: 'pending' | 'running' | 'done' | 'error';
+    result?: any;
+    error?: string;
+  }>>([]);
+  const [parityTopError, setParityTopError] = useState<string | null>(null);
 
   // AI mutation hooks (must be before any early returns per React rules)
   const generateStructureMutation = useGenerateStructure();
@@ -1014,216 +1021,254 @@ export default function PackBuilderPage() {
                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>The simulator needs registered triggers in the live engine to compare against the backtest path.</p>
                       </div>
                     </Card>
-                  ) : (
-                    <Card>
-                      <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
-                      <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-                        Replays the same OHLCV window through the backtest path and the live worker&apos;s incremental engine, then compares trigger fires bar-by-bar. PASS means parity confirmed. FAIL_SILENT means the pack works in batch mode but is silent in production.
-                      </p>
+                  ) : (() => {
+                    // Exec types tested per trigger. CC dropped — fires
+                    // at the same bar as C; CC's distinctive behavior
+                    // (exit-on-non-confirmation) is a state-machine
+                    // concern, not trigger parity.
+                    const EXEC_TYPES_TO_TEST: Array<{key: 'C' | 'L' | 'LC'; suffix: string}> = [
+                      {key: 'C',  suffix: ''},
+                      {key: 'L',  suffix: '_ib'},
+                      {key: 'LC', suffix: '_lc'},
+                    ];
+                    const VERDICT_COLORS: Record<string, {color: string; bg: string}> = {
+                      PASS: { color: 'var(--green)', bg: 'var(--green-muted)' },
+                      PASS_WITHIN_TOLERANCE: { color: 'var(--green)', bg: 'var(--green-muted)' },
+                      PARTIAL: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+                      FAIL_SILENT: { color: 'var(--red)', bg: 'var(--red-muted)' },
+                      FAIL_REVERSE: { color: 'var(--red)', bg: 'var(--red-muted)' },
+                      NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+                    };
+                    const totalCombos = sbPackTriggers.length * EXEC_TYPES_TO_TEST.length;
+                    const completedCount = parityCombos.filter((c) => c.status === 'done' || c.status === 'error').length;
+                    const firstDivergent = parityCombos.find((c) =>
+                      c.result && (c.result.backtest_only.length > 0 || c.result.live_only.length > 0)
+                    );
 
-                      <div className="flex flex-wrap items-end gap-3 mb-4">
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Trigger</label>
-                          <select
-                            style={{ ...inputStyle, width: 220, fontSize: '0.75rem' }}
-                            value={parityTrigger}
-                            onChange={(e) => setParityTrigger(e.target.value)}
-                          >
-                            <option value="">Select trigger…</option>
-                            {sbPackTriggers.map((t: { id: string; name: string }) => (
-                              <option key={t.id} value={t.id}>{t.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Exec type</label>
-                          <select
-                            style={{ ...inputStyle, width: 200, fontSize: '0.75rem' }}
-                            value={parityExecType}
-                            onChange={(e) => setParityExecType(e.target.value as 'C' | 'L' | 'LC' | 'CC')}
-                          >
-                            <option value="C">C — bar close</option>
-                            <option value="L">L — intra-bar level cross</option>
-                            <option value="LC">LC — level + close confirm</option>
-                            <option value="CC">CC — close + close confirm</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
-                          <input
-                            type="text"
-                            style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
-                            value={paritySymbol}
-                            onChange={(e) => setParitySymbol(e.target.value.toUpperCase())}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
-                          <select
-                            style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
-                            value={parityTimeframe}
-                            onChange={(e) => setParityTimeframe(e.target.value)}
-                          >
-                            <option value="1Min">1Min</option>
-                            <option value="5Min">5Min</option>
-                            <option value="15Min">15Min</option>
-                            <option value="1Hour">1Hour</option>
-                            <option value="1Day">1Day</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={30}
-                            style={{ ...inputStyle, width: 80, fontSize: '0.75rem' }}
-                            value={parityDays}
-                            onChange={(e) => setParityDays(parseInt(e.target.value) || 7)}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Warmup bars</label>
-                          <input
-                            type="number"
-                            min={0}
-                            max={1000}
-                            style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
-                            value={parityWarmup}
-                            onChange={(e) => setParityWarmup(parseInt(e.target.value) || 0)}
-                          />
-                        </div>
-                        <button
-                          style={{ ...btnPrimary, opacity: parityRunning || !parityTrigger ? 0.5 : 1 }}
-                          disabled={parityRunning || !parityTrigger}
-                          onClick={async () => {
-                            setParityRunning(true);
-                            setParityError(null);
-                            setParityResult(null);
-                            try {
-                              const execSuffix = (
-                                {C: '', L: '_ib', LC: '_lc', CC: '_cc'}
-                              )[parityExecType];
-                              const res = await apiFetch<any>('/api/packs/parity-test', {
-                                method: 'POST',
-                                body: JSON.stringify({
-                                  pack_id: installResult!.slug,
-                                  entry_trigger: parityTrigger + execSuffix,
-                                  symbol: paritySymbol,
-                                  timeframe: parityTimeframe,
-                                  days: parityDays,
-                                  warmup_bars: parityWarmup,
-                                }),
-                              });
-                              setParityResult(res);
-                            } catch (e: any) {
-                              setParityError(e?.message || 'Parity test failed.');
-                            } finally {
-                              setParityRunning(false);
-                            }
-                          }}
-                        >
-                          {parityRunning ? 'Running…' : 'Run Parity Test'}
-                        </button>
-                      </div>
+                    const runAllCombos = async () => {
+                      if (sbPackTriggers.length === 0) {
+                        setParityTopError('Pack has no triggers to test.');
+                        return;
+                      }
+                      setParityRunning(true);
+                      setParityTopError(null);
+                      const initial: typeof parityCombos = [];
+                      for (const t of sbPackTriggers) {
+                        for (const et of EXEC_TYPES_TO_TEST) {
+                          initial.push({
+                            triggerId: t.id,
+                            triggerName: t.name,
+                            execType: et.key,
+                            status: 'pending',
+                          });
+                        }
+                      }
+                      setParityCombos(initial);
+                      for (let i = 0; i < initial.length; i++) {
+                        const combo = initial[i];
+                        const exec = EXEC_TYPES_TO_TEST.find((e) => e.key === combo.execType)!;
+                        setParityCombos((prev) => prev.map((c, idx) => idx === i ? { ...c, status: 'running' } : c));
+                        try {
+                          const res = await apiFetch<any>('/api/packs/parity-test', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                              pack_id: installResult!.slug,
+                              entry_trigger: combo.triggerId + exec.suffix,
+                              symbol: paritySymbol,
+                              timeframe: parityTimeframe,
+                              days: parityDays,
+                              warmup_bars: parityWarmup,
+                            }),
+                          });
+                          setParityCombos((prev) => prev.map((c, idx) =>
+                            idx === i ? { ...c, status: 'done', result: res } : c
+                          ));
+                        } catch (e: any) {
+                          setParityCombos((prev) => prev.map((c, idx) =>
+                            idx === i ? { ...c, status: 'error', error: e?.message || 'failed' } : c
+                          ));
+                        }
+                      }
+                      setParityRunning(false);
+                    };
 
-                      {parityError && (
-                        <p className="text-xs mb-3 px-3 py-2 rounded" style={{ color: 'var(--red)', background: 'var(--red-muted)' }}>
-                          {parityError}
-                        </p>
-                      )}
+                    return (
+                      <div className="space-y-3">
+                        <Card>
+                          <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
+                          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                            Replays the same OHLCV window through the backtest path and the live worker&apos;s incremental engine, then compares trigger fires bar-by-bar. Tests every trigger across the C, L, and LC execution types.
+                          </p>
 
-                      {parityResult && (() => {
-                        const v = parityResult.verdict as string;
-                        const verdictColor: Record<string, { color: string; bg: string }> = {
-                          PASS: { color: 'var(--green)', bg: 'var(--green-muted)' },
-                          PASS_WITHIN_TOLERANCE: { color: 'var(--green)', bg: 'var(--green-muted)' },
-                          PARTIAL: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
-                          FAIL_SILENT: { color: 'var(--red)', bg: 'var(--red-muted)' },
-                          FAIL_REVERSE: { color: 'var(--red)', bg: 'var(--red-muted)' },
-                          NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
-                        };
-                        const vs = verdictColor[v] || verdictColor.NO_FIRES;
-                        return (
-                          <>
-                            <div className="flex items-center gap-3 mb-2">
-                              <span className="text-xs px-2 py-1 rounded font-semibold" style={{ color: vs.color, background: vs.bg }}>
-                                {v}
-                              </span>
-                              {parityResult.parity_score !== null && (
-                                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                                  parity_score = {(parityResult.parity_score * 100).toFixed(1)}%
-                                </span>
-                              )}
-                              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                                {parityResult.bars_loaded.toLocaleString()} bars loaded
-                              </span>
+                          <div className="flex flex-wrap items-end gap-3 mb-4">
+                            <div>
+                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Symbol</label>
+                              <input
+                                type="text"
+                                style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
+                                value={paritySymbol}
+                                onChange={(e) => setParitySymbol(e.target.value.toUpperCase())}
+                              />
                             </div>
-                            <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>{parityResult.explanation}</p>
+                            <div>
+                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
+                              <select
+                                style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
+                                value={parityTimeframe}
+                                onChange={(e) => setParityTimeframe(e.target.value)}
+                              >
+                                <option value="1Min">1Min</option>
+                                <option value="5Min">5Min</option>
+                                <option value="15Min">15Min</option>
+                                <option value="1Hour">1Hour</option>
+                                <option value="1Day">1Day</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Days</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={30}
+                                style={{ ...inputStyle, width: 80, fontSize: '0.75rem' }}
+                                value={parityDays}
+                                onChange={(e) => setParityDays(parseInt(e.target.value) || 7)}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Warmup bars</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1000}
+                                style={{ ...inputStyle, width: 100, fontSize: '0.75rem' }}
+                                value={parityWarmup}
+                                onChange={(e) => setParityWarmup(parseInt(e.target.value) || 0)}
+                              />
+                            </div>
+                            <button
+                              style={{ ...btnPrimary, opacity: parityRunning || sbPackTriggers.length === 0 ? 0.5 : 1 }}
+                              disabled={parityRunning || sbPackTriggers.length === 0}
+                              onClick={runAllCombos}
+                            >
+                              {parityRunning
+                                ? `Running ${completedCount + 1}/${totalCombos}…`
+                                : `Run All Combos (${totalCombos})`}
+                            </button>
+                            {!parityRunning && parityCombos.length > 0 && (
+                              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                                {parityCombos.filter((c) => c.result?.verdict === 'PASS' || c.result?.verdict === 'PASS_WITHIN_TOLERANCE').length} passing,
+                                {' '}
+                                {parityCombos.filter((c) =>
+                                  c.result && (c.result.verdict === 'FAIL_SILENT' || c.result.verdict === 'FAIL_REVERSE' || c.result.verdict === 'PARTIAL')
+                                ).length} failing
+                              </span>
+                            )}
+                          </div>
 
-                            <div className="grid grid-cols-4 gap-3 mb-4">
-                              {[
-                                { label: 'Backtest fires', value: parityResult.backtest_fires.length },
-                                { label: 'Live fires', value: parityResult.live_fires.length },
-                                { label: 'Matched', value: parityResult.matched.length, accent: 'green' as const },
-                                { label: 'Divergent', value: parityResult.backtest_only.length + parityResult.live_only.length, accent: (parityResult.backtest_only.length + parityResult.live_only.length > 0 ? 'red' : undefined) as 'red' | undefined },
-                              ].map((m) => (
-                                <div key={m.label} className="px-3 py-2 rounded" style={{ background: 'var(--bg-input)' }}>
-                                  <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{m.label}</div>
-                                  <div className="text-sm font-semibold mt-0.5" style={{ color: m.accent === 'green' ? 'var(--green)' : m.accent === 'red' ? 'var(--red)' : 'var(--text-primary)' }}>
-                                    {m.value.toLocaleString()}
+                          {parityTopError && (
+                            <p className="text-xs mb-3 px-3 py-2 rounded" style={{ color: 'var(--red)', background: 'var(--red-muted)' }}>
+                              {parityTopError}
+                            </p>
+                          )}
+                        </Card>
+
+                        {parityCombos.length > 0 && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+                              Results ({completedCount}/{totalCombos} complete)
+                            </h5>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                                <thead>
+                                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                    {['Trigger', 'Exec', 'Verdict', 'Parity', 'Backtest', 'Live', 'Matched', 'Divergent'].map((h) => (
+                                      <th key={h} className="text-left py-1.5 px-2 text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {parityCombos.map((c, i) => {
+                                    const r = c.result;
+                                    const verdict = c.status === 'pending' ? 'PENDING'
+                                      : c.status === 'running' ? 'RUNNING…'
+                                      : c.status === 'error' ? 'ERROR'
+                                      : r?.verdict || '—';
+                                    const vstyle = VERDICT_COLORS[verdict] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
+                                    const divergent = r ? r.backtest_only.length + r.live_only.length : 0;
+                                    return (
+                                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                        <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{c.triggerName}</td>
+                                        <td className="py-1.5 px-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{c.execType}</td>
+                                        <td className="py-1.5 px-2">
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                                                style={{ color: vstyle.color, background: vstyle.bg }}>
+                                            {verdict}
+                                          </span>
+                                        </td>
+                                        <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>
+                                          {r?.parity_score !== null && r?.parity_score !== undefined
+                                            ? `${(r.parity_score * 100).toFixed(0)}%` : '—'}
+                                        </td>
+                                        <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.backtest_fires.length ?? '—'}</td>
+                                        <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.live_fires.length ?? '—'}</td>
+                                        <td className="py-1.5 px-2" style={{ color: 'var(--green)' }}>{r?.matched.length ?? '—'}</td>
+                                        <td className="py-1.5 px-2" style={{ color: divergent > 0 ? 'var(--red)' : 'var(--text-secondary)' }}>
+                                          {r ? divergent : '—'}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </Card>
+                        )}
+
+                        {firstDivergent && firstDivergent.result && (
+                          <Card>
+                            <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--orange)' }}>
+                              Divergent fires — {firstDivergent.triggerName} [{firstDivergent.execType}]
+                            </h5>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {firstDivergent.result.backtest_only.length > 0 && (
+                                <div>
+                                  <div className="text-xs font-medium mb-1" style={{ color: 'var(--red)' }}>Backtest only (live missed)</div>
+                                  <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
+                                    {firstDivergent.result.backtest_only.slice(0, 50).map((f: any) => (
+                                      <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
+                                        <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
+                                        <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>{new Date(f.timestamp).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                    {firstDivergent.result.backtest_only.length > 50 && (
+                                      <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>… {firstDivergent.result.backtest_only.length - 50} more</div>
+                                    )}
                                   </div>
                                 </div>
-                              ))}
+                              )}
+                              {firstDivergent.result.live_only.length > 0 && (
+                                <div>
+                                  <div className="text-xs font-medium mb-1" style={{ color: 'var(--orange)' }}>Live only (backtest missed)</div>
+                                  <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
+                                    {firstDivergent.result.live_only.slice(0, 50).map((f: any) => (
+                                      <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
+                                        <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
+                                        <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>{new Date(f.timestamp).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                    {firstDivergent.result.live_only.length > 50 && (
+                                      <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>… {firstDivergent.result.live_only.length - 50} more</div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                             </div>
-
-                            {parityResult.backtest_warmup.length > 0 && (
-                              <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
-                                {parityResult.backtest_warmup.length} backtest fire(s) inside the warmup window — excluded from the score.
-                              </p>
-                            )}
-
-                            {(parityResult.backtest_only.length > 0 || parityResult.live_only.length > 0) && (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
-                                {parityResult.backtest_only.length > 0 && (
-                                  <div>
-                                    <div className="text-xs font-medium mb-1" style={{ color: 'var(--red)' }}>Backtest only (live missed)</div>
-                                    <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
-                                      {parityResult.backtest_only.slice(0, 50).map((f: any) => (
-                                        <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
-                                          <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
-                                          <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>{new Date(f.timestamp).toLocaleString()}</span>
-                                        </div>
-                                      ))}
-                                      {parityResult.backtest_only.length > 50 && (
-                                        <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>… {parityResult.backtest_only.length - 50} more</div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                                {parityResult.live_only.length > 0 && (
-                                  <div>
-                                    <div className="text-xs font-medium mb-1" style={{ color: 'var(--orange)' }}>Live only (backtest missed)</div>
-                                    <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
-                                      {parityResult.live_only.slice(0, 50).map((f: any) => (
-                                        <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
-                                          <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
-                                          <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>{new Date(f.timestamp).toLocaleString()}</span>
-                                        </div>
-                                      ))}
-                                      {parityResult.live_only.length > 50 && (
-                                        <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>… {parityResult.live_only.length - 50} more</div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </Card>
-                  )
+                          </Card>
+                        )}
+                      </div>
+                    );
+                  })()
                 )}
 
                 {tab === 'Sandbox' && (
