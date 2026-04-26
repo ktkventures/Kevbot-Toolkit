@@ -1,0 +1,77 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "stochastic_oscillator",
+  "name": "Stochastic Oscillator",
+  "category": "Momentum",
+  "description": "Stochastic oscillator with %K and %D lines showing overbought/oversold zones and momentum direction",
+  "author": "user",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "oscillator",
+  "interpreters": ["STOCHASTIC_OSCILLATOR"],
+  "trigger_prefix": "sto",
+  "parameters_schema": {
+    "k_period":   {"type": "int",   "default": 14, "min": 1,  "max": 100, "label": "%K Period"},
+    "k_smooth":   {"type": "int",   "default": 3,  "min": 1,  "max": 10,  "label": "%K Smoothing"},
+    "d_period":   {"type": "int",   "default": 3,  "min": 1,  "max": 10,  "label": "%D Period"},
+    "overbought": {"type": "float", "default": 80, "min": 50, "max": 99,  "label": "Overbought Level"},
+    "oversold":   {"type": "float", "default": 20, "min": 1,  "max": 50,  "label": "Oversold Level"},
+    "midline":    {"type": "float", "default": 50, "min": 1,  "max": 99,  "label": "Midline Level"}
+  },
+  "plot_schema": {
+    "k_color": {"type": "color", "default": "#3b82f6", "label": "%K Line Color"},
+    "d_color": {"type": "color", "default": "#f97316", "label": "%D Line Color"}
+  },
+  "plot_config": {
+    "reference_lines": [
+      {"value": 80, "color": "#ef4444", "label": "Overbought"},
+      {"value": 50, "color": "#6b7280", "label": "Midline"},
+      {"value": 20, "color": "#22c55e", "label": "Oversold"}
+    ],
+    "band_fills": [
+      {"upper_column": "stoch_k", "lower_column": "stoch_d", "fill_color_key": "k_color"}
+    ]
+  },
+  "outputs": [
+    "OVERBOUGHT_BEARISH",
+    "OVERBOUGHT_BULLISH",
+    "OVERSOLD_BULLISH",
+    "OVERSOLD_BEARISH",
+    "BULLISH_MIDRANGE",
+    "BEARISH_MIDRANGE"
+  ],
+  "output_descriptions": {
+    "OVERBOUGHT_BEARISH": "%K is above the overbought level AND %K is below %D (momentum weakening in overbought zone)",
+    "OVERBOUGHT_BULLISH": "%K is above the overbought level AND %K is above or equal to %D (momentum holding in overbought zone)",
+    "OVERSOLD_BULLISH": "%K is below the oversold level AND %K is above %D (momentum recovering in oversold zone)",
+    "OVERSOLD_BEARISH": "%K is below the oversold level AND %K is below or equal to %D (momentum falling in oversold zone)",
+    "BULLISH_MIDRANGE": "%K is between oversold and overbought levels AND %K is at or above the midline",
+    "BEARISH_MIDRANGE": "%K is between oversold and overbought levels AND %K is below the midline"
+  },
+  "triggers": [
+    {"base": "k_cross_above_d_oversold",   "name": "%K Crosses Above %D in Oversold",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "k_cross_below_d_overbought", "name": "%K Crosses Below %D in Overbought", "direction": "BOTH", "type": "BOTH"},
+    {"base": "k_cross_above_d_midrange",   "name": "%K Crosses Above %D in Midrange",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "k_cross_below_d_midrange",   "name": "%K Crosses Below %D in Midrange",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "enter_overbought",           "name": "%K Enters Overbought Zone",         "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_overbought",            "name": "%K Exits Overbought Zone",          "direction": "BOTH", "type": "BOTH"},
+    {"base": "enter_oversold",             "name": "%K Enters Oversold Zone",           "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_oversold",              "name": "%K Exits Oversold Zone",            "direction": "BOTH", "type": "BOTH"},
+    {"base": "k_cross_above_midline",      "name": "%K Crosses Above Midline",          "direction": "BOTH", "type": "BOTH"},
+    {"base": "k_cross_below_midline",      "name": "%K Crosses Below Midline",          "direction": "BOTH", "type": "BOTH"}
+  ],
+  "indicator_columns": ["stoch_k", "stoch_d"],
+  "column_color_map": {
+    "stoch_k": "k_color",
+    "stoch_d": "d_color"
+  },
+  "indicator_function": "calculate_stochastic_oscillator",
+  "interpreter_function": "interpret_stochastic_oscillator",
+  "trigger_function": "detect_stochastic_oscillator_triggers",
+  "requires_indicators": ["stoch_k", "stoch_d"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "StochasticOscillatorIncremental"
+  }
+}
