@@ -334,6 +334,56 @@ about:
 **Effort:** ~1 hour for the smoke test if Hi-Fi data flow already
 covers user packs; deferred indefinitely otherwise.
 
+**EOD 2026-04-26 update — Hi-Fi smoke shipped:** The follow-up turned
+out narrower than originally framed. Hi-Fi Pass 2 in
+`backtest_service._hifi_resolve_trades` is **exit-side only** (walks 1s
+bars between entry and exit looking for stop/target hits) and **calls
+no pack code** — it reads `stop_price`/`target_price` from the trade
+record and price action from 1s bars. So "do user packs support
+Hi-Fi" reduces to "does Pass 1 produce trades that Pass 2 can refine
+without breaking, and is the refinement deterministic?"
+
+Smoke harness shipped at `src/test_hifi_pack_smoke.py`. Two
+checks per pack:
+- **Smoke A (non-regression):** `hifi_mode=False` vs `True` — same
+  trade count, same entry timestamps, refinements within tolerance.
+- **Smoke B (determinism):** `hifi_mode=True` run twice — outcomes
+  match exactly.
+
+Results on SPY 1Min 5d LONG, 4 packs (covers L1 and L0):
+
+| Pack | Trades | Hi-Fi resolved | Outcome flips | Max $ Δ | Max R Δ | A | B |
+|---|---|---|---|---|---|---|---|
+| ut_bot_v4 (L1) | 73 | 41 | 0 | $0.016 | 0.043 | ✅ | ✅ |
+| supertrend (L1) | 22 | 12 | 2 | $0.210 | 0.457 | ✅ | ✅ |
+| ema_pp_v4 (L1) | 78 | 43 | 0 | $0.034 | 0.057 | ✅ | ✅ |
+| ema_pp_v3 (L0) | 78 | 43 | 0 | $0.034 | 0.057 | ✅ | ✅ |
+
+`supertrend` showed 2 stop↔target swaps (with net-zero impact on win
+count) — exactly the kind of correction Hi-Fi exists to make. The
+other packs had near-no-op refinements. No Hi-Fi system changes
+proposed.
+
+**Surprise finding (Smoke C, manual):** `ema_pp_v3` and `ema_pp_v4`
+produced **identical trade outcomes** for SPY 1Min 5d. For slow EMAs
+(8/21/50) at 1Min, the L0 vs L1 distinction doesn't materially shift
+fills through Hi-Fi. Could be coincidence over a 5-day window or a
+real "L0/L1 are equivalent at slow timescales" pattern. Worth a
+longer-window check eventually but not blocking.
+
+**Harness implementation notes (for future-me):**
+- Forces `db.USE_DB = False` and reads `confluence_groups.json`
+  directly (avoids needing Supabase auth).
+- Patches `confluence_groups.load_confluence_groups` AND
+  `services.load_confluence_groups` (the latter binds the symbol at
+  import time, so the cg-only patch is insufficient).
+- Injects in-memory `ConfluenceGroup` rows for packs lacking a default
+  in the live config (no file mutation).
+- Runs `run_backtest()` directly with `redirect_stdout` to suppress
+  the verbose `[BACKTEST]` prints.
+- 4 packs × 3 backtest runs each (off / on / on-again) ≈ 3 min wall
+  clock at 5d window.
+
 ### Follow-up C — Migrate one more pack to the modular pattern
 
 **Goal:** prove the pattern generalizes beyond the UT Bot test case
@@ -504,8 +554,10 @@ call fixed it; all 11 packs now PASS at parity=1.0.
    for big packs; the original use case (sweeping legacy packs) is now
    done, so value is purely future-facing.
 
-3. **Hi-Fi parity smoke** (Follow-up B). Run parity at sub-minute
-   timeframes once Hi-Fi data is exposed to the parity sim.
+3. ~~**Hi-Fi parity smoke** (Follow-up B).~~ **DONE 2026-04-26.** Shipped
+   as `src/test_hifi_pack_smoke.py` (separate harness from
+   `parity_simulator.py` — different axis: bar-vs-1s, not batch-vs-live).
+   All 4 packs PASS A+B. See Follow-up B section above for results.
 
 4. **Migrate built-in TF Confluence packs to manifest form.** Lowest
    priority since they already PASS via hand-tuned IncrementalIndicatorEngine
