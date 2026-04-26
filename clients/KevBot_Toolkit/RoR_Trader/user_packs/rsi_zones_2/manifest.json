@@ -1,0 +1,74 @@
+{
+  "$schema": "pack_spec_v1",
+  "slug": "rsi_zones_2",
+  "name": "RSI Zones 2",
+  "category": "Mean Reversion",
+  "description": "RSI with overbought/oversold zone classification, extreme levels, and midline cross triggers",
+  "author": "user",
+  "version": "2.0.0",
+  "created_at": "2026-04-26T00:00:00Z",
+  "pack_type": "tf_confluence",
+  "display_type": "oscillator",
+  "interpreters": ["RSI_ZONES_2"],
+  "trigger_prefix": "rsi2",
+  "parameters_schema": {
+    "rsi_period":              {"type": "int",   "default": 14, "min": 2,  "max": 50, "label": "RSI Period"},
+    "overbought_level":        {"type": "float", "default": 70, "min": 50, "max": 95, "label": "Overbought Level"},
+    "oversold_level":          {"type": "float", "default": 30, "min": 5,  "max": 50, "label": "Oversold Level"},
+    "extreme_overbought_level":{"type": "float", "default": 80, "min": 60, "max": 99, "label": "Extreme Overbought Level"},
+    "extreme_oversold_level":  {"type": "float", "default": 20, "min": 1,  "max": 40, "label": "Extreme Oversold Level"},
+    "source":                  {"type": "str",   "default": "close",                  "label": "Price Source"}
+  },
+  "plot_schema": {
+    "rsi_color": {"type": "color", "default": "#8b5cf6", "label": "RSI Line Color"}
+  },
+  "plot_config": {
+    "reference_lines": [
+      {"value": 80, "color": "#ef4444", "label": "Extreme Overbought"},
+      {"value": 70, "color": "#f97316", "label": "Overbought"},
+      {"value": 50, "color": "#94a3b8", "label": "Midline"},
+      {"value": 30, "color": "#22c55e", "label": "Oversold"},
+      {"value": 20, "color": "#06b6d4", "label": "Extreme Oversold"}
+    ]
+  },
+  "outputs": [
+    "EXTREME_OVERBOUGHT",
+    "OVERBOUGHT",
+    "NEUTRAL_BULLISH",
+    "NEUTRAL_BEARISH",
+    "OVERSOLD",
+    "EXTREME_OVERSOLD"
+  ],
+  "output_descriptions": {
+    "EXTREME_OVERBOUGHT": "RSI is at or above the extreme overbought level",
+    "OVERBOUGHT": "RSI is at or above the overbought level but below extreme overbought",
+    "NEUTRAL_BULLISH": "RSI is above the midpoint (50) but below the overbought level",
+    "NEUTRAL_BEARISH": "RSI is below the midpoint (50) but above the oversold level",
+    "OVERSOLD": "RSI is at or below the oversold level but above extreme oversold",
+    "EXTREME_OVERSOLD": "RSI is at or below the extreme oversold level"
+  },
+  "triggers": [
+    {"base": "cross_into_overbought",         "name": "RSI Crosses Into Overbought",         "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_into_extreme_overbought", "name": "RSI Crosses Into Extreme Overbought", "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_into_oversold",           "name": "RSI Crosses Into Oversold",           "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_into_extreme_oversold",   "name": "RSI Crosses Into Extreme Oversold",   "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_overbought_zone",          "name": "RSI Exits Overbought Zone",           "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_oversold_zone",            "name": "RSI Exits Oversold Zone",             "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_above_midline",           "name": "RSI Crosses Above Midline",           "direction": "BOTH", "type": "BOTH"},
+    {"base": "cross_below_midline",           "name": "RSI Crosses Below Midline",           "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_long_overbought",          "name": "Exit Long on Overbought",             "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_short_oversold",           "name": "Exit Short on Oversold",              "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_long_midline_cross_down",  "name": "Exit Long on Midline Cross Down",     "direction": "BOTH", "type": "BOTH"},
+    {"base": "exit_short_midline_cross_up",   "name": "Exit Short on Midline Cross Up",      "direction": "BOTH", "type": "BOTH"}
+  ],
+  "indicator_columns": ["rsi2_rsi"],
+  "column_color_map": {"rsi2_rsi": "rsi_color"},
+  "indicator_function": "calculate_rsi_zones_2",
+  "interpreter_function": "interpret_rsi_zones_2",
+  "trigger_function": "detect_rsi_zones_2_triggers",
+  "requires_indicators": ["rsi2_rsi"],
+  "incremental_class": {
+    "module": "indicator_incremental",
+    "class_name": "RsiZones2Incremental"
+  }
+}
