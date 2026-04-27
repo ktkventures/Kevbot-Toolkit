@@ -546,10 +546,117 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
         except Exception as e:
             logger.warning("Failed to create DB confluence group for %s: %s", slug, e)
 
+    # Auto-parity check: run a fast Q1+Q2 parity test on the just-installed
+    # pack so the wizard can surface a verdict before the user trusts it.
+    # Skipped on install failure or batch-only packs (no incremental_class).
+    # Q3+Q4 are not run here — they need a cross-TF config the wizard doesn't
+    # know; the user_packs detail page exposes the full 4Q test for those.
+    parity_summary = None
+    if success and slug:
+        try:
+            import pack_registry as _pr
+            pack = _pr.get_pack(slug)
+            if pack is not None and pack.incremental_class is not None:
+                from parity_simulator import (
+                    run_pack_parity_test,
+                    run_quadrant_2_interpreter_primary,
+                )
+                # Q1: pick the first declared trigger as the entry trigger
+                triggers_list = req.manifest.get('triggers', [])
+                q1 = None
+                if triggers_list:
+                    base = triggers_list[0].get('base', '')
+                    try:
+                        q1_full = run_pack_parity_test(
+                            pack_id=slug, entry_trigger=base,
+                            symbol='SPY', timeframe='1Min', days=5,
+                        )
+                        q1 = {
+                            'verdict': q1_full['verdict'],
+                            'parity_score': q1_full['parity_score'],
+                            'matched': len(q1_full['matched']),
+                            'divergent': (len(q1_full['backtest_only'])
+                                          + len(q1_full['live_only'])),
+                        }
+                    except Exception as _e:
+                        logger.warning(
+                            "[install] Q1 parity test crashed for %s: %s",
+                            slug, _e)
+                        q1 = {'verdict': 'ERROR', 'explanation': str(_e)}
+                # Q2: interpreter parity
+                q2 = None
+                try:
+                    q2_full = run_quadrant_2_interpreter_primary(
+                        pack_id=slug, symbol='SPY', timeframe='1Min', days=5,
+                    )
+                    q2 = {
+                        'verdict': q2_full['verdict'],
+                        'parity_score': q2_full.get('parity_score'),
+                        'compared': q2_full.get('compared'),
+                        'matched': q2_full.get('matched'),
+                    }
+                except Exception as _e:
+                    logger.warning(
+                        "[install] Q2 parity test crashed for %s: %s",
+                        slug, _e)
+                    q2 = {'verdict': 'ERROR', 'explanation': str(_e)}
+                # Roll up to a single verdict — overall is FAIL if any
+                # explicit FAIL, WARN if any WARN, else PASS.
+                parts = [p for p in (q1, q2) if p]
+                ranks = {'PASS': 1, 'SKIP': 0, 'WARN': 2, 'FAIL': 3,
+                         'ERROR': 3}
+                overall = 'PASS'
+                if parts:
+                    worst = max(ranks.get(p['verdict'], 0) for p in parts)
+                    overall = {3: 'FAIL', 2: 'WARN', 1: 'PASS',
+                               0: 'PASS'}[worst]
+                parity_summary = {
+                    'overall_verdict': overall,
+                    'Q1': q1,
+                    'Q2': q2,
+                    'note': ('Run the full 4-quadrant test (Q3 cross-TF) '
+                             'from the user_packs detail page when ready.'),
+                }
+                # Persist as initial parity_status row so the detail page
+                # opens with the install-time verdict already populated.
+                try:
+                    user_id = (user.get('id') or user.get('sub')
+                               if isinstance(user, dict) else None)
+                    if user_id:
+                        from db import save_pack_parity_status
+                        save_pack_parity_status(
+                            pack_slug=slug,
+                            user_id=str(user_id),
+                            overall_verdict=overall,
+                            summary=(
+                                f'Install-time check: '
+                                f'Q1={q1["verdict"] if q1 else "—"}, '
+                                f'Q2={q2["verdict"] if q2 else "—"} '
+                                f'(SPY/1Min/5d)'),
+                            quadrants={'Q1': q1, 'Q2': q2},
+                            test_config={
+                                'symbol': 'SPY',
+                                'primary_tf': '1Min',
+                                'secondary_tf': '15Min',
+                                'days': 5,
+                                'session': 'RTH',
+                                'install_time': True,
+                            },
+                        )
+                except Exception as _e:
+                    logger.warning(
+                        "[install] persist parity status failed for %s: %s",
+                        slug, _e)
+        except Exception as _e:
+            logger.warning(
+                "[install] auto-parity gate failed for %s: %s",
+                slug, _e)
+
     return {
         "success": success,
         "slug": slug,
         "errors": install_errors,
+        "parity": parity_summary,
     }
 
 

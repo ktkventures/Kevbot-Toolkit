@@ -551,3 +551,221 @@ def _get_call_name(node: ast.Call) -> str:
     elif isinstance(node.func, ast.Attribute):
         return node.func.attr
     return ""
+
+
+# =============================================================================
+# COLUMN CONTRACT VALIDATION (added 2026-04-27)
+# =============================================================================
+# Lesson from the ut_bot_v4 FLIP gap: a pack's interpreter can read columns
+# that only the BATCH indicator writes — leaving the LIVE incremental class
+# silent. The interpreter then mis-classifies live bars (e.g. ut_bot_v4
+# emitted BULL_TREND on flip bars instead of BULL_FLIP, capping Q2 parity
+# at ~0.87).
+#
+# This validator parses each pack file's column reads/writes and fails when
+# the contract is violated:
+#
+#   { columns interpreter reads }
+#       ⊆ ({ columns batch indicator writes }
+#         ∪ { columns incremental_class.update_bar() returns })
+#
+# Catches the bug class deterministically at validate-time, before install.
+
+# Column-name string-literal patterns we care about
+_DF_GET_RE = re.compile(r'df\s*\.\s*get\s*\(\s*["\']([^"\']+)["\']')
+_DF_INDEX_RE = re.compile(r'df\s*\[\s*["\']([^"\']+)["\']\s*\]')
+
+
+def _extract_columns_read_from_interpreter(file_path: str) -> set:
+    """Find every column the interpreter reads via df["X"] or df.get("X").
+
+    String-pattern based (regex over source) — we don't try to track
+    aliases or list comprehensions; for the contract check we just need
+    the set of literal string keys referenced. False positives here
+    only over-reports the contract, never misses violations.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        return set()
+    try:
+        src = path.read_text()
+    except Exception:
+        return set()
+    cols = set()
+    for m in _DF_GET_RE.finditer(src):
+        cols.add(m.group(1))
+    for m in _DF_INDEX_RE.finditer(src):
+        cols.add(m.group(1))
+    return cols
+
+
+def _extract_columns_written_by_indicator(file_path: str) -> set:
+    """Find every column the batch indicator writes via:
+       result[X] = ...    df[X] = ...    out[X] = ...
+    """
+    path = Path(file_path)
+    if not path.exists():
+        return set()
+    try:
+        src = path.read_text()
+    except Exception:
+        return set()
+    cols = set()
+    # result["X"] = ..., df["X"] = ..., out["X"] = ..., enriched["X"] = ...
+    for m in re.finditer(
+        r'(?:result|df|out|enriched|_df|new_df|res)\s*\[\s*["\']([^"\']+)["\']\s*\]\s*=',
+        src,
+    ):
+        cols.add(m.group(1))
+    return cols
+
+
+def _extract_columns_returned_by_incremental(file_path: str) -> set:
+    """AST-parse update_bar() to find the literal string keys in its
+    return dict. Handles dict-literal return values; treats anything
+    more dynamic conservatively (returns empty set, no contract enforcement)."""
+    path = Path(file_path)
+    if not path.exists():
+        return set()
+    try:
+        src = path.read_text()
+        tree = ast.parse(src)
+    except Exception:
+        return set()
+    cols: set = set()
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for fn in cls.body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if fn.name != 'update_bar':
+                continue
+            # Walk the function body for `return {...}` nodes
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+                    for key in node.value.keys:
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                            cols.add(key.value)
+    return cols
+
+
+def _filter_to_pack_columns(cols: set, pack_slug: str,
+                            trigger_prefix: str = '') -> set:
+    """Drop OHLCV and standard engine columns from the contract check.
+
+    The interpreter is allowed to read `close`, `high`, `low`, etc. without
+    these appearing in update_bar() — the engine writes them itself. We
+    only enforce the contract on pack-emitted columns, which heuristically
+    means columns starting with the slug, the trigger_prefix, or `__` +
+    either.
+    """
+    standard = {'open', 'high', 'low', 'close', 'volume', 'timestamp',
+                'atr', 'ema', 'macd_line', 'macd_signal', 'macd_hist',
+                'vwap', 'rvol', 'vol_sma'}
+    out = set()
+    for c in cols:
+        if c in standard:
+            continue
+        if c.startswith(pack_slug) or c.startswith('_' + pack_slug):
+            out.add(c)
+            continue
+        if trigger_prefix and (
+            c.startswith(trigger_prefix) or c.startswith('_' + trigger_prefix)
+            or c.startswith('__' + trigger_prefix)
+        ):
+            out.add(c)
+            continue
+    return out
+
+
+def validate_column_contract(
+    pack_dir: str | Path,
+    manifest: dict | None = None,
+) -> Tuple[bool, List[str]]:
+    """Verify the indicator + interpreter + incremental_class agree on
+    column shapes for live-mode parity.
+
+    Args:
+        pack_dir: directory containing manifest.json + indicator.py +
+                  interpreter.py + (optional) indicator_incremental.py
+        manifest: pre-loaded manifest dict; if None, reads from disk
+
+    Returns (ok, errors). `errors` is empty when ok=True. Each error is a
+    short string suitable for surfacing in the pack-builder wizard's
+    validation panel.
+
+    Skips silently when a file doesn't exist — that's the responsibility
+    of the existing structural validation.
+    """
+    pack_dir = Path(pack_dir)
+    indicator_path = pack_dir / 'indicator.py'
+    interpreter_path = pack_dir / 'interpreter.py'
+    incremental_path = pack_dir / 'indicator_incremental.py'
+
+    if manifest is None:
+        manifest_path = pack_dir / 'manifest.json'
+        if manifest_path.exists():
+            try:
+                import json
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                manifest = {}
+        else:
+            manifest = {}
+
+    pack_slug = manifest.get('slug', pack_dir.name)
+    trigger_prefix = manifest.get('trigger_prefix', '')
+
+    # Skip if no incremental class exists — pack is batch-only by design.
+    # The existing `is_valid` flag and pack_registry FAIL_SILENT already
+    # handle that case.
+    if not incremental_path.exists():
+        return True, []
+
+    interp_reads_raw = _extract_columns_read_from_interpreter(
+        str(interpreter_path))
+    indicator_writes_raw = _extract_columns_written_by_indicator(
+        str(indicator_path))
+    incremental_returns_raw = _extract_columns_returned_by_incremental(
+        str(incremental_path))
+
+    # Filter to pack-emitted columns (skip OHLCV / standard engine cols)
+    interp_reads = _filter_to_pack_columns(
+        interp_reads_raw, pack_slug, trigger_prefix)
+    indicator_writes = _filter_to_pack_columns(
+        indicator_writes_raw, pack_slug, trigger_prefix)
+    incremental_returns = _filter_to_pack_columns(
+        incremental_returns_raw, pack_slug, trigger_prefix)
+
+    errors: list = []
+
+    # CONTRACT 1: every column the interpreter reads must appear somewhere
+    # the engine could have written it — either the batch indicator (for
+    # backtest mode) OR the incremental class (for live mode).
+    missing_anywhere = interp_reads - indicator_writes - incremental_returns
+    if missing_anywhere:
+        errors.append(
+            f"interpreter.py reads columns that neither indicator.py nor "
+            f"indicator_incremental.py emit: {sorted(missing_anywhere)}. "
+            f"This will cause runtime errors in both backtest and live mode."
+        )
+
+    # CONTRACT 2: every column the interpreter reads AND the batch
+    # indicator emits MUST also be emitted by the incremental class.
+    # Otherwise the pack works in backtest but mis-classifies in live —
+    # the exact ut_bot_v4 FLIP gap.
+    in_indicator_not_incremental = (
+        interp_reads & indicator_writes) - incremental_returns
+    if in_indicator_not_incremental:
+        errors.append(
+            f"Live-mode parity gap: interpreter.py reads columns that "
+            f"indicator.py writes but indicator_incremental.update_bar() "
+            f"does NOT return: {sorted(in_indicator_not_incremental)}. "
+            f"The pack will pass backtest but mis-classify live bars. "
+            f"Add these keys to update_bar()'s return dict (mirror the "
+            f"batch path's __-prefixed aliases). See ut_bot_v4's "
+            f"indicator_incremental.py for a worked example."
+        )
+
+    return (len(errors) == 0), errors

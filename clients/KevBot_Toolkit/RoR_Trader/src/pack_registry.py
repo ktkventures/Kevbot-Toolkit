@@ -222,6 +222,23 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
             if not exists:
                 errors.append(err)
 
+    # Column-contract check: every column the interpreter reads must be
+    # emitted by EITHER the batch indicator OR the incremental class.
+    # Catches the live-mode parity gap class of bug (e.g. ut_bot_v4
+    # __-prefix FLIP gap, fixed 2026-04-27 ae2f03a) at validate-time.
+    # See pack_spec.validate_column_contract docstring for details.
+    if not errors:
+        try:
+            from pack_spec import validate_column_contract
+            cc_ok, cc_errors = validate_column_contract(pack_dir, manifest)
+            if not cc_ok:
+                errors.extend(cc_errors)
+        except Exception as e:
+            # Don't block pack loading on a validator bug — warn loudly.
+            import logging
+            logging.getLogger(__name__).warning(
+                "validate_column_contract crashed for %s: %s", slug, e)
+
     # If validation passed, import the modules
     incremental_class = None
     if not errors:

@@ -685,3 +685,76 @@ When translating Pine Script:
 2. Map Pine `plot()` calls to `indicator_columns`
 3. Map Pine `alertcondition()` calls to triggers
 4. Map any visual zones/fills to interpreter outputs
+
+---
+
+## Live-Mode Column Contract (added 2026-04-27)
+
+A pack's runtime correctness depends on three files agreeing on column names:
+
+| File | Role | Columns it touches |
+|---|---|---|
+| `indicator.py` (batch path) | `calculate_<slug>(df)` returns enriched DataFrame | WRITES indicator + flip-boolean columns |
+| `indicator_incremental.py` (live path) | `update_bar(bar)` returns dict per bar | RETURNS the same column set as a dict |
+| `interpreter.py` | `interpret_<slug>(df)` returns Series of states | READS columns from `df["X"]` or `df.get("X")` |
+
+**The contract:**
+
+> Every column the interpreter reads MUST be emitted by both the batch indicator (for backtest) AND the incremental class (for live mode).
+
+If the contract is violated — e.g. interpreter reads `df["__my_flip"]` but `update_bar()` only returns `{"my_flip": ...}` — the pack works perfectly in backtest and fails silently in live mode. Live bars get mis-classified to whichever fall-through state the interpreter defaults to.
+
+This was the **ut_bot_v4 FLIP gap** (fixed 2026-04-27): the interpreter read `df["__utv4_bull_flip"]` but the incremental class only returned `utv4_bull_flip` (single underscore). Q2 parity capped at 0.87 because every flip bar mis-classified to TREND.
+
+### Recommended convention: drop the `__`-prefix pattern
+
+Some legacy packs use a `__`-prefix on flip booleans to namespace "internal interpreter input" from "public engine input." This is purely aesthetic — the engine doesn't care. **For new packs, prefer the simpler convention:**
+
+```python
+# interpreter.py
+bull = df.get("my_bull_flip")        # public name, no __ prefix
+bear = df.get("my_bear_flip")
+```
+
+```python
+# indicator.py
+result["my_bull_flip"] = bull_flips  # batch writes ONE form
+result["my_bear_flip"] = bear_flips
+```
+
+```python
+# indicator_incremental.py update_bar() return:
+return {
+    "my_indicator_value": ...,
+    "my_bull_flip": bool(bull_flip),   # incremental writes the SAME form
+    "my_bear_flip": bool(bear_flip),
+}
+```
+
+### If you keep the `__`-prefix convention
+
+You MUST emit both variants from `update_bar()` so live and batch interpreters see identical column shapes:
+
+```python
+# indicator_incremental.py
+return {
+    "utv4_bull_flip": bool(bull_flip),       # public
+    "utv4_bear_flip": bool(bear_flip),
+    "__utv4_bull_flip": bool(bull_flip),     # alias for interpreter
+    "__utv4_bear_flip": bool(bear_flip),
+}
+```
+
+### Enforcement
+
+- **Static validator** (`pack_spec.validate_column_contract`) catches contract violations at validate-time, before install. Runs in <100ms via AST + regex.
+- **Auto-parity check on install** (Step 5) runs Q1 + Q2 parity tests on the just-installed pack and persists the verdict to `user_pack_parity_status`. Live-mode interpreter divergence shows up as Q2 < 1.0.
+- **4-quadrant parity test** (`/api/packs/builder/user-packs/{slug}/parity-test`) is the comprehensive gate — surfaces Q3 cross-TF issues that single-TF tests miss.
+
+A pack should reach Q1=PASS + Q2=PASS before being trusted in production. Q3=PASS is required if the pack will be used as a cross-TF confluence gate. Q4 (data-feed fidelity) is currently deferred — separately confirmed bit-perfect for Polygon.io.
+
+### Common pitfalls
+
+1. **Interpreter reads a `__`-prefixed column the live class doesn't emit** — the FLIP gap. Fix: emit the alias, or drop the `__` convention entirely.
+2. **`update_bar()` return shape differs across iterations** — e.g. omit a column conditionally. Fix: always return the same key set; use `None` or `0.0` for "not applicable" rather than dropping the key.
+3. **Path-dependent indicator state pollution from forming-bar calls** — `compute_tentative_state` snapshots the engine's built-in `IndicatorState` AND (post-2026-04-27) `_user_pack_engines`. New packs don't need to think about this; just keep per-class state self-contained (no module-level mutables, no shared globals across pack instances).

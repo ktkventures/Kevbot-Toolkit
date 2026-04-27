@@ -316,6 +316,14 @@ def generate_code_prompt(
                  "The level column must have a valid value on EVERY bar; do NOT use `.where(trigger_boolean, other=np.nan)` to filter it.")
     parts.append("16. Level columns (referenced from `trigger_levels`) and candle color columns (referenced from `plot_config.candle_color_column`) are internal — "
                  "include them in indicator_columns but do NOT add them to column_color_map or plot_schema.")
+    parts.append("17. CRITICAL — Live-mode column contract: every column your interpreter reads (via `df[\"X\"]` or `df.get(\"X\")`) MUST be emitted by BOTH "
+                 "indicator.py (batch path) AND indicator_incremental.py's `update_bar()` return dict (live path). If they differ, the pack will pass "
+                 "backtest but mis-classify live bars — exactly the ut_bot_v4 FLIP gap (fixed 2026-04-27). "
+                 "Recommended convention: have the interpreter read PUBLIC column names (e.g. `df[\"utv4_bull_flip\"]`, no `__` prefix). "
+                 "If you keep a `__`-prefixed naming pattern (legacy convention used to namespace internal vs public columns), "
+                 "you MUST emit BOTH variants from `update_bar()`'s return dict so the live dispatch matches the batch-mode interpreter. "
+                 "The static validator in pack_spec.validate_column_contract enforces this at validate-time; the auto-parity check at install time "
+                 "will FAIL if the contract is violated. See user_packs/ut_bot_v4/indicator_incremental.py for a worked example.")
 
     user_prompt = "\n".join(parts)
     return context, user_prompt
