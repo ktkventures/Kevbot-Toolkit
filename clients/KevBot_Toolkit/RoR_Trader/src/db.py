@@ -162,6 +162,8 @@ STRATEGY_COLUMN_FIELDS = {
     'kpis', 'stored_trades', 'equity_curve_data',
     'live_executions', 'discrepancies', 'discrepancies_dismissed_at',
     'data_refreshed_at', 'created_at', 'updated_at',
+    # Strategy Health Badge (2026-04-27 migration: strategy_health_badge.sql)
+    'data_source', 'kpis_stale_since', 'kpis_computed_at',
 }
 
 

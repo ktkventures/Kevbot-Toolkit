@@ -5858,6 +5858,11 @@ def render_strategy_builder():
             'alerts': enable_alerts,
             'backtest_start_date': _bt_range_start,
             'backtest_end_date': _bt_range_end,
+            # Strategy Health Badge: this is the full backtest save path.
+            # Stamps data_source='full' and clears any prior staleness.
+            'data_source': 'full',
+            'kpis_computed_at': datetime.now(timezone.utc).isoformat(),
+            'kpis_stale_since': None,
         }
 
         if editing_id:
@@ -9608,6 +9613,12 @@ def _save_mass_result_to_strategies(result: dict, result_index: int):
         'equity_curve_data': _hydrated_eq,
         'forward_test_start': datetime.now(timezone.utc).isoformat(),
         'created_at': datetime.now(timezone.utc).isoformat(),
+        # Strategy Health Badge: Mass Builder produces rapid-test KPIs
+        # (short window, simplified stops). Stamp 'rapid' so the badge
+        # surfaces it as 🟠 until a full backtest is run.
+        'data_source': 'rapid',
+        'kpis_computed_at': datetime.now(timezone.utc).isoformat(),
+        'kpis_stale_since': None,
     }
 
     save_strategy(strategy)

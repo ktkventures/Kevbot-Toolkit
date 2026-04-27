@@ -158,7 +158,41 @@ def list_strategies(
     if USE_DB and strategies:
         _augment_with_counts(strategies)
 
+    # Strategy Health Badge: attach `health` to every strategy so the list
+    # card can render the badge without a per-strategy round trip. Pure
+    # function — uses the count fields just attached above.
+    _attach_health(strategies)
+
     return _sanitize_json(strategies)
+
+
+def _attach_health(strategies: list) -> None:
+    """Attach a `health` dict to each strategy via the pure compute_strategy_health
+    function. Uses the count fields populated by _augment_with_counts.
+    Pack registry is loaded once and reused.
+    """
+    try:
+        import pack_registry
+        # scan_and_load_all is cached after first call; safe to invoke here
+        pack_registry.scan_and_load_all()
+        slugs = set(pack_registry.get_registered_packs().keys())
+    except Exception:
+        slugs = None
+    from services import compute_strategy_health
+    for s in strategies:
+        try:
+            health = compute_strategy_health(
+                s,
+                n_alerts=s.get('alert_trades_count'),
+                n_trades=s.get('forward_trades_count'),
+                pack_registry_slugs=slugs,
+            )
+            s['health'] = health.to_dict()
+        except Exception as e:
+            logger.warning(
+                "[HEALTH] compute_strategy_health failed for sid %s: %s",
+                s.get('id', '?'), e)
+            s['health'] = {'severity': 'healthy', 'issues': []}
 
 
 def _augment_with_counts(strategies: list) -> None:
@@ -253,6 +287,15 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     strategy['forward_testing'] = True
     strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
 
+    # Strategy Health Badge: stamp data_source if the caller didn't already
+    # (e.g. Mass Builder paths set 'rapid' explicitly). Frontends that ran
+    # a Hi-Fi backtest before saving should send `data_source='hifi'` in
+    # the body; full backtest defaults work.
+    strategy.setdefault('data_source', 'full')
+    strategy.setdefault(
+        'kpis_computed_at', datetime.now(timezone.utc).isoformat())
+    strategy.setdefault('kpis_stale_since', None)
+
     if 'confluence' in strategy and isinstance(strategy['confluence'], set):
         strategy['confluence'] = list(strategy['confluence'])
 
@@ -340,10 +383,32 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
         # path gives correct data for any monitored strategy; unmonitored
         # strategies with no forward trades return None and the UI shows
         # "Insufficient forward data" which is accurate.
-        return _sanitize_json(svc.enrich_strategy(strat, full_compute=False))
+        enriched = svc.enrich_strategy(strat, full_compute=False)
     except Exception as e:
         logger.warning("[DETAIL] Failed to enrich strategy %s: %s", strategy_id, e)
-        return _sanitize_json(strat)
+        enriched = strat
+
+    # Strategy Health Badge: attach health to the detail response too. Same
+    # pure function as list endpoint; uses already-computed counts when
+    # available on the enriched dict.
+    try:
+        import pack_registry
+        pack_registry.scan_and_load_all()
+        slugs = set(pack_registry.get_registered_packs().keys())
+        from services import compute_strategy_health
+        health = compute_strategy_health(
+            enriched,
+            n_alerts=enriched.get('alert_trades_count'),
+            n_trades=enriched.get('forward_trades_count'),
+            pack_registry_slugs=slugs,
+        )
+        enriched['health'] = health.to_dict()
+    except Exception as _e:
+        logger.warning(
+            "[HEALTH] detail compute failed for sid %s: %s", strategy_id, _e)
+        enriched['health'] = {'severity': 'healthy', 'issues': []}
+
+    return _sanitize_json(enriched)
 
 
 @router.put("/{strategy_id}")
@@ -367,6 +432,24 @@ def update_strategy(
             updated['created_at'] = existing.get('created_at')
         if 'confluence' in updated and isinstance(updated['confluence'], set):
             updated['confluence'] = list(updated['confluence'])
+
+        # Strategy Health Badge: if any backtest-affecting field changed,
+        # stamp kpis_stale_since so the badge surfaces the staleness until
+        # a re-backtest clears it. The caller can override by sending
+        # `kpis_stale_since=null` along with fresh KPIs (e.g. when this
+        # update IS a backtest result).
+        if 'kpis_stale_since' not in updated:
+            from services import HEALTH_BACKTEST_AFFECTING_FIELDS
+            changed_affecting = False
+            for field in HEALTH_BACKTEST_AFFECTING_FIELDS:
+                old_val = existing.get(field)
+                new_val = updated.get(field, old_val)
+                if new_val != old_val:
+                    changed_affecting = True
+                    break
+            if changed_affecting:
+                updated['kpis_stale_since'] = datetime.now(
+                    timezone.utc).isoformat()
 
         update_strategy_db(strategy_id, updated)
         return {"status": "updated"}

@@ -159,6 +159,11 @@ def _do_recompute(
             'kpis': kpis,
             'equity_curve_data': equity_curve_data,
             'data_refreshed_at': refreshed_at,
+            # Strategy Health Badge: forward-test recompute is treated as a
+            # KPI refresh — clear stale flag, stamp new computed timestamp.
+            # data_source preserved (recompute uses whatever path saved it).
+            'kpis_computed_at': refreshed_at,
+            'kpis_stale_since': None,
         })
 
     return {

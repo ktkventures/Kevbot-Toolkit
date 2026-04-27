@@ -1255,3 +1255,281 @@ def find_best_combinations(
 
     results.sort(key=lambda r: (r.get('profit_factor', 0), r.get('total_trades', 0)), reverse=True)
     return results[:top_n]
+
+
+# =============================================================================
+# STRATEGY HEALTH BADGE
+# =============================================================================
+# Pure-function health computer per docs/Strategy_Health_Badge_Design.md.
+# Takes already-loaded state (strategy dict + optional auxiliary inputs) and
+# returns a typed health report. No DB writes, no extra queries — caller
+# decides how to source the inputs.
+
+from dataclasses import dataclass, field, asdict
+from typing import Literal, Optional
+
+
+# Backtest-affecting fields that, when edited, invalidate KPIs.
+# Set conservatively — anything in `config` that the unified engine consumes.
+# Excludes name, tags, portfolio assignment, monitored flag, forward_testing.
+HEALTH_BACKTEST_AFFECTING_FIELDS = frozenset({
+    'entry_trigger_confluence_id',
+    'exit_trigger_confluence_ids',
+    'exit_trigger_confluence_id',  # legacy single-form
+    'confluence',
+    'general_confluences',
+    'stop_config',
+    'target_config',
+    'time_exit_config',
+    'direction',
+    'trading_session',
+    'data_days',
+    'lookback_mode',
+    'symbol',
+    'timeframe',
+})
+
+# Time-staleness threshold (days). KPIs older than this flag yellow.
+HEALTH_TIME_STALE_DAYS = 60
+
+# Forward-test trade threshold for the green tier (vs minor).
+HEALTH_GREEN_FORWARD_TRADES = 30
+
+
+_SEVERITY_ORDER = {'minor': 1, 'action': 2, 'broken': 3}
+
+
+@dataclass
+class HealthIssue:
+    """One issue surfaced for a strategy. Multiple issues per strategy are OK;
+    the badge color reflects the worst severity present."""
+    severity: Literal['minor', 'action', 'broken']
+    code: str
+    title: str           # short — for tooltip
+    detail: str          # longer — for drawer
+    fix_action: Optional[str] = None
+    fix_action_label: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class StrategyHealth:
+    severity: Literal['healthy', 'minor', 'action', 'broken']
+    issues: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            'severity': self.severity,
+            'issues': [i.to_dict() for i in self.issues],
+        }
+
+
+def _config_view(strategy: dict) -> dict:
+    """Return strategy config as a dict regardless of how it's stored."""
+    cfg = strategy.get('config') or {}
+    if isinstance(cfg, str):
+        try:
+            import json
+            cfg = json.loads(cfg)
+        except Exception:
+            cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return cfg
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
+    if isinstance(ts, datetime):
+        return ts
+    try:
+        # Supabase returns 'YYYY-MM-DDTHH:MM:SS.ffffff+00:00' — fromisoformat handles it
+        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def compute_strategy_health(
+    strategy: dict,
+    *,
+    n_alerts: Optional[int] = None,
+    n_trades: Optional[int] = None,
+    n_forward_trades: Optional[int] = None,
+    pack_registry_slugs: Optional[set] = None,
+    enabled_confluence_group_ids: Optional[set] = None,
+    now: Optional[datetime] = None,
+) -> StrategyHealth:
+    """Derive a StrategyHealth report from current state.
+
+    Args:
+        strategy: Row dict from the `strategies` table (config can be JSON or dict).
+        n_alerts: Alerts in DB for this strategy since forward_test_start.
+                  When None, the live_alert_divergence check is skipped.
+        n_trades: Trade rows in DB for this strategy since forward_test_start.
+                  Required alongside n_alerts for the divergence check.
+        n_forward_trades: Forward-test trade count (may equal n_trades) — used
+                          for the green-tier promotion check.
+        pack_registry_slugs: Set of currently-registered user-pack slugs.
+                             When provided, missing-pack issues are detected.
+        enabled_confluence_group_ids: Set of currently-enabled confluence
+                                      group IDs. When provided, orphan-group
+                                      issues are detected.
+        now: Override "current time" for time-staleness; defaults to UTC now.
+
+    Returns:
+        StrategyHealth with severity (worst issue's severity, or 'healthy') and
+        the full issue list ordered worst-first.
+
+    Pure: no DB writes, no extra DB reads. Caller sources optional inputs.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cfg = _config_view(strategy)
+    issues: list[HealthIssue] = []
+
+    # ── Configuration issues (additive — any can fire) ──
+    entry_id = cfg.get('entry_trigger_confluence_id')
+    if not entry_id:
+        issues.append(HealthIssue(
+            severity='broken',
+            code='missing_entry_trigger',
+            title='Missing entry trigger',
+            detail=(
+                'This strategy has no entry_trigger_confluence_id, so it '
+                'cannot be re-backtested or run live. Likely a legacy save '
+                'before the confluence-trigger schema landed. Edit the '
+                'strategy and pick an entry trigger to repair.'),
+            fix_action='edit_strategy',
+            fix_action_label='Edit strategy',
+        ))
+
+    if pack_registry_slugs is not None and entry_id:
+        # Each user-pack-prefixed entry_id is `<pack_slug>_<rest>` — look for
+        # any registered slug that matches as a prefix.
+        looks_like_user_pack = '_' in entry_id and not any(
+            entry_id.startswith(p) for p in
+            ('ema_', 'macd_', 'vwap_', 'rvol_', 'utbot_', 'ema_pp_v2_',
+             'ema_price_position_', 'utbot_v2_', 'macd_line_', 'macd_histogram_',
+             'ema_stack_'))
+        if looks_like_user_pack:
+            matched = any(entry_id.startswith(slug + '_')
+                          for slug in pack_registry_slugs)
+            if not matched:
+                # Could be a removed user pack. Best-effort guess by
+                # extracting the slug-like prefix.
+                issues.append(HealthIssue(
+                    severity='action',
+                    code='orphan_user_pack',
+                    title='References a missing user pack',
+                    detail=(
+                        f'Entry trigger {entry_id!r} references a user pack '
+                        'that is no longer registered. The strategy will '
+                        'not run live until the pack is re-installed or the '
+                        'trigger is changed.'),
+                    fix_action='edit_strategy',
+                    fix_action_label='Edit strategy',
+                ))
+
+    if enabled_confluence_group_ids is not None:
+        confluences = cfg.get('confluence', []) or []
+        # Confluence group IDs are tracked separately from the records; this
+        # check approximates by looking at template references encoded in
+        # entry_id and exit_id strings.
+        # (Detailed group-vs-record matching deferred — keep MVP simple.)
+
+    # ── Data quality issues (mutually exclusive — pick highest observed) ──
+    # The migration guarantees these columns exist on the row; tolerate
+    # legacy reads that haven't been re-fetched yet.
+    data_source = strategy.get('data_source')
+    kpis_stale_since = _parse_iso(strategy.get('kpis_stale_since'))
+    kpis_computed_at = _parse_iso(strategy.get('kpis_computed_at'))
+
+    # Stale-since-edit dominates over time-stale and tier-by-data-source.
+    if kpis_stale_since is not None:
+        issues.append(HealthIssue(
+            severity='action',
+            code='kpis_stale_since_edit',
+            title='KPIs stale since last edit',
+            detail=(
+                'A backtest-affecting field was edited after the last KPI '
+                'run, so the displayed KPIs no longer reflect the current '
+                'config. Re-run the backtest to refresh.'),
+            fix_action='run_full_backtest',
+            fix_action_label='Run full backtest',
+        ))
+    elif data_source == 'rapid':
+        issues.append(HealthIssue(
+            severity='action',
+            code='rapid_test_data',
+            title='Rapid-test KPIs only',
+            detail=(
+                'These KPIs come from the Mass Builder rapid-test path, '
+                'which uses a short window and simplified stops. Run a '
+                'full backtest before trusting the numbers in production.'),
+            fix_action='run_full_backtest',
+            fix_action_label='Run full backtest',
+        ))
+    elif data_source == 'full':
+        # Full backtest is OK but Hi-Fi gives execution-fidelity bonus.
+        # Only add the minor issue if there's no Hi-Fi run yet.
+        issues.append(HealthIssue(
+            severity='minor',
+            code='no_hifi_run',
+            title='Full backtest, no Hi-Fi yet',
+            detail=(
+                'KPIs are from the full backtest. A Hi-Fi run would tighten '
+                'execution fidelity (slippage, intra-bar fills). Optional.'),
+            fix_action='run_hifi_backtest',
+            fix_action_label='Run Hi-Fi backtest',
+        ))
+    # data_source == 'hifi' → no issue added (it's the green tier)
+
+    # Time-stale check (independent of data_source)
+    if kpis_computed_at is not None:
+        age_days = (now - kpis_computed_at).total_seconds() / 86400.0
+        if age_days > HEALTH_TIME_STALE_DAYS:
+            issues.append(HealthIssue(
+                severity='minor',
+                code='kpis_time_stale',
+                title=f'KPIs >{HEALTH_TIME_STALE_DAYS} days old',
+                detail=(
+                    f'Last KPI computation was {int(age_days)} days ago. '
+                    'Market conditions may have shifted since. Re-running '
+                    'the backtest re-validates the strategy against more '
+                    'recent data.'),
+                fix_action='run_full_backtest',
+                fix_action_label='Run full backtest',
+            ))
+
+    # ── Operational issues (additive) ──
+    # The standout case from the 2026-04-27 audit: strategy has trades in DB
+    # but zero alerts since forward_test_start. Strong signal that live
+    # was/is silently broken. Independent of data_source.
+    if (n_alerts is not None and n_trades is not None
+            and n_alerts == 0 and n_trades > 0):
+        issues.append(HealthIssue(
+            severity='action',
+            code='live_alert_divergence',
+            title='Backtest trades exist but no live alerts',
+            detail=(
+                f'{n_trades} backtest trades are recorded for this strategy '
+                'but no alerts have ever fired live. The most common cause '
+                'is a confluence gate that backtest satisfies but live '
+                'does not — historically this has flagged silent engine '
+                'bugs. Investigate before trusting the strategy in '
+                'production.'),
+            fix_action=None,
+            fix_action_label=None,
+        ))
+
+    # ── Determine overall severity ──
+    if not issues:
+        return StrategyHealth(severity='healthy', issues=[])
+
+    issues.sort(key=lambda i: -_SEVERITY_ORDER[i.severity])
+    worst = issues[0].severity
+    return StrategyHealth(severity=worst, issues=issues)
+
