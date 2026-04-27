@@ -649,6 +649,19 @@ class StrategyMonitor:
         import copy as _copy
         state_snapshot = _copy.deepcopy(self.indicators.state)
         init_snapshot = self.indicators._initialized
+        # User-pack incremental classes hold their own internal state (e.g.
+        # UtBotV4Incremental's _trail_stop / _prev_close). Forming-bar
+        # tentative computation MUST snapshot/restore these alongside the
+        # built-in state — otherwise per-second forming-bar updates pollute
+        # `_prev_close` and the next real bar's flip detection breaks
+        # silently. This was the root cause of strategy 132 (ut_bot_v4)
+        # never firing live alerts despite the indicator computing
+        # correctly per bar.
+        user_pack_snapshot = {
+            slug: _copy.deepcopy(eng)
+            for slug, eng in getattr(self.indicators,
+                                     '_user_pack_engines', {}).items()
+        }
         try:
             current = self.indicators.update_bar(forming_bar)
             prev = self.indicators.get_prev_values()
@@ -660,6 +673,8 @@ class StrategyMonitor:
         finally:
             self.indicators.state = state_snapshot
             self.indicators._initialized = init_snapshot
+            if user_pack_snapshot:
+                self.indicators._user_pack_engines = user_pack_snapshot
         return current, interps
 
     def on_tick(self, price: float, timestamp: str,
