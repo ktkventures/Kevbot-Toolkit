@@ -1087,138 +1087,192 @@ function SignalValidationTab({ pack }: { pack: UserPack }) {
 }
 
 /* ========================================================================
-   Detail: Parity Simulator Tab
+   Detail: Parity Simulator Tab — 4-quadrant pack validation
    ======================================================================== */
 
-interface ParityResult {
+// Backend response shapes (mirror parity_simulator.run_pack_parity_test_4q
+// and the user_pack_parity_status table).
+interface QuadrantResult {
+  quadrant?: string;
+  parity_score?: number | null;
+  verdict: 'PASS' | 'WARN' | 'FAIL' | 'SKIP' | string;
+  explanation?: string;
+  matched?: number;
+  compared?: number;
+  divergent_examples?: any[];
+  // Q1-specific
+  trigger?: string;
+  backtest_only?: number;
+  live_only?: number;
+  // Q2/Q3-specific
+  interpreter_key?: string;
+  primary_tf?: string;
+  secondary_tf?: string;
+}
+
+interface FourQuadrantResult {
   pack_id: string;
-  entry_trigger: string;
   symbol: string;
-  timeframe: string;
+  primary_tf: string;
+  secondary_tf: string;
   days: number;
-  bars_loaded: number;
-  warmup_bars: number;
-  backtest_fires: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  live_fires: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  matched: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  backtest_only: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  live_only: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  backtest_warmup: Array<{ bar_idx: number; timestamp: string; trigger: string }>;
-  parity_score: number | null;
-  verdict: string;
-  explanation: string;
+  overall_verdict: 'PASS' | 'WARN' | 'FAIL';
   summary: string;
+  quadrants: {
+    Q1?: QuadrantResult;
+    Q2?: QuadrantResult;
+    Q3?: QuadrantResult;
+    Q4?: QuadrantResult;
+  };
+}
+
+interface SavedParityStatus {
+  pack_slug: string;
+  overall_verdict: 'PASS' | 'WARN' | 'FAIL';
+  summary: string;
+  quadrants: FourQuadrantResult['quadrants'];
+  test_config: {
+    symbol?: string;
+    primary_tf?: string;
+    secondary_tf?: string;
+    days?: number;
+    session?: string;
+    feed?: string;
+    warmup_bars?: number;
+  };
+  tested_at: string;
 }
 
 const VERDICT_COLORS: Record<string, { color: string; bg: string }> = {
   PASS: { color: 'var(--green)', bg: 'var(--green-muted)' },
-  PASS_WITHIN_TOLERANCE: { color: 'var(--green)', bg: 'var(--green-muted)' },
-  PARTIAL: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
-  FAIL_SILENT: { color: 'var(--red)', bg: 'var(--red-muted)' },
-  FAIL_REVERSE: { color: 'var(--red)', bg: 'var(--red-muted)' },
-  NO_FIRES: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+  WARN: { color: 'var(--orange)', bg: 'var(--orange-muted)' },
+  FAIL: { color: 'var(--red)', bg: 'var(--red-muted)' },
+  SKIP: { color: 'var(--text-muted)', bg: 'var(--bg-input)' },
+  RUNNING: { color: 'var(--accent)', bg: 'var(--bg-input)' },
 };
 
-// Exec types tested per trigger. CC is intentionally omitted — it
-// fires at the same bar as C at the trigger level; CC's distinctive
-// behavior (exit-on-non-confirmation) is a position-state-machine
-// concern, not trigger parity. Re-adding CC here would just duplicate
-// the C result.
-const EXEC_TYPES_TO_TEST: Array<{ key: 'C' | 'L' | 'LC'; suffix: string; label: string }> = [
-  { key: 'C',  suffix: '',     label: 'C' },
-  { key: 'L',  suffix: '_ib',  label: 'L' },
-  { key: 'LC', suffix: '_lc',  label: 'LC' },
-];
+const QUADRANT_LABELS: Record<string, { title: string; subtitle: string }> = {
+  Q1: { title: 'Q1', subtitle: 'Trigger / primary TF' },
+  Q2: { title: 'Q2', subtitle: 'Interpreter / primary TF' },
+  Q3: { title: 'Q3', subtitle: 'Interpreter / secondary TF' },
+  Q4: { title: 'Q4', subtitle: 'Data fidelity (deferred)' },
+};
 
-interface ComboResult {
-  triggerId: string;
-  triggerName: string;
-  execType: 'C' | 'L' | 'LC';
-  status: 'pending' | 'running' | 'done' | 'error';
-  result?: ParityResult;
-  error?: string;
+function _timeAgo(dateStr?: string): string {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '—';
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function ParitySimulatorTab({ pack }: { pack: UserPack }) {
-  const entryTriggers = pack.triggers;
   const [symbol, setSymbol] = useState('SPY');
-  const [timeframe, setTimeframe] = useState('1Min');
+  const [primaryTf, setPrimaryTf] = useState('1Min');
+  const [secondaryTf, setSecondaryTf] = useState('15Min');
   const [days, setDays] = useState(7);
-  const [warmupBars, setWarmupBars] = useState(200);
   const [running, setRunning] = useState(false);
-  const [combos, setCombos] = useState<ComboResult[]>([]);
-  const [topError, setTopError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<FourQuadrantResult | null>(null);
+  const [savedStatus, setSavedStatus] = useState<SavedParityStatus | null>(null);
+  const [savedLoading, setSavedLoading] = useState(true);
 
-  const totalCombos = entryTriggers.length * EXEC_TYPES_TO_TEST.length;
+  // On mount: load the cached status (if any) so we can show last-known
+  // verdict + per-quadrant chips without a fresh test run.
+  useEffect(() => {
+    let cancelled = false;
+    setSavedLoading(true);
+    apiFetch<SavedParityStatus | null>(
+      `/api/packs/builder/user-packs/${pack.id}/parity-status`,
+    )
+      .then((data) => {
+        if (cancelled) return;
+        setSavedStatus(data || null);
+        // Pre-populate config controls from the saved test config so the
+        // user can re-run with the same settings (or change them).
+        if (data?.test_config) {
+          if (data.test_config.symbol) setSymbol(data.test_config.symbol);
+          if (data.test_config.primary_tf) setPrimaryTf(data.test_config.primary_tf);
+          if (data.test_config.secondary_tf) setSecondaryTf(data.test_config.secondary_tf);
+          if (data.test_config.days) setDays(data.test_config.days);
+        }
+      })
+      .catch(() => {
+        // 404 / missing → no saved status, show empty state
+        if (!cancelled) setSavedStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setSavedLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [pack.id]);
 
-  const runAllCombos = async () => {
-    if (entryTriggers.length === 0) {
-      setTopError('Pack has no triggers to test.');
-      return;
-    }
+  const runValidation = async () => {
     setRunning(true);
-    setTopError(null);
-    // Initialize all combos as pending so the table shows immediately.
-    const initial: ComboResult[] = [];
-    for (const t of entryTriggers) {
-      for (const et of EXEC_TYPES_TO_TEST) {
-        initial.push({
-          triggerId: t.id,
-          triggerName: t.name,
-          execType: et.key,
-          status: 'pending',
-        });
-      }
-    }
-    setCombos(initial);
-
-    // Sequential to avoid hammering the API and so progress is observable.
-    for (let i = 0; i < initial.length; i++) {
-      const combo = initial[i];
-      const exec = EXEC_TYPES_TO_TEST.find((e) => e.key === combo.execType)!;
-      // Mark this row running.
-      setCombos((prev) => prev.map((c, idx) => idx === i ? { ...c, status: 'running' } : c));
-      try {
-        const res = await apiFetch<ParityResult>('/api/packs/parity-test', {
+    setError(null);
+    try {
+      const res = await apiFetch<FourQuadrantResult>(
+        `/api/packs/builder/user-packs/${pack.id}/parity-test`,
+        {
           method: 'POST',
           body: JSON.stringify({
-            pack_id: pack.id,
-            entry_trigger: combo.triggerId + exec.suffix,
             symbol,
-            timeframe,
+            primary_tf: primaryTf,
+            secondary_tf: secondaryTf,
             days,
-            warmup_bars: warmupBars,
           }),
-        });
-        setCombos((prev) => prev.map((c, idx) =>
-          idx === i ? { ...c, status: 'done', result: res } : c
-        ));
-      } catch (e: any) {
-        setCombos((prev) => prev.map((c, idx) =>
-          idx === i ? { ...c, status: 'error', error: e?.message || 'failed' } : c
-        ));
-      }
+        },
+      );
+      setResult(res);
+      // Refresh the saved status so the "last tested" timestamp updates
+      const fresh = await apiFetch<SavedParityStatus | null>(
+        `/api/packs/builder/user-packs/${pack.id}/parity-status`,
+      );
+      setSavedStatus(fresh || null);
+    } catch (e: any) {
+      setError(e?.message || 'Validation failed');
+    } finally {
+      setRunning(false);
     }
-    setRunning(false);
   };
 
-  const completedCount = combos.filter((c) => c.status === 'done' || c.status === 'error').length;
-
-  // Surface the most useful divergent-fires drilldown beneath the table:
-  // the first combo with non-empty backtest_only or live_only fires, in
-  // table order. Avoids stacking N drilldowns when most rows agree.
-  const firstDivergent = combos.find((c) =>
-    c.result && (c.result.backtest_only.length > 0 || c.result.live_only.length > 0)
-  );
+  // Display source: live result wins (fresh run); fall back to saved status
+  // for the persistent view between runs.
+  const display: FourQuadrantResult | null = result
+    ? result
+    : (savedStatus
+        ? {
+            pack_id: savedStatus.pack_slug,
+            symbol: savedStatus.test_config?.symbol || '?',
+            primary_tf: savedStatus.test_config?.primary_tf || '?',
+            secondary_tf: savedStatus.test_config?.secondary_tf || '?',
+            days: savedStatus.test_config?.days || 0,
+            overall_verdict: savedStatus.overall_verdict,
+            summary: savedStatus.summary,
+            quadrants: savedStatus.quadrants,
+          }
+        : null);
 
   return (
     <div className="space-y-3">
       <Card>
-        <h4 className="text-sm font-medium mb-2">Backtest ↔ Live Parity Simulator</h4>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-sm font-medium">Pack Validation — 4-Quadrant Parity Test</h4>
+          {savedStatus && !running && (
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Last tested {_timeAgo(savedStatus.tested_at)}
+            </span>
+          )}
+        </div>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-          Replays the same OHLCV window through the backtest path and the live worker&apos;s
-          incremental engine, then compares trigger fires bar-by-bar. Tests every trigger
-          across the C, L, and LC execution types.
+          Validates this pack across four parity surfaces: trigger firing on the primary
+          timeframe (Q1), interpreter state on the primary timeframe (Q2), interpreter
+          state on a secondary timeframe via the cross-TF shadow path (Q3), and data
+          fidelity (Q4 — currently deferred). Pack is live-safe when overall verdict is PASS.
         </p>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -1232,12 +1286,27 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
             />
           </div>
           <div>
-            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Timeframe</label>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Primary TF</label>
             <select
               className="w-full text-xs px-2 py-1 rounded"
               style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-              value={timeframe}
-              onChange={(e) => setTimeframe(e.target.value)}
+              value={primaryTf}
+              onChange={(e) => setPrimaryTf(e.target.value)}
+            >
+              <option value="10Sec">10Sec</option>
+              <option value="1Min">1Min</option>
+              <option value="5Min">5Min</option>
+              <option value="15Min">15Min</option>
+              <option value="1Hour">1Hour</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Secondary TF</label>
+            <select
+              className="w-full text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              value={secondaryTf}
+              onChange={(e) => setSecondaryTf(e.target.value)}
             >
               <option value="1Min">1Min</option>
               <option value="5Min">5Min</option>
@@ -1258,173 +1327,155 @@ function ParitySimulatorTab({ pack }: { pack: UserPack }) {
               onChange={(e) => setDays(parseInt(e.target.value) || 7)}
             />
           </div>
-          <div>
-            <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Warmup bars</label>
-            <input
-              type="number"
-              min={0}
-              max={1000}
-              className="w-full text-xs px-2 py-1 rounded"
-              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-              value={warmupBars}
-              onChange={(e) => setWarmupBars(parseInt(e.target.value) || 0)}
-            />
-          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            className="text-xs px-3 py-1.5 rounded font-medium"
-            style={{
-              background: running ? 'var(--bg-input)' : 'var(--accent)',
-              color: running ? 'var(--text-muted)' : 'white',
-              cursor: running ? 'not-allowed' : 'pointer',
-            }}
-            onClick={runAllCombos}
-            disabled={running || entryTriggers.length === 0}
-          >
-            {running
-              ? `Running ${completedCount + 1}/${totalCombos}…`
-              : `Run All Combos (${totalCombos})`}
-          </button>
-          {!running && combos.length > 0 && (
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {combos.filter((c) => c.result?.verdict === 'PASS' || c.result?.verdict === 'PASS_WITHIN_TOLERANCE').length} passing,
-              {' '}
-              {combos.filter((c) =>
-                c.result && (c.result.verdict === 'FAIL_SILENT' || c.result.verdict === 'FAIL_REVERSE' || c.result.verdict === 'PARTIAL')
-              ).length} failing
-            </span>
-          )}
-        </div>
+        <button
+          className="text-xs px-3 py-1.5 rounded font-medium"
+          style={{
+            background: running ? 'var(--bg-input)' : 'var(--accent)',
+            color: running ? 'var(--text-muted)' : 'white',
+            cursor: running ? 'not-allowed' : 'pointer',
+          }}
+          onClick={runValidation}
+          disabled={running}
+        >
+          {running ? 'Running validation… (~30-60s)' : 'Run Full Validation'}
+        </button>
 
-        {topError && (
+        {error && (
           <p className="text-xs mt-3 px-3 py-2 rounded" style={{ color: 'var(--red)', background: 'var(--red-muted)' }}>
-            {topError}
+            {error}
           </p>
         )}
       </Card>
 
-      {combos.length > 0 && (
+      {savedLoading && !display && (
         <Card>
-          <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
-            Results ({completedCount}/{totalCombos} complete)
-          </h5>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Trigger', 'Exec', 'Verdict', 'Parity', 'Backtest', 'Live', 'Matched', 'Divergent'].map((h) => (
-                    <th key={h} className="text-left py-1.5 px-2 text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {combos.map((c, i) => {
-                  const r = c.result;
-                  const verdict = c.status === 'pending' ? 'PENDING'
-                    : c.status === 'running' ? 'RUNNING…'
-                    : c.status === 'error' ? 'ERROR'
-                    : r?.verdict || '—';
-                  const vstyle = VERDICT_COLORS[verdict] || { color: 'var(--text-muted)', bg: 'var(--bg-input)' };
-                  const divergent = r ? r.backtest_only.length + r.live_only.length : 0;
-                  return (
-                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{c.triggerName}</td>
-                      <td className="py-1.5 px-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{c.execType}</td>
-                      <td className="py-1.5 px-2">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                              style={{ color: vstyle.color, background: vstyle.bg }}>
-                          {verdict}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>
-                        {r?.parity_score !== null && r?.parity_score !== undefined
-                          ? `${(r.parity_score * 100).toFixed(0)}%` : '—'}
-                      </td>
-                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.backtest_fires.length ?? '—'}</td>
-                      <td className="py-1.5 px-2" style={{ color: 'var(--text-secondary)' }}>{r?.live_fires.length ?? '—'}</td>
-                      <td className="py-1.5 px-2" style={{ color: 'var(--green)' }}>{r?.matched.length ?? '—'}</td>
-                      <td className="py-1.5 px-2" style={{ color: divergent > 0 ? 'var(--red)' : 'var(--text-secondary)' }}>
-                        {r ? divergent : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+            Loading saved validation…
+          </p>
         </Card>
       )}
 
-      {firstDivergent && firstDivergent.result && (
+      {!savedLoading && !display && (
+        <Card>
+          <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+            No validation has been run for this pack yet. Click <span style={{ color: 'var(--text-primary)' }}>Run Full Validation</span> to generate the 4-quadrant report.
+          </p>
+        </Card>
+      )}
+
+      {display && (
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <span
+                className="px-2 py-0.5 rounded text-xs font-semibold"
+                style={(VERDICT_COLORS[display.overall_verdict] && {
+                  color: VERDICT_COLORS[display.overall_verdict].color,
+                  background: VERDICT_COLORS[display.overall_verdict].bg,
+                }) || {}}
+              >
+                {display.overall_verdict}
+              </span>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {display.symbol} · primary {display.primary_tf} · secondary {display.secondary_tf} · {display.days}d
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            {(['Q1', 'Q2', 'Q3', 'Q4'] as const).map((qkey) => {
+              const q = display.quadrants[qkey];
+              const v = q?.verdict || 'SKIP';
+              const vs = VERDICT_COLORS[v] || VERDICT_COLORS.SKIP;
+              const meta = QUADRANT_LABELS[qkey];
+              const score = (q?.parity_score !== null && q?.parity_score !== undefined)
+                ? `${(q.parity_score * 100).toFixed(1)}%`
+                : '—';
+              return (
+                <div
+                  key={qkey}
+                  className="rounded p-2"
+                  style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {meta.title}
+                    </span>
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                      style={{ color: vs.color, background: vs.bg }}
+                    >
+                      {v}
+                    </span>
+                  </div>
+                  <div className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    {meta.subtitle}
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: 'var(--text-primary)' }}>
+                    parity {score}
+                  </div>
+                  {q?.explanation && (
+                    <div className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                      {q.explanation.length > 80 ? q.explanation.slice(0, 80) + '…' : q.explanation}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {display.summary && (
+            <p className="text-[11px] mt-3 px-2 py-1 rounded" style={{ color: 'var(--text-muted)', background: 'var(--bg-input)' }}>
+              {display.summary}
+            </p>
+          )}
+        </Card>
+      )}
+
+      {/* Per-quadrant divergent-examples drilldown for any quadrant that has them */}
+      {display && (['Q1', 'Q2', 'Q3'] as const).some((k) => {
+        const q = display.quadrants[k];
+        return Array.isArray(q?.divergent_examples) && q!.divergent_examples!.length > 0;
+      }) && (
         <Card>
           <h5 className="text-xs font-medium mb-2" style={{ color: 'var(--orange)' }}>
-            Divergent fires — {firstDivergent.triggerName} [{firstDivergent.execType}]
+            Divergent examples
           </h5>
-          <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
-            First failing combo shown below. Click each row in the table above to drill into other failures (todo).
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {firstDivergent.result.backtest_only.length > 0 && (
-              <FireList
-                title="Backtest only (live missed these)"
-                fires={firstDivergent.result.backtest_only}
-                accent="red"
-              />
-            )}
-            {firstDivergent.result.live_only.length > 0 && (
-              <FireList
-                title="Live only (backtest missed these)"
-                fires={firstDivergent.result.live_only}
-                accent="orange"
-              />
-            )}
-          </div>
+          {(['Q1', 'Q2', 'Q3'] as const).map((qkey) => {
+            const q = display.quadrants[qkey];
+            const ex = q?.divergent_examples;
+            if (!Array.isArray(ex) || ex.length === 0) return null;
+            return (
+              <div key={qkey} className="mb-3 last:mb-0">
+                <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                  {QUADRANT_LABELS[qkey].title} — {QUADRANT_LABELS[qkey].subtitle}
+                </div>
+                <div className="text-[11px] rounded overflow-auto max-h-48" style={{ background: 'var(--bg-input)' }}>
+                  {ex.slice(0, 10).map((e: any, idx: number) => (
+                    <div key={idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        {e.timestamp || e.sec_ts || `bar ${e.bar_idx}`}
+                      </span>
+                      {e.batch !== undefined && (
+                        <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>
+                          batch={String(e.batch)} · live={String(e.live)}
+                        </span>
+                      )}
+                      {e.trigger && (
+                        <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>
+                          {e.trigger}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </Card>
       )}
-    </div>
-  );
-}
-
-function Stat({ label, value, accent }: { label: string; value: number; accent?: 'green' | 'red' }) {
-  const color = accent === 'green' ? 'var(--green)' : accent === 'red' ? 'var(--red)' : 'var(--text-primary)';
-  return (
-    <div className="px-3 py-2 rounded" style={{ background: 'var(--bg-input)' }}>
-      <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="text-sm font-semibold mt-0.5" style={{ color }}>{value.toLocaleString()}</div>
-    </div>
-  );
-}
-
-function FireList({
-  title,
-  fires,
-  accent,
-}: {
-  title: string;
-  fires: Array<{ bar_idx: number; timestamp: string }>;
-  accent: 'red' | 'orange';
-}) {
-  const color = accent === 'red' ? 'var(--red)' : 'var(--orange)';
-  return (
-    <div>
-      <div className="text-xs font-medium mb-1" style={{ color }}>{title}</div>
-      <div className="text-[11px] max-h-48 overflow-auto rounded" style={{ background: 'var(--bg-input)' }}>
-        {fires.slice(0, 50).map((f) => (
-          <div key={f.bar_idx} className="px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
-            <span style={{ color: 'var(--text-muted)' }}>bar {f.bar_idx}</span>
-            <span className="ml-2" style={{ color: 'var(--text-secondary)' }}>
-              {new Date(f.timestamp).toLocaleString()}
-            </span>
-          </div>
-        ))}
-        {fires.length > 50 && (
-          <div className="px-2 py-1 text-center" style={{ color: 'var(--text-muted)' }}>
-            … {fires.length - 50} more
-          </div>
-        )}
-      </div>
     </div>
   );
 }

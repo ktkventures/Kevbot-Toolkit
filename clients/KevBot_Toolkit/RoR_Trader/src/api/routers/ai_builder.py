@@ -278,7 +278,61 @@ def run_pack_parity_test_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Parity test crashed: {type(e).__name__}: {e}")
+
+    # Persist the result so the user_packs detail tab can render the
+    # last-known verdict on tab open without a fresh test run.
+    try:
+        from db import save_pack_parity_status
+        user_id = (user.get('id') or user.get('sub')
+                   if isinstance(user, dict) else None)
+        if user_id:
+            save_pack_parity_status(
+                pack_slug=slug,
+                user_id=str(user_id),
+                overall_verdict=result.get('overall_verdict', 'FAIL'),
+                summary=result.get('summary', ''),
+                quadrants=result.get('quadrants', {}),
+                test_config={
+                    'symbol': req.symbol,
+                    'primary_tf': req.primary_tf,
+                    'secondary_tf': req.secondary_tf,
+                    'days': req.days,
+                    'session': req.session,
+                    'feed': req.feed,
+                    'warmup_bars': req.warmup_bars,
+                },
+            )
+    except Exception as _e:
+        # Persistence failure should never break the test response —
+        # frontend still gets the fresh result, persistence will
+        # retry on the next run.
+        logger.warning("[parity-test] persistence failed for %s: %s",
+                       slug, _e)
     return result
+
+
+@router.get("/user-packs/{slug}/parity-status")
+def get_pack_parity_status(
+    slug: str,
+    user=Depends(get_current_user),
+):
+    """Return the most recent saved parity-test result for this user/pack.
+
+    Returns None (HTTP 200, body=null) if the user has never run the
+    test on this pack — frontend should show a "no result yet" state
+    and offer the "Run Validation" button.
+    """
+    import pack_registry
+    if pack_registry.get_pack(slug) is None:
+        raise HTTPException(
+            status_code=404, detail=f"Pack '{slug}' not registered")
+
+    from db import load_pack_parity_status
+    user_id = (user.get('id') or user.get('sub')
+               if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+    return load_pack_parity_status(slug, str(user_id))
 
 
 @router.post("/generate-structure")

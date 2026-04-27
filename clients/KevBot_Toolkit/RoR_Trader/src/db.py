@@ -1701,3 +1701,88 @@ def delete_mass_search(search_id: str):
     searches = _load_mass_searches_file()
     searches = [s for s in searches if s.get('id') != search_id]
     _save_mass_searches_file(searches)
+
+
+# ============================================================
+# User Pack Parity Status CRUD
+# ============================================================
+# Backs the user_pack_parity_status table — one row per
+# (user_id, pack_slug) holding the last 4-quadrant parity-test
+# result. See migrations/user_pack_parity_status.sql.
+
+def load_pack_parity_status(pack_slug: str, user_id: str) -> dict | None:
+    """Return the most recent saved parity-test result for this
+    (user, pack) combo, or None if the user has never run the test."""
+    try:
+        client = get_admin_client()
+        r = (client.table('user_pack_parity_status')
+             .select('*')
+             .eq('user_id', user_id)
+             .eq('pack_slug', pack_slug)
+             .limit(1)
+             .execute())
+        rows = r.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning(
+            "load_pack_parity_status(%s, %s) failed: %s",
+            pack_slug, user_id[:8] if user_id else '?', e)
+        return None
+
+
+def save_pack_parity_status(
+    pack_slug: str,
+    user_id: str,
+    overall_verdict: str,
+    summary: str,
+    quadrants: dict,
+    test_config: dict,
+) -> dict | None:
+    """Upsert the parity-test result for this (user, pack) combo.
+
+    Idempotent: re-running overwrites the row. Tested_at is set to now
+    on every upsert (independent of created_at).
+    """
+    from datetime import datetime, timezone
+    if overall_verdict not in ('PASS', 'WARN', 'FAIL'):
+        raise ValueError(
+            f"overall_verdict must be PASS|WARN|FAIL, got {overall_verdict!r}")
+    payload = {
+        'user_id': user_id,
+        'pack_slug': pack_slug,
+        'overall_verdict': overall_verdict,
+        'summary': summary or '',
+        'quadrants': quadrants or {},
+        'test_config': test_config or {},
+        'tested_at': datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        client = get_admin_client()
+        # Upsert by (user_id, pack_slug) unique constraint
+        r = (client.table('user_pack_parity_status')
+             .upsert(payload, on_conflict='user_id,pack_slug')
+             .execute())
+        rows = r.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning(
+            "save_pack_parity_status(%s, %s) failed: %s",
+            pack_slug, user_id[:8] if user_id else '?', e)
+        return None
+
+
+def list_pack_parity_statuses(user_id: str) -> list:
+    """Return all parity statuses for the user (one per pack). Used by
+    the user_packs LIST endpoint to surface verdicts inline."""
+    try:
+        client = get_admin_client()
+        r = (client.table('user_pack_parity_status')
+             .select('*')
+             .eq('user_id', user_id)
+             .execute())
+        return r.data or []
+    except Exception as e:
+        logger.warning(
+            "list_pack_parity_statuses(%s) failed: %s",
+            user_id[:8] if user_id else '?', e)
+        return []
