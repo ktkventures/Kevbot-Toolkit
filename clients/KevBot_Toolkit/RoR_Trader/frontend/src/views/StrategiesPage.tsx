@@ -61,6 +61,10 @@ interface Strategy {
   updatedAt: string;
   portfolioCount: number;
   health?: StrategyHealth;
+  // Backtest fidelity (services.compute_strategy_health)
+  dataSource?: 'rapid' | 'full' | 'hifi';
+  // Algo history fidelity — derived from stored_trades' behavior + hifi_resolved
+  algoHistoryFidelity?: 'Bar' | 'Hi-Fi' | 'Mixed' | 'Unknown';
 }
 
 // Strategy Health Badge — see services.compute_strategy_health.
@@ -149,7 +153,67 @@ function apiToStrategy(s: any): Strategy {
     // `strategies` array contains this strategy's id).
     portfolioCount: s.portfolio_count ?? 0,
     health: s.health || undefined,
+    dataSource: s.data_source || undefined,
+    algoHistoryFidelity: s.algo_history_fidelity || 'Unknown',
   };
+}
+
+/* ========================================================================= */
+/* Strategy Fidelity Badges                                                    */
+/* ========================================================================= */
+// Always-visible row of small chips showing the fidelity layer of each
+// strategy: Backtest tier (rapid/full/hifi) and Algo history resolution
+// (Bar/Hi-Fi). Distinct from the Health Badge — that surfaces ISSUES;
+// these surface INFORMATION about how the strategy was computed.
+
+const FIDELITY_BACKTEST_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
+  rapid: { bg: 'var(--orange-muted)', fg: 'var(--orange)', label: 'Rapid' },
+  full:  { bg: 'var(--bg-input)',     fg: 'var(--text-secondary)', label: 'Full' },
+  hifi:  { bg: 'var(--green-muted)',  fg: 'var(--green)', label: 'Hi-Fi' },
+};
+
+const FIDELITY_ALGO_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
+  'Bar':     { bg: 'var(--bg-input)',    fg: 'var(--text-secondary)', label: 'Bar' },
+  'Hi-Fi':   { bg: 'var(--green-muted)', fg: 'var(--green)',          label: 'Hi-Fi' },
+  'Mixed':   { bg: 'var(--orange-muted)',fg: 'var(--orange)',         label: 'Mixed' },
+  'Unknown': { bg: 'var(--bg-input)',    fg: 'var(--text-muted)',     label: 'Unknown' },
+};
+
+export function StrategyFidelityBadges({
+  strategy,
+  variant = 'compact',
+}: {
+  strategy: Pick<Strategy, 'dataSource' | 'algoHistoryFidelity'>;
+  variant?: 'compact' | 'detail';
+}) {
+  const bt = strategy.dataSource ? FIDELITY_BACKTEST_COLORS[strategy.dataSource] : null;
+  const algo = strategy.algoHistoryFidelity
+    ? FIDELITY_ALGO_COLORS[strategy.algoHistoryFidelity]
+    : null;
+  if (!bt && !algo) return null;
+
+  const sizeClass = variant === 'compact' ? 'text-[10px] px-1.5 py-0.5' : 'text-xs px-2 py-0.5';
+
+  return (
+    <div className="inline-flex items-center gap-1" title="Backtest fidelity / Algo history resolution">
+      {bt && (
+        <span
+          className={`${sizeClass} rounded font-medium`}
+          style={{ background: bt.bg, color: bt.fg, border: `1px solid ${bt.fg}40` }}
+        >
+          BT: {bt.label}
+        </span>
+      )}
+      {algo && (
+        <span
+          className={`${sizeClass} rounded font-medium`}
+          style={{ background: algo.bg, color: algo.fg, border: `1px solid ${algo.fg}40` }}
+        >
+          Algo: {algo.label}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /* ========================================================================= */
@@ -701,6 +765,39 @@ export default function StrategiesPage() {
           >
             {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update Data'}
           </button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            className="text-sm"
+            disabled={refreshing || selectedIds.size === 0}
+            onClick={async () => {
+              if (refreshing || selectedIds.size === 0) return;
+              const ids = Array.from(selectedIds).map(Number);
+              setRefreshing(true);
+              setRefreshCount(0);
+              setRefreshTotal(ids.length);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              try {
+                const resp = await fetch(`${base}/api/strategies/run-hifi-pass2-bulk`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ strategy_ids: ids }),
+                });
+                const result = await resp.json();
+                alert(`Hi-Fi Pass 2 complete\n\n` +
+                      `Strategies: ${result.total_strategies}\n` +
+                      `Entry timestamps refined: ${result.total_entries_refined}\n` +
+                      `Exits refined: ${result.total_exits_refined}\n` +
+                      `Failed: ${result.total_failed}`);
+              } catch (e: any) {
+                alert(`Hi-Fi Pass 2 failed: ${e?.message || e}`);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+          >
+            Run Hi-Fi
+          </button>
           <button style={btnSecondary} className="text-sm">
             Add Tag
           </button>
@@ -1044,6 +1141,10 @@ export default function StrategiesPage() {
                 </span>
                 <span> · Updated {timeAgo(strat.updatedAt)}</span>
               </p>
+              {/* Fidelity badges — always visible row above the equity curve */}
+              <div className="mb-2">
+                <StrategyFidelityBadges strategy={strat} variant="compact" />
+              </div>
 
               {/* Mini equity curve (3-segment per display settings V5) */}
               <div className="rounded-lg mb-2 overflow-hidden" style={{ background: 'var(--bg-input)' }}>

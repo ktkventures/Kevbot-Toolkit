@@ -585,9 +585,13 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
     """Resolve every entry/exit with 1-second data for precise timing.
 
     For each trade:
-    1. Fetch 1-second bars for the exit bar window
-    2. Walk 1-second bars to find which level (stop or target) was hit first
-    3. Update exit_reason, exit_price, and hold_time_seconds if outcome changed
+    1. ENTRY (added 2026-04-27): if entry was L-type and entry_fill_ts is on
+       the bar boundary, walk 1-second bars within the entry bar window to
+       find the per-second moment the entry level was crossed. Update
+       entry_fill_ts to that per-second timestamp.
+    2. EXIT (original): walk 1-second bars in the exit bar window to find
+       which level (stop or target) was hit first. Update exit_reason,
+       exit_price, hold_time_seconds.
 
     This is Pass 2 of the Hi-Fi backtest — runs after the normal engine Pass 1.
     """
@@ -596,17 +600,78 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
 
     outcomes_changed = 0
     total_resolved = 0
+    entries_refined = 0
 
     # Get timeframe duration in seconds for window calculation
     tf_seconds = _tf_to_seconds(timeframe)
 
     for idx in trades_df.index:
         trade = trades_df.loc[idx]
-        entry_time_str = trade.get('entry_time')
-        exit_time_str = trade.get('exit_time')
+        entry_time_str = trade.get('entry_time') or trade.get('entry_fill_ts')
+        exit_time_str = trade.get('exit_time') or trade.get('exit_fill_ts')
         stop_price = trade.get('stop_price')
         target_price = trade.get('target_price')
         direction = trade.get('direction', 'LONG')
+
+        # ── ENTRY refinement (L-type only, only when fill is on bar boundary) ──
+        # When the unified-engine bar-close-reachability fallback fires an
+        # L-type trigger, it stamps fill_ts at bar_start because it doesn't
+        # know the per-second moment within the bar. Pass 2 refines this:
+        # walk 1-sec bars and find when the level was actually crossed.
+        entry_exec_type = trade.get('entry_exec_type') or trade.get('exec_type', 'C')
+        if (entry_exec_type and str(entry_exec_type).upper().startswith('L')
+                and entry_time_str):
+            try:
+                entry_dt = _parse_dt(entry_time_str)
+                if entry_dt is not None:
+                    # Is fill_ts at a bar boundary? If yes, refine. If already
+                    # mid-bar (live engine per-second resolution), keep as-is.
+                    on_boundary = (entry_dt.second % tf_seconds == 0
+                                   and entry_dt.microsecond == 0)
+                    entry_price = trade.get('entry_price')
+                    if on_boundary and entry_price and entry_price > 0:
+                        e_window_start = entry_dt
+                        e_window_end = entry_dt + timedelta(seconds=tf_seconds)
+                        bars_1s_entry = fetch_1s_bars_for_window(
+                            symbol, e_window_start, e_window_end,
+                            padding_seconds=1)
+                        if bars_1s_entry is not None and len(bars_1s_entry) > 0:
+                            # Find first per-second where the entry level was crossed
+                            crossed_at = None
+                            for ts, bar in bars_1s_entry.iterrows():
+                                hi = bar.get('high', 0)
+                                lo = bar.get('low', 0)
+                                if direction == 'LONG':
+                                    # LONG entry on level cross above:
+                                    # first second where high >= entry_price
+                                    if hi >= entry_price:
+                                        crossed_at = ts
+                                        break
+                                else:  # SHORT
+                                    if lo <= entry_price:
+                                        crossed_at = ts
+                                        break
+                            if crossed_at is not None and crossed_at != entry_dt:
+                                # Only update if the per-second moment is LATER
+                                # than the bar boundary. (Equality means the
+                                # cross was on the very first second; nothing
+                                # to refine.)
+                                if crossed_at > entry_dt:
+                                    iso = crossed_at.isoformat() if hasattr(
+                                        crossed_at, 'isoformat') else str(
+                                            crossed_at)
+                                    trades_df.at[idx, 'entry_fill_ts'] = iso
+                                    if 'entry_time' in trades_df.columns:
+                                        trades_df.at[idx, 'entry_time'] = iso
+                                    entries_refined += 1
+                                    logger.info(
+                                        "[HIFI-ENTRY] Trade %s: entry %s → %s "
+                                        "(level=%.4f, dir=%s)",
+                                        idx, entry_dt.isoformat(),
+                                        iso, entry_price, direction)
+            except Exception as e:
+                logger.warning(
+                    "[HIFI-ENTRY] Error refining trade %s entry: %s", idx, e)
 
         if not exit_time_str:
             continue
@@ -681,7 +746,10 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
         except Exception as e:
             logger.warning("[HIFI] Error resolving trade %s: %s", idx, e)
 
-    logger.info("[HIFI] Resolved %d trades, %d outcomes changed", total_resolved, outcomes_changed)
+    logger.info(
+        "[HIFI] Resolved %d trades (exit), %d outcomes changed, "
+        "%d entry timestamps refined",
+        total_resolved, outcomes_changed, entries_refined)
     return trades_df
 
 

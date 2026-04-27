@@ -163,7 +163,69 @@ def list_strategies(
     # function — uses the count fields just attached above.
     _attach_health(strategies)
 
+    # Strategy Fidelity Badges: attach `algo_history_fidelity` derived from
+    # the trades' behavior + hifi_resolved fields. Sampled (not full scan)
+    # for performance — list endpoint runs across the user's whole fleet.
+    _attach_algo_history_fidelity(strategies)
+
     return _sanitize_json(strategies)
+
+
+def _attach_algo_history_fidelity(strategies: list) -> None:
+    """Attach `algo_history_fidelity` to each strategy: 'Hi-Fi' if any trade
+    has hifi_resolved=True, 'Bar' if any has behavior='B' (default backtest),
+    'Mixed' if both, 'Unknown' if no trades or no fidelity flags.
+
+    Sampled lookup: queries trades table for the most recent 50 trades per
+    strategy and reads the relevant fields. ~50ms per strategy, parallelizable
+    if the user has many strategies — for now we run sequentially.
+    """
+    from db import get_admin_client
+    client = get_admin_client()
+    for s in strategies:
+        sid = s.get('id')
+        if not sid:
+            s['algo_history_fidelity'] = 'Unknown'
+            continue
+        try:
+            r = (client.table('trades')
+                 .select('data')
+                 .eq('strategy_id', sid)
+                 .order('entry_fill_ts', desc=True)
+                 .limit(50)
+                 .execute())
+            rows = r.data or []
+            if not rows:
+                s['algo_history_fidelity'] = 'Unknown'
+                continue
+            has_hifi = False
+            has_bar = False
+            for row in rows:
+                d = row.get('data') or {}
+                if isinstance(d, str):
+                    import json as _json
+                    try:
+                        d = _json.loads(d)
+                    except Exception:
+                        d = {}
+                if d.get('hifi_resolved') is True:
+                    has_hifi = True
+                if d.get('behavior') == 'B':
+                    has_bar = True
+                if has_hifi and has_bar:
+                    break
+            if has_hifi and has_bar:
+                s['algo_history_fidelity'] = 'Mixed'
+            elif has_hifi:
+                s['algo_history_fidelity'] = 'Hi-Fi'
+            elif has_bar:
+                s['algo_history_fidelity'] = 'Bar'
+            else:
+                s['algo_history_fidelity'] = 'Unknown'
+        except Exception as e:
+            logger.warning(
+                "[FIDELITY] Could not attach for sid %s: %s", sid, e)
+            s['algo_history_fidelity'] = 'Unknown'
 
 
 def _attach_health(strategies: list) -> None:
@@ -408,6 +470,14 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
             "[HEALTH] detail compute failed for sid %s: %s", strategy_id, _e)
         enriched['health'] = {'severity': 'healthy', 'issues': []}
 
+    # Attach algo history fidelity (Bar / Hi-Fi / Mixed / Unknown). Reuses
+    # the list endpoint's helper — operates on a single-strategy list.
+    try:
+        _attach_algo_history_fidelity([enriched])
+    except Exception as _e:
+        logger.warning(
+            "[FIDELITY] detail attach failed for sid %s: %s", strategy_id, _e)
+
     return _sanitize_json(enriched)
 
 
@@ -481,6 +551,211 @@ def delete_strategy(strategy_id: int, user=Depends(get_current_user)):
                 json.dump(strategies, f, indent=2)
             return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Strategy not found")
+
+
+@router.post("/{strategy_id}/run-hifi-pass2")
+def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
+    """Run Hi-Fi Pass 2 on a strategy's existing trades — refines entry +
+    exit timestamps + prices using 1-second data, without re-running the
+    full backtest. ~10x faster than a full hifi_mode backtest because it
+    skips the indicator/trigger pipeline.
+
+    For each trade:
+      - Entry refinement (L-type only): walks 1-sec bars in entry bar
+        window to find when the entry level was crossed. Updates
+        entry_fill_ts to the per-second moment.
+      - Exit refinement: walks 1-sec bars in exit bar window to find
+        which level (stop/target) hit first. Updates exit_reason,
+        exit_price, hold_time_seconds.
+
+    Persists refined trades back to the trades table + bumps the
+    strategy's `data_source` to 'hifi'.
+
+    Response: counts of entry refinements + exit changes + total trades.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(
+            status_code=501, detail="Requires DB mode")
+
+    from db import (get_strategy_by_id_db, get_admin_client,
+                    update_strategy_admin)
+    strat = get_strategy_by_id_db(strategy_id)
+    if strat is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    user_id = strat.get('user_id') or (
+        user.get('id') or user.get('sub')
+        if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    # Load existing trades from the trades table (the canonical store post-Phase 40).
+    from db import load_trades_admin
+    trades_list = load_trades_admin(strategy_id, str(user_id)) or []
+    if not trades_list:
+        return {
+            "status": "ok",
+            "strategy_id": strategy_id,
+            "trades_count": 0,
+            "message": "Strategy has no trades to refine",
+        }
+
+    import pandas as pd
+    trades_df = pd.DataFrame(trades_list)
+
+    # Mirror the column names _hifi_resolve_trades expects. The trades
+    # table stores entry_fill_ts/exit_fill_ts; the function falls back to
+    # those when entry_time/exit_time are missing (handled in the
+    # extension we just shipped).
+    symbol = strat.get('symbol', 'SPY')
+    timeframe = strat.get('timeframe', '1Min')
+
+    # entry_exec_type is needed by the entry-refinement gate. Pull from
+    # exec_type which should be the entry exec_type for L-type strategies.
+    if 'entry_exec_type' not in trades_df.columns and 'exec_type' in trades_df.columns:
+        trades_df['entry_exec_type'] = trades_df['exec_type']
+    if 'direction' not in trades_df.columns or trades_df['direction'].isna().all():
+        # Direction not stored on trade row — fall back to strategy direction
+        trades_df['direction'] = strat.get('direction', 'LONG')
+
+    # Run Pass 2 (entries + exits)
+    from api.services.backtest_service import _hifi_resolve_trades
+    try:
+        refined_df = _hifi_resolve_trades(trades_df, symbol, timeframe)
+    except Exception as e:
+        logger.exception("[HIFI-PASS2] Strategy %s crashed: %s",
+                         strategy_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Hi-Fi Pass 2 crashed: {type(e).__name__}: {e}")
+
+    # Detect what changed
+    entries_changed = 0
+    exits_changed = 0
+    if 'entry_fill_ts' in refined_df.columns:
+        for i, row in refined_df.iterrows():
+            orig = trades_list[i] if i < len(trades_list) else {}
+            if str(row.get('entry_fill_ts')) != str(orig.get('entry_fill_ts')):
+                entries_changed += 1
+            if (str(row.get('exit_price')) != str(orig.get('exit_price'))
+                    or str(row.get('exit_reason')) != str(orig.get('exit_reason'))):
+                exits_changed += 1
+
+    # Persist refined trades + flip data_source. We update each row that
+    # changed; rows that didn't change are skipped.
+    client = get_admin_client()
+    persisted = 0
+    if entries_changed + exits_changed > 0:
+        # Update each changed row's columns. Since trades table now has
+        # canonical columns we update directly.
+        for i, row in refined_df.iterrows():
+            tid = row.get('id')
+            if not tid:
+                continue
+            update_payload = {}
+            orig = trades_list[i]
+            for col in ('entry_fill_ts', 'exit_fill_ts', 'exit_price',
+                        'exit_reason', 'r_multiple', 'dollar_pnl',
+                        'executed_quantity'):
+                if col in row.index:
+                    new_val = row[col]
+                    # Convert pandas/numpy values for JSON serialization
+                    if hasattr(new_val, 'isoformat'):
+                        new_val = new_val.isoformat()
+                    elif pd.isna(new_val):
+                        new_val = None
+                    elif hasattr(new_val, 'item'):
+                        new_val = new_val.item()
+                    if str(new_val) != str(orig.get(col)):
+                        update_payload[col] = new_val
+            if update_payload:
+                try:
+                    client.table('trades').update(
+                        update_payload).eq('id', tid).execute()
+                    persisted += 1
+                except Exception as e:
+                    logger.warning(
+                        "[HIFI-PASS2] Failed to update trade %s: %s",
+                        tid, e)
+
+    # Mark strategy as Hi-Fi resolved in data_source.
+    if entries_changed + exits_changed > 0:
+        try:
+            update_strategy_admin(strategy_id, str(user_id), {
+                'data_source': 'hifi',
+                'kpis_computed_at': datetime.now(timezone.utc).isoformat(),
+                'kpis_stale_since': None,
+            })
+        except Exception as e:
+            logger.warning(
+                "[HIFI-PASS2] Failed to update strategy data_source: %s", e)
+
+    return {
+        "status": "ok",
+        "strategy_id": strategy_id,
+        "trades_count": len(trades_list),
+        "entries_refined": entries_changed,
+        "exits_refined": exits_changed,
+        "persisted": persisted,
+        "data_source": 'hifi' if entries_changed + exits_changed > 0
+                       else strat.get('data_source'),
+    }
+
+
+@router.post("/run-hifi-pass2-bulk")
+def run_hifi_pass2_bulk(
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Run Hi-Fi Pass 2 across multiple strategies in one call.
+
+    Body: {"strategy_ids": [int, ...]}.
+    Returns per-strategy summary plus aggregate counts.
+    """
+    sids = body.get('strategy_ids') or []
+    if not isinstance(sids, list) or not sids:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide non-empty strategy_ids list")
+
+    results = []
+    total_entries = 0
+    total_exits = 0
+    total_failed = 0
+    for sid in sids:
+        try:
+            r = run_hifi_pass2(sid, user=user)
+            results.append({
+                "strategy_id": sid,
+                "status": r.get("status"),
+                "entries_refined": r.get("entries_refined", 0),
+                "exits_refined": r.get("exits_refined", 0),
+                "trades_count": r.get("trades_count", 0),
+            })
+            total_entries += r.get("entries_refined", 0)
+            total_exits += r.get("exits_refined", 0)
+        except HTTPException as e:
+            total_failed += 1
+            results.append({
+                "strategy_id": sid,
+                "status": "error",
+                "detail": e.detail,
+            })
+        except Exception as e:
+            total_failed += 1
+            results.append({
+                "strategy_id": sid,
+                "status": "error",
+                "detail": str(e),
+            })
+    return {
+        "results": results,
+        "total_strategies": len(sids),
+        "total_entries_refined": total_entries,
+        "total_exits_refined": total_exits,
+        "total_failed": total_failed,
+    }
 
 
 @router.post("/{strategy_id}/duplicate")

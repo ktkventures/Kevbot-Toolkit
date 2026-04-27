@@ -12,7 +12,7 @@ import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
-import { StrategyHealthBadge, StrategyHealthDrawer, type StrategyHealth } from './StrategiesPage';
+import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
@@ -109,6 +109,8 @@ function apiToDetailStrategy(s: any) {
     createdAt: s.created_at || '--',
     updatedAt: s.updated_at || '--',
     health: s.health || undefined,
+    dataSource: s.data_source || undefined,
+    algoHistoryFidelity: s.algo_history_fidelity || 'Unknown',
   };
 }
 
@@ -1936,6 +1938,57 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           </>
         }
       />
+
+      {/* Fidelity badges + Run Hi-Fi button row */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <StrategyFidelityBadges
+          strategy={strategy as any}
+          variant="detail"
+        />
+        <button
+          className="text-xs px-3 py-1 rounded font-medium"
+          style={{
+            background: 'var(--accent)',
+            color: 'white',
+            cursor: 'pointer',
+          }}
+          onClick={async () => {
+            const ok = confirm(
+              `Run Hi-Fi Pass 2 on this strategy?\n\n` +
+              `Walks 1-second bars to refine entry timestamps and exit ` +
+              `prices on every existing trade. Takes 10-30 seconds for ` +
+              `a few thousand trades. Results persist immediately.`
+            );
+            if (!ok) return;
+            const token = localStorage.getItem('ror_access_token') || '';
+            const base = process.env.NEXT_PUBLIC_API_URL || '';
+            try {
+              const resp = await fetch(
+                `${base}/api/strategies/${strategyId}/run-hifi-pass2`,
+                {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                });
+              const result = await resp.json();
+              if (resp.ok) {
+                alert(
+                  `Hi-Fi Pass 2 complete\n\n` +
+                  `Trades scanned: ${result.trades_count}\n` +
+                  `Entry timestamps refined: ${result.entries_refined}\n` +
+                  `Exits refined: ${result.exits_refined}\n` +
+                  `Persisted: ${result.persisted}`);
+                window.location.reload();
+              } else {
+                alert(`Failed: ${result.detail || JSON.stringify(result)}`);
+              }
+            } catch (e: any) {
+              alert(`Hi-Fi Pass 2 failed: ${e?.message || e}`);
+            }
+          }}
+        >
+          Run Hi-Fi Pass 2
+        </button>
+      </div>
 
       {/* Strategy Health banner — only shown when there are issues */}
       <StrategyHealthBadge
