@@ -840,8 +840,12 @@ def run_quadrant_2_interpreter_primary(
         'verdict': verdict,
         'explanation': (
             f'{matched}/{compared} bars matched on primary-TF interpreter '
-            f'(parity={parity:.4f}). Divergence on flip bars is the known '
-            f'__-prefix gap — see feedback memory.'
+            f'(parity={parity:.4f}). '
+            + ('Pack interpreter parity confirmed.' if parity == 1.0 else
+               'Common cause for divergence: pack interpreter reads `__`-prefixed '
+               'columns that the live incremental class doesn\'t emit. '
+               'Have update_bar() return both single- and double-underscore '
+               'variants of trigger booleans.')
             if compared else 'no comparable bars'),
     }
 
@@ -961,33 +965,46 @@ def run_quadrant_3_interpreter_secondary(
         return {'verdict': 'SKIP',
                 'explanation': 'not enough primary bars to span secondary'}
 
-    live_close_records: dict = {}
-    for ts, row in pri_df.iterrows():
-        bar_dict = {
-            'open': float(row['open']), 'high': float(row['high']),
-            'low': float(row['low']), 'close': float(row['close']),
-            'volume': float(row.get('volume', 0)),
-            'timestamp': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
-        }
-        try:
-            hub.on_polygon_bar(bar_dict, primary_tf_seconds)
-        except Exception as e:
-            logger.warning("[parity-Q3] hub.on_polygon_bar failed: %s", e)
-            continue
-        # _mtf_confluence is the shadow's latest emitted record set
-        recs = hub._mtf_confluence.get(sec_tf_seconds, set()) or set()
-        # Extract just this pack's interpreter state from the records
-        for rec in recs:
+    # Capture each shadow close event explicitly, keyed by the period's
+    # start timestamp (the bar_start of the just-closed secondary bar).
+    # This avoids the off-by-one anchoring problem of keying by primary
+    # bar ts (the previous version under-reported parity on packs where
+    # FLIP/TREND classifications differed across adjacent periods).
+    sec_close_records: dict = {}
+    _orig_on_bar_close = shadow.on_bar_close
+
+    def _capture_on_bar_close(bar):
+        records = _orig_on_bar_close(bar)
+        period_ts = pd.Timestamp(bar['timestamp'])
+        if period_ts.tzinfo is None:
+            period_ts = period_ts.tz_localize('UTC')
+        for rec in records:
             parts = rec.split('-', 2)
             if len(parts) >= 3 and parts[1] == interpreter_key:
-                # Use the closing timestamp of the secondary bar that
-                # produced this record. Approximation: the primary bar's
-                # timestamp aligned to secondary period end.
-                live_close_records[ts] = parts[2]
+                sec_close_records[period_ts] = parts[2]
+        return records
+    shadow.on_bar_close = _capture_on_bar_close
+    try:
+        for ts, row in pri_df.iterrows():
+            bar_dict = {
+                'open': float(row['open']), 'high': float(row['high']),
+                'low': float(row['low']), 'close': float(row['close']),
+                'volume': float(row.get('volume', 0)),
+                'timestamp': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+            }
+            try:
+                hub.on_polygon_bar(bar_dict, primary_tf_seconds)
+            except Exception as e:
+                logger.warning(
+                    "[parity-Q3] hub.on_polygon_bar failed: %s", e)
+                continue
+    finally:
+        shadow.on_bar_close = _orig_on_bar_close
 
-    # Compare live emissions against batch states on the secondary timeline.
-    # Skip the first `warmup_bars` secondary closes — both paths start
-    # cold and need time to converge on path-dependent indicators.
+    # Compare live emissions against batch states using exact period-start
+    # matching. Skip the first `warmup_bars` secondary closes — both
+    # paths start cold and need time to converge on path-dependent
+    # indicators.
     matched = 0
     compared = 0
     divergent: list = []
@@ -998,15 +1015,10 @@ def run_quadrant_3_interpreter_secondary(
             continue
         if batch_state is None:
             continue
-        # Find the primary bar at or after this secondary bar's close
-        try:
-            mask = pri_df.index >= sec_ts
-            if not mask.any():
-                continue
-            anchor_ts = pri_df.index[mask][0]
-        except Exception:
-            continue
-        live_state = live_close_records.get(anchor_ts)
+        sec_ts_norm = pd.Timestamp(sec_ts)
+        if sec_ts_norm.tzinfo is None:
+            sec_ts_norm = sec_ts_norm.tz_localize('UTC')
+        live_state = sec_close_records.get(sec_ts_norm)
         if live_state is None:
             continue
         compared += 1

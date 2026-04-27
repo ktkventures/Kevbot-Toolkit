@@ -99,6 +99,14 @@ class UtBotV4Incremental:
             "utv4_trailing_stop_prev": prev_stop_for_output,
             "utv4_bull_flip": bool(bull_flip),
             "utv4_bear_flip": bool(bear_flip),
+            # Mirror the batch path's `__`-prefixed columns so the
+            # interpreter (which reads `df["__utv4_bull_flip"]`) sees
+            # the same data live as it does in backtest. Without this
+            # alias, Q2/Q3 parity caps at ~0.87 because flip bars
+            # mis-classify to BULL_TREND/BEAR_TREND in live mode.
+            # Fixed 2026-04-27 after parity simulator surfaced the gap.
+            "__utv4_bull_flip": bool(bull_flip),
+            "__utv4_bear_flip": bool(bear_flip),
         }
 
     def warmup(self, df) -> None:
