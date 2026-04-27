@@ -60,6 +60,26 @@ interface Strategy {
   equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null };
   updatedAt: string;
   portfolioCount: number;
+  health?: StrategyHealth;
+}
+
+// Strategy Health Badge — see services.compute_strategy_health.
+// Severity: 'healthy' (no issues) | 'minor' (yellow info) | 'action' (orange,
+// fix recommended) | 'broken' (red, can't run as-is).
+export type HealthSeverity = 'healthy' | 'minor' | 'action' | 'broken';
+
+export interface HealthIssue {
+  severity: 'minor' | 'action' | 'broken';
+  code: string;
+  title: string;
+  detail: string;
+  fix_action: string | null;
+  fix_action_label: string | null;
+}
+
+export interface StrategyHealth {
+  severity: HealthSeverity;
+  issues: HealthIssue[];
 }
 
 /* ========================================================================= */
@@ -128,7 +148,160 @@ function apiToStrategy(s: any): Strategy {
     // Attached server-side by the list endpoint (count of portfolios whose
     // `strategies` array contains this strategy's id).
     portfolioCount: s.portfolio_count ?? 0,
+    health: s.health || undefined,
   };
+}
+
+/* ========================================================================= */
+/* Strategy Health Badge                                                       */
+/* ========================================================================= */
+
+const HEALTH_SEVERITY_COLORS: Record<HealthSeverity,
+  { bg: string; fg: string; label: string }> = {
+  healthy: { bg: 'var(--green-muted)', fg: 'var(--green)', label: 'Healthy' },
+  minor:   { bg: 'var(--orange-muted)', fg: 'var(--orange)', label: 'Minor' },
+  action:  { bg: 'var(--orange-muted)', fg: 'var(--orange)', label: 'Action recommended' },
+  broken:  { bg: 'var(--red-muted)', fg: 'var(--red)', label: 'Broken' },
+};
+
+const HEALTH_SEVERITY_ICONS: Record<HealthSeverity, string> = {
+  healthy: '✓',
+  minor: 'i',
+  action: '!',
+  broken: '✕',
+};
+
+export function StrategyHealthBadge({
+  health,
+  variant = 'pill',
+  onOpenDrawer,
+}: {
+  health?: StrategyHealth;
+  variant?: 'pill' | 'banner';
+  onOpenDrawer?: () => void;
+}) {
+  if (!health || health.severity === 'healthy') return null;
+  const c = HEALTH_SEVERITY_COLORS[health.severity];
+  const icon = HEALTH_SEVERITY_ICONS[health.severity];
+
+  // Tooltip: count by severity
+  const counts: Record<string, number> = {};
+  for (const i of health.issues) counts[i.severity] = (counts[i.severity] || 0) + 1;
+  const tooltipParts = Object.entries(counts)
+    .map(([s, n]) => `${n} ${s}`)
+    .join(', ');
+  const tooltip = `${tooltipParts} — click for details`;
+
+  if (variant === 'banner') {
+    return (
+      <div
+        className="rounded p-3 mb-3 cursor-pointer"
+        style={{ background: c.bg, border: `1px solid ${c.fg}40` }}
+        onClick={(e) => { e.stopPropagation(); onOpenDrawer?.(); }}
+        role="button"
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className="inline-flex items-center justify-center rounded-full font-bold"
+            style={{ background: c.fg, color: 'white', width: 24, height: 24, fontSize: 12 }}
+          >
+            {icon}
+          </span>
+          <div className="flex-1">
+            <div className="text-sm font-semibold" style={{ color: c.fg }}>
+              {c.label}: {health.issues.length} issue{health.issues.length !== 1 ? 's' : ''}
+            </div>
+            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {health.issues.slice(0, 2).map((i) => i.title).join(' · ')}
+              {health.issues.length > 2 && ` (+${health.issues.length - 2} more)`}
+            </div>
+          </div>
+          <span className="text-xs" style={{ color: c.fg }}>Click for details →</span>
+        </div>
+      </div>
+    );
+  }
+
+  // pill variant — for use inline in strategy card header
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpenDrawer?.(); }}
+      title={tooltip}
+      className="text-xs px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1"
+      style={{ background: c.bg, color: c.fg, border: `1px solid ${c.fg}40` }}
+    >
+      <span style={{ fontSize: 10, lineHeight: 1 }}>{icon}</span>
+      <span>{health.issues.length}</span>
+    </button>
+  );
+}
+
+export function StrategyHealthDrawer({
+  health,
+  isOpen,
+  onClose,
+  strategyName,
+}: {
+  health?: StrategyHealth;
+  isOpen: boolean;
+  onClose: () => void;
+  strategyName?: string;
+}) {
+  if (!health) return null;
+  return (
+    <Modal
+      title={`Strategy Health${strategyName ? ` — ${strategyName}` : ''}`}
+      isOpen={isOpen}
+      onClose={onClose}
+      width="560px"
+    >
+      {health.severity === 'healthy' ? (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          No issues detected. This strategy looks good.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {health.issues.map((issue, idx) => {
+            const c = HEALTH_SEVERITY_COLORS[issue.severity];
+            return (
+              <div
+                key={idx}
+                className="rounded p-3"
+                style={{ background: c.bg, border: `1px solid ${c.fg}30` }}
+              >
+                <div className="flex items-start gap-2">
+                  <span
+                    className="inline-flex items-center justify-center rounded-full font-bold flex-shrink-0"
+                    style={{ background: c.fg, color: 'white', width: 20, height: 20, fontSize: 10, marginTop: 1 }}
+                  >
+                    {HEALTH_SEVERITY_ICONS[issue.severity]}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold" style={{ color: c.fg }}>
+                      {issue.title}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                      {issue.detail}
+                    </div>
+                    <div className="text-[10px] mt-1 font-mono" style={{ color: 'var(--text-muted)' }}>
+                      code: {issue.code}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <p className="text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>
+            Fix-action buttons are coming in the next update — for now, the
+            issue codes above are mappable to the relevant action (e.g.
+            `rapid_test_data` → re-run a full backtest from the Strategy
+            Builder, `live_alert_divergence` → check live engine logs, etc.).
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
 }
 
 /* ========================================================================= */
@@ -311,6 +484,9 @@ export default function StrategiesPage() {
   const [eqShowConfBands, setEqShowConfBands] = useState(false);
   const [kpiMode, setKpiMode] = useState('Overall');
   const [chartHeight, setChartHeight] = useState(64);
+  // Strategy Health drawer — opens when a badge is clicked. We track the
+  // strategy whose drawer is open (or null when closed).
+  const [healthDrawerFor, setHealthDrawerFor] = useState<string | null>(null);
 
   // Bulk select (always available, no select mode toggle needed)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -520,6 +696,19 @@ export default function StrategiesPage() {
         </div>
       )}
 
+      {/* ---- Strategy Health drawer ---- */}
+      {healthDrawerFor && (() => {
+        const target = strategies.find((s) => s.id === healthDrawerFor);
+        return (
+          <StrategyHealthDrawer
+            health={target?.health}
+            isOpen={true}
+            onClose={() => setHealthDrawerFor(null)}
+            strategyName={target?.name}
+          />
+        );
+      })()}
+
       {/* ---- Bulk delete confirmation modal ---- */}
       <Modal
         title="Delete Selected Strategies"
@@ -717,6 +906,10 @@ export default function StrategiesPage() {
                 >
                   {strat.status}
                 </span>
+                <StrategyHealthBadge
+                  health={strat.health}
+                  onOpenDrawer={() => setHealthDrawerFor(strat.id)}
+                />
                 <span className="flex-1" />
                 {strat.fwdTrades > 0 && (() => {
                   const { fwd, alert } = getStrategySD(strat);

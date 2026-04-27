@@ -12,6 +12,7 @@ import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
 import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
+import { StrategyHealthBadge, StrategyHealthDrawer, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
@@ -107,6 +108,7 @@ function apiToDetailStrategy(s: any) {
     alertSD: (s.sigma_alert ?? null) as number | null,
     createdAt: s.created_at || '--',
     updatedAt: s.updated_at || '--',
+    health: s.health || undefined,
   };
 }
 
@@ -898,6 +900,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   );
   const [advancedTab, setAdvancedTab] = useState('Rolling Metrics');
   const [rollingWindow, setRollingWindow] = useState(20);
+  const [healthDrawerOpen, setHealthDrawerOpen] = useState(false);
   const [rollingMetric, setRollingMetric] = useState('Win Rate');
   const [returnView, setReturnView] = useState('Histogram');
   const [markovWindow, setMarkovWindow] = useState(20);
@@ -1932,6 +1935,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             </button>
           </>
         }
+      />
+
+      {/* Strategy Health banner — only shown when there are issues */}
+      <StrategyHealthBadge
+        health={strategy.health as StrategyHealth | undefined}
+        variant="banner"
+        onOpenDrawer={() => setHealthDrawerOpen(true)}
+      />
+      <StrategyHealthDrawer
+        health={strategy.health as StrategyHealth | undefined}
+        isOpen={healthDrawerOpen}
+        onClose={() => setHealthDrawerOpen(false)}
+        strategyName={strategy.name}
       />
 
       {/* Loading indicators */}
