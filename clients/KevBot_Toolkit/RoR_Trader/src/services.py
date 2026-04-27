@@ -1327,17 +1327,32 @@ class StrategyHealth:
 
 
 def _config_view(strategy: dict) -> dict:
-    """Return strategy config as a dict regardless of how it's stored."""
-    cfg = strategy.get('config') or {}
-    if isinstance(cfg, str):
+    """Return a unified config view that works for both shapes:
+       (a) raw DB row: strategy['config'] is a dict / JSON string with the
+           config-level keys nested inside.
+       (b) API/app shape: _row_to_strategy has already merged config keys
+           up to the top level, so strategy['config'] is empty/missing.
+
+    The fix (2026-04-27): merge BOTH levels into a single dict, with the
+    nested `config` taking precedence when both have a key (in practice
+    they don't disagree). Without this merge, every API-returned strategy
+    looked like it had a missing entry trigger, flagging healthy strategies
+    as 'broken' in the Health Badge.
+    """
+    cfg_nested = strategy.get('config') or {}
+    if isinstance(cfg_nested, str):
         try:
             import json
-            cfg = json.loads(cfg)
+            cfg_nested = json.loads(cfg_nested)
         except Exception:
-            cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    return cfg
+            cfg_nested = {}
+    if not isinstance(cfg_nested, dict):
+        cfg_nested = {}
+    # Start with the entire flat dict (API shape: config keys live at top).
+    # Then layer the nested config on top so DB-shaped rows still work.
+    merged = dict(strategy)
+    merged.update(cfg_nested)
+    return merged
 
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
