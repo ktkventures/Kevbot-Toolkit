@@ -1285,10 +1285,24 @@ class SymbolHub:
                 ind_vals = audit_data.get('indicator_values', {})
                 interp_states = audit_data.get('interpreter_states', {})
                 diag_parts = []
-                for k in ('utbot_direction', 'utbot_stop', 'utbot_atr'):
+                # Surface any user-pack indicator value of interest. The
+                # original list only handled utbot_v2 keys; here we include
+                # utv4_* (UT Bot V4 user pack) and any prefixed booleans so
+                # silent user-pack failures are visible in worker logs.
+                _diag_keys = (
+                    'utbot_direction', 'utbot_stop', 'utbot_atr',
+                    'utv4_trailing_stop', 'utv4_trailing_stop_prev',
+                    'utv4_bull_flip', 'utv4_bear_flip',
+                )
+                for k in _diag_keys:
                     if k in ind_vals:
                         v = ind_vals[k]
-                        diag_parts.append(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}")
+                        if isinstance(v, float):
+                            diag_parts.append(f"{k}={v:.4f}")
+                        elif isinstance(v, bool):
+                            diag_parts.append(f"{k}={int(v)}")
+                        else:
+                            diag_parts.append(f"{k}={v}")
                 interp_str = ",".join(f"{k}={v}" for k, v in interp_states.items()) if interp_states else "none"
                 logger.info("BAR_CLOSE(flush) strat=%s bar=%d close=%.2f pos=%s "
                             "signals=%d triggers=%s ind=[%s] interp=[%s]",

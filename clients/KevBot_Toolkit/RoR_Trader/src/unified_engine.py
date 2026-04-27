@@ -743,6 +743,9 @@ class IncrementalIndicatorEngine:
                         self._user_pack_engines[slug] = pack.incremental_class(
                             **pack_params
                         )
+                        logger.info(
+                            "user pack instantiated: slug=%s params=%s",
+                            slug, pack_params)
                     except Exception as e:
                         logger.warning(
                             "could not instantiate incremental_class for "
@@ -750,6 +753,11 @@ class IncrementalIndicatorEngine:
             except Exception as e:
                 logger.warning(
                     "user pack incremental load failed: %s", e)
+        if user_pack_markers and not self._user_pack_engines:
+            logger.warning(
+                "User-pack markers present in required set %s but "
+                "_user_pack_engines is empty after init — live triggers "
+                "will not fire.", sorted(user_pack_markers))
 
     def warmup(self, df: pd.DataFrame):
         """Initialize state from historical bars."""
