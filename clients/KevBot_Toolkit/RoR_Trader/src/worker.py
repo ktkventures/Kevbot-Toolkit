@@ -58,6 +58,19 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 
+# User packs (e.g. ut_bot_v4) are not in confluence_groups.TEMPLATES at import
+# time — pack_registry.scan_and_load_all() registers them. The Streamlit app
+# and FastAPI server already do this at startup; without it here, the worker's
+# resolve_strategy_requirements() never adds `_user_pack_<slug>` to a
+# strategy's required indicators, so user-pack triggers fire silently in live
+# mode (no `update_bar()` invocation, no `utv4_bull_flip` in `current`).
+import pack_registry  # noqa: E402
+_loaded_packs = pack_registry.scan_and_load_all()
+logger.info(
+    "pack_registry loaded %d user pack(s): %s",
+    len(_loaded_packs), sorted(_loaded_packs.keys()),
+)
+
 # Worker configuration
 POLL_INTERVAL = 15          # seconds between desired_state polls
 HEARTBEAT_INTERVAL = 30     # seconds between heartbeat writes
