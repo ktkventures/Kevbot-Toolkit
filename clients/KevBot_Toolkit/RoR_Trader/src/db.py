@@ -297,7 +297,12 @@ _STRATEGY_LIST_COLUMNS = (
     'alert_tracking_enabled,alert_tracking_reset_at,'
     'created_at,updated_at,data_refreshed_at,'
     'discrepancies,discrepancies_dismissed_at,'
-    'forward_test_start,forward_testing,strategy_origin'
+    'forward_test_start,forward_testing,strategy_origin,'
+    # Strategy Health Badge columns (2026-04-27 strategy_health_badge.sql)
+    # Without these the list endpoint can't fully compute the badge —
+    # data_source-based issues (rapid_test_data, no_hifi_run, kpis_time_stale)
+    # silently skip.
+    'data_source,kpis_stale_since,kpis_computed_at'
 )
 
 
