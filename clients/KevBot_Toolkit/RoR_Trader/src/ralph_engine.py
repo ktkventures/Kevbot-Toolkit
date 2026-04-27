@@ -1565,8 +1565,15 @@ class SymbolHub:
             if completed is None:
                 continue
             shadow = self._shadow_engines.get(sec_tf)
-            if shadow is None or not shadow.indicators._initialized:
+            if shadow is None:
                 continue
+            # Note: do NOT gate on shadow.indicators._initialized here.
+            # shadow.on_bar_close → update_bar handles cold-start via the
+            # incremental class's `_first` flag, and skipping when not
+            # initialized would prevent the shadow from ever initializing
+            # via live data alone (chicken-and-egg). worker.py.warmup()
+            # is an optimization, not a hard requirement. Found while
+            # investigating Q4 data fidelity (2026-04-27).
             try:
                 self._mtf_confluence[sec_tf] = shadow.on_bar_close(
                     completed)
@@ -1681,8 +1688,15 @@ class SymbolHub:
             if completed is None:
                 continue
             shadow = self._shadow_engines.get(sec_tf)
-            if shadow is None or not shadow.indicators._initialized:
+            if shadow is None:
                 continue
+            # Note: do NOT gate on shadow.indicators._initialized here.
+            # shadow.on_bar_close → update_bar handles cold-start via the
+            # incremental class's `_first` flag, and skipping when not
+            # initialized would prevent the shadow from ever initializing
+            # via live data alone (chicken-and-egg). worker.py.warmup()
+            # is an optimization, not a hard requirement. Found while
+            # investigating Q4 data fidelity (2026-04-27).
             try:
                 self._mtf_confluence[sec_tf] = shadow.on_bar_close(
                     completed)

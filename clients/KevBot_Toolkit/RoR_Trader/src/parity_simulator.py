@@ -854,7 +854,7 @@ def run_quadrant_3_interpreter_secondary(
     days: int = 14,
     session: str = 'RTH',
     feed: str = 'sip',
-    warmup_bars: int = 100,
+    warmup_bars: int = 20,
 ) -> dict:
     """Q3: Interpreter parity on a SECONDARY TF (cross-TF / shadow path).
 
@@ -943,11 +943,15 @@ def run_quadrant_3_interpreter_secondary(
                                 f'{sec_tf_seconds}s — Q3/Q4 user-pack '
                                 'requirement plumbing is broken')}
 
-    # Warmup the shadow engine on historical secondary bars (matches what
-    # worker.py does on engine startup).
-    sec_warmup = load_market_data(
-        symbol=symbol, days=days, timeframe=secondary_tf, session=session)
-    shadow.warmup(sec_warmup.iloc[:max(1, len(sec_warmup) - warmup_bars)])
+    # IMPORTANT: do NOT call shadow.warmup() here. The live replay below
+    # aggregates the same primary bars into the shadow's 15Min builder
+    # and calls shadow.on_bar_close on every close — running warmup AND
+    # live replay would double-process the warmup window and silently
+    # drift the path-dependent trail-stop state. Batch path (interpreter
+    # over full DF) starts cold; we mirror that by letting live start
+    # cold too. Q4 confirmed the aggregation is bit-perfect, so cold
+    # starts converge. We simply skip the first `warmup_bars` 15Min
+    # closes from the comparison so both states have time to stabilize.
 
     # Now feed each PRIMARY-TF bar through hub.on_polygon_bar — secondary
     # builder will aggregate and call shadow.on_bar_close on every close.
@@ -981,11 +985,17 @@ def run_quadrant_3_interpreter_secondary(
                 # timestamp aligned to secondary period end.
                 live_close_records[ts] = parts[2]
 
-    # Compare live emissions against batch states on the secondary timeline
+    # Compare live emissions against batch states on the secondary timeline.
+    # Skip the first `warmup_bars` secondary closes — both paths start
+    # cold and need time to converge on path-dependent indicators.
     matched = 0
     compared = 0
     divergent: list = []
-    for sec_ts, batch_state in zip(sec_df.index, batch_states):
+    for i, (sec_ts, batch_state) in enumerate(
+        zip(sec_df.index, batch_states)
+    ):
+        if i < warmup_bars:
+            continue
         if batch_state is None:
             continue
         # Find the primary bar at or after this secondary bar's close
