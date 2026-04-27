@@ -552,10 +552,18 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
             ind, group.id, strategy.get('id'),
         )
 
-    # Resolve user pack requirements (triggers not matched by built-in prefixes)
-    # User pack indicators/interpreters are computed by the batch pipeline and
-    # stored as pre-computed columns in the DataFrame. The unified engine reads
-    # these columns instead of computing them incrementally.
+    # Resolve user pack requirements.
+    #
+    # A pack is "in play" for a strategy if EITHER (a) any required trigger
+    # uses its `trigger_prefix`, OR (b) any required interpreter is in the
+    # pack's manifest `interpreters` list (the latter happens when a
+    # strategy uses a user-pack interpreter purely as a confluence gate,
+    # without firing any trigger from that pack).
+    #
+    # In both cases the pack's `_user_pack_<slug>` indicator marker is
+    # added so IncrementalIndicatorEngine instantiates the live
+    # incremental_class (or the batch pipeline runs the indicator function
+    # via run_indicators_for_group).
     try:
         import pack_registry
         from confluence_groups import TEMPLATES
@@ -563,20 +571,20 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
         for slug, pack in registered.items():
             manifest = pack.manifest
             tp = manifest.get('trigger_prefix', '')
-            if not tp:
-                continue
-            # Check if any required trigger matches this pack's prefix
-            pack_triggers_used = any(
+            pack_interpreters = set(manifest.get('interpreters', []))
+            pack_triggers_used = bool(tp) and any(
                 t.startswith(tp + '_') or t == tp
                 for t in triggers
             )
-            if not pack_triggers_used:
+            pack_interps_used = bool(pack_interpreters & interpreters)
+            if not pack_triggers_used and not pack_interps_used:
                 continue
-            # Add pack's interpreter keys to required set
-            for ik in manifest.get('interpreters', []):
+            # Pull pack's interpreter keys into the required set so the
+            # live dispatch and the backtest user_pack_data merge both
+            # surface its state. (No-op when only triggers triggered the
+            # match — interpreters set already had whatever was needed.)
+            for ik in pack_interpreters:
                 interpreters.add(ik)
-            # Mark that user pack indicators need batch computation
-            # (the batch pipeline will run them via run_indicators_for_group)
             indicators.add(f'_user_pack_{slug}')
     except Exception as e:
         # Surface — user packs that fail to register would silently produce
@@ -1120,6 +1128,48 @@ class TriggerEvaluator:
                 interps['UTBOT_V2'] = 'BULL'
             elif d == -1:
                 interps['UTBOT_V2'] = 'BEAR'
+
+        # ── User-pack interpreters (generic dispatch) ──
+        # Built-in interpreters above are inlined for speed. Any required
+        # interpreter NOT handled above is presumed to come from a user
+        # pack: look up the pack via pack_registry, build a 1-row
+        # DataFrame from `current`, and call the pack's interpreter
+        # function. This restores live confluence-record emission for
+        # user-pack interpreters — without it, strategies that gate on a
+        # `<TF>-<USER_PACK_INTERPRETER>-<state>` confluence record never
+        # see the gate satisfied in live mode (backtest path uses
+        # evaluate_bar_for_backtest which merges pre-computed states).
+        unhandled = self.required_interpreters - set(interps)
+        if unhandled:
+            try:
+                import pack_registry
+                row_df = None
+                for pack in pack_registry.get_registered_packs().values():
+                    pack_interps = set(
+                        pack.manifest.get('interpreters', []))
+                    overlap = pack_interps & unhandled
+                    if not overlap or pack.interpreter_func is None:
+                        continue
+                    if row_df is None:
+                        row_df = pd.DataFrame([current])
+                    try:
+                        states = pack.interpreter_func(row_df)
+                        if states is not None and len(states) > 0:
+                            latest = states.iloc[-1]
+                            for ikey in overlap:
+                                if latest is not None and not (
+                                    isinstance(latest, float)
+                                    and pd.isna(latest)
+                                ):
+                                    interps[ikey] = latest
+                    except Exception as e:
+                        logger.warning(
+                            "user-pack interpreter %s failed live "
+                            "dispatch: %s", overlap, e)
+            except Exception as e:
+                logger.warning(
+                    "pack_registry lookup failed in evaluate_bar_close: "
+                    "%s", e)
 
         # ── C-type Triggers (crossover detection: current vs prev) ──
 
